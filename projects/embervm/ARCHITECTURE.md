@@ -78,6 +78,8 @@ the drift check covers the copies used outside Bazel (#7066).
 | Composite | **Built** | No current consumer |
 | Node-local activator | **Planned** | Partly landed |
 | Brick autoscale | **Configured** at rung `full`; operational validation outstanding | Scale-down acceptance remains on #6059 |
+| Memory admission | **Built**: reserved declared claims, no overcommit; configured on the hub and in embervm-dev | #4185; live acceptance (no brick OOMKill under claude-runtime load) outstanding |
+| Firecracker jailer | **Built**, armed in embervm-dev only | Production arming is one value after a dev soak ([#5255](https://github.com/jomcgi-org/homelab/issues/5255)); conformance S7 gates dev promotion on it |
 | S3 archive-at-bank | **Decided direction** | Archive at bank commit |
 | Transport auth CP-to-noded | **Built** (bearer + ingress policy) | SPIFFE mTLS is **Built, default off**: noded's second listener (`noded.spiffe`, #5757) and the control plane's file-based dial (`controlPlane.spiffe`, #5758) both render inert until flipped; phase 2 of #5706 in flight |
 | Guest identity (JWT-SVID) | **Decided direction** | Per-principal SVID delivered over vsock, phase 3 of #5706 |
@@ -1089,26 +1091,27 @@ and principal-scoped erasure (ADR embervm/019).
 **A brick is the capacity unit everywhere**: a fixed-size noded
 Deployment pod in a T-shirt size class (`2gi` through `16gi`; small classes
 pack tasks densely, the largest hold 1-2 serving/session VMs), with honest
-requests (Burstable: memory requests at roughly 75% of the limit, CPU
-request-only, see below), sized roughly 4-8x the largest VM of its class, a
-handful per node. The daemon is budget-agnostic: it reads its ceiling from
-its own cgroup, so a size class is a resources block, not a code fork, and
-a brick's size is fixed for its lifetime.
+requests (memory requests equal to the limit on the hub and roughly 75% of it
+in the chart default, CPU request-only, see below), sized roughly 4-8x the
+largest VM of its class, a handful per node. The daemon is budget-agnostic: it
+reads its ceiling from its own cgroup, so a size class is a resources block,
+not a code fork, and a brick's size is fixed for its lifetime.
 
 | Layer | Owner | EmberVM's lever |
 | ----- | ----- | --------------- |
-| VM to brick slot | EmberVM control plane | per-brick contiguous-headroom ledger; pack-to-empty scoring; best-fit placement across classes |
+| VM to brick slot | EmberVM control plane | per-brick admission (`mem_admittable_mib` net of in-flight claims); pack-to-empty scoring; best-fit placement across classes; retry on refusal |
 | Brick pod to node | kube-scheduler | pod shape only |
 | Node provisioning | Karpenter or equivalent (cloud) / none (fixed fleet) | brick count vector from the single-writer controller; a Pending brick is the signal |
 
 **Why.** The reserve constants are provisional and measured only once:
 `daemonReserveMib` (256 in the chart, 512 in the binary default when the chart
-does not inject it), `vmOverheadMib` (0 until a brick is switched to `reserved`),
-and the roughly 3 MiB per guest the overhead script reported on the first hub
-samples. `Stats()` is read once at release, so there is no recurring per-VM RSS
-series and no separation of daemon working set from guest RSS from shared page
-cache. That is deliberate: a sampler is cheap to write and expensive to keep
-honest (page-cache first-toucher misattribution, cgroup v2 no-internal-process
+does not inject it), `vmOverheadMib` (64, a cushion charged only under
+`reserved`), and the roughly 3 MiB per guest the overhead script reported on
+the first hub samples. `Stats()` is read once at release, so there is no
+recurring per-VM RSS series and no separation of daemon working set from guest
+RSS from shared page cache. That is deliberate: a sampler is cheap to write
+and expensive to keep honest (page-cache first-toucher misattribution, cgroup
+v2 no-internal-process
 rules, cardinality), and no sizing or incident decision has yet needed a number
 the existing facilities cannot supply. Recurring per-VM telemetry (#4773) is
 added when a named decision needs it, scoped to that decision, and never changes
@@ -1119,16 +1122,72 @@ On a fixed fleet a Pending brick **is** the fleet-full signal: the
 controller flags `:fleet_full`, the dispatcher refuses placement (503), and
 a human is paged, rather than overcommitting.
 
+**Admission is reserved** (#4185; `noded.admissionModel: reserved` on the hub
+and in embervm-dev, `observed` in the chart default). A brick admits a boot
+only when the declared `memMib` of every live and in-flight VM, plus
+`vmOverheadMib` per VM, fits its budget (`memory.max` minus
+`daemonReserveMib`), and the observed guard also holds: cgroup headroom net of
+reclaimable page cache, less boots in flight, less `memRejectFloorMib`. noded
+evaluates that predicate in one function under one mutex, against an atomic
+ticket ledger: every boot verb, `BuildBase` included, holds a ticket from
+admission until its driver boot call returns, so concurrent boots cannot each
+pass against the same headroom. A refusal is `RESOURCE_EXHAUSTED` with a stable
+token (`pressure:mem`, `pressure:taps`, `slots`), logged and counted in
+`NodeStatus.admission_refusals`. Every `NodeStatus` carries
+`mem_admittable_mib`, the largest `memMib` the brick would admit for one more
+VM at that instant, computed by the same function; it is the one memory
+predicate the control plane trusts.
+
+The control plane keeps its own in-flight ledger (`Embervm.Scheduler.Inflight`).
+Every new-VM placement claims its declared memory on the chosen brick before
+the boot RPC, releases it on a refusal, and holds it for a few seconds after a
+successful boot so the brick's next report already counts the VM.
+`Scheduler.mem_eligible?/2` admits a need only when it fits
+`mem_admittable_mib` net of those pending claims, and a classed brick reporting
+a zero budget is not placeable. Two placers racing between reports can still
+pick the same brick; the brick's own admission refuses the loser, and with
+`dispatcher.placementRetry` (armed on the hub and in embervm-dev) task, serving
+and session placement moves on to the next candidate instead of failing the
+attempt, recording demand once.
+
+`vmOverheadMib` and the jailer's ceilings are different numbers. The overhead
+is what admission charges each VM for host memory beyond guest RAM. The
+jailer's per-VM leaf caps one VM at its `memMib` plus 192 MiB and charges
+nothing; the shared `embervm-vms` parent caps all guests together at the brick
+limit minus `daemonReserveMib`, with `memory.oom.group` 0 there and 1 on each
+leaf, so an aggregate overrun kills one guest and the container lives. With
+the jailer disarmed, as in production today, the container limit is the only
+ceiling and the kubelet's `memory.oom.group=1` on it takes noded and every
+guest down together.
+
+Brick memory requests equal their limits on the hub, in production and
+embervm-dev. A reserved brick fills its budget with declared memory, so
+requests below the limit would let kube-scheduler place more brick limit on a
+node than it holds, and the kubelet would evict co-located bricks together.
+
+**Why.** On 2026-10-10 the hub's 8gi brick (budget 7936 MiB) ran the observed
+model and admitted five to seven claude-runtime guests at 3072 MiB each, 15 to
+21 GiB declared. A restored guest is charged only for pages it has touched, so
+for minutes after a restore it costs a few hundred MiB of headroom, and creates
+scored on one stale report herded onto the fullest brick. As the guests warmed
+up the container crossed its limit and was OOMKilled whole, noded and every
+guest, three times in about 70 minutes. Reserved admission fits two such
+guests per 8gi brick and one per 4gi, so the hub's 8gi ceiling moved from 3 to
+6 bricks, and demand past a brick now shows up as denials that scale bricks
+up. An overcommit ratio was rejected while production runs without the
+jailer, because without the `embervm-vms` cap an overcommit failure still kills
+the whole brick. Rollback is `noded.admissionModel: observed`.
+
 **Built**: every brick and the serving relay run a disposable-shaped
 priority class (`homelab-disposable`, or `homelab-preemptible` on GKE, see
 below), so guests are the first to yield under node memory pressure;
 per-workload arbitration happens only in CP dispatch. QoS is Burstable:
 CPU carries no limit (request-only, sized as a CFS fair-share weight rather
-than a reservation), and memory requests sit at roughly 75% of limit (PR
-#5519, merged 2026-09-01) since Firecracker guest RAM is demand-faulted and a
-brick's resident set runs far under its configured ceiling; the limit itself
-is untouched and still sets `usable_mib`, so no guest's admitted capacity
-changes (ADR embervm/039).
+than a reservation). Memory requests sat at roughly 75% of limit (PR #5519,
+merged 2026-09-01, ADR embervm/039) because guest RAM is demand-faulted; the
+chart default keeps that for the observed model, and the hub overlays now
+request the full limit because reserved admission fills a brick to it. The
+limit itself still sets `usable_mib`.
 
 **Decided direction** (ADR embervm/039, from the 2026-09-01 capacity
 incidents): overcommit blast radius is a ladder, guest (Firecracker jailer
@@ -1149,9 +1208,9 @@ remaining first-evicted; this reopens, and only partially answers, the
 mass-VM-death preemption concern ADR embervm/016 raised against
 below-default brick priority (scheduler preemption deletes rather than
 drains). The Firecracker jailer that backs the guest rung of the ladder is
-**Shipped-but-suspended** (#5520; section 10 has the containment detail). It
-lands dark pending live verification on one brick, after which a values-only
-change can arm it.
+**Built and armed in embervm-dev only** (#5255; section 10 has the
+containment detail); production arms with a values-only change after a dev
+soak.
 
 **Why.** Host memory usage cannot say whether a guest is reclaiming hard or has
 already killed its application: a guest OOM leaves the Firecracker process
@@ -1857,14 +1916,32 @@ embervm/032).
   principal-bound lineage; no cluster credential in guests; Envoy-only
   serving ingress; bound dial-home registration identity.
 - **Accepted risk**: privileged noded with /dev/kvm; external-allow guest
-  egress via the broker; taint optional; CPU side-channel between
-  co-resident tenant guests on the same brick, unmapped (#5255).
-- **Shipped-but-suspended** (ADR embervm/039, #5520): the Firecracker jailer
-  provides per-VM chroot, uid/gid drop, and cgroup containment, closing the
-  direct-root-exec gap when enabled. The chart lands it dark
-  (`noded.jailer.enabled: false` in every deployment) pending live
-  verification on one brick. `--new-pid-ns` is deliberately omitted because
-  a PID namespace breaks `execProcess` `Wait` and `Pid` supervision semantics.
+  egress via the broker; taint optional; CPU micro-architectural side
+  channels between co-resident tenant guests. Tenants share bricks and
+  Kubernetes nodes by design, and nothing pins a guest to cores or isolates
+  SMT siblings: noded sets no CPU affinity, and bricks carry no CPU limit, so
+  they are never Guaranteed pods the kubelet could give exclusive cores.
+  Whether the Spot brick nodes run SMT is set in gcloud, not in git (#5255).
+- **Built, armed in embervm-dev only** (ADR embervm/039, #5255): with
+  `noded.jailer.enabled` every guest launches through Firecracker's jailer: a
+  per-VM chroot whose inputs are staged readable by the jail uid, a uid and gid
+  from a block of the node's 20000-59999 range that each daemon leases for its
+  lifetime, a cgroup v2 leaf with `memory.max` at the guest's `memMib` plus
+  192 MiB and `memory.oom.group=1` under the capped `embervm-vms` parent
+  (section 7), and a PID namespace noded creates with `CLONE_NEWPID`, so
+  Firecracker is init of its own namespace while noded still waits on, kills
+  and reads it as its own child (the jailer's `--new-pid-ns` is not used,
+  because it leaves the VMM a grandchild noded cannot supervise). Snapshot
+  outputs written inside a jail are handed back to the daemon, and the guest
+  egress socket in the jail is chowned to the jail uid. It fails closed at
+  startup and per launch: an armed brick that cannot delegate cgroups, find
+  the jailer, or open every READY base rootfs through a jailed preflight exits
+  before it registers; a jailed launch that cannot be contained is refused,
+  never retried unjailed; a startup sweep removes jails a dead daemon left.
+  `NodeStatus` reports `jailer_armed` and cumulative `launch_modes`
+  (`jailed`, `direct_exec`, `refused`), and conformance S7 fails the dev gate
+  on any unjailed or refused launch. Production keeps `enabled: false` until a
+  dev soak; arming it there is that one value.
 - **Planned** (ADR embervm/041 phase 2, in flight): X.509-SVID mTLS on the
   CP-to-noded hop and the token broker, retiring the static bearer.
 
@@ -2068,7 +2145,14 @@ clone, requires the same marker back, rejects the peer marker, and requires two
 15-second guest holds to complete inside a 25-second overlap budget. The budget
 includes 10 seconds of explicit restore, admission, and HTTP headroom while
 remaining shorter than two serialized holds. The hold is bounded by the sandbox
-guest's own 25-second wall-clock cap, which S1 requests explicitly. A
+guest's own 25-second wall-clock cap, which S1 requests explicitly. In
+embervm-dev two more scenarios run after the rest (#5255). S7 reads
+`/v1/capacity` before S1 and after the suite and requires every brick to
+report `jailer_armed`, no `direct_exec` or `refused` launch across the suite,
+at least one `jailed` launch, and a nonzero budget with its own admission
+predicate on every classed brick. S8 has a task guest dial the host's egress
+vsock port and requires the egress sidecar's CA certificate back, which proves
+a jailed Firecracker can connect to its egress socket. A
 failed or all-vacuous run blocks promotion; Freight approval is the explicit
 operator override. Phase 1 is tracked in #5224. The launch-mode, crash-relaunch,
 and architecture acceptance matrix for restore-time vsock overrides is a
@@ -2108,7 +2192,7 @@ this table when the work ships or the issue closes without it.
 | --- | --- | --- | --- |
 | Brick scale-down couples durable archive acknowledgement with one brick per node (Joe, 2026-10-10) | section 7 | #6533 | single repository gate default-off; staged enable and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
-| The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |
+| The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | built and armed in embervm-dev; production arming pending a dev soak |
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | built, hub dev 4gi bound-1 canary staged; live acceptance pending |
 | SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | CP-to-noded mTLS built default off on both sides (#5757, #5758), rest not started |
 
@@ -2159,7 +2243,7 @@ has the full text.
 | embervm/036 | Platform KEK custody derived in the control plane's key service | Accepted, Built | deleted |
 | embervm/037 | Brick silence timeout | Draft, Built and armed at 21600 s (#5073) | deleted |
 | embervm/038 | Image-lane serving fresh boot | Draft, Built | deleted |
-| embervm/039 | Fair-share brick resources, blast-radius ladder, capacity as a signal | Accepted; requests Built, shedding Built and disarmed, jailer suspended, signal Decided direction | deleted |
+| embervm/039 | Fair-share brick resources, blast-radius ladder, capacity as a signal | Accepted; 75% memory requests Built, reversed to equal limits on the hub with reserved admission (#4185); shedding Built and disarmed; jailer Built and armed in embervm-dev only (#5255); signal Decided direction | deleted |
 | embervm/040 | Anchor-loss recovery, preemption budget split | Accepted; restore-onto-peer Built, preemption watcher Built and disarmed | deleted |
 | embervm/041 | SPIFFE workload identity on self-hosted SPIRE | Accepted; phases 0 and 1 done, phase 2 in flight (#5706) | deleted |
 | embervm/042 | Brick class ceilings move on denial pressure | Accepted, built; hub dev canary staged, live acceptance pending (#5505) | deleted |
