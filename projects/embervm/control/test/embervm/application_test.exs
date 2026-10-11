@@ -239,7 +239,7 @@ defmodule Embervm.ApplicationTest do
   test "brick class parsing carries zero-replica admission capacity" do
     System.put_env(
       "EMBERVM_BRICK_CLASSES",
-      ~s([{"name":"2gi","desired":0,"min":0,"max":4,"ceiling_bound":6,"usable_mib":1792,"mem_reject_floor_mib":512,"slots":8}])
+      ~s([{"name":"2gi","desired":0,"min":0,"max":4,"ceiling_bound":6,"usable_mib":1792,"mem_reject_floor_mib":512,"vm_overhead_mib":64,"slots":8}])
     )
 
     assert App.brick_classes_env() == [
@@ -251,8 +251,24 @@ defmodule Embervm.ApplicationTest do
                ceiling_bound: 6,
                usable_mib: 1_792,
                mem_reject_floor_mib: 512,
+               vm_overhead_mib: 64,
                slots: 8
              }
+           ]
+  end
+
+  test "brick class parsing reads an absent or invalid per-VM overhead as zero" do
+    System.put_env(
+      "EMBERVM_BRICK_CLASSES",
+      ~s([{"name":"2gi","desired":0,"usable_mib":1792,"mem_reject_floor_mib":512,"slots":8},) <>
+        ~s({"name":"4gi","desired":0,"usable_mib":3840,"mem_reject_floor_mib":512,"vm_overhead_mib":-1,"slots":8},) <>
+        ~s({"name":"8gi","desired":0,"usable_mib":7936,"mem_reject_floor_mib":512,"vm_overhead_mib":"64","slots":8}])
+    )
+
+    assert Enum.map(App.brick_classes_env(), &{&1.name, &1.vm_overhead_mib}) == [
+             {"2gi", 0},
+             {"4gi", 0},
+             {"8gi", 0}
            ]
   end
 

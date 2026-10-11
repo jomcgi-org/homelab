@@ -420,9 +420,12 @@ spec:
             # Brick capacity (PR-3): the per-size-class DESIRED replica counts the
             # Embervm.BrickController reconciles the brick Deployments to, as a JSON
             # array of {name,desired,min,max,ceiling_bound,usable_mib,
-            # mem_reject_floor_mib,slots};
+            # mem_reject_floor_mib,vm_overhead_mib,slots};
             # capacities are declared here rather than observed because classes
-            # must work before any brick exists.
+            # must work before any brick exists. vm_overhead_mib is
+            # noded.vmOverheadMib, the per-VM charge every brick makes under the
+            # reserved admission model, so a class fits a need only when its
+            # empty brick would admit one.
             # desired from the bricks.desiredReplicas
             # map, default 0 for an unlisted class; min/max are the Axis C autoscale
             # clamp from bricks.autoscale.minReplicas/maxReplicas, unlisted min reads
@@ -438,12 +441,13 @@ spec:
             {{- $bounds := $auto.ceilingBound | default dict }}
             {{- $daemonReserve := .Values.bricks.daemonReserveMib | default 512 | int }}
             {{- $rejectFloor := .Values.noded.memRejectFloorMib | default 512 | int }}
+            {{- $vmOverhead := .Values.noded.vmOverheadMib | default 0 | int }}
             {{- $classes := list }}
             {{- range .Values.bricks.classes }}
             {{- $nameplateMib := trimSuffix "Gi" .resources.limits.memory | int | mul 1024 }}
             {{- $usableMib := max 0 (sub $nameplateMib $daemonReserve) }}
             {{- $slots := ternary .maxLiveVMs $.Values.noded.maxLiveVMs (not (kindIs "invalid" .maxLiveVMs)) }}
-            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0)) "ceiling_bound" (index $bounds .name | default 0) "usable_mib" $usableMib "mem_reject_floor_mib" $rejectFloor "slots" $slots) }}
+            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0)) "ceiling_bound" (index $bounds .name | default 0) "usable_mib" $usableMib "mem_reject_floor_mib" $rejectFloor "vm_overhead_mib" $vmOverhead "slots" $slots) }}
             {{- end }}
             - name: EMBERVM_BRICK_CLASSES
               value: {{ $classes | toJson | quote }}
