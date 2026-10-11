@@ -895,6 +895,52 @@ defmodule Embervm.ServingSweeperTest do
     refute "node-4" in Agent.get(dialed, & &1)
   end
 
+  # -- instance-scoped drain (one brick of a shared node) -----------------------
+
+  # node-4 hosts two bricks. pod-8gi keeps running vm-a (it reports it); pod-2gi is
+  # draining, so the registry already dropped its fact and nothing reports vm-b.
+  defp co_located_serving(ctx) do
+    serving_workload(ctx, "wl-a", %{drain_seconds: 5})
+    serving_workload(ctx, "wl-b", %{drain_seconds: 5})
+    put_serving_brick(ctx, "node-4", "pod-8gi", serving_vms: [live_vm("vm-a", "wl-a", "10.99.0.5")])
+    published_instance(ctx, "srv-a", "wl-a", "vm-a", "10.99.0.5")
+    published_instance(ctx, "srv-b", "wl-b", "vm-b", "10.99.0.6")
+  end
+
+  test "an instance-scoped drain banks only the draining brick's guest, through that brick" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    ctx =
+      start_stack(
+        channel_fun: fn key ->
+          Agent.update(dialed, &[key | &1])
+          {:ok, :ch}
+        end
+      )
+
+    co_located_serving(ctx)
+
+    assert ServingSweeper.drain_instance(ctx.sweeper, "node-4", "pod-2gi") == 1
+    assert {:ok, %{state: :published}} = ServingStore.get(ctx.store, "srv-a")
+    assert {:ok, %{state: :draining, drain_reason: :bank}} = ServingStore.get(ctx.store, "srv-b")
+
+    fire_drain(ctx, "srv-b")
+    wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, ServingStore.get(ctx.store, "srv-b")) end)
+    # The draining brick's fact is gone, so the bank dials it by instance id rather
+    # than the bare node name, which resolves to no channel.
+    assert Agent.get(dialed, & &1) == ["node-4/pod-2gi"]
+  end
+
+  test "a node-wide drain still unpublishes every guest on the node" do
+    ctx = start_stack()
+    co_located_serving(ctx)
+
+    assert ServingSweeper.drain_node(ctx.sweeper, "node-4") == 2
+    assert ServingSweeper.drain_instance(ctx.sweeper, "node-4", "") == 0
+    assert {:ok, %{state: :draining}} = ServingStore.get(ctx.store, "srv-a")
+    assert {:ok, %{state: :draining}} = ServingStore.get(ctx.store, "srv-b")
+  end
+
   # -- recovery of drains and banks lost with a sweeper restart ----------------
   #
   # The drain timer, the draining map and the bank worker's reply address live in

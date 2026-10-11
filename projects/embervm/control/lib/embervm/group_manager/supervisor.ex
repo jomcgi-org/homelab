@@ -133,6 +133,8 @@ defmodule Embervm.GroupManager.Supervisor do
   `running` and the sweeper re-publishes). A group with no live owner process (e.g.
   a CP restart that has not re-adopted it yet) spawns one bound to the instance so
   the bank has a driver. A missing catalog entry / anchor node is `{:error, reason}`.
+  `opts[:anchor]` (`{node_id, dial_id}`) pins the anchor a drain already knows,
+  for a group whose brick instance no longer reports capacity.
   """
   @spec bank_group(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def bank_group(workload, instance_id, opts \\ []) do
@@ -143,7 +145,7 @@ defmodule Embervm.GroupManager.Supervisor do
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
     with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
-         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, instance_id, anchor_opts(opts, false)),
+         {:ok, node_id, dial_id} <- bank_anchor(capacity_table, entry, workload, instance_id, opts),
          {:ok, pid} <- start_or_get_child(workload, instance_id, entry, node_id, dial_id, opts) do
       case GroupManager.bank_group(pid) do
         {:ok, _} = ok ->
@@ -363,6 +365,18 @@ defmodule Embervm.GroupManager.Supervisor do
 
   defp anchor_opts(opts, demand?) do
     [demand: demand?, inflight: Keyword.get(opts, :inflight_table, :default)]
+  end
+
+  # The anchor a bank drives. A drain of the group's brick instance hands its dial
+  # (`opts[:anchor]`, `{node_id, dial_id}`): the registry has already dropped that
+  # instance's capacity fact, so re-finding the group by its reported members
+  # would miss it and cold-pick a sibling that holds no member. Otherwise the
+  # bank re-finds the running group like an adoption does, recording no demand.
+  defp bank_anchor(capacity_table, entry, workload, instance_id, opts) do
+    case Keyword.get(opts, :anchor) do
+      {node_id, dial_id} when is_binary(node_id) and is_binary(dial_id) -> {:ok, node_id, dial_id}
+      _ -> anchor_instance(capacity_table, entry, workload, instance_id, anchor_opts(opts, false))
+    end
   end
 
   # Order group-capable node facts so any node already reporting the banked group's

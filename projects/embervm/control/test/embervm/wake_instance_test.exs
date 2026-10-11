@@ -56,6 +56,8 @@ defmodule Embervm.WakeInstanceTest do
         serving_snapshots: Keyword.get(opts, :serving_snapshots, []),
         group_bundle_sets: Keyword.get(opts, :group_bundle_sets, []),
         group_member_vms: Keyword.get(opts, :group_member_vms, []),
+        serving_vms: Keyword.get(opts, :serving_vms, []),
+        stateful_vms: Keyword.get(opts, :stateful_vms, []),
         vm_overhead_mib: Keyword.get(opts, :vm_overhead_mib, 0),
         updated_at: Keyword.get(opts, :updated_at, 0)
       }
@@ -724,6 +726,47 @@ defmodule Embervm.WakeInstanceTest do
 
       assert {{:error, :no_eligible_instance}, [{:denial, "wl-a", 512}]} =
                demand_casts(fn -> WakeInstance.cold_candidates("node-4", opts) end)
+    end
+  end
+
+  describe "drains_with_instance?" do
+    test "spares only a guest a co-located sibling positively reports", %{table: table} do
+      # pod-2gi is draining, so the registry already dropped its fact.
+      put_instance(table, "node-4", "pod-8gi", serving_vms: [%{vm_id: "vm-a"}])
+
+      refute WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :serving_vms, :vm_id, "vm-a")
+      assert WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :serving_vms, :vm_id, "vm-b")
+    end
+
+    test "the draining instance's own report and a node-scoped drain still drain", %{table: table} do
+      put_instance(table, "node-4", "pod-2gi", stateful_vms: [%{vm_id: "vm-b"}])
+      put_instance(table, "node-4", "pod-8gi", stateful_vms: [%{vm_id: "vm-a"}])
+
+      assert WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :stateful_vms, :vm_id, "vm-b")
+      assert WakeInstance.drains_with_instance?(table, "node-4", "", :stateful_vms, :vm_id, "vm-a")
+      assert WakeInstance.drains_with_instance?(table, "node-4", nil, :stateful_vms, :vm_id, "vm-a")
+    end
+
+    test "a reporting fact without an instance_id, or on another node, is no proof", %{table: table} do
+      NodeCapacity.put(table, "node-4", %{node_id: "node-4", configured_id: "node-4", serving_vms: [%{vm_id: "vm-a"}]})
+      put_instance(table, "node-5", "pod-8gi", serving_vms: [%{vm_id: "vm-c"}])
+
+      assert WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :serving_vms, :vm_id, "vm-a")
+      assert WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :serving_vms, :vm_id, "vm-c")
+    end
+
+    test "a group is spared by a sibling's live members, never by a banked set", %{table: table} do
+      put_instance(table, "node-4", "pod-8gi", group_bundle_sets: [%{group_instance_id: "g-1", set_id: "s-1"}])
+      assert WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :group_member_vms, :group_instance_id, "g-1")
+
+      put_instance(table, "node-4", "pod-4gi", group_member_vms: [%{group_instance_id: "g-1", member_name: "db"}])
+      refute WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :group_member_vms, :group_instance_id, "g-1")
+    end
+
+    test "draining_dial names the draining instance, or nothing for a node-scoped drain" do
+      assert WakeInstance.draining_dial("node-4", "pod-2gi") == "node-4/pod-2gi"
+      assert WakeInstance.draining_dial("node-4", "") == nil
+      assert WakeInstance.draining_dial("node-4", nil) == nil
     end
   end
 end

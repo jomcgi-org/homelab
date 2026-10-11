@@ -136,7 +136,7 @@ defmodule Embervm.GroupSweeperTest do
       scrape_fun: fn _url -> Agent.get(scrape_agent, & &1) end,
       stats_base: Keyword.get(opts, :stats_base, "http://serving:9902"),
       splices_table: splices,
-      bank_fun: bank_fun,
+      bank_fun: Keyword.get(opts, :bank_fun, bank_fun),
       channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
       stop_group_member_fun: stop_group_member_fun,
       delete_group_network_fun: delete_group_network_fun,
@@ -869,5 +869,56 @@ defmodule Embervm.GroupSweeperTest do
     assert "node-4/pod-owner" in keys
     refute "node-4" in keys
     refute "node-4/pod-sibling" in keys
+  end
+
+  # -- instance-scoped drain (one brick of a shared node) -----------------------
+
+  # A 3-arity bank seam recording {workload, instance_id, opts} (the drain's anchor
+  # rides opts) without touching the store.
+  defp recording_bank_fun do
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+
+    fun = fn workload, instance_id, opts ->
+      Agent.update(calls, &(&1 ++ [{workload, instance_id, opts}]))
+      {:ok, %{set_id: "set-#{instance_id}", banked: 2, pause_spread_ms: 0}}
+    end
+
+    {fun, calls}
+  end
+
+  # node-4 hosts two bricks. pod-8gi keeps running gi-1 (it reports the live
+  # members) and holds a banked set of gi-2; pod-2gi is draining, so the registry
+  # already dropped its fact and nothing reports gi-2's live members.
+  defp co_located_groups(ctx) do
+    group_workload(ctx, "grp-a", 5410)
+    group_workload(ctx, "grp-b", 5411)
+
+    group_brick(ctx, "node-4", "pod-8gi",
+      group_member_vms: [%{vm_id: "vm-gi-1-a", group_instance_id: "gi-1", member_name: "a", ip: "10.101.0.10", healthy: true}],
+      group_bundle_sets: [%{group_instance_id: "gi-2", set_id: "set-old", members: [%{member_name: "a"}]}]
+    )
+
+    running_group(ctx, "gi-1", "grp-a")
+    running_group(ctx, "gi-2", "grp-b", listen_port: 5411)
+  end
+
+  test "an instance-scoped drain banks only the draining brick's group, anchored on that brick" do
+    {bank_fun, calls} = recording_bank_fun()
+    ctx = start_stack(bank_fun: bank_fun)
+    co_located_groups(ctx)
+
+    # A banked set on the sibling is no proof gi-2 runs there; only live members are.
+    assert GroupSweeper.drain_instance(ctx.sweeper, "node-4", "pod-2gi") == 1
+    assert [{"grp-b", "gi-2", [anchor: {"node-4", "node-4/pod-2gi"}]}] = Agent.get(calls, & &1)
+  end
+
+  test "a node-wide drain banks every running group on the node with no anchor" do
+    {bank_fun, calls} = recording_bank_fun()
+    ctx = start_stack(bank_fun: bank_fun)
+    co_located_groups(ctx)
+
+    assert GroupSweeper.drain_node(ctx.sweeper, "node-4") == 2
+    assert Agent.get(calls, & &1) |> Enum.map(&elem(&1, 1)) |> Enum.sort() == ["gi-1", "gi-2"]
+    assert Enum.all?(Agent.get(calls, & &1), fn {_wl, _id, opts} -> opts == [] end)
   end
 end
