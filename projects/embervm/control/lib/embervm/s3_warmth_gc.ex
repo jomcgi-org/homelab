@@ -32,9 +32,12 @@ defmodule Embervm.S3WarmthGc do
       by NodeRegistry must be present in NodeCapacity with a fresh `updated_at`.
       NodeCapacity DROPS a non-dispatchable node's row, so a down node's
       unreported disk bundles would otherwise look orphaned. Expiry tombstones
-      keep this gate closed for the stateful TTL grace window. An empty registry
+      keep this gate closed for the stateful TTL grace window unless a complete
+      Kubernetes node inventory confirms their host absent. Pod absence is not
+      sufficient. Host evidence is refreshed at each gate; a returning host or
+      re-registered identity closes the gate again. An empty live registry
       aborts while brick capacity is expected. `fleet_snapshot/1` records the
-      approved {instance_id, configured_id, pod_uid} identities; its /2 arm
+      approved {instance_id, configured_id, pod_uid, expired_at} identities; its /2 arm
       requires that subset to remain expected and fresh at plan time and before
       every prefix delete. Plan holds union the start and plan inventories.
     * Empty-CP-state guard: candidates in S3 while the corresponding store
@@ -242,6 +245,7 @@ defmodule Embervm.S3WarmthGc do
       # Read the expected fleet and its expiry tombstones on every sweep. A
       # static boot option goes stale as bricks register, expire, and are replaced.
       node_registry_fun: Keyword.get(opts, :node_registry_fun, fn -> NodeRegistry.expected_instances() end),
+      node_inventory_fun: Keyword.get(opts, :node_inventory_fun, &Embervm.K8s.list_node_names/0),
       freshness_window_ms: Keyword.get(opts, :freshness_window_ms, @freshness_window_ms),
       min_uptime_ms: Keyword.get(opts, :min_uptime_ms, @min_uptime_ms),
       ttls: Map.merge(@default_ttls, Keyword.get(opts, :ttls, %{})),
@@ -342,15 +346,15 @@ defmodule Embervm.S3WarmthGc do
   # each NodeStatus projection), and the registry DROPS a node's row the moment
   # it stops being dispatchable. So "this node's disk inventory is represented
   # in the facts we exclude against" requires BOTH presence and freshness for
-  # EVERY live or tombstoned registry instance; a down/stale instance's
-  # unreported bundles must never look orphaned. The capacity fact must also name
+  # EVERY live or tombstoned registry instance whose host is not confirmed gone.
+  # A down/stale instance's unreported bundles must never look orphaned. The capacity fact must also name
   # a modeled CPU vendor so stateful assignments can be matched to their vendor
   # pool. An empty registry aborts because brick capacity is expected and there
   # is no basis to claim the inventory is complete.
   defp fleet_snapshot(state, approved_instances \\ MapSet.new()) do
     now = state.clock.()
     expected_instances = expected_instances(state)
-    identities = MapSet.new(expected_instances, &{&1.instance_id, &1.node_id, &1.pod_uid})
+    identities = MapSet.new(expected_instances, &instance_identity/1)
 
     cond do
       expected_instances == [] ->
@@ -359,7 +363,11 @@ defmodule Embervm.S3WarmthGc do
       not MapSet.subset?(approved_instances, identities) ->
         abort(:fleet_changed, "approved instance identities disappeared or changed during the sweep")
 
+      not Enum.any?(expected_instances, &is_nil(&1.expired_at)) ->
+        abort(:fleet_stale, "no live registry instances remain")
+
       true ->
+      expected_instances = require_resident_instances(state, expected_instances)
       {facts, stale} =
         Enum.reduce(expected_instances, {[], []}, fn instance, {facts, stale} ->
           case NodeCapacity.fetch(state.capacity_table, {instance.node_id, instance.pod_uid}) do
@@ -418,7 +426,7 @@ defmodule Embervm.S3WarmthGc do
   defp expected_instances(state) do
     case state.node_registry_fun.() do
       registry when is_map(registry) ->
-        Enum.map(registry, fn {instance_id, %{configured_id: node_id, pod_uid: pod_uid}} ->
+        Enum.map(registry, fn {instance_id, %{configured_id: node_id, pod_uid: pod_uid} = identity} ->
           unless is_binary(instance_id) and instance_id != "" and
                    is_binary(node_id) and node_id != "" and is_binary(pod_uid) and pod_uid != "" do
             raise ArgumentError, "unreadable registry identity"
@@ -427,13 +435,48 @@ defmodule Embervm.S3WarmthGc do
           %{
             instance_id: instance_id,
             node_id: node_id,
-            pod_uid: pod_uid
+            pod_uid: pod_uid,
+            expired_at: Map.get(identity, :expired_at)
           }
         end)
 
       _ ->
         raise ArgumentError, "node registry returned a non-map"
     end
+  end
+
+  # Only expiry plus confirmed HOST absence retires a tombstone. Pod departure
+  # says nothing about the shared scratch on its host. The K8s client rejects
+  # partial/paginated inventories; failures here abort rather than imply absence.
+  # Keep retired identities in the approval fingerprint so re-registration or
+  # identity changes cannot reuse a prior absence proof. Re-read on every gate.
+  defp require_resident_instances(state, instances) do
+    if Enum.any?(instances, &is_integer(&1.expired_at)) do
+      case state.node_inventory_fun.() do
+        {:ok, %MapSet{} = hosts} ->
+          unless Enum.all?(hosts, &(is_binary(&1) and &1 != "")) do
+            raise ArgumentError, "invalid host node inventory"
+          end
+
+          unless MapSet.new(expected_instances(state), &instance_identity/1) ==
+                   MapSet.new(instances, &instance_identity/1) do
+            raise ArgumentError, "registry changed during host inventory read"
+          end
+
+          Enum.reject(instances, fn instance ->
+            is_integer(instance.expired_at) and not MapSet.member?(hosts, instance.node_id)
+          end)
+
+        _ ->
+          raise ArgumentError, "complete host node inventory unavailable"
+      end
+    else
+      instances
+    end
+  end
+
+  defp instance_identity(instance) do
+    {instance.instance_id, instance.node_id, instance.pod_uid, instance.expired_at}
   end
 
   defp normalized_vendor(facts) do
