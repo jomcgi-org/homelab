@@ -176,7 +176,15 @@ def handout_entity_ids(events) -> set[str]:
 def project_handout_body(
     body: dict[str, Any], visible_entity_ids: set[str] | frozenset[str]
 ) -> dict[str, Any]:
-    """Drop ``entity_id`` unless the viewer can already see that entity."""
+    """Project a handout body for a non-DM viewer.
+
+    The image reference is reduced to its ``source`` so the raw upload key or
+    chunk id never leaves the server (the card fetches the image by event id),
+    and ``entity_id`` is dropped unless the viewer can already see that entity.
+    """
+    image = body.get("image")
+    if isinstance(image, dict):
+        body = {**body, "image": {"source": image.get("source")}}
     value = body.get("entity_id")
     if value is None:
         return body
