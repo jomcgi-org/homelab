@@ -14,6 +14,7 @@ defmodule Embervm.ServingManagerTest do
 
   alias Embervm.{NodeCapacity, NodeRegistry, ServingManager, ServingStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
+  alias Embervm.Scheduler.Inflight
   alias Embervm.Node.V1.{NodeStatus, ResourceSpec, ServingVm, StartServingResponse, StopServingResponse}
 
   # A no-op publisher (a GenServer that counts publish/1 casts) so the manager's
@@ -34,6 +35,9 @@ defmodule Embervm.ServingManagerTest do
     suffix = System.unique_integer([:positive])
     cap_table = :"mcap_#{suffix}"
     cat_table = :"mcat_#{suffix}"
+    # A private in-flight ledger, so one test's settled claim (held for seconds)
+    # never debits another test's same-named brick.
+    inflight_table = Keyword.get_lazy(opts, :inflight_table, fn -> Inflight.create(:"minfl_#{suffix}") end)
 
     NodeCapacity.create(cap_table)
     WorkloadCatalog.create(cat_table)
@@ -70,6 +74,7 @@ defmodule Embervm.ServingManagerTest do
         publisher: pub,
         capacity_table: cap_table,
         catalog_table: cat_table,
+        inflight_table: inflight_table,
         clock: Keyword.get(opts, :clock, fn -> 1_000 end),
         # Default echoes nothing (a fixed channel); a retry test overrides this to
         # echo the dial_id so its StartServing stub can reject a SPECIFIC brick.
@@ -91,6 +96,7 @@ defmodule Embervm.ServingManagerTest do
       store: store,
       cap_table: cap_table,
       cat_table: cat_table,
+      inflight_table: inflight_table,
       starts: starts,
       stop_calls: stop_calls,
       destroy_confirmed: destroy_confirmed,
@@ -1171,5 +1177,163 @@ defmodule Embervm.ServingManagerTest do
 
     # Exactly ONE dial: gate off never chased the second brick.
     assert length(Agent.get(dialed, & &1)) == 1
+  end
+
+  # -- in-flight claims and pinned demand ---------------------------------------
+
+  # The BrickController demand casts the manager process sent while `fun` ran, as
+  # {tag, workload, need}. Only the manager is traced.
+  defp manager_demand_casts(ctx, fun) do
+    :erlang.trace(ctx.mgr, true, [:send])
+    result = fun.()
+    :erlang.trace(ctx.mgr, false, [:send])
+    ref = :erlang.trace_delivered(ctx.mgr)
+    assert_receive {:trace_delivered, _, ^ref}
+
+    casts =
+      Stream.repeatedly(fn ->
+        receive do
+          {:trace, _, _kind, {:"$gen_cast", {tag, wl, need}}, _to} when tag in [:denial, :empty_demand] -> {tag, wl, need}
+          {:trace, _, _kind, _msg, _to} -> :skip
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+      |> Enum.reject(&(&1 == :skip))
+
+    {result, casts}
+  end
+
+  # A classed brick with `headroom_mib` that has wl-a and wl-b's serving bases READY.
+  defp sized_serving_brick(ctx, node_id, pod_uid, headroom_mib, opts \\ []) do
+    ready = %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap", serving_image_ref: "base-a"}
+
+    NodeCapacity.put(ctx.cap_table, {node_id, pod_uid}, %{
+      configured_id: node_id,
+      node_id: node_id,
+      pod_uid: pod_uid,
+      instance_id: "#{node_id}/#{pod_uid}",
+      size_class: "4gi",
+      mem_headroom_mib: headroom_mib,
+      mem_budget_mib: 4_096,
+      serving_subnet_cidr: "10.99.0.0/24",
+      max_live_vms: 4,
+      live_vms: Keyword.get(opts, :live_vms, 0),
+      workloads: %{"wl-a" => ready, "wl-b" => ready},
+      serving_vms: [],
+      serving_snapshots: [],
+      store_reachable: Keyword.get(opts, :store_reachable, false)
+    })
+  end
+
+  defp sized_serving_workload(ctx, name, mem_mib) do
+    WorkloadCatalog.upsert(ctx.cat_table, name, %{
+      class: "serving",
+      mem_mib: mem_mib,
+      serving: %{host: "#{name}.example", port: 8080, health_path: "/healthz", min_instances: 0, max_instances: 2}
+    })
+  end
+
+  test "a cold create claims its brick before StartServing and settles the claim on success" do
+    test = self()
+    ledger = Inflight.create(:"sm_claim_#{System.unique_integer([:positive])}")
+
+    start_fun = fn dial_id, _req ->
+      send(test, {:pending_at_start, dial_id, Inflight.pending_mib(dial_id, table: ledger)})
+      {:ok, %StartServingResponse{vm_id: "vm-claimed", ip: "10.99.0.5", port: 8080}}
+    end
+
+    ctx = start_stack(start_serving_fun: start_fun, channel_fun: fn dial_id -> {:ok, dial_id} end, inflight_table: ledger)
+    serving_workload(ctx, "wl-a")
+    serving_brick(ctx, "node-4", "pod-a", "node-4/pod-a")
+
+    assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    # The claim was in the ledger when the daemon was asked to boot.
+    assert_received {:pending_at_start, "node-4/pod-a", 512}
+    # Settled: it holds until the brick's next report counts the VM.
+    assert Inflight.pending_mib("node-4/pod-a", table: ledger) == 512
+  end
+
+  test "a wake in flight debits its brick, so another workload's concurrent cold create places elsewhere" do
+    test = self()
+
+    start_fun = fn dial_id, req ->
+      send(test, {:started, req.trace.workload, dial_id, self()})
+
+      receive do
+        :go -> {:ok, %StartServingResponse{vm_id: "vm-#{req.trace.workload}", ip: "10.99.0.5", port: 8080}}
+      end
+    end
+
+    ctx = start_stack(start_serving_fun: start_fun, channel_fun: fn dial_id -> {:ok, dial_id} end)
+    sized_serving_workload(ctx, "wl-a", 3_000)
+    sized_serving_workload(ctx, "wl-b", 3_000)
+    # Two 4Gi bricks that each fit ONE 3000 MiB guest on the headroom they report.
+    sized_serving_brick(ctx, "node-4", "pod-a", 4_000)
+    sized_serving_brick(ctx, "node-4", "pod-b", 4_000)
+
+    miss_a = Task.async(fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
+    assert_receive {:started, "wl-a", dial_a, worker_a}
+    assert Inflight.pending_mib(dial_a, table: ctx.inflight_table) == 3_000
+
+    # Neither brick has reported wl-a's VM; only the claim steers wl-b away.
+    miss_b = Task.async(fn -> ServingManager.miss(ctx.mgr, "wl-b", req(), "serving:wl-b") end)
+    assert_receive {:started, "wl-b", dial_b, worker_b}
+    refute dial_b == dial_a
+
+    send(worker_a, :go)
+    send(worker_b, :go)
+    assert {:ok, _} = Task.await(miss_a)
+    assert {:ok, _} = Task.await(miss_b)
+  end
+
+  test "gate ON: a refused hop releases its claim and the brick that boots keeps one" do
+    System.put_env("EMBERVM_PLACEMENT_RETRY", "1")
+    on_exit(fn -> System.delete_env("EMBERVM_PLACEMENT_RETRY") end)
+
+    {start_fun, dialed} = rejecting_start_fun(1)
+    ctx = start_stack(start_serving_fun: start_fun, channel_fun: fn dial_id -> {:ok, dial_id} end)
+    serving_workload(ctx, "wl-a")
+    serving_brick(ctx, "node-4", "pod-a", "node-4/pod-a")
+    serving_brick(ctx, "node-4", "pod-b", "node-4/pod-b")
+
+    assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    [refused, booted] = Agent.get(dialed, & &1)
+    assert Inflight.pending_mib(refused, table: ctx.inflight_table) == 0
+    assert Inflight.pending_mib(booted, table: ctx.inflight_table) == 512
+  end
+
+  test "a failed cold create leaves no claim behind" do
+    {start_fun, _dialed} = rejecting_start_fun(99)
+    ctx = start_stack(start_serving_fun: start_fun, channel_fun: fn dial_id -> {:ok, dial_id} end)
+    serving_workload(ctx, "wl-a")
+    serving_brick(ctx, "node-4", "pod-a", "node-4/pod-a")
+
+    assert {:error, {:wake_failed, _}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    assert Inflight.entries(table: ctx.inflight_table) == []
+  end
+
+  test "a cold create the fleet cannot host records one denial" do
+    ctx = start_stack()
+    sized_serving_workload(ctx, "wl-a", 3_000)
+    sized_serving_brick(ctx, "node-4", "pod-a", 1_000)
+
+    assert {{:error, {:wake_failed, :no_capacity}}, [{:denial, "wl-a", 3_000}]} =
+             manager_demand_casts(ctx, fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
+  end
+
+  test "a restore-relight pinned to a full snapshot node records no demand and claims nothing" do
+    ctx = start_stack()
+    sized_serving_workload(ctx, "wl-a", 3_000)
+    # The banked snapshot's node reports a reachable store but no local snapshot, so
+    # the wake restores onto a cold pick ON THAT NODE, whose only brick is full.
+    sized_serving_brick(ctx, "node-4", "pod-a", 1_000, store_reachable: true)
+    seed_banked(ctx, "srv-1", "base-a", "serving/s-1")
+
+    assert {{:error, {:wake_failed, :no_eligible_instance}}, []} =
+             manager_demand_casts(ctx, fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
+
+    assert Inflight.entries(table: ctx.inflight_table) == []
   end
 end
