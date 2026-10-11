@@ -197,6 +197,15 @@ func (p *guestOutputProcess) Jail() *Jail {
 	return nil
 }
 
+// Exited delegates to the wrapped VMM. Every production process is wrapped
+// here, so without this the driver could never see a reaped VMM.
+func (p *guestOutputProcess) Exited() bool {
+	if reporter, ok := p.Process.(exitReporter); ok {
+		return reporter.Exited()
+	}
+	return false
+}
+
 // serialOutputPath is the guest console sink path for a thread's bundle dir.
 func (d *Driver) serialOutputPath(threadID string) string {
 	return filepath.Join(d.threadDir(threadID), serialOutputName)
