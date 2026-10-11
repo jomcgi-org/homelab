@@ -1,7 +1,7 @@
 import asyncio
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
@@ -156,7 +156,7 @@ def test_recall_block_renders_header_and_notes(enabled_recall, monkeypatch):
 
     block = recall.recall_block(
         "a sufficiently long task prompt",
-        now=datetime(2026, 10, 3, tzinfo=timezone.utc),
+        now=datetime(2026, 10, 3, tzinfo=UTC),
     )
 
     header = (
@@ -243,6 +243,28 @@ def test_kg_node_key_matches_the_drain_lane_constants():
     from knowledge.extraction import KG_NODE_KEY as extraction_key
 
     assert recall.KG_NODE_KEY == sessions_key == extraction_key
+
+
+def test_campaign_extraction_skips_all_recall_entry_points(monkeypatch):
+    from factory.execution.constants import GRIMOIRE_KG_NODE_KEY
+
+    assert recall.GRIMOIRE_KG_NODE_KEY == GRIMOIRE_KG_NODE_KEY
+    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "true")
+    monkeypatch.setattr(
+        recall,
+        "recall_block",
+        lambda *_args: pytest.fail("campaign content must never reach recall"),
+    )
+    assert not recall.defer_recall(None, node_key=GRIMOIRE_KG_NODE_KEY)
+    assert (
+        recall.attach_recall("base", "private", node_key=GRIMOIRE_KG_NODE_KEY) == "base"
+    )
+    assert (
+        recall.append_message_recall(
+            "private", "private campaign task", node_key=GRIMOIRE_KG_NODE_KEY
+        )
+        == "private"
+    )
 
 
 def test_render_related_notes_flattens_and_caps_titles():
@@ -473,7 +495,7 @@ def test_metrics_count_unique_served_facts(enabled_recall, monkeypatch):
         assert (
             recall.recall_block(
                 "a sufficiently long task prompt",
-                now=datetime(2026, 10, 3, tzinfo=timezone.utc),
+                now=datetime(2026, 10, 3, tzinfo=UTC),
             )
             is not None
         )
