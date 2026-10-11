@@ -58,6 +58,8 @@ defmodule Embervm.BrickTest do
     assert old.mem_admittable_mib == 0
     assert old.mem_inflight_mib == 0
     assert old.inflight_vms == 0
+    assert old.mem_inflight_placed_mib == 0
+    assert old.inflight_placed_vms == 0
     assert old.admission_refusals == %{}
     assert old.jailer_armed == false
     assert old.launch_modes == %{}
@@ -71,6 +73,8 @@ defmodule Embervm.BrickTest do
         mem_admittable_mib: -64,
         mem_inflight_mib: 3_072,
         inflight_vms: 1,
+        mem_inflight_placed_mib: 2_048,
+        inflight_placed_vms: 1,
         admission_refusals: %{"pressure:mem" => 2},
         jailer_armed: true,
         launch_modes: %{"jailed" => 5}
@@ -81,6 +85,8 @@ defmodule Embervm.BrickTest do
     assert new.mem_admittable_mib == -64
     assert new.mem_inflight_mib == 3_072
     assert new.inflight_vms == 1
+    assert new.mem_inflight_placed_mib == 2_048
+    assert new.inflight_placed_vms == 1
     assert new.admission_refusals == %{"pressure:mem" => 2}
     assert new.jailer_armed
     assert new.launch_modes == %{"jailed" => 5}

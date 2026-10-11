@@ -47,6 +47,8 @@ defmodule Embervm.Brick do
           mem_admittable_mib: integer(),
           mem_inflight_mib: non_neg_integer(),
           inflight_vms: non_neg_integer(),
+          mem_inflight_placed_mib: non_neg_integer(),
+          inflight_placed_vms: non_neg_integer(),
           admission_refusals: %{optional(String.t()) => non_neg_integer()},
           jailer_armed: boolean(),
           launch_modes: %{optional(String.t()) => non_neg_integer()},
@@ -198,6 +200,10 @@ defmodule Embervm.Brick do
       mem_admittable_mib: num(facts, :mem_admittable_mib),
       mem_inflight_mib: num(facts, :mem_inflight_mib),
       inflight_vms: num(facts, :inflight_vms),
+      # The control-plane-placed part of those (NodeStatus 51-52), the only part
+      # Embervm.Scheduler.Inflight.debit_mib/3 nets its claims against.
+      mem_inflight_placed_mib: num(facts, :mem_inflight_placed_mib),
+      inflight_placed_vms: num(facts, :inflight_placed_vms),
       admission_refusals: Map.get(facts, :admission_refusals) || %{},
       # Jailer facts (NodeStatus 49-50), diagnostic: placement does not read them.
       jailer_armed: Map.get(facts, :jailer_armed) == true,

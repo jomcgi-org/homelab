@@ -20,11 +20,13 @@ defmodule Embervm.CapacityReport do
   `admittable_mib` (`Embervm.Brick.admittable_mib/1`, the daemon's own
   `mem_admittable_mib` when it reports one, else the per-model fallback; nil for
   a wildcard or a blind brick, which the memory gate does not evaluate),
-  `pending_mib` (control-plane claims the brick has not reported yet,
-  `Embervm.Scheduler.Inflight`), the daemon's in-flight boots, its cumulative
-  admission refusals by reason, and its jailer facts (`jailer_armed` and the
-  cumulative `launch_modes` counts; an armed brick whose `direct_exec` count
-  moves is running a guest without containment).
+  `pending_mib` (the debit placement subtracts from it: control-plane claims the
+  brick's report does not count yet, `Embervm.Scheduler.Inflight.debit_mib/3`),
+  `inflight_claims_mib` (every unexpired control-plane claim on it, gross), the
+  daemon's in-flight boots and the part of them it admitted for a control-plane
+  placement, its cumulative admission refusals by reason, and its jailer facts
+  (`jailer_armed` and the cumulative `launch_modes` counts; an armed brick whose
+  `direct_exec` count moves is running a guest without containment).
 
   Instance rows remain keyed and labeled by `instance_id` and `pod_uid`. A
   surge can have two instances with the same `node_id`, so grouping by node id
@@ -217,9 +219,12 @@ defmodule Embervm.CapacityReport do
       vm_overhead_mib: brick.vm_overhead_mib,
       admission_reported: brick.admission_reported,
       admittable_mib: admittable_mib(brick),
-      pending_mib: Inflight.pending_mib(Brick.dial_id(brick), table: inflight_table),
+      pending_mib: Inflight.debit_mib(Brick.dial_id(brick), brick, table: inflight_table),
+      inflight_claims_mib: Inflight.pending_mib(Brick.dial_id(brick), table: inflight_table),
       mem_inflight_mib: brick.mem_inflight_mib,
       inflight_vms: brick.inflight_vms,
+      mem_inflight_placed_mib: brick.mem_inflight_placed_mib,
+      inflight_placed_vms: brick.inflight_placed_vms,
       jailer_armed: brick.jailer_armed,
       workloads:
         facts

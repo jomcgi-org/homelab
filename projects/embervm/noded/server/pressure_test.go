@@ -726,6 +726,109 @@ func TestStartServingHoldsTicketUntilClaimReturns(t *testing.T) {
 	}
 }
 
+// TestPlacedInflightCountsOnlyControlPlaneBoots: a control-plane StartServing
+// counts toward the placed in-flight figure while it boots, and an activator
+// wake of the same size does not, though both hold the same reservation. The
+// control plane nets its unsettled claims against the placed figure only, so a
+// node-local wake can never cancel one of its claims (delta review, ledger).
+func TestPlacedInflightCountsOnlyControlPlaneBoots(t *testing.T) {
+	_, port := healthServer(t, servingHealthPath)
+	s, _, fsd := newServingTestServer(t)
+	var during admissionSnapshot
+	fsd.onClaim = func() { during = s.admissionStatus() }
+
+	startFresh(t, s, port)
+	if during.inflightMib != 512 || during.placedMib != 512 || during.placedVMs != 1 {
+		t.Fatalf("ledger during a control-plane boot = %+v, want 512 MiB in flight, all of it placed", during)
+	}
+
+	_, err := s.startServing(context.Background(), &nodev1.StartServingRequest{
+		Resources:  &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
+		Port:       port,
+		HealthPath: servingHealthPath,
+		Trace:      &nodev1.Trace{Workload: "wl-serve"},
+	}, nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR)
+	if err != nil {
+		t.Fatalf("activator wake: %v", err)
+	}
+	if during.inflightMib != 512 || during.inflightVMs != 1 || during.placedMib != 0 || during.placedVMs != 0 {
+		t.Fatalf("ledger during an activator wake = %+v, want 512 MiB in flight, none of it placed", during)
+	}
+	if snap := s.admissionStatus(); snap.placedMib != 0 || snap.placedVMs != 0 || snap.inflightMib != 0 {
+		t.Fatalf("ledger after both boots landed = %+v, want empty", snap)
+	}
+}
+
+// TestPlacedInflightCarriesTheDeclaredSize: a restore charged above its declared
+// size (a bundle larger than the registry entry) reserves the larger size but
+// counts only the declared size, the amount the control plane claimed, toward
+// the placed figure NodeStatus reports.
+func TestPlacedInflightCarriesTheDeclaredSize(t *testing.T) {
+	_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+	ticket, err := srv.admit(context.Background(), "Relight", 3072, placedShare(2048, 3072), classMemOnly)
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	ns := srv.nodeStatus()
+	if ns.GetMemInflightMib() != 3072 || ns.GetMemInflightPlacedMib() != 2048 || ns.GetInflightPlacedVms() != 1 {
+		t.Fatalf("NodeStatus in flight = (%d MiB, placed %d MiB, %d VMs), want (3072, 2048, 1)",
+			ns.GetMemInflightMib(), ns.GetMemInflightPlacedMib(), ns.GetInflightPlacedVms())
+	}
+	ticket.release()
+	if ns := srv.nodeStatus(); ns.GetMemInflightPlacedMib() != 0 || ns.GetInflightPlacedVms() != 0 {
+		t.Fatalf("placed after release = (%d MiB, %d VMs), want zero", ns.GetMemInflightPlacedMib(), ns.GetInflightPlacedVms())
+	}
+	if got := placedShare(0, 1536); got != 1536 {
+		t.Fatalf("placedShare with no declared size = %d, want the whole reservation", got)
+	}
+}
+
+// TestPlacedTicketLeavesThePlacedFigureWhenItsRPCEnds: a boot that outlives its
+// RPC (a build past the client's deadline) keeps its reservation but stops
+// counting as placed, because the control plane released its claim when the
+// RPC ended. Release afterwards takes the reservation back without touching the
+// placed figure a second time, and a ticket released before its RPC ends is
+// never unplaced twice.
+func TestPlacedTicketLeavesThePlacedFigureWhenItsRPCEnds(t *testing.T) {
+	_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	ticket, err := srv.admit(ctx, "BuildBase", 2048, 2048, classMemOnly)
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	if snap := srv.admissionStatus(); snap.placedMib != 2048 || snap.placedVMs != 1 {
+		t.Fatalf("placed while the RPC is open = %+v, want 2048 MiB / 1 VM", snap)
+	}
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.admissionStatus().placedVMs != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("placed figure never dropped after the RPC ended: %+v", srv.admissionStatus())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if snap := srv.admissionStatus(); snap.inflightMib != 2048 || snap.inflightVMs != 1 || snap.placedMib != 0 {
+		t.Fatalf("after the RPC ended = %+v, want the reservation kept and nothing placed", snap)
+	}
+	ticket.release()
+	if snap := srv.admissionStatus(); snap.inflightMib != 0 || snap.placedMib != 0 || snap.placedVMs != 0 {
+		t.Fatalf("after release = %+v, want empty", snap)
+	}
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	ticket2, err := srv.admit(ctx2, "Prime", 1024, 1024, classMemOnly)
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	ticket2.release()
+	cancel2()
+	time.Sleep(10 * time.Millisecond)
+	if snap := srv.admissionStatus(); snap.placedMib != 0 || snap.placedVMs != 0 {
+		t.Fatalf("a released ticket's RPC ending moved the placed figure: %+v", snap)
+	}
+}
+
 // TestBootVerbsRefuseMissingResources: a tap or group boot without a nonzero
 // ResourceSpec is refused InvalidArgument before admission, instead of being
 // charged 0 MiB and booted at the driver default (1 vCPU / 1024 MiB). Nothing is
@@ -1133,7 +1236,7 @@ func TestNodeStatusAdmittableMatchesAdmit(t *testing.T) {
 			}
 		}
 		for _, need := range needs {
-			ticket, err := srv.admit("Prime", need, classMemOnly)
+			ticket, err := srv.admit(context.Background(), "Prime", need, need, classMemOnly)
 			ticket.release()
 			admitted := err == nil
 			want := !reported || int64(need) <= admittable
@@ -1219,7 +1322,7 @@ func TestReservedRefusalMessageNamesTheModel(t *testing.T) {
 	_, srv := newTestServer(t, &fakeDriver{live: 1, claimedMib: 400}, &fakeTransport{}, 8)
 	srv.cfg.AdmissionModel = admissionModelReserved
 	srv.memBudget = func() uint64 { return 1000 }
-	_, err := srv.admit("Prime", 601, classMemOnly)
+	_, err := srv.admit(context.Background(), "Prime", 601, 601, classMemOnly)
 	if want := "noded: pressure:mem (need 601 MiB, admittable 600 MiB, model reserved)"; status.Convert(err).Message() != want {
 		t.Fatalf("reserved refusal = %q, want %q", status.Convert(err).Message(), want)
 	}

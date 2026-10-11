@@ -54,7 +54,14 @@ func (s *Server) startServing(ctx context.Context, req *nodev1.StartServingReque
 	// which releases it the moment the VM is booted or has failed; the defer
 	// covers every early return in between. A RELIGHT is charged at least the
 	// banked bundle's recorded size, which is what the restored VM lands at.
-	ticket, err := s.admit("StartServing", s.servingAdmitMib(req), classTapBearing)
+	// Only a control-plane boot counts toward the placed in-flight figure: an
+	// activator wake has no control-plane claim to net against.
+	need := s.servingAdmitMib(req)
+	var placed uint64
+	if origin == nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
+		placed = placedShare(uint64(req.GetResources().GetMemMib()), need)
+	}
+	ticket, err := s.admit(ctx, "StartServing", need, placed, classTapBearing)
 	if err != nil {
 		return nil, err
 	}

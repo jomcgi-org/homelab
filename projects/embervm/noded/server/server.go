@@ -919,7 +919,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	if buildNeedMib == 0 {
 		buildNeedMib = s.primeNeedMib(workload)
 	}
-	ticket, err := s.admit("BuildBase", buildNeedMib, classMemOnly)
+	ticket, err := s.admit(ctx, "BuildBase", buildNeedMib, buildNeedMib, classMemOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -1449,7 +1449,8 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	// built at. The ticket holds the reservation until Claim returns; the defer
 	// covers every early return in between.
 	sizeVCPUs, sizeMemMib := s.primeSizing(base.workload, ref)
-	ticket, err := s.admit("Prime", s.primeAdmitMib(sizeMemMib, ref), classMemOnly)
+	primeNeed := s.primeAdmitMib(sizeMemMib, ref)
+	ticket, err := s.admit(ctx, "Prime", primeNeed, placedShare(uint64(sizeMemMib), primeNeed), classMemOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -2192,7 +2193,8 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	// The lookup runs after the ref check so an unknown ref still reports
 	// FAILED_PRECONDITION rather than a spurious pressure reject. The ticket holds
 	// the reservation until RestoreSession returns.
-	ticket, err := s.admit("Relight", s.relightNeedMib(workload, ref), classMemOnly)
+	relightNeed := s.relightNeedMib(workload, ref)
+	ticket, err := s.admit(ctx, "Relight", relightNeed, placedShare(s.primeNeedMib(workload), relightNeed), classMemOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -2589,11 +2591,13 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		VmmExitCounts:          s.vmmExitCounts(),
 		// The admission ledger: the daemon's own predicate for one more VM, the
 		// boots it has admitted that are still in flight, and every refusal.
-		AdmissionReported: admission.reported,
-		MemAdmittableMib:  admission.admittableMib,
-		MemInflightMib:    admission.inflightMib,
-		InflightVms:       uint32(admission.inflightVMs),
-		AdmissionRefusals: admission.refusals,
+		AdmissionReported:    admission.reported,
+		MemAdmittableMib:     admission.admittableMib,
+		MemInflightMib:       admission.inflightMib,
+		InflightVms:          uint32(admission.inflightVMs),
+		MemInflightPlacedMib: admission.placedMib,
+		InflightPlacedVms:    uint32(admission.placedVMs),
+		AdmissionRefusals:    admission.refusals,
 		// The daemon registers only after its jailer preflight passes, so the
 		// configured flag is the armed state.
 		JailerArmed: s.cfg.JailerEnabled,

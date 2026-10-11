@@ -9,7 +9,7 @@ defmodule Embervm.Scheduler.Inflight do
   a burst of creates scored on one stale snapshot herds onto the same head brick
   (the 2026-10-10 whole-brick OOMKill). Every new-VM placement therefore charges
   its declared memory here first, and `Embervm.Scheduler.place/1` subtracts
-  `pending_mib/2` from each candidate brick before it filters and scores. This is
+  `debit_mib/3` from each candidate brick before it filters and scores. This is
   Kubernetes' "assume" step, scoped to the window between the claim and the
   daemon's next report that already counts the VM.
 
@@ -20,25 +20,37 @@ defmodule Embervm.Scheduler.Inflight do
       boot RPC, so the next placement that process (or any other) makes sees it.
     * `release(dial_id, ref)`: the boot RPC failed or the brick refused it. The debit drops
       at once, so a refused brick is placeable again immediately.
-    * `settle(dial_id, ref)`: the boot RPC succeeded. The debit is kept until the
-      brick's next `NodeStatus` arrives (`observe_report/2`, called by
-      `Embervm.NodeRegistry` on every report), because that report already counts
-      the VM in its live map. A hold (default 5_000 ms) bounds it if reports stop.
-      Dropping it at once would reopen the herd window for one report interval.
+    * `settle(dial_id, ref)`: the boot RPC succeeded. The debit is kept for a
+      hold (default 5_000 ms). On a reserved brick it drops sooner, at the
+      brick's next `NodeStatus` (`observe_report/2`, called by
+      `Embervm.NodeRegistry` on every report), because that report charges the
+      VM through its live map. An observed brick's report does not charge a
+      guest until it faults its memory in, so there the debit keeps the whole
+      hold. Dropping it at once would reopen the herd window for one report
+      interval.
 
   ## one count per boot
 
   A brick that reports its own ledger (`admission_reported`) already subtracts
-  every boot it has admitted and not yet landed (`mem_inflight_mib`) from
-  `mem_admittable_mib`. Subtracting the control plane's unsettled claim for the
-  same boot again halved what a burst could place (the multi-brick simulation:
-  one claude-runtime guest on an 8gi brick that admits two) and turned the
+  every boot it has admitted and not yet landed from `mem_admittable_mib`.
+  Subtracting the control plane's unsettled claim for the same boot again
+  halved what a burst could place (the multi-brick simulation: one
+  claude-runtime guest on an 8gi brick that admits two) and turned the
   difference into false autoscaler demand. `debit_mib/3` therefore charges a
-  reporting brick only the unsettled claims its report does not yet show, never
-  less than zero and never cancelling more than the control plane's own claims
-  (`max(0, unsettled - (mem_inflight_mib + vm_overhead_mib * inflight_vms))`,
-  the overhead term only under the reserved model, the one that charges it),
-  plus settled claims no report has followed yet. A brick that does not report its ledger is charged every claim.
+  reporting brick only the unsettled claims its report does not yet show:
+  `max(0, unsettled - (mem_inflight_placed_mib + vm_overhead_mib *
+  inflight_placed_vms))`, the overhead term only under the reserved model, the
+  one that charges it, plus settled claims no report has followed yet.
+
+  It nets against the PLACED in-flight figure (NodeStatus 51-52), never the
+  totals: the boots the daemon admitted for a control-plane RPC still open, each
+  at the size the control plane declared. A boot no claim stands behind (a
+  node-local activator wake, the excess of a restore over its declared size, a
+  build that outlived its RPC) is already in `mem_admittable_mib` and must not
+  also cancel an unrelated claim the daemon has not admitted yet. Netting is by
+  amount, not by claim, so it can still cancel the wrong one of two claims
+  racing on one brick; the sum is right either way. A brick that does not
+  report its ledger is charged every claim.
 
   Every row carries an ABSOLUTE expiry (default 200_000 ms, above the
   create worker timeout) so a claimer that crashes before it releases cannot
@@ -156,22 +168,30 @@ defmodule Embervm.Scheduler.Inflight do
   end
 
   @doc """
-  A `NodeStatus` from `dial_id` was just written to the capacity table: drop
-  the settled claims it follows. The boot landed in the daemon's live map
-  before its RPC returned and the claim settled, so a report processed after
-  the settle counts the VM itself. Ordering is by the brick's report sequence,
-  not wall time, so two events in the same millisecond still order. Unsettled
-  claims are untouched; `debit_mib/3` reconciles them against the report's
-  in-flight ledger instead.
+  A `NodeStatus` from `dial_id` was just written to the capacity table: advance
+  the brick's report sequence and, when the report charges landed VMs
+  (`counts_landed:`, default true; a reserved brick's does, through its live
+  map), drop the settled claims it follows. The boot landed in the daemon's live
+  map before its RPC returned and the claim settled, so a report processed after
+  the settle charges the VM itself. Ordering is by the brick's report sequence,
+  not wall time, so two events in the same millisecond still order. With
+  `counts_landed: false` (an observed brick, whose report charges a guest only
+  once it faults its memory in) settled claims keep their hold. Unsettled
+  claims are untouched either way; `debit_mib/3` reconciles them against the
+  report's placed in-flight figure instead.
   """
   @spec observe_report(String.t(), keyword()) :: :ok
   def observe_report(dial_id, opts \\ []) do
     table = table(opts)
+    counts_landed = Keyword.get(opts, :counts_landed, true)
 
     safe(fn ->
       seq = :ets.update_counter(table, {:report_seq, dial_id}, {2, 1}, {{:report_seq, dial_id}, 0})
-      spec = [{{{dial_id, :_}, :_, :_, :"$1"}, [{:"/=", :"$1", nil}, {:<, :"$1", seq}], [true]}]
-      :ets.select_delete(table, spec)
+
+      if counts_landed do
+        spec = [{{{dial_id, :_}, :_, :_, :"$1"}, [{:"/=", :"$1", nil}, {:<, :"$1", seq}], [true]}]
+        :ets.select_delete(table, spec)
+      end
     end)
 
     :ok
@@ -198,6 +218,7 @@ defmodule Embervm.Scheduler.Inflight do
       :ets.match_delete(table(opts), {{dial_id, :_}, :_, :_, :_})
       :ets.delete(table(opts), {:report_seq, dial_id})
     end)
+
     :ok
   end
 
@@ -236,10 +257,11 @@ defmodule Embervm.Scheduler.Inflight do
   @doc """
   The debit placement charges `brick` (a `NodeCapacity` fact map or a
   normalised `Embervm.Brick`) for claims against `dial_id`. A brick that
-  reports its admission ledger already subtracts the boots it has admitted
-  (`mem_inflight_mib`), so only the unsettled claims beyond those are charged,
-  plus settled claims its reports have not caught up with. Any other brick is
-  charged every claim. See "one count per boot" above.
+  reports its admission ledger already subtracts the boots it has admitted, so
+  only the unsettled claims beyond the ones it reports as placed in flight
+  (`mem_inflight_placed_mib`) are charged, plus settled claims its reports have
+  not caught up with. Any other brick is charged every claim. See "one count per
+  boot" above.
   """
   @spec debit_mib(String.t(), map(), keyword()) :: non_neg_integer()
   def debit_mib(dial_id, brick, opts \\ []) do
@@ -248,9 +270,10 @@ defmodule Embervm.Scheduler.Inflight do
     if Map.get(brick, :admission_reported) == true do
       # A claim charges need plus the per-VM overhead the brick's model charges
       # (Brick.charge_mib/2, none under observed); the daemon's admittable
-      # already subtracts both for each boot in flight.
+      # already subtracts both for each boot in flight. Only the boots it
+      # admitted for a control-plane placement can stand for a claim.
       overhead = Embervm.Brick.charged_overhead_mib(brick)
-      reported = count(brick, :mem_inflight_mib) + overhead * count(brick, :inflight_vms)
+      reported = count(brick, :mem_inflight_placed_mib) + overhead * count(brick, :inflight_placed_vms)
       max(unsettled - reported, 0) + settled
     else
       unsettled + settled

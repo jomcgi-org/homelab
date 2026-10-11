@@ -69,7 +69,8 @@ func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	// call of either mode, which releases it; the defer covers early returns. A
 	// RELIGHT is charged at least the member bundle's recorded size, which is
 	// what the restored VM lands at.
-	ticket, err := s.admit("StartGroupMember", s.groupMemberAdmitMib(req), classMemOnly)
+	need := s.groupMemberAdmitMib(req)
+	ticket, err := s.admit(ctx, "StartGroupMember", need, placedShare(uint64(req.GetResources().GetMemMib()), need), classMemOnly)
 	if err != nil {
 		return nil, err
 	}

@@ -2352,6 +2352,16 @@ message NodeStatus {
   // mem_admittable_mib; they are reported for diagnosis and parity tests.
   uint64 mem_inflight_mib = 46;
   uint32 inflight_vms = 47;
+  // mem_inflight_placed_mib and inflight_placed_vms are the part of the
+  // in-flight boots above that answer a control-plane placement whose RPC is
+  // still open, each at the memMib the control plane declared for it. A
+  // node-local wake (the activators), the excess of a restore over its declared
+  // size, and a boot that outlives its RPC are left out: no control-plane claim
+  // stands behind them. The control plane nets its own unsettled claims against
+  // these two, never against the totals above, so a boot it did not place can
+  // never cancel one of its claims.
+  uint64 mem_inflight_placed_mib = 51;
+  uint32 inflight_placed_vms = 52;
   // admission_refusals is cumulative since daemon start, keyed by the stable
   // refusal token: "pressure:mem", "pressure:taps", "slots". Never labelled by
   // VM or workload IDs.
