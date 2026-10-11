@@ -267,6 +267,30 @@ defmodule Embervm.S3WarmthGcTest do
   end
 
   describe "expired host retirement" do
+    for stage <- [1, 2, 3] do
+      test "capacity expiring during host inventory gate #{stage} blocks deletion" do
+        %{agent: agent, s3: s3, table: table, base_opts: opts} = orphan_fixture()
+        put_node_fact(table, "node-4", [], [], @mono - 119_999)
+        {:ok, clock} = Agent.start_link(fn -> @mono end)
+        {:ok, calls} = Agent.start_link(fn -> 0 end)
+        stage = unquote(stage)
+        inventory = fn ->
+          call = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+          if call == stage, do: Agent.update(clock, &(&1 + 2))
+          {:ok, MapSet.new(["node-4"])}
+        end
+        gc = start_gc(s3, opts ++ [enabled: true, node_registry_fun: &tombstone_registry/0,
+          node_inventory_fun: inventory, clock: fn -> Agent.get(clock, & &1) end])
+        if stage == 3 do
+          assert {:ok, %{deleted: []}} = S3WarmthGc.sweep_now(gc)
+        else
+          assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
+          assert puts(agent) == []
+        end
+        assert deleted(agent) == []
+      end
+    end
+
     test "complete host absence permits deletion, rechecking at all three gates" do
       %{agent: agent, s3: s3, prefix: prefix, base_opts: opts} = orphan_fixture()
       {:ok, calls} = Agent.start_link(fn -> 0 end)

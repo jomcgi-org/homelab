@@ -352,7 +352,6 @@ defmodule Embervm.S3WarmthGc do
   # pool. An empty registry aborts because brick capacity is expected and there
   # is no basis to claim the inventory is complete.
   defp fleet_snapshot(state, approved_instances \\ MapSet.new()) do
-    now = state.clock.()
     expected_instances = expected_instances(state)
     identities = MapSet.new(expected_instances, &instance_identity/1)
 
@@ -368,6 +367,8 @@ defmodule Embervm.S3WarmthGc do
 
       true ->
       expected_instances = require_resident_instances(state, expected_instances)
+      # Host inventory is a blocking request; capacity must still be fresh after it.
+      now = state.clock.()
       {facts, stale} =
         Enum.reduce(expected_instances, {[], []}, fn instance, {facts, stale} ->
           case NodeCapacity.fetch(state.capacity_table, {instance.node_id, instance.pod_uid}) do
