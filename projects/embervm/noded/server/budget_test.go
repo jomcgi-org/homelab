@@ -70,6 +70,20 @@ func TestUnlimitedCgroupReportsZero(t *testing.T) {
 	}
 }
 
+// TestExhaustedCgroupHeadroomIsKnown: a cgroup whose numeric limit is fully
+// charged reads 1 MiB through the real reader, never the 0 that means unknown,
+// so admission refuses instead of failing open (S16).
+func TestExhaustedCgroupHeadroomIsKnown(t *testing.T) {
+	withBudgetFsRoot(t, map[string]string{
+		"memory.max":     "4294967296\n",
+		"memory.current": "4294967296\n",
+		"memory.stat":    "file 0\n",
+	})
+	if got := newBudget(0).MemHeadroomMib(); got != 1 {
+		t.Fatalf("MemHeadroomMib() on an exhausted cgroup = %d, want 1 (known, not the unknown 0)", got)
+	}
+}
+
 func TestMemHeadroomFallsBackWhenMemoryStatUnreadable(t *testing.T) {
 	withBudgetFsRoot(t, map[string]string{
 		"memory.max":     "4294967296\n",
@@ -164,12 +178,29 @@ func TestParseMemHeadroomMibWithPageCache(t *testing.T) {
 			statRaw: "file 1\n",
 			want:    0,
 		},
+		// A numeric limit makes the reading KNOWN, so an exhausted cgroup reports
+		// 1 MiB rather than the 0 that means unknown (which admission fails open
+		// on). These rows pinned 0 before the known/unknown split.
 		{
-			name:    "max is no greater than nonreclaimable",
+			name:    "max is no greater than nonreclaimable is known exhausted",
 			maxRaw:  "2147483648",
 			curRaw:  "2147483648",
 			statRaw: "file 1\nshmem 1\n",
-			want:    0,
+			want:    1,
+		},
+		{
+			name:    "free under 1 MiB is known, not unknown",
+			maxRaw:  "4294967296",
+			curRaw:  "4294967000",
+			statRaw: "file 0\nshmem 0\n",
+			want:    1,
+		},
+		{
+			name:    "current overshooting max is known exhausted",
+			maxRaw:  "4294967296",
+			curRaw:  "4295229440",
+			statRaw: "file 0\n",
+			want:    1,
 		},
 	}
 	for _, c := range cases {

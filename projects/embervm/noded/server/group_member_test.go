@@ -240,6 +240,7 @@ func newGroupMemberTestServer(t *testing.T) (*Server, *fakeGroupNet, *fakeGroupM
 func startFreshMember(t *testing.T, s *Server, port uint32, member string, index uint32) *nodev1.StartGroupMemberResponse {
 	t.Helper()
 	resp, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
 		GroupInstanceId: "grp-A",
 		MemberName:      member,
@@ -287,6 +288,7 @@ func TestStartGroupMemberFreshRefusedWhileStale(t *testing.T) {
 	s.registry.mu.Unlock()
 
 	_, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
 		GroupInstanceId: "grp-A",
 		MemberName:      "worker-0",
@@ -369,6 +371,7 @@ func TestStartGroupMemberEntryInstallsDNAT(t *testing.T) {
 
 	// The entry member (entry_guest_port > 0) installs the DNAT at that guest port.
 	if _, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
 		GroupInstanceId: "grp-A",
 		MemberName:      "server",
@@ -407,6 +410,7 @@ func TestStartGroupMemberEntryReportsEndpoint(t *testing.T) {
 
 	// Entry member: the response carries the daemon's projection.
 	resp, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
 		GroupInstanceId: "grp-A",
 		MemberName:      "server",
@@ -433,6 +437,7 @@ func TestStartGroupMemberEntryNoDNATReportsNoEndpoint(t *testing.T) {
 	s, _, _, _ := newGroupMemberTestServer(t)
 
 	resp, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
 		GroupInstanceId: "grp-A",
 		MemberName:      "server",
@@ -473,6 +478,7 @@ func TestStartGroupMemberEntryDNATFailureReaps(t *testing.T) {
 	gn.entryDNATErr = errors.New("nft apply failed")
 
 	_, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
 		GroupInstanceId: "grp-A",
 		MemberName:      "server",
@@ -499,6 +505,7 @@ func TestStartGroupMemberFreshHealthGateFailure(t *testing.T) {
 	s, gn, _, _ := newGroupMemberTestServer(t)
 	// Use a port with no listener so the health-gate times out.
 	_, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
 		GroupInstanceId: "grp-A", MemberName: "worker-0", MemberIndex: 0,
 		Ip: "127.0.0.1", Source: "src-a", HealthPort: 1, // port 1: nothing listens
@@ -523,6 +530,7 @@ func TestStartGroupMemberFreshHealthGateFailure(t *testing.T) {
 func TestStartGroupMemberFreshUnprovisionedImageFails(t *testing.T) {
 	s, gn, gmd, _ := newGroupMemberTestServer(t)
 	_, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
 		GroupInstanceId: "grp-A", MemberName: "worker-0", MemberIndex: 0,
 		Ip: "127.0.0.1", Source: "not-provisioned", HealthPort: 1,
@@ -560,6 +568,7 @@ func TestStartGroupMemberRelightResyncsClockAndPinsWorld(t *testing.T) {
 	gn.mu.Unlock()
 
 	relit, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT,
 		GroupInstanceId: "grp-A", MemberName: "worker-0", MemberIndex: 0,
 		Ip: "127.0.0.1", SnapshotRef: bankResp.GetSnapshotRef(), HealthPort: port,
@@ -609,6 +618,7 @@ func TestStartGroupMemberRelightClockFailure(t *testing.T) {
 	clock.err = errors.New("guest clock read-back 3s off host (limit 1s)")
 	prevRemoved := len(gn.removedTaps)
 	_, err = s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT,
 		GroupInstanceId: "grp-A", MemberName: "worker-0", MemberIndex: 0,
 		Ip: "127.0.0.1", SnapshotRef: bankResp.GetSnapshotRef(), HealthPort: port,
@@ -735,6 +745,7 @@ func TestStopGroupMemberConcurrentStopRefused(t *testing.T) {
 func TestStartGroupMemberRelightUnknownBundleFails(t *testing.T) {
 	s, _, _, _ := newGroupMemberTestServer(t)
 	_, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT,
 		GroupInstanceId: "grp-A", MemberName: "worker-0", MemberIndex: 0,
 		Ip: "127.0.0.1", SnapshotRef: "group/set-x/worker-0", HealthPort: 8080,
@@ -753,7 +764,7 @@ func TestGroupMemberVerbsUnimplementedWithoutDriver(t *testing.T) {
 		Transport: &fakeTransport{},
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	if _, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{GroupInstanceId: "g", MemberName: "m", HealthPort: 1, Ip: "127.0.0.1"}); status.Code(err) != codes.Unimplemented {
+	if _, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512}, GroupInstanceId: "g", MemberName: "m", HealthPort: 1, Ip: "127.0.0.1"}); status.Code(err) != codes.Unimplemented {
 		t.Errorf("StartGroupMember without a driver should be Unimplemented, got %v", err)
 	}
 	if _, err := s.StopGroupMember(context.Background(), &nodev1.StopGroupMemberRequest{VmId: "v"}); status.Code(err) != codes.Unimplemented {
