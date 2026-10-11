@@ -19772,3 +19772,173 @@ def test_human_cessation_supervision_does_not_request_another_human_decision(
     task = {"task_id": "t-human"}
     conductor._supervise_cessation(task, object(), human_owned=True)
     assert calls == [task]
+
+
+def _funding_landing_recovery(monkeypatch):
+    from datetime import datetime
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = funding_task(monkeypatch)
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test"
+    )["ok"]
+    deadline = datetime.fromisoformat(controls.task_snapshot(task["id"])["deadline_at"])
+    return task, policy, deadline
+
+
+def test_fixed_recovery_cap_survives_newer_funding_grant_and_replay(
+    feedback_db, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy, deadline = _funding_landing_recovery(monkeypatch)
+    monkeypatch.setattr(controls, "_now", lambda: deadline - timedelta(seconds=60))
+    assert funding.request(task, "Fund remaining review")
+    settle_funding(task, funding_decision())
+    before = controls.task_snapshot(task["id"])
+    monkeypatch.setattr(controls, "_now", lambda: deadline + timedelta(seconds=1))
+    after = controls.task_snapshot(task["id"])
+    assert after["deadline_at"] == deadline.isoformat()
+    assert after["limits"]["deadline_expired"]
+    assert after["deadline_reason"] == "landing_recovery_deadline"
+    assert controls.can_start(task["id"])["reason"] == "landing_recovery_deadline"
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "merge_queue", "test"
+    )["replayed"]
+    assert controls.task_snapshot(task["id"])["deadline_at"] == after["deadline_at"]
+    for key in ("turns_used", "planner_turns_used", "committed_cost_usd", "policy"):
+        assert after[key] == before[key]
+    for _ in range(3):
+        assert not funding.reconcile(
+            task,
+            after["policy"],
+            conductor.graph.node_runs(task["id"]),
+            controls.can_start(task["id"]),
+        )
+        assert not funding.request(task, "Retry cannot extend recovery", recover=True)
+    assert (
+        controls.task_snapshot(task["id"])["committed_cost_usd"]
+        == after["committed_cost_usd"]
+    )
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"]) is None
+
+
+@pytest.mark.parametrize("reserved", [False, True])
+def test_fixed_recovery_cap_blocks_pending_paid_review(
+    feedback_db, monkeypatch, reserved
+):
+    from datetime import timedelta
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy, deadline = _funding_landing_recovery(monkeypatch)
+    monkeypatch.setattr(controls, "_now", lambda: deadline - timedelta(seconds=1))
+    assert funding.request(task, "Review queued before cap")
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    if reserved:
+        assert controls.authorize_start(
+            task["id"],
+            request["start_key"],
+            "test",
+            model=funding.review_model(request),
+            max_cost_usd=funding.REVIEW_COST_USD,
+        )["ok"]
+    before = controls.task_snapshot(task["id"])
+    monkeypatch.setattr(controls, "_now", lambda: deadline)
+    with controls.start_guard(task["id"], start_key=request["start_key"]) as decision:
+        assert decision["reason"] == "landing_recovery_deadline"
+    assert (
+        controls.authorize_start(
+            task["id"],
+            request["start_key"],
+            "test",
+            model=funding.review_model(request),
+            max_cost_usd=funding.REVIEW_COST_USD,
+        )["reason"]
+        == "landing_recovery_deadline"
+    )
+    assert (
+        controls.can_start(task["id"], start_key=request["start_key"])["reason"]
+        == "landing_recovery_deadline"
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_dispatch_ready",
+        lambda *a, **kw: pytest.fail("expired recovery must not buy another review"),
+    )
+    for _ in range(2):
+        assert not funding.reconcile(
+            task, policy, conductor.graph.node_runs(task["id"]), {"ok": True}
+        )
+    after = controls.task_snapshot(task["id"])
+    for key in (
+        "unresolved_starts",
+        "committed_cost_usd",
+        "turns_used",
+        "planner_turns_used",
+    ):
+        assert after[key] == before[key]
+
+
+def test_completed_paid_review_after_recovery_cap_settles_once_without_grant(
+    feedback_db, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy, deadline = _funding_landing_recovery(monkeypatch)
+    monkeypatch.setattr(controls, "_now", lambda: deadline - timedelta(seconds=1))
+    assert funding.request(task, "Already paid review")
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    run_feedback_node(task, request["node_key"], funding_decision())
+    before = controls.task_snapshot(task["id"])
+    monkeypatch.setattr(controls, "_now", lambda: deadline + timedelta(seconds=1))
+    runs = conductor.graph.node_runs(task["id"])
+    assert funding.reconcile(task, policy, runs, controls.can_start(task["id"]))
+    assert not funding.reconcile(task, policy, runs, controls.can_start(task["id"]))
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"]) is None
+        assert funding.amendment(db, task["id"]) is None
+        assert (
+            "landing recovery deadline"
+            in funding.latest(db, task["id"], "funding_review_settled")["refusal"]
+        )
+    after = controls.task_snapshot(task["id"])
+    for key in ("turns_used", "planner_turns_used", "committed_cost_usd", "policy"):
+        assert after[key] == before[key]
+
+
+def test_fixed_recovery_cap_rechecked_after_funding_evidence_read(
+    feedback_db, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy, deadline = _funding_landing_recovery(monkeypatch)
+    monkeypatch.setattr(controls, "_now", lambda: deadline - timedelta(seconds=1))
+    original = funding._issue
+
+    def delayed_issue(task):
+        result = original(task)
+        monkeypatch.setattr(controls, "_now", lambda: deadline)
+        return result
+
+    monkeypatch.setattr(funding, "_issue", delayed_issue)
+    assert not funding.request(task, "Cap expires while reading evidence")
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"]) is None

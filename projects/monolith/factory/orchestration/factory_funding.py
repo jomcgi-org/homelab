@@ -327,6 +327,11 @@ def request(task, reason, *, recover=False):
     """Reserve one exact judge decision, even when task soft limits ran out."""
     from factory.orchestration import factory_conductor as c
 
+    # No funding decision can extend an expired landing-recovery cap.
+    # Avoid even preparing a paid review; recheck under the write lock below.
+    with controls._read_session() as db:
+        if controls._landing_recovery_expired(db, task["id"]):
+            return False
     if not enabled():
         with controls._read_session() as db:
             if latest(db, task["id"], "funding_review_requested") is None:
@@ -350,6 +355,8 @@ def request(task, reason, *, recover=False):
             }
     with controls._locked_session() as (db, control):
         row = controls._receipt(db, task["id"])
+        if controls._landing_recovery_expired(db, task["id"]):
+            return False
         if (
             row is None
             or row.repo != task["repo"]
@@ -550,6 +557,10 @@ def settle(task, run, request):
         escalation = None
         failure_category = "authority_invalid"
         try:
+            if controls._landing_recovery_expired(db, task["id"]):
+                raise ValueError(
+                    "landing recovery deadline expired; operator recovery required"
+                )
             if (
                 run["pin"]["model"] != review_model(request)
                 or run["dispatch_key"] != request["start_key"]
@@ -762,10 +773,14 @@ def reconcile(task, policy, runs, permission):
         review = pending(db, task["id"])
         last = latest(db, task["id"], "funding_review_settled")
         grant = amendment(db, task["id"])
+        recovery_expired = controls._landing_recovery_expired(db, task["id"])
     if review:
         own = next((r for r in runs if r["node_key"] == review["node_key"]), None)
         if own and own["status"] in graph.TERMINAL_RUN_STATUSES:
             settle(task, own, review)
+        elif recovery_expired:
+            # Preserve in-flight ownership; no new review can repair this cap.
+            return False
         elif own is None:
             if controls._now() >= datetime.fromisoformat(review["deadline_at"]):
                 with controls._locked_session() as (db, _control):
@@ -821,6 +836,8 @@ def reconcile(task, policy, runs, permission):
                 funding_review=True,
             )
         return True
+    if recovery_expired:
+        return False
     if not enabled() and not grant and not last:
         return False
     if not permission["ok"] and permission["reason"] not in {
