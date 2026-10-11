@@ -56,10 +56,17 @@ graph LR
 
 Ranked by what an attacker gets. Each issue holds the detail.
 
-1. **A Firecracker escape is not contained**
+1. **A Firecracker escape is not contained in production**
    ([#5255](https://github.com/jomcgi-org/homelab/issues/5255)).
-   The VM monitor runs as root in a privileged pod without the jailer.
-   An escape hands over the node and the fleet's storage credential.
+   The jailer is built and armed in embervm-dev, where each VM monitor
+   runs chrooted as its own uid in its own cgroup and PID namespace.
+   Production still runs it as root in a privileged pod until a dev soak
+   and a one-value flip; there an escape hands over the node and the
+   fleet's storage credential.
+   Tenants share bricks and Kubernetes nodes by design, and CPU side
+   channels between co-resident guests are an accepted risk: nothing pins
+   a guest to cores or isolates SMT siblings. Whether the Spot brick
+   nodes run SMT is set in gcloud, not in git, and is unverified.
 2. **Any valid token reaches every MCP tool**
    ([#4569](https://github.com/jomcgi-org/homelab/issues/4569)).
    The monolith verifies who is calling; no tool then checks whether
