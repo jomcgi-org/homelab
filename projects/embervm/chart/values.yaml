@@ -1492,10 +1492,12 @@ noded:
   admissionModel: observed
 
   # Per-VM admission charge in MiB the reserved model adds on top of each live
-  # and in-flight guest's declared memMib; ignored under observed (noded still
-  # reports it). It stands for host memory a VM costs beyond its guest RAM: the
-  # measured Firecracker VMM overhead is a few MiB plus the guest's page tables,
-  # so 64 is a deliberate cushion, not a measurement. It is distinct from the
+  # and in-flight guest's declared memMib. Under observed nothing charges it:
+  # noded still reports it, but the control plane's in-flight claims charge
+  # none and each EMBERVM_BRICK_CLASSES entry renders vm_overhead_mib 0. It
+  # stands for host memory a VM costs beyond its guest RAM: the measured
+  # Firecracker VMM overhead is a few MiB plus the guest's page tables, so 64
+  # is a deliberate cushion, not a measurement. It is distinct from the
   # jailer's per-VM memory.max ceiling (guest + 192 MiB), which only bounds one
   # VM's own runaway and charges nothing at admission. noded refuses to start on
   # a negative value.

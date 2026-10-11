@@ -795,7 +795,8 @@ defmodule Embervm.Dispatcher do
                 # so the map shape is load-bearing, not cosmetic.
                 #
                 # :charge_mib is what the in-flight claim debits on that brick
-                # (the workload's memory plus the brick's per-VM overhead).
+                # (the workload's memory plus the per-VM overhead the brick's
+                # model charges).
                 miss_frontier =
                   Enum.map(ordered, fn brick ->
                     %{

@@ -420,13 +420,22 @@ defmodule Embervm.SchedulerTest do
     assert {:ok, [%{instance_id: "n/a"} | _]} = Scheduler.place_and_claim(req, {:create, 4})
   end
 
-  test "place_and_claim charges the brick's per-VM overhead with the need" do
+  test "place_and_claim charges the brick's per-VM overhead with the need under the reserved model" do
     table = inflight_table()
-    b = Map.merge(brick(instance_id: "n/o", mem_headroom_mib: 8_000), %{vm_overhead_mib: 192})
+    b = Map.merge(brick(instance_id: "n/o", mem_headroom_mib: 8_000), %{vm_overhead_mib: 192, admits_on_reservation: true})
     req = %Request{bricks: [b], need_mib: 1_000, base: :none, record_demand: false, inflight: table}
 
     assert {:ok, [_]} = Scheduler.place_and_claim(req, :r)
     assert Inflight.pending_mib("n/o", table: table) == 1_192
+  end
+
+  test "place_and_claim charges an observed brick the bare need, as its daemon does" do
+    table = inflight_table()
+    b = Map.merge(brick(instance_id: "n/o", mem_headroom_mib: 8_000), %{vm_overhead_mib: 192, admits_on_reservation: false})
+    req = %Request{bricks: [b], need_mib: 1_000, base: :none, record_demand: false, inflight: table}
+
+    assert {:ok, [_]} = Scheduler.place_and_claim(req, :r)
+    assert Inflight.pending_mib("n/o", table: table) == 1_000
   end
 
   test "place_and_claim passes the base gate result through" do

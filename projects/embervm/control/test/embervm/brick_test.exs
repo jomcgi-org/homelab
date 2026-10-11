@@ -117,8 +117,17 @@ defmodule Embervm.BrickTest do
       assert Brick.admittable_mib(brick) == 3_573
     end
 
-    test "charge_mib adds the brick's per-VM overhead to the need" do
-      assert Brick.charge_mib(%{vm_overhead_mib: 192}, 3_072) == 3_264
+    test "charge_mib adds the per-VM overhead to the need only under the reserved model" do
+      reserved = %{admits_on_reservation: true, vm_overhead_mib: 192}
+      assert Brick.charge_mib(reserved, 3_072) == 3_264
+      assert Brick.charged_overhead_mib(reserved) == 192
+
+      # noded reports the overhead under observed too, but charges none.
+      observed = %{reserved | admits_on_reservation: false}
+      assert Brick.charge_mib(observed, 3_072) == 3_072
+      assert Brick.charged_overhead_mib(observed) == 0
+      assert Brick.charge_mib(%{vm_overhead_mib: 192}, 3_072) == 3_072
+
       assert Brick.charge_mib(%{}, 3_072) == 3_072
       assert Brick.charge_mib(%{}, nil) == 0
     end

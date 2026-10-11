@@ -4241,9 +4241,9 @@ defmodule Embervm.SessionManager do
   defp relight_node({:ok, node_id}, _session, _capacity_table), do: {:ok, node_id}
   defp relight_node(:none, session, capacity_table), do: WakeInstance.node_for_relight(session, capacity_table)
 
-  # The relight's charge on its brick: the workload's memory plus that brick's
-  # per-VM overhead, or the bare need when the dial has no capacity row (a
-  # legacy node-name dial).
+  # The relight's charge on its brick: the workload's memory plus the per-VM
+  # overhead that brick charges, or the bare need when the dial has no capacity
+  # row (a legacy node-name dial).
   defp claim_relight(state, dial_id, claim_ref, entry) do
     need_mib = create_need_mib(entry)
 

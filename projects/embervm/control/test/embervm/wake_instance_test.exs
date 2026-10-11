@@ -59,6 +59,7 @@ defmodule Embervm.WakeInstanceTest do
         serving_vms: Keyword.get(opts, :serving_vms, []),
         stateful_vms: Keyword.get(opts, :stateful_vms, []),
         vm_overhead_mib: Keyword.get(opts, :vm_overhead_mib, 0),
+        admits_on_reservation: Keyword.get(opts, :admits_on_reservation, false),
         updated_at: Keyword.get(opts, :updated_at, 0)
       }
 
@@ -630,7 +631,7 @@ defmodule Embervm.WakeInstanceTest do
     end
 
     test "a cold pick with a claim_ref charges the picked brick its need plus overhead", %{table: table, ledger: ledger} do
-      dial = put_instance(table, "node-4", "pod-a", vm_overhead_mib: 64)
+      dial = put_instance(table, "node-4", "pod-a", vm_overhead_mib: 64, admits_on_reservation: true)
 
       assert {:ok, ^dial} =
                WakeInstance.select("node-4", table: table, workload: "wl-a", need_mib: 1_000, claim_ref: :wake, inflight: ledger)
@@ -698,7 +699,7 @@ defmodule Embervm.WakeInstanceTest do
     end
 
     test "claim/4 charges the brick's overhead, and the bare need for a dial with no fact", %{table: table, ledger: ledger} do
-      dial = put_instance(table, "node-4", "pod-a", vm_overhead_mib: 64)
+      dial = put_instance(table, "node-4", "pod-a", vm_overhead_mib: 64, admits_on_reservation: true)
 
       assert :ok = WakeInstance.claim(dial, :m, 512, table: table, inflight: ledger)
       assert :ok = WakeInstance.claim("node-9/gone", :m, 512, table: table, inflight: ledger)
