@@ -10,7 +10,10 @@ go_library(
 
 go_test(
     name = "egress_test",
-    srcs = ["forwarder_test.go"],
+    srcs = [
+        "forwarder_linux_test.go",
+        "forwarder_test.go",
+    ],
     embed = [":egress"],
     deps = ["//projects/embervm/noded/vsockproto"],
 )
