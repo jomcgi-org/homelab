@@ -3245,6 +3245,15 @@ func (d *Driver) vsockDevicePath(proc Process, threadID string) string {
 	return d.VsockUDSPath(threadID)
 }
 
+// ColdBootMemoryMib resolves an omitted request exactly as the cold-boot
+// entrypoints do. Admission must charge this size before installing its ceiling.
+func (d *Driver) ColdBootMemoryMib(requested uint64) uint64 {
+	if requested > 0 {
+		return requested
+	}
+	return uint64(d.cfg.MemMib)
+}
+
 // SnapshotMemoryMib uses the same sizing as the restore path. Base claims may
 // fall back to cold boot when a volume requires it, so reserve that size too.
 func (d *Driver) SnapshotMemoryMib(kind, ref, member string) uint64 {

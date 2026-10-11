@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	fcvmdriver "github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
@@ -642,5 +644,95 @@ func TestRelightClassesChargeSnapshotBeforeRestore(t *testing.T) {
 				t.Fatal("rejected restore left a pending claim")
 			}
 		})
+	}
+}
+
+// Stop at the process-launch boundary, after real driver defaults and admission
+// checks have run. These tests need neither KVM nor a Firecracker process.
+type admissionBoundaryLauncher struct{ launch func(fcvmdriver.LaunchSpec) }
+
+func (l admissionBoundaryLauncher) Launch(_ context.Context, spec fcvmdriver.LaunchSpec) (fcvmdriver.Process, error) {
+	l.launch(spec)
+	return nil, errors.New("test launch boundary")
+}
+
+func TestDefaultSizedFreshAdmissionUsesRealDriver(t *testing.T) {
+	for _, kind := range []string{"serving", "stateful", "group", "build"} {
+		for _, configured := range []int{0, 1536} {
+			for _, budget := range []string{"unknown", "zero", "insufficient", "enough"} {
+				t.Run(fmt.Sprintf("%s/default=%d/budget=%s", kind, configured, budget), func(t *testing.T) {
+					var s *Server
+					var start func() error
+					launches := 0
+					wantMib := configured
+					if wantMib == 0 {
+						wantMib = 1024
+					}
+					d := fcvmdriver.New(fcvmdriver.Config{SnapshotRoot: t.TempDir(), MemMib: configured, RootfsPath: "/rootfs/a", KernelImagePath: "/kernel"}, admissionBoundaryLauncher{func(spec fcvmdriver.LaunchSpec) {
+						launches++
+						if spec.MemMib != wantMib {
+							t.Errorf("launch memory=%d, want %d", spec.MemMib, wantMib)
+						}
+						s.admissionMu.Lock()
+						reserved := s.pendingMib
+						s.admissionMu.Unlock()
+						if reserved != uint64(wantMib) {
+							t.Errorf("pending=%d, want resolved default %d", reserved, wantMib)
+						}
+					}}, nil)
+					switch kind {
+					case "serving":
+						s, _, _ = newServingTestServer(t)
+						s.servingDriver = d
+						start = func() error {
+							_, err := s.StartServing(t.Context(), &nodev1.StartServingRequest{Source: &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}}, Port: 8080, Trace: &nodev1.Trace{Workload: "echo"}})
+							return err
+						}
+					case "stateful":
+						s, _, _ = newStatefulTestServer(t)
+						s.statefulDriver = d
+						start = func() error {
+							_, err := s.StartStateful(t.Context(), &nodev1.StartStatefulRequest{Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH, BootImageRef: "img-a", Port: 8080, Trace: &nodev1.Trace{Workload: "echo"}, VolumeSizeBytes: 1 << 20, VolumeMount: "/data", CreateIfMissing: true, BlessedGeneration: 1})
+							return err
+						}
+					case "group":
+						s, _, _, _ = newGroupMemberTestServer(t)
+						s.groupDriver = d
+						start = func() error {
+							_, err := s.StartGroupMember(t.Context(), &nodev1.StartGroupMemberRequest{Mode: nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH, GroupInstanceId: "grp-A", MemberName: "worker", Source: "src-a", Ip: "127.0.0.1", HealthPort: 8080, Trace: &nodev1.Trace{Workload: "echo"}})
+							return err
+						}
+					case "build":
+						_, s = newTestServer(t, d, &fakeTransport{}, 8)
+						start = func() error { _, err := s.runBuild(t.Context(), d, "base", "echo", "/ready", nil, 0); return err }
+					}
+					s.driver = d
+					s.memHeadroom = func() (uint64, bool) { return 0, false }
+					s.memBudget = func() (uint64, bool) {
+						switch budget {
+						case "unknown":
+							return 0, false
+						case "zero":
+							return 0, true
+						case "insufficient":
+							return 512, true
+						default:
+							return 4096, true
+						}
+					}
+					err := start()
+					if budget == "unknown" || budget == "enough" {
+						if launches != 1 || err == nil || !strings.Contains(err.Error(), "test launch boundary") {
+							t.Fatalf("default-sized guest failed before real launch boundary: launches=%d err=%v", launches, err)
+						}
+					} else if launches != 0 || status.Code(err) != codes.ResourceExhausted {
+						t.Fatalf("finite capacity admission: launches=%d err=%v", launches, err)
+					}
+					if s.pendingMib != 0 || s.pendingVMs != 0 {
+						t.Fatal("failed launch leaked reservation")
+					}
+				})
+			}
+		}
 	}
 }

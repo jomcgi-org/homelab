@@ -1241,6 +1241,7 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 // -> Hydrate (POST the archive; zip lane only) -> WaitReady (/shim/ready flips 200
 // only after the shim unpacks + imports the handler) -> SnapshotBase.
 func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload, readyPath string, archive []byte, needMib uint64) (int64, error) {
+	needMib = coldBootNeedMib(bd, needMib)
 	finishAdmission, err := s.reserveAdmission(needMib, classMemOnly)
 	if err != nil {
 		return 0, err

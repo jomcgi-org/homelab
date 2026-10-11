@@ -238,3 +238,12 @@ func snapshotNeedMib(driver any, declared uint64, kind, ref, member string) uint
 	}
 	return declared
 }
+
+// coldBootNeedMib resolves driver defaults while the request is still outside
+// admission. An omitted declaration is not a zero-byte launch reservation.
+func coldBootNeedMib(driver any, declared uint64) uint64 {
+	if d, ok := driver.(interface{ ColdBootMemoryMib(uint64) uint64 }); ok {
+		return d.ColdBootMemoryMib(declared)
+	}
+	return declared
+}

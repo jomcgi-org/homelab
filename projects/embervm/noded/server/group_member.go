@@ -64,7 +64,7 @@ func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
-	needMib := uint64(req.GetResources().GetMemMib())
+	needMib := coldBootNeedMib(s.groupDriver, uint64(req.GetResources().GetMemMib()))
 	if req.GetMode() == nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT {
 		setID, member, ok := parseGroupMemberRef(req.GetSnapshotRef())
 		if !ok || member != req.GetMemberName() {

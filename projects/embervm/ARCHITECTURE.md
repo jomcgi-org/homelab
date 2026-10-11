@@ -1103,6 +1103,8 @@ atomically and held through readiness, conservatively overlapping the driver's
 live claim until the RPC returns. Restores reserve the larger of current
 workload sizing and stored snapshot sizing, including base cold-boot fallback.
 The driver checks the resolved size against that reservation before launch.
+Fresh and build requests with omitted sizing reserve the driver's configured
+default before admission, including when cgroup capacity is unknown.
 Build guests use separate drivers, so their
 reservation lasts through confirmed teardown, including explicit evidence from
 an internal snapshot-failure reap; a failed build teardown retains

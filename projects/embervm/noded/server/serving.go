@@ -48,7 +48,7 @@ func (s *Server) startServing(ctx context.Context, req *nodev1.StartServingReque
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
-	needMib := uint64(req.GetResources().GetMemMib())
+	needMib := coldBootNeedMib(s.servingDriver, uint64(req.GetResources().GetMemMib()))
 	if req.GetRelight() != nil {
 		needMib = snapshotNeedMib(s.servingDriver, needMib, "serving", req.GetRelight().GetSnapshotRef(), "")
 	}

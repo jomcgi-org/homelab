@@ -79,7 +79,7 @@ func (s *Server) startStateful(ctx context.Context, req *nodev1.StartStatefulReq
 	// Cheap rejection under real memory/tap pressure (ADR embervm/014 decision 3),
 	// BEFORE the tap allocation and boot below. Stateful is tap-bearing; the
 	// workload's mem need comes from the request's ResourceSpec.
-	needMib := uint64(req.GetResources().GetMemMib())
+	needMib := coldBootNeedMib(s.statefulDriver, uint64(req.GetResources().GetMemMib()))
 	if req.GetMode() == nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT {
 		needMib = snapshotNeedMib(s.statefulDriver, needMib, "stateful", req.GetRelightSnapshotRef(), "")
 	}
