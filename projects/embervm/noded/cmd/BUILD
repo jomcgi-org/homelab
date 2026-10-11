@@ -52,6 +52,7 @@ go_test(
     embed = [":cmd_lib"],
     deps = [
         "//projects/embervm/noded/config",
+        "//projects/embervm/noded/fcvm/driver",
         "//projects/embervm/noded/server",
         "//projects/embervm/proto/embervm/node/v1:nodev1",
         "@com_github_spiffe_go_spiffe_v2//bundle/x509bundle",

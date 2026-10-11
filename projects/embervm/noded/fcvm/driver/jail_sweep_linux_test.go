@@ -92,7 +92,7 @@ func TestSweepOrphanJailsRemovesOnlyJailTrees(t *testing.T) {
 // files in the node-shared snapshot root, are inert to the startup jail sweep.
 func TestUIDLeaseLocksAreIgnoredBySweep(t *testing.T) {
 	dir := t.TempDir()
-	lease, err := leaseUIDBlock(dir)
+	lease, err := leaseUIDBlock(dir, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

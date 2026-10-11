@@ -24,6 +24,9 @@ const (
 	// vmUIDBlockSize is the slice of the node-wide uid range one daemon leases:
 	// 40 daemons per node, each with 1000 concurrently live VMs.
 	vmUIDBlockSize = 1000
+	// JailUIDBlocks is how many uid blocks the node's range holds, the bound
+	// ExecLauncher.UIDBlockBase must stay under.
+	JailUIDBlocks = vmUIDCount / vmUIDBlockSize
 	// defaultJailerBin is the jailer baked beside Firecracker in the noded image.
 	defaultJailerBin = "/opt/fc/jailer"
 )
@@ -76,9 +79,14 @@ type ExecLauncher struct {
 	// VM cgroup parent is capped at the brick's memory.max minus this reserve, so
 	// guests in aggregate OOM inside their own parent, never the container.
 	DaemonReserveMib int
-	// UIDLeaseDir is the node-shared directory holding the jail uid block locks
-	// (the snapshot root). Jailed launches fail closed without it.
+	// UIDLeaseDir is the directory holding the jail uid block locks (the
+	// release's snapshot root, shared by every brick of that release on the
+	// node). Jailed launches fail closed without it.
 	UIDLeaseDir string
+	// UIDBlockBase is the first uid block this daemon may lease. Releases that
+	// share a node lease under different snapshot roots, so each one needs its
+	// own disjoint range of blocks (production 0, embervm-dev 20).
+	UIDBlockBase int
 	// ReadyTimeout bounds how long Launch waits for the API socket to accept
 	// connections before giving up.
 	ReadyTimeout time.Duration
@@ -158,8 +166,8 @@ var productionLaunchState = struct {
 	sync.Mutex
 	nextUID  int
 	usedUIDs map[int]bool
-	// uidBlock is this daemon's node-wide uid block, leased on first use and
-	// held for the process lifetime.
+	// uidBlock is this daemon's block of the node's uid range, leased on
+	// first use and held for the process lifetime.
 	uidBlock *uidBlockLease
 	cgroups  *cgroupManager
 }{usedUIDs: make(map[int]bool), cgroups: newCgroupManager()}
@@ -562,12 +570,13 @@ func (l *ExecLauncher) jailerBin() string {
 
 // allocateUID hands out a jail uid from this daemon's leased block. The block
 // is leased on first use and kept for the process lifetime, so uids stay unique
-// across every brick on the node, not only within this daemon.
+// across every brick of this release on the node, and across releases as long
+// as each leases from its own disjoint block range (UIDBlockBase).
 func (l *ExecLauncher) allocateUID() (int, func(), error) {
 	productionLaunchState.Lock()
 	defer productionLaunchState.Unlock()
 	if productionLaunchState.uidBlock == nil {
-		lease, err := leaseUIDBlock(l.UIDLeaseDir)
+		lease, err := leaseUIDBlock(l.UIDLeaseDir, l.UIDBlockBase)
 		if err != nil {
 			return 0, nil, err
 		}
