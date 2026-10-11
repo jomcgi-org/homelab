@@ -1438,11 +1438,11 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	// Admission (ADR embervm/014 decision 3), AFTER the base is resolved (so the
 	// workload's mem footprint is known) but BEFORE the expensive Claim/restore.
 	// Prime is vsock-only (no tap), so it checks slots and memory only. The need
-	// is the workload's registry sizing, else the size the base was built at. The
-	// ticket holds the reservation until Claim returns; the defer covers every
-	// early return in between.
+	// is the larger of the workload's registry sizing and the size the base was
+	// built at. The ticket holds the reservation until Claim returns; the defer
+	// covers every early return in between.
 	sizeVCPUs, sizeMemMib := s.primeSizing(base.workload, ref)
-	ticket, err := s.admit("Prime", uint64(sizeMemMib), classMemOnly)
+	ticket, err := s.admit("Prime", s.primeAdmitMib(sizeMemMib, ref), classMemOnly)
 	if err != nil {
 		return nil, err
 	}

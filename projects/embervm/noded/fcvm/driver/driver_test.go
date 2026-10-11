@@ -573,6 +573,38 @@ func TestDriverForwardsHugePageConfiguration(t *testing.T) {
 	}
 }
 
+// TestDriverClaimColdBootUsesDeclaredSizing: a Claim that cold boots (here no
+// base snapshot exists) boots at the ClaimSpec's declared vCPUs and memory, the
+// size admission charged, and falls back to the driver default only when the
+// spec leaves them zero.
+func TestDriverClaimColdBootUsesDeclaredSizing(t *testing.T) {
+	launcher := &fakeLauncher{}
+	d := New(Config{
+		KernelImagePath: "/kernel", RootfsPath: "/rootfs", SnapshotRoot: shortTempDir(t),
+		VCPUs: 1, MemMib: 1024,
+	}, launcher, nil)
+	sized, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "sized", ColdBootVCPUs: 2, ColdBootMemMib: 3072})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), sized) })
+	unsized, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "unsized"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), unsized) })
+	configs := launcher.machineConfigBodies()
+	if len(configs) != 2 {
+		t.Fatalf("machine configs = %d, want 2: %v", len(configs), configs)
+	}
+	if configs[0]["vcpu_count"] != float64(2) || configs[0]["mem_size_mib"] != float64(3072) {
+		t.Fatalf("declared cold boot machine config = %v, want 2 vCPUs and 3072 MiB", configs[0])
+	}
+	if configs[1]["vcpu_count"] != float64(1) || configs[1]["mem_size_mib"] != float64(1024) {
+		t.Fatalf("undeclared cold boot machine config = %v, want the driver default 1 vCPU and 1024 MiB", configs[1])
+	}
+}
+
 func TestDriverTracksDirtyPagesOnlyForBankingClaims(t *testing.T) {
 	launcher := &fakeLauncher{}
 	d := New(Config{
