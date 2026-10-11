@@ -1446,18 +1446,33 @@ noded:
   # real concurrency; this only stops a runaway from exhausting the node.
   maxLiveVMs: 8
 
-  # Memory admission model for a brick (EMBERVM_NODED_ADMISSION_MODEL).
-  # observed reads lagging cgroup headroom; reserved keeps a declared claims
-  # ledger plus per-VM overhead (noded/server/pressure.go). #4185 tracks moving
-  # the GKE bricks to reserved in a separate values PR once this template lands.
-  # noded validates this at boot and refuses anything but observed or reserved,
-  # so a typo or null override (rendered as an empty string) crashloops every
-  # brick at once.
+  # Memory admission model for a brick (EMBERVM_NODED_ADMISSION_MODEL). Both
+  # models evaluate one predicate per boot, atomically with an in-flight ledger
+  # of boots admitted but not yet live (noded/server/pressure.go admittableMib):
+  #   observed: cgroup headroom (memory.max minus non-reclaimable memory, so
+  #     clean page cache counts as free) less boots in flight less
+  #     memRejectFloorMib. It lags reality: a restored guest faults its memory
+  #     in lazily, so a brick can admit far more declared memory than it holds.
+  #   reserved: no overcommit. The declared memMib of every live and in-flight
+  #     VM, plus vmOverheadMib per VM, must fit memory.max minus
+  #     daemonReserveMib, and the observed bound above still applies as a
+  #     second guard.
+  # NodeStatus reports the result as mem_admittable_mib so the control plane
+  # places on the same predicate. #4185 tracks moving the GKE bricks to reserved
+  # in a separate values PR. noded validates this at boot and refuses anything
+  # but observed or reserved, so a typo or null override (rendered as an empty
+  # string) crashloops every brick at once.
   admissionModel: observed
 
-  # Per-VM host overhead in MiB charged by the reserved model on top of the
-  # guest's declared memory; ignored under observed.
-  vmOverheadMib: 0
+  # Per-VM admission charge in MiB the reserved model adds on top of each live
+  # and in-flight guest's declared memMib; ignored under observed (noded still
+  # reports it). It stands for host memory a VM costs beyond its guest RAM: the
+  # measured Firecracker VMM overhead is a few MiB plus the guest's page tables,
+  # so 64 is a deliberate cushion, not a measurement. It is distinct from the
+  # jailer's per-VM memory.max ceiling (guest + 192 MiB), which only bounds one
+  # VM's own runaway and charges nothing at admission. noded refuses to start on
+  # a negative value.
+  vmOverheadMib: 64
 
   # Residual memory cushion required after admitting a VM. This is rendered into
   # every noded pod and into each control-plane class declaration so derived
@@ -1879,22 +1894,24 @@ bricks:
   # daemon's own RSS") 512 was ~50x oversized: measured 2026-08-16 on the idle
   # bricks, noded's container RSS is 9 MiB (node-1) and 11 MiB (node-2).
   #
-  # DO NOT take it lower on the strength of that number alone. Two readings of
-  # the same brick disagree, and the gap is the reason for the remaining slack:
-  # the admission predicate reads `memory.max - memory.current`
-  # (noded/server/pressure.go:142) and cgroup v2 counts PAGE CACHE in
-  # memory.current, so a brick that has baked a rootfs or restored a snapshot
-  # from its hostPath scratch carries hundreds of MiB of reclaimable file cache
-  # charged to its own cgroup (node-3's brick: 1391 MiB with zero live VMs). The
-  # 512 was silently paying for that cache and for per-VM Firecracker VMM
-  # overhead, neither of which is what the field says it covers. VMOverheadMib
-  # is the field that should carry the VMM half; it defaults to 0 and is read
-  # only by the `reserved` admission model, which is not switched on. Splitting
-  # this into measured parts is #4773.
+  # DO NOT take it lower on the strength of that number alone. The brick cgroup
+  # is charged for more than noded's RSS: kernel memory (slab, page tables),
+  # shmem, and the page cache of rootfs bakes and snapshot restores from its
+  # hostPath scratch (node-3's brick: 1391 MiB of file cache with zero live VMs).
+  # Admission's observed headroom subtracts clean non-shmem page cache as
+  # reclaimable (noded/server/budget.go parseMemHeadroomMib), so cache no longer
+  # depresses headroom, but the reserve is still the only slack for the rest.
+  # Per-VM Firecracker VMM overhead is carried by noded.vmOverheadMib under the
+  # reserved model, not by this reserve. Splitting this into measured parts is
+  # #4773.
   #
-  # Because the observed model re-checks live headroom at boot, undersizing this
-  # shows up as `pressure:mem` boot rejections and evicted snapshot cache
-  # (slower restores), not as an OOM kill. Rollback is setting it back to 512.
+  # The observed model never reads this value (its headroom is memory.max minus
+  # non-reclaimable memory), so there an undersized reserve only overstates the
+  # control plane's usable_mib and shows up as `pressure:mem` refusals. Under
+  # the reserved model it is the gap between the declared sum and memory.max:
+  # undersizing it lets declared guests fill the cgroup, and only the observed
+  # guard (headroom minus memRejectFloorMib) stands between that and a brick
+  # OOM. Rollback is setting it back to 512.
   daemonReserveMib: 256
   classes:
     # Optional maxLiveVMs overrides the fleet noded.maxLiveVMs for one class;

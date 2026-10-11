@@ -994,7 +994,7 @@ def test_noded_admission_model_defaults_observed_and_accepts_reserved():
             ["bricks.enabled=true"],
             {
                 "EMBERVM_NODED_ADMISSION_MODEL": "observed",
-                "EMBERVM_NODED_VM_OVERHEAD_MIB": "0",
+                "EMBERVM_NODED_VM_OVERHEAD_MIB": "64",
                 "EMBERVM_NODED_MEM_REJECT_FLOOR_MIB": "512",
             },
         ),

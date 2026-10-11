@@ -140,8 +140,12 @@ type Config struct {
 	// cgroup-headroom predicate; reserved gates on declared live claims.
 	// Env EMBERVM_NODED_ADMISSION_MODEL. Default observed.
 	AdmissionModel string
-	// VMOverheadMib is host memory charged per live VM in the reserved model.
-	// Env EMBERVM_NODED_VM_OVERHEAD_MIB. Default 0.
+	// VMOverheadMib is host memory charged per live and in-flight VM in the
+	// reserved model, on top of each guest's declared memMib (VMM process,
+	// guest page tables). It is an admission charge only, distinct from the
+	// jailer's per-VM memory.max ceiling. Env EMBERVM_NODED_VM_OVERHEAD_MIB.
+	// Default 0 (the chart renders its own default); a negative value refuses
+	// to load rather than silently admitting more than the budget.
 	VMOverheadMib int
 
 	// DaemonReserveMib is subtracted from the cgroup memory.max ceiling
@@ -597,6 +601,9 @@ func Load() (Config, error) {
 	}
 	if c.AdmissionModel != "observed" && c.AdmissionModel != "reserved" {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_ADMISSION_MODEL must be observed or reserved, got %q", c.AdmissionModel)
+	}
+	if c.VMOverheadMib < 0 {
+		return Config{}, fmt.Errorf("EMBERVM_NODED_VM_OVERHEAD_MIB must be non-negative, got %d", c.VMOverheadMib)
 	}
 	if c.StoreAccessKeyID == "" && c.StoreSecretAccessKey != "" {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_STORE_ACCESS_KEY_ID is required when EMBERVM_NODED_STORE_SECRET_ACCESS_KEY is set")
