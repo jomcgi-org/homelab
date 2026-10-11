@@ -278,6 +278,37 @@ func TestLoadRejectsNegativeVMOverhead(t *testing.T) {
 	}
 }
 
+// TestLoadJailerUIDBlockBase: a release's first jail uid block defaults to 0,
+// loads any block of the node's range, and refuses a negative, out-of-range or
+// malformed value rather than fall back to block 0, which would give a second
+// release on the node the first release's uids.
+func TestLoadJailerUIDBlockBase(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_JAILER_UID_BLOCK_BASE", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.JailerUIDBlockBase != 0 {
+		t.Fatalf("JailerUIDBlockBase default = %d, want 0", c.JailerUIDBlockBase)
+	}
+	for _, raw := range []string{"20", "39"} {
+		t.Setenv("EMBERVM_NODED_JAILER_UID_BLOCK_BASE", raw)
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load with base %s: %v", raw, err)
+		}
+		if fmt.Sprint(c.JailerUIDBlockBase) != raw {
+			t.Fatalf("JailerUIDBlockBase = %d, want %s", c.JailerUIDBlockBase, raw)
+		}
+	}
+	for _, raw := range []string{"-1", "40", "twenty", "20x"} {
+		t.Setenv("EMBERVM_NODED_JAILER_UID_BLOCK_BASE", raw)
+		if _, err := Load(); err == nil {
+			t.Fatalf("Load accepted EMBERVM_NODED_JAILER_UID_BLOCK_BASE=%q", raw)
+		}
+	}
+}
+
 func TestLoadActivatorAddress(t *testing.T) {
 	t.Setenv("EMBERVM_NODED_ACTIVATOR_ADDR", "127.0.0.1:18081")
 	c, err := Load()

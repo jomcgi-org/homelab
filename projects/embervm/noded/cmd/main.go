@@ -538,7 +538,8 @@ func newDriver(cfg config.Config, logger *slog.Logger, x driverExtras) *driver.D
 
 // newExecLauncher builds the production launcher. Every launcher in the daemon
 // shares one uid lease and one delegated cgroup parent, so each gets the same
-// node-shared lease directory and daemon reserve.
+// lease directory (the release's snapshot root), uid block base and daemon
+// reserve.
 func newExecLauncher(cfg config.Config, logger *slog.Logger) *driver.ExecLauncher {
 	return &driver.ExecLauncher{
 		Logger:           logger,
@@ -547,6 +548,7 @@ func newExecLauncher(cfg config.Config, logger *slog.Logger) *driver.ExecLaunche
 		JailerEnabled:    cfg.JailerEnabled,
 		DaemonReserveMib: cfg.DaemonReserveMib,
 		UIDLeaseDir:      cfg.SnapshotRoot,
+		UIDBlockBase:     cfg.JailerUIDBlockBase,
 		OOMScoreAdj:      cfg.GuestOomScoreAdj,
 		MountNamespace:   true,
 	}

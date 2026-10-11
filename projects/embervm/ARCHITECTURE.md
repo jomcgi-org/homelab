@@ -1920,8 +1920,11 @@ embervm/032).
   `noded.jailer.enabled` every guest launches through Firecracker's jailer: a
   per-VM chroot whose inputs are staged readable by the jail uid, a uid and gid
   from a block of the node's 20000-59999 range that each daemon leases for its
-  lifetime, a cgroup v2 leaf with `memory.max` at the guest's `memMib` plus
-  192 MiB and `memory.oom.group=1` under the capped `embervm-vms` parent
+  lifetime (the lease is unique among one release's bricks, because they share
+  its snapshot root; releases sharing a node pool must lease from disjoint
+  ranges set by `noded.jailer.uidBlockBase`: production 0, and embervm-dev 20
+  before it arms), a cgroup v2 leaf with `memory.max` at the guest's `memMib`
+  plus 192 MiB and `memory.oom.group=1` under the capped `embervm-vms` parent
   (section 7), and a PID namespace noded creates with `CLONE_NEWPID`, so
   Firecracker is init of its own namespace while noded still waits on, kills
   and reads it as its own child (the jailer's `--new-pid-ns` is not used,

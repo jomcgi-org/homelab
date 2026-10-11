@@ -8,7 +8,7 @@ type uidBlockLease struct {
 	base int
 }
 
-func leaseUIDBlock(string) (*uidBlockLease, error) {
+func leaseUIDBlock(string, int) (*uidBlockLease, error) {
 	return nil, errors.New("driver: jailer uid lease requires Linux")
 }
 

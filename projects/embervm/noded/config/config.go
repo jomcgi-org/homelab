@@ -32,6 +32,11 @@ import (
 // data-key request receives a permanent control-plane refusal.
 const DefaultUnexportableTTL = 24 * time.Hour
 
+// JailerUIDBlocks is how many jail uid blocks one node's 20000-59999 range
+// holds (the fcvm driver's JailUIDBlocks; noded/cmd pins the two equal).
+// EMBERVM_NODED_JAILER_UID_BLOCK_BASE must name one of them.
+const JailerUIDBlocks = 40
+
 // Image is the node-side identity of one guest image the daemon can build a base
 // for. The gRPC BuildBase request names the image by ref; the daemon resolves
 // that ref to the on-disk rootfs an init container (rootfs-builder) baked, plus
@@ -204,6 +209,14 @@ type Config struct {
 	JailerEnabled bool
 	// JailerBinPath is the jailer binary matching BinPath's Firecracker release.
 	JailerBinPath string
+	// JailerUIDBlockBase is the first jail uid block this daemon may lease; it
+	// leases the first free block from here up. The lease lock files live under
+	// this release's snapshot root, so two releases on one node never see each
+	// other's leases: each release sharing a node pool needs its own disjoint
+	// range of blocks (production 0, embervm-dev 20). Env
+	// EMBERVM_NODED_JAILER_UID_BLOCK_BASE. Default 0; Load refuses a value
+	// that is not an integer in [0, JailerUIDBlocks).
+	JailerUIDBlockBase int
 	// KernelImagePath is the guest kernel (baked at /opt/fc), shared by every VM.
 	KernelImagePath string
 	// KernelBootArgs are appended to the kernel command line on cold boot. Empty
@@ -605,6 +618,18 @@ func Load() (Config, error) {
 	}
 	if c.VMOverheadMib < 0 {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_VM_OVERHEAD_MIB must be non-negative, got %d", c.VMOverheadMib)
+	}
+	// Parsed strictly: a typo that fell back to block 0 would hand a second
+	// release the same jail uids as the release already leasing from 0.
+	if raw := os.Getenv("EMBERVM_NODED_JAILER_UID_BLOCK_BASE"); raw != "" {
+		base, err := strconv.Atoi(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid EMBERVM_NODED_JAILER_UID_BLOCK_BASE %q: %w", raw, err)
+		}
+		c.JailerUIDBlockBase = base
+	}
+	if c.JailerUIDBlockBase < 0 || c.JailerUIDBlockBase >= JailerUIDBlocks {
+		return Config{}, fmt.Errorf("EMBERVM_NODED_JAILER_UID_BLOCK_BASE must be in [0, %d), got %d", JailerUIDBlocks, c.JailerUIDBlockBase)
 	}
 	if c.StoreAccessKeyID == "" && c.StoreSecretAccessKey != "" {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_STORE_ACCESS_KEY_ID is required when EMBERVM_NODED_STORE_SECRET_ACCESS_KEY is set")
