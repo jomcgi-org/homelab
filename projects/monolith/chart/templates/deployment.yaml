@@ -411,6 +411,8 @@ spec:
               value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.listenPort }}/scratch"
             {{- end }}
             {{- if .Values.chat.enabled }}
+            - name: DISCORD_AMBIENT_ENABLED
+              value: {{ .Values.chat.discordAmbientEnabled | quote }}
             - name: DISCORD_BOT_TOKEN
               valueFrom:
                 secretKeyRef:

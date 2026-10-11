@@ -1,5 +1,6 @@
 """Additional coverage for ChatBot -- on_message(), on_ready(), streaming response."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1811,3 +1812,53 @@ class TestStartAgentFlowOrchestrator:
 
         assert isinstance(verdict, orchestrator.FailOpen)
         mock_compile.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("addressed", [False, True])
+async def test_ambient_pause_preserves_storage_and_explicit_requests(addressed):
+    from chat import safeguards
+
+    bot = _make_bot()
+    message = _make_message(mentions=[bot.user] if addressed else [])
+    store = _make_store()
+    bot.evaluate_triggers = AsyncMock()
+    bot._stream_response = AsyncMock(return_value=(None, "", None))
+    with (
+        patch("chat.bot.DISCORD_AMBIENT_ENABLED", False, create=True),
+        patch("chat.bot.get_engine"),
+        patch("chat.bot.Session"),
+        patch("chat.bot.MessageStore", return_value=store),
+        patch(
+            "chat.bot.safeguards.observe_message",
+            return_value=safeguards.Verdict(addressed=addressed),
+        ) as observe,
+        patch("chat.bot.safeguards.score_intent", new_callable=AsyncMock),
+        patch("chat.bot.acl.ambient_channels", return_value={"99"}) as grants,
+        patch("chat.bot.attention.evaluate", new_callable=AsyncMock) as classify,
+    ):
+        await bot.on_message(message)
+        await asyncio.sleep(0)
+
+    observe.assert_called_once()
+    grants.assert_not_called()
+    classify.assert_not_awaited()
+    bot.evaluate_triggers.assert_not_awaited()
+    store.save_message.assert_awaited_once()
+    assert bot._stream_response.await_count == int(addressed)
+    message.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ambient_pause_covers_child_threads_and_preserves_grants():
+    bot = _make_bot()
+    message = _make_message(channel_id=123)
+    message.channel = MagicMock(spec=discord.Thread)
+    message.channel.parent_id = 99
+    with patch("chat.bot.acl.ambient_channels", return_value={"99"}) as grants:
+        with patch("chat.bot.DISCORD_AMBIENT_ENABLED", False, create=True):
+            assert not await bot._resolve_ambient("guild", "123", message)
+        grants.assert_not_called()
+        with patch("chat.bot.DISCORD_AMBIENT_ENABLED", True, create=True):
+            assert await bot._resolve_ambient("guild", "123", message)
+        grants.assert_called_once_with("guild")

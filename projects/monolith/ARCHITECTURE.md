@@ -1088,6 +1088,15 @@ the hub that path is Meta's hosted API rather than an in-cluster server.
 (see: /projects/monolith/deploy/values.yaml)
 (see: /projects/monolith/deploy/values-gke.yaml)
 
+The operational `chat.discordAmbientEnabled` switch maps to
+`DISCORD_AMBIENT_ENABLED`. False pauses attention classification (including
+ordinary child threads) and automatic message-trigger dispatch without changing
+channel grants or trust safeguards. Message storage and existing KG feeds,
+explicit mentions/replies, slash commands, agent-thread sessions and Notify stay
+on their existing paths. Scheduled changelogs and reminders are separate. The
+UK-move pause has no expiry; restore the deployment value to true and roll out
+only when Joe requests resumption.
+
 Proactive work is scheduled rather than reactive: hourly changelog summaries
 for three repositories, a reminders drain every two minutes, a weekly directive
 observation pass and a daily directive autopilot, daily channel summaries, and
