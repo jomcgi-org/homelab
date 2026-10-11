@@ -9,6 +9,9 @@
   import JournalPanel from "$lib/grimoire/JournalPanel.svelte";
   import KnowledgeDrawer from "$lib/grimoire/KnowledgeDrawer.svelte";
   import KnowledgeSearch from "$lib/grimoire/KnowledgeSearch.svelte";
+  import TurnStrip from "$lib/grimoire/TurnStrip.svelte";
+  import YourTurnBanner from "$lib/grimoire/YourTurnBanner.svelte";
+  import InitiativeEditor from "$lib/grimoire/InitiativeEditor.svelte";
   import "$lib/grimoire/theme.css";
 
   let { data } = $props();
@@ -42,6 +45,19 @@
   // the panel always shows the latest projection for it.
   let journal = $derived(state.journal?.[journalView] ?? null);
   let playing = $derived(state.session && state.session.status !== "ended");
+  // The state carries the caller's own view of the order. A player can also
+  // follow the latest turn event, which is the same player projection.
+  let turnOrder = $derived.by(() => {
+    if (state.initiative) return state.initiative;
+    if (dm) return null;
+    return (
+      state.events
+        .filter((event) => event.kind === "turn" && !event.retracted_at)
+        .at(-1)?.body || null
+    );
+  });
+  let turnEntries = $derived(turnOrder?.entries || []);
+  let ownCharacterIds = $derived(state.characters.map((row) => row.id));
   const endpoint = () =>
     `/grimoire/campaigns/${state.campaign.id}/session/state`;
 
@@ -193,6 +209,24 @@
     return `${match[1]}${rollModeSuffix()}${modifier}`;
   }
 
+  // The approved sheet's DEX modifier when it has one, else a bare d20.
+  function initiativeFormula() {
+    const dex = state.characters[0]?.approved?.ability_modifiers?.dexterity;
+    const modifier = !dm && Number.isInteger(dex) ? dex : 0;
+    return formulaWithMode(
+      `1d20${modifier ? `${modifier > 0 ? "+" : ""}${modifier}` : ""}`,
+    );
+  }
+
+  function turnSummary(body) {
+    if (body?.action === "end") return "The encounter has ended.";
+    const entry = body?.entries?.[body.active_index];
+    const turn = entry ? `Round ${body.round}: ${entry.label}'s turn.` : "";
+    return body?.action === "set"
+      ? `Turn order set. ${turn}`.trim()
+      : turn || "Turn order updated.";
+  }
+
   function roll(event) {
     event.preventDefault();
     act({
@@ -298,6 +332,30 @@
     </div>{/if}
   <div class="layout" hidden={activeTab !== "story"}>
     <section aria-label="Session feed" class="feed">
+      {#if !dm}<YourTurnBanner
+          entries={turnEntries}
+          activeIndex={turnOrder?.active_index ?? null}
+          characterIds={ownCharacterIds}
+        />{/if}
+      <TurnStrip
+        entries={turnEntries}
+        round={turnOrder?.round ?? 1}
+        activeIndex={turnOrder?.active_index ?? null}
+        {dm}
+      />
+      {#if dm && playing}
+        <details class="initiative-panel">
+          <summary>Initiative order</summary>
+          <InitiativeEditor
+            initiative={state.initiative}
+            characters={state.characters}
+            events={state.events}
+            members={state.members}
+            {busy}
+            act={(input) => act(input)}
+          />
+        </details>
+      {/if}
       {#if !state.events.length}
         <div class="empty">
           <h2>
@@ -334,7 +392,9 @@
                       ? "Handout"
                       : event.kind === "system"
                         ? "Table update"
-                        : "Player action"}</strong
+                        : event.kind === "turn"
+                          ? "Turn order"
+                          : "Player action"}</strong
             >
             <span
               >{event.audience === "table"
@@ -382,6 +442,8 @@
                 {/if}
               </div>
             {/each}
+          {:else if event.kind === "turn" && !event.retracted_at}
+            <p>{turnSummary(event.body)}</p>
           {:else}<p>
               {event.retracted_at
                 ? "This message was retracted."
@@ -407,7 +469,7 @@
               {/if}
             </div>
           {/if}
-          {#if !event.retracted_at && !event.body?.retracted}{#if !dm}<button
+          {#if !event.retracted_at && !event.body?.retracted && event.kind !== "turn"}{#if !dm}<button
                 class="secondary"
                 disabled={busy}
                 onclick={() => pin(event)}
@@ -519,6 +581,17 @@
             </div>
           {/if}
           <div class="quick-dice" aria-label="Quick rolls">
+            <button
+              class="secondary"
+              disabled={busy}
+              onclick={() =>
+                act({
+                  operation: "roll",
+                  formula: initiativeFormula(),
+                  label: "Initiative",
+                  visibility: rollVisibility,
+                })}>Initiative</button
+            >
             {#each [4, 6, 8, 10, 12, 20, 100] as sides}<button
                 class="secondary"
                 disabled={busy}
@@ -747,6 +820,13 @@
   }
   .composer {
     margin-top: 28px;
+  }
+  .initiative-panel {
+    margin: 0 0 24px;
+  }
+  .initiative-panel summary {
+    cursor: pointer;
+    min-height: 36px;
   }
   .dice-tray {
     margin-top: 24px;

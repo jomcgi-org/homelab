@@ -251,4 +251,66 @@ describe("player view", () => {
       ),
     ).not.toContain("Reveal knowledge");
   });
+
+  it("shows a player the turn strip but no initiative controls", async () => {
+    const data = {
+      ...pageData("player", []),
+      initiative: {
+        round: 2,
+        active_index: 0,
+        entries: [
+          {
+            label: "Aria",
+            player_character_id: fixture.viewer,
+            initiative: 15,
+            hidden: false,
+          },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json(data)),
+    );
+    instance = mount(Page, { target: document.body, props: { data } });
+    await settle();
+    expect(document.body.textContent).toContain("Round 2");
+    const labels = [...document.querySelectorAll("button")].map((button) =>
+      button.textContent.trim(),
+    );
+    for (const dmOnly of ["Save order", "Next turn", "End encounter"])
+      expect(labels).not.toContain(dmOnly);
+  });
+});
+
+// Every DM initiative operation must land on a route in the DM-only list, so
+// the player-operation allowlist above is what keeps a player away from them.
+describe("initiative operations", () => {
+  beforeEach(() => {
+    process.env.API_BASE = "http://backend.test";
+    process.env.GRIMOIRE_PLAY_ENABLED = "true";
+  });
+
+  for (const [operation, extra] of Object.entries(
+    dmRoutes.dm_initiative_operations,
+  ))
+    it(`${operation} reaches a DM-only route and is not a player operation`, async () => {
+      expect(dmRoutes.player_operations).not.toContain(operation);
+      const calls = await backendCalls([
+        endpoint,
+        {
+          method: "POST",
+          body: JSON.stringify({ sessionId, operation, ...extra }),
+        },
+      ]);
+      expect(calls).toHaveLength(1);
+      const [{ target, method }] = calls;
+      expect(
+        DM_ROUTES.some(
+          (route) =>
+            route.method === method && route.pattern.test(target.pathname),
+        ),
+        `${method} ${target.pathname}`,
+      ).toBe(true);
+    });
 });

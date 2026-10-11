@@ -97,6 +97,42 @@ export async function GET({ fetch, cookies, params, url }) {
   }
 }
 
+const UUID = /^[0-9a-f-]{36}$/i;
+
+// Only the fields the backend accepts are forwarded, so UI-only draft keys
+// never reach its strict request model.
+function initiativeBody(input) {
+  if (!Array.isArray(input.entries)) throw new Error("Invalid initiative.");
+  const entries = input.entries.map((entry) => {
+    const pc = entry.player_character_id ?? null;
+    if (pc !== null && !UUID.test(pc)) throw new Error("Invalid character.");
+    if (!Number.isInteger(entry.initiative))
+      throw new Error("Initiative must be a whole number.");
+    return {
+      label: String(entry.label || ""),
+      player_character_id: pc,
+      initiative: entry.initiative,
+      hidden: entry.hidden === true,
+    };
+  });
+  const body = { entries };
+  if (input.hiddenDisplay !== undefined) {
+    if (!["mask", "omit"].includes(input.hiddenDisplay))
+      throw new Error("Choose mask or omit.");
+    body.hidden_display = input.hiddenDisplay;
+  }
+  for (const [key, field] of [
+    ["activeIndex", "active_index"],
+    ["round", "round"],
+  ])
+    if (input[key] !== undefined) {
+      if (!Number.isInteger(input[key]))
+        throw new Error("Invalid initiative position.");
+      body[field] = input[key];
+    }
+  return body;
+}
+
 export async function POST({ request, fetch, cookies, params }) {
   if (process.env.GRIMOIRE_PLAY_ENABLED !== "true")
     error(404, "Session play is not enabled.");
@@ -218,6 +254,19 @@ export async function POST({ request, fetch, cookies, params }) {
       if (input.operation === "status") {
         method = "PATCH";
         body = { status: input.status };
+      } else if (input.operation === "initiativeSet") {
+        path += "/initiative";
+        method = "PUT";
+        body = initiativeBody(input);
+      } else if (input.operation === "initiativeAdvance") {
+        if (!["next", "previous"].includes(input.direction))
+          throw new Error("Choose next or previous.");
+        path += "/initiative/advance";
+        body = { direction: input.direction };
+      } else if (input.operation === "initiativeEnd") {
+        path += "/initiative";
+        method = "DELETE";
+        body = undefined;
       } else if (input.operation === "roll") {
         path += "/rolls";
         body = {
@@ -246,7 +295,7 @@ export async function POST({ request, fetch, cookies, params }) {
     const result = await grimoireJson(fetch, cookies, path, {
       method,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
     return json(result);
   } catch (error) {

@@ -219,6 +219,29 @@ CASES = {
         state="play",
         denied_writers=(),
     ),
+    ("GET", PREFIX + "/sessions/{session_id}/initiative"): Case(
+        params={"session_id": "$campaign_session.id"},
+    ),
+    ("PUT", PREFIX + "/sessions/{session_id}/initiative"): Case(
+        params={"session_id": "$campaign_session.id"},
+        body={
+            "entries": [
+                {"label": "Goblin", "initiative": 12},
+                {"label": "Ogre", "initiative": 6, "hidden": True},
+            ],
+            "hidden_display": "omit",
+        },
+        state="play",
+    ),
+    ("POST", PREFIX + "/sessions/{session_id}/initiative/advance"): Case(
+        params={"session_id": "$campaign_session.id"},
+        body={"direction": "next"},
+        state="play",
+    ),
+    ("DELETE", PREFIX + "/sessions/{session_id}/initiative"): Case(
+        params={"session_id": "$campaign_session.id"},
+        state="play",
+    ),
     ("POST", PREFIX + "/sessions/{session_id}/events/{event_id}/retract"): Case(
         params={"session_id": "$campaign_session.id", "event_id": "$event_table.id"},
     ),
@@ -301,7 +324,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 55  # Six inventory routes extend the exact registry.
+    assert len(enumerated) == 59  # Inventory and initiative routes extend the exact registry.
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
@@ -531,7 +554,7 @@ def test_scanner_clean_body_and_audience_matrix(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    assert len(tokens) == 240  # Eight inventory items add four canaries each.
+    assert len(tokens) == 242  # Inventory items and the initiative order add canaries.
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]

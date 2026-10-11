@@ -50,6 +50,7 @@ from grimoire.audience import (
     note_predicate,
 )
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
+from grimoire import initiative as initiative_logic
 from grimoire.invitation_provider import enrollment_enabled
 from grimoire.join_links import links_enabled
 from grimoire.join_links import router as join_links_router
@@ -77,6 +78,7 @@ from grimoire.models import (
     PlayerCharacter,
     Relationship,
     SessionEvent,
+    SessionInitiative,
     SessionStatus,
 )
 from grimoire.play_embeddings import (
@@ -3505,6 +3507,185 @@ def retract_session_event(
         session.commit()
         session.refresh(row)
     return _event_view(row, member)
+
+
+# --- Initiative order --------------------------------------------------
+
+
+def _initiative_row(
+    session: Session, session_id: str, *, lock: bool = False
+) -> SessionInitiative | None:
+    query = select(SessionInitiative).where(SessionInitiative.session_id == session_id)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    return session.exec(query).one_or_none()
+
+
+def _initiative_caller_view(
+    row: SessionInitiative | None, member: CampaignMember
+) -> dict[str, Any]:
+    if row is None:
+        return initiative_logic.empty_view()
+    if member.role == "dm":
+        return initiative_logic.dm_view(row)
+    return initiative_logic.player_view(
+        row,
+        str(member.player_character_id)
+        if member.player_character_id is not None
+        else None,
+    )
+
+
+def _append_turn_event(
+    session: Session,
+    game_session: GameSession,
+    member: CampaignMember,
+    body: dict[str, Any],
+) -> None:
+    """Persist the player projection only; the DM view never enters an event."""
+    try:
+        append_event(
+            session,
+            game_session=game_session,
+            kind="turn",
+            audience=Audience("table", frozenset(), author_member_id=member.id),
+            author_member_id=member.id,
+            body=body,
+        )
+    except SessionEndedError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get(
+    "/campaigns/{campaign_id}/sessions/{session_id}/initiative",
+    dependencies=[Depends(require_play_enabled)],
+)
+def get_initiative(
+    campaign_id: str,
+    session_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    member = _get_member_or_404(session, campaign_id, email)
+    _session_in_campaign(session, campaign_id, session_id)
+    return _initiative_caller_view(_initiative_row(session, session_id), member)
+
+
+@router.put(
+    "/campaigns/{campaign_id}/sessions/{session_id}/initiative",
+    dependencies=[Depends(require_play_enabled)],
+)
+def put_initiative(
+    campaign_id: str,
+    session_id: str,
+    body: initiative_logic.InitiativeSetRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    member = _require_dm(session, campaign_id, email)
+    game_session = _session_in_campaign(session, campaign_id, session_id)
+    pc_ids = {
+        entry.player_character_id
+        for entry in body.entries
+        if entry.player_character_id is not None
+    }
+    if pc_ids:
+        known = {
+            UUID(pc)
+            for pc in session.exec(
+                select(PlayerCharacter.id).where(
+                    PlayerCharacter.campaign_id == campaign_id
+                )
+            ).all()
+        }
+        if not pc_ids <= known:
+            raise HTTPException(
+                status_code=422,
+                detail="initiative characters must belong to this campaign",
+            )
+    row = _initiative_row(session, session_id, lock=True)
+    if row is None:
+        row = SessionInitiative(session_id=session_id, campaign_id=campaign_id)
+        session.add(row)
+    row.entries = initiative_logic.stored_entries(body.entries)
+    row.hidden_display = body.hidden_display
+    row.active_index = body.active_index
+    row.round = body.round
+    row.updated_at = datetime.now(timezone.utc)
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409, detail="initiative was changed concurrently"
+        ) from exc
+    _append_turn_event(
+        session,
+        game_session,
+        member,
+        {**initiative_logic.player_view(row), "action": "set"},
+    )
+    session.commit()
+    session.refresh(row)
+    return initiative_logic.dm_view(row)
+
+
+@router.post(
+    "/campaigns/{campaign_id}/sessions/{session_id}/initiative/advance",
+    dependencies=[Depends(require_play_enabled)],
+)
+def advance_initiative(
+    campaign_id: str,
+    session_id: str,
+    body: initiative_logic.InitiativeAdvanceRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    member = _require_dm(session, campaign_id, email)
+    game_session = _session_in_campaign(session, campaign_id, session_id)
+    row = _initiative_row(session, session_id, lock=True)
+    if row is None or not row.entries:
+        raise HTTPException(status_code=409, detail="initiative order is empty")
+    initiative_logic.advance(row, body.direction)
+    row.updated_at = datetime.now(timezone.utc)
+    session.flush()
+    _append_turn_event(
+        session,
+        game_session,
+        member,
+        {**initiative_logic.player_view(row), "action": body.direction},
+    )
+    session.commit()
+    session.refresh(row)
+    return initiative_logic.dm_view(row)
+
+
+@router.delete(
+    "/campaigns/{campaign_id}/sessions/{session_id}/initiative",
+    dependencies=[Depends(require_play_enabled)],
+)
+def end_initiative(
+    campaign_id: str,
+    session_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    member = _require_dm(session, campaign_id, email)
+    game_session = _session_in_campaign(session, campaign_id, session_id)
+    row = _initiative_row(session, session_id, lock=True)
+    if row is None:
+        raise HTTPException(status_code=404, detail="initiative not found")
+    session.delete(row)
+    session.flush()
+    _append_turn_event(
+        session,
+        game_session,
+        member,
+        {**initiative_logic.empty_view(), "action": "end"},
+    )
+    session.commit()
+    return initiative_logic.empty_view()
 
 
 # --- Registered-user lobby and accepted invitations --------------------

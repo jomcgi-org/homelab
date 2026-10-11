@@ -1,5 +1,5 @@
 {
-  "comment": "Backend grants, sessions and inventory routes guarded by _require_dm that the session BFF can reach, and the BFF operations a player may send. grimoire/visibility_test.py derives the routes from router.py; the reveal isolation vitest replays every player request through the real BFF and fails on any of them.",
+  "comment": "Backend grants, sessions, inventory and initiative routes guarded by _require_dm that the session BFF can reach, and the BFF operations a player may send. grimoire/visibility_test.py derives the routes from router.py; the reveal isolation vitest replays every player request through the real BFF and fails on any of them.",
   "routes": [
     ["GET", "/api/grimoire/campaigns/{campaign_id}/grants"],
     ["POST", "/api/grimoire/campaigns/{campaign_id}/grants"],
@@ -10,7 +10,19 @@
     ["POST", "/api/grimoire/campaigns/{campaign_id}/sessions"],
     ["PATCH", "/api/grimoire/campaigns/{campaign_id}/sessions/{session_id}"],
     ["POST", "/api/grimoire/campaigns/{campaign_id}/inventory"],
-    ["DELETE", "/api/grimoire/campaigns/{campaign_id}/inventory/{item_id}"]
+    ["DELETE", "/api/grimoire/campaigns/{campaign_id}/inventory/{item_id}"],
+    [
+      "PUT",
+      "/api/grimoire/campaigns/{campaign_id}/sessions/{session_id}/initiative"
+    ],
+    [
+      "POST",
+      "/api/grimoire/campaigns/{campaign_id}/sessions/{session_id}/initiative/advance"
+    ],
+    [
+      "DELETE",
+      "/api/grimoire/campaigns/{campaign_id}/sessions/{session_id}/initiative"
+    ]
   ],
   "dm_only_query_params": ["not_granted_to"],
   "player_operations": [
@@ -20,5 +32,15 @@
     "deleteNote",
     "updateItem",
     "moveItem"
-  ]
+  ],
+  "dm_initiative_operations": {
+    "initiativeSet": {
+      "entries": [],
+      "hiddenDisplay": "mask",
+      "activeIndex": 0,
+      "round": 1
+    },
+    "initiativeAdvance": { "direction": "next" },
+    "initiativeEnd": {}
+  }
 }

@@ -6712,6 +6712,23 @@ bdd_test(
     srcs = ["grimoire/character_assignment_postgres_test.py"],
 )
 
+# Hand-registered because grimoire is gazelle-excluded: initiative order
+# routes, player projection and turn events.
+py_test(
+    name = "grimoire_initiative_test",
+    srcs = ["grimoire/initiative_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "grimoire_router_test",
     srcs = ["grimoire/router_test.py"],

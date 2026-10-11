@@ -363,3 +363,94 @@ describe("reveal payload", () => {
     expect(body.grants[0].revealed_details).toBeNull();
   });
 });
+
+describe("initiative operations", () => {
+  const initiativePath = `http://backend.test/api/grimoire/campaigns/${campaignId}/sessions/${sessionId}/initiative`;
+  const call = async (input) => {
+    const request = post(input);
+    const result = await request.response;
+    const [url, options] = request.fetch.mock.calls[0] || [];
+    return { result, url, options, fetch: request.fetch };
+  };
+
+  it("sets the order with a PUT carrying only backend fields", async () => {
+    const { result, url, options } = await call({
+      operation: "initiativeSet",
+      entries: [
+        {
+          key: 7,
+          label: "Aria",
+          player_character_id: pcA,
+          initiative: 18,
+          hidden: false,
+        },
+        { label: "Ambusher", initiative: 12, hidden: true },
+      ],
+      hiddenDisplay: "omit",
+      activeIndex: 1,
+      round: 3,
+    });
+    expect(result.status).toBe(200);
+    expect(url).toBe(initiativePath);
+    expect(options.method).toBe("PUT");
+    expect(JSON.parse(options.body)).toEqual({
+      entries: [
+        {
+          label: "Aria",
+          player_character_id: pcA,
+          initiative: 18,
+          hidden: false,
+        },
+        {
+          label: "Ambusher",
+          player_character_id: null,
+          initiative: 12,
+          hidden: true,
+        },
+      ],
+      hidden_display: "omit",
+      active_index: 1,
+      round: 3,
+    });
+  });
+
+  it("advances in the chosen direction with a POST", async () => {
+    const { url, options } = await call({
+      operation: "initiativeAdvance",
+      direction: "previous",
+    });
+    expect(url).toBe(`${initiativePath}/advance`);
+    expect(options.method).toBe("POST");
+    expect(JSON.parse(options.body)).toEqual({ direction: "previous" });
+  });
+
+  it("ends the encounter with a DELETE and no body", async () => {
+    const { url, options } = await call({ operation: "initiativeEnd" });
+    expect(url).toBe(initiativePath);
+    expect(options.method).toBe("DELETE");
+    expect(options.body).toBeUndefined();
+  });
+
+  it.each([
+    [{ operation: "initiativeAdvance", direction: "sideways" }],
+    [{ operation: "initiativeSet", entries: "nope" }],
+    [
+      {
+        operation: "initiativeSet",
+        entries: [{ label: "A", initiative: 1.5 }],
+      },
+    ],
+    [
+      {
+        operation: "initiativeSet",
+        entries: [{ label: "A", initiative: 1, player_character_id: "x" }],
+      },
+    ],
+    [{ operation: "initiativeSet", entries: [], hiddenDisplay: "reveal" }],
+    [{ operation: "initiativeEnd", sessionId: "../escape" }],
+  ])("rejects %j before contacting the backend", async (input) => {
+    const { result, fetch } = await call(input);
+    expect(result.status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});

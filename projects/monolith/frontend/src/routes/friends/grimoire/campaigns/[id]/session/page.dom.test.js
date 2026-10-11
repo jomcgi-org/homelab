@@ -389,6 +389,8 @@ describe("private session events from server projections", () => {
       if (path.endsWith("/sheets")) return json({ versions: [] });
       if (path.endsWith("/sessions"))
         return json([{ id: sessionId, status: "active" }]);
+      if (path.endsWith("/initiative"))
+        return json({ round: 1, active_index: null, entries: [] });
       if (path.endsWith("/events")) return json(events);
       if (path.endsWith("/journal")) return json({});
       if (path.endsWith("/members"))
@@ -1048,5 +1050,208 @@ describe("session journal tab", () => {
     await click("Show in story", learned);
     expect(document.querySelector(".layout").hidden).toBe(false);
     expect(scrolled).toHaveBeenCalledWith({ block: "center" });
+  });
+});
+
+describe("initiative on the session page", () => {
+  const turnEvent = (id, seq, body) => ({
+    id,
+    seq,
+    kind: "turn",
+    audience: "table",
+    audience_pc_ids: [],
+    author_member_id: "member-dm",
+    body,
+    created_at: "2026-10-10T12:00:00Z",
+    retracted_at: null,
+  });
+  const projection = (activeIndex, round = 1) => ({
+    round,
+    active_index: activeIndex,
+    entries: [
+      {
+        label: "Aria",
+        player_character_id: pcA,
+        initiative: 18,
+        hidden: false,
+      },
+      {
+        label: "???",
+        player_character_id: null,
+        initiative: null,
+        hidden: true,
+      },
+      { label: "Bram", player_character_id: pcB, initiative: 9, hidden: false },
+    ],
+  });
+  const dmView = (activeIndex, round = 1) => ({
+    ...projection(activeIndex, round),
+    hidden_display: "mask",
+    entries: [
+      projection(0).entries[0],
+      {
+        label: "Secret Lich",
+        player_character_id: null,
+        initiative: 14,
+        hidden: true,
+      },
+      projection(0).entries[2],
+    ],
+  });
+  const show = async (data) => {
+    await render(data);
+    await settle();
+  };
+  // The viewer owns only Aria; Bram belongs to another player.
+  const playerData = (events, initiative) => ({
+    ...pageData("player", events),
+    characters: [{ id: pcA, character_name: "Aria", approved: null }],
+    initiative,
+  });
+  const strip = () =>
+    document.querySelector('section[aria-label="Turn order"]');
+  const activeName = () =>
+    strip().querySelector('[aria-current="step"] .name').textContent;
+  const buttons = () =>
+    [...document.querySelectorAll("button")].map((b) => b.textContent.trim());
+
+  it("shows a player the strip, hides the secret label and never offers the editor", async () => {
+    const data = playerData(
+      [turnEvent("t1", 1, { ...projection(0), action: "set" })],
+      projection(0),
+    );
+    stubFetch(() => data);
+    await show(data);
+    expect(strip()).not.toBeNull();
+    expect(activeName()).toBe("Aria");
+    expect(strip().textContent).toContain("???");
+    expect(document.body.textContent).not.toContain("Secret Lich");
+    expect(document.querySelector('[role="status"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Your turn");
+    for (const control of [
+      "Save order",
+      "Next turn",
+      "Previous turn",
+      "End encounter",
+    ])
+      expect(buttons()).not.toContain(control);
+    expect(document.querySelector(".initiative-editor")).toBeNull();
+  });
+
+  it("does not announce a turn that belongs to someone else or to a hidden entry", async () => {
+    for (const index of [1, 2]) {
+      const data = playerData([], projection(index));
+      stubFetch(() => data);
+      await show(data);
+      expect(document.body.textContent).not.toContain("Your turn");
+      await unmount(instance);
+      instance = undefined;
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("moves the strip and banner when a new turn event arrives on a poll", async () => {
+    vi.useFakeTimers();
+    let current = playerData(
+      [turnEvent("t1", 1, { ...projection(0), action: "set" })],
+      projection(0),
+    );
+    stubFetch(() => current);
+    await show(current);
+    expect(activeName()).toBe("Aria");
+    expect(document.body.textContent).toContain("Your turn");
+    current = playerData(
+      [
+        turnEvent("t1", 1, { ...projection(0), action: "set" }),
+        turnEvent("t2", 2, { ...projection(2, 2), action: "next" }),
+      ],
+      projection(2, 2),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(activeName()).toBe("Bram");
+    expect(strip().textContent).toContain("Round 2");
+    expect(document.body.textContent).not.toContain("Your turn");
+    // The feed explains the change in words.
+    expect(document.querySelector("#event-t2").textContent).toContain(
+      "Round 2: Bram's turn.",
+    );
+  });
+
+  it("gives the DM the full order with the hidden badge and the editor", async () => {
+    const data = {
+      ...pageData("dm", [
+        turnEvent("t1", 1, { ...projection(0), action: "set" }),
+      ]),
+      initiative: dmView(0),
+    };
+    stubFetch(() => data);
+    await show(data);
+    expect(strip().textContent).toContain("Secret Lich");
+    expect(strip().querySelector(".badge").textContent).toBe("hidden");
+    expect(document.body.textContent).not.toContain("Your turn");
+    for (const control of [
+      "Save order",
+      "Next turn",
+      "Previous turn",
+      "End encounter",
+    ])
+      expect(buttons()).toContain(control);
+  });
+
+  it("sends the editor's operations through the session endpoint", async () => {
+    const data = { ...pageData("dm", []), initiative: dmView(0) };
+    const fetch = stubFetch(() => data);
+    await show(data);
+    [...document.querySelectorAll("button")]
+      .find((b) => b.textContent.trim() === "Next turn")
+      .click();
+    await settle();
+    expect(posted(fetch)).toEqual([
+      expect.objectContaining({
+        operation: "initiativeAdvance",
+        direction: "next",
+        sessionId,
+      }),
+    ]);
+  });
+
+  it("rolls Initiative with the approved sheet's DEX modifier for a player", async () => {
+    const data = pageData("player", []);
+    data.characters[0].approved = {
+      ability_modifiers: { dexterity: 3 },
+    };
+    const fetch = stubFetch(() => data);
+    await show(data);
+    document
+      .querySelector('div[aria-label="Quick rolls"]')
+      .querySelectorAll("button")[0]
+      .click();
+    await settle();
+    expect(posted(fetch)).toEqual([
+      expect.objectContaining({
+        operation: "roll",
+        formula: "1d20+3",
+        label: "Initiative",
+        visibility: "table",
+      }),
+    ]);
+  });
+
+  it("rolls a bare d20 Initiative without a sheet and uses the DM's visibility", async () => {
+    const fetch = stubFetch(() => pageData("dm", []));
+    await show(pageData("dm", []));
+    const button = [
+      ...document.querySelectorAll('div[aria-label="Quick rolls"] button'),
+    ].find((b) => b.textContent.trim() === "Initiative");
+    button.click();
+    await settle();
+    expect(posted(fetch)).toEqual([
+      expect.objectContaining({
+        formula: "1d20",
+        label: "Initiative",
+        visibility: "dm",
+      }),
+    ]);
   });
 });
