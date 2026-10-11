@@ -19,7 +19,11 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
-from factory.execution.constants import DRAINER_NODE_KEY, KG_NODE_KEY
+from factory.execution.constants import (
+    DRAINER_NODE_KEY,
+    GRIMOIRE_KG_NODE_KEY,
+    KG_NODE_KEY,
+)
 
 # Lane liveness thresholds, in seconds of checkpoint silence.
 #
@@ -35,7 +39,11 @@ from factory.execution.constants import DRAINER_NODE_KEY, KG_NODE_KEY
 QUIET_AFTER_SECONDS = 120
 WEDGED_AFTER_SECONDS = 600
 
-_SESSION_KEY_MARKERS = (f":{DRAINER_NODE_KEY}:", f":{KG_NODE_KEY}:")
+_SESSION_KEY_MARKERS = (
+    f":{DRAINER_NODE_KEY}:",
+    f":{KG_NODE_KEY}:",
+    f":{GRIMOIRE_KG_NODE_KEY}:",
+)
 
 PROMPT_HEAD_CHARS = 160
 SUMMARY_HEAD_CHARS = 200

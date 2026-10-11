@@ -259,6 +259,8 @@ spec:
               value: {{ join "," .jobKinds | quote }}
             - name: DRAINER_KG_MAX_JOBS_PER_DAY
               value: {{ .kgMaxJobsPerDay | quote }}
+            - name: DRAINER_GRIMOIRE_KG_MAX_JOBS_PER_DAY
+              value: {{ $.Values.grimoire.kg.dailyCap | quote }}
             - name: DRAINER_DOCFIX_ENABLED
               value: {{ .docFixEnabled | quote }}
             # The only agent-merged path, after docfix-review excludes the

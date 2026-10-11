@@ -1,13 +1,13 @@
 # projects/monolith/agent/config_test.py
 import pytest
+from core.github import GITHUB_REPO
+from goosecracker.api import REPO_CATALOG
 
 from agent.config import (
     agent_sessions_channel_notify,
     load_drainer_settings,
     load_settings,
 )
-from core.github import GITHUB_REPO
-from goosecracker.api import REPO_CATALOG
 
 
 def test_load_settings(monkeypatch):
@@ -42,6 +42,7 @@ def test_drainer_defaults(monkeypatch):
         "DRAINER_JOB_KINDS",
         "DRAINER_JOB_KIND",
         "DRAINER_KG_MAX_JOBS_PER_DAY",
+        "DRAINER_GRIMOIRE_KG_MAX_JOBS_PER_DAY",
         "DRAINER_DOCFIX_AUTO_MERGE",
         "KG_DOCFIX_REVIEW_ENABLED",
         "DRAINER_REPO",
@@ -58,8 +59,9 @@ def test_drainer_defaults(monkeypatch):
     assert settings.turn_timeout_seconds == 43800
     assert settings.kg_turn_timeout_seconds == 900
     assert settings.stall_threshold_seconds == 2700
-    assert settings.job_kinds == ("qwen-drain", "kg-drain")
+    assert settings.job_kinds == ("qwen-drain", "kg-drain", "grimoire-kg-drain")
     assert settings.kg_max_jobs_per_day == 40
+    assert settings.grimoire_kg_max_jobs_per_day == 0
     assert settings.docfix_auto_merge is False
     assert settings.docfix_review_enabled is False
     assert settings.repo == GITHUB_REPO
@@ -80,6 +82,7 @@ def test_drainer_environment_overrides(monkeypatch):
     monkeypatch.setenv("DRAINER_JOB_KINDS", "custom-drain, kg-drain")
     monkeypatch.setenv("DRAINER_JOB_KIND", "legacy-ignored")
     monkeypatch.setenv("DRAINER_KG_MAX_JOBS_PER_DAY", "12")
+    monkeypatch.setenv("DRAINER_GRIMOIRE_KG_MAX_JOBS_PER_DAY", "10")
     monkeypatch.setenv("DRAINER_DOCFIX_AUTO_MERGE", "true")
     monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "true")
     monkeypatch.setenv("DRAINER_REPO", "weave-hand/loom")
@@ -97,6 +100,7 @@ def test_drainer_environment_overrides(monkeypatch):
     assert settings.kg_turn_timeout_seconds == 123
     assert settings.stall_threshold_seconds == 84
     assert settings.job_kinds == ("custom-drain", "kg-drain")
+    assert settings.grimoire_kg_max_jobs_per_day == 10
     assert settings.kg_max_jobs_per_day == 12
     assert settings.docfix_auto_merge is True
     assert settings.docfix_review_enabled is True

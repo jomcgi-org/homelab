@@ -16,6 +16,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from grimoire.access import get_authenticated_email, get_game_creator_email
 from grimoire.models import Entity
 from grimoire.router import router
+from grimoire.testing.routine_jobs import create_routine_jobs_table
 
 
 @pytest.fixture(name="session")
@@ -34,6 +35,7 @@ def session_fixture(tmp_path):
     try:
         SQLModel.metadata.create_all(engine)
         with Session(engine) as session:
+            create_routine_jobs_table(session)
             yield session
     finally:
         for table in SQLModel.metadata.tables.values():
