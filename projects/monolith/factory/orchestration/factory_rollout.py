@@ -555,15 +555,16 @@ def workload_evidence(workload: dict, pods: list[dict], *, pinned: bool) -> dict
         p
         for p in pods
         if selected(p["metadata"].get("labels", {}), spec.get("selector", {}))
+        # Terminal and deleting remnants are not active replicas. Controller
+        # counts above and the active pod count below still require replacements.
+        and not p["metadata"].get("deletionTimestamp")
+        and p.get("status", {}).get("phase") not in {"Failed", "Succeeded"}
     ]
     if len(matching) != desired:
         raise Pending("pod_count_mismatch")
     images = set()
     for pod in matching:
-        if (
-            pod["metadata"].get("deletionTimestamp")
-            or pod.get("status", {}).get("phase") != "Running"
-        ):
+        if pod.get("status", {}).get("phase") != "Running":
             raise Pending("pod_not_running")
         conditions = pod.get("status", {}).get("conditions", [])
         if not any(

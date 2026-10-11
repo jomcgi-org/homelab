@@ -1826,6 +1826,17 @@ One task-level Discord summary replaces attempt and supervision-cycle noise;
 the audit retains every observation. This delegates the three reversible gates
 under #6208 without granting deployment or credential authority.
 
+**Why.** A successful repository delivery does not complete an outstanding live
+acceptance checklist. Normal plan edits and completed work artifacts persist
+typed operational gates before further work, and before publishing their GitHub
+rescope. Separate gate and graph decision identities let a retry apply an edit
+that was interrupted after gate persistence. Re-admission retains the checklist
+in receipt direction. Landing reloads it before closure and independently
+checks that the merged PR confirms completion of this issue; a reference-only
+or explicitly rescoped PR leaves the issue open. Rollout evidence counts active
+pods, excluding terminal and deleting remnants while still requiring the desired
+number of ready replicas running the requested images.
+
 ### Control loops that gate work
 
 A factory control loop that can demote, pause or reroute work ships only with a

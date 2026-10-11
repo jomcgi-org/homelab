@@ -17053,12 +17053,12 @@ def assert_closing_prompt(prompt, issue, gated, *, review=False):
         assert f"Closes #{issue}" not in prompt
     else:
         expected = (
-            f"The pull request body must contain the line Closes #{issue}, "
-            "whatever the node believes about remaining live checks. Finish is "
-            "refused with pr_missing_close_keyword otherwise. If live acceptance "
-            "appears to remain, report it in the implementation artifact summary "
-            "so the planner can record a live_validation gate; the PR body must "
-            f"still contain Closes #{issue} until that gate is recorded. "
+            f"When no operational acceptance remains, the pull request body must "
+            f"contain the line Closes #{issue}. If live acceptance remains, return "
+            "a typed live_validation gate with scope and live_checks in the "
+            "artifact, and use "
+            f"Refs #{issue} while that gate is being recorded. Finish is refused "
+            "until the durable acceptance contract and PR body agree. "
         )
         assert (
             f"The pull request body must contain the line Refs #{issue}" not in prompt
@@ -17393,7 +17393,7 @@ def test_invalid_investigation_gate_continues_to_planner(
     assert not conductor._decision_processed(
         task["id"], "investigate-gate:investigate_threshold:1"
     )
-    assert "invalid investigate gate" in caplog.text
+    assert "invalid work gate" in caplog.text
     planners = [
         node
         for node in conductor.graph.load_graph(task["id"])
@@ -19942,3 +19942,157 @@ def test_fixed_recovery_cap_rechecked_after_funding_evidence_read(
     assert not funding.request(task, "Cap expires while reading evidence")
     with controls._read_session() as db:
         assert funding.pending(db, task["id"]) is None
+
+
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+def test_normal_graph_decision_persists_live_gate_before_edits(
+    feedback_db, monkeypatch, action
+):
+    from factory.orchestration import factory_landing as landing
+
+    task, policy = feedback_task()
+    monkeypatch.setattr(conductor, "_post_decision_card", lambda *_: None)
+    monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": ""})
+    monkeypatch.setattr(landing, "github_write", lambda *a, **kw: None)
+    edit = plan_edit("staged", "implement")
+    decision = (
+        {"action": "plan", "reason": "staged delivery", "edits": [edit]}
+        if action == "plan"
+        else edit
+    )
+    decision["gate"] = live_gate()
+    run = complete_feedback_node(task, policy, "conductor_1", decision)
+    cause = "factory-decision:conductor_1:1"
+    original = conductor.graph.apply_edits if action == "plan" else conductor._add
+    target = conductor.graph if action == "plan" else conductor
+    name = "apply_edits" if action == "plan" else "_add"
+
+    def crash(*args, **kwargs):
+        assert conductor._task(task["id"])["conductor_gates"] == [live_gate()]
+        raise RuntimeError("process lost after gate persistence")
+
+    monkeypatch.setattr(target, name, crash)
+    with pytest.raises(RuntimeError, match="process lost"):
+        conductor.apply_decision(task, policy, run, [])
+    assert not conductor._decision_processed(task["id"], cause)
+    assert conductor._decision_processed(task["id"], cause + ":gate")
+    # A restart loads the durable contract and still applies the unfinished edit.
+    task = conductor._task(task["id"])
+    monkeypatch.setattr(target, name, original)
+    conductor.apply_decision(task, policy, run, [])
+    conductor.apply_decision(conductor._task(task["id"]), policy, run, [])
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])].count(
+        "implement_staged"
+    ) == 1
+    assert conductor._task(task["id"])["conductor_gates"] == [live_gate()]
+
+
+def test_live_gate_survives_failed_github_sync(feedback_db, monkeypatch):
+    import httpx
+
+    task, _policy = feedback_task()
+
+    def fail(*_args):
+        raise httpx.ConnectError("unavailable")
+
+    monkeypatch.setattr(conductor, "_post_decision_card", fail)
+    with pytest.raises(httpx.ConnectError):
+        conductor.factory_gates.resolve(task, {"gate": live_gate()}, "test:sync-failed")
+    assert conductor._task(task["id"])["conductor_gates"] == [live_gate()]
+    assert not conductor._decision_processed(task["id"], "test:sync-failed")
+
+
+def test_completed_implementation_gate_is_recorded_before_next_planner(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_landing as landing
+
+    task, policy = feedback_task()
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_staged",
+        {
+            "status": "complete",
+            "summary": "Repository change complete; live acceptance remains",
+            "pr_number": None,
+            "head_sha": None,
+            "gate": live_gate(),
+        },
+    )
+    monkeypatch.setattr(conductor, "_post_decision_card", lambda *_: None)
+    monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": ""})
+    monkeypatch.setattr(landing, "github_write", lambda *a, **kw: None)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor._task(task["id"])["conductor_gates"] == [live_gate()]
+    assert conductor._decision_processed(
+        task["id"], "implement-gate:implement_staged:1"
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Refs #77\n## Live validation outstanding (not claimed)\n- Check the live gate",
+        "Closes #77\n## Operational acceptance pending\n- Check the live gate",
+        "Refs #77\nConductor rescope: repository only",
+    ],
+)
+def test_finish_refuses_explicit_operational_rescope_without_durable_gate(
+    monkeypatch, body
+):
+    task, runs = delivery(monkeypatch, body=body)
+    with pytest.raises(conductor.DeliveryRefused) as exc:
+        conductor.verify_delivery(task, 3, runs, issue_number=77)
+    assert exc.value.code == "live_validation_gate_missing"
+
+
+def test_requeue_keeps_recorded_operational_contract(feedback_db, monkeypatch):
+    from factory.orchestration import factory_decisions as decisions
+
+    task, _policy = feedback_task()
+    record_closing_gate(task, monkeypatch)
+    with Session(feedback_db) as db:
+        row = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        direction = decisions._direction(
+            row,
+            {"question": "Continue repository work"},
+            {"key": "resume", "label": "Resume", "effect": "continue", "detail": {}},
+            "operator",
+            "Continue with the same outstanding live checks",
+        )
+        row.direction_json = json.dumps(direction)
+        decisions._requeue(row)
+        db.add(row)
+        db.commit()
+        assert row.task_id is None
+        assert json.loads(row.direction_json)["conductor_gates"] == [live_gate()]
+
+
+def test_normal_plan_restricted_gate_cannot_authorize_work(feedback_db, monkeypatch):
+    task, policy = feedback_task()
+    gate = live_gate()
+    gate["effects"]["uses_credentials"] = True
+    monkeypatch.setattr(
+        conductor.factory_gates,
+        "resolve",
+        lambda *a, **kw: pytest.fail("restricted gate must not be resolved"),
+    )
+    with pytest.raises(conductor._EditRefused) as exc:
+        conductor._apply_decision(
+            task,
+            policy,
+            {
+                "action": "plan",
+                "reason": "stage",
+                "edits": [plan_edit("work", "implement")],
+                "gate": gate,
+            },
+            "test:restricted-plan",
+            [],
+        )
+    assert exc.value.code == "gate_requires_pause"
+    assert conductor._task(task["id"])["conductor_gates"] == []
+    assert conductor.graph.load_graph(task["id"]) == []
