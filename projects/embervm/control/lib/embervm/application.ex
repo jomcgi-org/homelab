@@ -1808,15 +1808,17 @@ defmodule Embervm.Application do
 
   # Parse EMBERVM_BRICK_CLASSES (a JSON array of {"name","desired","usable_mib",
   # "mem_reject_floor_mib","slots"} objects, plus optional autoscale clamp fields
-  # "min"/"max" and the opt-in "ceiling_bound") into a list of %{name,
-  # desired, min, max, ceiling_bound, usable_mib, mem_reject_floor_mib, slots}.
+  # "min"/"max", the opt-in "ceiling_bound" and the per-VM admission charge
+  # "vm_overhead_mib") into a list of %{name, desired, min, max, ceiling_bound,
+  # usable_mib, mem_reject_floor_mib, vm_overhead_mib, slots}.
   # nil when unset, malformed, or empty, so the
   # controller's empty-list default fires (it reconciles nothing). A class
   # missing a binary name, a non-negative integer desired, positive usable
   # memory, a non-negative rejection cushion, or a non-negative slot limit is
   # dropped, never crashing boot; an invalid/absent min reads 0 and an
   # invalid/absent max reads nil (the controller then clamps to max(desired,
-  # min): no autoscale headroom).
+  # min): no autoscale headroom). An invalid/absent vm_overhead_mib reads 0, the
+  # charge of a chart that predates the field.
   @doc false
   def brick_classes_env do
     case trimmed_env("EMBERVM_BRICK_CLASSES") do
@@ -1840,6 +1842,7 @@ defmodule Embervm.Application do
                   usable_mib: Map.get(class, "usable_mib"),
                   mem_reject_floor_mib:
                     non_neg_int_or(Map.get(class, "mem_reject_floor_mib"), nil),
+                  vm_overhead_mib: non_neg_int_or(Map.get(class, "vm_overhead_mib"), 0),
                   slots: non_neg_int_or(Map.get(class, "slots"), nil)
                 }
               end
