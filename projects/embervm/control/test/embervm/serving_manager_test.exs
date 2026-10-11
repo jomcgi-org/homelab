@@ -14,7 +14,7 @@ defmodule Embervm.ServingManagerTest do
 
   alias Embervm.{NodeCapacity, NodeRegistry, ServingManager, ServingStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{NodeStatus, ServingVm, StartServingResponse, StopServingResponse}
+  alias Embervm.Node.V1.{NodeStatus, ResourceSpec, ServingVm, StartServingResponse, StopServingResponse}
 
   # A no-op publisher (a GenServer that counts publish/1 casts) so the manager's
   # EndpointPublisher.publish call has a live target without a real sidecar.
@@ -893,6 +893,67 @@ defmodule Embervm.ServingManagerTest do
     assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
     # The relight sent the guest port 8080 (serving_workload's serving.port), NOT 30002.
     assert Agent.get(ports, & &1) == [8080]
+  end
+
+  # The CP places a serving wake on the catalog's memMib, so the boot must carry
+  # the same size. With no ResourceSpec noded admitted the boot at need 0 and
+  # booted the driver default (1 vCPU / 1024 MiB), so a 128 MiB ping guest ran at
+  # 1024 and a guest declaring more than 1024 ran undersized.
+  defp sized_serving_workload(cat_table, name) do
+    WorkloadCatalog.upsert(cat_table, name, %{
+      class: "serving",
+      vcpus: 2,
+      mem_mib: 128,
+      serving: %{host: "#{name}.example", port: 8080, health_path: "/healthz", min_instances: 0, max_instances: 2}
+    })
+  end
+
+  defp recording_requests do
+    {:ok, reqs} = Agent.start_link(fn -> [] end)
+
+    fun = fn _ch, req ->
+      Agent.update(reqs, &[req | &1])
+      {:ok, %StartServingResponse{vm_id: "vm-#{System.unique_integer([:positive])}", ip: "10.99.0.5", port: 8080}}
+    end
+
+    {fun, reqs}
+  end
+
+  test "a relight StartServing carries the catalog's ResourceSpec" do
+    {fun, reqs} = recording_requests()
+    ctx = start_stack(start_serving_fun: fun)
+    sized_serving_workload(ctx.cat_table, "wl-a")
+
+    serving_node(ctx, "node-4",
+      serving_snapshots: [%{snapshot_ref: "serving/s-1", workload: "wl-a", size_bytes: 10, created_at_unix_ms: 1}]
+    )
+
+    seed_banked(ctx, "srv-1", "base-a", "serving/s-1", 30002)
+    assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    assert [%{source: {:relight, _}} = relight] = Agent.get(reqs, & &1)
+    assert relight.resources == %ResourceSpec{vcpus: 2, mem_mib: 128}
+  end
+
+  test "a cold StartServing carries the catalog's ResourceSpec" do
+    {fun, reqs} = recording_requests()
+    ctx = start_stack(start_serving_fun: fun)
+    sized_serving_workload(ctx.cat_table, "wl-a")
+    serving_node(ctx, "node-4")
+
+    assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    assert [%{source: {:fresh, _}} = fresh] = Agent.get(reqs, & &1)
+    assert fresh.resources == %ResourceSpec{vcpus: 2, mem_mib: 128}
+  end
+
+  test "a catalog entry with no declared size sends the size placement charged (1 vCPU, 512 MiB)" do
+    {fun, reqs} = recording_requests()
+    ctx = start_stack(start_serving_fun: fun)
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+
+    assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    assert [fresh] = Agent.get(reqs, & &1)
+    assert fresh.resources == %ResourceSpec{vcpus: 1, mem_mib: 512}
   end
 
   # -- restore-on-miss (R6, Task 8) -------------------------------------------
