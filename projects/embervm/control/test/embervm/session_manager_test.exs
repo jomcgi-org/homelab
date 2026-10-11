@@ -27,6 +27,7 @@ defmodule Embervm.SessionManagerTest do
   }
   alias Embervm.KeyService.Envelope
   alias Embervm.OpLog.SQLite
+  alias Embervm.Scheduler.Inflight
   alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, SessionInterruptResponse, UsageStats}
 
   @bank_dial_miss_limit 30
@@ -179,6 +180,9 @@ defmodule Embervm.SessionManagerTest do
 
     NodeCapacity.create(cap_table)
     WorkloadCatalog.create(cat_table)
+    # A private in-flight ledger, so this test's placement claims never debit
+    # (or read) the application's shared one.
+    inflight_table = Inflight.create(:"sinflight_#{suffix}")
 
     path = Path.join(System.tmp_dir!(), "embervm_sessionmgr_test_#{suffix}.db")
     on_exit(fn -> File.rm_rf!(path) end)
@@ -285,7 +289,11 @@ defmodule Embervm.SessionManagerTest do
         metering: Keyword.get(opts, :metering, Embervm.Metering),
         op_log: manager_op_log,
         op_log_mod: Keyword.get(opts, :op_log_mod, SQLite),
-        tenant: Keyword.get(opts, :tenant, "homelab")
+        tenant: Keyword.get(opts, :tenant, "homelab"),
+        inflight_table: inflight_table,
+        # Hermetic by default: a node-pressure denial must not cast into the
+        # application's BrickController. Demand tests inject a recorder.
+        note_denial_fun: Keyword.get(opts, :note_denial_fun, fn _workload, _need -> :ok end)
       ] ++
         Keyword.take(opts, [
           :quota_config,
@@ -314,6 +322,7 @@ defmodule Embervm.SessionManagerTest do
       writer: writer,
       cap_table: cap_table,
       cat_table: cat_table,
+      inflight_table: inflight_table,
       registry: registry,
       sup: sup
     }
@@ -361,7 +370,7 @@ defmodule Embervm.SessionManagerTest do
       invoke_path: "/",
       timeout_ms: Keyword.get(opts, :timeout_ms, 90_000),
       cap: Keyword.get(opts, :cap, 8),
-      floor: 1,
+      floor: Keyword.get(opts, :floor, 1),
       session:
         Keyword.get(opts, :session, %{
           idle_bank_seconds: 300,
@@ -608,12 +617,14 @@ defmodule Embervm.SessionManagerTest do
       size_class: Keyword.get(opts, :size_class, "8gi"),
       mem_headroom_mib: Keyword.get(opts, :mem_headroom, 8_000),
       mem_budget_mib: Keyword.get(opts, :mem_budget, 8_192),
+      mem_reject_floor_mib: Keyword.get(opts, :mem_reject_floor, 0),
+      vm_overhead_mib: Keyword.get(opts, :vm_overhead, 0),
       workloads: %{
         wl => %{
           free_primed_slots: 1,
           snapshot_ref: Keyword.get(opts, :snapshot_ref, "snap-#{wl}"),
           base_state: :BASE_BUILD_STATE_READY,
-          primed_vm_ids: []
+          primed_vm_ids: Keyword.get(opts, :primed_ids, [])
         }
       },
       session_volumes: Keyword.get(opts, :session_volumes, []),
@@ -621,7 +632,7 @@ defmodule Embervm.SessionManagerTest do
       live_vms: 0,
       max_live_vms: 8,
       draining: false,
-      updated_at: 5_000_000
+      updated_at: Keyword.get(opts, :updated_at, 5_000_000)
     })
   end
 
@@ -1714,7 +1725,7 @@ defmodule Embervm.SessionManagerTest do
     assert attrs["ember.placement.base_missing_node"] == base_missing_node
   end
 
-  test "create primes on a claim miss and fails to :no_capacity when prime fails" do
+  test "create primes on a claim miss and carries a non-pressure Prime failure" do
     ctx = start_stack(claim_fun: fn _d, _n, _w -> :miss end, prime_fun: fn _ch, _req -> {:error, :boom} end)
     put_session_workload(ctx, "wl-miss")
 
@@ -1762,8 +1773,490 @@ defmodule Embervm.SessionManagerTest do
       prime_fun: fn _channel, _req -> {:error, %GRPC.RPCError{status: 8, message: "pressure:mem"}} end
     )
     put_session_workload(ctx, "wl-pressure")
-    assert {:error, {:denied, {:prime_failed, _}}} = SessionManager.create(ctx.mgr, "wl-pressure", "p1")
+    # A pressure refusal is a capacity outcome (429), not a Prime failure.
+    assert {:error, {:denied, :no_capacity}} = SessionManager.create(ctx.mgr, "wl-pressure", "p1")
     refute_receive {:invalidated, _, _}
+  end
+
+  # -- create placement across bricks: claims, reroute, demand ----------------
+
+  @brick_pressure %GRPC.RPCError{
+    status: 8,
+    message: "noded: pressure:mem (need 3072 MiB, admittable 2800 MiB, model reserved)"
+  }
+
+  defp with_placement_retry do
+    System.put_env("EMBERVM_PLACEMENT_RETRY", "1")
+    on_exit(fn -> System.delete_env("EMBERVM_PLACEMENT_RETRY") end)
+  end
+
+  defp brick_vm(dial), do: "vm-" <> (dial |> String.split("/") |> List.last())
+
+  # Two 4gi bricks on node-4 for a 3072 MiB workload, with the wildcard row the
+  # catalog helper inserts dropped. pod-a reports less headroom, so PACK scoring
+  # puts it at the head; each brick admits exactly one such VM. `results` maps a
+  # dial to the Prime result it returns (default: boots "vm-<pod>"); every Prime
+  # is reported to the test as {:primed, dial, request}.
+  defp two_brick_stack(opts) do
+    parent = self()
+    wl = Keyword.get(opts, :workload, "wl-bricks")
+    results = Keyword.get(opts, :results, %{})
+
+    ctx =
+      start_stack(
+        Keyword.merge(
+          [
+            claim_fun: fn _d, _n, _w -> :miss end,
+            channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+            note_denial_fun: fn workload, need -> send(parent, {:denial, workload, need}) end,
+            prime_fun: fn {:channel, dial}, req ->
+              send(parent, {:primed, dial, req})
+              Map.get(results, dial, {:ok, %PrimeResponse{vm_id: brick_vm(dial)}})
+            end
+          ],
+          Keyword.drop(opts, [:workload, :results, :workload_opts])
+        )
+      )
+
+    put_session_workload(ctx, wl, Keyword.merge([mem_mib: 3_072], Keyword.get(opts, :workload_opts, [])))
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    put_brick(ctx, wl, "pod-a", size_class: "4gi", mem_budget: 4_096, mem_headroom: 3_700)
+    put_brick(ctx, wl, "pod-b", size_class: "4gi", mem_budget: 4_096, mem_headroom: 4_000)
+    {ctx, wl}
+  end
+
+  defp claims(ctx), do: Inflight.entries(table: ctx.inflight_table)
+
+  test "a pressure refusal on the head brick reroutes the create to the next brick" do
+    with_placement_retry()
+    {ctx, wl} = two_brick_stack(results: %{"node-4/pod-a" => {:error, @brick_pressure}})
+
+    assert {:ok, created} = SessionManager.create(ctx.mgr, wl, "p1")
+    assert_receive {:primed, "node-4/pod-a", _}
+    assert_receive {:primed, "node-4/pod-b", _}
+
+    # The row, the remembered dial and the claim all follow the brick that
+    # admitted the VM, not the placed head.
+    assert {:ok, %{vm_id: "vm-pod-b", node_id: "node-4"}} = SessionStore.get(ctx.store, created.session_id)
+    assert :sys.get_state(ctx.mgr).session_dials[created.session_id] == "node-4/pod-b"
+
+    # The refused brick's claim is gone; the admitting brick keeps its debit for
+    # the settle hold, so the daemon's next report counts the VM first.
+    assert [{"node-4/pod-b", {:session_create, _}, 3_072, expires_at}] = claims(ctx)
+    assert expires_at <= System.monotonic_time(:millisecond) + Inflight.default_hold_ms()
+    refute_received {:denial, _, _}
+  end
+
+  test "a create every candidate refuses is a retryable no_capacity that records demand once" do
+    with_placement_retry()
+
+    {ctx, wl} =
+      two_brick_stack(results: %{"node-4/pod-a" => {:error, @brick_pressure}, "node-4/pod-b" => {:error, @brick_pressure}})
+
+    assert {:error, {:denied, :no_capacity}} = SessionManager.create(ctx.mgr, wl, "p1")
+    assert_receive {:primed, "node-4/pod-a", _}
+    assert_receive {:primed, "node-4/pod-b", _}
+    assert_receive {:denial, ^wl, 3_072}
+    refute_receive {:denial, _, _}
+    assert claims(ctx) == []
+    assert SessionStore.all(ctx.store) == []
+  end
+
+  test "with placement retry off a head refusal is one attempt and still a capacity denial" do
+    {ctx, wl} = two_brick_stack(results: %{"node-4/pod-a" => {:error, @brick_pressure}})
+
+    assert {:error, {:denied, :no_capacity}} = SessionManager.create(ctx.mgr, wl, "p1")
+    assert_receive {:primed, "node-4/pod-a", _}
+    refute_received {:primed, "node-4/pod-b", _}
+    assert_receive {:denial, ^wl, 3_072}
+    refute_receive {:denial, _, _}
+    assert claims(ctx) == []
+  end
+
+  test "a rerouted persistence create reuses its one lineage and records the admitting node" do
+    with_placement_retry()
+
+    {ctx, wl} =
+      two_brick_stack(
+        workload_opts: persistence_workload_opts(),
+        results: %{"node-4/pod-a" => {:error, @brick_pressure}}
+      )
+
+    assert {:ok, created} = SessionManager.create(ctx.mgr, wl, "p1")
+    assert_receive {:primed, "node-4/pod-a", %{lineage_id: lineage_a}}
+    assert_receive {:primed, "node-4/pod-b", %{lineage_id: lineage_b}}
+    assert lineage_a != ""
+    assert lineage_a == lineage_b
+
+    assert {:ok, %{vm_id: "vm-pod-b", volume_node_id: "node-4"}} = SessionStore.get(ctx.store, created.session_id)
+    assert :sys.get_state(ctx.mgr).session_dials[created.session_id] == "node-4/pod-b"
+  end
+
+  test "a non-pressure Prime failure on the head stays terminal and records no demand" do
+    with_placement_retry()
+    {ctx, wl} = two_brick_stack(results: %{"node-4/pod-a" => {:error, :boom}})
+
+    assert {:error, {:denied, {:prime_failed, {:error, :boom}}}} = SessionManager.create(ctx.mgr, wl, "p1")
+    assert_receive {:primed, "node-4/pod-a", _}
+    refute_received {:primed, "node-4/pod-b", _}
+    refute_received {:denial, _, _}
+    assert claims(ctx) == []
+  end
+
+  test "concurrent creates that fit one per brick land on different bricks" do
+    parent = self()
+
+    {ctx, wl} =
+      two_brick_stack(
+        prime_fun: fn {:channel, dial}, _req ->
+          send(parent, {:prime_started, dial, self()})
+
+          receive do
+            :release -> {:ok, %PrimeResponse{vm_id: brick_vm(dial)}}
+          end
+        end
+      )
+
+    first = Task.async(fn -> SessionManager.create(ctx.mgr, wl, "p1") end)
+    second = Task.async(fn -> SessionManager.create(ctx.mgr, wl, "p2") end)
+    assert_receive {:prime_started, dial_one, worker_one}
+    assert_receive {:prime_started, dial_two, worker_two}
+
+    # Both Primes are in flight on one stale snapshot of the capacity table; the
+    # placement claims are what spread them.
+    assert Enum.sort([dial_one, dial_two]) == ["node-4/pod-a", "node-4/pod-b"]
+
+    # Both bricks are claimed, so a third create is a capacity miss with no Prime.
+    assert {:error, {:denied, :no_capacity}} = SessionManager.create(ctx.mgr, wl, "p3")
+    refute_received {:prime_started, _, _}
+
+    send(worker_one, :release)
+    send(worker_two, :release)
+    assert {:ok, a} = Task.await(first)
+    assert {:ok, b} = Task.await(second)
+
+    dials = :sys.get_state(ctx.mgr).session_dials
+    assert Enum.sort([dials[a.session_id], dials[b.session_id]]) == ["node-4/pod-a", "node-4/pod-b"]
+  end
+
+  test "a pool hit releases its placement claim" do
+    ctx = start_stack(claim_fun: fn _d, _n, _w -> {:ok, "vm-pooled"} end)
+    put_session_workload(ctx, "wl-pooled")
+
+    assert {:ok, _created} = SessionManager.create(ctx.mgr, "wl-pooled", "p1")
+    assert claims(ctx) == []
+  end
+
+  test "a create's claim is released when its worker dies or times out" do
+    parent = self()
+
+    {ctx, wl} =
+      two_brick_stack(
+        prime_fun: fn {:channel, dial}, _req ->
+          send(parent, {:prime_started, dial, self()})
+
+          receive do
+            :never -> :ok
+          end
+        end
+      )
+
+    killed = Task.async(fn -> SessionManager.create(ctx.mgr, wl, "p1") end)
+    assert_receive {:prime_started, "node-4/pod-a", worker}
+    assert Inflight.pending_mib("node-4/pod-a", table: ctx.inflight_table) == 3_072
+    Process.exit(worker, :kill)
+    assert {:error, {:denied, {:create_worker_crashed, :killed}}} = Task.await(killed)
+    assert claims(ctx) == []
+
+    timed_out = Task.async(fn -> SessionManager.create(ctx.mgr, wl, "p2") end)
+    assert_receive {:prime_started, "node-4/pod-a", _worker}
+    [ref] = Map.keys(:sys.get_state(ctx.mgr).create_workers)
+    send(ctx.mgr, {:create_timeout, ref})
+    assert {:error, {:denied, :create_timeout}} = Task.await(timed_out)
+    assert claims(ctx) == []
+  end
+
+  test "a create result that loses the race to its timeout destroys the VM it primed" do
+    parent = self()
+
+    {ctx, wl} =
+      two_brick_stack(
+        prime_fun: fn {:channel, dial}, _req ->
+          send(parent, {:prime_started, dial, self()})
+
+          receive do
+            :never -> :ok
+          end
+        end,
+        destroy_fun: fn {:channel, dial}, vm_id ->
+          send(parent, {:destroyed, dial, vm_id})
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    task = Task.async(fn -> SessionManager.create(ctx.mgr, wl, "p1") end)
+    assert_receive {:prime_started, _dial, _worker}
+    [ref] = Map.keys(:sys.get_state(ctx.mgr).create_workers)
+    send(ctx.mgr, {:create_timeout, ref})
+    assert {:error, {:denied, :create_timeout}} = Task.await(task)
+
+    # The worker's own result was already in flight when the timeout won.
+    send(ctx.mgr, {:create_done, ref, {:ok, "vm-late", false, "node-4", "node-4/pod-a"}})
+    assert_receive {:destroyed, "node-4/pod-a", "vm-late"}
+    assert SessionStore.all(ctx.store) == []
+  end
+
+  # -- caps count in-flight creates (S10) ------------------------------------
+
+  defp blocking_claim_stack do
+    parent = self()
+
+    start_stack(
+      claim_fun: fn _d, _n, workload ->
+        send(parent, {:claim_started, workload, self()})
+
+        receive do
+          {:release, result} -> result
+        end
+      end
+    )
+  end
+
+  test "an in-flight create holds a workload cap slot" do
+    ctx = blocking_claim_stack()
+    put_session_workload(ctx, "wl-inflight-cap", cap: 1, max_sessions: 8)
+
+    first = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-inflight-cap", "p1") end)
+    assert_receive {:claim_started, "wl-inflight-cap", worker}
+
+    assert {:error, {:denied, :workload_cap}} = SessionManager.create(ctx.mgr, "wl-inflight-cap", "p2")
+
+    send(worker, {:release, {:ok, "vm-inflight-cap"}})
+    assert {:ok, _} = Task.await(first)
+    assert SessionStore.counts(ctx.store, "wl-inflight-cap").live == 1
+  end
+
+  test "an in-flight create holds a maxSessions slot" do
+    ctx = blocking_claim_stack()
+    put_session_workload(ctx, "wl-inflight-max", cap: 8, max_sessions: 1)
+
+    first = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-inflight-max", "p1") end)
+    assert_receive {:claim_started, "wl-inflight-max", worker}
+
+    assert {:error, {:denied, :session_cap}} = SessionManager.create(ctx.mgr, "wl-inflight-max", "p2")
+
+    send(worker, {:release, {:ok, "vm-inflight-max"}})
+    assert {:ok, _} = Task.await(first)
+  end
+
+  test "a failed in-flight create gives its cap slot back" do
+    ctx = blocking_claim_stack()
+    put_session_workload(ctx, "wl-inflight-fail", cap: 1, max_sessions: 8)
+
+    first = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-inflight-fail", "p1") end)
+    assert_receive {:claim_started, "wl-inflight-fail", worker}
+    # A pool miss falls through to the stack's default Prime, which fails.
+    send(worker, {:release, :miss})
+    assert {:error, {:denied, {:prime_failed, _}}} = Task.await(first)
+
+    second = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-inflight-fail", "p2") end)
+    assert_receive {:claim_started, "wl-inflight-fail", worker}
+    send(worker, {:release, {:ok, "vm-after-failure"}})
+    assert {:ok, _} = Task.await(second)
+  end
+
+  test "in-flight creates count only against their own workload's caps" do
+    ctx = blocking_claim_stack()
+    put_session_workload(ctx, "wl-cap-a", cap: 1, max_sessions: 1)
+    put_session_workload(ctx, "wl-cap-b", cap: 1, max_sessions: 1)
+    # The catalog helper's node row carries only the last workload's base.
+    put_brick(ctx, "wl-cap-a", "pod-a", [])
+
+    a = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-cap-a", "p1") end)
+    assert_receive {:claim_started, "wl-cap-a", worker_a}
+
+    b = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-cap-b", "p1") end)
+    assert_receive {:claim_started, "wl-cap-b", worker_b}
+
+    send(worker_a, {:release, {:ok, "vm-cap-a"}})
+    send(worker_b, {:release, {:ok, "vm-cap-b"}})
+    assert {:ok, _} = Task.await(a)
+    assert {:ok, _} = Task.await(b)
+  end
+
+  # -- a primed VM with no session row is destroyed (S9) ---------------------
+
+  defmodule DuplicateKeyCreateOpLog do
+    def load_sessions(server), do: SQLite.load_sessions(server)
+
+    def append(_server, %Embervm.OpLog.Op{kind: :session_created}),
+      do: {:error, {:duplicate_session_idempotency_key, "s-holder"}}
+
+    def append(server, op), do: SQLite.append(server, op)
+  end
+
+  defp discard_stack(opts) do
+    parent = self()
+
+    start_stack(
+      Keyword.merge(
+        [
+          channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+          release_session_vm_fun: fn _dispatcher, vm_id ->
+            send(parent, {:released, vm_id})
+            :ok
+          end,
+          destroy_fun: fn {:channel, dial}, vm_id ->
+            send(parent, {:destroyed, dial, vm_id})
+            {:ok, %{teardown_confirmed: true}}
+          end
+        ],
+        opts
+      )
+    )
+  end
+
+  test "a persistence create whose ownership write fails destroys its VM instead of releasing it" do
+    ctx = discard_stack(store_op_log_mod: UnavailableCreateOpLog, prime_fun: fake_prime_fun("vm-leak"))
+    put_session_workload(ctx, "wl-leak", persistence_workload_opts(instance_id: "node-4/pod-leak"))
+
+    assert {:error, {:denied, {:store, :unavailable}}} = SessionManager.create(ctx.mgr, "wl-leak", "p1")
+    assert_receive {:destroyed, "node-4/pod-leak", "vm-leak"}
+    refute_received {:released, "vm-leak"}
+  end
+
+  test "a lost idempotency-key race keeps the manager alive and discards the VM" do
+    ctx = discard_stack(store_op_log_mod: DuplicateKeyCreateOpLog, prime_fun: fake_prime_fun("vm-dup"))
+    put_session_workload(ctx, "wl-dup", persistence_workload_opts(instance_id: "node-4/pod-dup"))
+
+    assert {:error, {:denied, {:store, {:duplicate_session_idempotency_key, "s-holder"}}}} =
+             SessionManager.create(ctx.mgr, "wl-dup", "p1", nil, idempotency_key: "key-1")
+
+    assert Process.alive?(ctx.mgr)
+    assert_receive {:destroyed, "node-4/pod-dup", "vm-dup"}
+  end
+
+  test "a persistence workload's unowned primed VM is destroyed once the create window has passed" do
+    {:ok, mono} = Agent.start_link(fn -> 1_000_000 end)
+
+    ctx =
+      discard_stack(
+        node_confirmed_destroy: true,
+        monotonic_clock: fn -> Agent.get(mono, & &1) end
+      )
+
+    put_session_workload(ctx, "wl-reap", persistence_workload_opts(floor: 0))
+    put_session_workload(ctx, "wl-reap-floor", persistence_workload_opts(floor: 1))
+    put_session_workload(ctx, "wl-reap-pool", floor: 0)
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+
+    {:ok, _owner} =
+      SessionStore.create(ctx.store, %{
+        tenant: "homelab",
+        principal: "p1",
+        workload: "wl-reap",
+        node_id: "node-4",
+        vm_id: "vm-owned",
+        expires_at: 9_000_000
+      })
+
+    report = fn ->
+      now = Agent.get(mono, & &1)
+      put_brick(ctx, "wl-reap", "pod-a", primed_ids: ["vm-orphan-primed", "vm-owned"], updated_at: now)
+      put_brick(ctx, "wl-reap-floor", "pod-b", primed_ids: ["vm-floor"], updated_at: now)
+      put_brick(ctx, "wl-reap-pool", "pod-c", primed_ids: ["vm-pool"], updated_at: now)
+    end
+
+    report.()
+    :ok = SessionManager.reconcile(ctx.mgr)
+    refute_receive {:destroyed, _, _}, 100
+
+    # Still inside the window a create could be registering it.
+    Agent.update(mono, &(&1 + SessionManager.create_worker_timeout_ms() - 1))
+    report.()
+    :ok = SessionManager.reconcile(ctx.mgr)
+    refute_receive {:destroyed, _, _}, 100
+
+    Agent.update(mono, &(&1 + 1))
+    report.()
+    :ok = SessionManager.reconcile(ctx.mgr)
+    assert_receive {:destroyed, "node-4/pod-a", "vm-orphan-primed"}
+    refute_receive {:destroyed, _, _}, 100
+  end
+
+  test "an unowned primed VM on a stale fact is left alone" do
+    {:ok, mono} = Agent.start_link(fn -> 1_000_000 end)
+    ctx = discard_stack(node_confirmed_destroy: true, monotonic_clock: fn -> Agent.get(mono, & &1) end)
+    put_session_workload(ctx, "wl-reap-stale", persistence_workload_opts(floor: 0))
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    put_brick(ctx, "wl-reap-stale", "pod-a", primed_ids: ["vm-stale"], updated_at: 1_000_000)
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+    Agent.update(mono, &(&1 + SessionManager.create_worker_timeout_ms()))
+    :ok = SessionManager.reconcile(ctx.mgr)
+    refute_receive {:destroyed, _, _}, 100
+  end
+
+  # -- wakes claim before their RPC ------------------------------------------
+
+  defp wake_claims(ctx, kind) do
+    Enum.filter(claims(ctx), fn {_dial, ref, _mib, _expires} -> elem(ref, 0) == kind end)
+  end
+
+  test "a rejoin claims its brick, releases the claim on a refusal and settles it on boot" do
+    parent = self()
+    {:ok, gate} = Agent.start_link(fn -> :clear end)
+
+    prime_fun = fn _channel, _req ->
+      if Agent.get(gate, & &1) == :pressure do
+        send(parent, :rejoin_refused)
+        {:error, @brick_pressure}
+      else
+        {:ok, %PrimeResponse{vm_id: "vm-rejoin-claimed"}}
+      end
+    end
+
+    ctx = start_stack(prime_fun: prime_fun, channel_fun: fake_channel_fun(), pressure_retry_interval_ms: 10)
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+    :ok = Agent.update(gate, fn _ -> :pressure end)
+
+    task = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"}) end)
+    assert_receive :rejoin_refused
+    assert eventually(fn -> wake_claims(ctx, :session_rejoin) == [] end)
+
+    :ok = Agent.update(gate, fn _ -> :clear end)
+    assert {:ok, %{status_code: 200}} = Task.await(task)
+    assert [{"node-4", _ref, 512, _expires}] = wake_claims(ctx, :session_rejoin)
+  end
+
+  test "a relight claims its brick, releases the claim on a refusal and settles it on boot" do
+    parent = self()
+    {:ok, gate} = Agent.start_link(fn -> :pressure end)
+
+    relight_fun = fn _channel, _req ->
+      if Agent.get(gate, & &1) == :pressure do
+        send(parent, :relight_refused)
+        {:error, @brick_pressure}
+      else
+        {:ok, %RelightResponse{vm_id: "vm-relight-claimed"}}
+      end
+    end
+
+    ctx = start_stack(relight_fun: relight_fun, pressure_retry_interval_ms: 10)
+    put_session_workload(ctx, "wl-relight-claim")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-relight-claim", "p1")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    wait_for_state(ctx, created.session_id, :banked)
+    put_snapshot_fact(ctx, "wl-relight-claim", created.session_id)
+
+    task = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"}) end)
+    assert_receive :relight_refused
+    assert eventually(fn -> wake_claims(ctx, :session_relight) == [] end)
+
+    :ok = Agent.update(gate, fn _ -> :clear end)
+    assert {:ok, %{status_code: 200}} = Task.await(task)
+    assert [{"node-4", _ref, 512, _expires}] = wake_claims(ctx, :session_relight)
   end
 
   test "create async completes slower claim/prime without blocking" do
