@@ -7,17 +7,15 @@ registration never imports it or registers its identity endpoints.
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from pathlib import Path
 
 import jwt
+from auth.api import AuthError, auth_error_handler
+from core.db import get_engine
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import text
-from sqlmodel import SQLModel, Session, select
-
-from auth.api import AuthError, auth_error_handler
-from core.db import get_engine
 from grimoire.models import (
     AppUser,
     Campaign,
@@ -30,6 +28,8 @@ from grimoire.models import (
 )
 from grimoire.router import router
 from grimoire.sheets import CharacterSheetV1, derive_sheet
+from sqlalchemy import text
+from sqlmodel import Session, SQLModel, select
 
 
 def build_app() -> FastAPI:
@@ -44,6 +44,18 @@ def build_app() -> FastAPI:
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         connection.execute(text("CREATE SCHEMA IF NOT EXISTS grimoire"))
+        # Ending a session queues content-free extraction jobs even when off.
+        # Use the existing queue migration in this isolated rehearsal database;
+        # no drainer runs here, and production still owns its migration rollout.
+        if (
+            connection.scalar(text("SELECT to_regclass('claude_agent.routine_jobs')"))
+            is None
+        ):
+            migration = (
+                Path(__file__).resolve().parents[2]
+                / "chart/migrations/20260507120000_agent_tables.sql"
+            )
+            connection.execute(text(migration.read_text()))
     SQLModel.metadata.create_all(
         engine,
         tables=[t for t in SQLModel.metadata.tables.values() if t.schema == "grimoire"],
@@ -105,7 +117,7 @@ def build_app() -> FastAPI:
                 ]
             )
             session.flush()
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             approved = []
             for character, user in zip(characters, users[1:]):
                 sheet = CharacterSheetV1(
