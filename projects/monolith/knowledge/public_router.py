@@ -36,7 +36,8 @@ from sqlmodel import Session, select
 from knowledge.api import search_public_chunks
 from knowledge.freshness import current_predicate
 from knowledge.gardener import _slugify
-from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _as_utc, public_cache_control
+from core.clock import as_utc
+from knowledge.http_cache import _GRAPH_CACHE_CONTROL, public_cache_control
 from knowledge.notes import resolve_note_body
 from knowledge.public_limits import allow_semantic_search
 from knowledge.public_models import (
@@ -101,7 +102,7 @@ def _cache_response(
 ) -> Response | None:
     if notes is not None:
         served_at = _now()
-        if any(_as_utc(note.review_after) <= served_at for note in notes):
+        if any(as_utc(note.review_after) <= served_at for note in notes):
             # A deadline can pass during embedding or database work. Refuse
             # that snapshot rather than send it, including on a 304 path.
             raise HTTPException(
@@ -114,14 +115,14 @@ def _cache_response(
         )
         etag = _record_etag(
             etag,
-            sorted((note.note_id, _as_utc(note.review_after)) for note in notes),
+            sorted((note.note_id, as_utc(note.review_after)) for note in notes),
         )
     # No explicit Date header here: uvicorn sends a single Date (request
     # start) and proxies plus Cloudflare start the TTL at receipt, so the
     # lease above is measured from serve time and each hop dates its own
     # response instead of forwarding upstream Date/Age as a new lease basis.
     headers = {"Cache-Control": cache_control, "ETag": etag}
-    latest = _as_utc(last_modified)
+    latest = as_utc(last_modified)
     if latest is not None:
         headers["Last-Modified"] = format_datetime(latest, usegmt=True)
     if request.headers.get("if-none-match") == etag:
@@ -209,8 +210,8 @@ def get_public_entities(
             "aliases": list(entity.aliases or []),
             "scope": entity.scope,
             "source": entity.source,
-            "created_at": _as_utc(entity.created_at).isoformat(),
-            "updated_at": _as_utc(entity.updated_at).isoformat(),
+            "created_at": as_utc(entity.created_at).isoformat(),
+            "updated_at": as_utc(entity.updated_at).isoformat(),
             "note_counts": {
                 state: counts_by_entity.get(entity.id, {}).get(state, 0)
                 for state in _VERIFICATION_STATES
@@ -220,10 +221,10 @@ def get_public_entities(
     ]
 
     latest_entity = max(
-        (_as_utc(entity.updated_at) for entity in entities), default=None
+        (as_utc(entity.updated_at) for entity in entities), default=None
     )
     latest_note = session.exec(select(func.max(PublicNoteEntity.note_indexed_at))).one()
-    latest_note = _as_utc(latest_note)
+    latest_note = as_utc(latest_note)
     indexed_at = max(
         (value for value in (latest_entity, latest_note) if value is not None),
         default=None,
@@ -344,9 +345,7 @@ def get_public_graph(
         for row in public_note_rows
     ]
 
-    indexed_at = _as_utc(
-        max((row.indexed_at for row in public_note_rows), default=None)
-    )
+    indexed_at = as_utc(max((row.indexed_at for row in public_note_rows), default=None))
     cached = _cache_response(
         request,
         response,
@@ -412,7 +411,7 @@ def get_public_entity_notes(
         if note.note_id in note_rows:
             continue
         note_rows[note.note_id] = note
-        observed_at = _as_utc(note.observed_at)
+        observed_at = as_utc(note.observed_at)
         notes.append(
             {
                 "note_id": note.note_id,
@@ -490,7 +489,7 @@ def get_public_entity_notes(
         "contradictions": contradictions,
     }
     latest = max(
-        (_as_utc(note.indexed_at) for note in contradiction_rows.values()), default=None
+        (as_utc(note.indexed_at) for note in contradiction_rows.values()), default=None
     )
     etag = _record_etag(f"entity-{kind}-{slug}-{','.join(states)}-{limit}", payload)
     served_ids = set(note_rows)
@@ -587,7 +586,7 @@ def get_public_search_index(
             ]
         )
 
-    latest = max((_as_utc(note.indexed_at) for note in rows), default=None)
+    latest = max((as_utc(note.indexed_at) for note in rows), default=None)
     payload = {
         "generated_at": (
             latest.isoformat().replace("+00:00", "Z")
@@ -705,7 +704,7 @@ async def search_public_record(
         {**row, "entities": entities_by_note.get(row["note_id"], [])}
         for row in result_rows
     ]
-    latest = max((_as_utc(value) for value in indexed_by_id.values()), default=None)
+    latest = max((as_utc(value) for value in indexed_by_id.values()), default=None)
     etag = _record_etag(f"search-{mode}-{query}-{limit}", payload)
     cached = _cache_response(
         request,
@@ -854,7 +853,7 @@ def get_public_note(
     )
     sanitized = strip_private_wikilinks(body, public_ids)
 
-    indexed_at = _as_utc(note.indexed_at)
+    indexed_at = as_utc(note.indexed_at)
     logger.info("public.note.served note_id=%s", note_id)
     payload = {
         "note_id": note.note_id,

@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
+from core.clock import as_utc, iso
 from core.db import get_session
 from campsites.models import Availability, Campground, Weather
 
@@ -36,26 +37,6 @@ _SNAPSHOT_CACHE_CONTROL = (
 )
 
 _LOOKAHEAD_DAYS = 14
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """Coerce a datetime to tz-aware UTC.
-
-    Postgres returns tz-aware values; SQLite (tests) can return naive ones even
-    though we always write tz-aware UTC. Treat naive as UTC so ETag stamps stay
-    stable across both backends.
-    """
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _iso(value: datetime | None) -> str | None:
-    """ISO-8601 string in UTC, or None."""
-    coerced = _as_utc(value)
-    return coerced.isoformat() if coerced is not None else None
 
 
 def _snapshot_etag(generated_at: str | None, count: int) -> str:
@@ -118,7 +99,7 @@ def get_snapshot(
 
     def _bump(dt: datetime | None) -> None:
         nonlocal generated_at_dt
-        coerced = _as_utc(dt)
+        coerced = as_utc(dt)
         if coerced is not None and (
             generated_at_dt is None or coerced > generated_at_dt
         ):
@@ -172,7 +153,7 @@ def get_snapshot(
 
     parks.sort(key=lambda p: (-p["best_score"], p["name"]))
 
-    generated_at = _iso(generated_at_dt)
+    generated_at = iso(generated_at_dt)
     etag = _snapshot_etag(generated_at, len(parks))
     headers = {"Cache-Control": _SNAPSHOT_CACHE_CONTROL, "ETag": etag}
 

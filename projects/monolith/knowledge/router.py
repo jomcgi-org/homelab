@@ -44,7 +44,8 @@ from knowledge.gaps import (
     verify_gap,
 )
 from knowledge.gardener import MAX_GARDENER_RETRIES
-from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _as_utc, _graph_etag
+from core.clock import as_utc
+from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _graph_etag
 from knowledge.indexing import reindex_note_with_edits
 from knowledge.interventions import decision_reference, lock_intervention
 from knowledge.models import AtomRawProvenance, Dispute, Intervention, RawInput
@@ -112,17 +113,17 @@ def _intervention_dict(row: Intervention) -> dict:
     return {
         "raw_id": row.raw_id,
         "state": row.state,
-        "created_at": _as_utc(row.created_at).isoformat() if row.created_at else None,
+        "created_at": as_utc(row.created_at).isoformat() if row.created_at else None,
         "responder_subject": row.responder_subject,
         "acknowledged_by_subject": row.acknowledged_by_subject,
         "acknowledged_at": (
-            _as_utc(row.acknowledged_at).isoformat() if row.acknowledged_at else None
+            as_utc(row.acknowledged_at).isoformat() if row.acknowledged_at else None
         ),
         "acknowledged_request_revision": row.acknowledged_request_revision,
         "decision_id": row.decision_id,
         "decision_state": row.decision_state,
         "associated_by_subject": row.associated_by_subject,
-        "associated_at": _as_utc(row.associated_at).isoformat()
+        "associated_at": as_utc(row.associated_at).isoformat()
         if row.associated_at
         else None,
         "decision_request_revision": row.decision_request_revision,
@@ -130,15 +131,13 @@ def _intervention_dict(row: Intervention) -> dict:
         "node_key": row.node_key,
         "disposition": row.disposition,
         "resolution": row.resolution,
-        "resolved_at": _as_utc(row.resolved_at).isoformat()
-        if row.resolved_at
-        else None,
+        "resolved_at": as_utc(row.resolved_at).isoformat() if row.resolved_at else None,
         "resolved_request_revision": row.resolved_request_revision,
         "revision": row.revision,
         "evidence_raw_id": row.evidence_raw_id,
         "evidence_by_subject": row.evidence_by_subject,
         "evidence_submitted_at": (
-            _as_utc(row.evidence_submitted_at).isoformat()
+            as_utc(row.evidence_submitted_at).isoformat()
             if row.evidence_submitted_at
             else None
         ),
@@ -433,7 +432,7 @@ def get_graph(
     Conditional GETs short-circuit with 304 via ETag/Last-Modified.
     """
     graph = KnowledgeStore(session).get_graph()
-    indexed_at = _as_utc(graph.get("indexed_at"))
+    indexed_at = as_utc(graph.get("indexed_at"))
     etag = _graph_etag(len(graph["nodes"]), indexed_at)
     headers = {"Cache-Control": _GRAPH_CACHE_CONTROL, "ETag": etag}
     if indexed_at is not None:

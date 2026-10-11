@@ -20,11 +20,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
+from core.clock import as_utc, iso
 from core.db import get_session
 from worldcup.models import Qualification, Standing, SwingMatch
 
@@ -38,25 +39,6 @@ _SUMMARY_CACHE_CONTROL = "public, max-age=300"
 
 # The country the page opens on; the dropdown can switch to any of the 48.
 _FOCUS_CODE = "SCO"
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """Coerce a datetime to tz-aware UTC.
-
-    Postgres returns tz-aware values; SQLite (tests) can return naive ones even
-    though we always write tz-aware UTC. Treat naive as UTC so ETag stamps and
-    serialized timestamps stay stable across both backends.
-    """
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _iso(value: datetime | None) -> str | None:
-    coerced = _as_utc(value)
-    return coerced.isoformat() if coerced is not None else None
 
 
 def _serialize_standing(row: Standing) -> dict:
@@ -99,7 +81,7 @@ def _serialize_qualification(row: Qualification | None) -> dict:
         "prob_third": row.prob_third,
         "status": row.status,
         "n_sims": row.n_sims,
-        "computed_at": _iso(row.computed_at),
+        "computed_at": iso(row.computed_at),
     }
 
 
@@ -109,7 +91,7 @@ def _serialize_swing(row: SwingMatch) -> dict:
         "group_name": row.group_name,
         "home_code": row.home_code,
         "away_code": row.away_code,
-        "kickoff": _iso(row.kickoff),
+        "kickoff": iso(row.kickoff),
         "swing": row.swing,
         "p_qualify_home_win": row.p_qualify_home_win,
         "p_qualify_draw": row.p_qualify_draw,
@@ -165,7 +147,7 @@ def get_summary(
 
     updated_at: datetime | None = None
     for row in standings:
-        stamp = _as_utc(row.updated_at)
+        stamp = as_utc(row.updated_at)
         if stamp is not None and (updated_at is None or stamp > updated_at):
             updated_at = stamp
 

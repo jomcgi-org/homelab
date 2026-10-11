@@ -2564,6 +2564,16 @@ py_test(
 )
 
 py_test(
+    name = "clock_test",
+    srcs = ["core/clock_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "identity_test",
     srcs = ["core/identity_test.py"],
     imports = ["."],

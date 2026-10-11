@@ -48,6 +48,7 @@ from factory.execution.mcp import (
     _set_session_status,
     _transport,
 )
+from core.clock import as_utc, iso
 from core.db import get_session
 from core.identity import verified_email
 from faas.embervm_client import EmberVMTransportError
@@ -76,19 +77,6 @@ def session_stop_control_enabled() -> bool:
     return (
         os.environ.get("AGENT_SESSION_STOP_CONTROL_ENABLED", "false").lower() == "true"
     )
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _iso(value: datetime | None) -> str | None:
-    value = _as_utc(value)
-    return value.isoformat() if value is not None else None
 
 
 def _decode(value: str | None, default):
@@ -220,14 +208,14 @@ def _session_payload(
                 "id": row.guest_cleanup_id,
                 "guest_id": row.guest_cleanup_guest_id,
                 "workflow_id": row.guest_cleanup_workflow_id,
-                "started_at": _iso(row.guest_cleanup_started_at),
+                "started_at": iso(row.guest_cleanup_started_at),
                 "reason": "awaiting_terminal_confirmation",
             }
             if row.guest_cleanup_id is not None
             else None
         ),
-        "created_at": _iso(row.created_at),
-        "last_turn_at": _iso(row.last_turn_at),
+        "created_at": iso(row.created_at),
+        "last_turn_at": iso(row.last_turn_at),
         "voice_summary": row.voice_summary,
         "turn_count": int(turn_count),
         "total_cost_usd": (
@@ -623,25 +611,25 @@ def drain_lane_status() -> dict:
     running_names = set()
 
     for job in jobs:
-        locked_at = _as_utc(job["locked_at"])
+        locked_at = as_utc(job["locked_at"])
         if (
             job["locked_by"] is not None
             and locked_at is not None
             and locked_at + timedelta(seconds=job["ttl_secs"] or 0) > now
         ):
-            running.append({"name": job["name"], "locked_at": _iso(locked_at)})
+            running.append({"name": job["name"], "locked_at": iso(locked_at)})
             running_names.add(job["name"])
 
     due_count = sum(
         1
         for job in jobs
         if job["name"] not in running_names
-        and (next_run_at := _as_utc(job["next_run_at"])) is not None
+        and (next_run_at := as_utc(job["next_run_at"])) is not None
         and next_run_at <= now
     )
     completed = [job for job in jobs if job["last_run_at"] is not None]
     last_job = (
-        max(completed, key=lambda job: _as_utc(job["last_run_at"]))
+        max(completed, key=lambda job: as_utc(job["last_run_at"]))
         if completed
         else None
     )
@@ -649,7 +637,7 @@ def drain_lane_status() -> dict:
         {
             "name": last_job["name"],
             "status": last_job["last_status"],
-            "last_run_at": _iso(last_job["last_run_at"]),
+            "last_run_at": iso(last_job["last_run_at"]),
         }
         if last_job is not None
         else None
@@ -1104,7 +1092,7 @@ def get_session_detail(
                 "usage": _decode(turn.usage_json, {}),
                 "cost_usd": turn.cost_usd,
                 "list_cost_usd": turn.list_cost_usd,
-                "created_at": _iso(turn.created_at),
+                "created_at": iso(turn.created_at),
             }
             for turn in turns
         ],
@@ -1115,9 +1103,9 @@ def get_session_detail(
                 "partial_text": message.partial_text,
                 "partial_activities": _decode(message.partial_activities, None),
                 "claimed_by_replica": message.claimed_by_replica,
-                "claimed_at": _iso(message.claimed_at),
+                "claimed_at": iso(message.claimed_at),
                 "dispatch_count": message.dispatch_count,
-                "created_at": _iso(message.created_at),
+                "created_at": iso(message.created_at),
             }
             for message in pending
         ],
@@ -1678,7 +1666,7 @@ def search_sessions(
                 "local_session_id": result["local_session_id"],
                 "workspace": result["workspace"],
                 "seq": result["seq"],
-                "created_at": _iso(result["created_at"]),
+                "created_at": iso(result["created_at"]),
                 "rank": float(result["rank"]),
                 "snippet": result["snippet"],
             }

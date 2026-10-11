@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
+from core.clock import as_utc, iso
 from core.db import get_session
 from shared.forecast_freshness import top_of_hour
 from stars.models import Site, SiteHour, SiteMonthClimatology
@@ -77,27 +78,6 @@ _SITES_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate
 # to the /history response shape also needs that same purge. Mirrors
 # STARS_HISTORY_CACHE_CONTROL in frontend/src/lib/cache-headers.js; keep in sync.
 _HISTORY_CACHE_CONTROL = "public, max-age=0, s-maxage=31536000, stale-while-revalidate=604800, stale-if-error=604800"
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """Coerce a datetime to tz-aware UTC.
-
-    Postgres returns tz-aware values; SQLite (used in tests) can return
-    naive ones even though we always write tz-aware UTC. Treat naive
-    datetimes as UTC so downstream formatters and ETag stamps are stable
-    across both backends.
-    """
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _iso(value: datetime | None) -> str | None:
-    """ISO-8601 string in UTC, or None. Keeps the JSON consistent across backends."""
-    coerced = _as_utc(value)
-    return coerced.isoformat() if coerced is not None else None
 
 
 @router.get("/sites")
@@ -278,7 +258,7 @@ def _build_sites_from_db(
         # headlines above carry the magnitudes.
         best_hours = [
             {
-                "time": _iso(h[0]),
+                "time": iso(h[0]),
                 "cloud_area_fraction": h[1],
                 "dark": is_dark_hour(h[2]),
             }
@@ -321,7 +301,7 @@ def _build_sites_from_db(
     # The ETag folds in the current clock hour so the CDN turns over hourly even
     # when fetched_at has not changed: as hours fall past the cutoff the payload
     # shrinks, and the cutoff token forces a revalidation at each hour boundary.
-    max_fetched_utc = _as_utc(max_fetched)
+    max_fetched_utc = as_utc(max_fetched)
     etag = (
         f'"v2-{cutoff.isoformat()}-'
         f"{max_fetched_utc.isoformat() if max_fetched_utc else 'none'}-"
@@ -339,7 +319,7 @@ def _build_sites_from_db(
         "count": len(sites),
         "total_sites": len(by_id),
         "darkness": darkness,
-        "fetched_at": _iso(max_fetched),
+        "fetched_at": iso(max_fetched),
     }
 
 
