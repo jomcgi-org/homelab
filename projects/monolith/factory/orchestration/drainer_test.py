@@ -216,7 +216,7 @@ def test_grimoire_uses_pinned_cap_kg_tier_luna_and_own_writer(monkeypatch):
     assert applied == [
         (("campaign-job", payload, "finished"), {"expected_holder": "owner"})
     ]
-    assert completions == [("campaign-job", "ok", "facts=1 rejected=0", True)]
+    assert completions == [("campaign-job", "ok", "facts=1 rejected=0", False)]
     assert destroys == [(101, "workflow-1:grimoire-kg-drain:campaign-job")]
 
 
@@ -399,6 +399,29 @@ def test_parallel_grimoire_claims_cannot_spend_last_daily_job(admission_database
     with ThreadPoolExecutor(max_workers=2) as workers:
         jobs = list(workers.map(claim, ("wf-a", "wf-b")))
     assert sum(job is not None for job in jobs) == 1
+
+
+def test_completed_grimoire_jobs_keep_the_session_end_replay_fence(
+    tmp_path, monkeypatch
+):
+    from agent import routine_jobs
+    from grimoire.fact_extraction import enqueue_session_facts
+    from grimoire.testing.leak_harness import sqlite_harness
+
+    with sqlite_harness(tmp_path / "campaign-completion.db") as h:
+        monkeypatch.setattr(routine_jobs, "get_engine", lambda: h.session.get_bind())
+        campaign_id = h.rows["campaign"].id
+        session_id = h.rows["campaign_session"].id
+        assert enqueue_session_facts(h.session, campaign_id, session_id) == 3
+        h.session.commit()
+        name = f"grimoire-kg-drain:{session_id}:party"
+        assert drainer.finish_drainer_job.__wrapped__(name, "ok", "facts=0", False)
+        assert enqueue_session_facts(h.session, campaign_id, session_id) == 0
+        row = h.session.execute(
+            text("SELECT next_run_at,last_status FROM routine_jobs WHERE name=:name"),
+            {"name": name},
+        ).one()
+        assert row.next_run_at is None and row.last_status == "ok"
 
 
 def test_grimoire_daily_count_is_separate_from_ordinary_kg(admission_database):

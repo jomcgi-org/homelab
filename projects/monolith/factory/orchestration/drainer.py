@@ -1987,9 +1987,10 @@ def drain_cycle() -> dict:
                             else output
                         )
                     if job_kind in KG_JOB_KINDS:
-                        finish_drainer_job(
-                            name, "ok", summary, not recurring, **ownership
-                        )
+                        # Keep completed campaign rows: their unique names are
+                        # the session-end replay fence, even after extraction.
+                        deregister = job_kind == KG_JOB_KIND and not recurring
+                        finish_drainer_job(name, "ok", summary, deregister, **ownership)
                     else:
                         completed = finish_drainer_job(name, "ok", summary, **ownership)
                         if completed and name.startswith("docfix:"):
