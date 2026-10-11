@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 )
 
 // budgetFsRoot is the cgroup v2 mount point the reader inspects. A package
@@ -28,13 +30,25 @@ var budgetFsRoot = "/sys/fs/cgroup"
 // and /proc/self/cgroup names it. Under a PRIVATE cgroup namespace the line is
 // "0::/" and budgetFsRoot already IS the pod's cgroup, so resolution falls
 // back to budgetFsRoot and behaves exactly as before.
+//
+// Once the jailer delegates cgroups, noded itself lives in the daemon-only
+// child (driver.DaemonCgroupName) and /proc/self/cgroup names that child, whose
+// memory.max is "max". cgroupDir therefore resolves the brick cgroup, the
+// delegation root, not noded's own leaf.
 var selfCgroupPath = "/proc/self/cgroup"
 
 // cgroupDir resolves the directory whose cgroup v2 controller files (memory.max,
-// cpu.max, ...) describe THIS daemon's cgroup. It parses selfCgroupPath for the
-// "0::<path>" entry and joins <path> under budgetFsRoot. It degrades gracefully:
-//   - a "0::/" self-path (private cgroupns) or an unreadable/absent
-//     /proc/self/cgroup falls back to budgetFsRoot;
+// cpu.max, ...) describe THIS daemon's brick cgroup. It parses selfCgroupPath
+// for the "0::<path>" entry, maps a trailing jailer daemon child back to the
+// brick cgroup that contains it (driver.BrickCgroupPath), and joins the result
+// under budgetFsRoot. The brick cgroup is the delegation root: its memory.max
+// is the brick ceiling, and its memory.current, memory.stat and cpu.stat are
+// hierarchical over the daemon child and every VM leaf, so the reader reports
+// the same budget and headroom before and after the jailer's first launch. It
+// degrades gracefully:
+//   - a "0::/" self-path (private cgroupns), including "0::/embervm-noded-daemon"
+//     after delegation, or an unreadable/absent /proc/self/cgroup falls back to
+//     budgetFsRoot;
 //   - a joined dir that lacks memory.max (e.g. the host-root join does not
 //     exist, or a fixture wrote files at budgetFsRoot itself) also falls back
 //     to budgetFsRoot.
@@ -43,7 +57,7 @@ var selfCgroupPath = "/proc/self/cgroup"
 // namespace probe: the join is only preferred when it actually carries the
 // controller files.
 func cgroupDir() string {
-	rel := parseSelfCgroupV2Path(readSelfCgroup())
+	rel := driver.BrickCgroupPath(parseSelfCgroupV2Path(readSelfCgroup()))
 	if rel == "" || rel == "/" {
 		return budgetFsRoot
 	}

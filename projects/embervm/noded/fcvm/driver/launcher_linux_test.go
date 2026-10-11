@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -90,8 +92,12 @@ func TestExecLauncherJailerLifecycle(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cgroupDir, "firecracker", "vm-test"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The helper joins its leaf the way the jailer does, so the launcher's
+	// membership check sees the VMM in its cgroup.
+	t.Setenv("EMBER_JAILER_CGROUP_PROCS", filepath.Join(cgroupDir, "cgroup.procs"))
 	released := 0
 	var output lockedBuffer
+	var modes launchModeCounters
 	launcher := &ExecLauncher{
 		Logger:        slog.New(slog.NewJSONHandler(&output, nil)),
 		Bin:           os.Args[0],
@@ -108,6 +114,10 @@ func TestExecLauncherJailerLifecycle(t *testing.T) {
 			}
 			return &vmCgroup{dir: cgroupDir, parentArg: "test-parent/vm-test"}, nil
 		},
+		// CLONE_NEWPID needs CAP_SYS_ADMIN; the namespace itself is covered by
+		// TestExecLauncherJailerLifecycleInPIDNamespace.
+		jailerPIDNamespace: func(*exec.Cmd) {},
+		launchModes:        &modes,
 	}
 	socket := filepath.Join(tmp, "bundle", "api.sock")
 	if err := os.MkdirAll(filepath.Dir(socket), 0o755); err != nil {
@@ -121,10 +131,21 @@ func TestExecLauncherJailerLifecycle(t *testing.T) {
 	if execProc.Jail() == nil {
 		t.Fatal("jailed launch returned no jail mapper")
 	}
+	// noded creates the PID namespace itself; the jailer's --new-pid-ns would
+	// fork the VMM away from the process noded waits on and kills.
 	if slices.Contains(execProc.cmd.Args, "--new-pid-ns") {
-		t.Fatal("jailed launch unexpectedly enabled a PID namespace")
+		t.Fatal("jailed launch asked the jailer to fork into a PID namespace")
+	}
+	if modes.jailed.Load() != 1 || modes.directExec.Load() != 0 || modes.refused.Load() != 0 {
+		t.Fatalf("launch modes jailed=%d direct=%d refused=%d, want one jailed",
+			modes.jailed.Load(), modes.directExec.Load(), modes.refused.Load())
 	}
 	jailDir := execProc.Jail().Dir
+	// cgroupfs control files are virtual and vanish with the leaf; drop the
+	// plain-file fixture so cleanup's rmdir sees what it would on cgroupfs.
+	if err := os.Remove(filepath.Join(cgroupDir, "cgroup.procs")); err != nil {
+		t.Fatal(err)
+	}
 	if err := process.Kill(); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
@@ -223,16 +244,22 @@ func TestExecOutputHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-func TestExecLauncherCgroupFailureCleansJailAndFallsBack(t *testing.T) {
+// TestExecLauncherCgroupFailureRefusesLaunch pins J5: a jailed launch whose VM
+// cgroup cannot be created is refused and cleaned up, never run unjailed.
+func TestExecLauncherCgroupFailureRefusesLaunch(t *testing.T) {
 	t.Setenv("EMBER_JAILER_HELPER", "1")
 	t.Setenv("EMBER_JAILER_TEST_BINARY", os.Args[0])
 	tmp := t.TempDir()
+	marker := filepath.Join(tmp, "started")
+	t.Setenv("EMBER_JAILER_MARKER", marker)
 	wrapper := filepath.Join(tmp, "firecracker-helper")
 	script := "#!/bin/sh\nexec \"$EMBER_JAILER_TEST_BINARY\" -test.run=TestExecLauncherHelperProcess -- \"$@\"\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	released := 0
+	injected := errors.New("injected cgroup failure")
+	var modes launchModeCounters
 	launcher := &ExecLauncher{
 		Bin:           wrapper,
 		JailerBin:     wrapper,
@@ -243,29 +270,39 @@ func TestExecLauncherCgroupFailureCleansJailAndFallsBack(t *testing.T) {
 			return os.Getuid(), func() { released++ }, nil
 		},
 		createCgroup: func(string, int64) (*vmCgroup, error) {
-			return nil, errors.New("injected cgroup failure")
+			return nil, injected
 		},
+		jailerPIDNamespace: func(*exec.Cmd) {},
+		launchModes:        &modes,
 	}
 	socket := filepath.Join(tmp, "bundle", "api.sock")
 	if err := os.MkdirAll(filepath.Dir(socket), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	process, err := launcher.Launch(context.Background(), LaunchSpec{VMID: "vm-fallback", SocketPath: socket, Workload: "test", Phase: guestPhaseVM, MemMib: 256})
-	if err != nil {
-		t.Fatalf("Launch fallback: %v", err)
+	if process != nil {
+		_ = process.Kill()
+		t.Fatal("cgroup failure still returned a running process")
 	}
-	if process.(*execProcess).Jail() != nil {
-		t.Fatal("cgroup failure fallback retained a jail")
+	if !errors.Is(err, ErrJailerContainment) || !errors.Is(err, injected) {
+		t.Fatalf("Launch error = %v, want ErrJailerContainment wrapping the cgroup failure", err)
 	}
 	failedJail := filepath.Join(filepath.Dir(socket), "jailer", filepath.Base(wrapper), "vm-fallback")
 	if _, err := os.Stat(failedJail); !os.IsNotExist(err) {
-		t.Fatalf("failed jail setup remains after fallback: %v", err)
+		t.Fatalf("failed jail setup remains after refusal: %v", err)
 	}
-	if err := process.Kill(); err != nil {
-		t.Fatalf("Kill: %v", err)
+	if _, err := os.Lstat(socket); !os.IsNotExist(err) {
+		t.Fatalf("API socket alias remains after refusal: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("a refused launch still executed a VMM: %v", err)
 	}
 	if released != 1 {
 		t.Fatalf("uid release count = %d, want 1", released)
+	}
+	if modes.refused.Load() != 1 || modes.jailed.Load() != 0 || modes.directExec.Load() != 0 {
+		t.Fatalf("launch modes jailed=%d direct=%d refused=%d, want one refusal",
+			modes.jailed.Load(), modes.directExec.Load(), modes.refused.Load())
 	}
 }
 
@@ -273,8 +310,25 @@ func TestExecLauncherHelperProcess(t *testing.T) {
 	if os.Getenv("EMBER_JAILER_HELPER") != "1" {
 		return
 	}
+	if marker := os.Getenv("EMBER_JAILER_MARKER"); marker != "" {
+		_ = os.WriteFile(marker, nil, 0o600)
+	}
+	if marker := os.Getenv("EMBER_JAILER_PID1_MARKER"); marker != "" {
+		_ = os.WriteFile(marker, []byte(strconv.Itoa(os.Getpid())), 0o600)
+	}
+	if procs := os.Getenv("EMBER_JAILER_CGROUP_PROCS"); procs != "" {
+		// Join the leaf as the jailer does. A cgroupfs write is translated into
+		// the reader's PID namespace; a plain file is not, so write the pid as
+		// noded sees it: the first NSpid field of this process's status.
+		if err := os.WriteFile(procs, []byte(hostVisiblePid()+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	_, _ = os.Stdout.Write([]byte("stdout line\nstdout tail"))
 	_, _ = os.Stderr.Write([]byte("stderr line\nstderr tail"))
+	if os.Getenv("EMBER_JAILER_EXIT_IMMEDIATELY") == "1" {
+		os.Exit(3)
+	}
 	if os.Getenv("EMBER_JAILER_NO_SOCKET") == "1" {
 		for {
 			time.Sleep(time.Hour)
@@ -296,9 +350,28 @@ func TestExecLauncherHelperProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	if os.Getenv("EMBER_JAILER_EXIT_AFTER_READY") == "1" {
+		// A VMM that dies on its own after serving its API socket.
+		time.Sleep(300 * time.Millisecond)
+		os.Exit(0)
+	}
 	for {
 		time.Sleep(time.Hour)
 	}
+}
+
+// hostVisiblePid is this process's pid in the PID namespace /proc belongs to:
+// the first NSpid field, which equals os.Getpid() outside a nested namespace.
+func hostVisiblePid() string {
+	b, err := os.ReadFile("/proc/self/status")
+	if err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "NSpid:" {
+				return fields[1]
+			}
+		}
+	}
+	return strconv.Itoa(os.Getpid())
 }
 
 func argumentValue(args []string, name string) string {
