@@ -924,6 +924,10 @@ defmodule Embervm.NodeRegistry do
 
     if rt.health == :healthy and not rt.draining do
       NodeCapacity.put(state.table, instance_key(rt), facts_from_status(status, rt, state.clock.()))
+      # This report counts every VM that landed before it, so the settled
+      # in-flight debits it follows are dropped (Inflight, "one count per boot").
+      dial_id = Embervm.Brick.dial_id(%{instance_id: rt.instance_id, configured_id: rt.configured_id})
+      Inflight.observe_report(dial_id, table: state.inflight_table)
     else
       NodeCapacity.drop(state.table, instance_key(rt))
     end

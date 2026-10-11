@@ -20,10 +20,24 @@ defmodule Embervm.Scheduler.Inflight do
       boot RPC, so the next placement that process (or any other) makes sees it.
     * `release(dial_id, ref)`: the boot RPC failed or the brick refused it. The debit drops
       at once, so a refused brick is placeable again immediately.
-    * `settle(dial_id, ref)`: the boot RPC succeeded. The debit is kept for a short hold
-      (default 5_000 ms) so the daemon's next `NodeStatus`, which already counts
-      the VM, lands before the debit drops. Dropping it at once would reopen the
-      herd window for one report interval.
+    * `settle(dial_id, ref)`: the boot RPC succeeded. The debit is kept until the
+      brick's next `NodeStatus` arrives (`observe_report/2`, called by
+      `Embervm.NodeRegistry` on every report), because that report already counts
+      the VM in its live map. A hold (default 5_000 ms) bounds it if reports stop.
+      Dropping it at once would reopen the herd window for one report interval.
+
+  ## one count per boot
+
+  A brick that reports its own ledger (`admission_reported`) already subtracts
+  every boot it has admitted and not yet landed (`mem_inflight_mib`) from
+  `mem_admittable_mib`. Subtracting the control plane's unsettled claim for the
+  same boot again halved what a burst could place (the multi-brick simulation:
+  one claude-runtime guest on an 8gi brick that admits two) and turned the
+  difference into false autoscaler demand. `debit_mib/3` therefore charges a
+  reporting brick only the unsettled claims its report does not yet show, never
+  less than zero and never cancelling more than the control plane's own claims
+  (`max(0, unsettled - (mem_inflight_mib + vm_overhead_mib * inflight_vms))`),
+  plus settled claims no report has followed yet. A brick that does not report its ledger is charged every claim.
 
   Every row carries an ABSOLUTE expiry (default 200_000 ms, above the
   create worker timeout) so a claimer that crashes before it releases cannot
@@ -33,7 +47,10 @@ defmodule Embervm.Scheduler.Inflight do
   ## shape and ownership
 
   A public ETS `:set` keyed `{dial_id, ref}` with rows
-  `{{dial_id, ref}, mem_mib, expires_at_ms}`, where `dial_id` is
+  `{{dial_id, ref}, mem_mib, expires_at_ms, settled_after | nil}`, where
+  `settled_after` is the brick's report sequence when the claim settled (nil
+  while its boot RPC is in flight), plus one `{{:report_seq, dial_id}, seq}`
+  counter per reporting brick. `dial_id` is
   `Embervm.Brick.dial_id/1` (the instance id, `"node/pod_uid"`). It is a pure
   accessor module with no process, like `Embervm.NodeCapacity`:
   `Embervm.NodeRegistry` creates the shared table next to the capacity table and
@@ -100,7 +117,7 @@ defmodule Embervm.Scheduler.Inflight do
 
     safe(fn ->
       sweep_expired(table, now)
-      :ets.insert(table, {{dial_id, ref}, max(mem_mib, 0), now + ttl})
+      :ets.insert(table, {{dial_id, ref}, max(mem_mib, 0), now + ttl, nil})
     end)
 
     :ok
@@ -114,10 +131,10 @@ defmodule Embervm.Scheduler.Inflight do
   end
 
   @doc """
-  The boot RPC succeeded: keep the debit only for `hold_ms` (default
-  #{@default_hold_ms}) more, so the daemon's next report counts the VM before
-  the debit drops. Never extends a row's expiry, and is a no-op for a row that
-  no longer exists.
+  The boot RPC succeeded: keep the debit until the brick's next report
+  (`observe_report/2`), and at most `hold_ms` (default #{@default_hold_ms})
+  more, so that report counts the VM before the debit drops. Never extends a
+  row's expiry, and is a no-op for a row that no longer exists.
   """
   @spec settle(String.t(), term(), keyword()) :: :ok
   def settle(dial_id, ref, opts \\ []) do
@@ -126,25 +143,60 @@ defmodule Embervm.Scheduler.Inflight do
 
     safe(fn ->
       case :ets.lookup(table, {dial_id, ref}) do
-        [{key, mem_mib, expires_at}] -> :ets.insert(table, {key, mem_mib, min(expires_at, hold_until)})
-        [] -> true
+        [{key, mem_mib, expires_at, _settled}] ->
+          :ets.insert(table, {key, mem_mib, min(expires_at, hold_until), report_seq(table, dial_id)})
+
+        [] ->
+          true
       end
     end)
 
     :ok
   end
 
+  @doc """
+  A `NodeStatus` from `dial_id` was just written to the capacity table: drop
+  the settled claims it follows. The boot landed in the daemon's live map
+  before its RPC returned and the claim settled, so a report processed after
+  the settle counts the VM itself. Ordering is by the brick's report sequence,
+  not wall time, so two events in the same millisecond still order. Unsettled
+  claims are untouched; `debit_mib/3` reconciles them against the report's
+  in-flight ledger instead.
+  """
+  @spec observe_report(String.t(), keyword()) :: :ok
+  def observe_report(dial_id, opts \\ []) do
+    table = table(opts)
+
+    safe(fn ->
+      seq = :ets.update_counter(table, {:report_seq, dial_id}, {2, 1}, {{:report_seq, dial_id}, 0})
+      spec = [{{{dial_id, :_}, :_, :_, :"$1"}, [{:"/=", :"$1", nil}, {:<, :"$1", seq}], [true]}]
+      :ets.select_delete(table, spec)
+    end)
+
+    :ok
+  end
+
+  defp report_seq(table, dial_id) do
+    case :ets.lookup(table, {:report_seq, dial_id}) do
+      [{_key, seq}] -> seq
+      [] -> 0
+    end
+  end
+
   @doc "Drops `ref`'s debit on every brick: a claimer that died mid-flight."
   @spec release_ref(term(), keyword()) :: :ok
   def release_ref(ref, opts \\ []) do
-    safe(fn -> :ets.match_delete(table(opts), {{:_, ref}, :_, :_}) end)
+    safe(fn -> :ets.match_delete(table(opts), {{:_, ref}, :_, :_, :_}) end)
     :ok
   end
 
   @doc "Drops every debit on `dial_id`: the registry forgot the brick."
   @spec drop(String.t(), keyword()) :: :ok
   def drop(dial_id, opts \\ []) do
-    safe(fn -> :ets.match_delete(table(opts), {{dial_id, :_}, :_, :_}) end)
+    safe(fn ->
+      :ets.match_delete(table(opts), {{dial_id, :_}, :_, :_, :_})
+      :ets.delete(table(opts), {:report_seq, dial_id})
+    end)
     :ok
   end
 
@@ -154,12 +206,51 @@ defmodule Embervm.Scheduler.Inflight do
   """
   @spec pending_mib(String.t(), keyword()) :: non_neg_integer()
   def pending_mib(dial_id, opts \\ []) do
+    {unsettled, settled} = pending(dial_id, opts)
+    unsettled + settled
+  end
+
+  @doc """
+  The unexpired memory claimed against `dial_id`, split into claims whose boot
+  RPC is still in flight and settled claims no report has followed yet.
+  `{0, 0}` when the table does not exist.
+  """
+  @spec pending(String.t(), keyword()) :: {non_neg_integer(), non_neg_integer()}
+  def pending(dial_id, opts \\ []) do
     now = now(opts)
-    spec = [{{{dial_id, :_}, :"$1", :"$2"}, [{:>, :"$2", now}], [:"$1"]}]
+    spec = [{{{dial_id, :_}, :"$1", :"$2", :"$3"}, [{:>, :"$2", now}], [{{:"$1", :"$3"}}]}]
 
     case safe(fn -> :ets.select(table(opts), spec) end) do
-      list when is_list(list) -> Enum.sum(list)
-      _ -> 0
+      list when is_list(list) ->
+        Enum.reduce(list, {0, 0}, fn
+          {mib, nil}, {unsettled, settled} -> {unsettled + mib, settled}
+          {mib, _at}, {unsettled, settled} -> {unsettled, settled + mib}
+        end)
+
+      _ ->
+        {0, 0}
+    end
+  end
+
+  @doc """
+  The debit placement charges `brick` (a `NodeCapacity` fact map or a
+  normalised `Embervm.Brick`) for claims against `dial_id`. A brick that
+  reports its admission ledger already subtracts the boots it has admitted
+  (`mem_inflight_mib`), so only the unsettled claims beyond those are charged,
+  plus settled claims its reports have not caught up with. Any other brick is
+  charged every claim. See "one count per boot" above.
+  """
+  @spec debit_mib(String.t(), map(), keyword()) :: non_neg_integer()
+  def debit_mib(dial_id, brick, opts \\ []) do
+    {unsettled, settled} = pending(dial_id, opts)
+
+    if Map.get(brick, :admission_reported) == true do
+      # A claim charges need plus the per-VM overhead (Brick.charge_mib/2); the
+      # daemon's admittable already subtracts both for each boot in flight.
+      reported = count(brick, :mem_inflight_mib) + count(brick, :vm_overhead_mib) * count(brick, :inflight_vms)
+      max(unsettled - reported, 0) + settled
+    else
+      unsettled + settled
     end
   end
 
@@ -167,7 +258,7 @@ defmodule Embervm.Scheduler.Inflight do
   @spec entries(keyword()) :: [{String.t(), term(), non_neg_integer(), integer()}]
   def entries(opts \\ []) do
     now = now(opts)
-    spec = [{{{:"$1", :"$2"}, :"$3", :"$4"}, [{:>, :"$4", now}], [{{:"$1", :"$2", :"$3", :"$4"}}]}]
+    spec = [{{{:"$1", :"$2"}, :"$3", :"$4", :_}, [{:>, :"$4", now}], [{{:"$1", :"$2", :"$3", :"$4"}}]}]
 
     case safe(fn -> :ets.select(table(opts), spec) end) do
       list when is_list(list) -> list
@@ -185,7 +276,14 @@ defmodule Embervm.Scheduler.Inflight do
   end
 
   defp sweep_expired(table, now) do
-    :ets.select_delete(table, [{{:_, :_, :"$1"}, [{:"=<", :"$1", now}], [true]}])
+    :ets.select_delete(table, [{{:_, :_, :"$1", :_}, [{:"=<", :"$1", now}], [true]}])
+  end
+
+  defp count(map, key) do
+    case Map.get(map, key) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> 0
+    end
   end
 
   defp table(opts), do: Keyword.get(opts, :table) || @table

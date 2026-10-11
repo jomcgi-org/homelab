@@ -120,4 +120,61 @@ defmodule Embervm.Scheduler.InflightTest do
   test "create is idempotent", %{table: table} do
     assert Inflight.create(table) == table
   end
+
+  describe "one count per boot" do
+    test "a report drops the settled claims it follows, ordered by report sequence", %{opts: opts} do
+      :ok = Inflight.claim("n/a", :landed, 3_136, opts)
+      :ok = Inflight.claim("n/a", :flying, 3_136, opts)
+      :ok = Inflight.settle("n/a", :landed, opts)
+      assert Inflight.pending("n/a", opts) == {3_136, 3_136}
+
+      # A report on another brick does not touch this one.
+      :ok = Inflight.observe_report("n/b", opts)
+      assert Inflight.pending("n/a", opts) == {3_136, 3_136}
+
+      :ok = Inflight.observe_report("n/a", opts)
+      assert Inflight.pending("n/a", opts) == {3_136, 0}
+
+      # A claim settled after the latest report waits for the next one.
+      :ok = Inflight.settle("n/a", :flying, opts)
+      assert Inflight.pending("n/a", opts) == {0, 3_136}
+      :ok = Inflight.observe_report("n/a", opts)
+      assert Inflight.pending("n/a", opts) == {0, 0}
+    end
+
+    test "a brick reporting its ledger is charged only the claims it does not yet show", %{opts: opts} do
+      reporting = %{admission_reported: true, mem_inflight_mib: 3_072, inflight_vms: 1, vm_overhead_mib: 64}
+
+      :ok = Inflight.claim("n/a", :admitted, 3_136, opts)
+      # The daemon already counts the admitted boot (need plus overhead).
+      assert Inflight.debit_mib("n/a", reporting, opts) == 0
+
+      :ok = Inflight.claim("n/a", :racing, 3_136, opts)
+      assert Inflight.debit_mib("n/a", reporting, opts) == 3_136
+
+      # Never cancels more than the control plane's own claims, so a daemon
+      # in-flight boot the control plane did not place adds no headroom.
+      busy = %{reporting | mem_inflight_mib: 9_000, inflight_vms: 3}
+      assert Inflight.debit_mib("n/a", busy, opts) == 0
+
+      # A settled claim counts in full until a report follows it.
+      :ok = Inflight.settle("n/a", :admitted, opts)
+      assert Inflight.debit_mib("n/a", %{reporting | mem_inflight_mib: 0, inflight_vms: 0}, opts) == 3_136 + 3_136
+    end
+
+    test "a brick that does not report its ledger is charged every claim", %{opts: opts} do
+      :ok = Inflight.claim("n/a", :one, 3_136, opts)
+      :ok = Inflight.claim("n/a", :two, 1_000, opts)
+      :ok = Inflight.settle("n/a", :two, opts)
+      assert Inflight.debit_mib("n/a", %{admission_reported: false, mem_inflight_mib: 3_072}, opts) == 4_136
+    end
+
+    test "drop forgets the brick's report sequence with its claims", %{opts: opts} do
+      :ok = Inflight.observe_report("n/a", opts)
+      :ok = Inflight.claim("n/a", :r, 100, opts)
+      :ok = Inflight.drop("n/a", opts)
+      assert Inflight.pending("n/a", opts) == {0, 0}
+      assert :ets.lookup(opts[:table], {:report_seq, "n/a"}) == []
+    end
+  end
 end
