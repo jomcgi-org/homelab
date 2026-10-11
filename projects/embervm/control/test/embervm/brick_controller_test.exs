@@ -2248,6 +2248,147 @@ defmodule Embervm.BrickControllerTest do
     assert attributed.(1_024, 2_816) == ["4gi"]
   end
 
+  # -- same-class floors (separate pinned Deployments) ---------------------------
+
+  # The class Deployment's pod is brick-a; brick-floor belongs to a pinned
+  # nodeFloors Deployment of the same class. Selectors are recorded so a test
+  # can prove every lookup excluded the floor label.
+  defp floor_pods_fun(selectors) do
+    fn _ns, selector ->
+      Agent.update(selectors, &[selector | &1])
+
+      if selector =~ "!embervm.jomcgi.dev/brick-floor" do
+        {:ok, [%{name: "brick-a", uid: "uid-a"}]}
+      else
+        {:ok, [%{name: "brick-a", uid: "uid-a"}, %{name: "brick-floor", uid: "uid-floor"}]}
+      end
+    end
+  end
+
+  defp new_selectors do
+    {:ok, pid} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
+    pid
+  end
+
+  defp floor_opts(facts, scale_recorder, annotate, selectors) do
+    [
+      mode: :full,
+      classes: [%{name: "2gi", desired: 1, min: 0, max: 4, floors: 1}],
+      scale_fun: scale_recorder,
+      scale_get_fun: fn _ns, _name -> {:ok, 1} end,
+      facts_fun: fn -> facts end,
+      pods_fun: floor_pods_fun(selectors),
+      annotate_fun: annotate,
+      registered_fun: fn -> %{"2gi" => 2} end,
+      down_idle_ms: 100
+    ]
+  end
+
+  test "an idle same-class floor never holds the idle dwell or becomes the victim" do
+    {record, calls} = new_recorder()
+    {annotate, annotated} = new_annotator()
+    {clock, advance} = new_clock()
+    selectors = new_selectors()
+
+    facts = [
+      %{size_class: "2gi", pod_uid: "uid-a", live_vms: 3, draining: false},
+      %{size_class: "2gi", pod_uid: "uid-floor", live_vms: 0, draining: false}
+    ]
+
+    pid = start(floor_opts(facts, record, annotate, selectors) ++ [clock: clock])
+
+    BrickController.reconcile_now(pid)
+    advance.(200)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    refute log =~ "idle_drain"
+    assert annotated.() == []
+    assert Enum.all?(calls.(), &(elem(&1, 2) == 1))
+    assert :sys.get_state(pid).idle_since == %{}
+
+    assert selectors |> Agent.get(& &1) |> Enum.all?(&(&1 =~ "!embervm.jomcgi.dev/brick-floor"))
+  end
+
+  test "the class's own idle brick is the victim even when a floor has less warmth" do
+    {record, calls} = new_recorder()
+    {annotate, annotated} = new_annotator()
+    {clock, advance} = new_clock()
+    selectors = new_selectors()
+
+    facts = [
+      %{
+        size_class: "2gi",
+        pod_uid: "uid-a",
+        live_vms: 0,
+        draining: false,
+        stateful_bundles: [%{exported: true}]
+      },
+      %{size_class: "2gi", pod_uid: "uid-floor", live_vms: 0, draining: false}
+    ]
+
+    pid = start(floor_opts(facts, record, annotate, selectors) ++ [clock: clock])
+
+    BrickController.reconcile_now(pid)
+    advance.(200)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert log =~ "brick autoscale: scaling class 2gi from 1 to 0 (reason=idle_drain)"
+
+    assert annotated.() == [
+             {"embervm", "brick-a", %{"controller.kubernetes.io/pod-deletion-cost" => "-1000"}}
+           ]
+
+    assert List.last(calls.()) == {"embervm", @prefix <> "2gi", 0}
+  end
+
+  test "a registered same-class floor does not mask fleet-full" do
+    for {pods_fun, flagged} <- [
+          {floor_pods_fun(new_selectors()), MapSet.new(["2gi"])},
+          # An unlisted ownership counts every registered brick, as before.
+          {fn _ns, _selector -> {:error, :forbidden} end, MapSet.new()}
+        ] do
+      pid =
+        start(
+          mode: :full,
+          classes: [%{name: "2gi", desired: 2, min: 0, max: 4, floors: 1}],
+          scale_fun: fn _ns, _name, _replicas -> :ok end,
+          scale_get_fun: fn _ns, _name -> {:ok, 2} end,
+          facts_fun: fn ->
+            [
+              %{size_class: "2gi", pod_uid: "uid-a", live_vms: 1, draining: false},
+              %{size_class: "2gi", pod_uid: "uid-floor", live_vms: 1, draining: false}
+            ]
+          end,
+          pods_fun: pods_fun,
+          registered_fun: fn -> %{"2gi" => 2} end,
+          fleet_full_after_ms: 0
+        )
+
+      ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+      assert BrickController.flagged(pid) == flagged
+    end
+  end
+
+  test "brick pods are listed only in full mode and only for a class with floors" do
+    for {mode, floors} <- [{:off, 1}, {:observe, 1}, {:up, 1}, {:full, 0}] do
+      pid =
+        start(
+          mode: mode,
+          classes: [%{name: "2gi", desired: 1, min: 0, max: 4, floors: floors}],
+          scale_fun: fn _ns, _name, _replicas -> :ok end,
+          scale_get_fun: fn _ns, _name -> {:ok, 1} end,
+          facts_fun: fn ->
+            [%{size_class: "2gi", pod_uid: "uid-floor", live_vms: 0, draining: false}]
+          end,
+          pods_fun: fn _ns, _selector -> raise "#{mode} with #{floors} floors listed pods" end,
+          registered_fun: fn -> %{"2gi" => 1} end
+        )
+
+      assert :ok = BrickController.reconcile_now(pid)
+    end
+  end
+
   # -- catalog floors and class authorization -----------------------------------
 
   test "a catalog floor skips an unauthorized class and scales the authorized one" do

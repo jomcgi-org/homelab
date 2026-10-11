@@ -72,6 +72,17 @@ defmodule Embervm.BrickController do
   (default 15m) AND zero denials in the window AND no fleet-full episode inside
   the same window. Steps -1, never below `min`.
 
+  Same-class `nodeFloors` bricks run in separate pinned Deployments, so they
+  are not this controller's replicas. For a class the chart pins floors to (its
+  declared `floors`), mode `full` lists the brick pods once per tick and counts
+  only the class Deployment's pods, the ones without the chart's
+  `embervm.jomcgi.dev/brick-floor` label: a floor brick is neither idle
+  evidence, a scale-down victim, nor a registered replica. The other modes hold
+  no pods RBAC in a namespaced install, so there a floor still counts as idle
+  and registered; it can never become a victim, since only `full` removes
+  replicas. A failed list counts every brick, as before, and the victim lookup
+  itself never matches a floor pod.
+
   Hysteresis: separate cooldowns per direction (`up_cooldown_ms` default 60s,
   `down_cooldown_ms` default 10m; a scale-up also blocks scale-down for the
   down cooldown), plus the asymmetric windows above, so the loop cannot flap.
@@ -412,7 +423,11 @@ defmodule Embervm.BrickController do
       # to spill demand past a class at its ceiling. Never deleted, so an
       # unreadable /scale keeps the prior count; no entry means the class has
       # not been reconciled since boot and has no known headroom.
-      last_acted: %{}
+      last_acted: %{},
+      # Pod uids of the class Deployments' bricks (never a same-class floor),
+      # listed once per tick in mode :full when a class has floors; :unknown
+      # when not listed or the list failed, which counts every brick as before.
+      elastic_pod_uids: :unknown
     }
 
     if Keyword.get(opts, :reconcile_on_start, true), do: send(self(), :reconcile)
@@ -556,6 +571,9 @@ defmodule Embervm.BrickController do
     state = prune_archive_pending(state, facts)
     now = state.clock.()
     state = check_capacity_drift(state, facts)
+    state = track_elastic_pods(state, facts)
+    registered = elastic_registered(state, registered, facts)
+
     state =
       if state.mode == :off,
         do: %{state | empty_demand: []},
@@ -563,7 +581,7 @@ defmodule Embervm.BrickController do
           state
           |> settle_empty_demand(facts, now)
           |> prune_denials(now)
-          |> track_idle(now, facts)
+          |> track_idle(now, elastic_facts(state, facts))
 
     portfolio = Portfolio.floors(state.catalog_fun.(), state.classes)
     state = track_floor_overflow(state, portfolio)
@@ -1194,6 +1212,90 @@ defmodule Embervm.BrickController do
       Map.get(fact, :live_vms, 0) == 0
   end
 
+  # -- same-class floors ---------------------------------------------------------
+
+  # The chart labels every nodeFloors pod with this (embervm.brickFloor.labels);
+  # a class Deployment's pods never carry it.
+  @brick_floor_label "embervm.jomcgi.dev/brick-floor"
+
+  # List the class Deployments' brick pods once per tick, so a same-class floor
+  # (a separate pinned Deployment this controller never scales) is neither idle
+  # evidence, a victim, nor a registered replica. Only mode :full lists: it is
+  # the only mode a namespaced install grants pods list, and the only one that
+  # removes replicas. Only a class the chart pins floors to has a floor to tell
+  # apart, so the list is skipped unless a fact of such a class names a pod; a
+  # fleet without nodeFloors never lists.
+  defp track_elastic_pods(%{mode: :full} = state, facts) do
+    floored = floored_classes(state)
+
+    pod_facts? =
+      Enum.any?(facts, fn fact ->
+        MapSet.member?(floored, Map.get(fact, :size_class, "")) and
+          Map.get(fact, :pod_uid, "") not in [nil, ""]
+      end)
+
+    selector = "app.kubernetes.io/component=noded-brick,!#{@brick_floor_label}"
+
+    elastic =
+      with true <- pod_facts?,
+           {:ok, pods} <- state.pods_fun.(state.namespace, selector) do
+        MapSet.new(pods, & &1.uid)
+      else
+        false ->
+          :unknown
+
+        {:error, reason} ->
+          Logger.warning("embervm brick pods list failed; same-class floors stay counted",
+            reason: inspect(reason)
+          )
+
+          :unknown
+      end
+
+    %{state | elastic_pod_uids: elastic}
+  end
+
+  defp track_elastic_pods(state, _facts), do: %{state | elastic_pod_uids: :unknown}
+
+  # The classes the chart pins nodeFloors bricks to (a positive `floors`).
+  defp floored_classes(state) do
+    for class <- state.classes,
+        (class_field(class, [:floors, "floors"]) || 0) > 0,
+        into: MapSet.new(),
+        do: class_name(class)
+  end
+
+  # A known floor brick: its class has floors and the tick's class-pod list
+  # does not hold its pod. Unknown ownership marks nothing.
+  defp floor_fact?(%{elastic_pod_uids: :unknown}, _floored, _fact), do: false
+
+  defp floor_fact?(state, floored, fact) do
+    MapSet.member?(floored, Map.get(fact, :size_class, "")) and
+      not MapSet.member?(state.elastic_pod_uids, Map.get(fact, :pod_uid))
+  end
+
+  defp elastic_facts(state, facts) do
+    floored = floored_classes(state)
+    Enum.reject(facts, &floor_fact?(state, floored, &1))
+  end
+
+  # Credit only class Deployment bricks to a class's registered count, so a
+  # registered floor cannot offset a Pending class replica and mask fleet-full.
+  # The registered count and the facts come from the same capacity ledger.
+  defp elastic_registered(state, registered, facts) do
+    floored = floored_classes(state)
+
+    facts
+    |> Enum.filter(&floor_fact?(state, floored, &1))
+    |> Enum.frequencies_by(&Map.get(&1, :size_class, ""))
+    |> Enum.reduce(registered, fn {name, floors}, acc ->
+      case Map.fetch(acc, name) do
+        {:ok, count} -> Map.put(acc, name, max(count - floors, 0))
+        :error -> acc
+      end
+    end)
+  end
+
   defp idle_dwell_ok?(state, name, now) do
     case Map.get(state.idle_since, name) do
       nil -> false
@@ -1377,7 +1479,7 @@ defmodule Embervm.BrickController do
   # preemption drain (noded SIGTERM -> registry drain edge -> DrainCoordinator
   # force-bank) is the backstop for exactly that window.
   defp prepare_scale_down(state, class, now) do
-    facts = archive_facts(state)
+    facts = elastic_facts(state, archive_facts(state))
 
     case pick_archive_victim(state, facts, class) do
       {:safe, victim} ->
@@ -1479,8 +1581,12 @@ defmodule Embervm.BrickController do
     end
   end
 
+  # Same-class nodeFloors bricks run in their own pinned Deployments and carry
+  # the floor label; they are never this class Deployment's replicas or victims.
   defp brick_pod_selector(class),
-    do: "app.kubernetes.io/component=noded-brick,embervm.jomcgi.dev/size-class=#{class}"
+    do:
+      "app.kubernetes.io/component=noded-brick,embervm.jomcgi.dev/size-class=#{class}," <>
+        "!#{@brick_floor_label}"
 
   defp class_deployment_pod?(%{archive_ack_gate: false}, _class, _pod), do: true
   defp class_deployment_pod?(state, class, pod) do
