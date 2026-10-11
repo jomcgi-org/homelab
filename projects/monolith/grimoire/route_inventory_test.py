@@ -74,6 +74,7 @@ CASES = {
     ("GET", PREFIX + "/transcript/settings"): Case(
         denials={"player_a": 403, "player_b": 403, "no_character": 403},
     ),
+    ("GET", PREFIX + "/transcript/settings"): Case(),
     ("PATCH", PREFIX + "/transcript/settings"): Case(
         body={"retention_days": 14},
     ),

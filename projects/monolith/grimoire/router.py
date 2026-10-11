@@ -3271,7 +3271,7 @@ def get_transcript_settings(
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> dict:
-    _require_dm(session, campaign_id, email)
+    _get_member_or_404(session, campaign_id, email)
     campaign = session.get(Campaign, campaign_id)
     return {"retention_days": campaign.transcript_retention_days}
 
