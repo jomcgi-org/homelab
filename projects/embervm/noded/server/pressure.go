@@ -44,7 +44,10 @@ const refusalLogInterval = 10 * time.Second
 // ClaimedMib count it, or it is gone, so the ticket is released exactly once and
 // the boot is never uncounted in between. A BuildBase holds its ticket for the
 // whole build, because build VMs run on their own drivers and never appear in
-// LiveCount or ClaimedMib.
+// LiveCount or ClaimedMib. Once its build guest has booted, the observed term
+// stops subtracting that ticket (buildGuestBooted): the brick cgroup's headroom
+// already charges every page the guest touches, so the guest would otherwise
+// count twice for the minutes the build runs.
 //
 // Rejection stays O(1): every input is an already-maintained counter or a cheap
 // cgroup file read (the budget reader's headroom and ceiling, the IP allocator's
@@ -98,6 +101,10 @@ type admissionLedger struct {
 	// decision subtracts them, and NodeStatus reports them.
 	inflightMib uint64
 	inflightVMs int
+	// buildResidentMib is the part of inflightMib held by builds whose guest has
+	// booted. The observed term leaves it out, because the cgroup headroom
+	// already charges those guests; the reserved term and the slot count do not.
+	buildResidentMib uint64
 	// refusals counts every refusal since daemon start by token
 	// (NodeStatus.admission_refusals).
 	refusals map[rejectReason]uint64
@@ -160,9 +167,12 @@ type admissionFacts struct {
 	live        int
 	inflightMib uint64
 	inflightVMs int
-	overheadMib uint64
-	floorMib    uint64
-	slotCeiling int
+	// buildResidentMib is the in-flight memory of booted build guests, which
+	// the observed headroom already reflects.
+	buildResidentMib uint64
+	overheadMib      uint64
+	floorMib         uint64
+	slotCeiling      int
 }
 
 // modelName is the admission model as logged and reported: reserved, or
@@ -179,7 +189,7 @@ func (f admissionFacts) modelName() string {
 // verb and NodeStatus.mem_admittable_mib call it, so the control plane admits
 // need N exactly when the daemon would.
 //
-//	observed = headroom - inflight - floor                      (headroom known)
+//	observed = headroom - (inflight - buildResident) - floor         (headroom known)
 //	reserved = budget - claimed - inflight - O*(live+inflightVMs+1)  (budget known)
 //
 // The observed model uses observed alone. The reserved model (no overcommit)
@@ -188,14 +198,17 @@ func (f admissionFacts) modelName() string {
 // the kernel cannot reclaim). An unknown input contributes no bound, so a brick
 // that can see neither number fails open exactly as it did before this predicate
 // existed. The arithmetic is signed: a negative result admits nothing, not even a
-// zero-need probe.
+// zero-need probe. A build guest that has booted is charged by the headroom
+// itself, so the observed term subtracts only the tickets whose memory the
+// cgroup cannot see yet.
 func (f admissionFacts) admittableMib() (int64, bool) {
 	var (
 		admittable int64
 		finite     bool
 	)
 	if f.headroomKnown {
-		admittable = clampInt64(f.headroomMib) - clampInt64(f.inflightMib) - clampInt64(f.floorMib)
+		unseen := f.inflightMib - min(f.buildResidentMib, f.inflightMib)
+		admittable = clampInt64(f.headroomMib) - clampInt64(unseen) - clampInt64(f.floorMib)
 		finite = true
 	}
 	if f.model == admissionModelReserved && f.budgetMib > 0 {
@@ -236,16 +249,17 @@ func clampInt64(v uint64) int64 {
 func (s *Server) admissionFactsLocked() admissionFacts {
 	headroom, known := s.observedHeadroomMib()
 	f := admissionFacts{
-		model:         s.cfg.AdmissionModel,
-		budgetMib:     s.memBudgetMib(),
-		headroomMib:   headroom,
-		headroomKnown: known,
-		claimedMib:    s.claimedMib(),
-		inflightMib:   s.admission.inflightMib,
-		inflightVMs:   s.admission.inflightVMs,
-		overheadMib:   s.vmOverheadMib(),
-		floorMib:      s.memRejectFloorMib(),
-		slotCeiling:   s.SlotCeiling(),
+		model:            s.cfg.AdmissionModel,
+		budgetMib:        s.memBudgetMib(),
+		headroomMib:      headroom,
+		headroomKnown:    known,
+		claimedMib:       s.claimedMib(),
+		inflightMib:      s.admission.inflightMib,
+		inflightVMs:      s.admission.inflightVMs,
+		buildResidentMib: s.admission.buildResidentMib,
+		overheadMib:      s.vmOverheadMib(),
+		floorMib:         s.memRejectFloorMib(),
+		slotCeiling:      s.SlotCeiling(),
 	}
 	if s.driver != nil {
 		f.live = s.driver.LiveCount()
@@ -259,6 +273,11 @@ type admissionTicket struct {
 	s       *Server
 	needMib uint64
 	once    sync.Once
+	// resident and released are guarded by s.admission.mu. resident marks a
+	// build ticket whose guest has booted (buildGuestBooted); released marks a
+	// ticket already returned, which can no longer become resident.
+	resident bool
+	released bool
 }
 
 // release returns the reservation exactly once. Boot paths call it the moment
@@ -274,11 +293,41 @@ func (t *admissionTicket) release() {
 		l.mu.Lock()
 		l.inflightMib -= t.needMib
 		l.inflightVMs--
+		if t.resident {
+			l.buildResidentMib -= t.needMib
+		}
+		t.released = true
 		l.mu.Unlock()
 		// The released reservation changes mem_admittable_mib: tell the control
 		// plane now rather than at the next liveness tick.
 		t.s.signalChange()
 	})
+}
+
+// buildGuestBooted is called by a BuildBase once its build guest has booted. It
+// moves the ticket's memory out of the observed term only: from here the brick
+// cgroup's headroom charges every page the guest touches, so subtracting the
+// whole ticket again would count the guest twice for the rest of the build. The
+// reserved term and the slot count keep the ticket until release, because a
+// build VM never appears in LiveCount or ClaimedMib. Until the guest boots the
+// observed term still subtracts it, so a concurrent boot cannot pass against
+// headroom the guest has not faulted in yet. Once only; a no-op on a nil or
+// released ticket.
+func (t *admissionTicket) buildGuestBooted() {
+	if t == nil {
+		return
+	}
+	l := &t.s.admission
+	l.mu.Lock()
+	if t.resident || t.released {
+		l.mu.Unlock()
+		return
+	}
+	t.resident = true
+	l.buildResidentMib += t.needMib
+	l.mu.Unlock()
+	// The observed term just grew: tell the control plane now.
+	t.s.signalChange()
 }
 
 type admissionTicketKey struct{}
@@ -365,6 +414,7 @@ func (s *Server) refusal(verb string, reason rejectReason, needMib uint64, f adm
 			"live", f.live,
 			"inflight_vms", f.inflightVMs,
 			"inflight_mib", f.inflightMib,
+			"build_resident_mib", f.buildResidentMib,
 			"slot_ceiling", f.slotCeiling,
 			"claimed_mib", f.claimedMib,
 			"budget_mib", f.budgetMib,
@@ -444,8 +494,8 @@ func (s *Server) memExhausted(needMib uint64) bool {
 }
 
 // memPressured is the observed half of the predicate on its own: whether known
-// cgroup headroom, less the boots in flight, is below the workload's need plus
-// the reject floor. An unknown headroom (unlimited or unreadable cgroup) fails
+// cgroup headroom, less the boots in flight it does not yet reflect, is below
+// the workload's need plus the reject floor. An unknown headroom (unlimited or unreadable cgroup) fails
 // open; a known but exhausted cgroup reads at least 1 MiB (parseMemHeadroomMib)
 // and refuses.
 func (s *Server) memPressured(needMib uint64) bool {

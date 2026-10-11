@@ -911,7 +911,9 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	// an idempotent repair call is never refused) and before any staging or
 	// registry bookkeeping (so a refusal leaves no FAILED base or build_error).
 	// The build guest runs on its own driver, outside LiveCount and ClaimedMib, so
-	// its ticket is held for the whole build rather than released at boot.
+	// its ticket is held for the whole build rather than released at boot. Once
+	// the guest has booted, runBuild moves the ticket out of the observed term
+	// (buildGuestBooted), because the cgroup headroom then charges the guest.
 	res := req.GetResources()
 	buildNeedMib := uint64(res.GetMemMib())
 	if buildNeedMib == 0 {
@@ -955,7 +957,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		MemMib:      int(res.GetMemMib()),
 	})
 
-	sizeBytes, err := s.runBuild(buildCtx, bd, baseKey, workload, readyPath, archive)
+	sizeBytes, err := s.runBuild(buildCtx, bd, ticket, baseKey, workload, readyPath, archive)
 	// runBuild has torn the build guest down (its deferred Release) on every
 	// path, so the reservation is no longer backing any memory.
 	ticket.release()
@@ -1251,12 +1253,17 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 // Sequence: Claim (cold boot) -> Prime (drain the vsock path via /shim/healthz)
 // -> Hydrate (POST the archive; zip lane only) -> WaitReady (/shim/ready flips 200
 // only after the shim unpacks + imports the handler) -> SnapshotBase.
-func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload, readyPath string, archive []byte) (int64, error) {
+//
+// ticket is the build's admission ticket. The caller releases it after runBuild
+// returns; runBuild only marks the guest booted once Claim succeeds, so the
+// observed admission term stops counting it on top of the cgroup headroom.
+func (s *Server) runBuild(ctx context.Context, bd BuildDriver, ticket *admissionTicket, baseKey, workload, readyPath string, archive []byte) (int64, error) {
 	spec := substrate.ClaimSpec{Workload: workload, Arch: s.cfg.Arch, ThreadID: newID("build")}
 	h, err := bd.Claim(ctx, spec)
 	if err != nil {
 		return 0, fmt.Errorf("cold boot: %w", err)
 	}
+	ticket.buildGuestBooted()
 	egressCancel := func() {}
 	defer func() {
 		egressCancel()
