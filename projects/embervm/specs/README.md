@@ -932,7 +932,13 @@ these differences between that protocol and the tree at c05e43f66:
   now charges a reporting brick only the claims its report does not show, and a
   settled claim drops on the brick's next report. noded still counts a landed
   VM twice between `track()` and `release()`, for microseconds; that cannot
-  overcommit and costs at most a refusal the CP retries.
+  overcommit and costs at most a refusal the CP retries. noded's own build
+  double count is resolved too: a `BuildBase` holds its ticket for the whole
+  build, and the observed guard subtracted it on top of headroom that already
+  charged the running build guest, for minutes. The observed term now drops
+  the ticket once the build guest boots (`buildGuestBooted`), while the
+  reserved term and the slot count keep it. `admission.tla` does not model
+  builds.
 
 ## Running TLC
 
