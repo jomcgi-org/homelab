@@ -157,8 +157,10 @@ defmodule Embervm.BrickController do
   exceeds `max`, the controller raises `:floor_overflow` immediately through a
   transition-only warning and trace, and suppresses scale writes for that class
   until the contradiction clears. Other classes continue reconciling. The
-  computation uses declared memory, admission cushion, and slot capacity, so it
-  works when a class has zero live replicas.
+  computation uses declared memory, admission cushion, per-VM overhead, and
+  slot capacity, so it works when a class has zero live replicas. Like denial
+  attribution it charges only classes with a positive authorized bound, unless
+  no authorized class can hold an item.
 
   ## inert until bricks exist
 
