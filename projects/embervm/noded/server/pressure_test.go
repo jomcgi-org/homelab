@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -881,6 +883,99 @@ func TestBuildBaseHoldsTicketForWholeBuild(t *testing.T) {
 	}
 	if _, err := s.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__afterbuild"}); err != nil {
 		t.Fatalf("Prime after the build: %v", err)
+	}
+}
+
+// TestBuildBaseObservedTermCountsBootedBuildGuestOnce: the observed term
+// subtracts a build's ticket until its guest boots, which closes the
+// admit-to-Claim race for builds, and from then on only the cgroup headroom
+// charges the guest, so a resident build guest is not counted twice for the
+// minutes the build runs. The reserved term, the slot count and NodeStatus
+// mem_inflight_mib keep the whole ticket until the build finishes, because the
+// build VM never joins LiveCount or ClaimedMib.
+func TestBuildBaseObservedTermCountsBootedBuildGuestOnce(t *testing.T) {
+	ready := make(chan struct{})
+	s, drv, build, started := buildAdmissionServer(t, ready)
+	claimGate := make(chan struct{})
+	claimStarted := make(chan struct{}, 1)
+	build.mu.Lock()
+	build.claimStarted, build.blockClaim = claimStarted, claimGate
+	build.mu.Unlock()
+	primeClaimed := make(chan struct{}, 1)
+	drv.mu.Lock()
+	drv.claimStarted = primeClaimed
+	drv.mu.Unlock()
+	openClaim := sync.OnceFunc(func() { close(claimGate) })
+	openReady := sync.OnceFunc(func() { close(ready) })
+	defer openClaim()
+	defer openReady()
+	var headroom atomic.Uint64
+	headroom.Store(6000) // an idle 8gi brick: memory.max less the daemon's own RSS
+	s.memHeadroom = headroom.Load
+	seedBase(s, "echo__beside", "echo")
+	s.registry.sync([]workloadEntry{{Workload: "echo", VCPUs: 1, MemMib: 3072}})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.BuildBase(context.Background(), buildRequest(3072))
+		done <- err
+	}()
+	recvWithin(t, claimStarted, "build guest cold boot")
+	// Admitted, not yet booted: the cgroup cannot see the guest, so the whole
+	// ticket comes off the observed headroom.
+	if got := s.nodeStatus().GetMemAdmittableMib(); got != 6000-3072-512 {
+		t.Fatalf("mem_admittable_mib before the build guest boots = %d, want %d", got, 6000-3072-512)
+	}
+	if _, err := s.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__beside"}); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("Prime before the build guest boots = %v, want ResourceExhausted", err)
+	}
+
+	openClaim()
+	recvWithin(t, started, "build guest readiness wait")
+	headroom.Store(6000 - 2048) // the booted build guest has faulted 2 GiB in
+	ns := s.nodeStatus()
+	if ns.GetMemInflightMib() != 3072 || ns.GetInflightVms() != 1 {
+		t.Fatalf("in flight during the build = (%d MiB, %d VMs), want (3072, 1)", ns.GetMemInflightMib(), ns.GetInflightVms())
+	}
+	if got := ns.GetMemAdmittableMib(); got != 6000-2048-512 {
+		t.Fatalf("mem_admittable_mib beside a booted build guest = %d, want %d (its pages counted once)", got, 6000-2048-512)
+	}
+	s.admission.mu.Lock()
+	f := s.admissionFactsLocked()
+	s.admission.mu.Unlock()
+	f.model, f.budgetMib = admissionModelReserved, 5000
+	if got, _ := f.admittableMib(); got != 5000-3072 {
+		t.Fatalf("reserved admittable beside a booted build guest = %d, want %d (the build ticket still reserved)", got, 5000-3072)
+	}
+
+	prime := make(chan error, 1)
+	go func() {
+		_, err := s.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__beside"})
+		prime <- err
+	}()
+	select {
+	case <-primeClaimed:
+	case err := <-prime:
+		t.Fatalf("Prime of a 3072 MiB guest beside a booted build guest = %v, want admitted", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Prime beside a booted build guest never reached its Claim")
+	}
+
+	openReady()
+	if err := recvWithin(t, done, "BuildBase"); err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	if err := recvWithin(t, prime, "Prime"); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	if snap := s.admissionStatus(); snap.inflightMib != 0 || snap.inflightVMs != 0 {
+		t.Fatalf("ledger after the build = %+v, want empty", snap)
+	}
+	s.admission.mu.Lock()
+	resident := s.admission.buildResidentMib
+	s.admission.mu.Unlock()
+	if resident != 0 {
+		t.Fatalf("buildResidentMib after the build = %d, want 0", resident)
 	}
 }
 

@@ -1129,9 +1129,12 @@ only when the declared `memMib` of every live and in-flight VM, plus
 `daemonReserveMib`), and the observed guard also holds: cgroup headroom net of
 reclaimable page cache, less boots in flight, less `memRejectFloorMib`. noded
 evaluates that predicate in one function under one mutex, against an atomic
-ticket ledger: every boot verb, `BuildBase` included, holds a ticket from
-admission until its driver boot call returns, so concurrent boots cannot each
-pass against the same headroom. A restore (a Prime, or a session, serving,
+ticket ledger: every boot verb holds a ticket from admission until its driver
+boot call returns, so concurrent boots cannot each pass against the same
+headroom. `BuildBase` holds its ticket for the whole build, because a build
+guest never joins the live map, but the observed guard stops subtracting it
+once the build guest boots, because the cgroup headroom then charges that
+guest. A restore (a Prime, or a session, serving,
 stateful or group-member relight) is charged the larger of its declared
 `memMib` and the size recorded with the snapshot it restores, because the live
 map counts the restored VM at the snapshot's size. A refusal is
