@@ -28,6 +28,7 @@ from grimoire.play_embeddings import (
     play_embedding_predicate,
 )
 from grimoire.visibility import Viewer, project_entity, visible_entities_query
+from grimoire.voices import speaker_ref
 
 # How many extra candidates to pull past ``k`` before visibility filtering and
 # trimming, so grant-invisible hits do not starve the final result set.
@@ -267,6 +268,20 @@ def _resolve_knowledge_hits(
             ):
                 # This uses the feed's live reveal_items projection, drops
                 # recognition-only items and renders partial snapshots safely.
+                # Non-DM viewers get the opaque voice ref, mirroring the feed
+                # and journal projections, so a raw speaker UUID never reaches
+                # a preview.
+                body = event.body
+                if viewer != "dm" and body and isinstance(
+                    body.get("speaker_key"), str
+                ):
+                    body = {
+                        **body,
+                        "speaker_key": speaker_ref(
+                            event.campaign_id, body["speaker_key"]
+                        ),
+                    }
+                    event = event.model_copy(update={"body": body})
                 preview = event_text(event)
                 if preview:
                     resolved = {
