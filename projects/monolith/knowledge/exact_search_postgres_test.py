@@ -367,3 +367,68 @@ def test_postgres_review_check_uses_evidence_basis_and_elapsed_hours(ranked_sess
         with pytest.raises(IntegrityError, match="notes_review_deadline_chk"):
             with session.begin_nested():
                 _note(session, "illegal lease", **fields)
+
+
+_OTHER_SCOPE = "repo:other-scope/test"
+
+
+def _scoped_ranking_fixture(session):
+    # Every out-of-scope note outranks every in-scope note by similarity, so a
+    # scope filter applied after the global top-k would leave nothing behind.
+    outside = [
+        _note(session, f"outside {score}", score, scope=_OTHER_SCOPE)
+        for score in (0.95, 0.94, 0.93, 0.92)
+    ]
+    inside = [
+        _note(session, f"inside {score}", score)
+        for score in (0.80, 0.78, 0.76, 0.74)
+    ]
+    return outside, inside
+
+
+def test_scoped_search_returns_top_k_within_scope_not_scoped_subset_of_global_top_k(
+    ranked_session,
+):
+    session = ranked_session
+    outside, inside = _scoped_ranking_fixture(session)
+    store = KnowledgeStore(session)
+    # Precondition: across both scopes the global top-3 is all out of scope.
+    global_top = store.search_notes_with_context(
+        _QUERY, limit=3, scope_filters=(_SCOPE, _OTHER_SCOPE)
+    )
+    assert [row["note_id"] for row in global_top] == [
+        note.note_id for note in outside[:3]
+    ]
+    scoped = store.search_notes_with_context(_QUERY, limit=3, scope_filter=_SCOPE)
+    assert [row["note_id"] for row in scoped] == [note.note_id for note in inside[:3]]
+    assert [row["score"] for row in scoped] == pytest.approx([0.80, 0.78, 0.76])
+    assert {row["scope"] for row in scoped} == {_SCOPE}
+
+
+def test_scoped_rank_search_chunks_returns_top_k_within_scope(ranked_session):
+    session = ranked_session
+    outside, inside = _scoped_ranking_fixture(session)
+    global_top = _rank_search_chunks(
+        session, _QUERY, 3, None, scope_filters=(_SCOPE, _OTHER_SCOPE)
+    )
+    assert [row[0] for row in global_top] == [note.id for note in outside[:3]]
+    scoped = _rank_search_chunks(session, _QUERY, 3, None, scope_filters=(_SCOPE,))
+    assert [row[0] for row in scoped] == [note.id for note in inside[:3]]
+    assert [row[2] for row in scoped] == pytest.approx([0.80, 0.78, 0.76])
+
+
+def test_scoped_exact_token_search_returns_top_k_within_scope(ranked_session):
+    session = ranked_session
+    outside, inside = _scoped_ranking_fixture(session)
+    # "#999" yields an identifier token that matches no note, so the exact-token
+    # ordering is active but falls through to semantic score within scope.
+    scoped = _rank(session, "#999", limit=3, scope_filters=(_SCOPE,))
+    assert [row[0] for row in scoped] == [note.id for note in inside[:3]]
+    both = _rank(session, "#999", limit=3, scope_filters=(_SCOPE, _OTHER_SCOPE))
+    assert [row[0] for row in both] == [note.id for note in outside[:3]]
+    results = KnowledgeStore(session).search_notes_with_context(
+        _QUERY, limit=3, scope_filter=_SCOPE, query_text="#999"
+    )
+    assert [row["note_id"] for row in results] == [
+        note.note_id for note in inside[:3]
+    ]
