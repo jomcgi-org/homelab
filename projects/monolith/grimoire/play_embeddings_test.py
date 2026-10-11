@@ -230,7 +230,13 @@ def test_job_embeds_only_eligible_player_safe_projections_and_second_run_is_noop
     h = harness
     client = FakeEmbedder()
     rows = [
-        event(h, kind, {"text": f"searchable-{kind}"})
+        event(
+            h,
+            kind,
+            {"title": "T", "markdown": "searchable-handout"}
+            if kind == "handout"
+            else {"text": f"searchable-{kind}"},
+        )
         for kind in ("narration", "handout", "utterance")
     ]
     partial = event(
@@ -534,3 +540,52 @@ def test_wrong_embedding_batch_cardinality_does_not_write(harness):
         ).all()
         == []
     )
+
+
+def test_handout_text_is_title_and_markdown_only(harness):
+    h = harness
+    key = "campaigns/c1/handouts/0123456789abcdef.png"
+    chunk_id = str(uuid4())
+    entity_id = str(uuid4())
+    for image in (
+        {"source": "upload", "key": key},
+        {"source": "chunk", "chunk_id": chunk_id},
+    ):
+        row = event(
+            h,
+            "handout",
+            {
+                "title": "Letter from the baron",
+                "markdown": "Meet me at **dusk**.",
+                "entity_id": entity_id,
+                "image": image,
+            },
+        )
+        text = event_text(row)
+        assert text == "Letter from the baron\n\nMeet me at **dusk**."
+        for hidden in (key, chunk_id, entity_id, "upload", "source", "image"):
+            assert hidden not in text
+    # A handout without markdown is still searchable by its title.
+    assert event_text(event(h, "handout", {"title": "Map"})) == "Map"
+
+
+def test_retracting_a_handout_removes_its_embedding(harness):
+    h = harness
+    row = event(
+        h,
+        "handout",
+        {
+            "title": "Letter",
+            "markdown": "Secret plan",
+            "image": {"source": "chunk", "chunk_id": str(uuid4())},
+        },
+    )
+    eid = embedding(h.session, row)
+    assert stored(h, eid) is not None
+    with TestClient(h.app()) as client:
+        response = client.post(
+            prefix(h) + f"/sessions/{row.session_id}/events/{row.id}/retract",
+            headers=h.headers("dm"),
+        )
+    assert response.status_code == 200, response.text
+    assert stored(h, eid) is None

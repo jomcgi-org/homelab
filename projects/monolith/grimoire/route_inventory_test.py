@@ -337,7 +337,8 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 58  # 49 base + 6 inventory + 3 voice routes.
+    # Main's 58 plus two handout routes (upload, members-only image).
+    assert len(enumerated) == 60
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
@@ -572,11 +573,14 @@ def test_scanner_clean_body_and_audience_matrix(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    assert len(tokens) == 240  # Eight inventory items add four canaries each.
+    # Main's 240 (eight inventory items add four canaries each) plus six for the
+    # two seeded handouts (id, title and markdown on the live and retracted twin).
+    assert len(tokens) == 246
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]
-    assert len(embeddings) == 25
+    # Main's 25 plus a vectored embedding for each of the two seeded handouts.
+    assert len(embeddings) == 27
     assert all(row.dim == 1024 and len(row.vector) == 1024 for row in embeddings)
     storage = str(harness.snapshot()).casefold()
     for token in tokens:
@@ -741,3 +745,39 @@ def test_every_join_link_route_fails_closed_when_disabled(
             assert response.status_code == 503, response.text
             harness.assert_no_leak(response, viewer)
             assert harness.snapshot() == before
+
+
+def test_handout_is_audience_scoped_in_search_events_and_image(harness):
+    """The handout aimed at one PC is real in search for that PC, and only there."""
+    h = harness
+    title = h.rows["event_handout"].body["title"]
+    retracted_title = h.rows["event_handout_retracted"].body["title"]
+    embedding = h.rows["embedding_event_handout"]
+    assert len(embedding.vector) == 1024 and embedding.embeddable_kind == "event"
+    base = PREFIX.format(campaign_id=h.rows["campaign"].id)
+    session_base = f"{base}/sessions/{h.rows['campaign_session'].id}"
+    image = f"{session_base}/events/{h.rows['event_handout'].id}/image"
+    with TestClient(h.app()) as client:
+
+        def get(path, viewer, **query):
+            response = client.get(path, headers=h.headers(viewer), params=query)
+            h.assert_no_leak(response, viewer)
+            return response
+
+        # Positive control: the recipient's search returns the handout, so the
+        # absence below is the audience filter at work and not an empty index.
+        found = get(f"{base}/knowledge/search", "player_a", q="knowledge", k=50)
+        assert found.status_code == 200, found.text
+        assert title in found.text
+        assert retracted_title not in found.text
+        assert get(image, "player_a").status_code == 200
+        for viewer in ("player_b", "no_character"):
+            for path, query in (
+                (f"{base}/knowledge/search", {"q": "knowledge", "k": 50}),
+                (f"{session_base}/events", {}),
+                (f"{session_base}/journal", {}),
+                (f"{base}/journal", {}),
+            ):
+                response = get(path, viewer, **query)
+                assert title not in response.text, (viewer, path)
+            assert get(image, viewer).status_code == 404, viewer
