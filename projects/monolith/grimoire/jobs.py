@@ -27,9 +27,11 @@ import gzip
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete
+from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, select
 
 from grimoire.models import Campaign, Embedding, KnowledgeChunk, SessionEvent
@@ -46,6 +48,26 @@ DEFAULT_EXTRACT_LIMIT = 25
 DEFAULT_VERIFY_LIMIT = 25
 DEFAULT_VERIFY_EVIDENCE_LIMIT = 6
 TRANSCRIPT_REDACTION_BATCH_SIZE = 500
+# The play embedder (grimoire-embed-play, every 5 minutes) holds FOR UPDATE
+# locks on utterance source rows in embedding-scan order while retention holds
+# them in created_at order. Retry a conflicted batch and revisit skip-locked
+# rows instead of failing the run.
+TRANSCRIPT_REDACTION_RETRY_DELAY_SECONDS = 0.2
+TRANSCRIPT_REDACTION_MAX_RETRIES = 50
+
+
+def _is_redaction_conflict(exc: DBAPIError) -> bool:
+    code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+    return code in {"40001", "40P01"}
+
+
+def _expired_utterances(campaign_id: str, cutoff: datetime):
+    return (
+        SessionEvent.campaign_id == campaign_id,
+        SessionEvent.kind == "utterance",
+        SessionEvent.created_at < cutoff,
+        SessionEvent.body["redacted"].as_boolean().is_not(True),
+    )
 # Concurrent extract calls. Extraction is asynchronous bulk work, so it gets the
 # async slot budget of one decode slot and never makes an interactive caller
 # queue. See shared.inference.ASYNC_SLOT_BUDGET and
@@ -54,7 +76,13 @@ DEFAULT_EXTRACT_CONCURRENCY = shared.inference.ASYNC_SLOT_BUDGET
 
 
 def redact_transcripts(session: Session, *, now: datetime | None = None) -> int:
-    """Redact expired utterances and their vectors, committing each bounded batch."""
+    """Redact expired utterances and their vectors, committing each bounded batch.
+
+    Skips rows locked by the concurrent play embedder (SKIP LOCKED) and
+    revisits them until they are free, retrying serialization and deadlock
+    conflicts (SQLSTATE 40001/40P01) with a bounded backoff, so one overlap
+    with grimoire-embed-play cannot fail the daily run.
+    """
     now = now or datetime.now(timezone.utc)
     campaigns = session.exec(
         select(Campaign.id, Campaign.transcript_retention_days).order_by(Campaign.id)
@@ -62,22 +90,53 @@ def redact_transcripts(session: Session, *, now: datetime | None = None) -> int:
     redacted = 0
     for campaign_id, retention_days in campaigns:
         cutoff = now - timedelta(days=retention_days)
+        skipped_retries = 0
+        conflict_retries = 0
         while True:
-            rows = session.exec(
-                select(SessionEvent)
-                .where(
-                    SessionEvent.campaign_id == campaign_id,
-                    SessionEvent.kind == "utterance",
-                    SessionEvent.created_at < cutoff,
-                    SessionEvent.body["redacted"].as_boolean().is_not(True),
-                )
-                .order_by(SessionEvent.created_at, SessionEvent.id)
-                .limit(TRANSCRIPT_REDACTION_BATCH_SIZE)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            ).all()
+            try:
+                rows = session.exec(
+                    select(SessionEvent)
+                    .where(*_expired_utterances(campaign_id, cutoff))
+                    .order_by(SessionEvent.created_at, SessionEvent.id)
+                    .limit(TRANSCRIPT_REDACTION_BATCH_SIZE)
+                    .with_for_update(skip_locked=True)
+                    .execution_options(populate_existing=True)
+                ).all()
+            except DBAPIError as exc:
+                session.rollback()
+                if (
+                    _is_redaction_conflict(exc)
+                    and conflict_retries < TRANSCRIPT_REDACTION_MAX_RETRIES
+                ):
+                    conflict_retries += 1
+                    logger.warning(
+                        "grimoire_redact_transcripts: retrying conflicted batch "
+                        "(attempt %d)",
+                        conflict_retries,
+                    )
+                    time.sleep(TRANSCRIPT_REDACTION_RETRY_DELAY_SECONDS)
+                    continue
+                raise
             if not rows:
-                break
+                remaining = session.exec(
+                    select(SessionEvent.id)
+                    .where(*_expired_utterances(campaign_id, cutoff))
+                    .limit(1)
+                ).first()
+                if remaining is None:
+                    break
+                session.rollback()
+                if skipped_retries >= TRANSCRIPT_REDACTION_MAX_RETRIES:
+                    logger.warning(
+                        "grimoire_redact_transcripts: rows still locked after %d "
+                        "revisits, leaving them for the next run",
+                        skipped_retries,
+                    )
+                    break
+                skipped_retries += 1
+                time.sleep(TRANSCRIPT_REDACTION_RETRY_DELAY_SECONDS)
+                continue
+            skipped_retries = 0
             for row in rows:
                 row.body = {
                     "redacted": True,
@@ -89,13 +148,30 @@ def redact_transcripts(session: Session, *, now: datetime | None = None) -> int:
                 }
             # The play embedder locks the same source rows before persisting.
             # Remove both current transcript and legacy event-keyed vectors.
-            session.execute(
-                delete(Embedding).where(
-                    Embedding.embeddable_kind.in_(("transcript", "event")),
-                    Embedding.embeddable_id.in_([row.id for row in rows]),
+            try:
+                session.execute(
+                    delete(Embedding).where(
+                        Embedding.embeddable_kind.in_(("transcript", "event")),
+                        Embedding.embeddable_id.in_([row.id for row in rows]),
+                    )
                 )
-            )
-            session.commit()
+                session.commit()
+            except DBAPIError as exc:
+                session.rollback()
+                if (
+                    _is_redaction_conflict(exc)
+                    and conflict_retries < TRANSCRIPT_REDACTION_MAX_RETRIES
+                ):
+                    conflict_retries += 1
+                    logger.warning(
+                        "grimoire_redact_transcripts: retrying conflicted batch "
+                        "(attempt %d)",
+                        conflict_retries,
+                    )
+                    time.sleep(TRANSCRIPT_REDACTION_RETRY_DELAY_SECONDS)
+                    continue
+                raise
+            conflict_retries = 0
             redacted += len(rows)
     return redacted
 

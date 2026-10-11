@@ -146,7 +146,7 @@ utterance text. Ingest forbids unknown fields, including raw audio.
 
 Every campaign member can read retention settings. The DM sets
 `transcript_retention_days` from 1 to 365 days, with a default of 30. The daily
-`grimoire-redact-transcripts` CronJob runs at 03:30 UTC regardless of the play
+`grimoire-redact-transcripts` CronJob runs at 03:32 UTC regardless of the play
 and transcript flags. It redacts utterances older than the campaign window by
 server `created_at`, preserving a stub with `redacted: true`, timing, source
 and speaker label when present. The speaker remains in `author_member_id`.

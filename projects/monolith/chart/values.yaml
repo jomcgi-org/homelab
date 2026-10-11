@@ -1135,7 +1135,7 @@ jobs:
     # Privacy retention runs regardless of the transcript capture flag.
     - name: grimoire-redact-transcripts
       args: ["grimoire-redact-transcripts"]
-      schedule: "30 3 * * *" # daily 03:30 UTC
+      schedule: "32 3 * * *" # daily 03:32 UTC, off the */5 embed-play grid
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 600
       suspend: false

@@ -1,5 +1,6 @@
 """Real migrations, row-lock concurrency, rollback, and private-child lifecycle."""
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -116,6 +117,80 @@ def test_postgres_retention_redacts_expired_utterance_and_both_vector_kinds(lane
             session.refresh(row)
         assert {row.id: row.model_dump() for row in rows} == after
         assert retention_vectors(session, lane.campaign_id) == remaining
+
+
+def test_redaction_survives_embedder_lock_contention(lane):
+    """Redaction completes when the embedder holds source locks mid-scan."""
+    from grimoire.play_embeddings import _source
+
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
+    kept = {
+        "started_at": "2026-01-01T12:00:00Z",
+        "ended_at": "2026-01-01T12:00:01Z",
+        "source": "browser",
+    }
+    stub = {"redacted": True, **kept}
+    with Session(lane.engine) as session:
+        session.get(Campaign, lane.campaign_id).transcript_retention_days = 30
+        rows = [
+            SessionEvent(
+                campaign_id=lane.campaign_id,
+                session_id=lane.session_id,
+                seq=index + 1,
+                kind="utterance",
+                author_member_id=lane.member_id,
+                audience="table",
+                created_at=now - timedelta(days=31) + timedelta(hours=index),
+                body={"text": f"contention transcript {index}", **kept},
+            )
+            for index in range(2)
+        ]
+        session.add_all(rows)
+        session.add_all(
+            Embedding(
+                embeddable_kind=kind,
+                embeddable_id=row.id,
+                model="redact-contention",
+                dim=3,
+                vector=[0.0] * 3,
+                campaign_id=lane.campaign_id,
+                audience="table",
+                audience_pc_ids=[],
+                author_member_id=lane.member_id,
+            )
+            for row in rows
+            for kind in ("transcript", "event")
+        )
+        session.commit()
+        earlier_id, later_id = rows[0].id, rows[1].id
+    def run_redaction():
+        with Session(lane.engine) as redact_session:
+            return redact_transcripts(redact_session, now=now)
+
+    holder = Session(lane.engine)
+    try:
+        # Embedder mid-scan: holds the later-created row before redaction starts.
+        assert _source(holder, "transcript", later_id) is not None
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            redact_result = pool.submit(run_redaction)
+            # Let redaction lock the earlier row, then take the opposite order.
+            time.sleep(0.2)
+            assert _source(holder, "transcript", earlier_id) is not None
+            # Hold the later row while redaction revisits its skipped rows.
+            time.sleep(0.5)
+            holder.rollback()
+            assert redact_result.result(timeout=30) == 2
+    finally:
+        holder.close()
+    with Session(lane.engine) as session:
+        for row_id in (earlier_id, later_id):
+            assert session.get(SessionEvent, row_id).body == stub
+        assert (
+            session.exec(
+                select(Embedding).where(Embedding.embeddable_id.in_((earlier_id, later_id)))
+            ).all()
+            == []
+        )
 
 
 def _delete_campaign(connection, campaign_id):
