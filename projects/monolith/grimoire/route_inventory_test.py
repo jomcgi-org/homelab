@@ -324,7 +324,9 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 59  # Inventory and initiative routes extend the exact registry.
+    assert (
+        len(enumerated) == 59
+    )  # Inventory and initiative routes extend the exact registry.
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
