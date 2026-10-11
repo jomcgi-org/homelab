@@ -9,27 +9,14 @@ router never has to import the private-route module to reuse them.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime
+
+from core.clock import as_utc
 
 # Mirrors NOTES_PAGE_CACHE_CONTROL in projects/monolith/frontend/src/lib/cache-headers.js — keep in sync.
 _GRAPH_CACHE_CONTROL = (
     "public, s-maxage=3600, stale-while-revalidate=86400, stale-if-error=31536000"
 )
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """Coerce a datetime to tz-aware UTC.
-
-    Postgres returns tz-aware values; SQLite (used in tests) can return
-    naive ones even though we always write tz-aware UTC. Treat naive
-    datetimes as UTC so downstream formatters and ETag stamps are stable
-    across both backends.
-    """
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def _graph_etag(node_count: int, indexed_at: datetime | None) -> str:
@@ -49,10 +36,10 @@ def public_cache_control(notes, *, now: datetime, default: str) -> str:
     subsecond leases are not stored; browsers get an explicit freshness bound.
     The private graph policy is unchanged.
     """
-    deadlines = [_as_utc(note.review_after) for note in notes]
+    deadlines = [as_utc(note.review_after) for note in notes]
     if not deadlines or any(deadline is None for deadline in deadlines):
         return "no-store"
-    remaining = math.floor((min(deadlines) - _as_utc(now)).total_seconds())
+    remaining = math.floor((min(deadlines) - as_utc(now)).total_seconds())
     if remaining <= 0:
         return "no-store"
     directives = dict(

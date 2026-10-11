@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
+from core.clock import as_utc, iso
 from core.db import get_session
 from ships.heat import LAT_STEP as HEAT_LAT_STEP
 from ships.heat import LON_STEP as HEAT_LON_STEP
@@ -49,27 +50,6 @@ _TRACK_CACHE_CONTROL = (
 _HEAT_CACHE_CONTROL = (
     "public, max-age=0, s-maxage=300, stale-while-revalidate=3600, stale-if-error=86400"
 )
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """Coerce a datetime to tz-aware UTC.
-
-    Postgres returns tz-aware values; SQLite (used in tests) can return
-    naive ones even though we always write tz-aware UTC. Treat naive
-    datetimes as UTC so downstream formatters and ETag stamps are stable
-    across both backends.
-    """
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _iso(value: datetime | None) -> str | None:
-    """ISO-8601 string in UTC, or None. Keeps the JSON consistent across backends."""
-    coerced = _as_utc(value)
-    return coerced.isoformat() if coerced is not None else None
 
 
 def _snapshot_etag(vessel_count: int, max_updated: datetime | None) -> str:
@@ -177,7 +157,7 @@ def get_snapshot(
     vessels = []
     max_updated: datetime | None = None
     for pos, vessel in rows:
-        updated = _as_utc(pos.updated_at)
+        updated = as_utc(pos.updated_at)
         if updated is not None and (max_updated is None or updated > max_updated):
             max_updated = updated
         vessels.append(
@@ -191,13 +171,13 @@ def get_snapshot(
                 "nav_status": pos.nav_status,
                 # Prefer the position-message ship_name, fall back to vessel name.
                 "ship_name": pos.ship_name or (vessel.name if vessel else None),
-                "recorded_at": _iso(pos.recorded_at),
-                "first_seen_at_location": _iso(pos.first_seen_at_location),
-                "updated_at": _iso(pos.updated_at),
+                "recorded_at": iso(pos.recorded_at),
+                "first_seen_at_location": iso(pos.first_seen_at_location),
+                "updated_at": iso(pos.updated_at),
                 "name": vessel.name if vessel else None,
                 "ship_type": vessel.ship_type if vessel else None,
                 "destination": vessel.destination if vessel else None,
-                "eta": _iso(vessel.eta) if vessel else None,
+                "eta": iso(vessel.eta) if vessel else None,
             }
         )
 
@@ -246,7 +226,7 @@ def get_track(
             "course": p.course,
             "heading": p.heading,
             "nav_status": p.nav_status,
-            "recorded_at": _iso(p.recorded_at),
+            "recorded_at": iso(p.recorded_at),
         }
         for p in positions
     ]

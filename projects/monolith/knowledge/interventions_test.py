@@ -17,8 +17,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from auth.principal import Authority, Principal, PrincipalKind
 from auth.verifier import TokenResolver
+from core.clock import as_utc
 from core.db import get_session
-from knowledge.http_cache import _as_utc
 from knowledge.interventions import create_intervention
 from knowledge.mcp import _report_distress_sync, report_distress
 from knowledge.models import Intervention, RawInput
@@ -132,7 +132,7 @@ def test_distress_commit_is_atomic_and_stamps_server_provenance(db):
         assert raw.extra["reporter_subject"] == "agent:sender"
         assert row.state == "open"
         # SQLite returns naive UTC timestamps; PostgreSQL retains the zone.
-        assert before <= _as_utc(row.created_at) <= datetime.now(timezone.utc)
+        assert before <= as_utc(row.created_at) <= datetime.now(timezone.utc)
 
 
 @pytest.mark.asyncio
