@@ -3279,7 +3279,7 @@ def get_transcript_settings(
 class TranscriptSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    retention_days: int = Field(ge=1, le=365)
+    retention_days: int = Field(strict=True, ge=1, le=365)
 
 
 @router.patch(

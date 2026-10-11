@@ -144,16 +144,24 @@ DM-authored PC asides reach the listed characters and DM. Event-list responses
 project author ids for the caller; the journal currently does not fold
 utterance text. Ingest forbids unknown fields, including raw audio.
 
-The campaign retention column defaults to 30 days, constrained to 1 through
-365. Retention settings and the daily redaction job remain outstanding in
-#6618. Their settled contract uses server-created timestamps, preserves timing
-stubs and removes transcript embeddings. Derived summaries, journal entries
-and facts will remain. This head does not redact existing utterances.
+Every campaign member can read retention settings. The DM sets
+`transcript_retention_days` from 1 to 365 days, with a default of 30. The daily
+`grimoire-redact-transcripts` CronJob runs at 03:30 UTC regardless of the play
+and transcript flags. It redacts utterances older than the campaign window by
+server `created_at`, preserving a stub with `redacted: true`, timing, source
+and speaker label when present. The speaker remains in `author_member_id`.
+Event ids, sequence numbers and check-in state stay unchanged. Stubs retain
+the table, DM whisper and listed-PC audience rules above, including the
+characterless-member restriction. The job deletes each expired utterance's
+transcript and legacy event-keyed vectors; the embedder never re-indexes
+stubs. Derived summaries, journal entries and facts survive. Raw audio is
+never accepted or stored.
 
-**Why.** Consent and off-the-record state are server-owned controls shared by
-capture providers. Keeping capture disabled while retention remains
-unfinished avoids admitting transcript text before those privacy guarantees
-exist.
+**Why.** Consent, off-the-record state and retention are server-owned controls
+shared by capture providers. Members can read the retention window before
+consenting. Timing stubs preserve the session log without retaining spoken
+text. Capture stays default-off until live consent, pause, audience and
+retention execution checks are accepted.
 
 ## Audience contract
 

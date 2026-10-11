@@ -1,6 +1,6 @@
 """Consent privacy, state transitions and the default-off HTTP boundary."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -10,7 +10,20 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from grimoire.models import Campaign, GameSession, SessionEvent, TranscriptConsent
+from grimoire.jobs import redact_transcripts
+from grimoire.models import (
+    Campaign,
+    Embedding,
+    GameSession,
+    SessionEvent,
+    TranscriptConsent,
+)
+from grimoire.play_embeddings import (
+    audience_columns,
+    collect_play_inputs,
+    event_text,
+    sync_event_embeddings,
+)
 from grimoire.router import _lock_consent_member
 from grimoire.session_events import require_transcript_enabled, transcript_enabled
 from grimoire.testing.leak_harness import sqlite_harness
@@ -82,6 +95,285 @@ def ingest(h, client, viewer="player_a", *, session_id=None, **changes):
     )
     h.assert_no_leak(response, viewer)
     return response
+
+
+def retention_vector(row, kind):
+    return Embedding(
+        embeddable_kind=kind,
+        embeddable_id=row.id,
+        model="retention-test",
+        dim=1024,
+        vector=[0.0] * 1024,
+        **audience_columns(row),
+    )
+
+
+def persisted(h, row):
+    h.session.refresh(row)
+    return row.model_dump()
+
+
+def test_retention_redacts_expired_text_and_vectors_preserving_stubs_and_feed(
+    http_harness,
+    monkeypatch,
+):
+    h, client = http_harness
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
+    h.rows["campaign"].transcript_retention_days = 2
+    h.rows["other"].transcript_retention_days = 30
+    rows = []
+    expired_ids = set()
+    for campaign_key, session_key, member_key, expired_age, fresh_age in (
+        ("campaign", "campaign_session", "member_player_a", 3, 1),
+        ("other", "other_session", "member_other_campaign", 31, 3),
+    ):
+        for offset, age in enumerate((expired_age, fresh_age)):
+            row = SessionEvent(
+                campaign_id=h.rows[campaign_key].id,
+                session_id=h.rows[session_key].id,
+                seq=100 + offset,
+                kind="utterance",
+                author_member_id=h.rows[member_key].id,
+                audience="table",
+                created_at=now - timedelta(days=age),
+                body={
+                    "text": "Private transcript",
+                    "confidence": 0.9,
+                    "started_at": "2026-01-01T12:00:00Z",
+                    "ended_at": "2026-01-01T12:00:01Z",
+                    "source": "browser",
+                },
+            )
+            rows.append(row)
+            if offset == 0:
+                expired_ids.add(row.id)
+    for offset, kind, audience, retracted, label in (
+        (2, "narration", "table", False, False),
+        (3, "utterance", "dm", True, False),
+        (4, "utterance", "table", False, True),
+        (5, "utterance", "dm", False, False),
+        (6, "utterance", "pcs", False, False),
+    ):
+        row = SessionEvent(
+            campaign_id=h.rows["campaign"].id,
+            session_id=h.rows["campaign_session"].id,
+            seq=100 + offset,
+            kind=kind,
+            author_member_id=None if label else h.rows["member_player_a"].id,
+            audience=audience,
+            audience_pc_ids=[h.rows["character_a"].id] if audience == "pcs" else [],
+            created_at=now - timedelta(days=3),
+            retracted_at=now - timedelta(days=1) if retracted else None,
+            body={
+                "text": "Expired transcript",
+                "confidence": 0.8,
+                "started_at": "2026-01-01T12:00:00Z",
+                "ended_at": "2026-01-01T12:00:01Z",
+                "source": "table" if label else "browser",
+                **({"speaker_label": "Table mic"} if label else {}),
+            },
+        )
+        rows.append(row)
+        if kind == "utterance":
+            expired_ids.add(row.id)
+    h.session.add_all(rows)
+    vectors = [
+        retention_vector(row, kind)
+        for row in rows
+        for kind in (("transcript", "event") if row.kind == "utterance" else ("event",))
+    ]
+    h.session.add_all(vectors)
+    h.session.commit()
+    h.session.expire_all()
+    before = {row.id: persisted(h, row) for row in rows}
+    vector_before = {
+        row.id: row.model_dump() for row in h.session.exec(select(Embedding)).all()
+    }
+    sessions_before = {
+        key: persisted(h, h.rows[key]) for key in ("campaign_session", "other_session")
+    }
+    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
+    monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "false")
+    assert redact_transcripts(h.session, now=now) == len(expired_ids)
+    h.session.expire_all()
+    for row in rows:
+        h.session.refresh(row)
+        original = before[row.id]
+        if row.id in expired_ids:
+            expected_body = {
+                "redacted": True,
+                **{
+                    key: original["body"][key]
+                    for key in ("started_at", "ended_at", "source", "speaker_label")
+                    if key in original["body"]
+                },
+            }
+            assert row.model_dump() == {**original, "body": expected_body}
+        else:
+            assert row.model_dump() == original
+    remaining = {
+        row.id: row.model_dump() for row in h.session.exec(select(Embedding)).all()
+    }
+    assert remaining == {
+        key: value
+        for key, value in vector_before.items()
+        if value["embeddable_id"] not in expired_ids
+    }
+    assert {
+        key: persisted(h, h.rows[key]) for key in sessions_before
+    } == sessions_before
+    after = {row.id: persisted(h, row) for row in rows}
+    assert redact_transcripts(h.session, now=now) == 0
+    h.session.expire_all()
+    assert {row.id: persisted(h, row) for row in rows} == after
+    assert {
+        row.id: row.model_dump() for row in h.session.exec(select(Embedding)).all()
+    } == remaining
+    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
+    monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "true")
+    path = (
+        PREFIX.format(campaign_id=h.rows["campaign"].id)
+        + f"/sessions/{h.rows['campaign_session'].id}/events"
+    )
+    for viewer in ("dm", "player_a", "player_b", "no_character"):
+        response = client.get(path, headers=h.headers(viewer))
+        assert response.status_code == 200, response.text
+        feed = {row["id"]: row for row in response.json()}
+        for row in rows:
+            if row.id not in expired_ids or row.campaign_id != h.rows["campaign"].id:
+                continue
+            visible = viewer in ("dm", "player_a") or row.audience == "table"
+            assert (row.id in feed) == visible
+            if visible:
+                expected = (
+                    None
+                    if row.retracted_at is not None and viewer != "dm"
+                    else row.body
+                )
+                assert feed[row.id]["body"] == expected
+
+
+@pytest.mark.parametrize(
+    "body", ({"redacted": True}, {}, {"text": "   "}, {"text": None}, {"text": 42})
+)
+def test_redacted_or_empty_utterance_is_never_collected_and_stale_vectors_are_deleted(
+    http_harness, body
+):
+    h, _ = http_harness
+    row = SessionEvent(
+        campaign_id=h.rows["campaign"].id,
+        session_id=h.rows["campaign_session"].id,
+        seq=100,
+        kind="utterance",
+        audience="table",
+        body=body,
+    )
+    h.session.add(row)
+    h.session.add_all([retention_vector(row, kind) for kind in ("transcript", "event")])
+    h.session.commit()
+    assert event_text(row) is None
+    assert all(
+        item.source_id != row.id
+        for item in collect_play_inputs(h.session, "retention-test", 1000)
+    )
+    h.session.commit()
+    assert not h.session.exec(
+        select(Embedding).where(Embedding.embeddable_id == row.id)
+    ).all()
+    h.session.add_all([retention_vector(row, kind) for kind in ("transcript", "event")])
+    h.session.commit()
+    sync_event_embeddings(h.session, row)
+    h.session.commit()
+    assert not h.session.exec(
+        select(Embedding).where(Embedding.embeddable_id == row.id)
+    ).all()
+
+
+@pytest.mark.parametrize("days", (1, 365))
+def test_dm_retention_settings_bounds_persist_and_control_redaction(http_harness, days):
+    h, client = http_harness
+    path = SETTINGS.format(campaign_id=h.rows["campaign"].id)
+    response = client.patch(
+        path, headers=h.headers("dm"), json={"retention_days": days}
+    )
+    assert response.status_code == 200, response.text
+    h.session.refresh(h.rows["campaign"])
+    assert h.rows["campaign"].transcript_retention_days == days
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
+    rows = [
+        SessionEvent(
+            campaign_id=h.rows["campaign"].id,
+            session_id=h.rows["campaign_session"].id,
+            seq=100 + index,
+            kind="utterance",
+            audience="table",
+            body={"text": "Keep or redact"},
+            created_at=now - timedelta(days=days, seconds=offset),
+        )
+        for index, offset in enumerate((1, 0, -1))
+    ]
+    h.session.add_all(rows)
+    h.session.commit()
+    assert redact_transcripts(h.session, now=now) == 1
+    for index, row in enumerate(rows):
+        h.session.refresh(row)
+        assert row.body == (
+            {"redacted": True} if index == 0 else {"text": "Keep or redact"}
+        )
+    for viewer in ("dm", "operator", "player_a", "player_b", "no_character"):
+        response = client.get(path, headers=h.headers(viewer))
+        assert response.status_code == 200, response.text
+        assert response.json() == {"retention_days": days}
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        {"retention_days": 0},
+        {"retention_days": 366},
+        {"retention_days": 1.5},
+        {"retention_days": "14"},
+        {"retention_days": True},
+        {"retention_days": 14, "audio": "forbidden"},
+    ),
+)
+def test_retention_settings_reject_invalid_and_unknown_fields_without_changes(
+    http_harness, body
+):
+    h, client = http_harness
+    path = SETTINGS.format(campaign_id=h.rows["campaign"].id)
+    before = h.snapshot()
+    assert client.patch(path, headers=h.headers("dm"), json=body).status_code == 422
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize(
+    "viewer,status",
+    (
+        ("player_a", 403),
+        ("player_b", 403),
+        ("no_character", 403),
+        ("outsider", 404),
+        ("other_campaign", 404),
+    ),
+)
+def test_retention_settings_write_is_dm_only_and_outsiders_cannot_read(
+    http_harness, viewer, status
+):
+    h, client = http_harness
+    path = SETTINGS.format(campaign_id=h.rows["campaign"].id)
+    before = h.snapshot()
+    assert (
+        client.patch(
+            path, headers=h.headers(viewer), json={"retention_days": 14}
+        ).status_code
+        == status
+    )
+    assert h.snapshot() == before
+    response = client.get(path, headers=h.headers(viewer))
+    assert response.status_code == (404 if status == 404 else 200), response.text
+    if response.status_code == 200:
+        assert response.json() == {"retention_days": 30}
 
 
 @pytest.mark.parametrize("revoked", (False, True))

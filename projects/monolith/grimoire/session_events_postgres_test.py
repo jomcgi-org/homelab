@@ -1,7 +1,7 @@
 """Real migrations, row-lock concurrency, rollback, and private-child lifecycle."""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier, Event
 from types import SimpleNamespace
@@ -15,10 +15,12 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine, select
 
 from grimoire.audience import Audience
+from grimoire.jobs import redact_transcripts
 from grimoire.models import (
     AppUser,
     Campaign,
     CampaignMember,
+    Embedding,
     GameSession,
     PlayerCharacter,
     SessionEvent,
@@ -30,6 +32,90 @@ from grimoire.router import (
     revoke_transcript_consent,
 )
 from grimoire.session_events import append_event
+
+
+def retention_vectors(session, campaign_id):
+    return {
+        row.id: {**row.model_dump(), "vector": list(row.vector)}
+        for row in session.exec(
+            select(Embedding).where(Embedding.campaign_id == campaign_id)
+        ).all()
+    }
+
+
+def test_postgres_retention_redacts_expired_utterance_and_both_vector_kinds(lane):
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
+    with Session(lane.engine) as session:
+        campaign = session.get(Campaign, lane.campaign_id)
+        campaign.transcript_retention_days = 2
+        rows = [
+            SessionEvent(
+                campaign_id=lane.campaign_id,
+                session_id=lane.session_id,
+                seq=index + 1,
+                kind="utterance",
+                author_member_id=lane.member_id,
+                audience="table",
+                created_at=now - timedelta(days=age),
+                body={
+                    "text": "PostgreSQL transcript",
+                    "confidence": 0.9,
+                    "started_at": "2026-01-01T12:00:00Z",
+                    "ended_at": "2026-01-01T12:00:01Z",
+                    "source": "browser",
+                },
+            )
+            for index, age in enumerate((3, 1, 2))
+        ]
+        session.add_all(rows)
+        session.add_all(
+            [
+                Embedding(
+                    embeddable_kind=kind,
+                    embeddable_id=row.id,
+                    model="retention-test",
+                    dim=1024,
+                    vector=[0.0] * 1024,
+                    campaign_id=lane.campaign_id,
+                    audience="table",
+                    audience_pc_ids=[],
+                    author_member_id=lane.member_id,
+                )
+                for row in rows
+                for kind in ("transcript", "event")
+            ]
+        )
+        session.commit()
+        for row in rows:
+            session.refresh(row)
+        before = {row.id: row.model_dump() for row in rows}
+        vectors_before = retention_vectors(session, lane.campaign_id)
+        assert redact_transcripts(session, now=now) == 1
+        for row in rows:
+            session.refresh(row)
+        assert rows[0].model_dump() == {
+            **before[rows[0].id],
+            "body": {
+                "redacted": True,
+                "started_at": "2026-01-01T12:00:00Z",
+                "ended_at": "2026-01-01T12:00:01Z",
+                "source": "browser",
+            },
+        }
+        for row in rows[1:]:
+            assert row.model_dump() == before[row.id]
+        remaining = retention_vectors(session, lane.campaign_id)
+        assert remaining == {
+            key: value
+            for key, value in vectors_before.items()
+            if value["embeddable_id"] != rows[0].id
+        }
+        after = {row.id: row.model_dump() for row in rows}
+        assert redact_transcripts(session, now=now) == 0
+        for row in rows:
+            session.refresh(row)
+        assert {row.id: row.model_dump() for row in rows} == after
+        assert retention_vectors(session, lane.campaign_id) == remaining
 
 
 def _delete_campaign(connection, campaign_id):
