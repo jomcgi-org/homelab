@@ -2987,7 +2987,9 @@ def test_brick_classes_carry_the_per_vm_overhead_noded_charges() -> None:
         assert len(declared) == 1, "expected one control-plane brick class environment"
         assert declared[0], "the brick class environment is empty; this test is inert"
         expected = configured if charged else 0
-        assert {entry["vm_overhead_mib"] for entry in declared[0]} == {expected}, settings
+        assert {entry["vm_overhead_mib"] for entry in declared[0]} == {expected}, (
+            settings
+        )
 
 
 def test_brick_classes_count_the_node_floors_pinned_to_each_class() -> None:
