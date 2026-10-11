@@ -260,6 +260,24 @@ func TestLoadAdmissionConfig(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsNegativeVMOverhead: a negative per-VM overhead would let the
+// reserved model admit more than the budget, so it refuses to load. Zero (no
+// charge) stays valid.
+func TestLoadRejectsNegativeVMOverhead(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_VM_OVERHEAD_MIB", "-1")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load accepted a negative EMBERVM_NODED_VM_OVERHEAD_MIB")
+	}
+	t.Setenv("EMBERVM_NODED_VM_OVERHEAD_MIB", "0")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load with zero overhead: %v", err)
+	}
+	if c.VMOverheadMib != 0 {
+		t.Fatalf("VMOverheadMib = %d, want 0", c.VMOverheadMib)
+	}
+}
+
 func TestLoadActivatorAddress(t *testing.T) {
 	t.Setenv("EMBERVM_NODED_ACTIVATOR_ADDR", "127.0.0.1:18081")
 	c, err := Load()
