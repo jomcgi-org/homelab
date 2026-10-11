@@ -533,6 +533,16 @@ requires the paired recovery audit plus a fresh, independent, approving review
 of the delivered pull request head above that floor; neither the audit, an old
 approval, nor a `changes_requested` result is sufficient.
 
+The landing-recovery deadline is a fixed cap, distinct from a renewable funding
+lease. Snapshots and start permission identify its expiry as
+`landing_recovery_deadline`. Funding cannot buy another reassessment or extend
+that cap, including when it expires during evidence reads or before a queued
+review starts. Completed paid reviews still settle once with their accounting
+intact, but cannot issue an ineffective grant. The receipt and its lane slot
+remain held for an operator recovery decision; this fence does not resume,
+re-admit, cancel, or release the task. Ordinary funding leases retain their
+existing renewal path.
+
 **Why.** An escalation is a decision, not a message. The refine lane's
 `needs-human` verdict used to end at a warning and a question, so eleven of
 them in one hour on 2026-09-11 were eleven GitHub threads a person had to open,
