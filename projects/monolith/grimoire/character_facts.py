@@ -83,7 +83,8 @@ def _events(session: Session, campaign_id: str, session_id: str, viewer, member)
             SessionEvent.retracted_at.is_(None),
             audience_predicate(SessionEvent, viewer, member),
         )
-        .order_by(SessionEvent.seq, SessionEvent.id)
+        # All multi-source paths acquire event locks in id order before facts.
+        .order_by(SessionEvent.id)
         .with_for_update()
         .execution_options(populate_existing=True)
     ).all()
@@ -109,6 +110,16 @@ def _projections(session: Session, campaign_id: str, viewer):
         if projection is not None:
             projections[_identity(entity.id)] = projection
     return projections
+
+
+def _supports_fact(event: SessionEvent) -> bool:
+    # A grouped reveal can lose only part of its content without retracting the
+    # event itself. Facts have event-level provenance, so that changed snapshot
+    # cannot prove which item originally supported a statement. Precision first:
+    # keep the surviving items in the journal, but stop using it as evidence.
+    return event.retracted_at is None and not (
+        event.kind == "reveal" and event.body.get("retracted_entity_ids")
+    )
 
 
 def _vocabulary(session: Session, campaign_id: str, viewer):
@@ -216,6 +227,7 @@ def build_fact_payload(
             "campaign_id": campaign_id,
             "session_id": session_id,
             "viewer_key": viewer_key,
+            "evidence_event_ids": [row.id for row in events if _supports_fact(row)],
             "events": [
                 {"id": row.id, "seq": row.seq, "kind": row.kind, "body": row.body}
                 for row in projected
@@ -259,6 +271,7 @@ def write_character_facts(
     events = {
         _identity(row.id): row.id
         for row in _events(session, campaign_id, session_id, viewer, member)
+        if _supports_fact(row)
     }
     vocabulary = _vocabulary(session, campaign_id, viewer)
     accepted = {}
@@ -332,10 +345,10 @@ def write_character_facts(
 
 
 def retract_facts_for_event(session: Session, event: SessionEvent) -> None:
-    """Retract facts only when all supporting events are retracted, in this transaction."""
+    """Retract facts when no unchanged live evidence survives, in this transaction."""
     from grimoire.play_embeddings import sync_fact_embeddings
 
-    if event.retracted_at is None:
+    if _supports_fact(event):
         return
     query = select(CharacterFact).where(
         CharacterFact.campaign_id == event.campaign_id,
@@ -344,17 +357,23 @@ def retract_facts_for_event(session: Session, event: SessionEvent) -> None:
     )
     if session.get_bind().dialect.name == "postgresql":
         query = query.where(CharacterFact.evidence_event_ids.contains([event.id]))
-    for fact in session.exec(query.order_by(CharacterFact.id).with_for_update()).all():
+    for fact in session.exec(
+        query.order_by(CharacterFact.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all():
         if event.id not in fact.evidence_event_ids:
             continue
         surviving = session.exec(
-            select(SessionEvent.id).where(
+            select(SessionEvent)
+            .where(
                 SessionEvent.campaign_id == fact.campaign_id,
                 SessionEvent.session_id == fact.session_id,
                 SessionEvent.id.in_(fact.evidence_event_ids),
                 SessionEvent.retracted_at.is_(None),
             )
-        ).first()
-        if surviving is None:
+            .execution_options(populate_existing=True)
+        ).all()
+        if not any(_supports_fact(row) for row in surviving):
             fact.status = "retracted"
             sync_fact_embeddings(session, fact)
