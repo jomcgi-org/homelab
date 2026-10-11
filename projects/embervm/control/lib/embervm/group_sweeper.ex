@@ -198,11 +198,12 @@ defmodule Embervm.GroupSweeper do
       # is the third idle clause (zero live splices). nil reads no-splice (a sweeper
       # wired without an activator never blocks banking on a signal it does not track).
       splices_table: Keyword.get(opts, :splices_table, ActivatorSplices),
-      # The whole-set bank drive seam: (workload, instance_id) -> {:ok, %{set_id,
-      # banked, pause_spread_ms}} | {:error, reason}. Production drives
-      # GroupManager.Supervisor.bank_group/2 (the per-instance manager pauses/snapshots/
-      # destroys the members and records the set atomically); tests inject a recorder.
-      bank_fun: Keyword.get(opts, :bank_fun, &default_bank/2),
+      # The whole-set bank drive seam: (workload, instance_id[, opts]) -> {:ok,
+      # %{set_id, banked, pause_spread_ms}} | {:error, reason}. Production drives
+      # GroupManager.Supervisor.bank_group/3 (the per-instance manager pauses/snapshots/
+      # destroys the members and records the set atomically), passing a scoped
+      # drain's anchor in opts; tests inject a recorder of either arity.
+      bank_fun: Keyword.get(opts, :bank_fun, &default_bank/3),
       # The daemon group-verb seams for lifetime/forced-roll destroys (a banked group
       # has no live GroupManager process, so the sweeper destroys directly, mirroring
       # StatefulSweeper). Injected for tests; production dials the real NodeService stub.
@@ -271,6 +272,11 @@ defmodule Embervm.GroupSweeper do
 
   def handle_call({:drain_node, node_id}, _from, state) do
     {count, state} = drain_bank_node(state, node_id)
+    {:reply, count, state}
+  end
+
+  def handle_call({:drain_instance, node_id, pod_uid}, _from, state) do
+    {count, state} = drain_bank_node(state, node_id, pod_uid)
     {:reply, count, state}
   end
 
@@ -782,17 +788,54 @@ defmodule Embervm.GroupSweeper do
     GenServer.call(server, {:drain_node, node_id}, :infinity)
   end
 
-  defp drain_bank_node(state, node_id) do
+  @doc """
+  Force-banks the running groups on ONE draining brick instance
+  (`node_id/pod_uid`) rather than the whole node, with `drain_node/2`'s
+  semantics. A group whose live members a co-located sibling brick reports is
+  left running (`Embervm.WakeInstance.drains_with_instance?/6`; a banked set on a
+  sibling does not count, only live members do), and the rest bank anchored on
+  the draining instance, whose capacity fact the registry has already dropped.
+  An empty `pod_uid` is `drain_node/2`.
+  """
+  @spec drain_instance(GenServer.server(), String.t(), String.t()) :: non_neg_integer()
+  def drain_instance(server \\ __MODULE__, node_id, pod_uid) do
+    GenServer.call(server, {:drain_instance, node_id, pod_uid}, :infinity)
+  end
+
+  defp drain_bank_node(state, node_id, pod_uid \\ nil) do
+    bank_opts =
+      case Embervm.WakeInstance.draining_dial(node_id, pod_uid) do
+        nil -> []
+        dial -> [anchor: {node_id, dial}]
+      end
+
     instances =
       GroupStore.all(state.store)
       |> Enum.filter(&(&1.state == :running and &1.node_id == node_id))
+      |> Enum.filter(
+        &Embervm.WakeInstance.drains_with_instance?(
+          state.capacity_table,
+          node_id,
+          pod_uid,
+          :group_member_vms,
+          :group_instance_id,
+          &1.instance_id
+        )
+      )
 
-    state = Enum.reduce(instances, state, fn instance, acc -> drive_bank(acc, instance) end)
+    state = Enum.reduce(instances, state, fn instance, acc -> drive_bank(acc, instance, bank_opts) end)
     {length(instances), state}
   end
 
-  defp drive_bank(state, instance) do
-    case state.bank_fun.(instance.workload, instance.instance_id) do
+  # `bank_opts` carries a scoped drain's anchor to the bank (a 3-arity bank_fun);
+  # a 2-arity seam is still accepted and banks as before.
+  defp drive_bank(state, instance, bank_opts \\ []) do
+    result =
+      if is_function(state.bank_fun, 3),
+        do: state.bank_fun.(instance.workload, instance.instance_id, bank_opts),
+        else: state.bank_fun.(instance.workload, instance.instance_id)
+
+    case result do
       {:ok, %{set_id: set_id, pause_spread_ms: spread}} ->
         Logger.info("embervm group banked",
           workload: instance.workload,
@@ -1332,8 +1375,8 @@ defmodule Embervm.GroupSweeper do
     Embervm.WakeInstance.dial_for_group(state.capacity_table, node_id, instance_id)
   end
 
-  defp default_bank(workload, instance_id) do
-    Embervm.GroupManager.Supervisor.bank_group(workload, instance_id)
+  defp default_bank(workload, instance_id, opts) do
+    Embervm.GroupManager.Supervisor.bank_group(workload, instance_id, opts)
   end
 
   # Sweep RPCs execute on this GenServer and must not hold it indefinitely.

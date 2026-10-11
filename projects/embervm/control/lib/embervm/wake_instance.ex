@@ -211,6 +211,45 @@ defmodule Embervm.WakeInstance do
   end
 
   @doc """
+  Whether a drain of the brick instance `node_id/pod_uid` should take the guest
+  that `ref` names in the inventory list `key` (rows matched on `field`): true
+  unless a SIBLING instance on the same node positively reports it. The drain
+  analogue of the session lane's surviving-instance check.
+
+  The registry drops the draining instance's capacity fact on the drain edge, so
+  the draining brick's own guests are usually reported by nobody here. Unknown
+  placement therefore drains (fail toward banking), as does an empty `pod_uid`
+  (a node-scoped drain) and a reporting fact with no `instance_id` (a legacy fact
+  that cannot be told apart from the draining instance). Only positive evidence
+  that a co-located brick holds the guest spares it.
+  """
+  @spec drains_with_instance?(atom(), String.t(), String.t() | nil, atom(), atom(), String.t() | nil) :: boolean()
+  def drains_with_instance?(_table, _node_id, pod_uid, _key, _field, _ref) when pod_uid in [nil, ""], do: true
+
+  def drains_with_instance?(table, node_id, pod_uid, key, field, ref) when is_binary(ref) and ref != "" do
+    draining = node_id <> "/" <> pod_uid
+
+    not Enum.any?(instances_on(table, node_id), fn fact ->
+      dial_id(fact) not in [draining, node_id] and fact_reports_warmth?(fact, key, ref, field)
+    end)
+  end
+
+  def drains_with_instance?(_table, _node_id, _pod_uid, _key, _field, _ref), do: true
+
+  @doc """
+  The dial key of the draining brick instance `node_id/pod_uid`, or nil for a
+  node-scoped drain. The registry has already dropped that instance's capacity
+  fact when a drain runs, so the `dial_for_*` lookups fall open to the bare node
+  name (`:unknown_node` post-B0c); a guest the drain scoped to this instance is
+  dialled here instead.
+  """
+  @spec draining_dial(String.t(), String.t() | nil) :: String.t() | nil
+  def draining_dial(node_id, pod_uid) when is_binary(node_id) and is_binary(pod_uid) and pod_uid != "",
+    do: node_id <> "/" <> pod_uid
+
+  def draining_dial(_node_id, _pod_uid), do: nil
+
+  @doc """
   The channel key of the instance on `node_id` currently RUNNING `vm_id` (its
   per-instance capacity fact reports the `vm_id` in `stateful_vms`), or the bare
   `node_id` when no reporting instance is found (a legacy/single-instance fact, or
