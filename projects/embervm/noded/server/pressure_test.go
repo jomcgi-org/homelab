@@ -1032,7 +1032,7 @@ func (d *jailerCountingDriver) JailerLaunchCounts() (bool, uint64, uint64, uint6
 	return true, d.jailed, d.directExec, d.refused
 }
 
-// TestNodeStatusReportsAdmissionLedger covers fields 43-49: nothing is reported
+// TestNodeStatusReportsAdmissionLedger covers fields 44-50: nothing is reported
 // while no bound is known, the reserved model reports its own predicate, refusals
 // are counted per token, and the jailer facts come from config and the optional
 // driver counters (absent, not zero, without them).
