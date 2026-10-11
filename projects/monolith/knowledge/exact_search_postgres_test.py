@@ -380,8 +380,7 @@ def _scoped_ranking_fixture(session):
         for score in (0.95, 0.94, 0.93, 0.92)
     ]
     inside = [
-        _note(session, f"inside {score}", score)
-        for score in (0.80, 0.78, 0.76, 0.74)
+        _note(session, f"inside {score}", score) for score in (0.80, 0.78, 0.76, 0.74)
     ]
     return outside, inside
 
@@ -429,6 +428,4 @@ def test_scoped_exact_token_search_returns_top_k_within_scope(ranked_session):
     results = KnowledgeStore(session).search_notes_with_context(
         _QUERY, limit=3, scope_filter=_SCOPE, query_text="#999"
     )
-    assert [row["note_id"] for row in results] == [
-        note.note_id for note in inside[:3]
-    ]
+    assert [row["note_id"] for row in results] == [note.note_id for note in inside[:3]]
