@@ -2,7 +2,7 @@ defmodule Embervm.SchedulerTest do
   use ExUnit.Case, async: true
 
   alias Embervm.{Brick, Scheduler}
-  alias Embervm.Scheduler.{Request, Reservation, Score}
+  alias Embervm.Scheduler.{Inflight, Request, Reservation, Score}
 
   defp brick(opts \\ []) do
     %{
@@ -344,6 +344,155 @@ defmodule Embervm.SchedulerTest do
   test "wildcard remains a Brick property" do
     assert Brick.wildcard?(brick(size_class: "", mem_budget_mib: 8_192))
     refute Brick.wildcard?(brick(size_class: "8gi", mem_budget_mib: 8_192))
+  end
+
+  # -- one memory gate: admission model, blind bricks, in-flight debit -------
+
+  defp inflight_table do
+    Inflight.create(String.to_atom("scheduler_inflight_#{System.unique_integer([:positive])}"))
+  end
+
+  test "a classed brick reporting no budget is blind and never mem eligible (fail closed)" do
+    # Deliberately inverted from the old fail-open: a classed zero budget used to
+    # read as the unlimited wildcard, which is what a jailer-armed brick whose
+    # cgroup readout broke reports. Only an empty class is the wildcard now.
+    blind = brick(size_class: "8gi", mem_budget_mib: 0, mem_headroom_mib: 0)
+    refute Brick.wildcard?(blind)
+    assert Brick.blind?(blind)
+    refute Scheduler.mem_eligible?(blind, 0)
+    refute Scheduler.mem_eligible?(blind, 512)
+    assert Scheduler.place(%Request{bricks: [blind], need_mib: 512, inflight: false}) == []
+    # With no memory gate at all the slot gate still places it.
+    assert Scheduler.place(%Request{bricks: [blind], need_mib: nil, inflight: false}) == [blind]
+  end
+
+  test "mem eligible subtracts the in-flight debit a brick carries" do
+    b = brick(mem_headroom_mib: 4_000, mem_reject_floor_mib: 0)
+    assert Scheduler.mem_eligible?(b, 3_072)
+    refute Scheduler.mem_eligible?(Map.put(b, :pending_mib, 1_000), 3_072)
+    assert Scheduler.mem_eligible?(Map.put(b, :pending_mib, 928), 3_072)
+    # A wildcard ignores memory, debit or not.
+    assert Scheduler.mem_eligible?(brick(size_class: "", mem_budget_mib: 0) |> Map.put(:pending_mib, 99_999), 4_000)
+  end
+
+  test "place debits the ledger before filtering and hands back the caller's maps" do
+    table = inflight_table()
+    a = brick(instance_id: "n/a", mem_headroom_mib: 4_000, mem_reject_floor_mib: 0)
+    b = brick(instance_id: "n/b", mem_headroom_mib: 4_000, mem_reject_floor_mib: 0)
+    req = %Request{bricks: [a, b], key: "wl", need_mib: 3_072, inflight: table}
+
+    assert Enum.sort_by(Scheduler.place(req), & &1.instance_id) == [a, b]
+
+    Inflight.claim("n/a", :held, 3_072, table: table)
+    # Brick a no longer fits; the map that comes back is b exactly as given.
+    assert Scheduler.place(req) == [b]
+    # inflight: false turns the debit off.
+    assert length(Scheduler.place(%{req | inflight: false})) == 2
+  end
+
+  test "two serial place_and_claim calls never herd: the second goes elsewhere" do
+    table = inflight_table()
+    # Both bricks admit 4000 MiB, so each fits exactly one 3072 MiB guest. Brick a
+    # holds more VMs, so packing scores it first on identical memory facts: the
+    # herd the ledger exists to break.
+    a = brick(instance_id: "n/a", size_class: "8gi", mem_budget_mib: 7_936, mem_headroom_mib: 4_512,
+      mem_reject_floor_mib: 512, live_vms: 3, max_live_vms: 16, free_slots: nil)
+    b = brick(instance_id: "n/b", size_class: "8gi", mem_budget_mib: 7_936, mem_headroom_mib: 4_512,
+      mem_reject_floor_mib: 512, live_vms: 0, max_live_vms: 16, free_slots: nil)
+    assert Brick.admittable_mib(a) == 4_000
+    assert Score.score(a) > Score.score(b)
+
+    req = %Request{bricks: [a, b], workload: "claude-runtime", key: "claude-runtime", need_mib: 3_072,
+      base: :none, record_demand: false, inflight: table}
+
+    assert {:ok, [%{instance_id: "n/a"} | _]} = Scheduler.place_and_claim(req, {:create, 1})
+    assert Inflight.pending_mib("n/a", table: table) == 3_072
+
+    # The same facts, one claim later: a has 928 MiB left, so b is the head.
+    assert {:ok, [%{instance_id: "n/b"} | _]} = Scheduler.place_and_claim(req, {:create, 2})
+    assert Inflight.pending_mib("n/b", table: table) == 3_072
+
+    # Both claimed, nothing left that fits.
+    assert {:error, :capacity} = Scheduler.place_and_claim(req, {:create, 3})
+
+    # Releasing the first claim makes a placeable again.
+    Inflight.release("n/a", {:create, 1}, table: table)
+    assert {:ok, [%{instance_id: "n/a"} | _]} = Scheduler.place_and_claim(req, {:create, 4})
+  end
+
+  test "place_and_claim charges the brick's per-VM overhead with the need" do
+    table = inflight_table()
+    b = Map.merge(brick(instance_id: "n/o", mem_headroom_mib: 8_000), %{vm_overhead_mib: 192})
+    req = %Request{bricks: [b], need_mib: 1_000, base: :none, record_demand: false, inflight: table}
+
+    assert {:ok, [_]} = Scheduler.place_and_claim(req, :r)
+    assert Inflight.pending_mib("n/o", table: table) == 1_192
+  end
+
+  test "place_and_claim passes the base gate result through" do
+    table = inflight_table()
+    building = brick(configured_id: "node-base", workloads: %{})
+    req = %Request{bricks: [building], workload: "wl", need_mib: 512, base: :ready, record_demand: false, inflight: table}
+
+    assert {:error, {:base_missing, "node-base"}} = Scheduler.place_and_claim(req, :r)
+    assert Inflight.entries(table: table) == []
+  end
+
+  describe "reserved-model bricks (mirror of noded pressure_test.go TestReservedAdmissionBoundaryAndOverhead)" do
+    defp reserved(opts) do
+      Map.merge(
+        brick(
+          instance_id: Keyword.get(opts, :instance_id, "n/r"),
+          size_class: "1gi",
+          mem_budget_mib: Keyword.get(opts, :budget, 1_000),
+          # Observed terms the reserved predicate must ignore: headroom far too low
+          # and a floor that would refuse everything.
+          mem_headroom_mib: Keyword.get(opts, :headroom, 100),
+          mem_reject_floor_mib: 512,
+          live_vms: Keyword.get(opts, :live, 1),
+          max_live_vms: 16,
+          free_slots: nil
+        ),
+        %{
+          admits_on_reservation: true,
+          mem_reserved_mib: Keyword.get(opts, :reserved, 400),
+          vm_overhead_mib: Keyword.get(opts, :overhead, 0)
+        }
+      )
+    end
+
+    test "the boundary and the per-VM overhead match the daemon" do
+      assert Scheduler.mem_eligible?(reserved([]), 600)
+      refute Scheduler.mem_eligible?(reserved([]), 601)
+      # overhead * (live + 1) = 2 MiB.
+      refute Scheduler.mem_eligible?(reserved(overhead: 1), 599)
+      assert Scheduler.mem_eligible?(reserved(overhead: 1), 598)
+    end
+
+    test "a declared-full 8gi is refused while an empty reserved 4gi places (no wedge on the fullest)" do
+      full_8gi =
+        reserved(instance_id: "n/8gi", budget: 7_936, reserved: 6_144, headroom: 6_800, live: 2)
+        |> Map.put(:size_class, "8gi")
+
+      empty_4gi = reserved(instance_id: "n/4gi", budget: 3_840, reserved: 0, headroom: 4_085, live: 0) |> Map.put(:size_class, "4gi")
+
+      req = %Request{bricks: [full_8gi], workload: "claude-runtime", need_mib: 3_072, base: :none, inflight: false}
+      assert Scheduler.place(req) == []
+      assert [%{instance_id: "n/4gi"}] = Scheduler.place(%{req | bricks: [full_8gi, empty_4gi]})
+
+      # The same numbers in the observed model still place on the 8gi (control).
+      observed = Map.put(full_8gi, :admits_on_reservation, false)
+      assert Scheduler.mem_eligible?(observed, 3_072)
+    end
+
+    test "a daemon-reported admittable value wins over both fallbacks" do
+      reported = Map.merge(reserved(reserved: 0), %{admission_reported: true, mem_admittable_mib: 500})
+      assert Brick.admittable_mib(reported) == 500
+      assert Scheduler.mem_eligible?(reported, 500)
+      refute Scheduler.mem_eligible?(reported, 501)
+      # Signed: a negative report admits nothing, not even a zero-need probe.
+      refute Scheduler.mem_eligible?(%{reported | mem_admittable_mib: -1}, 0)
+    end
   end
 
   # Regression for the 2026-09-30 GKE no_capacity run, when the BrickController

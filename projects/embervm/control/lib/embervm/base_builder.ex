@@ -2288,8 +2288,9 @@ defmodule Embervm.BaseBuilder do
         do: fact
   end
 
-  # An instance can build the workload when it is a wildcard (empty class or zero
-  # budget: the full-node envelope, always able to boot) or its budget covers need.
+  # An instance can build the workload when it is a wildcard (an empty class: the
+  # full-node envelope, always able to boot) or its budget covers need. A classed
+  # brick reporting a zero budget is blind (Brick.blind?/1) and never builds.
   defp build_eligible?(i, need_mib) do
     Embervm.Brick.wildcard?(i) or i.mem_budget_mib >= need_mib
   end
