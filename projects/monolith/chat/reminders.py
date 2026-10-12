@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
+from core.clock import aware
 from chat.models import Reminder
 from chat.outbox import enqueue_message
 
@@ -24,12 +25,6 @@ MAX_PENDING_PER_USER = 10
 # year (or an LLM hallucinating a far-future date) would otherwise wait
 # unnoticed for a very long time.
 MAX_HORIZON_DAYS = 366
-
-
-def _aware(dt: datetime) -> datetime:
-    """Coerce a naive datetime (as SQLite hands back regardless of what was
-    stored) to UTC-aware so it can be compared against datetime.now(utc)."""
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def create_reminder(
@@ -44,9 +39,9 @@ def create_reminder(
     out, or the author already has MAX_PENDING_PER_USER pending reminders.
     Caller commits."""
     now = datetime.now(timezone.utc)
-    if _aware(due_at) <= now:
+    if aware(due_at) <= now:
         return "due_at must be in the future"
-    if _aware(due_at) > now + timedelta(days=MAX_HORIZON_DAYS):
+    if aware(due_at) > now + timedelta(days=MAX_HORIZON_DAYS):
         return f"due_at cannot be more than {MAX_HORIZON_DAYS} days out"
     if len(list_pending(session, author_id)) >= MAX_PENDING_PER_USER:
         return f"you already have {MAX_PENDING_PER_USER} pending reminders"
@@ -95,11 +90,11 @@ def deliver_due(session: Session, now: datetime) -> int:
     ``now`` is tz-aware, and the two are not string/numeric comparable at the
     SQL level; the pending row count is small enough that this is cheap.
     Caller commits."""
-    now = _aware(now)
+    now = aware(now)
     pending = session.exec(select(Reminder).where(Reminder.status == "pending")).all()
     delivered = 0
     for reminder in pending:
-        if _aware(reminder.due_at) > now:
+        if aware(reminder.due_at) > now:
             continue
         enqueue_message(
             session,

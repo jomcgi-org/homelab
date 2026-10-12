@@ -39,6 +39,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from core.clock import aware
+
 logger = logging.getLogger(__name__)
 
 CACHE_TTL_S = 60.0
@@ -75,10 +77,6 @@ KG_DISPUTE_NOTE_LIMIT = 5
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
 def _minutes(delta: timedelta) -> str:
@@ -195,13 +193,13 @@ def evaluate_create_streak(latest, since, now: datetime) -> tuple[bool, str]:
     """
     if latest is None:
         return False, "no session create recorded yet"
-    checked_at = _utc(latest.checked_at)
+    checked_at = aware(latest.checked_at)
     if latest.ok:
         return False, f"last session create ok {_minutes(now - checked_at)} ago"
     started = checked_at
     if since is not None:
-        candidate = _utc(since.checked_at)
-        last_ok = _utc(latest.last_ok_at) if latest.last_ok_at else None
+        candidate = aware(since.checked_at)
+        last_ok = aware(latest.last_ok_at) if latest.last_ok_at else None
         if candidate <= checked_at and (last_ok is None or candidate >= last_ok):
             started = candidate
     span = checked_at - started
@@ -478,9 +476,9 @@ def evaluate_factory(
     problems = []
     stale = sorted(
         (
-            (now - _utc(updated), rid, issue)
+            (now - aware(updated), rid, issue)
             for rid, issue, updated in uncertain
-            if now - _utc(updated) > UNCERTAIN_MAX_AGE
+            if now - aware(updated) > UNCERTAIN_MAX_AGE
         ),
         reverse=True,
     )

@@ -7,6 +7,7 @@ import os
 
 from sqlmodel import select
 
+from core.clock import aware
 from factory.orchestration import factory_controls as controls, graph
 from factory.orchestration.factory_models import FactoryReceipt
 
@@ -103,7 +104,7 @@ def try_grant(
         ):
             return False, "continuation_waiting"
         stored_task = graph._lock_task(db, task["id"])
-        created = conductor._aware(stored_task.created_at)
+        created = aware(stored_task.created_at)
         deadline = created + timedelta(seconds=policy["task_timeout_seconds"])
         if (
             controls._now() >= deadline

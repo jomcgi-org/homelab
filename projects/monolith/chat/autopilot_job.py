@@ -47,6 +47,7 @@ from uuid import uuid4
 
 from sqlmodel import Session, select
 
+from core.clock import aware
 from chat import ambient_analysis, directives
 from chat.models import ChannelDirective, DirectiveAutopilot, UserStylePref
 
@@ -86,13 +87,6 @@ def _float_env(name: str, default: float) -> float:
 def _mode() -> str:
     mode = os.environ.get("AUTOPILOT_MODE", _DEFAULT_MODE).strip().lower()
     return mode if mode in ("live", "shadow") else _DEFAULT_MODE
-
-
-def _as_utc(dt: datetime) -> datetime:
-    """Coerce a possibly-naive datetime to UTC-aware. SQLite test fixtures store
-    naive datetimes; production (Postgres) is tz-aware. Coercing both sides of a
-    subtraction keeps the age math valid under both."""
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 def _length_ok(current: str, proposed: str) -> bool:
@@ -154,7 +148,7 @@ def _manual_block(
     if row is None or row.source != "manual":
         return False
     cooldown = _int_env("AUTOPILOT_MANUAL_COOLDOWN_DAYS", _DEFAULT_MANUAL_COOLDOWN_DAYS)
-    return _as_utc(now) - _as_utc(row.created_at) < timedelta(days=cooldown)
+    return aware(now) - aware(row.created_at) < timedelta(days=cooldown)
 
 
 def _autopilot_cooldown(
@@ -170,7 +164,7 @@ def _autopilot_cooldown(
     if row is None:
         return False
     cooldown = _int_env("AUTOPILOT_COOLDOWN_DAYS", _DEFAULT_COOLDOWN_DAYS)
-    return _as_utc(now) - _as_utc(row.created_at) < timedelta(days=cooldown)
+    return aware(now) - aware(row.created_at) < timedelta(days=cooldown)
 
 
 # --- APPLY phase -------------------------------------------------------------

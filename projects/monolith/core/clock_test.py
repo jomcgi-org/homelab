@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from core.clock import as_utc, iso
+from core.clock import as_utc, aware, iso
 
 _BST = timezone(timedelta(hours=1))
 
@@ -24,3 +24,10 @@ def test_iso_formats_in_utc():
     assert iso(None) is None
     assert iso(datetime(2026, 10, 11, 2, 0, 30)) == "2026-10-11T02:00:30+00:00"
     assert iso(datetime(2026, 10, 11, 3, 0, tzinfo=_BST)) == "2026-10-11T02:00:00+00:00"
+
+
+def test_aware_labels_naive_and_keeps_zone():
+    naive = datetime(2026, 10, 11, 2, 0)
+    assert aware(naive) == naive.replace(tzinfo=timezone.utc)
+    stamped = datetime(2026, 10, 11, 3, 0, tzinfo=_BST)
+    assert aware(stamped) is stamped

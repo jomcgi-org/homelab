@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from core.clock import aware
 from core.db import get_engine
 from sqlalchemy import distinct, func
 from sqlmodel import Session, select
@@ -41,12 +42,6 @@ UNCERTAIN_STATUS = "uncertain"
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _as_utc(value: datetime) -> datetime:
-    # SQLite returns naive datetimes for TIMESTAMPTZ columns while Postgres
-    # returns aware ones; coerce before comparing so the age matches on both.
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def uncertain_task_snapshot(db: Session, *, now: datetime | None = None) -> dict:
@@ -65,7 +60,7 @@ def uncertain_task_snapshot(db: Session, *, now: datetime | None = None) -> dict
     ).one()
     if not count or oldest is None:
         return {"uncertain_tasks": 0, "oldest_uncertain_age_seconds": 0.0}
-    age = (current - _as_utc(oldest)).total_seconds()
+    age = (current - aware(oldest)).total_seconds()
     return {
         "uncertain_tasks": int(count),
         "oldest_uncertain_age_seconds": max(0.0, float(age)),

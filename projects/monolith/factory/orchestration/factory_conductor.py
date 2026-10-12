@@ -28,6 +28,7 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
+from core.clock import aware
 from core.db import get_engine
 from core.github import GITHUB_API
 from factory.orchestration import config as swarm_config
@@ -5303,10 +5304,6 @@ def _stranded_versions(state) -> tuple[str, str] | None:
 UNREADABLE_STEPS = object()
 
 
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
-
 def _current_replica_claim(owner: str | None) -> bool:
     replica = platform.node()
     return bool(owner and (owner == replica or owner.startswith(f"{replica}:")))
@@ -5358,7 +5355,7 @@ def _abandon_recovering_factory_session(
             ).first()
             if pending is None:
                 return False
-            stale_claim = pending.claimed_at is not None and _aware(
+            stale_claim = pending.claimed_at is not None and aware(
                 pending.claimed_at
             ) < datetime.now(timezone.utc) - timedelta(
                 seconds=FACTORY_RECOVERY_ABANDON_SECONDS
@@ -7249,7 +7246,7 @@ def _expire_reconciler_pause(task_id: str) -> bool:
             if (
                 pause is None
                 or pause.actor != ACTOR
-                or _aware(pause.created_at)
+                or aware(pause.created_at)
                 >= datetime.now(timezone.utc)
                 - timedelta(seconds=FACTORY_RECONCILER_PAUSE_TTL_SECONDS)
                 or db.exec(
@@ -7317,7 +7314,7 @@ def _deadline_backstop_due(task: dict) -> bool:
     if not isinstance(stamp, str):
         return False
     try:
-        deadline = _aware(datetime.fromisoformat(stamp))
+        deadline = aware(datetime.fromisoformat(stamp))
     except ValueError:
         return False
     grace = timedelta(seconds=FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS)

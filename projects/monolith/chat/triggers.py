@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import regex
+from core.clock import aware
 from core.db import get_engine
 from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
@@ -61,10 +62,6 @@ class _TriggerCandidate:
     action_config: dict[str, Any]
     cooldown_secs: int
     created_by_user_id: str
-
-
-def _utc(dt: datetime) -> datetime:
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def validate_pattern(pattern: object) -> str:
@@ -375,7 +372,7 @@ def claim_matching(
     Claims commit before action dispatch, preventing retries or pod restarts
     from accidentally repeating a side effect.
     """
-    claimed_at = _utc(now or datetime.now(timezone.utc))
+    claimed_at = aware(now or datetime.now(timezone.utc))
     rows = session.exec(
         select(MessageTrigger)
         .where(MessageTrigger.enabled == True)

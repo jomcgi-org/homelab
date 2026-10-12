@@ -14,3 +14,7 @@ def as_utc(value: datetime | None) -> datetime | None:
 def iso(value: datetime | None) -> str | None:
     coerced = as_utc(value)
     return coerced.isoformat() if coerced is not None else None
+
+
+def aware(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
