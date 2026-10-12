@@ -626,7 +626,21 @@ def test_agent_activity_snapshot_aggregates_turns_at_list_price(session):
     assert payload["cost_basis"] == "list"
     today = payload["spend_daily"][-1]
     assert today["day"] == datetime.now(timezone.utc).date().isoformat()
-    assert today["ember_usd"] == 0.4
+    # The paid turn is twenty minutes old and can belong to yesterday near
+    # midnight UTC. Assert against its recorded day, not the wall-clock day.
+    paid_day = (
+        session.execute(
+            text(
+                "SELECT (created_at AT TIME ZONE 'UTC')::date "
+                "FROM agent_sessions.agent_turns WHERE session_id = :id AND seq = 1"
+            ),
+            {"id": agent[0]},
+        )
+        .scalar_one()
+        .isoformat()
+    )
+    paid_bucket = next(row for row in payload["spend_daily"] if row["day"] == paid_day)
+    assert paid_bucket["ember_usd"] == 0.4
     week = payload["totals_7d"]["ember"]
     assert week["turns"] == 2
     assert week["input_tokens"] == 120
