@@ -211,10 +211,17 @@ async def monolith_agent_list_routine_jobs(
             "ttl_secs",
             "created_at",
         )
-        jobs = [
-            _serialize_routine_job({key: row.get(key) for key in fields})
-            for row in rows[:limit]
-        ]
+        jobs = []
+        for row in rows[:limit]:
+            projected = {key: row.get(key) for key in fields}
+            truncated = []
+            for key, value in projected.items():
+                if isinstance(value, str) and len(value) > 256:
+                    projected[key] = value[:256]
+                    truncated.append(key)
+            jobs.append(
+                {**_serialize_routine_job(projected), "truncated_fields": truncated}
+            )
         return {
             "jobs": jobs,
             "offset": offset,

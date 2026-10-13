@@ -60,6 +60,7 @@ async def test_routine_list_is_bounded_and_does_not_export_payloads(monkeypatch)
                 "created_at": datetime.now(timezone.utc),
                 "payload": {"secret": "private-payload"},
                 "last_summary": "private-result",
+                "last_status": "x" * 100000,
             }
             for i in range(3)
         ]
@@ -71,5 +72,7 @@ async def test_routine_list_is_bounded_and_does_not_export_payloads(monkeypatch)
     assert result["next_offset"] == 6
     assert "private-" not in str(result)
     assert "payload" not in result["jobs"][0]
+    assert len(result["jobs"][0]["last_status"]) == 256
+    assert result["jobs"][0]["truncated_fields"] == ["last_status"]
     monkeypatch.setattr(mcp.routine_jobs, "list_jobs", lambda **kwargs: [])
     assert (await mcp.monolith_agent_list_routine_jobs())["next_offset"] is None
