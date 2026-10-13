@@ -2153,3 +2153,16 @@ retiring frontend returned connection refused for `/docs/mcp` while its
 replacement was coming online. Serving through endpoint propagation addresses
 the race; retries cover a transient connection failure without re-executing a
 request that reached the application.
+
+
+**Why bounded permit diagnostics.** Unknown execution retains admission capacity
+until exact cessation evidence is reconciled. The operator-only
+`factory_permit_diagnostics` read accepts at most twenty exact permit IDs and
+projects reservation, session, pending-claim, DBOS status, routine lease and
+stored supervision refusal metadata. It excludes prompts, results, payloads,
+credentials and raw evidence. Observation timestamps describe persisted evidence,
+not a fresh guest check, and the read never settles a permit or authorizes recovery.
+Routine-job MCP listing is paginated (twenty rows by default, fifty maximum),
+omits payloads and free-form summaries, and runs its database read off the event
+loop. Follow `next_offset` to inspect retained history without an unbounded tool
+response. A null next-run timestamp can mean an unresolved hold, not completion.

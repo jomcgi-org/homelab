@@ -1701,3 +1701,74 @@ def test_never_invoked_settlement_requires_the_exact_idle_guest(never_invoked, c
     original = before(never_invoked, pid)
     sweep(_never_invoked_view("guest-never-exact", **change))
     assert before(never_invoked, pid) == original
+
+
+def test_permit_diagnostics_are_select_only_and_redacted(database):
+    from sqlalchemy import event
+    from factory.execution.admission_diagnostics import inspect_permits
+
+    permit_id = seed(database, tier="kg", job_held=True)
+    original = before(database, permit_id)
+    with database.begin() as connection:
+        connection.execute(text("ALTER TABLE routine_jobs ADD COLUMN ttl_secs INTEGER"))
+        connection.execute(
+            text("CREATE TABLE workflow_status (workflow_uuid TEXT, status TEXT)")
+        )
+        connection.execute(
+            text("INSERT INTO workflow_status VALUES ('wf-one', 'ERROR')")
+        )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, permit_id)
+        agent = db.get(AgentSession, permit.session_id)
+        agent.workflow_id = "wf-one"
+        db.add(agent)
+        db.add(
+            ProbeObservation(
+                permit_id=permit_id,
+                checked_at=datetime.now(timezone.utc),
+                reason="cessation_precedes_turn",
+                evidence_json='{"secret":"private-evidence"}',
+            )
+        )
+    statements = []
+
+    def capture(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(database, "before_cursor_execute", capture)
+    try:
+        with Session(database) as db:
+            result = inspect_permits([permit_id, 999999], session=db)
+    finally:
+        event.remove(database, "before_cursor_execute", capture)
+    assert all(s.lstrip().upper().startswith("SELECT") for s in statements)
+    item = result["items"][0]
+    assert item["reservation"]["state"] == "uncertain"
+    assert item["observation"]["reason"] == "cessation_precedes_turn"
+    assert item["workflow"]["status"] == "ERROR"
+    assert item["routine"]["next_run_at"] is None
+    assert item["pending_count"] == 0
+    assert result["items"][1] == {"permit_id": 999999, "found": False}
+    assert result["recovery_authorized"] is False
+    encoded = json.dumps(result)
+    for forbidden in (
+        "never-export",
+        "original prompt",
+        "lost response",
+        "private-evidence",
+        "artifact_blob",
+        "usage_json",
+        "ember_session_token",
+    ):
+        assert forbidden not in encoded
+    assert before(database, permit_id)[0] == original[0]
+
+
+@pytest.mark.parametrize(
+    "ids", [[], [True], [0], [-1], [1, 1], list(range(1, 22)), [2**63]]
+)
+def test_permit_diagnostics_reject_unbounded_or_ambiguous_requests(ids):
+    from factory.execution.admission_diagnostics import inspect_permits
+
+    with pytest.raises(ValueError):
+        inspect_permits(ids)
