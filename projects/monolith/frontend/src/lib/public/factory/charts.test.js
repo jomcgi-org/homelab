@@ -206,7 +206,7 @@ it("describes series using the same language as their visible legend", () => {
     [{ d: "2026-09-01", v: 3, u: 2 }],
     ["v", "u"],
     ["var(--tone-ram)", "hatch"],
-    "Facts written per day",
+    "Public facts by observation date",
     ["verified", "unverified"],
   );
   expect(svg).toContain("verified: 3; unverified: 2.");
