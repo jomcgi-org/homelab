@@ -339,7 +339,7 @@
           </p>
         </div>
         <div class="chart">
-          <p class="sec-label">/ Facts written per day</p>
+          <p class="sec-label">/ Public facts by observation date</p>
           {#if data.unavailable.facts}
             <p class="none">Nothing passes the current filter.</p>
           {:else}
@@ -348,10 +348,14 @@
               facts,
               ["v", "u"],
               ["var(--tone-ram)", "hatch"],
-              "Facts written per day",
+              "Public facts by observation date",
               ["verified", "unverified"],
             )}
           {/if}
+          <p class="none">
+            All public facts, grouped by evidence date and current verification
+            state. Reviews do not add a bar.
+          </p>
           <p class="legend">
             <span><i class="ram"></i>verified</span><span
               ><i class="lh"></i>unverified</span
