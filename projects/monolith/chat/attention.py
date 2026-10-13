@@ -23,6 +23,8 @@ import logging
 import os
 from dataclasses import dataclass
 
+from shared.inference import extract_json
+
 logger = logging.getLogger(__name__)
 ATTENTION_THRESHOLD = float(os.environ.get("ATTENTION_THRESHOLD", "0.5"))
 _RECENT_TAG_THRESHOLD = float(os.environ.get("ATTENTION_RECENT_TAG_THRESHOLD", "0.35"))
@@ -138,7 +140,7 @@ async def evaluate(
             '"confidence": 0.0-1.0}. No prose, no markdown.'
         )
         raw = await caller(prompt)
-        data = json.loads(_extract_json(raw))
+        data = json.loads(extract_json(raw))
         engage = bool(data.get("engage", False))
         conf = float(data.get("confidence", 0.0))
         threshold = _RECENT_TAG_THRESHOLD if recently_tagged else ATTENTION_THRESHOLD
@@ -221,7 +223,7 @@ async def should_send(
             "No prose, no markdown."
         )
         raw = await caller(prompt)
-        data = json.loads(_extract_json(raw))
+        data = json.loads(extract_json(raw))
         return bool(data.get("send", True))
     except Exception:
         logger.exception("attention: send-gate failed; failing open (send)")
@@ -282,17 +284,10 @@ async def needs_agent(message, *, _caller=None) -> bool:
             '{"needs_agent": true|false}. Message: ' + text
         )
         raw = await caller(prompt)
-        data = json.loads(_extract_json(raw))
+        data = json.loads(extract_json(raw))
         return bool(data.get("needs_agent", False))
     except Exception:
         logger.exception(
             "attention: needs_agent classify failed; failing closed (chat)"
         )
         return False
-
-
-def _extract_json(raw: str) -> str:
-    """Pull the first {...} object out of a model reply (tolerates stray text)."""
-    s = raw.find("{")
-    e = raw.rfind("}")
-    return raw[s : e + 1] if s != -1 and e != -1 and e > s else raw

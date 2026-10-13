@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 
 from sqlmodel import Session, select
 
+from shared.inference import extract_json
 from chat.models import AttentionDecision, Message, ReactionEvent
 
 logger = logging.getLogger(__name__)
@@ -268,12 +269,6 @@ def _format_episodes(episodes: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _extract_json(raw: str) -> str:
-    s = raw.find("{")
-    e = raw.rfind("}")
-    return raw[s : e + 1] if s != -1 and e != -1 and e > s else raw
-
-
 async def classify_scope(
     caller: Callable[[str], Awaitable[str]],
     scope_kind: str,
@@ -309,7 +304,7 @@ async def classify_scope(
             episodes=_format_episodes(episodes),
         )
         raw = await caller(prompt)
-        data = json.loads(_extract_json(raw))
+        data = json.loads(extract_json(raw))
 
         if not data.get("propose"):
             return abstain
