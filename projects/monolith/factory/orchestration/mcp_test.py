@@ -1457,3 +1457,62 @@ def test_submission_retry_reads_receipt_without_github(monkeypatch):
     assert result["created"] is False
     assert result["receipt"]["receipt_id"] == 42
     assert result["receipt"]["state"] == "succeeded"
+
+
+def test_permit_diagnostics_require_operator_before_read(monkeypatch):
+    from factory.execution import admission_diagnostics
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("unauthorized read")
+
+    monkeypatch.setattr(admission_diagnostics, "inspect_permits", fail)
+    result = _as(_principal(groups=()), lambda: mcp.factory_permit_diagnostics([11254]))
+    assert result["error"] == mcp.OPERATOR_REQUIRED
+
+
+def test_permit_diagnostics_use_worker_thread(monkeypatch):
+    import threading
+    from factory.execution import admission_diagnostics
+
+    caller = threading.get_ident()
+
+    def read(ids):
+        assert threading.get_ident() != caller
+        return {"ids": ids, "recovery_authorized": False}
+
+    monkeypatch.setattr(admission_diagnostics, "inspect_permits", read)
+    assert _as(_principal(), lambda: mcp.factory_permit_diagnostics([11254])) == {
+        "ids": [11254],
+        "recovery_authorized": False,
+    }
+
+
+def test_permit_diagnostics_wire_schema_rejects_invalid_ids(monkeypatch):
+    from fastmcp import Client
+    from core.mcp_app import mcp as shared
+    from factory.execution import admission_diagnostics
+
+    calls = []
+
+    def inspect(ids):
+        calls.append(ids)
+        return {"items": [], "recovery_authorized": False}
+
+    monkeypatch.setattr(admission_diagnostics, "inspect_permits", inspect)
+
+    async def exercise():
+        async with Client(shared) as client:
+            for ids in ([], [True], ["11254"], [0], [2**63], list(range(1, 22))):
+                result = await client.call_tool(
+                    "factory_permit_diagnostics",
+                    {"permit_ids": ids},
+                    raise_on_error=False,
+                )
+                assert result.is_error
+            result = await client.call_tool(
+                "factory_permit_diagnostics", {"permit_ids": [11254]}
+            )
+            assert result.data["recovery_authorized"] is False
+        assert calls == [[11254]]
+
+    _as(_principal(), exercise)

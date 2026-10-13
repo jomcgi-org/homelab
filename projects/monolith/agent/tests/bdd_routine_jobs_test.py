@@ -65,6 +65,16 @@ class TestRegisterAndList:
         assert row["payload"] == {"hello": "world"}
         assert row["created_by"] == "test"
 
+    def test_list_pages_have_stable_order_and_keep_filters(self, agent_db: Session):
+        for name in ("page-c", "page-a", "page-b"):
+            routine_jobs.register_job(name=name, kind="paged")
+        routine_jobs.register_job(name="other", kind="other")
+        first = routine_jobs.list_jobs(kind="paged", limit=2, offset=0)
+        second = routine_jobs.list_jobs(kind="paged", limit=2, offset=2)
+        assert [row["name"] for row in first] == ["page-a", "page-b"]
+        assert [row["name"] for row in second] == ["page-c"]
+        assert routine_jobs.list_jobs(kind="paged", limit=2, offset=3) == []
+
     def test_register_duplicate_raises(self, agent_db: Session):
         routine_jobs.register_job(name="dup", kind="check")
         with pytest.raises(IntegrityError):

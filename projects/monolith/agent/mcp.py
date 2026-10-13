@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import Field
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -181,16 +183,46 @@ async def monolith_agent_trigger_job(name: str) -> dict:
 
 @mcp.tool
 async def monolith_agent_list_routine_jobs(
-    due_only: bool = False, kind: str | None = None
+    due_only: bool = False,
+    kind: str | None = None,
+    limit: Annotated[int, Field(ge=1, le=50)] = 20,
+    offset: Annotated[int, Field(ge=0, le=1000000)] = 0,
 ) -> dict:
-    """List routine_jobs rows, optionally filtered to due-only or by kind.
+    """Read a bounded page of routine-job status and lease metadata.
 
-    Each row's last_status and last_summary are the verdict of its latest run.
-    A one-shot row whose next_run_at is null has completed and will not run
-    again until monolith-agent-trigger-routine-job re-arms it.
+    Filter by due-only or kind and follow next_offset for more rows. Payloads
+    and free-form summaries are omitted. A null next_run_at does not prove
+    completion: an unknown-outcome hold also prevents automatic retries.
     """
-    rows = routine_jobs.list_jobs(due_only=due_only, kind=kind)
-    return {"jobs": [_serialize_routine_job(r) for r in rows]}
+
+    def read_page():
+        rows = routine_jobs.list_jobs(
+            due_only=due_only, kind=kind, limit=limit + 1, offset=offset
+        )
+        fields = (
+            "name",
+            "routine_kind",
+            "interval_secs",
+            "next_run_at",
+            "last_run_at",
+            "last_status",
+            "locked_by",
+            "locked_at",
+            "ttl_secs",
+            "created_at",
+        )
+        jobs = [
+            _serialize_routine_job({key: row.get(key) for key in fields})
+            for row in rows[:limit]
+        ]
+        return {
+            "jobs": jobs,
+            "offset": offset,
+            "limit": limit,
+            "next_offset": offset + limit if len(rows) > limit else None,
+        }
+
+    return await asyncio.to_thread(read_page)
 
 
 @mcp.tool

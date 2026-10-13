@@ -71,13 +71,14 @@ def list_jobs(
     kinds: tuple[str, ...] | list[str] | None = None,
     limit: int | None = None,
     newest_first: bool = False,
+    offset: int = 0,
 ) -> list[dict]:
     """Return routine_jobs rows, optionally filtered to due-only and/or by kind."""
     kind_filter = "routine_kind = ANY(:kinds)" if kinds is not None else "TRUE"
     order_clause = (
         "created_at DESC, name" if newest_first else "next_run_at NULLS LAST, name"
     )
-    limit_clause = "LIMIT :limit" if limit is not None else ""
+    limit_clause = "LIMIT :limit OFFSET :offset" if limit is not None else ""
     sql = text(
         """
         SELECT name, routine_kind, interval_secs, next_run_at, last_run_at,
@@ -107,6 +108,7 @@ def list_jobs(
             "kind": kind,
             "kinds": list(kinds or []),
             "limit": limit,
+            "offset": offset,
         }
         rows = session.execute(sql, params).fetchall()
     return [_row_to_dict(r) for r in rows]

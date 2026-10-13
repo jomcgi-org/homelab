@@ -40,3 +40,36 @@ async def test_all_agent_tools_registered():
 def test_expected_tool_count_is_sixteen():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
     assert len(EXPECTED_TOOLS) == 16
+
+
+@pytest.mark.asyncio
+async def test_routine_list_is_bounded_and_does_not_export_payloads(monkeypatch):
+    import threading
+    from datetime import datetime, timezone
+    from agent import mcp
+
+    caller = threading.get_ident()
+    calls = []
+
+    def rows(**kwargs):
+        assert threading.get_ident() != caller
+        calls.append(kwargs)
+        return [
+            {
+                "name": f"job-{i}",
+                "created_at": datetime.now(timezone.utc),
+                "payload": {"secret": "private-payload"},
+                "last_summary": "private-result",
+            }
+            for i in range(3)
+        ]
+
+    monkeypatch.setattr(mcp.routine_jobs, "list_jobs", rows)
+    result = await mcp.monolith_agent_list_routine_jobs(limit=2, offset=4)
+    assert calls == [{"due_only": False, "kind": None, "limit": 3, "offset": 4}]
+    assert len(result["jobs"]) == 2
+    assert result["next_offset"] == 6
+    assert "private-" not in str(result)
+    assert "payload" not in result["jobs"][0]
+    monkeypatch.setattr(mcp.routine_jobs, "list_jobs", lambda **kwargs: [])
+    assert (await mcp.monolith_agent_list_routine_jobs())["next_offset"] is None
