@@ -6485,6 +6485,16 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_images_test",
+    srcs = ["grimoire/images_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "grimoire_handouts_test",
     srcs = ["grimoire/handouts_test.py"],
     imports = ["."],

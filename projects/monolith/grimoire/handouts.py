@@ -29,13 +29,6 @@ from grimoire.visibility import entity_belongs_to_campaign
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 UPLOAD_EXTENSIONS = ("png", "jpg", "webp", "gif")
-IMAGE_CONTENT_TYPES = {
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "webp": "image/webp",
-    "gif": "image/gif",
-}
 
 
 class HandoutInvalidError(ValueError):
