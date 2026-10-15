@@ -2,6 +2,8 @@
   import { onMount, untrack, tick } from "svelte";
   import { sheetRolls } from "$lib/grimoire/sheet-rolls.js";
   import { composeMessage } from "$lib/grimoire/session-compose.js";
+  import HandoutCard from "$lib/grimoire/HandoutCard.svelte";
+  import HandoutComposer from "$lib/grimoire/HandoutComposer.svelte";
   import RevealPanel from "$lib/grimoire/RevealPanel.svelte";
   import RevealProjection from "$lib/grimoire/RevealProjection.svelte";
   import SessionNotesPanel from "$lib/grimoire/SessionNotesPanel.svelte";
@@ -70,7 +72,9 @@
     inventoryPrefill = {
       name: knowledge
         ? knowledge.name
-        : (event.body?.text || "").split("\n")[0].slice(0, 200),
+        : (event.body?.title || event.body?.text || "")
+            .split("\n")[0]
+            .slice(0, 200),
       entity_id: knowledge?.entity_id || null,
       owner:
         knowledge &&
@@ -399,6 +403,16 @@
                 {/if}
               </div>
             {/each}
+          {:else if event.kind === "handout"}
+            <HandoutCard
+              handout={event}
+              campaignId={state.campaign.id}
+              sessionId={state.session.id}
+              {dm}
+              {busy}
+              {pin}
+              openKnowledge={(id) => (selectedEntity = id)}
+            />
           {:else}<p>
               {event.retracted_at
                 ? "This message was retracted."
@@ -409,7 +423,7 @@
             <button
               class="secondary"
               onclick={() => giveItem(event)}
-              aria-label={`Give item from ${event.body?.text?.split("\n")[0] || "handout"}`}
+              aria-label={`Give item from ${event.body?.title || event.body?.text?.split("\n")[0] || "handout"}`}
               >Give item</button
             >
           {/if}
@@ -424,7 +438,7 @@
               {/if}
             </div>
           {/if}
-          {#if !event.retracted_at && !event.body?.retracted}{#if !dm}<button
+          {#if !event.retracted_at && !event.body?.retracted && event.kind !== "handout"}{#if !dm}<button
                 class="secondary"
                 disabled={busy}
                 onclick={() => pin(event)}
@@ -510,6 +524,15 @@
             {act}
             {busy}
           />{/if}
+        {#if dm}<details class="dice-tray">
+            <summary>Send a handout</summary>
+            <HandoutComposer
+              campaignId={state.campaign.id}
+              characters={state.characters}
+              {busy}
+              send={act}
+            />
+          </details>{/if}
         <details class="dice-tray">
           <summary>Roll dice</summary>
           <div class="quick-dice">

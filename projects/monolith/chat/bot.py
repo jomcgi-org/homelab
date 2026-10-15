@@ -97,6 +97,11 @@ AGENT_REACTION_QUEUED = "⏳"
 
 
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
+# Operational pause, independent of channel grants and trust safeguards.
+# Storage, explicit summons, commands and Notify keep their existing paths.
+DISCORD_AMBIENT_ENABLED = (
+    os.environ.get("DISCORD_AMBIENT_ENABLED", "true").lower() == "true"
+)
 DISCORD_MESSAGE_LIMIT = 2000
 THINKING_TRUNCATE_AT = 1985
 LLM_MAX_RETRIES = 3
@@ -698,6 +703,7 @@ class ChatBot(discord.Client):
 
     async def on_ready(self):
         logger.info("Discord bot connected as %s", self.user)
+        logger.info("Discord ambient processing enabled=%s", DISCORD_AMBIENT_ENABLED)
         # Sync slash commands globally so they are available in every server the
         # bot is in (execution is gated by the ADR 029 feature-grant ACL, so a
         # server or user without a grant is refused). A global sync can take up
@@ -892,7 +898,7 @@ class ChatBot(discord.Client):
         # for existing mention, ambient, storage, or response behavior. Trust
         # lockout above takes precedence, and all bot-authored messages are
         # excluded so responses and crossposts cannot feed back into triggers.
-        if not message.author.bot:
+        if DISCORD_AMBIENT_ENABLED and not message.author.bot:
             task = asyncio.create_task(self.evaluate_triggers(message))
             self._safeguards_tasks.add(task)
             task.add_done_callback(self._safeguards_tasks.discard)
@@ -1089,6 +1095,8 @@ class ChatBot(discord.Client):
         Fails closed (non-ambient) on a grants-read error (DB blip), so a
         failure never spuriously engages nor strands the message.
         """
+        if not DISCORD_AMBIENT_ENABLED:
+            return False
         try:
             ambient = await asyncio.to_thread(acl.ambient_channels, guild_id)
         except Exception:

@@ -1,4 +1,5 @@
 <script>
+  import HandoutText from "./HandoutText.svelte";
   let {
     journal,
     view = "mine",
@@ -121,7 +122,10 @@
     {#if !eventSections[0].entries.length}<p>{eventSections[0].empty}</p>{/if}
     {#each eventSections[0].entries as entry (entry.id)}
       <article>
-        {@render fields(entry.body)}{@render source(entry.id)}
+        {#if entry.kind === "handout"}
+          <h4>{entry.body?.title || "Handout"}</h4>
+          <HandoutText markdown={entry.body?.markdown} />
+        {:else}{@render fields(entry.body)}{/if}{@render source(entry.id)}
       </article>
     {/each}
   </section>

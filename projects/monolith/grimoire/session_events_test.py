@@ -1009,7 +1009,11 @@ def test_allowed_actions_have_authenticated_author(
 def test_dm_can_post_all_non_ingest_kinds_and_audiences(http_harness, kind, audience):
     h, client = http_harness
     ids = [h.rows["character_a"].id] if audience == "pcs" else []
-    response = _post(h, client, kind=kind, audience=audience, audience_pc_ids=ids)
+    body = {"title": "Map", "markdown": "A sketch"} if kind == "handout" else None
+    changes = {"body": body} if body else {}
+    response = _post(
+        h, client, kind=kind, audience=audience, audience_pc_ids=ids, **changes
+    )
     assert response.status_code == 200, response.text
     assert response.json()["kind"] == kind
     assert response.json()["audience"] == audience

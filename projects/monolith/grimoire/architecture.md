@@ -188,8 +188,8 @@ hidden roll. Self visibility uses `pcs` containing the player's character
 with the same author provenance. A DM choosing self uses the dm audience.
 Characterless players may roll only table; restricted visibility returns 422
 because their audience contract would hide even their own restricted roll.
-These rules leave `audience_predicate` unchanged. There are 58 campaign routes
-in the route inventory, including the roller, bulk grants, inventory, and voice map.
+These rules leave `audience_predicate` unchanged. There are 60 campaign routes
+in the route inventory, including the roller, bulk grants, inventory, voice map, and handout upload and image.
 
 **Why.** Server-side `secrets.SystemRandom` prevents clients from supplying
 results or seeds. A dependency override lets tests use a seeded RNG and assert
@@ -199,6 +199,42 @@ players' table-only rule keeps every accepted roll visible to its roller.
 Part of #6610, which owns coordinated enablement of `grimoire.play.enabled`
 and live audience checks after the #6612 play surface is ready. Deployment
 values remain off. No operational flag flip belongs to this change.
+
+### Handouts
+
+A DM posts a `handout` event with body `{title, markdown, entity_id?, image?}`
+to the table or to chosen PCs through the ordinary events route. The body is
+validated and stored normalised (`handouts.py`), so an identical `request_id`
+retry stays idempotent. `image` is `{"source": "chunk", "chunk_id"}` for an
+image chunk of an open-licensed book, or `{"source": "upload", "key"}` for an
+image the DM uploaded through `POST /campaigns/{id}/handouts/uploads` (5 MiB,
+PNG, JPEG, GIF or WebP, sniffed from magic bytes) under
+`campaigns/<campaign_id>/handouts/` in the grimoire bucket. Images are served
+only by `GET .../sessions/{sid}/events/{event_id}/image`, which applies the
+audience predicate, hides retracted handouts from players and answers one 404
+for missing and non-recipient alike. For non-DM viewers `entity_id` survives
+projection (events list and journal Received) only when that viewer can already
+see the entity. A player pins a handout through `POST /notes` with
+`from_event_id`; the entity link follows the same visibility rule and never
+fails the pin.
+
+**Why.** Clients never receive an S3 key to fetch, so the audience predicate is
+the only path to the bytes and a retraction withdraws the image with the
+event. Chunk images re-check `book.copyrighted_content` at serve time and fail
+closed (copyrighted, unclassified or a missing book), so reclassifying a book
+withdraws handouts already posted. The upload key is matched in full against
+this campaign's prefix and a uuid4 name, which rules out traversal and other
+campaigns' objects without trusting the client's filename or declared type.
+
+The frontend reaches all of this through the SvelteKit BFF: the session state
+endpoint's `handout` operation (limits mirrored from `handouts.py`), a multipart
+upload proxy that forwards only the file, and an image proxy that takes the
+campaign, session and event ids as single encoded segments and answers
+`Cache-Control: private, no-store`. Pages only ever hold the proxy URL, never the
+key. The DM composer offers uploaded images only; chunk images are accepted by
+the API but have no picker yet. The frontend container sets `BODY_SIZE_LIMIT`
+to 6M because adapter-node's 512K default would refuse the upload before the
+proxy ran.
 
 ## Journal
 

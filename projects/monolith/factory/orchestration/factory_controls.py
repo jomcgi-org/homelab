@@ -1836,7 +1836,7 @@ def _start_dict(row: FactoryStart) -> dict:
     return result
 
 
-def _recovery_deadline(db: Session, task_id: str, ordinary: datetime) -> datetime:
+def _landing_recovery_deadline(db: Session, task_id: str) -> datetime | None:
     event = db.exec(
         select(FactoryAudit)
         .where(
@@ -1847,7 +1847,12 @@ def _recovery_deadline(db: Session, task_id: str, ordinary: datetime) -> datetim
         .limit(1)
     ).first()
     value = json.loads(event.detail_json).get("deadline_at") if event else None
-    return datetime.fromisoformat(value) if value else ordinary
+    return datetime.fromisoformat(value) if value else None
+
+
+def _landing_recovery_expired(db: Session, task_id: str) -> bool:
+    deadline = _landing_recovery_deadline(db, task_id)
+    return deadline is not None and _now() >= deadline
 
 
 def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
@@ -1996,12 +2001,16 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
         deadline = admitted + timedelta(
             seconds=result["policy"]["task_timeout_seconds"]
         )
-        deadline = _recovery_deadline(db, row.task_id, deadline)
+        recovery_deadline = _landing_recovery_deadline(db, row.task_id)
+        deadline = recovery_deadline or deadline
         allowance = _stored_allowance(row, result["policy"])
         result["allowance"] = allowance
         result.update(
             admitted_at=admitted.isoformat(),
             deadline_at=deadline.isoformat(),
+            deadline_reason="landing_recovery_deadline"
+            if recovery_deadline is not None
+            else "task_deadline",
             limits={
                 "deadline_expired": _now() >= deadline,
                 "turn_limit_reached": result["turns_used"] >= allowance["turns"],
@@ -2977,7 +2986,13 @@ def _can_start(
             s.start_key == start_key and s.status == "reserved"
             for s in _starts(db, task_id)
         )
-        if funding_key and not oversight:
+        # Funding oversight can renew a soft task lease, never the fixed
+        # landing-recovery cap. Check it before pending/granted lease gates.
+        recovery_deadline = _landing_recovery_deadline(db, task_id)
+        now = _now()
+        if recovery_deadline is not None and now >= recovery_deadline:
+            reason = "landing_recovery_deadline"
+        elif funding_key and not oversight:
             reason = "funding_review_expired"
         elif request and not oversight:
             reason = "funding_review_pending"
@@ -2985,11 +3000,11 @@ def _can_start(
             grant
             and not oversight
             and not already_reserved
-            and _now() >= datetime.fromisoformat(grant["review_due_at"])
+            and now >= datetime.fromisoformat(grant["review_due_at"])
         ):
             reason = "funding_lease_due"
-        elif not oversight and _now() >= _recovery_deadline(
-            db, task_id, admitted + timedelta(seconds=timeout)
+        elif not oversight and now >= (
+            recovery_deadline or admitted + timedelta(seconds=timeout)
         ):
             reason = "task_deadline"
     return {"ok": reason is None, "reason": reason}

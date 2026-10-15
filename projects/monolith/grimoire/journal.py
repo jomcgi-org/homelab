@@ -6,6 +6,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from grimoire.audience import Member, Viewer, can_see
+from grimoire.handouts import project_handout_body
 from grimoire.models import SessionEvent
 from grimoire.reveals import reveal_items
 from grimoire.voices import speaker_ref
@@ -66,13 +67,21 @@ def visible_rows(viewer, member, events, view):
     )
 
 
-def _event(row: SessionEvent, viewer: Viewer, member: Member) -> dict[str, Any]:
+def _event(
+    row: SessionEvent,
+    viewer: Viewer,
+    member: Member,
+    visible_entities: Mapping[str, Any] = {},  # noqa: B006 - read-only, never mutated
+) -> dict[str, Any]:
     body = row.body
     if viewer != "dm" and isinstance(body.get("speaker_key"), str):
         body = {
             **body,
             "speaker_key": speaker_ref(row.campaign_id, body["speaker_key"]),
         }
+    if row.kind == "handout" and viewer != "dm" and body:
+        # entity_id survives only for entities this viewer can already see.
+        body = project_handout_body(body, frozenset(visible_entities))
     return {
         "id": row.id,
         "seq": row.seq,
@@ -149,7 +158,7 @@ def journal(
                         entry["entity"] = body["entity"]
                     learned[pc, _identity(entity_id)] = entry
         elif row.kind == "handout":
-            result.received.append(_event(row, viewer, member))
+            result.received.append(_event(row, viewer, member, visible_entities))
         elif row.kind == "roll" and (
             view == "party" or row.author_member_id == member.id
         ):

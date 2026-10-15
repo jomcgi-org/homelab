@@ -52,8 +52,11 @@ def play_embedding_predicate(campaign_id: str, viewer: Viewer, member: Member):
     )
 
 
-def event_note_markdown(body: dict) -> str:
+def event_note_markdown(body: dict, kind: str | None = None) -> str:
     """Human-readable snapshot of an already audience-filtered event body."""
+    if kind == "handout":
+        markdown = body.get("markdown")
+        return markdown if isinstance(markdown, str) else ""
     if "reveals" in body:
         return "\n\n".join(event_note_markdown(item) for item in reveal_items(body))
     if body.get("text"):
@@ -109,6 +112,13 @@ def event_text(event: SessionEvent) -> str | None:
     # Until utterance ingest defines another contract, only literal ooc=True is OOC.
     if event.kind == "utterance" and event.body.get("ooc") is True:
         return None
+    if event.kind == "handout":
+        # Title and markdown only: the image reference and entity id are
+        # storage details that must never enter the index or search results.
+        body = event.body if isinstance(event.body, dict) else {}
+        title, markdown = body.get("title"), event_note_markdown(body, "handout")
+        parts = [title if isinstance(title, str) else "", markdown]
+        return "\n\n".join(part.strip() for part in parts if part.strip()) or None
     if event.kind != "reveal":
         return event_note_markdown(event.body).strip() if event.body else None
     texts = []
