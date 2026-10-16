@@ -26,13 +26,13 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session
 
+from core.clock import aware_iso
 from core.db import get_session
 from grimoire_chat import (
     cache,
@@ -208,19 +208,6 @@ class ForkRequest(BaseModel):
     # never from the client body.
     snapshot_id: str | None = None
     turnstile_token: str | None = None
-
-
-def _iso(dt: datetime | None) -> str | None:
-    """Serialize a possibly-naive timestamp as an offset-consistent ISO string.
-
-    SQLite round-trips a TIMESTAMPTZ as a naive datetime in tests while Postgres
-    is tz-aware; coerce to UTC so JSON output matches across both (per the
-    monolith sqlite-fixture rule, mirroring ships/router.py)."""
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.isoformat()
 
 
 def _limit_status(code: str) -> int:
@@ -599,7 +586,7 @@ def get_shared_chat(
         raise HTTPException(status_code=404, detail="Snapshot not found")
     return {
         "id": snapshot.id,
-        "created_at": _iso(snapshot.created_at),
+        "created_at": aware_iso(snapshot.created_at),
         "messages": list(snapshot.transcript or []),
     }
 

@@ -26,11 +26,11 @@ import json
 import logging
 import os
 from contextlib import nullcontext
-from datetime import datetime, timezone
 
 import httpx
 from sqlmodel import select
 
+from core.clock import iso
 from factory.orchestration.factory_controls import (
     CLOSE_REASONS,
     CONTINUE_EFFECT,
@@ -99,11 +99,6 @@ def _marker(receipt_id: int, option_key: str) -> str:
 def _effect_marker(fields: dict, key: str) -> str:
     scope = fields.get("effect_namespace")
     return _marker(fields["id"], f"{scope}:{key}" if scope else key)
-
-
-def _iso(value: datetime) -> str:
-    aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-    return aware.astimezone(timezone.utc).isoformat()
 
 
 def _github():
@@ -740,7 +735,7 @@ def _resolve(
         "actor": actor,
         "note": (note or "").strip()[:MAX_NOTE] or None,
         "effects": effects,
-        "decided_at": _iso(_now()),
+        "decided_at": iso(_now()),
         "decision_id": expected_decision_id,
     }
     with _locked_session() as (db, _control):
@@ -1056,7 +1051,7 @@ def _direction(
         "detail": option.get("detail") or {},
         "note": (note or "").strip()[:MAX_NOTE] or None,
         "actor": actor,
-        "decided_at": _iso(_now()),
+        "decided_at": iso(_now()),
         "question": escalation.get("question"),
         "previous_task_ids": previous[-8:],
         # Server-owned rescope and adoption survive an unrelated human decision.
@@ -1158,7 +1153,7 @@ def _requeue_refine(
         {
             "note": note,
             "actor": actor,
-            "asked_at": _iso(_now()),
+            "asked_at": iso(_now()),
             "requeued": blocker is None,
             "blocked_by": blocker,
         }
@@ -1449,7 +1444,7 @@ def request_decision(
                 request_key=request_key,
                 receipt_id=receipt_id,
                 decision_id=decision_id,
-                acknowledged_at=_iso(_now()),
+                acknowledged_at=iso(_now()),
             )
             _request_event(db, actor, request, result)
             return result
@@ -1463,7 +1458,7 @@ def request_decision(
             request_key=request_key,
             receipt_id=receipt_id,
             decision_id=decision_id,
-            acknowledged_at=_iso(_now()),
+            acknowledged_at=iso(_now()),
             reason="completion unconfirmed; retry this same request to inspect its outcome",
         )
         _request_event(db, actor, request, accepted)
@@ -1531,7 +1526,7 @@ def _apply_chat_request(fields: dict, request: dict, actor: str) -> dict:
             decision_id=request["decision_id"],
             requeued=blocker is None,
             blocked_by=blocker,
-            acknowledged_at=_iso(_now()),
+            acknowledged_at=iso(_now()),
         )
         _audit(
             db,

@@ -22,12 +22,12 @@ ingest/extract need for their scheduler-loop handlers).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
+from core.clock import aware_iso
 from grimoire.extract import book_kind, current_extraction_key
 from grimoire.models import (
     Adventure,
@@ -57,20 +57,6 @@ MAX_CHUNK_PAGE = 500
 # so pages are kept smaller than the preview list above).
 DEFAULT_READ_PAGE = 40
 MAX_READ_PAGE = 120
-
-
-def _as_utc(dt: datetime | None) -> datetime | None:
-    """Coerce a possibly-naive datetime (SQLite tests round-trip TIMESTAMPTZ as
-    naive) to tz-aware UTC, matching the ships/router.py serialization pattern.
-    """
-    if dt is None:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
-def _iso(dt: datetime | None) -> str | None:
-    coerced = _as_utc(dt)
-    return coerced.isoformat() if coerced else None
 
 
 def _kind(chunk: KnowledgeChunk) -> str:
@@ -166,8 +152,10 @@ def list_books(session: Session) -> list[dict[str, Any]]:
                 "image_count": chunks.image_count if chunks else 0,
                 "extracted_count": extracted_by_book.get(book_id, 0),
                 "entity_count": entity_by_book.get(book_id, 0),
-                "last_loaded_at": _iso(book.created_at) if book else None,
-                "latest_chunk_at": _iso(chunks.latest_chunk_at) if chunks else None,
+                "last_loaded_at": aware_iso(book.created_at) if book else None,
+                "latest_chunk_at": aware_iso(chunks.latest_chunk_at)
+                if chunks
+                else None,
                 "cover_chunk_id": cover_by_book.get(book_id),
             }
         )
@@ -305,7 +293,7 @@ def list_sections(session: Session, book_id: str) -> list[dict[str, Any]]:
     return [
         {
             **nodes[key],
-            "latest_chunk_at": _iso(nodes[key]["latest_chunk_at"]),
+            "latest_chunk_at": aware_iso(nodes[key]["latest_chunk_at"]),
             "raw_section_paths": sorted(
                 p for p in nodes[key]["raw_section_paths"] if p is not None
             ),
@@ -352,7 +340,7 @@ def list_chunks(
             "section_path": chunk.section_path,
             "kind": _kind(chunk),
             "preview": chunk.content[:_PREVIEW_LEN],
-            "created_at": _iso(chunk.created_at),
+            "created_at": aware_iso(chunk.created_at),
         }
         for chunk in rows
     ]
@@ -557,7 +545,7 @@ def get_chunk(
         "prev_id": prev_id,
         "next_id": next_id,
         "entities": entities,
-        "created_at": _iso(chunk.created_at),
+        "created_at": aware_iso(chunk.created_at),
     }
 
 

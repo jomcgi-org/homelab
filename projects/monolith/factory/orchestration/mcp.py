@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Literal
 
 from auth.api import Principal, current_principal
+from core.clock import aware_iso
 from core.mcp_app import mcp
 from pydantic import BeforeValidator, Field
 
@@ -96,13 +97,9 @@ def _now() -> str:
 
 
 def _iso(value: object) -> str | None:
-    if value is None:
-        return None
     if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.isoformat()
-    return str(value)
+        return aware_iso(value)
+    return None if value is None else str(value)
 
 
 def _page(items: list[dict], offset: int, limit: int) -> tuple[list[dict], dict]:
