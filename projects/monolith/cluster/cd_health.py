@@ -342,18 +342,21 @@ async def _record_deployment_observations(poll_time: datetime) -> None:
         )
         probe_interval_s = 300.0
     kubernetes = KubernetesClient()
-    for entry in apps:
-        try:
-            observation = await _collect_deployment_observation(
-                kubernetes, entry, poll_time, probe_interval_s
-            )
-            await _write_deployment_observation(observation)
-        except Exception:  # noqa: BLE001 - one app must not suppress later apps
-            logger.warning(
-                "deployment observation: write failed for %s",
-                entry["app"],
-                exc_info=True,
-            )
+    try:
+        for entry in apps:
+            try:
+                observation = await _collect_deployment_observation(
+                    kubernetes, entry, poll_time, probe_interval_s
+                )
+                await _write_deployment_observation(observation)
+            except Exception:  # noqa: BLE001 - one app must not suppress later apps
+                logger.warning(
+                    "deployment observation: write failed for %s",
+                    entry["app"],
+                    exc_info=True,
+                )
+    finally:
+        await kubernetes.close()
 
 
 def _evaluate_chart_lag(
@@ -424,21 +427,24 @@ async def _chart_lag_fault(lag_s: float) -> tuple[bool, list[str]]:
     kubernetes = KubernetesClient()
     ok = True
     details: list[str] = []
-    for entry in apps:
-        live = await kubernetes.get_argocd_app_deployed_revision(entry["app"])
-        freight = await kubernetes.list_kargo_freight(
-            entry["namespace"], repo_suffix=entry["suffix"]
-        )
-        app_ok = True
-        fault, note = _evaluate_chart_lag(
-            entry["app"], live, freight, lag_s, datetime.now(timezone.utc)
-        )
-        if fault:
-            app_ok = False
-            details.append(fault)
-        if note:
-            details.append(note)
-        ok = ok and app_ok
+    try:
+        for entry in apps:
+            live = await kubernetes.get_argocd_app_deployed_revision(entry["app"])
+            freight = await kubernetes.list_kargo_freight(
+                entry["namespace"], repo_suffix=entry["suffix"]
+            )
+            app_ok = True
+            fault, note = _evaluate_chart_lag(
+                entry["app"], live, freight, lag_s, datetime.now(timezone.utc)
+            )
+            if fault:
+                app_ok = False
+                details.append(fault)
+            if note:
+                details.append(note)
+            ok = ok and app_ok
+    finally:
+        await kubernetes.close()
     return ok, details
 
 
