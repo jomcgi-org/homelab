@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import zlib
 from dataclasses import dataclass
@@ -145,6 +146,417 @@ def _int(value) -> int | None:
         return int(float(value))
     except (TypeError, ValueError):
         return None
+
+
+# A usage report can survive an idle subscription for hours. Keep that last
+# measurement visible, but never compare it with today's clock as fresh pace.
+QUOTA_STALE_AFTER_SECONDS = 900
+
+
+def _quota_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return float(value) if math.isfinite(value) else None
+    except OverflowError:
+        return None
+
+
+def _quota_time(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc) if parsed.tzinfo else None
+    except ValueError:
+        return None
+
+
+def _quota_windows(
+    views: list[dict], now: datetime, fetched: datetime | None
+) -> tuple[list[dict], int]:
+    groups: dict[float, list[dict]] = {}
+    unknown = 0
+    for view in views:
+        if view.get("observed") is not True:
+            continue
+        windows = view.get("windows")
+        if not isinstance(windows, list):
+            continue
+        # One account contributes once per duration. Ambiguous duplicate limits
+        # are omitted, never summed into a fictitious larger subscription.
+        account: dict[float, list[dict]] = {}
+        for window in windows:
+            if not isinstance(window, dict):
+                unknown += 1
+                continue
+            minutes = _quota_number(window.get("window_minutes"))
+            if minutes is None or not 0 < minutes <= 525600:
+                unknown += 1
+                continue
+            account.setdefault(minutes * 60, []).append(window)
+        age = _quota_number(view.get("age_seconds"))
+        observed_at = None
+        if age is not None and 0 <= age <= 315360000 and fetched is not None:
+            observed_at = fetched - timedelta(seconds=age)
+        for seconds, candidates in account.items():
+            samples = groups.setdefault(seconds, [])
+            if len(candidates) != 1:
+                continue
+            window = candidates[0]
+            used = _quota_number(window.get("used_percent"))
+            reset = _quota_time(window.get("resets_at"))
+            if (
+                used is None
+                or not 0 <= used <= 100
+                or reset is None
+                or window.get("expired") not in (None, False)
+                or not 0 < (reset - now).total_seconds() <= seconds
+            ):
+                continue
+            samples.append({"used": used, "reset": reset, "observed_at": observed_at})
+    result = []
+    for seconds, samples in sorted(groups.items()):
+        count = len(samples)
+        resets = [sample["reset"] for sample in samples]
+        observed = [sample["observed_at"] for sample in samples]
+        fresh = sum(
+            at is not None
+            and 0 <= (now - at).total_seconds() <= QUOTA_STALE_AFTER_SECONDS
+            for at in observed
+        )
+        used = sum(sample["used"] for sample in samples) / count if count else None
+        remaining = (
+            sum((reset - now).total_seconds() for reset in resets) / count
+            if count
+            else None
+        )
+        result.append(
+            {
+                "window_seconds": seconds,
+                "reported_accounts": count,
+                "fresh_accounts": fresh,
+                "used_percent": used,
+                "remaining_seconds": remaining,
+                "elapsed_percent": 100 * (1 - remaining / seconds)
+                if remaining is not None
+                else None,
+                "next_reset_at": _iso(min(resets)) if resets else None,
+                "last_reset_at": _iso(max(resets)) if resets else None,
+                "oldest_observed_at": _iso(min(observed))
+                if observed and all(observed)
+                else None,
+            }
+        )
+    return result, unknown
+
+
+def shape_quota(payload: dict | None, now: datetime) -> dict:
+    """Public allowlist: account means and coverage, without account identity.
+
+    Percentages have unknown token capacities. An equal-account mean is the
+    only aggregate justified by these reports. Provider rollups are a fallback
+    observation with unknown coverage, and never another account in the mean.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    available = payload.get("available") is True
+    fetched = _quota_time(payload.get("fetched_at")) if available else None
+    if fetched is not None and fetched > now:
+        fetched = None
+    grants = payload.get("grants")
+    valid = isinstance(grants, dict) and payload.get("grants_valid") is True
+    inventory = payload.get("grants_complete") is True and valid
+    if not isinstance(grants, dict):
+        grants = {}
+    # A malformed entry with no provider could hide an account of either kind.
+    inventory = inventory and all(
+        isinstance(view, dict) and isinstance(view.get("provider"), str)
+        for view in grants.values()
+    )
+    raw_providers = payload.get("providers")
+    raw_providers = raw_providers if isinstance(raw_providers, dict) else {}
+    providers = []
+    for provider in ("codex", "claude"):
+        accounts = (
+            [
+                view
+                for view in grants.values()
+                if isinstance(view, dict) and view.get("provider") == provider
+            ]
+            if available
+            else []
+        )
+        fallback = raw_providers.get(provider)
+        views = accounts or (
+            [fallback] if available and isinstance(fallback, dict) else []
+        )
+        windows, unknown = _quota_windows(views, now, fetched)
+        for window in windows:
+            window["complete"] = (
+                bool(accounts)
+                and inventory
+                and window["reported_accounts"] == len(accounts)
+            )
+            window["pace_delta_percent"] = (
+                window["used_percent"] - window["elapsed_percent"]
+                if window["complete"] and window["fresh_accounts"] == len(accounts)
+                else None
+            )
+        providers.append(
+            {
+                "provider": provider,
+                "source": "accounts" if accounts else "provider",
+                "configured_accounts": len(accounts) if accounts else None,
+                "inventory_complete": bool(accounts) and inventory,
+                "unknown_windows": unknown,
+                "windows": windows,
+            }
+        )
+    return {
+        "available": available,
+        "sampled_at": _iso(now),
+        "stale_after_seconds": QUOTA_STALE_AFTER_SECONDS,
+        "providers": providers,
+    }
+
+
+QUOTA_HISTORY_DAYS = 8
+QUOTA_HISTORY_BUCKET_SECONDS = 900
+_QUOTA_HISTORY_STATUSES = ("complete", "observed", "partial", "stale", "unavailable")
+
+
+def _quota_history_point(raw: object, now: datetime, seconds: float) -> dict | None:
+    """Rebuild even previously published points, never trust stored JSON fields."""
+    if not isinstance(raw, dict):
+        return None
+    sampled = _quota_time(raw.get("sampled_at"))
+    if (
+        sampled is None
+        or not now - timedelta(days=QUOTA_HISTORY_DAYS) <= sampled <= now
+    ):
+        return None
+    source, status = raw.get("source"), raw.get("status")
+    if source not in ("accounts", "provider") or status not in _QUOTA_HISTORY_STATUSES:
+        return None
+    observed = _quota_time(raw.get("observed_at"))
+    first, last = (
+        _quota_time(raw.get(key)) for key in ("next_reset_at", "last_reset_at")
+    )
+    counts = []
+    for key in ("reported_accounts", "configured_accounts"):
+        value = raw.get(key)
+        counts.append(value if type(value) is int and 0 <= value <= 10000 else None)
+    reported, configured = counts
+    complete = (
+        raw.get("complete") is True
+        and source == "accounts"
+        and configured == reported
+        and bool(reported)
+    )
+    fresh = (
+        raw.get("fresh") is True
+        and observed is not None
+        and 0 <= (sampled - observed).total_seconds() <= QUOTA_STALE_AFTER_SECONDS
+    )
+    used, elapsed = (
+        _quota_number(raw.get(key)) for key in ("used_percent", "elapsed_percent")
+    )
+    valid = (
+        fresh
+        and first is not None
+        and last is not None
+        and 0
+        < (first - sampled).total_seconds()
+        <= (last - sampled).total_seconds()
+        <= seconds
+        and used is not None
+        and 0 <= used <= 100
+        and elapsed is not None
+        and 0 <= elapsed <= 100
+        and (
+            (status == "complete" and complete)
+            or (status == "observed" and source == "provider")
+        )
+    )
+    if status in ("complete", "observed") and not valid:
+        status = "stale" if not fresh else "partial"
+    return {
+        "sampled_at": _iso(sampled),
+        "observed_at": _iso(observed),
+        "used_percent": used if valid else None,
+        "elapsed_percent": elapsed if valid else None,
+        "next_reset_at": _iso(first),
+        "last_reset_at": _iso(last),
+        "reported_accounts": reported,
+        "configured_accounts": configured,
+        "complete": bool(complete),
+        "fresh": fresh,
+        "source": source,
+        "status": status,
+        "break_before": raw.get("break_before") is True,
+        "reset_before": raw.get("reset_before") is True,
+    }
+
+
+def _quota_history_append(points: list[dict], point: dict) -> list[dict]:
+    if points:
+        prior = points[-1]
+        scope_changed = any(
+            prior[key] != point[key]
+            for key in (
+                "source",
+                "configured_accounts",
+                "reported_accounts",
+                "complete",
+                "status",
+            )
+        )
+        reset_changed = any(
+            prior[key] != point[key] for key in ("next_reset_at", "last_reset_at")
+        )
+        old_observed, observed = (_quota_time(p["observed_at"]) for p in (prior, point))
+        # Broker ages are rounded and can jitter slightly between reads. An
+        # unchanged cached report must not become another measured data point.
+        same_observation = old_observed == observed or (
+            old_observed is not None
+            and observed is not None
+            and abs((observed - old_observed).total_seconds()) <= 2
+        )
+        if (
+            not scope_changed
+            and not reset_changed
+            and prior["used_percent"] == point["used_percent"]
+            and (same_observation or point["used_percent"] is None)
+        ):
+            return points
+        advanced_reset = any(
+            old is not None and new is not None and new > old
+            for old, new in (
+                (_quota_time(prior[key]), _quota_time(point[key]))
+                for key in ("next_reset_at", "last_reset_at")
+            )
+        )
+        usage_drop = (
+            prior["used_percent"] is not None
+            and point["used_percent"] is not None
+            and point["used_percent"] < prior["used_percent"]
+        )
+        gap = (
+            _quota_time(point["sampled_at"]) - _quota_time(prior["sampled_at"])
+        ).total_seconds() > 2 * QUOTA_HISTORY_BUCKET_SECONDS
+        point["reset_before"] = point["reset_before"] or advanced_reset
+        point["break_before"] = (
+            point["break_before"] or scope_changed or reset_changed or usage_drop or gap
+        )
+    return [*points, point]
+
+
+def _quota_history_compact(points: list[dict]) -> list[dict]:
+    """First and latest real observation per bucket, carrying skipped breaks."""
+    buckets: dict[int, list[dict]] = {}
+    for point in sorted(points, key=lambda value: value["sampled_at"]):
+        bucket = (
+            int(_quota_time(point["sampled_at"]).timestamp())
+            // QUOTA_HISTORY_BUCKET_SECONDS
+        )
+        rows = buckets.setdefault(bucket, [])
+        if not rows or rows[-1]["sampled_at"] != point["sampled_at"]:
+            rows.append(point)
+        else:
+            rows[-1] = point
+    compacted = []
+    for rows in buckets.values():
+        compacted.append(rows[0])
+        if len(rows) > 1:
+            last = dict(rows[-1])
+            last["break_before"] = any(row["break_before"] for row in rows[1:])
+            last["reset_before"] = any(row["reset_before"] for row in rows[1:])
+            compacted.append(last)
+    return compacted
+
+
+def shape_quota_history(quota: dict, previous: object) -> list[dict]:
+    """Eight days of measured quota burn, kept in the existing board singleton.
+
+    Missing, stale and partial account inventories insert gaps. A provider-only
+    reading is useful history but remains explicitly coverage-unknown. No
+    synthetic beginning, interpolated usage or cached-report heartbeat is added.
+    """
+    now = _quota_time(quota.get("sampled_at"))
+    if now is None:
+        return []
+    groups: dict[tuple[str, float], list[dict]] = {}
+    for group in previous if isinstance(previous, list) else []:
+        if not isinstance(group, dict) or group.get("provider") not in (
+            "codex",
+            "claude",
+        ):
+            continue
+        seconds = _quota_number(group.get("window_seconds"))
+        rows = group.get("points")
+        if seconds is None or not 0 < seconds <= 31536000 or not isinstance(rows, list):
+            continue
+        points = [
+            point
+            for raw in rows
+            if (point := _quota_history_point(raw, now, seconds)) is not None
+        ]
+        if points:
+            groups[(group["provider"], seconds)] = _quota_history_compact(points)
+    current = {}
+    for provider in quota["providers"]:
+        for window in provider["windows"]:
+            fresh = (
+                window["reported_accounts"] > 0
+                and window["fresh_accounts"] == window["reported_accounts"]
+            )
+            status = (
+                "stale"
+                if not fresh
+                else (
+                    "complete"
+                    if window["complete"]
+                    else "observed"
+                    if provider["source"] == "provider"
+                    else "partial"
+                )
+            )
+            point = _quota_history_point(
+                {
+                    **window,
+                    "sampled_at": quota["sampled_at"],
+                    "observed_at": window["oldest_observed_at"],
+                    "source": provider["source"],
+                    "configured_accounts": provider["configured_accounts"],
+                    "fresh": fresh,
+                    "status": status,
+                },
+                now,
+                window["window_seconds"],
+            )
+            if point is not None:
+                current[(provider["provider"], window["window_seconds"])] = point
+    for key in groups.keys() | current.keys():
+        points = groups.get(key, [])
+        point = current.get(key)
+        if point is None:
+            # Retain a real outage marker even when the broker omitted every
+            # window. The last known coverage is context, never carried usage.
+            point = {
+                **points[-1],
+                "sampled_at": quota["sampled_at"],
+                "used_percent": None,
+                "elapsed_percent": None,
+                "fresh": False,
+                "status": "unavailable" if not quota["available"] else "partial",
+                "break_before": True,
+                "reset_before": False,
+            }
+        groups[key] = _quota_history_compact(_quota_history_append(points, point))
+    return [
+        {"provider": provider, "window_seconds": seconds, "points": points}
+        for (provider, seconds), points in sorted(groups.items())
+    ]
 
 
 def flatten_max_tasks(value: object) -> int | None:
@@ -824,12 +1236,15 @@ def ledger_totals(db: Session, now: datetime) -> dict:
     }
 
 
-def build_public_snapshot(session: Session) -> PublicSnapshot:
+def build_public_snapshot(
+    session: Session, *, provider_quota: dict | None = None
+) -> PublicSnapshot:
     """Read the factory once and shape everything the public pages serve."""
     from factory.private_view import build_factory_view
 
     now = datetime.now(timezone.utc)
     snapshotted_at = _iso(now)
+    quota = shape_quota(provider_quota, now)
     work_items = _public_work_items(session, snapshotted_at)
     task_ids, bodies = _board_task_ids(session)
     board = build_factory_view(session=session, plan_tasks=task_ids)
@@ -845,6 +1260,7 @@ def build_public_snapshot(session: Session) -> PublicSnapshot:
                 "queued": [],
                 "recent": [],
                 "totals_7d": ledger_totals(session, now),
+                "quota": quota,
             },
             tasks={},
             sessions={},
@@ -890,6 +1306,7 @@ def build_public_snapshot(session: Session) -> PublicSnapshot:
             task_summary(card, card_cost(card)) for card in board.get("recent") or []
         ],
         "totals_7d": ledger_totals(session, now),
+        "quota": quota,
     }
 
     tasks: dict[int, dict] = {}
@@ -934,6 +1351,10 @@ def build_public_snapshot(session: Session) -> PublicSnapshot:
     )
 
 
+_QUOTA_HISTORY_READ = text(
+    "SELECT payload->'quota'->'history' "
+    "FROM public_api.factory_activity_snapshot WHERE id = 1 FOR UPDATE"
+)
 _ACTIVITY_UPSERT = text(
     """
     INSERT INTO public_api.factory_activity_snapshot (id, payload, snapshotted_at)
@@ -999,15 +1420,22 @@ def _encode(payload: dict) -> str:
     return json.dumps(sanitized, ensure_ascii=False)
 
 
-def write_public_snapshot(session: Session) -> dict:
+def write_public_snapshot(
+    session: Session, *, provider_quota: dict | None = None
+) -> dict:
     """Build the snapshot and replace what the public tables hold with it.
 
     Write the activity payload first (fail loudly if it fails, no partial board).
     Write each task and session inside its own savepoint to isolate failures:
     one bad row no longer takes down the whole snapshot.
     """
-    snapshot = build_public_snapshot(session)
+    # Serialize read/replace with the existing singleton. Its history survives
+    # ordinary board refreshes and failed broker fetches without a new table.
+    previous_history = session.execute(_QUOTA_HISTORY_READ).scalar_one_or_none()
+    snapshot = build_public_snapshot(session, provider_quota=provider_quota)
     at = snapshot.activity["snapshotted_at"]
+    quota = snapshot.activity["quota"]
+    quota["history"] = shape_quota_history(quota, previous_history)
 
     # Write activity first; if this fails, the job fails loudly.
     session.execute(

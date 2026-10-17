@@ -1,6 +1,11 @@
 <script>
+  import { untrack } from "svelte";
   import { SchemeToggle, Seo } from "$lib/public/components";
-  import { barChartSvg, sparkSvg } from "$lib/public/factory/charts.js";
+  import {
+    barChartSvg,
+    quotaChartSvg,
+    sparkSvg,
+  } from "$lib/public/factory/charts.js";
   import {
     activitySeries,
     breakdown,
@@ -11,6 +16,7 @@
     goalSummary,
     mergeSeries,
     paginate,
+    quotaGroups,
     shortNumber,
     snapshotFreshness,
     sortPullRequests,
@@ -28,6 +34,52 @@
 
   let { data } = $props();
   let sort = $state("date");
+  let quota = $state(untrack(() => data.board.quota));
+  let quotaNow = $state(
+    untrack(() => data.board.quota?.sampled_at ?? new Date().toISOString()),
+  );
+  let quotaRefreshFailed = $state(false);
+  const quotas = $derived(quotaGroups(quota, quotaNow));
+
+  $effect(() => {
+    quota = data.board.quota;
+  });
+
+  $effect(() => {
+    let stopped = false;
+    let pending = false;
+    let controller;
+    const refresh = async () => {
+      quotaNow = new Date().toISOString();
+      if (pending || document.hidden) return;
+      pending = true;
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const response = await fetch("/slop/factory/data/board", {
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("quota snapshot unavailable");
+        const board = await response.json();
+        if (!stopped) {
+          quota = board.quota;
+          quotaRefreshFailed = false;
+        }
+      } catch {
+        if (!stopped) quotaRefreshFailed = true;
+      } finally {
+        clearTimeout(timeout);
+        pending = false;
+      }
+    };
+    quotaNow = new Date().toISOString();
+    const timer = setInterval(refresh, 60_000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      controller?.abort();
+    };
+  });
   let direction = $state(-1);
   let prPage = $state(0);
   // Measured from the space the list actually gets, because a fixed count
@@ -286,6 +338,79 @@
           </div>
         {/each}
       </dl>
+
+      <section class="quota-panel" aria-label="Subscription quota">
+        <header class="quota-heading">
+          <h2>/ Subscription quota</h2>
+          <p>Equal-account mean · remaining quota vs time</p>
+        </header>
+        <div class="quota-providers">
+          {#each quotas as provider}
+            <div class="quota-provider">
+              <h3>{provider.label}</h3>
+              {#each provider.windows as window}
+                {@const historySvg = quotaChartSvg(
+                  window.history,
+                  `${provider.label} ${window.window}`,
+                )}
+                <div class="quota-window">
+                  {#if historySvg}
+                    {@html historySvg}
+                  {:else}
+                    <p class="quota-meta">
+                      History starts with the first fresh measurement.
+                    </p>
+                  {/if}
+                  <div class="quota-values">
+                    <strong>{window.window}</strong>
+                    <span class="num"
+                      >{window.used === null
+                        ? "Awaiting quota report"
+                        : `${window.used.toFixed(1)}% used · ${(100 - window.used).toFixed(1)}% left`}</span
+                    >
+                  </div>
+                  {#if window.used !== null}
+                    <p class="quota-time num">
+                      {window.remaining} mean time left · {window.pace}
+                    </p>
+                    <p class="quota-meta">
+                      {window.staggered ? "Resets in" : "Reset in"}
+                      {window.resetRange}{window.staggered
+                        ? " (staggered)"
+                        : ""}
+                    </p>
+                  {/if}
+                  <p class="quota-meta">
+                    {window.coverage} · {window.measured}{window.stale
+                      ? " · stale"
+                      : ""}
+                  </p>
+                </div>
+              {:else}
+                <p class="quota-meta">
+                  Quota unavailable · no active window reported
+                </p>
+              {/each}
+              {#if provider.unknownWindows}
+                <p class="quota-meta">
+                  {provider.unknownWindows}
+                  {provider.unknownWindows === 1
+                    ? "window has"
+                    : "windows have"} unknown duration
+                </p>
+              {/if}
+            </div>
+          {/each}
+        </div>
+        <p class="quota-legend">
+          <span><i class="actual"></i>Actual remaining</span><span
+            ><i class="expected"></i>Expected at steady pace</span
+          ><span><i class="reset"></i>Reset observed</span>
+        </p>
+        {#if quotaRefreshFailed}<p class="quota-refresh">
+            Refresh unavailable · showing the last report
+          </p>{/if}
+      </section>
 
       <div class="charts" aria-label="Factory trends">
         <div class="chart">

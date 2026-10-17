@@ -235,3 +235,94 @@ it("keeps the colored plot wide when the scale only needs two digits", () => {
   expect(svg).toContain('data-axis-digits="2"');
   expect(svg).toContain('<line x1="44"');
 });
+
+describe("quota history", () => {
+  it("draws actual and expected remaining without projecting to reset", async () => {
+    const { quotaChartSvg } = await import("./charts.js");
+    const svg = quotaChartSvg(
+      [
+        {
+          sampled_at: "2026-10-17T10:00:00Z",
+          used_percent: 10,
+          elapsed_percent: 20,
+          fresh: true,
+        },
+        {
+          sampled_at: "2026-10-17T11:00:00Z",
+          used_percent: 30,
+          elapsed_percent: 40,
+          fresh: true,
+        },
+      ],
+      "Codex 5h",
+    );
+    expect(svg).toContain("actual quota remaining versus expected remaining");
+    expect(svg).toContain("2 measurements");
+    expect(svg).toContain('class="quota-actual" d="M37.0 19.4L352.0 38.2"');
+    expect(svg).toContain('class="quota-expected" d="M37.0 28.8L352.0 47.6"');
+    expect(svg).toContain("90.0% remaining");
+    expect(svg).not.toContain("NaN");
+  });
+  it("breaks lines on missing observations and reset boundaries", async () => {
+    const { quotaChartSvg } = await import("./charts.js");
+    const points = [
+      {
+        sampled_at: "2026-10-17T10:00:00Z",
+        used_percent: 80,
+        elapsed_percent: 90,
+        fresh: true,
+      },
+      {
+        sampled_at: "2026-10-17T10:10:00Z",
+        used_percent: null,
+        elapsed_percent: null,
+        fresh: false,
+      },
+      {
+        sampled_at: "2026-10-17T10:20:00Z",
+        used_percent: 85,
+        elapsed_percent: 95,
+        fresh: true,
+      },
+      {
+        sampled_at: "2026-10-17T10:30:00Z",
+        used_percent: 5,
+        elapsed_percent: 5,
+        fresh: true,
+        break_before: true,
+        reset_before: true,
+      },
+    ];
+    const svg = quotaChartSvg(points, "Codex <script>");
+    const actual = svg.match(/class="quota-actual" d="([^"]*)"/)[1];
+    expect(actual.match(/M/g)).toHaveLength(3);
+    expect(actual).not.toContain("L");
+    expect(svg).toContain("Reset observed");
+    expect(svg).toContain("&lt;script&gt;");
+    expect(svg).not.toContain("<script>");
+  });
+  it("shows one real measurement as a dot, and nothing for missing data", async () => {
+    const { quotaChartSvg } = await import("./charts.js");
+    expect(quotaChartSvg([], "Codex")).toBe("");
+    expect(
+      quotaChartSvg(
+        [{ sampled_at: "bad", used_percent: 10, fresh: true }],
+        "Codex",
+      ),
+    ).toBe("");
+    const svg = quotaChartSvg(
+      [
+        {
+          sampled_at: "2026-10-17T10:00:00Z",
+          used_percent: 0,
+          elapsed_percent: 10,
+          fresh: true,
+        },
+      ],
+      "Codex",
+    );
+    expect(svg).toContain('class="quota-point"');
+    expect(svg).toContain("100.0% remaining");
+    expect(svg).toContain("1 measurements");
+  });
+});

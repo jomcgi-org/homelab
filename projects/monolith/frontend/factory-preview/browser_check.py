@@ -180,6 +180,28 @@ def layout_checks(page, view, scenario, width, scale):
             require(title["fontSize"] >= 13 * scale, f"mobile title too small: {title}")
 
     if view == "overview":
+        quota = page.get_by_role("region", name="Subscription quota")
+        require(quota.is_visible(), "subscription quota panel missing")
+        require(
+            quota.locator("h3").all_text_contents() == ["Codex", "Claude"],
+            "provider quota groups missing",
+        )
+        if scenario == "live":
+            require(
+                quota.locator("svg.quota-history").count() == 2,
+                "recorded quota history missing",
+            )
+            require("42.0% used" in quota.inner_text(), "account quota usage missing")
+            require(
+                "8pp behind time" in quota.inner_text(),
+                "quota versus time pace missing",
+            )
+            require("stale" in quota.inner_text(), "stale provider measurement hidden")
+        else:
+            require(
+                "Quota unavailable" in quota.inner_text(),
+                "missing quota presented as zero",
+            )
         mobile = page.locator("details.mobile-stats")
         desktop = page.locator(".home > .stats")
         if width <= 900:

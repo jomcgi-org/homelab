@@ -8,6 +8,7 @@ import {
   markClass,
   modelLane,
   paginate,
+  quotaGroups,
   shortNumber,
   snapshotFreshness,
   sortPullRequests,
@@ -330,5 +331,82 @@ describe("snapshotFreshness", () => {
       label: "unknown",
       stale: true,
     });
+  });
+});
+
+describe("subscription quota versus reset time", () => {
+  const now = "2026-10-17T12:00:00Z";
+  const quota = () => ({
+    available: true,
+    sampled_at: now,
+    stale_after_seconds: 900,
+    providers: [
+      {
+        provider: "codex",
+        source: "accounts",
+        configured_accounts: 2,
+        inventory_complete: true,
+        windows: [
+          {
+            window_seconds: 18000,
+            reported_accounts: 2,
+            used_percent: 30,
+            remaining_seconds: 9000,
+            complete: true,
+            next_reset_at: "2026-10-17T14:00:00Z",
+            last_reset_at: "2026-10-17T15:00:00Z",
+            oldest_observed_at: "2026-10-17T11:59:00Z",
+          },
+        ],
+      },
+    ],
+  });
+  it("compares matching account means and exposes staggered resets", () => {
+    const [codex, claude] = quotaGroups(quota(), now);
+    expect(codex.label).toBe("Codex");
+    expect(codex.windows[0]).toMatchObject({
+      window: "5h",
+      used: 30,
+      elapsed: 50,
+      remaining: "2.5h",
+      resetRange: "2h–3h",
+      coverage: "2/2 accounts",
+      comparable: true,
+      pace: "20pp behind time",
+      measured: "measured 1m ago",
+    });
+    expect(claude.label).toBe("Claude");
+    expect(claude.windows).toEqual([]);
+  });
+  it("ages the report and hides pace without discarding measured usage", () => {
+    const row = quotaGroups(quota(), "2026-10-17T12:16:00Z")[0].windows[0];
+    expect(row.used).toBe(30);
+    expect(row.stale).toBe(true);
+    expect(row.comparable).toBe(false);
+    expect(row.pace).toBe("pace unavailable");
+  });
+  it("waits for a new report when any account reset has passed", () => {
+    const row = quotaGroups(quota(), "2026-10-17T14:00:00Z")[0].windows[0];
+    expect(row.used).toBeNull();
+    expect(row.resetRange).toBeNull();
+    expect(row.pace).toBe("pace unavailable");
+  });
+  it("does not turn incomplete or provider-only coverage into a total pace", () => {
+    const partial = quota();
+    partial.providers[0].windows[0].complete = false;
+    partial.providers[0].windows[0].reported_accounts = 1;
+    expect(quotaGroups(partial, now)[0].windows[0]).toMatchObject({
+      coverage: "1/2 accounts",
+      comparable: false,
+    });
+    partial.providers[0].source = "provider";
+    expect(quotaGroups(partial, now)[0].windows[0].coverage).toBe(
+      "Provider report · account coverage unknown",
+    );
+    expect(
+      quotaGroups(null, now).every((provider) => provider.windows.length === 0),
+    ).toBe(true);
+    partial.available = false;
+    expect(quotaGroups(partial, now)[0].windows[0].used).toBeNull();
   });
 });

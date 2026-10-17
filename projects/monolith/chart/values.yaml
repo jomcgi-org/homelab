@@ -819,9 +819,10 @@ jobs:
     # Snapshot the factory board into public_api for the jomcgi.dev factory
     # pages (#6014). The public tier has no grant on swarm or agent_sessions
     # and no factory code in its image, so this is the only thing that puts a
-    # board where the public router can read it. Postgres only: no cluster
-    # reads, so it stays on the default executor SA and needs nothing beyond
-    # the DATABASE_URL every job pod gets.
+    # board where the public router can read it. It reads Postgres and the
+    # token broker's quota snapshot, without cluster reads or new credentials,
+    # so it stays on the default executor SA. A missing broker identity when
+    # SPIFFE is enabled leaves quota unavailable rather than using plaintext.
     #
     # 2-min cadence matches how fast the board actually moves: a turn lands
     # every few minutes at most, and the public route caches for 60s on top.
@@ -829,6 +830,7 @@ jobs:
     # writers pruning the same rolling window against each other.
     - name: factory-public-snapshot
       args: ["factory-public-snapshot"]
+      providerQuota: true
       schedule: "*/2 * * * *"
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 240
