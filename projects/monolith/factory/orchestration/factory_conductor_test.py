@@ -2151,7 +2151,9 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # the planner's task section (#6641), while historical evidence stays bounded.
     # #6309 requires four declared effects on every gate. The prompt explains
     # those booleans and free reason prose, adding about 450 characters.
-    assert len(prompt) < 22_000
+    # #6992 adds typed per-node effort and the complexity rules needed to
+    # request xhigh before dispatch. Allow 500 characters for that contract.
+    assert len(prompt) < 22_500
     assert (task, nodes, runs) == before
 
 
