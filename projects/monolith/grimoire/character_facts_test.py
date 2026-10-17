@@ -341,9 +341,7 @@ def test_payload_is_json_serializable_and_passes_leak_canaries(harness):
     assert h.rows["event_character_a"].id not in response.text
 
 
-def test_private_note_text_cannot_reach_dm_through_payload_facts(
-    harness, monkeypatch
-):
+def test_private_note_text_cannot_reach_dm_through_payload_facts(harness, monkeypatch):
     from grimoire import search
     from grimoire.testing.leak_harness import fake_knn
 
