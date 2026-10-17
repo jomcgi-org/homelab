@@ -510,3 +510,120 @@ def test_correction_pass_is_allowed_once_and_appends_rejections(session):
     assert third["replayed"] is True
     session.refresh(raw)
     assert raw.extra["extraction_passes"] == 2
+
+
+@pytest.mark.parametrize("source", ["agent-report", "repo-diff", "codex-session"])
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "PR #6958 moves its Grimoire migration to the 20261017121000 filename",
+        "PR #6958 is open, ready for review, and cleanly mergeable at head 93ce9e7",
+        "PR #6994 adds disjoint freshness-aware public fact totals and source-review coverage",
+        "PR #6993 implements Astra coding defaults with explicit reasoning-effort support",
+        "Issue #6995 remains open because oversized sources cannot be reviewed",
+    ],
+)
+def test_usefulness_rejects_screenshot_change_logs_for_every_lane(
+    session, source, claim
+):
+    raw = _raw(session)
+    raw.source = source
+    session.commit()
+    result = apply_extraction(session, raw.raw_id, _result(_assertion(claim, claim)))
+    assert result["atoms"] == []
+    assert result["rejected"][0]["reason_code"] == "usefulness"
+    assert session.exec(select(Note)).all() == []
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Present Bearer credentials do not fall back to anonymous in monolith auth.",
+        "Pull requests must pass the merge queue checks before merging.",
+        "The restore marker must be external because snapshot recovery repeats stale state.",
+    ],
+)
+def test_usefulness_keeps_actionable_contracts(session, claim):
+    raw = _raw(session)
+    result = apply_extraction(session, raw.raw_id, _result(_assertion(claim, claim)))
+    assert len(result["atoms"]) == 1
+    assert result["rejected"] == []
+
+
+def test_exact_claim_dedup_ignores_changed_title_and_evidence(session):
+    body = "Present Bearer credentials do not fall back to anonymous in monolith auth."
+    first = _raw(session)
+    result = apply_extraction(
+        session, first.raw_id, _result(_assertion("Auth contract", body))
+    )
+    original = session.exec(
+        select(Note).where(Note.note_id == result["atoms"][0])
+    ).one()
+    second = _raw(session)
+    duplicate = apply_extraction(
+        session,
+        second.raw_id,
+        _result(
+            _assertion(
+                "Bearer validation",
+                body,
+                evidence=["projects/monolith/auth/tokens.py:50"],
+            )
+        ),
+    )
+    assert duplicate["atoms"] == []
+    assert duplicate["rejected"][0]["reason_code"] == "duplicate"
+    assert len(session.exec(select(Note)).all()) == 1
+    assert (
+        len(
+            session.exec(
+                select(AtomRawProvenance).where(
+                    AtomRawProvenance.atom_fk == original.id
+                )
+            ).all()
+        )
+        == 2
+    )
+
+
+def test_same_answer_duplicates_do_not_multiply_provenance_or_confidence(session):
+    raw = _raw(session)
+    body = "Present Bearer credentials do not fall back to anonymous in monolith auth."
+    result = apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            _assertion("Auth contract", body), _assertion("Bearer validation", body)
+        ),
+    )
+    assert len(result["atoms"]) == 1
+    assert result["rejected"][0]["reason_code"] == "duplicate"
+    note = session.exec(select(Note)).one()
+    assert note.confidence == 0.8
+    assert len(session.exec(select(AtomRawProvenance)).all()) == 1
+
+
+@pytest.mark.parametrize(
+    "difference", ["scope", "negation", "identifier_case", "invalidated"]
+)
+def test_exact_dedup_preserves_claim_boundaries(session, difference):
+    raw = _raw(session)
+    body = "The dispatcher must reject input Foo before sending it."
+    result = apply_extraction(
+        session, raw.raw_id, _result(_assertion("Dispatch contract", body))
+    )
+    note = session.exec(select(Note).where(Note.note_id == result["atoms"][0])).one()
+    if difference == "invalidated":
+        note.verification_state = "invalidated"
+        session.commit()
+    second = _raw(session)
+    other = _assertion("Dispatch contract", body)
+    if difference == "scope":
+        other["scope"] = "repo:other/repo"
+    elif difference == "negation":
+        other["body"] = body.replace("must reject", "must not reject")
+    elif difference == "identifier_case":
+        other["body"] = body.replace("Foo", "foo")
+    result = apply_extraction(session, second.raw_id, _result(other))
+    assert len(result["atoms"]) == 1
+    assert len(session.exec(select(Note)).all()) == 2

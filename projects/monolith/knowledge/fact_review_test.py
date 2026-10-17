@@ -329,7 +329,7 @@ def test_daily_limit_and_kill_switch(db, monkeypatch):
     )
     db.commit()
     assert prepare(db) == review.NO_REVIEW
-    monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "1000")
+    monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "20000")
     assert prepare(db, "raised-limit") != review.NO_REVIEW
     monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "false")
     assert prepare(db, "disabled") == review.NO_REVIEW
@@ -389,6 +389,58 @@ def test_source_only_progress_is_distinct_from_no_eligible_work(db):
     )
     db.refresh(row)
     assert row.last_reviewed_at is None
+
+
+def test_untouched_claims_precede_retries_even_without_file_pointers(db):
+    row = note(db, "retry")
+    note(db, "untouched", content="The caller must reject unsupported inputs.")
+    db.add(
+        FactReviewRun(
+            invocation_key="prior",
+            note_id=row.note_id,
+            revision=row.revision,
+            status="complete",
+            created_at=NOW - timedelta(days=2),
+        )
+    )
+    db.commit()
+    assert review._candidate(db, NOW).note_id == "untouched"
+    row.revision += 1
+    db.commit()
+    assert review._candidate(db, NOW).note_id == "retry"
+
+
+def test_throughput_counts_attempts_and_distinct_facts_separately(db):
+    for key, note_id, outcome, created_at in [
+        ("a1", "a", "unavailable", NOW),
+        ("a2", "a", "unavailable", NOW),
+        ("b1", "b", "renewed", NOW),
+        ("b2", "b", "renewed", NOW),
+        ("c1", "c", None, NOW),
+        ("empty", None, None, NOW),
+        ("old", "old", "renewed", NOW - timedelta(days=1, seconds=1)),
+        ("future", "future", "renewed", NOW + timedelta(seconds=1)),
+    ]:
+        db.add(
+            FactReviewRun(
+                invocation_key=key,
+                note_id=note_id,
+                created_at=created_at,
+                status="complete" if outcome else "prepared",
+                result={"outcome": outcome} if outcome else {},
+            )
+        )
+    db.commit()
+    assert review.throughput(db, now=NOW) == {
+        "window_hours": 24,
+        "attempts": 5,
+        "distinct_facts": 3,
+        "repeat_attempts": 2,
+        "completed_by_outcome": {
+            "unavailable": {"attempts": 2, "distinct_facts": 1},
+            "renewed": {"attempts": 2, "distinct_facts": 1},
+        },
+    }
 
 
 @pytest.mark.parametrize(
