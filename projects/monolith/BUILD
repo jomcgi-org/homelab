@@ -6515,6 +6515,7 @@ bdd_test(
     deps = [
         "@pip//pytest",
         "@pip//sqlalchemy",
+        "@pip//sqlmodel",
     ],
 )
 

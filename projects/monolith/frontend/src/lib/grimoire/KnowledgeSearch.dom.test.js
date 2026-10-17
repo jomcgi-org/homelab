@@ -31,6 +31,80 @@ afterEach(async () => {
 });
 
 describe("character knowledge search", () => {
+  it("renders own and party facts without lore links and disputes only an own fact", async () => {
+    const own = {
+      type: "fact",
+      id: "own-fact",
+      preview: "My clue",
+      ownership: "you",
+      can_dispute: true,
+      status: "active",
+      source: { fact_id: "own-fact" },
+    };
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response([
+          own,
+          {
+            ...own,
+            id: "party-fact",
+            preview: "Party clue",
+            ownership: "party",
+            can_dispute: false,
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(response({ status: "disputed" }));
+    vi.stubGlobal("fetch", fetch);
+    await render();
+    await search();
+    expect(document.body.textContent).toContain("My clue");
+    expect(document.body.textContent).toContain("Party clue");
+    expect(document.querySelectorAll("li a")).toHaveLength(0);
+    const buttons = [...document.querySelectorAll("li button")];
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].textContent).toContain("Dispute fact");
+    buttons[0].click();
+    await settle();
+    expect(fetch).toHaveBeenLastCalledWith(`${base}/facts/own-fact/dispute`, {
+      method: "POST",
+      cache: "no-store",
+    });
+    expect(document.body.textContent).toContain("Disputed");
+    expect(document.body.textContent).toContain(
+      "Excluded from your assistant's context.",
+    );
+    expect(document.querySelectorAll("li button")).toHaveLength(0);
+  });
+  it("keeps an unsuccessful dispute retryable and hides provider errors", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response([
+          {
+            type: "fact",
+            id: "f",
+            preview: "Clue",
+            ownership: "you",
+            can_dispute: true,
+            status: "active",
+            source: { fact_id: "f" },
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(response({ error: "OTHER-PC-SECRET" }, 404));
+    vi.stubGlobal("fetch", fetch);
+    await render();
+    await search();
+    document.querySelector("li button").click();
+    await settle();
+    expect(document.querySelector('[role="alert"]').textContent).toContain(
+      "could not be disputed",
+    );
+    expect(document.body.textContent).not.toContain("OTHER-PC-SECRET");
+    expect(document.querySelector("li button").disabled).toBe(false);
+  });
   it("labels the input and submits a trimmed query to the campaign BFF without caching", async () => {
     const fetch = vi.fn().mockResolvedValue(response([]));
     vi.stubGlobal("fetch", fetch);

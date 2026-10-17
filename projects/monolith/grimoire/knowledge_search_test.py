@@ -275,7 +275,6 @@ def test_types_sources_sorting_limit_and_live_note_preview(harness, monkeypatch)
         elif row["type"] == "fact":
             assert row["source"] == {
                 "fact_id": row["id"],
-                "session_id": h.rows["campaign_session"].id,
             }
             assert row["status"] in ("active", "disputed")
         else:

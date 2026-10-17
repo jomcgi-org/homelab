@@ -42,6 +42,17 @@ SPAN_SUMMARY_MAX_CHARS = 200
 SUMMARY_MAX_CHARS = 2000
 GRIMOIRE_KG_JOB_KIND = GRIMOIRE_KG_NODE_KEY
 KG_JOB_KINDS = frozenset((KG_JOB_KIND, GRIMOIRE_KG_JOB_KIND))
+
+
+def grimoire_transport_registered() -> bool:
+    """No tool-free extraction transport is registered in this release.
+
+    A positive cap alone cannot authorize campaign input to an agent runtime.
+    The follow-up transport implementation must supply its own execution path.
+    """
+    return False
+
+
 DOCFIX_PR_URL_RE = re.compile(r"github\.com/jomcgi-org/homelab/pull/(\d+)")
 DOCFIX_REVIEW_SUMMARY_RE = re.compile(
     r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
@@ -291,7 +302,8 @@ def claim_drainer_job(
         remaining_kinds = tuple(
             kind
             for kind in kinds
-            if kind != GRIMOIRE_KG_JOB_KIND or base_grimoire_kg_cap > 0
+            if kind != GRIMOIRE_KG_JOB_KIND
+            or (base_grimoire_kg_cap > 0 and grimoire_transport_registered())
         )
         if kg_walled and KG_JOB_KINDS.intersection(remaining_kinds):
             remaining_kinds = tuple(
@@ -1533,7 +1545,10 @@ def _job_kinds(settings: dict) -> tuple[str, ...]:
         kind
         for kind in kinds
         if kind != GRIMOIRE_KG_JOB_KIND
-        or settings.get("grimoire_kg_max_jobs_per_day", 0) > 0
+        or (
+            settings.get("grimoire_kg_max_jobs_per_day", 0) > 0
+            and grimoire_transport_registered()
+        )
     )
 
 
@@ -1773,6 +1788,21 @@ def drain_cycle() -> dict:
                     job_span, {"drain.job_name": name, "drain.job_kind": job_kind}
                 )
 
+                # Unconditional, outside DBOS.patch: old claims and pinned
+                # settings replay here too. No prompt, retry, correction or
+                # fallback may put campaign input in an Ember agent session.
+                if job_kind == GRIMOIRE_KG_JOB_KIND:
+                    finish_drainer_job(
+                        name,
+                        "disabled",
+                        "tool-free Grimoire transport absent",
+                        **ownership,
+                    )
+                    cancel_drainer_reservation(
+                        _session_key(workflow_id, name, GRIMOIRE_KG_NODE_KEY)
+                    )
+                    continue
+
                 base_kg_cap = settings.get("kg_max_jobs_per_day", 40)
                 if job_kind == KG_JOB_KIND and kg_jobs_today() >= kg_effective_cap(
                     base_kg_cap
@@ -1788,27 +1818,6 @@ def drain_cycle() -> dict:
                         **ownership,
                     )
                     claim_kinds = [kind for kind in claim_kinds if kind != KG_JOB_KIND]
-                    continue
-
-                if (
-                    job_kind == GRIMOIRE_KG_JOB_KIND
-                    and DBOS.patch("grimoire-kg-daily-cap-v1")
-                    and grimoire_kg_jobs_today()
-                    >= settings.get("grimoire_kg_max_jobs_per_day", 0)
-                ):
-                    cancel_drainer_reservation(
-                        _session_key(workflow_id, name, GRIMOIRE_KG_NODE_KEY)
-                    )
-                    finish_drainer_job(
-                        name,
-                        "deferred",
-                        "grimoire kg daily cap reached",
-                        defer_seconds=3600,
-                        **ownership,
-                    )
-                    claim_kinds = [
-                        kind for kind in claim_kinds if kind != GRIMOIRE_KG_JOB_KIND
-                    ]
                     continue
 
                 processed += 1
@@ -1901,19 +1910,6 @@ def drain_cycle() -> dict:
                             cancel_drainer_reservation(local_session_id)
                             continue
                         repo = settings["repo"]
-                        branch = settings["branch"]
-                        reasoning = settings.get("reasoning", False)
-                        model = DRAIN_MODEL
-                    elif job_kind == GRIMOIRE_KG_JOB_KIND:
-                        job_payload = job.get("payload")
-                        if not DBOS.patch("grimoire-kg-prompt-v1"):
-                            raise MalformedPayload(
-                                "grimoire extraction not in this cycle history"
-                            )
-                        prompt = build_grimoire_kg_prompt(job_payload)
-                        # Campaign extraction needs no repository checkout or
-                        # tools. All authorized input is in the prompt.
-                        repo = ""
                         branch = settings["branch"]
                         reasoning = settings.get("reasoning", False)
                         model = DRAIN_MODEL
@@ -2040,15 +2036,6 @@ def drain_cycle() -> dict:
                                 f"doc_drift={applied['doc_drift']} "
                                 f"docfix_jobs={applied['docfix_jobs']}"
                             )
-                    elif job_kind == GRIMOIRE_KG_JOB_KIND:
-                        result_text = str(turn.get("result_text") or "")
-                        if not DBOS.patch("grimoire-kg-apply-v1"):
-                            raise MalformedPayload(
-                                "grimoire extraction not in this cycle history"
-                            )
-                        summary = apply_grimoire_kg_extraction(
-                            name, job_payload, result_text, **ownership
-                        )["summary"]
                     else:
                         result_text = str(turn.get("result_text") or "")
                         summary = (

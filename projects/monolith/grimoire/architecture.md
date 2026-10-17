@@ -14,7 +14,7 @@ CronWorkflow (#6626).
 `GET /api/grimoire/campaigns/{campaign_id}/knowledge/search` is play-gated and
 available to every campaign member, including members without a character.
 It accepts a 1 to 200 character query and returns at most `k` (1 to 50, default
-10) scored hits with `type` (`entity`, `note`, `event`, or `chunk`) and `source`
+10) scored hits with `type` (`entity`, `note`, `event`, `fact`, or `chunk`) and `source`
 link fields: `entity_id`, `note_id`, `session_id` plus `seq`, or `book_id` plus
 `chunk_id`. The existing corpus `/search` endpoint is unchanged.
 
@@ -35,6 +35,43 @@ author's knowledge, with DM access requiring `dm_readable`.
   Grimoire deployment or datastore.
 
 ## Data model
+
+### Character facts
+
+`character_fact` stores viewer-owned campaign facts and their evidence event ids.
+The validating writer rechecks visible evidence and granted entity vocabulary in
+the transaction. Evidence retraction invalidates dependent facts and vectors.
+Events are locked in id order before dependent facts; embedding collection and
+vector persistence follow the same order. PostgreSQL concurrency tests exercise
+the writer, retraction and embedding collection together.
+
+The play-gated `/campaigns/{campaign_id}/facts` API lists own and party facts for
+an assigned player, all facts for the DM, and none for characterless members.
+Search uses the same audiences and rechecks live status after vector retrieval.
+The search UI renders fact status and offers an own-fact dispute action. The
+dispute endpoint returns the same 404 for other-PC, party, foreign-campaign,
+retracted and absent facts. A player cannot mutate party facts. Responses carry
+no evidence, entity, author or PC identifiers. Disputing is idempotent.
+
+`facts_for_context` re-reads only active facts when assembling extraction input.
+`search_knowledge(..., for_context=True)` also excludes disputed rows even when
+their vectors remain. The future private campaign assistant must use these
+active-only paths. The existing public corpus chat never reads campaign facts.
+
+**Why.** Players need to see disputed facts to correct their knowledge while
+assistant context must exclude them. Live source checks apply after retrieval;
+an old embedding or cached ORM row cannot restore a disputed fact to context.
+
+Session end queues only campaign, session and viewer identities. Completed queue
+names remain replay fences. `grimoire.kg.dailyCap` defaults to zero. Claiming
+requires a positive independent cap and a registered tool-free transport. This
+release registers none. Previously claimed or replayed Grimoire jobs finish
+disabled before prompt assembly, retries or any Ember extraction session.
+
+**Why.** An ordinary Luna agent has shell, web and agents MCP access. A prompt
+instruction or empty checkout cannot keep campaign text out of generic knowledge
+tools. The tool-free transport choice and live acceptance remain in #6991.
+Repository delivery on PR #6958 is staged and default-off; #6627 stays open.
 
 The `grimoire` schema uses a typed entity spine rather than the standalone
 prototype's Firestore and polymorphic JSON model:

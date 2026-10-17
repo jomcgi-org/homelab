@@ -28,6 +28,7 @@ from grimoire.models import (
 )
 from grimoire.reveals import reveal_items
 from grimoire.visibility import project_entity, visible_entities_query
+from grimoire.voices import speaker_ref
 
 
 class FactCandidate(BaseModel):
@@ -52,6 +53,65 @@ class FactWriteResult:
 
 def _identity(value: str) -> str:
     return str(UUID(value))
+
+
+def visible_facts_predicate(campaign_id: str, viewer):
+    """Party knowledge follows party-note visibility: an assigned PC or DM."""
+    audience = (
+        True
+        if viewer == "dm"
+        else False
+        if viewer is None
+        else or_(
+            and_(
+                CharacterFact.viewer_key == "party",
+                CharacterFact.player_character_id.is_(None),
+            ),
+            and_(
+                CharacterFact.viewer_key == viewer,
+                CharacterFact.player_character_id == viewer,
+            ),
+        )
+    )
+    return and_(CharacterFact.campaign_id == campaign_id, audience)
+
+
+def project_fact(fact: CharacterFact, viewer, member) -> dict:
+    """No PC, evidence, entity or author identifiers cross this boundary."""
+    return {
+        "id": fact.id,
+        "statement": fact.statement,
+        "status": fact.status,
+        "can_dispute": member.role == "player"
+        and viewer is not None
+        and fact.viewer_key == viewer
+        and fact.player_character_id == viewer,
+        "ownership": "party"
+        if fact.viewer_key == "party"
+        else "you"
+        if fact.viewer_key == viewer
+        else "character",
+    }
+
+
+def facts_for_context(session: Session, campaign_id: str, viewer) -> list[dict]:
+    """Re-read active facts at context assembly, never trust search snapshots.
+
+    The campaign assistant is not implemented yet. Its context builder must
+    use this selector, including after any vector search or cached retrieval.
+    """
+    return [
+        {"id": fact.id, "statement": fact.statement}
+        for fact in session.exec(
+            select(CharacterFact)
+            .where(
+                visible_facts_predicate(campaign_id, viewer),
+                CharacterFact.status == "active",
+            )
+            .order_by(CharacterFact.id)
+            .execution_options(populate_existing=True)
+        ).all()
+    ]
 
 
 def _viewer(session: Session, campaign_id: str, session_id: str, viewer_key: str):
@@ -175,6 +235,11 @@ def build_fact_payload(
         if row.kind == "utterance" and not _supports_fact(row):
             continue
         body = row.body
+        if isinstance(body.get("speaker_key"), str):
+            body = {
+                **body,
+                "speaker_key": speaker_ref(campaign_id, body["speaker_key"]),
+            }
         if row.kind == "reveal":
             body = {
                 "reveals": [
@@ -250,6 +315,7 @@ def build_fact_payload(
                 for row in notes
             ],
             "entities": list(vocabulary.values()),
+            "facts": facts_for_context(session, campaign_id, viewer),
         }
     )
 
