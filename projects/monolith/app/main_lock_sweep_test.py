@@ -514,20 +514,19 @@ class TestLockSweepLoopWithExpiredLocks:
 
     @pytest.mark.asyncio
     async def test_sweep_loop_skips_non_discord_locks(self):
-        """A lock whose channel_id is not a numeric snowflake (a WhatsApp group
-        JID) is skipped, never reprocessed via the Discord bot -- and it does not
+        """A lock whose channel_id is not a numeric snowflake is skipped, never reprocessed via the Discord bot -- and it does not
         poison the sweep, so a Discord lock in the same batch still reprocesses."""
         coros, capture_fn, mock_bot = _capture_sweep_coro()
         mock_bot.reprocess_message = AsyncMock()
 
-        wa_lock = _make_lock(
+        nonnumeric_lock = _make_lock(
             discord_message_id="3B331C180B2C166EE82A",
-            channel_id="120363412404798712@g.us",
+            channel_id="non-numeric-channel",
         )
         discord_lock = _make_lock(discord_message_id=222, channel_id=888)
 
         mock_store = MagicMock()
-        mock_store.reclaim_expired.return_value = [wa_lock, discord_lock]
+        mock_store.reclaim_expired.return_value = [nonnumeric_lock, discord_lock]
         mock_store.cleanup_completed.return_value = 0
 
         mock_session_obj = MagicMock()
@@ -571,10 +570,10 @@ class TestLockSweepLoopWithExpiredLocks:
             except asyncio.CancelledError:
                 pass
 
-        # Only the Discord lock is reprocessed; the WhatsApp JID lock is skipped.
+        # Only the Discord lock is reprocessed; the non-numeric lock is skipped.
         assert mock_bot.reprocess_message.await_count == 1
         mock_bot.reprocess_message.assert_awaited_once_with(222, 888)
-        # cleanup still ran (the sweep was not poisoned by the WhatsApp lock).
+        # cleanup still ran (the sweep was not poisoned by the non-numeric lock).
         mock_store.cleanup_completed.assert_called_once_with(max_age_seconds=3600)
 
     @pytest.mark.asyncio

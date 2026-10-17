@@ -43,4 +43,3 @@ class Vacancy(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
     # so the switchover never dumps the existing backlog. See dr_jobs/jobs.py and
     # migration 20260713000000_dr_jobs_notified_columns.sql.
     notified_discord: datetime | None = None
-    notified_whatsapp: datetime | None = None

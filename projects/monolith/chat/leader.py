@@ -123,13 +123,9 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
                     expired = store.reclaim_expired(ttl_seconds=30, limit=5)
                     for lock in expired:
                         # Reclaim-and-reprocess is Discord-specific:
-                        # reprocess_message re-fetches the message by int()
-                        # channel/message snowflake. A WhatsApp lock carries a
-                        # string group JID (e.g. "...@g.us"), processed inline
-                        # by the inbound handler (not re-fetchable via the
-                        # Discord bot), so skip it -- otherwise a single
-                        # non-numeric lock raises ValueError and poisons the
-                        # whole sweep, blocking Discord reclaim + cleanup too.
+                        # reprocess_message re-fetches by numeric channel and
+                        # message snowflakes. Skip non-numeric channel ids so one
+                        # malformed lock cannot block reclaim and cleanup.
                         if not str(lock.channel_id).isdigit():
                             continue
                         logger.info(

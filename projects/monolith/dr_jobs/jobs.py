@@ -6,10 +6,10 @@ to a worker thread (asyncio.to_thread) so it never blocks the scheduler event
 loop, mirroring hikes.scrape_walks_handler. The scheduler passes a session, but
 the DB work uses its own session inside the thread.
 
-Notification state lives on the vacancy row (``notified_discord`` /
-``notified_whatsapp``), so "was this posting announced?" is a column check, not
-cross-system archaeology. After the upsert the handler claims un-notified,
-still-open rows, enqueues one digest per channel directly to the outbox, and
+Notification state lives on the vacancy row (``notified_discord``), so "was this
+posting announced?" is a column check, not cross-system archaeology. After the
+upsert the handler claims un-notified,
+still-open rows, enqueues one Discord digest directly to the outbox, and
 stamps the column only on a successful enqueue, so a failed send is retried next
 run (self-healing). Rows inserted on the initial seed of an empty table are born
 already-stamped, so the switchover never dumps the existing backlog.
@@ -127,7 +127,6 @@ def _persist(vacancies: list[dict]) -> tuple[list[dict], int, bool]:
                 # chat. Symmetric with the migration's backfill of prod rows.
                 for row in new_rows:
                     row.notified_discord = now
-                    row.notified_whatsapp = now
             session.add_all(new_rows)
         session.commit()
     return new_vacancies, updated, was_seed
@@ -193,20 +192,14 @@ def build_digest(new_vacancies: list[dict]) -> str:
 
 
 def _notify_pending_sync() -> None:
-    """Claim un-notified, still-open vacancies and deliver one digest per channel.
+    """Claim un-notified, still-open vacancies and deliver one Discord digest.
 
-    Source of truth is the row: ``notified_<channel> IS NULL`` plus an open
+    Source of truth is the row: ``notified_discord IS NULL`` plus an open
     closing date means pending. On a successful enqueue we stamp the column, so a
-    failed send leaves it NULL and the next hourly run retries. Channels are
-    independent (a WhatsApp failure never blocks Discord) and each commits on its
-    own, so one channel's stamp is durable even if the other raises. Runs off the
+    failed send leaves it NULL and the next hourly run retries. Runs off the
     event loop via asyncio.to_thread.
     """
-    from chat.api import (
-        enqueue_message,
-        enqueue_whatsapp_message,
-        whatsapp_household_group_jids,
-    )
+    from chat.api import enqueue_message
     from sqlmodel import Session
 
     from core.db import get_engine
@@ -236,29 +229,6 @@ def _notify_pending_sync() -> None:
                 exc_info=True,
             )
 
-        # --- WhatsApp (enqueue self-commits per group; enqueue-then-stamp so a
-        # failure leaves NULL rather than a silent miss) ---
-        try:
-            pending = _pending(session, models.Vacancy.notified_whatsapp, today)
-            jids = whatsapp_household_group_jids() if pending else []
-            if pending and jids:
-                digest = build_digest(_digest_dicts(pending))
-                for jid in jids:
-                    enqueue_whatsapp_message(jid, digest)
-                _stamp(pending, "notified_whatsapp", now)
-                session.commit()
-                logger.info(
-                    "dr_jobs: enqueued WhatsApp digest for %d vacancies to %d group(s)",
-                    len(pending),
-                    len(jids),
-                )
-            # No enabled household group -> leave NULL, retry once one exists.
-        except Exception:  # noqa: BLE001 - best-effort; NULL column retries
-            session.rollback()
-            logger.warning(
-                "dr_jobs: WhatsApp digest enqueue failed; will retry next run",
-                exc_info=True,
-            )
 
 
 async def scrape_nhs_handler(session) -> datetime | None:

@@ -46,7 +46,6 @@ helm_chart(
         "jobs.image": "//projects/monolith:jobs_image.info",
         "progress.image": "//projects/monolith:progress_image.info",
         "stars.gridGenerator.image": "//projects/monolith:stars_grid_image.info",
-        "whatsapp.image": "//projects/monolith/whatsapp:image.info",
     },
     lint = False,
     publish = True,

@@ -1341,6 +1341,50 @@ _NOTIFICATION_ENV = {
 }
 
 
+@pytest.mark.parametrize("environment", ["default", "prod", "gke", "dev", "recovery-gke"])
+def test_retired_gateway_has_no_resources_or_credentials(
+    environment, renders, recovery_gke_render
+):
+    if environment == "default":
+        rendered = _render("monolith", [])
+    elif environment == "recovery-gke":
+        rendered = recovery_gke_render
+    else:
+        rendered = renders[environment]
+    documents = [doc for doc in yaml.safe_load_all(rendered) if doc]
+    for document in documents:
+        # Applied SQL and its checksum remain immutable historical evidence.
+        if document.get("kind") == "ConfigMap" and document["metadata"]["name"].endswith(
+            "-migrations"
+        ):
+            document = {key: value for key, value in document.items() if key != "data"}
+        serialized = yaml.safe_dump(document).lower()
+        assert "whatsapp" not in serialized
+        assert "whatsmeow" not in serialized
+        assert "household_llm_model" not in serialized
+
+
+@pytest.mark.parametrize("environment", ["prod", "gke"])
+def test_moving_calendar_credential_remains_optional_and_transport_independent(
+    environment, renders
+):
+    jobs = dict(_cron_containers(renders[environment]))
+    calendar_env = {
+        item["name"]: item["valueFrom"]["secretKeyRef"]
+        for item in jobs["moving-gcal-sync"]
+        if item["name"].startswith("GOOGLE_CALENDAR_")
+    }
+    keys = (
+        "GOOGLE_CALENDAR_CLIENT_ID",
+        "GOOGLE_CALENDAR_CLIENT_SECRET",
+        "GOOGLE_CALENDAR_REFRESH_TOKEN",
+    )
+    assert calendar_env == {
+        key: {"name": "monolith-google-calendar", "key": key, "optional": True}
+        for key in keys
+    }
+
+
 def _notification_projection(rendered):
     return [
         item
@@ -1430,36 +1474,6 @@ def test_github_api_token_follows_secret_availability_only(
     ]
     assert len(producers) == 1
     assert producers[0]["spec"]["itemPath"] == token_item_path
-
-
-@pytest.mark.parametrize("chat_enabled", [False, True])
-@pytest.mark.parametrize("whatsapp_enabled", [False, True])
-def test_household_model_follows_whatsapp_and_retired_agent_gate_is_absent(
-    tmp_path, chat_enabled, whatsapp_enabled
-):
-    override = _write_values(
-        tmp_path,
-        "whatsapp-gates.yaml",
-        {
-            "chat": {"enabled": chat_enabled},
-            "whatsapp": {
-                "enabled": whatsapp_enabled,
-                "model": "test-household-model",
-                "onepassword": {"itemPath": "vaults/test/items/whatsapp"},
-            },
-        },
-    )
-    env = _deployment_backend_env(_render("whatsapp-gates", [override]))
-    retired = [item for item in env if item["name"] == "WHATSAPP_AGENT_ENABLED"]
-    household = [item for item in env if item["name"] == "HOUSEHOLD_LLM_MODEL"]
-
-    assert retired == []
-    if whatsapp_enabled:
-        assert household == [
-            {"name": "HOUSEHOLD_LLM_MODEL", "value": "test-household-model"}
-        ]
-    else:
-        assert household == []
 
 
 @pytest.mark.parametrize("policy", [None, "none"])

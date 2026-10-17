@@ -16,7 +16,7 @@ egress and every non-HTTPS public flow. Metadata-server access remains denied
 when the policy is enabled.
 
 This intentionally selects only the app endpoint. Searxng,
-WhatsApp, CNPG, Atlas jobs, and monolith-workflows pods have separate trust and
+CNPG, Atlas jobs, and monolith-workflows pods have separate trust and
 execution boundaries and are not made namespace-wide default-deny by this
 change.
 */}}
