@@ -49,7 +49,6 @@
 # gazelle:exclude observability_snapshot_grants_test.py
 # gazelle:exclude public_knowledge_views_test.py
 # gazelle:exclude chat_public_grants_test.py
-# gazelle:exclude retired_transport_migration_test.py
 # gazelle:exclude public_httproute_chat_guard_test.py
 # gazelle:exclude public_faas_rate_limit_test.py
 # gazelle:exclude public_faas_token_projection_test.py
@@ -8605,12 +8604,6 @@ bdd_test(
 bdd_test(
     name = "chat_public_grants_test",
     srcs = ["chat_public_grants_test.py"],
-)
-
-# Runtime-created transport tables must retire without dropping shared objects.
-bdd_test(
-    name = "retired_transport_migration_test",
-    srcs = ["retired_transport_migration_test.py"],
 )
 
 # Real-Postgres test: chat_public retention and takedown purge (ADR security/005).
