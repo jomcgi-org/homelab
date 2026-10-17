@@ -89,6 +89,7 @@ def test_coverage_counts_distinct_current_claims_not_attempts(db):
         db.commit()
     note(db, "current", observed_at=NOW, review_after=NOW + timedelta(days=1))
     note(db, "private-scope", scope="personal:joe")
+    note(db, "no-scope", scope=None)
     note(db, "deleted", deleted_at=NOW)
     note(db, "expired", valid_until=NOW)
     note(db, "invalidated", verification_state="invalidated")
@@ -99,6 +100,7 @@ def test_coverage_counts_distinct_current_claims_not_attempts(db):
     assert review.coverage(db, now=NOW) == {
         "scope": "repo:jomcgi-org/homelab",
         "due": 6,
+        "outside_scope_due": 2,
         "latest_outcome": {
             "unassessed": 3,
             "unsupported": 1,

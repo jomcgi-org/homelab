@@ -117,9 +117,8 @@ def ensure_job(session: Session) -> bool:
     return result.rowcount > 0
 
 
-def _review_pool(now: datetime):
-    return (
-        Note.scope == _get_repo_scope(),
+def _review_pool(now: datetime, *, include_other_scopes: bool = False):
+    pool = (
         Note.type == "fact",
         Note.deleted_at.is_(None),
         Note.verification_state.in_(("verified", "unverified")),
@@ -131,6 +130,7 @@ def _review_pool(now: datetime):
             )
         ),
     )
+    return pool if include_other_scopes else (Note.scope == _get_repo_scope(), *pool)
 
 
 def coverage(session: Session, *, now: datetime) -> dict:
@@ -146,6 +146,10 @@ def coverage(session: Session, *, now: datetime) -> dict:
     )
     outcome = case(
         (
+            or_(Note.scope.is_(None), Note.scope != _get_repo_scope()),
+            "outside_scope",
+        ),
+        (
             (ReviewOutcome.note_revision == Note.revision)
             & ReviewOutcome.reason.startswith(PREFIX),
             ReviewOutcome.status,
@@ -157,13 +161,15 @@ def coverage(session: Session, *, now: datetime) -> dict:
         .select_from(Note)
         .outerjoin(latest, latest.c.note_id == Note.note_id)
         .outerjoin(ReviewOutcome, ReviewOutcome.id == latest.c.id)
-        .where(*_review_pool(now))
+        .where(*_review_pool(now, include_other_scopes=True))
         .group_by(outcome)
     ).all()
     counts = {row.outcome: int(row.n) for row in rows}
+    outside_scope = counts.pop("outside_scope", 0)
     return {
         "scope": _get_repo_scope(),
         "due": sum(counts.values()),
+        "outside_scope_due": outside_scope,
         "latest_outcome": counts,
     }
 
