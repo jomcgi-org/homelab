@@ -315,6 +315,44 @@ def test_drain_lane_classifies_running_due_and_last(client, monkeypatch):
     }
 
 
+def test_drain_lane_ignores_unclaimable_grimoire_backlog(client, monkeypatch):
+    now = datetime.now(timezone.utc)
+    jobs = [
+        {
+            "name": "grimoire-kg-drain:session:party",
+            "routine_kind": "grimoire-kg-drain",
+            "next_run_at": now - timedelta(minutes=61),
+            "last_run_at": None,
+            "last_status": None,
+            "locked_by": None,
+            "locked_at": None,
+            "ttl_secs": 300,
+        },
+    ]
+    monkeypatch.setattr(
+        agent_config,
+        "load_drainer_settings",
+        lambda: agent_config.DrainerSettings(
+            enabled=True,
+            max_jobs_per_cycle=3,
+            turn_timeout_seconds=1800,
+            stall_threshold_seconds=2700,
+            job_kinds=("qwen-drain", "kg-drain", "grimoire-kg-drain"),
+            kg_max_jobs_per_day=40,
+            grimoire_kg_max_jobs_per_day=0,
+            repo="acme/repo",
+            branch="main",
+            reasoning=True,
+        ),
+    )
+    monkeypatch.setattr(routine_jobs, "list_jobs", lambda *, kinds: jobs)
+
+    response = client.get("/api/agents/drain-lane")
+
+    assert response.status_code == 200
+    assert response.json()["due_count"] == 0
+
+
 def test_drain_lane_empty(client, monkeypatch):
     monkeypatch.setattr(
         agent_config,

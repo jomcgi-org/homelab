@@ -8,7 +8,10 @@ from sqlalchemy.exc import IntegrityError
 
 
 @pytest.mark.parametrize("trial", range(4))
-def test_writer_retraction_and_embedding_collection_share_lock_order(pg, trial):
+@pytest.mark.parametrize("fresh", [False, True])
+def test_writer_retraction_and_embedding_collection_share_lock_order(
+    pg, trial, fresh
+):
     """Exercise real row locks and autoflush, which SQLite cannot establish."""
     from concurrent.futures import ThreadPoolExecutor
     from datetime import UTC, datetime
@@ -36,7 +39,7 @@ def test_writer_retraction_and_embedding_collection_share_lock_order(pg, trial):
         pg.url,
         connect_args={"options": "-c lock_timeout=5000 -c statement_timeout=10000"},
     )
-    campaign = Campaign(name=f"Fact lock test {trial}")
+    campaign = Campaign(name=f"Fact lock test {trial} fresh={fresh}")
     user = AppUser(email=f"fact-lock-{uuid4()}@example.test")
     with Session(engine) as session:
         session.add_all([campaign, user])
@@ -74,6 +77,19 @@ def test_writer_retraction_and_embedding_collection_share_lock_order(pg, trial):
             session, campaign_id, game_id, pc_id, "lock/v1", candidates
         )
         assert len(result.written) == 12 and not result.rejections
+        race_candidates = (
+            [
+                FactCandidate(
+                    statement=f"Fresh fact {i}", evidence_event_ids=[row.id]
+                )
+                for i, row in enumerate(events)
+            ]
+            if fresh
+            # The replay path hits ON CONFLICT DO NOTHING; fresh statements
+            # exercise a real insert racing the concurrent retraction.
+            else candidates
+        )
+        race_version = "lock/v2" if fresh else "lock/v1"
         inputs = collect_play_inputs(session, "fact-lock-test", 10000)
         persist_play_vectors(
             session, "fact-lock-test", inputs, [[0.1] * 1024 for _ in inputs]
@@ -87,7 +103,7 @@ def test_writer_retraction_and_embedding_collection_share_lock_order(pg, trial):
             barrier.wait(timeout=10)
             if operation == "write":
                 write_character_facts(
-                    session, campaign_id, game_id, pc_id, "lock/v1", candidates
+                    session, campaign_id, game_id, pc_id, race_version, race_candidates
                 )
             elif operation == "retract":
                 rows = session.exec(
@@ -113,7 +129,10 @@ def test_writer_retraction_and_embedding_collection_share_lock_order(pg, trial):
             facts = session.exec(
                 select(CharacterFact).where(CharacterFact.campaign_id == campaign_id)
             ).all()
-            assert len(facts) == 12
+            # A fresh insert either lands before the retraction cascade and is
+            # retracted with everything else, or its evidence is already gone
+            # and every candidate is rejected. Either way nothing stays active.
+            assert len(facts) == 12 if not fresh else len(facts) in (12, 24)
             assert all(row.status == "retracted" for row in facts)
             assert (
                 session.scalar(

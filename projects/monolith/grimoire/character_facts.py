@@ -288,7 +288,18 @@ def build_fact_payload(
             Note.campaign_id == campaign_id,
             Note.deleted_at.is_(None),
             Note.kind == ("party" if viewer is None else "character"),
-            True if viewer is None else Note.author_member_id == member.id,
+            # Character notes reach the DM only when opted in, and facts
+            # built from this payload are DM-visible. Keep private notes out
+            # of the PC payload so no fact can carry text the DM may not
+            # read. Party notes are unchanged. The writer validates evidence
+            # and vocabulary, not prose; any writer-side or DM-visibility
+            # alternative needs Joe's choice on #6991 before activation.
+            True
+            if viewer is None
+            else and_(
+                Note.author_member_id == member.id,
+                Note.dm_readable.is_(True),
+            ),
         )
         .order_by(Note.id)
         .execution_options(populate_existing=True)
