@@ -40,6 +40,12 @@ Every action below has a serving implementation correspondence:
     local flight; parked followers still own the old pointer. CP finish_wake,
     finish_created, publish_and_resolve write serving_started/serving_published
     before resolving waiters; errors return 503 and keep the fallback.
+    Restriction: the model guards CP Complete with v in s.reported, but
+    finish_wake/finish_created (serving_manager.ex:709-770) never check node
+    inventory, so a CP VM withdrawn after StartServing returns but before
+    wake_done is processed still gets a published row in the code while the
+    model takes CompleteFailure. Documented, not closed; no verdict change
+    at these bounds.
   Forward / DialResult / Timeout: activator.go:340 proxyBuffered, http.Client.Do
     and HTTP 502/503; tcp_activator.ex and activator_splices.ex have analogous
     bounded dial failures. CP request proxy uses the endpoint returned to its
@@ -70,7 +76,12 @@ Every action below has a serving implementation correspondence:
   Backfill: serving_store.ex:608 appends serving_started then serving_published;
     failure leaves the ETS row. Success/failure is nondeterministic. Rebuild
     from a partial durable append still preserves the claiming row, represented
-    by durable membership. A retry can run through AdoptExisting's backfill.
+    by durable membership. There is no re-drive in the code: after a failed
+    backfill the ETS row exists, so later passes skip it at the
+    find_instance_by_vm :none check (adopt_activator_vms fires only on a
+    miss), and adopt_one/adopt_live never append. The row stays ETS-only
+    until a crash, then is re-adopted. Backfill(d) still permits d = {},
+    so the safety results stand, but the mapping does not claim a re-drive.
   ReconcileStep: evict_orphan_snapshots, withdraw_unreported_resident_health,
     redrive_destroying, in that order; abstract no-ops because there are no
     snapshots, pre-existing destroying rows, or missing node facts in this model.
@@ -123,6 +134,11 @@ PREDICATES. Nodes/Wakers/Requests are the implementation populations above;
   Serialized CP callbacks need strong fairness because idle is intermittent;
   all other progress obligations use weak fairness.
   RequestsResolve requires every parked request eventually deliver or fail.
+  Fairness caveat: FairSpec gives weak fairness to Timeout but none to Join,
+  Forward, DialResult or UnavailableCP, and Timeout stays enabled in every
+  non-terminal request state, so RequestsResolve is discharged by the
+  route/connect timeout alone. It is not evidence that delivery progresses:
+  a regression that stops forwarding keeps the liveness cfg green.
   NeverOfflineDelivery/NeverReturnAdoption/NeverDuplicateResolved/NeverLoudFailure
   are deliberately false witnesses, not safety requirements.
 

@@ -76,8 +76,9 @@ are documented with the individual specs below.
   `dual_wake_offline.cfg`, `dual_wake_return_adoption.cfg`,
   `dual_wake_duplicate_resolved.cfg`, `dual_wake_loud_failure.cfg`,
   `dual_wake_two_vms.cfg`, `dual_wake_origin_skip_disabled.cfg`,
-  `dual_wake_orphans_first.cfg` : the eighteen dual-wake configurations (below).
-- `BUILD` : fifty-six genrules run TLC over the ten specs, one per cfg, via the
+  `dual_wake_orphans_first.cfg`, `dual_wake_accounting_wedge.cfg`,
+  `dual_wake_requests_wedge.cfg` : the twenty dual-wake configurations (below).
+- `BUILD` : fifty-eight genrules run TLC over the ten specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -798,7 +799,11 @@ that accounting at every settled, complete-inventory reconcile cut.
 `NoLegitActivatorWakeReaped` covers the orphan-destroy exception.
 `PublishAfterReady` checks readiness history, including failed splice attempts.
 `NoDeadSplice` checks delivery-time readiness and life, and `RequestsResolve`
-requires every parked request to deliver or fail eventually.
+requires every parked request to deliver or fail eventually. Fairness caveat:
+`FairSpec` gives weak fairness to `Timeout` but none to `Join`, `Forward`,
+`DialResult` or `UnavailableCP`, and `Timeout` stays enabled in every
+non-terminal request state, so `RequestsResolve` is discharged by the
+route/connect timeout alone and is not evidence that delivery progresses.
 
 The serving model carries only shared readiness, independent-flight,
 explicit-failure and origin-skip abstractions into its stateful/group mapping.
@@ -826,7 +831,10 @@ with one CP absence or crash and one post-ready guest crash
 are outside the checked bounds. The liveness cfg uses the last safety bound
 with fair return, RPC completion and reconciliation. Serialized CP callbacks
 need strong fairness because idle opportunities are intermittent; other
-progress obligations use weak fairness. Fault budgets are finite.
+progress obligations use weak fairness. `Timeout` is weakly fair while `Join`,
+`Forward`, `DialResult` and `UnavailableCP` carry no fairness, so
+`RequestsResolve` follows from the route/connect timeout rather than from
+protocol delivery actions. Fault budgets are finite.
 
 The negative and sensitivity cfgs use the one-request bound except
 `wrong_winner`, `duplicate_resolved` and `two_vms`, which use two requests with
@@ -840,8 +848,11 @@ The results below use Linux, the SHA-verified TLC 1.7.4 jar and Temurin
 genrule's exact `tlc.sh` expectation. Only fully drained PASS runs are called
 exhaustive. FAIL rows are completed expected counterexamples, not exhaustive
 safety passes. Their depth is TLC's reported search depth at the violation.
-Each negative lists only its intended invariant, and the driver requires that
-exact invariant, so another safety failure cannot satisfy the expectation.
+Each single-mutation negative lists only its intended invariant, and the
+driver requires that exact invariant, so another safety failure cannot
+satisfy the expectation. The two liveness wedges are the exception: they run
+as bare `fail` (no named invariant, as temporal violations name none), matching
+the adoption wedge precedent.
 
 | cfg | changed switch | expect | checked result | generated / distinct / queue | depth |
 | --- | --- | --- | --- | --- | --- |
@@ -863,6 +874,8 @@ exact invariant, so another safety failure cannot satisfy the expectation.
 | `dual_wake_duplicate_resolved.cfg` | `Witness = "duplicate"` | FAIL | witness: `NeverDuplicateResolved` violated | 3,115,788 / 631,251 / 100,086 | 19 |
 | `dual_wake_loud_failure.cfg` | `Witness = "loud"` | FAIL | witness: `NeverLoudFailure` violated | 26 / 21 / 14 | 3 |
 | `dual_wake_two_vms.cfg` | none (current-main reachability) | FAIL | witness: `AtMostOneVMPerWorkload` violated | 1,528 / 751 / 538 | 5 |
+| `dual_wake_accounting_wedge.cfg` | `Leak = TRUE`, `FairSpec` | FAIL | temporal `EventualAccounting` violated (bare `fail`) | pending Linux CI | pending |
+| `dual_wake_requests_wedge.cfg` | `SilentFailure = TRUE`, `FairSpec` | FAIL | temporal `RequestsResolve` violated (bare `fail`) | pending Linux CI | pending |
 
 The four `Never*` rows are deliberately false non-vacuity checks: offline
 delivery, return-mid-boot adoption, resolved duplicate flights and loud failure
@@ -875,7 +888,10 @@ not a production safety invariant.
 `destroy_orphan_serving_vms` skips activator origin. Earlier in the same pass,
 `adopt_activator_vms` consumes the same captured inventory and
 `ServingStore.adopt_activator` inserts the ETS row before durable backfill.
-Backfill failure keeps that row. The `origin_skip_disabled` and `orphans_first`
+Backfill failure keeps that row, and there is no re-drive in the code: the
+row exists afterwards, so later passes skip it at the `:none` check and the
+row stays ETS-only until a crash re-adopts it. The `origin_skip_disabled`
+and `orphans_first`
 PASS sensitivity checks each retain one protection. The `unguarded_orphans`
 composite removes both and violates `NoLegitActivatorWakeReaped` at one request;
 `reap_activator` is the stronger negative that reaps even owned activator facts.
@@ -904,7 +920,7 @@ authority to retire either wake path
 
 ## Running TLC
 
-CI runs all fifty-six genrules through the repository's affected-target
+CI runs all fifty-eight genrules through the repository's affected-target
 Linux path. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
