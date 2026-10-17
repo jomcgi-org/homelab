@@ -46,7 +46,7 @@
     {
       "key": "header-authz-drift",
       "view": "physical",
-      "statement": "X-Auth-Email is forwarded by several allowlisted in-cluster senders (gateway, MCP gateway, Argo job pods, the WhatsApp gateway, the EmberVM progress-ingest sidecar) that do not all cryptographically bind the claim to a verified caller; today it is read only for attribution (agent_sessions triggered_by), but nothing stops a future authorization decision from keying on it without also verifying the caller's JWT",
+      "statement": "X-Auth-Email is forwarded by several allowlisted in-cluster senders (gateway, MCP gateway, Argo job pods, the EmberVM progress-ingest sidecar) that do not all cryptographically bind the claim to a verified caller; today it is read only for attribution (agent_sessions triggered_by), but nothing stops a future authorization decision from keying on it without also verifying the caller's JWT",
       "losses": [
         "L.unauthorized-access"
       ],

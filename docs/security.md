@@ -241,7 +241,7 @@ FQDN rules. Metadata-server access would remain denied.
 
 Native-policy successors remain #5276, #5277 and #3897. The staged native
 egress policy intentionally scopes default-deny to
-the private app endpoint. Searxng, WhatsApp, CNPG, Atlas migration jobs, and
+the private app endpoint. Searxng, CNPG, Atlas migration jobs, and
 the separate `monolith-workflows` batch namespace retain their existing egress
 behavior because they are distinct workload and credential boundaries. They
 need their own destination-specific policies instead of inheriting a union of
@@ -394,7 +394,7 @@ images build as uid 65532 (`bazel/tools/oci/go_image.bzl`) and most charts
 set the full hardened context (`readOnlyRootFilesystem`, `runAsNonRoot`,
 `allowPrivilegeEscalation: false`, `drop: [ALL]`, `seccompProfile:
 RuntimeDefault`). The private monolith applies that context to its backend,
-progress-ingest, frontend and optional WhatsApp gateway containers. Each gets
+progress-ingest and frontend containers. Each gets
 a separate writable `/tmp` `emptyDir`, owned through pod `fsGroup: 65532`;
 the remainder of each root filesystem is read-only. No admission policy
 enforces any of it. Kyverno runs two `ClusterPolicy` objects, both `Audit`
