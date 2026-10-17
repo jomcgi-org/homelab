@@ -37,7 +37,6 @@ oci_digest_manifest(
         "//projects/firecracker/substrate/rootfs-builder:image.info": "//projects/firecracker/substrate/rootfs-builder:image.push",
         "//projects/monolith/frontend:image.info": "//projects/monolith/frontend:image.push",
         "//projects/monolith/frontend:image_public.info": "//projects/monolith/frontend:image_public.push",
-        "//projects/monolith/whatsapp:image.info": "//projects/monolith/whatsapp:image.push",
         "//projects/monolith:image.info": "//projects/monolith:image.push",
         "//projects/monolith:image_public.info": "//projects/monolith:image_public.push",
         "//projects/monolith:jobs_image.info": "//projects/monolith:jobs_image.push",

@@ -30,9 +30,6 @@ image guard elsewhere.
        renders a CronWorkflow referencing the openrouter secret. */ -}}
 {{- else if and .knowledgePublishFacts (not $.Values.knowledge.publishFacts.enabled) }}
 {{- /* The publication lane is opt-in because it changes public visibility. */ -}}
-{{- else if and .whatsapp (not $.Values.whatsapp.enabled) }}
-{{- /* the whatsapp morning-digest job only exists when the gateway is enabled;
-       a deploy with whatsapp off renders no digest CronWorkflow. */ -}}
 {{- else }}
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -212,14 +209,6 @@ spec:
                 secretKeyRef:
                   name: monolith-chat-secrets
                   key: GITHUB_TOKEN
-            {{- end }}
-            {{- if .whatsapp }}
-            # The morning-digest job reads WHATSAPP_TZ for the household-local send
-            # time and quiet hours. Derive it from the same single source the
-            # backend uses (whatsapp.calendar.tz) so quiet-hours/send-time cannot
-            # silently diverge from the capabilities tz.
-            - name: WHATSAPP_TZ
-              value: {{ $.Values.whatsapp.calendar.tz | quote }}
             {{- end }}
             {{- if .grimoire }}
             # Grimoire ingest jobs (spec #4.2/#4.3): the loader reads R2 S3 env +

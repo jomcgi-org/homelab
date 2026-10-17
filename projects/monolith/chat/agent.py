@@ -334,39 +334,9 @@ class ChatDeps:
     no_reply_reason: str = ""
 
 
-def build_system_prompt(channel: str = "discord") -> str:
-    """Build the system prompt for the chat agent.
-
-    ``channel`` reframes the venue for a non-Discord agent. The behaviour is
-    shared across channels; only the channel-specific wording differs. Rather
-    than fork the whole prompt, a short READ-FIRST header corrects the
-    Discord-specific framing below when the agent is elsewhere (e.g. WhatsApp),
-    so the model is never told it is on Discord when it is not.
-    """
-    header = ""
-    if channel == "whatsapp":
-        header = (
-            "CHANNEL -- READ FIRST: You are in a WhatsApp group, NOT Discord. "
-            "There are no threads, no server, and no Discord <@id> mentions here. "
-            "Wherever the guidance below says 'Discord', 'server', or 'thread', "
-            "read it as 'this WhatsApp group' and 'heavier work runs in the "
-            "background and replies back here'. Messages are plain WhatsApp text "
-            "(no Discord markdown). DELIVERY, READ CAREFULLY: only an IMAGE that "
-            "run_code generates (a chart, a plot, a rendered table) comes back "
-            "here, sent as a normal WhatsApp image. Anything that is NOT an image "
-            "cannot be sent over WhatsApp: an HTML page, an interactive webpage, "
-            "a standalone artifact, or any file you saved is dropped and reaches "
-            "nobody. So NEVER say a page or file is 'attached', NEVER tell someone "
-            "to 'open the HTML file', and NEVER claim you delivered something you "
-            "did not. A full webpage or interactive artifact is an agent-thread "
-            "job, like every heavier task here: hand it off so it builds in the "
-            "background and replies with a link, and never try to produce one "
-            "inline. If a visual result cannot be shown here, say so plainly and "
-            "offer the link route, instead of narrating a delivery that did not "
-            "happen. When someone says 'Bosun' or 'the bot', or replies to you, "
-            "they mean YOU. Never mention Discord.\n\n"
-        )
-    return header + (
+def build_system_prompt() -> str:
+    """Build the system prompt for the Discord chat agent."""
+    return (
         "You are a friend hanging out in a Discord server, and you're also "
         "genuinely useful. You talk like a real person: casual, direct, and "
         "natural. But people also come here to get real help, and helping "
@@ -607,15 +577,13 @@ def create_agent(
     api_key: str | None = None,
     provider_base_url: str | None = None,
     model_settings: ModelSettings | None = None,
-    channel: str = "discord",
 ) -> Agent[ChatDeps]:
     """Create a PydanticAI agent (same tools and prompts for every tier).
 
     Defaults to the env-configured hosted provider when both CHAT_MODEL and
     CHAT_BASE_URL are set, otherwise to the LLAMA_CPP_URL OpenAI-compatible
     endpoint. Pass ``provider_base_url`` + ``api_key`` + ``model_name`` to back
-    it with an explicit hosted OpenAI-compatible model instead (the
-    household/WhatsApp tier -> DeepSeek V4 Flash on OpenRouter).
+    it with an explicit hosted OpenAI-compatible model instead.
     ``provider_base_url`` is used verbatim (it already includes the API path,
     e.g. ``.../api/v1``), unlike the llama.cpp ``base_url`` which gets ``/v1``
     appended.
@@ -665,7 +633,7 @@ def create_agent(
 
     agent: Agent[ChatDeps] = Agent(
         model,
-        system_prompt=build_system_prompt(channel),
+        system_prompt=build_system_prompt(),
         model_settings=model_settings or _sync_chat_settings(),
         prepare_tools=inject_signposts,
     )
@@ -1372,35 +1340,6 @@ def create_agent(
     signpost_map.update(_collect_signposts(agent))
 
     return agent
-
-
-# OpenRouter API path for the household tier's hosted model. Used verbatim as the
-# provider base_url (it already ends in the API version segment).
-_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-
-
-def create_household_agent() -> Agent[ChatDeps]:
-    """The WhatsApp/household chat agent (ADR 039, amended).
-
-    Same tools, system prompt, and signposts as the default concierge, but backed
-    by DeepSeek V4 Flash on OpenRouter (strong but cheap) rather than Meta Spark:
-    every generated reply on the WhatsApp channel is authored by that model,
-    while Meta Spark is reserved for the activation classifier. Runs in the
-    monolith, which already holds ``OPENROUTER_API_KEY``, so it reaches
-    openrouter.ai directly (no egress swap; that is only for the goose guest). The
-    model id is pinned via ``household_model()`` (HOUSEHOLD_LLM_MODEL from values).
-    """
-    from chat.summarizer import household_model
-
-    return create_agent(
-        channel="whatsapp",
-        provider_base_url=_OPENROUTER_BASE_URL,
-        api_key=os.environ.get("OPENROUTER_API_KEY", ""),
-        model_name=household_model(),
-        # Keep hosted-provider sampling simple and let the model apply its
-        # defaults.
-        model_settings=ModelSettings(temperature=0.7, top_p=0.95),
-    )
 
 
 def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":

@@ -235,21 +235,10 @@ go_deps.gazelle_override(
     path = "sigs.k8s.io/apiserver-network-proxy/konnectivity-client",
 )
 
-# whatsmeow ships pre-generated .pb.go files; gazelle otherwise tries to build
-# its proto/* packages as go_proto_library and cross-references a
-# waStatusAttributions package that has no BUILD file, aborting analysis. Treat
-# the checked-in .pb.go as ordinary Go sources instead.
-go_deps.gazelle_override(
-    directives = [
-        "gazelle:proto disable",
-    ],
-    path = "go.mau.fi/whatsmeow",
-)
-
 # go-spiffe ships pre-generated .pb.go files for proto/spiffe/workload; gazelle
 # otherwise generates a go_proto_library from workload.proto and the checked-in
 # workload_grpc.pb.go fails to compile against it (undefined: X509SVIDRequest).
-# Treat the checked-in .pb.go as ordinary Go sources, like whatsmeow above.
+# Treat the checked-in .pb.go as ordinary Go sources.
 go_deps.gazelle_override(
     directives = [
         "gazelle:proto disable",
@@ -264,7 +253,7 @@ go_deps.gazelle_override(
 # genrules (//projects/embervm/proto/embervm/node/v1), not by any Go import go_deps
 # can see, so both are `// indirect` in go.mod and `bazel mod tidy` would drop them
 # from this list. Re-add them after any tidy or node_go_src stops resolving.
-use_repo(go_deps, "com_github_envoyproxy_go_control_plane", "com_github_envoyproxy_go_control_plane_envoy", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_jackc_pgx_v5", "com_github_klauspost_compress", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_spf13_cobra", "com_github_spiffe_go_spiffe_v2", "com_github_stretchr_testify", "fi_mau_go_whatsmeow", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_sync", "org_golang_x_sys")
+use_repo(go_deps, "com_github_envoyproxy_go_control_plane", "com_github_envoyproxy_go_control_plane_envoy", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_klauspost_compress", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_spf13_cobra", "com_github_spiffe_go_spiffe_v2", "com_github_stretchr_testify", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_sync", "org_golang_x_sys")
 
 #########################
 # JavaScript and pnpm package manager
@@ -446,10 +435,6 @@ apko.translate_lock(
     lock = "//projects/firecracker/sandbox/javascript:apko.lock.json",
 )
 apko.translate_lock(
-    name = "whatsapp_lock",
-    lock = "//projects/monolith/whatsapp:apko.lock.json",
-)
-apko.translate_lock(
     name = "stars_grid_apko_lock",
     lock = "//projects/monolith:stars/grid_gen/apko.lock.json",
 )
@@ -509,7 +494,7 @@ apko.translate_lock(
     name = "embervm_runtime_pi_lock",
     lock = "//projects/embervm/runtimes/pi:apko.lock.json",
 )
-use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "shotter_lock", "stars_grid_apko_lock", "whatsapp_lock")
+use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "shotter_lock", "stars_grid_apko_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")

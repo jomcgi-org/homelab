@@ -1066,22 +1066,20 @@ jobs:
         # primary calendar. Pointing milestones at a shared calendar is a
         # one-line edit here.
         MOVING_GCAL_CALENDAR_ID: ""
-      # The whatsapp calendar credential (ADR 039). optional: the keys do not
-      # exist until the OAuth credential is minted, and the handler no-ops
-      # while unconfigured, so the job must still schedule without them.
-      # Provisioning (#5428) must also clone monolith-whatsapp into
-      # workflowNamespace (job pods cannot read monolith-namespace secrets).
+      # Optional calendar OAuth credential in workflowNamespace (#5428).
+      # The handler no-ops while unconfigured, so the job still schedules
+      # without the Secret. Credential provisioning is separate from this chart.
       secretEnv:
         GOOGLE_CALENDAR_CLIENT_ID:
-          secretName: monolith-whatsapp
+          secretName: monolith-google-calendar
           key: GOOGLE_CALENDAR_CLIENT_ID
           optional: true
         GOOGLE_CALENDAR_CLIENT_SECRET:
-          secretName: monolith-whatsapp
+          secretName: monolith-google-calendar
           key: GOOGLE_CALENDAR_CLIENT_SECRET
           optional: true
         GOOGLE_CALENDAR_REFRESH_TOKEN:
-          secretName: monolith-whatsapp
+          secretName: monolith-google-calendar
           key: GOOGLE_CALENDAR_REFRESH_TOKEN
           optional: true
       resources:
@@ -1233,30 +1231,6 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
-    # whatsapp.morning_digest: render today's calendar + open reminders into one
-    # whatsapp_outbox message per enabled household group (ADR 039 spec 5d). Runs
-    # hourly so a group whose send time or quiet hours have just lifted still gets
-    # its digest that day; the job dedupes to one digest per local day and honours
-    # per-group quiet hours from digest_config. DB-only (no bot, no external creds).
-    # The cronworkflows template skips this entry unless whatsapp.enabled, so a
-    # deploy with the gateway off renders no digest CronWorkflow. The cronworkflows
-    # template injects WHATSAPP_TZ (household-local tz for send time and quiet
-    # hours) from whatsapp.calendar.tz, the same single source the backend reads,
-    # so this job cannot diverge from the capabilities tz.
-    - name: whatsapp-morning-digest
-      replaces: whatsapp.morning_digest
-      args: ["whatsapp-morning-digest"]
-      schedule: "0 * * * *" # hourly; per-group send time + quiet hours gate it
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 300
-      suspend: false
-      whatsapp: true
-      resources:
-        requests:
-          cpu: 100m
-          memory: 256Mi
-        limits:
-          memory: 256Mi
     # Agent lane probes cover production factory execution. Public demos are retired.
     - name: ember-codex-session-synthetic
       args: ["ember-codex-synthetic-trigger"]
@@ -2033,60 +2007,6 @@ orchestrator:
   # Initial-compile budget: covers BOTH the route-decision call and the
   # submit_plan tool call (plan construction is real work, not a quick classify).
   timeoutSeconds: 60
-
-# WhatsApp channel gateway (ADR 039): a transport-only Go whatsmeow service in
-# its own single-replica Deployment. Disabled by default; Joe flips
-# whatsapp.enabled after pairing the throwaway bot number. The whatsmeow session
-# persists in the monolith CNPG Postgres under a dedicated `whatsapp` schema
-# (DB DSN reused from the monolith CNPG app secret). Non-secret bot config
-# (number, group allow-list, alert channel) is set here; the 1Password item named
-# by onepassword.itemPath carries the credentials later phases consume. The image
-# repository/tag are pinned at chart build time via helm_images_values (see the
-# chart BUILD images map); never hand-set a digest here.
-whatsapp:
-  enabled: false
-  # Pinned OpenRouter model for household CONTENT generation in the monolith: the
-  # surviving WhatsApp chat agent authors on this (strong but cheap). Kept as a
-  # value (never :auto) so replies stay attributable; the monolith reaches
-  # openrouter.ai directly with OPENROUTER_API_KEY.
-  model: "deepseek/deepseek-v4-flash"
-  image:
-    repository: ""
-    tag: ""
-    pullPolicy: IfNotPresent
-  onepassword:
-    itemPath: ""
-  # PII is NOT configured here (the repo is public):
-  #   - the bot number lives in the "whatsapp" 1Password item (WHATSAPP_BOT_NUMBER),
-  #     read by secretKeyRef in the gateway Deployment.
-  #   - group JIDs (which embed a phone number) live in chat.whatsapp_group; the
-  #     gateway loads its allow-list from that table and refreshes on a ticker.
-  # Discord channel id ops alerts (pairing code, logout/ban) are posted to via
-  # the shared chat.discord_outbox drain (a channel id, not personal data).
-  alertChannelId: ""
-  # In-cluster URL of the monolith backend inbound endpoint the gateway forwards
-  # group messages to (ADR 039 spec section 2). Set in deploy values; never
-  # hardcoded in Go (a release rename changes the service name prefix).
-  monolithInboundUrl: ""
-  # Household calendar scheduling (ADR 039 spec 5b, OQ1). The create-event path
-  # uses an OAuth user credential (client id/secret + refresh token) carried in
-  # the whatsapp 1Password item as the GOOGLE_CALENDAR_CLIENT_ID /
-  # GOOGLE_CALENDAR_CLIENT_SECRET / GOOGLE_CALENDAR_REFRESH_TOKEN fields; they are
-  # injected into the monolith backend as OPTIONAL secret env (absence is fine:
-  # the code falls back to drafting events into the morning digest). calendarId
-  # and tz are non-secret and set here. Leave calendarId "primary" to write to the
-  # credential owner's primary calendar.
-  calendar:
-    calendarId: "primary"
-    tz: "America/Vancouver"
-  # Small: this is a websocket pump. CPU request, no CPU limit; memory
-  # request=limit, per the repo resource-sizing convention.
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      memory: 64Mi
 
 # Marine / AIS ship tracking: streams vessel positions from AISStream.io.
 # Reuses the existing 1Password "marine" vault item (shared with the legacy

@@ -79,15 +79,6 @@ def app_pod_spec(request: pytest.FixtureRequest) -> dict:
     return deployment["spec"]["template"]["spec"]
 
 
-@pytest.fixture
-def whatsapp_pod_spec() -> dict:
-    deployment = _deployment(
-        _render(set_values=("whatsapp.enabled=true",)),
-        "monolith-whatsapp",
-    )
-    return deployment["spec"]["template"]["spec"]
-
-
 def test_private_containers_have_read_only_roots(app_pod_spec: dict) -> None:
     containers = {
         container["name"]: container for container in app_pod_spec["containers"]
@@ -120,28 +111,6 @@ def test_each_container_has_only_its_own_writable_tmp(app_pod_spec: dict) -> Non
 
 def test_tmp_volumes_are_writable_by_the_non_root_process(app_pod_spec: dict) -> None:
     assert app_pod_spec["securityContext"] == {
-        "runAsNonRoot": True,
-        "runAsUser": 65532,
-        "runAsGroup": 65532,
-        "fsGroup": 65532,
-        "seccompProfile": {"type": "RuntimeDefault"},
-    }
-
-
-def test_whatsapp_gateway_has_only_writable_tmp(whatsapp_pod_spec: dict) -> None:
-    assert len(whatsapp_pod_spec["containers"]) == 1
-    container = whatsapp_pod_spec["containers"][0]
-    assert container["name"] == "whatsapp"
-    assert container["securityContext"] == {
-        "runAsNonRoot": True,
-        "runAsUser": 65532,
-        "readOnlyRootFilesystem": True,
-        "allowPrivilegeEscalation": False,
-        "capabilities": {"drop": ["ALL"]},
-    }
-    assert container["volumeMounts"] == [{"name": "whatsapp-tmp", "mountPath": "/tmp"}]
-    assert whatsapp_pod_spec["volumes"] == [{"name": "whatsapp-tmp", "emptyDir": {}}]
-    assert whatsapp_pod_spec["securityContext"] == {
         "runAsNonRoot": True,
         "runAsUser": 65532,
         "runAsGroup": 65532,

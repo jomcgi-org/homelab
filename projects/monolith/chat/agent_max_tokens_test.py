@@ -101,7 +101,7 @@ class TestChatMaxTokens:
         assert "max_tokens" not in agent.model_settings
 
     def test_explicit_model_settings_pass_through_untouched(self):
-        """Hosted household and WhatsApp settings do not gain the cap."""
+        """Explicit provider settings do not gain the cap."""
         explicit = ModelSettings(temperature=0.7, top_p=0.95)
 
         with (
@@ -114,7 +114,6 @@ class TestChatMaxTokens:
             agent = create_agent(
                 base_url="http://fake:8080",
                 model_settings=explicit,
-                channel="whatsapp",
             )
 
         assert agent.model_settings is explicit

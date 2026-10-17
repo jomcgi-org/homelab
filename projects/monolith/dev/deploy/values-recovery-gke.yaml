@@ -118,8 +118,6 @@ chat:
   enabled: false
   onepassword:
     itemPath: ""
-whatsapp:
-  enabled: false
 marine:
   enabled: false
   onepassword:

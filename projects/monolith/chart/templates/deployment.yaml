@@ -522,46 +522,6 @@ spec:
               value: {{ .Values.healthAlerts.brickNamespace | quote }}
             - name: EMBERVM_CREATE_OUTCOME_LATCH_ENABLED
               value: {{ .Values.healthAlerts.recordCreateOutcomes | quote }}
-            {{- if .Values.whatsapp.enabled }}
-            # Pinned OpenRouter model for the surviving in-monolith WhatsApp
-            # household reply path. Heavy Goose agent dispatch was retired.
-            - name: HOUSEHOLD_LLM_MODEL
-              value: {{ .Values.whatsapp.model | quote }}
-            # WhatsApp inbound bearer token (ADR 039 spec section 2). The monolith
-            # validates the gateway's forwarded requests against it; the same
-            # 1Password-managed Secret injects it into the gateway (the caller).
-            - name: WHATSAPP_INBOUND_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-whatsapp
-                  key: WHATSAPP_INBOUND_TOKEN
-            # Household calendar scheduling (ADR 039 spec 5b). The OAuth credential
-            # for live create-event lives in the same whatsapp 1Password Secret;
-            # marked optional so the pod is not blocked when the fields are absent
-            # (the capability then drafts events into the morning digest instead).
-            - name: GOOGLE_CALENDAR_CLIENT_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-whatsapp
-                  key: GOOGLE_CALENDAR_CLIENT_ID
-                  optional: true
-            - name: GOOGLE_CALENDAR_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-whatsapp
-                  key: GOOGLE_CALENDAR_CLIENT_SECRET
-                  optional: true
-            - name: GOOGLE_CALENDAR_REFRESH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-whatsapp
-                  key: GOOGLE_CALENDAR_REFRESH_TOKEN
-                  optional: true
-            - name: GOOGLE_CALENDAR_ID
-              value: {{ .Values.whatsapp.calendar.calendarId | quote }}
-            - name: WHATSAPP_TZ
-              value: {{ .Values.whatsapp.calendar.tz | quote }}
-            {{- end }}
             {{- if .Values.knowledge.enabled }}
             - name: KG_FEED_SINCE
               value: {{ .Values.knowledge.feeds.emberSessions.since | quote }}

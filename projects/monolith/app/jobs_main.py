@@ -1149,21 +1149,6 @@ def safeguards_train() -> None:
     )
 
 
-@app.command("whatsapp-morning-digest")
-def whatsapp_morning_digest() -> None:
-    """Send the morning digest to each enabled WhatsApp household group.
-
-    One-shot of whatsapp.morning_digest (ADR 039 spec 5d). Run hourly; it renders
-    today's calendar + open reminders into one whatsapp_outbox message per group,
-    honouring the group's quiet hours and deduping to one digest per local day.
-    DB-only (reads groups/reminders/drafts + the home calendar snapshot, enqueues
-    outbox rows); no bot or external creds needed. WHATSAPP_TZ sets the local tz
-    (default America/Vancouver)."""
-    _run_job(
-        "whatsapp-morning-digest", "chat.whatsapp_digest", "morning_digest_handler"
-    )
-
-
 if __name__ == "__main__":
     _otel_provider = _setup_otel()
     try:
