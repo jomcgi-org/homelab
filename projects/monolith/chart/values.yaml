@@ -230,7 +230,10 @@ agents:
     stallThresholdSeconds: 2700
     # Claim the existing general-purpose lane and the knowledge extraction lane.
     # Set jobKinds: [] to pause all claims while leaving the drainer enabled.
-    jobKinds: ["qwen-drain", "kg-drain", "grimoire-kg-drain"]
+    # grimoire-kg-drain stays out until a tool-free extraction transport exists
+    # (#6991): queueing it early would count unclaimable backlog as general
+    # lane lag. The drainer gates its claims on cap plus transport anyway.
+    jobKinds: ["qwen-drain", "kg-drain"]
     # Bound knowledge extraction turns independently of the general queue.
     kgMaxJobsPerDay: 40
     # Permit repo-diff extraction to queue human-reviewed documentation PRs.
@@ -1942,6 +1945,8 @@ grimoire:
   kg:
     # Session-end facts queue regardless; this separate rolling daily cap gates
     # Luna claims. Enable only after reviewing real-session operational checks.
+    # A positive cap alone is inert: claims also need a registered tool-free
+    # extraction transport, and none is registered in this release (#6991).
     dailyCap: 0
   invitationLinks:
     enabled: false

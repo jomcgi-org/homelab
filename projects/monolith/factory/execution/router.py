@@ -632,10 +632,18 @@ def drain_lane_status() -> dict:
             running.append({"name": job["name"], "locked_at": _iso(locked_at)})
             running_names.add(job["name"])
 
+    # grimoire-kg-drain rows queue at session end even while nothing can
+    # claim them; keep them out of the due backlog until the lane is
+    # claimable, matching factory.orchestration.health.general_lane_kinds.
+    # Rows without a recorded kind predate kind tracking and still count.
+    from factory.orchestration.health import general_lane_kinds
+
+    countable = set(general_lane_kinds(settings)) | {"kg-drain"}
     due_count = sum(
         1
         for job in jobs
         if job["name"] not in running_names
+        and (job.get("routine_kind") is None or job.get("routine_kind") in countable)
         and (next_run_at := _as_utc(job["next_run_at"])) is not None
         and next_run_at <= now
     )

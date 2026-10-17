@@ -61,6 +61,29 @@ def _drainer_health_core(
     return _result(float(lag_seconds or 0.0), threshold_seconds)
 
 
+def _grimoire_lane_claimable(settings: DrainerSettings) -> bool:
+    """Mirror the drainer's claim gate: a positive cap plus transport."""
+    if getattr(settings, "grimoire_kg_max_jobs_per_day", 0) <= 0:
+        return False
+    from factory.orchestration.drainer import grimoire_transport_registered
+
+    return grimoire_transport_registered()
+
+
+def general_lane_kinds(settings: DrainerSettings) -> list[str]:
+    """Kinds the general stall signal and due counts treat as actionable.
+
+    kg-drain has its own advisory. grimoire-kg-drain rows queue at session
+    end even at cap zero, but nothing can claim them without a registered
+    transport, so while the lane is disabled they must not read as general
+    lane lag or due backlog. #6991 owns the transport and any lane advisory.
+    """
+    kinds = [kind for kind in settings.job_kinds if kind != "kg-drain"]
+    if not _grimoire_lane_claimable(settings):
+        kinds = [kind for kind in kinds if kind != "grimoire-kg-drain"]
+    return kinds
+
+
 def _read_drainer_health(settings: DrainerSettings) -> dict:
     from core.db import get_engine
 
@@ -68,9 +91,8 @@ def _read_drainer_health(settings: DrainerSettings) -> dict:
         # kg-drain jobs are deferred by design when the daily extraction cap
         # is reached, which would read as a stall here. The kg advisory owns
         # that queue's age, so this lag covers the general lane only.
-        general_kinds = [kind for kind in settings.job_kinds if kind != "kg-drain"]
         return _drainer_health_core(
-            session, general_kinds, settings.stall_threshold_seconds
+            session, general_lane_kinds(settings), settings.stall_threshold_seconds
         )
 
 

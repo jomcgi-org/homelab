@@ -169,7 +169,7 @@
           <p>{preview(result)}</p>
           {#if result.type === "fact" && result.can_dispute}
             {#if result.status === "disputed"}
-              <p>Excluded from your assistant's context.</p>
+              <p>Disputed. Excluded from campaign context.</p>
             {:else}
               <button
                 type="button"

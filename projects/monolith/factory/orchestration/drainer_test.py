@@ -168,6 +168,47 @@ def test_grimoire_claim_kind_is_default_off(cap, registered, monkeypatch):
     )
 
 
+def test_ended_session_at_cap_zero_leaves_drainer_health_not_stalled(tmp_path):
+    from types import SimpleNamespace
+
+    from factory.orchestration.health import general_lane_kinds
+    from grimoire.fact_extraction import enqueue_session_facts
+    from grimoire.testing.leak_harness import sqlite_harness
+
+    with sqlite_harness(tmp_path / "campaign-ended.db") as h:
+        campaign_id = h.rows["campaign"].id
+        session_id = h.rows["campaign_session"].id
+        assert enqueue_session_facts(h.session, campaign_id, session_id) == 3
+        h.session.commit()
+        queued_kinds = {
+            row[0]
+            for row in h.session.execute(
+                text("SELECT DISTINCT routine_kind FROM routine_jobs")
+            ).all()
+        }
+        assert queued_kinds == {"grimoire-kg-drain"}
+        settings = SimpleNamespace(
+            job_kinds=("qwen-drain", "kg-drain", "grimoire-kg-drain"),
+            grimoire_kg_max_jobs_per_day=0,
+        )
+        # The health query only sees these kinds, so none of the queued rows
+        # can report lag: no due claimable job means not stalled.
+        assert general_lane_kinds(settings) == ["qwen-drain"]
+
+
+def test_claimable_grimoire_lane_counts_as_general_health_kind(monkeypatch):
+    from types import SimpleNamespace
+
+    from factory.orchestration.health import general_lane_kinds
+
+    monkeypatch.setattr(drainer, "grimoire_transport_registered", lambda: True)
+    settings = SimpleNamespace(
+        job_kinds=("qwen-drain", "kg-drain", "grimoire-kg-drain"),
+        grimoire_kg_max_jobs_per_day=10,
+    )
+    assert general_lane_kinds(settings) == ["qwen-drain", "grimoire-kg-drain"]
+
+
 @pytest.mark.parametrize("cap", [0, 10])
 @pytest.mark.parametrize("replay", [False, True])
 def test_grimoire_manual_or_replayed_claim_disables_before_any_session(

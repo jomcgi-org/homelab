@@ -322,7 +322,10 @@ def test_payload_is_json_serializable_and_passes_leak_canaries(harness):
     h.assert_no_leak(response, "player_a")
     serialized = json.dumps(payload)
     assert h.rows["event_character_a"].id in serialized
-    assert h.rows["note_private"].markdown in serialized
+    # Private character notes stay out of the PC payload; the DM-visible
+    # shared note still goes in.
+    assert h.rows["note_private"].markdown not in serialized
+    assert h.rows["note_shared"].markdown in serialized
     assert h.rows["event_table_retracted"].id not in serialized
     party = build_fact_payload(
         h.session,
@@ -336,6 +339,45 @@ def test_payload_is_json_serializable_and_passes_leak_canaries(harness):
     h.assert_no_leak(response, "player_a")
     h.assert_no_leak(response, "player_b")
     assert h.rows["event_character_a"].id not in response.text
+
+
+def test_private_note_text_cannot_reach_dm_through_payload_facts(
+    harness, monkeypatch
+):
+    from grimoire import search
+    from grimoire.testing.leak_harness import fake_knn
+
+    h = harness
+    monkeypatch.setattr(search, "knn_embeddings", fake_knn)
+    payload = build_fact_payload(
+        h.session,
+        h.rows["campaign"].id,
+        h.rows["campaign_session"].id,
+        h.rows["character_a"].id,
+    )
+    serialized = json.dumps(payload)
+    assert h.rows["note_private"].markdown not in serialized
+    # A fact derived from the fixed payload carries only DM-readable note
+    # text, so the DM's fact routes stay clean. The writer validates
+    # evidence and vocabulary, not prose; the guarantee is producer-side
+    # until #6991 carries Joe's choice of a writer-side or DM-visibility
+    # alternative.
+    result = write(
+        h,
+        [
+            FactCandidate(
+                statement=f"Shared note says: {h.rows['note_shared'].markdown}",
+                evidence_event_ids=[h.rows["event_table"].id],
+            )
+        ],
+    )
+    assert not result.rejections
+    base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
+    with TestClient(h.app()) as client:
+        for path in (base + "/facts", base + "/knowledge/search?q=note&k=50"):
+            response = client.get(path, headers=h.headers("dm"))
+            assert response.status_code == 200
+            h.assert_no_leak(response, "dm")
 
 
 @pytest.mark.parametrize("body", [{"ooc": True}, {"redacted": True}])

@@ -73,7 +73,7 @@ describe("character knowledge search", () => {
     });
     expect(document.body.textContent).toContain("Disputed");
     expect(document.body.textContent).toContain(
-      "Excluded from your assistant's context.",
+      "Disputed. Excluded from campaign context.",
     );
     expect(document.querySelectorAll("li button")).toHaveLength(0);
   });
