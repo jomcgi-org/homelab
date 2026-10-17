@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, or_, text
+from sqlalchemy import case, func, or_, text
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
@@ -24,6 +24,7 @@ from knowledge.disputes import create_dispute
 from knowledge.extraction import ExtractionOutputInvalid
 from knowledge.freshness import commit_successful_review, record_outcome, utc
 from knowledge.models import Dispute, FactReviewRun, Note, ReviewOutcome
+from knowledge.public_fact_counts import fact_summary
 from knowledge.recall import _get_repo_scope
 from knowledge.review_sources import (
     EvidenceUnavailable,
@@ -58,6 +59,7 @@ def status() -> dict:
 
     max_daily, interval = settings()
     with Session(get_engine()) as session:
+        now = datetime.now(UTC)
         rows = session.exec(
             select(FactReviewRun)
             .where(FactReviewRun.note_id.is_not(None))
@@ -68,6 +70,8 @@ def status() -> dict:
             "enabled": True,
             "max_daily": max_daily,
             "interval_seconds": interval,
+            "public_facts": fact_summary(session, now=now),
+            "coverage": coverage(session, now=now),
             "recent": [
                 {
                     "invocation_key": row.invocation_key,
@@ -113,6 +117,57 @@ def ensure_job(session: Session) -> bool:
     return result.rowcount > 0
 
 
+def _review_pool(now: datetime):
+    return (
+        Note.scope == _get_repo_scope(),
+        Note.type == "fact",
+        Note.deleted_at.is_(None),
+        Note.verification_state.in_(("verified", "unverified")),
+        or_(Note.review_after.is_(None), Note.review_after <= now),
+        or_(Note.valid_until.is_(None), Note.valid_until > now),
+        Note.note_id.not_in(
+            select(Dispute.note_id).where(
+                Dispute.state.in_(("open", "resolution_failed"))
+            )
+        ),
+    )
+
+
+def coverage(session: Session, *, now: datetime) -> dict:
+    """Count distinct due repo facts, not attempts or sampled receipts.
+
+    Only this reviewer's latest outcome at the current claim revision counts.
+    Unassessed says nothing about whether sources will support the claim.
+    """
+    latest = (
+        select(ReviewOutcome.note_id, func.max(ReviewOutcome.id).label("id"))
+        .group_by(ReviewOutcome.note_id)
+        .subquery()
+    )
+    outcome = case(
+        (
+            (ReviewOutcome.note_revision == Note.revision)
+            & ReviewOutcome.reason.startswith(PREFIX),
+            ReviewOutcome.status,
+        ),
+        else_="unassessed",
+    ).label("outcome")
+    rows = session.execute(
+        select(outcome, func.count().label("n"))
+        .select_from(Note)
+        .outerjoin(latest, latest.c.note_id == Note.note_id)
+        .outerjoin(ReviewOutcome, ReviewOutcome.id == latest.c.id)
+        .where(*_review_pool(now))
+        .group_by(outcome)
+    ).all()
+    counts = {row.outcome: int(row.n) for row in rows}
+    return {
+        "scope": _get_repo_scope(),
+        "due": sum(counts.values()),
+        "latest_outcome": counts,
+    }
+
+
 def _candidate(session: Session, now: datetime):
     newer = aliased(ReviewOutcome)
     # The deterministic verifier's unsupported outcome is eligible for this
@@ -137,17 +192,7 @@ def _candidate(session: Session, now: datetime):
     return session.exec(
         select(Note)
         .where(
-            Note.scope == _get_repo_scope(),
-            Note.type == "fact",
-            Note.deleted_at.is_(None),
-            Note.verification_state.in_(("verified", "unverified")),
-            or_(Note.review_after.is_(None), Note.review_after <= now),
-            or_(Note.valid_until.is_(None), Note.valid_until > now),
-            Note.note_id.not_in(
-                select(Dispute.note_id).where(
-                    Dispute.state.in_(("open", "resolution_failed"))
-                )
-            ),
+            *_review_pool(now),
             ~blocked,
         )
         .order_by(

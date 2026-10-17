@@ -991,6 +991,35 @@
   padding: 0.45em 0.7em;
 }
 
+.factory-page .fact-summary {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.factory-page .fact-summary > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6em;
+  padding: 0.3em 0;
+}
+
+.factory-page .fact-summary .total {
+  border-bottom: 1px solid var(--stroke);
+  font-weight: 700;
+}
+
+.factory-page .fact-summary dd {
+  margin: 0;
+  font-family: var(--font-code);
+}
+
+.factory-page .fact-summary-help {
+  margin: 0.6em 0 1.6rem;
+  color: var(--ink-2);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
 .factory-page .filter {
   display: grid;
   gap: 0.2em;

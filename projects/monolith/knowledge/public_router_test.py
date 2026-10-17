@@ -1084,6 +1084,102 @@ class TestPublicRecordSearch:
 
 
 class TestPublicFactsDaily:
+    def test_summary_partitions_public_facts_without_counting_links_as_facts(
+        self, client, session
+    ):
+        changes = {
+            "valid": {},
+            "due": {"review_after": _NOW},
+            "unknown": {"review_after": None},
+            "unverified": {"verification_state": "unverified"},
+            "future-observed": {"observed_at": _NOW + timedelta(seconds=1)},
+            "future-valid": {"valid_from": _NOW + timedelta(seconds=1)},
+            "invalidated": {"verification_state": "invalidated"},
+            "expired": {"valid_until": _NOW},
+            "flagged": {"disputed": True},
+            "disputed": {"verification_state": "disputed"},
+            "left": {},
+            "right": {},
+            "legacy": {"verification_state": "legacy"},
+            "safe": {},
+        }
+        notes = []
+        for key, fields in changes.items():
+            note = _make_note(key, key, type_="fact")
+            for field, value in fields.items():
+                setattr(note, field, value)
+            notes.append(note)
+        session.add_all([*notes, _make_note("concept", "Other record")])
+        session.add_all(
+            [
+                PublicNoteLink(
+                    id=index,
+                    source=source,
+                    target=target,
+                    kind="edge",
+                    edge_type="contradicts",
+                )
+                for index, (source, target) in enumerate(
+                    [
+                        ("left", "right"),
+                        ("left", "right"),
+                        ("right", "left"),
+                        ("safe", "private-target"),
+                        ("private-source", "safe"),
+                        ("safe", "expired"),
+                        ("safe", "invalidated"),
+                    ],
+                    start=1,
+                )
+            ]
+        )
+        session.commit()
+        response = client.get("/api/knowledge/public/facts/daily")
+        assert response.status_code == 200
+        summary = response.json()["summary"]
+        assert summary == {
+            "total": 14,
+            "valid": 2,
+            "to_confirm": 6,
+            "contradicted": 4,
+            "retired": 2,
+            "to_confirm_breakdown": {
+                "unverified": 2,
+                "review_due": 1,
+                "review_unknown": 2,
+                "not_yet_valid": 1,
+            },
+        }
+        assert summary["total"] == sum(
+            summary[key] for key in ("valid", "to_confirm", "contradicted", "retired")
+        )
+
+    def test_summary_changes_at_review_and_expiry_without_a_write(
+        self, client, session, monkeypatch
+    ):
+        note = _make_note("deadline", "Deadline", type_="fact")
+        note.review_after = _NOW + timedelta(seconds=1)
+        note.valid_until = _NOW + timedelta(seconds=2)
+        session.add(note)
+        session.commit()
+        before = client.get("/api/knowledge/public/facts/daily")
+        assert before.json()["summary"]["valid"] == 1
+        assert before.headers["cache-control"] == "no-store"
+        for offset, bucket in [(1, "to_confirm"), (2, "retired")]:
+            monkeypatch.setattr(
+                "knowledge.public_router._now",
+                lambda offset=offset: _NOW + timedelta(seconds=offset),
+            )
+            after = client.get(
+                "/api/knowledge/public/facts/daily",
+                headers={"If-None-Match": before.headers["etag"]},
+            )
+            assert after.status_code == 200
+            assert after.json()["summary"]["total"] == 1
+            assert after.json()["summary"]["valid"] == 0
+            assert after.json()["summary"][bucket] == 1
+            assert after.headers["cache-control"] == "no-store"
+
     def test_review_does_not_count_as_a_new_observation(self, client, session):
         now = datetime.now(_UTC)
         note = _make_note("reviewed", "Reviewed fact", indexed_at=now)

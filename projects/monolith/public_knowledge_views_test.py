@@ -519,6 +519,22 @@ async def test_public_reader_freshness_on_real_views(session, monkeypatch):
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
     with TestClient(app) as client:
+        summary_response = client.get("/api/knowledge/public/facts/daily")
+        assert summary_response.status_code == 200
+        assert summary_response.headers["cache-control"] == "no-store"
+        assert summary_response.json()["summary"] == {
+            "total": 8,
+            "valid": 0,
+            "to_confirm": 6,
+            "contradicted": 2,
+            "retired": 0,
+            "to_confirm_breakdown": {
+                "unverified": 0,
+                "review_due": 1,
+                "review_unknown": 5,
+                "not_yet_valid": 0,
+            },
+        }
         for mode in ("grep", "semantic"):
             response = client.get(
                 f"/api/knowledge/public/search?q=fresh&mode={mode}&limit=1"

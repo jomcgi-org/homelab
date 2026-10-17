@@ -87,12 +87,8 @@
   const number = (value) => Number(value ?? 0).toLocaleString();
   const day = (value) => value?.slice(5, 10).replace("-", "·") ?? "";
   const count = (entity, state) => Number(entity.note_counts?.[state] ?? 0);
-  const verifiedTotal = $derived(Number(data.facts.totals?.verified ?? 0));
-  const unverifiedTotal = $derived(Number(data.facts.totals?.unverified ?? 0));
-  // A fact is contradicted by appearing in a contradiction pair, not by
-  // carrying a disputed flag: that column is empty across the whole corpus, so
-  // filtering on it was a control that could never do anything.
-  const contradictedTotal = $derived(Number(data.facts.contradictions ?? 0));
+  const factSummary = $derived(data.facts.summary ?? null);
+  // Contradiction pairs and open disputes both affect the displayed marks.
   const contradictedIds = $derived(
     new Set(
       (data.chapter?.contradictions ?? []).flatMap((pair) => [
@@ -331,8 +327,39 @@
           </form>
         </div>
         <div>
+          <p class="sec-label">/ Public facts</p>
+          {#if factSummary && !data.unavailable.facts}
+            <dl class="fact-summary" aria-label="Public fact totals">
+              <div class="total">
+                <dt>Total</dt>
+                <dd class="num">{number(factSummary.total)}</dd>
+              </div>
+              <div>
+                <dt>Valid</dt>
+                <dd class="num">{number(factSummary.valid)}</dd>
+              </div>
+              <div>
+                <dt>To be confirmed</dt>
+                <dd class="num">{number(factSummary.to_confirm)}</dd>
+              </div>
+              <div>
+                <dt>Contradicted</dt>
+                <dd class="num">{number(factSummary.contradicted)}</dd>
+              </div>
+              <div>
+                <dt>Expired or invalidated</dt>
+                <dd class="num">{number(factSummary.retired)}</dd>
+              </div>
+            </dl>
+            <p class="fact-summary-help">
+              Valid facts have current supporting evidence. To be confirmed
+              includes unverified facts and facts awaiting review.
+            </p>
+          {:else}
+            <p class="fact-summary-help">Fact totals unavailable.</p>
+          {/if}
           <p class="sec-label">
-            / Filter
+            / Filter current records
             <button
               class="explain"
               type="button"
@@ -348,17 +375,17 @@
             <label
               ><input type="checkbox" bind:checked={showVerified} /><span
                 ><i class="mark verified"></i>&nbsp; Verified</span
-              ><span class="n num">{number(verifiedTotal)}</span></label
+              ></label
             >
             <label
               ><input type="checkbox" bind:checked={showUnverified} /><span
                 ><i class="mark unverified"></i>&nbsp; Unverified</span
-              ><span class="n num">{number(unverifiedTotal)}</span></label
+              ></label
             >
             <label
               ><input type="checkbox" bind:checked={showContradicted} /><span
                 ><i class="mark disputed"></i>&nbsp; Contradicted</span
-              ><span class="n num">{number(contradictedTotal)}</span></label
+              ></label
             >
           </div>
           {#if definitionsOpen}

@@ -32,7 +32,17 @@ describe("entity observation and review dates", () => {
             q: "",
             entities: [entity],
             projects: [entity],
-            facts: { totals: { verified: 1 }, contradictions: 0 },
+            facts: {
+              totals: { verified: 12833, unverified: 4615 },
+              contradictions: 269,
+              summary: {
+                total: 20,
+                valid: 3,
+                to_confirm: 12,
+                contradicted: 4,
+                retired: 1,
+              },
+            },
             results: [],
             unavailable: {},
             chapter: {
@@ -52,6 +62,22 @@ describe("entity observation and review dates", () => {
           },
         },
       });
+      const summary = target.querySelector(".fact-summary");
+      expect(
+        Array.from(summary.querySelectorAll("div"), (row) => [
+          row.querySelector("dt").textContent.trim(),
+          row.querySelector("dd").textContent.trim(),
+        ]),
+      ).toEqual([
+        ["Total", "20"],
+        ["Valid", "3"],
+        ["To be confirmed", "12"],
+        ["Contradicted", "4"],
+        ["Expired or invalidated", "1"],
+      ]);
+      expect(target.querySelector(".filter").textContent).not.toMatch(
+        /12,833|4,615|269/,
+      );
       expect(target.textContent).toContain("last observed 10·11");
       if (lastReviewedAt) {
         expect(target.textContent).toContain("last reviewed 10·13");
