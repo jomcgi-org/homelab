@@ -117,7 +117,7 @@ multicast ranges. Native policy cannot select FQDNs, so arbitrary public HTTPS
 remains an accepted residual.
 
 The native egress policy intentionally selects only the private app endpoint, not every
-pod rendered into the namespace. Searxng, WhatsApp, CNPG, Atlas migration jobs,
+pod rendered into the namespace. Searxng, CNPG, Atlas migration jobs,
 and batch pods in `monolith-workflows` keep their existing egress behavior.
 They have distinct service accounts, credentials, and execution roles, and
 folding them into one policy would replace destination-specific review with a
@@ -1178,13 +1178,6 @@ scope: `response_cache` is keyed by message rather than session, Grimoire chat
 has its own schema, and a forked session copies a transcript with no lineage,
 so takedown does not follow forks.
 
-The WhatsApp gateway is a transport-only Go service in its own single-replica
-Deployment with a household agent path behind it. It holds an external session
-singleton, so it is parked during the cutover window and comes back on the hub
-only once the home deployment is off.
-(see: /projects/monolith/whatsapp)
-(see: /projects/monolith/deploy/values.yaml)
-
 **Why.** LLM-only abuse detection was rejected because it charges a model call
 for every message and lets a flood turn the detector into the resource drain;
 hard bans and deletion were rejected because recoverable red-team play is part
@@ -1194,6 +1187,21 @@ shadow-first learned model. The design accepts delayed LLM verdicts and tunable
 false positives, with score recovery and pardon providing the correction path.
 Anonymous chat adds Turnstile and bounded admission because its GPU and write
 paths cannot rely on an authenticated principal (ADR security/005).
+
+### Household gateway retired
+
+The WhatsApp gateway and its household integration are removed in #6915.
+The forward migration retires five transport-only chat tables and whatsmeow's
+runtime tables and schema. Shared goosecracker columns remain intact.
+`dr_jobs.nhs_vacancies.notified_whatsapp` stays until the new image is verified
+live because old pods still select it. The moving calendar job keeps optional
+credentials under `monolith-google-calendar`; provisioning them is separate
+operator work.
+
+**Why.** Joe chose removal on 2026-10-17 (#6915). The home cluster was retired
+in #6914. The gateway stayed disabled through the cutover and was never
+re-enabled on GKE. It held a singleton external identity and about 6,000 lines
+of maintained gateway and chat integration with no remaining consumer.
 
 ## 6. Knowledge and Grimoire
 
@@ -1770,8 +1778,8 @@ deploy. Read the live one:
 (see: /projects/monolith/deploy/values-gke.yaml)
 (see: /projects/platform/kargo/values.yaml)
 
-The home Application is dormant (backend replicas zero by values commit,
-WhatsApp off) and keeps its write-back-maintained revision as the revert lever.
+The home Application is dormant (backend replicas zero by values commit)
+and keeps its write-back-maintained revision as the revert lever.
 The hub is the sole management plane
 ([#4964](https://github.com/jomcgi-org/homelab/issues/4964) closed 2026-09-18, not
 planned), so the overlay is a revert lever and not a placement target. The development
@@ -1817,6 +1825,7 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | guarded policy migration prepared; deployment and a new Astra planning node remain to verify |
+| Retire the household gateway and its exclusively owned schema, retaining shared data | section 5, Household gateway retired | #6915 | repository retirement staged; merge, rollout, migration and shared-job acceptance remain |
 | Platform invitations create Authentik-linked platform users; application grants and campaign membership remain separate, with reusable HTTP/MCP management commands | [Platform enrollment and access](auth/architecture.md) | #6858 | design recorded; API, enrollment binding, permissions and MCP implementation remain unbuilt; signup remains disabled |
 | The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
 | Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
@@ -2150,7 +2159,7 @@ mismatch without silently rewriting the decision record.
 | `agents/036` | Orchestrator Brief-Compiler Tier via OpenRouter | Accepted, shipped (see: /projects/monolith/chat/orchestrator_client.py) | deleted |
 | 037 | Label-Driven Firecracker Node Enrollment | Accepted, shipped through EmberVM | deleted |
 | `agents/038` | Autonomous Work Queue with Capability-Tier Routing and Reviewer-Verdict Feedback | Accepted, shipped in bounded form (see: /projects/monolith/swarm); its `work_queue` table was never built, `routine_jobs` took the role (#3839) | deleted |
-| `agents/039` | WhatsApp Channel Gateway (whatsmeow) for the Household Agent | Accepted, shipped, parked during the cutover window (see: /projects/monolith/whatsapp) | deleted |
+| `agents/039` | WhatsApp Channel Gateway (whatsmeow) for the Household Agent | Retired (#6915) | deleted |
 | 040 | Caller-Provided Context Injection for Agent Guests (`/injected-context/`) | Draft, not shipped | deleted |
 | 041 | Hot Git Mirror for goosecracker Agent Workspaces | Draft, not shipped | deleted |
 | 042 | Agent MCP v1 Follow-ons and Deferred Self-Improvement Loop | Accepted, partially shipped (see: /projects/monolith/agent/mcp.py) (#3844) | deleted |
