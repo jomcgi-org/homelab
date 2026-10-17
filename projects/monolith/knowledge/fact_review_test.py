@@ -65,6 +65,49 @@ def prepare(db, key="invocation", sources=None):
     )
 
 
+def test_coverage_counts_distinct_current_claims_not_attempts(db):
+    note(db, "unassessed")
+    for key, status in [
+        ("unsupported", "unsupported"),
+        ("unavailable", "unavailable"),
+        ("failed", "failed"),
+        ("revised", "unsupported"),
+        ("strict-only", "unsupported"),
+    ]:
+        row = note(db, key)
+        for _ in range(2):
+            record_outcome(
+                db,
+                note_id=key,
+                revision=row.revision,
+                status=status,
+                reason=("strict: " if key == "strict-only" else review.PREFIX) + "test",
+                now=NOW,
+            )
+        if key == "revised":
+            row.revision += 1
+        db.commit()
+    note(db, "current", observed_at=NOW, review_after=NOW + timedelta(days=1))
+    note(db, "private-scope", scope="personal:joe")
+    note(db, "deleted", deleted_at=NOW)
+    note(db, "expired", valid_until=NOW)
+    note(db, "invalidated", verification_state="invalidated")
+    note(db, "other-type", type="concept")
+    note(db, "disputed")
+    db.add(Dispute(note_id="disputed", reason="test", state="open"))
+    db.commit()
+    assert review.coverage(db, now=NOW) == {
+        "scope": "repo:jomcgi-org/homelab",
+        "due": 6,
+        "latest_outcome": {
+            "unassessed": 3,
+            "unsupported": 1,
+            "unavailable": 1,
+            "failed": 1,
+        },
+    }
+
+
 def output(db, key="invocation", **changes):
     run = db.get(FactReviewRun, key)
     body = {

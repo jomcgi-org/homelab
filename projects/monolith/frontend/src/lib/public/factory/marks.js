@@ -13,7 +13,7 @@ export const MARK_DEFINITIONS = [
   {
     state: "verified",
     label: "Verified",
-    definition: "trusted fact",
+    definition: "claim supported by recorded evidence",
   },
   {
     state: "unverified",

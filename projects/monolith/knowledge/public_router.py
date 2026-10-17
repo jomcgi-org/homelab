@@ -38,6 +38,7 @@ from knowledge.freshness import current_predicate
 from knowledge.gardener import _slugify
 from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _as_utc, public_cache_control
 from knowledge.notes import resolve_note_body
+from knowledge.public_fact_counts import fact_summary
 from knowledge.public_limits import allow_semantic_search
 from knowledge.public_models import (
     PublicEntity,
@@ -732,7 +733,7 @@ def get_public_facts_daily(
     response: Response,
     session: Session = Depends(get_session),
 ):
-    """Return the public fact history and all-time record totals."""
+    """Return record history plus disjoint, freshness-aware public fact totals."""
     today = datetime.now(timezone.utc).date()
     first_day = today - timedelta(days=29)
     tomorrow = today + timedelta(days=1)
@@ -792,10 +793,15 @@ def get_public_facts_daily(
         ],
         "totals": totals,
         "contradictions": int(contradictions or 0),
+        "summary": fact_summary(session, now=_now()),
     }
     latest = session.exec(select(func.max(PublicNote.indexed_at))).one()
     etag = _record_etag("facts-daily", payload)
-    cached = _cache_response(request, response, etag=etag, last_modified=latest)
+    # A fact can become due or expire without a row update. Never reuse this
+    # live summary through the historical graph's stale-serving policy.
+    cached = _cache_response(
+        request, response, etag=etag, last_modified=latest, cache_control="no-store"
+    )
     if cached is not None:
         return cached
     return payload
