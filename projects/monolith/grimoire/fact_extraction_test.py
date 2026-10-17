@@ -72,7 +72,10 @@ def test_rendered_prompt_has_no_dm_other_pc_ooc_or_retracted_canaries(harness, v
     if viewer == "party":
         h.assert_no_leak(response, "player_b")
     else:
-        assert h.rows["note_private"].markdown in prompt
+        # Private character notes stay out of the PC extraction prompt; the
+        # DM-readable shared note still goes in.
+        assert h.rows["note_private"].markdown not in prompt
+        assert h.rows["note_shared"].markdown in prompt
         assert h.rows["event_character_a"].id in prompt
     assert rows[0].body["text"] in prompt
     assert EXTRACTION_VERSION in prompt
