@@ -72,6 +72,7 @@ def status() -> dict:
             "interval_seconds": interval,
             "public_facts": fact_summary(session, now=now),
             "coverage": coverage(session, now=now),
+            "throughput": throughput(session, now=now),
             "recent": [
                 {
                     "invocation_key": row.invocation_key,
@@ -174,6 +175,36 @@ def coverage(session: Session, *, now: datetime) -> dict:
     }
 
 
+def throughput(session: Session, *, now: datetime) -> dict:
+    """Rolling coverage distinguishes distinct facts from repeated selections."""
+    window = (
+        FactReviewRun.created_at >= now - timedelta(days=1),
+        FactReviewRun.created_at <= now,
+        FactReviewRun.note_id.is_not(None),
+    )
+    attempts, distinct = session.exec(
+        select(func.count(), func.count(func.distinct(FactReviewRun.note_id)))
+        .select_from(FactReviewRun)
+        .where(*window)
+    ).one()
+    outcome = FactReviewRun.result["outcome"].as_string()
+    rows = session.exec(
+        select(outcome, func.count(), func.count(func.distinct(FactReviewRun.note_id)))
+        .where(*window, FactReviewRun.status == "complete", outcome.is_not(None))
+        .group_by(outcome)
+    ).all()
+    return {
+        "window_hours": 24,
+        "attempts": attempts,
+        "distinct_facts": distinct,
+        "repeat_attempts": attempts - distinct,
+        "completed_by_outcome": {
+            name: {"attempts": count, "distinct_facts": unique}
+            for name, count, unique in rows
+        },
+    }
+
+
 def _candidate(session: Session, now: datetime):
     newer = aliased(ReviewOutcome)
     # The deterministic verifier's unsupported outcome is eligible for this
@@ -195,6 +226,16 @@ def _candidate(session: Session, now: datetime):
         .correlate(Note)
         .exists()
     )
+    attempts = (
+        select(func.count())
+        .select_from(FactReviewRun)
+        .where(
+            FactReviewRun.note_id == Note.note_id,
+            FactReviewRun.revision == Note.revision,
+        )
+        .correlate(Note)
+        .scalar_subquery()
+    )
     return session.exec(
         select(Note)
         .where(
@@ -202,6 +243,7 @@ def _candidate(session: Session, now: datetime):
             ~blocked,
         )
         .order_by(
+            attempts.asc(),
             or_(
                 Note.content.contains("projects/"), Note.content.contains("docs/")
             ).desc(),

@@ -10,7 +10,12 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from knowledge.extraction import _Assertion, _event_rejection, _value_rejection
+from knowledge.extraction import (
+    _Assertion,
+    _event_rejection,
+    _usefulness_rejection,
+    _value_rejection,
+)
 
 
 TESTDATA = Path(__file__).parent / "testdata"
@@ -63,12 +68,16 @@ def test_gates_meet_graded_corpus_thresholds():
     keep_rejections = [
         note_id
         for note_id, item in keep_rows
-        if _event_rejection(item) is not None or _value_rejection(item) is not None
+        if _event_rejection(item) is not None
+        or _value_rejection(item) is not None
+        or _usefulness_rejection(item) is not None
     ]
     borderline_rejections = [
         note_id
         for note_id, item in borderline_rows
-        if _event_rejection(item) is not None or _value_rejection(item) is not None
+        if _event_rejection(item) is not None
+        or _value_rejection(item) is not None
+        or _usefulness_rejection(item) is not None
     ]
 
     assert len(value_rows) - len(value_misses) >= len(value_rows) * 0.25, (

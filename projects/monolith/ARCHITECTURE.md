@@ -1227,6 +1227,19 @@ visibility flip for verified/unverified agent facts).
 (see: /projects/monolith/chart/migrations/20260903000000_knowledge_scoped_assertions.sql)
 (see: /projects/monolith/deploy/values.yaml)
 
+All extraction sources share the usefulness lens: keep reusable behavior,
+constraints and decision rationale, with PRs and commits in provenance.
+The server rejects assertions whose subject is a numbered PR, issue or commit
+announcement, and returns a reason to the existing one-turn correction path.
+Exact claim fingerprints supplement semantic deduplication within the same
+scope. Identical concurrent claims acquire ordered transaction locks; repeated
+claims in one raw input cannot add provenance or confidence twice.
+
+**Why.** Confirming a PR's status or repeating a change announcement consumes
+review capacity without adding a reusable engineering fact. The admission
+checks preserve raw evidence and rejection reasons so a discarded candidate
+can be inspected. Existing notes are retained; this gate applies to extraction.
+
 **Why.** Knowledge stays in Postgres beside the evidence lanes rather than moving
 to a Loom deployment (#5991, closed 2026-09-14). Loom was removed from the
 cluster in 81c58b2ae, the entity spine (`knowledge/entities.yaml`, b3b2ea20b)
@@ -1323,9 +1336,14 @@ the checkout.
 An independent `kg-fact-review` drain job handles due prose facts under
 `knowledge.factReview.enabled`. It uses the same KG permits and daily capacity,
 selecting one repository fact per run. `maxDaily` and `intervalSeconds` are
-configurable; production selects at most 1,000 facts in a rolling day with a
-10-second delay after completion, inside the shared 2,000-job KG allowance.
+configurable; production permits at most 20,000 selections in a rolling day with
+a one-second delay after completion, inside the shared 22,000-job KG allowance.
 The selection allowance includes unsupported sources and failed attempts.
+Claims with fewer attempts at their current revision are selected first, so
+retrying an old failure cannot keep untouched claims behind it. Operator status
+reports attempts, distinct facts, repeat attempts and distinct facts by outcome
+over the last 24 hours. The single review job and per-fact session overhead
+still bound achieved throughput; the allowance is not a measured daily rate.
 An empty eligible set or exhausted allowance backs off for 15 minutes.
 **Why.** A recurring job's session and review receipt key includes its worker
 cycle, so repeating the job inside that cycle only replays the same receipt.
