@@ -1270,8 +1270,9 @@ def _claim_key(body: str) -> str:
     return body.strip()
 
 
-def _claim_hash(body: str) -> str:
-    return hashlib.sha256(_claim_key(body).encode()).hexdigest()
+def _claim_hash(title: str, body: str) -> str:
+    claim = json.dumps([_claim_key(title), _claim_key(body)])
+    return hashlib.sha256(claim.encode()).hexdigest()
 
 
 def _value_rejection(assertion: _Assertion) -> str | None:
@@ -1345,7 +1346,7 @@ def _best_duplicate(
 ) -> dict | None:
     from knowledge.store import KnowledgeStore
 
-    fingerprint = _claim_hash(assertion.body)
+    fingerprint = _claim_hash(assertion.title, assertion.body)
     exact = session.exec(
         select(Note).where(
             Note.scope == scope,
@@ -1359,9 +1360,12 @@ def _best_duplicate(
         )
     ).all()
     for note in exact:
-        if note.note_id not in assertion.edges.supersedes and _claim_key(
-            (note.content or "").split("\n## Evidence", maxsplit=1)[0]
-        ) == _claim_key(assertion.body):
+        if (
+            note.note_id not in assertion.edges.supersedes
+            and _claim_key(note.title or "") == _claim_key(assertion.title)
+            and _claim_key((note.content or "").split("\n## Evidence", maxsplit=1)[0])
+            == _claim_key(assertion.body)
+        ):
             return {"note_id": note.note_id, "score": 1.0}
 
     matches = KnowledgeStore(session).search_notes_with_context(
@@ -1595,7 +1599,7 @@ def apply_extraction(
             # deadlocks when two inputs contain the same claims in reverse order.
             keys = sorted(
                 {
-                    f"extraction:{authoritative_scope or assertion.scope}:{_claim_hash(assertion.body)}"
+                    f"extraction:{authoritative_scope or assertion.scope}:{_claim_hash(assertion.title, assertion.body)}"
                     for assertion, _, _, _ in prepared
                 }
             )
@@ -1714,7 +1718,7 @@ def apply_extraction(
             note = session.exec(select(Note).where(Note.note_id == note_id)).one()
             note.extra = {
                 **(note.extra or {}),
-                "extraction_claim_hash": _claim_hash(assertion.body),
+                "extraction_claim_hash": _claim_hash(assertion.title, assertion.body),
             }
             _, unknown = link_subjects(
                 session,
