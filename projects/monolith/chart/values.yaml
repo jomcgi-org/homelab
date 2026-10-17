@@ -1417,9 +1417,10 @@ knowledge:
   # Scope assigned to repository knowledge reports when callers propose repo.
   defaultRepoScope: "repo:jomcgi-org/homelab"
   factReview:
-    # Independent source-grounded review, one fact per 15-minute drain job.
-    # Hard ceiling: 20 facts/day within the existing KG admission budget.
+    # Independent source-grounded review within the shared KG admission budget.
     enabled: false
+    maxDaily: 20
+    intervalSeconds: 900
   audit:
     # Single kill switch. Uses ordinary kg-drain admission and daily caps.
     enabled: false

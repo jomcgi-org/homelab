@@ -169,13 +169,16 @@ def audit_enabled() -> bool:
     return _enabled()
 
 
-def build_fact_review_prompt(invocation_key: str) -> str:
+def build_fact_review_prompt(
+    invocation_key: str, *, progress_signal: bool = False
+) -> str:
     from core.db import get_engine
-    from knowledge.fact_review import prepare
     from sqlmodel import Session
 
+    from knowledge.fact_review import prepare
+
     with Session(get_engine()) as session:
-        return prepare(session, invocation_key)
+        return prepare(session, invocation_key, progress_signal=progress_signal)
 
 
 def apply_fact_review(session: Session, invocation_key: str, result_text: str) -> dict:

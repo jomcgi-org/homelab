@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from knowledge import fact_review as review
@@ -273,15 +274,129 @@ def test_missing_sources_and_outage_never_grant_freshness(db):
 
 
 def test_daily_limit_and_kill_switch(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "3")
     note(db)
     db.add_all(
         [
             FactReviewRun(invocation_key=str(i), note_id="prior", created_at=NOW)
-            for i in range(review.MAX_DAILY)
+            for i in range(3)
         ]
     )
     db.commit()
     assert prepare(db) == review.NO_REVIEW
+    monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "1000")
+    assert prepare(db, "raised-limit") != review.NO_REVIEW
     monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "false")
     assert prepare(db, "disabled") == review.NO_REVIEW
     assert db.get(FactReviewRun, "disabled") is None
+
+
+def test_limit_is_rolling_and_replays_do_not_spend_it_again(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "1")
+    note(db)
+    db.add(
+        FactReviewRun(
+            invocation_key="yesterday",
+            note_id="prior",
+            created_at=NOW - timedelta(days=1, seconds=1),
+        )
+    )
+    db.commit()
+    first = prepare(db)
+    assert first != review.NO_REVIEW
+    assert prepare(db) == first
+    assert prepare(db, "over-limit") == review.NO_REVIEW
+    assert (
+        len(
+            db.exec(
+                select(FactReviewRun).where(FactReviewRun.note_id.is_not(None))
+            ).all()
+        )
+        == 2
+    )
+
+
+def test_source_only_progress_is_distinct_from_no_eligible_work(db):
+    row = note(db)
+    assert (
+        review.prepare(
+            db,
+            "source-only",
+            collector=lambda _: ([], None),
+            now=NOW,
+            progress_signal=True,
+        )
+        == review.NO_MODEL
+    )
+    assert (
+        review.prepare(
+            db,
+            "source-only",
+            collector=lambda _: pytest.fail("refetched"),
+            now=NOW,
+            progress_signal=True,
+        )
+        == review.NO_MODEL
+    )
+    assert prepare(db, "source-only") == review.NO_REVIEW
+    assert (
+        review.prepare(db, "empty", now=NOW, progress_signal=True) == review.NO_REVIEW
+    )
+    db.refresh(row)
+    assert row.last_reviewed_at is None
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("KG_FACT_REVIEW_MAX_DAILY", "0"),
+        ("KG_FACT_REVIEW_INTERVAL_SECONDS", "-1"),
+        ("KG_FACT_REVIEW_MAX_DAILY", "bad"),
+    ],
+)
+def test_invalid_configuration_is_refused(monkeypatch, key, value):
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError):
+        review.settings()
+
+
+@pytest.mark.parametrize("state", ["scheduled", "leased", "held", "unknown", "stopped"])
+def test_registration_scales_only_unlocked_scheduled_jobs(db, monkeypatch, state):
+    db.execute(
+        text("""CREATE TABLE routine_jobs (
+        name TEXT PRIMARY KEY, routine_kind TEXT NOT NULL,
+        interval_secs INTEGER, next_run_at TIMESTAMP, payload TEXT,
+        created_by TEXT, last_status TEXT, locked_by TEXT, locked_at TIMESTAMP
+    )""")
+    )
+    monkeypatch.setenv("KG_FACT_REVIEW_INTERVAL_SECONDS", "900")
+    assert review.ensure_job(db)
+    db.execute(
+        text("""UPDATE routine_jobs SET payload = :payload,
+        next_run_at = :due, locked_by = :holder, locked_at = :locked_at,
+        last_status = :status"""),
+        {
+            "payload": json.dumps({"mode": "fact-review"}),
+            "due": None if state == "held" else "2026-10-17 07:00:00",
+            "holder": "live-worker" if state == "leased" else None,
+            "locked_at": "2026-10-17 06:00:00" if state == "leased" else None,
+            "status": {
+                "unknown": "invocation_outcome_unknown",
+                "stopped": "factory_stopped",
+            }.get(state, "ok"),
+        },
+    )
+    before = dict(db.execute(text("SELECT * FROM routine_jobs")).mappings().one())
+    monkeypatch.setenv("KG_FACT_REVIEW_INTERVAL_SECONDS", "10")
+    assert review.ensure_job(db) is (state == "scheduled")
+    after = dict(db.execute(text("SELECT * FROM routine_jobs")).mappings().one())
+    expected = before | (
+        {
+            "interval_secs": 10,
+            "payload": json.dumps({"mode": "fact-review", "review_protocol": 2}),
+        }
+        if state == "scheduled"
+        else {}
+    )
+    assert after == expected
+    assert not review.ensure_job(db)

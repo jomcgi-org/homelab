@@ -653,8 +653,8 @@ def build_kg_prompt(payload: dict) -> str:
     from knowledge.api import (
         RawInput,
         build_audit_prompt,
-        build_fact_review_prompt,
         build_extraction_prompt,
+        build_fact_review_prompt,
         build_repo_diff_prompt,
     )
     from sqlmodel import Session, select
@@ -662,7 +662,10 @@ def build_kg_prompt(payload: dict) -> str:
     if payload.get("mode") == "repo-diff":
         return build_repo_diff_prompt(payload.get("last_sha"))
     if payload.get("mode") == "fact-review":
-        return build_fact_review_prompt(payload["_review_invocation_key"])
+        return build_fact_review_prompt(
+            payload["_review_invocation_key"],
+            progress_signal=payload.get("_review_progress", False),
+        )
     if payload.get("mode") == "audit":
         with Session(get_engine()) as session:
             return build_audit_prompt(
@@ -725,8 +728,8 @@ def apply_kg_extraction(
     from knowledge.api import (
         apply_audit,
         apply_extraction,
-        apply_repo_diff,
         apply_fact_review,
+        apply_repo_diff,
     )
     from sqlmodel import Session
 
@@ -1592,9 +1595,10 @@ def drain_cycle() -> dict:
         ttl_secs = lease_timeout + CLAIM_TTL_MARGIN_SECONDS
         claim_kinds = list(enabled_kinds)
         idle_rotation = False
+        review_rotation = False
 
         for claim_index in range(settings["max_jobs_per_cycle"]):
-            if not claim_kinds:
+            if review_rotation or not claim_kinds:
                 break
             job, idle_rotation = _claim_with_idle_wait(
                 ttl_secs,
@@ -1680,20 +1684,48 @@ def drain_cycle() -> dict:
                                     cancel_drainer_reservation(local_session_id)
                                     continue
                         elif job_payload.get("mode") == "fact-review":
+                            # A recurring job's session key is unique per workflow,
+                            # not per claim. Rotate after v2 reviews so the next
+                            # fact gets a fresh receipt without changing permit
+                            # ownership or replaying a completed session.
+                            review_rotation = (
+                                recurring
+                                and job_payload.get("review_protocol") == 2
+                                and DBOS.patch("fact-review-cycle-v2")
+                            )
                             job_payload = {
                                 **job_payload,
                                 "_review_invocation_key": local_session_id,
+                                **(
+                                    {"_review_progress": True}
+                                    if review_rotation
+                                    else {}
+                                ),
                             }
                         elif not _is_repo_diff(job_payload):
                             raw_id = _kg_raw_id(job_payload)
                         prompt = build_kg_prompt(job_payload)
-                        if (
-                            job_payload.get("mode") == "fact-review"
-                            and prompt == "No source-grounded review is due."
-                        ):
-                            finish_drainer_job(
-                                name, "ok", "No eligible source review", **ownership
+                        if job_payload.get("mode") == "fact-review" and prompt in {
+                            "No source-grounded review is due.",
+                            "Source review completed without model inference.",
+                        }:
+                            completed = (
+                                prompt
+                                == "Source review completed without model inference."
                             )
+                            finish_drainer_job(
+                                name,
+                                "ok",
+                                prompt,
+                                **(
+                                    {"defer_seconds": 900}
+                                    if review_rotation and not completed
+                                    else {}
+                                ),
+                                **ownership,
+                            )
+                            if completed:
+                                succeeded += 1
                             cancel_drainer_reservation(local_session_id)
                             continue
                         repo = settings["repo"]
@@ -1895,6 +1927,9 @@ def drain_cycle() -> dict:
                     if start_attempted and not outcome_unknown:
                         destroy_drainer_session(session_id, local_session_id)
 
+        # Protocol v2 review progress also rotates immediately: its recurring
+        # name must get a new workflow/session key for the next fact. Empty
+        # review work backs off above and does not count as progress.
         # Chain straight into the next cycle when this one stopped because it hit
         # max_jobs_per_cycle rather than because the queue ran dry. Without this a
         # deep backlog drains in bursts: a cycle takes its 15 jobs, exits, and the
@@ -1938,7 +1973,9 @@ def drain_cycle() -> dict:
             )
         chained = False
         if idle_rotation or (
-            processed and succeeded and processed >= settings["max_jobs_per_cycle"]
+            processed
+            and succeeded
+            and (review_rotation or processed >= settings["max_jobs_per_cycle"])
         ):
             chain_next_cycle()
             chained = True
@@ -1950,7 +1987,9 @@ def drain_cycle() -> dict:
                 "drain.jobs_succeeded": succeeded,
                 "drain.chained": chained,
                 "drain.outcome": (
-                    "bound_reached"
+                    "review_rotation"
+                    if review_rotation
+                    else "bound_reached"
                     if processed >= settings["max_jobs_per_cycle"] and processed > 0
                     else (
                         "queue_empty"
