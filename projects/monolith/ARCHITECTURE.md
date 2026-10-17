@@ -1193,9 +1193,12 @@ paths cannot rely on an authenticated principal (ADR security/005).
 The WhatsApp gateway and its household integration are removed in #6915.
 The forward migration retires five transport-only chat tables and whatsmeow's
 runtime tables and schema. Shared goosecracker columns remain intact.
-`dr_jobs.nhs_vacancies.notified_whatsapp` stays until the new image is verified
-live because old pods still select it. The moving calendar job keeps optional
-credentials under `monolith-google-calendar`; provisioning them is separate
+The staged follow-up (#6988) drops only
+`dr_jobs.nhs_vacancies.notified_whatsapp` with restrictive dependency behavior.
+Before production application, an authorized operator must clear live database
+dependencies and verify all deployed vacancy consumers no longer select it.
+Repository tests do not establish those live facts. The moving calendar job keeps
+optional credentials under `monolith-google-calendar`; provisioning them is separate
 operator work.
 
 **Why.** Joe chose removal on 2026-10-17 (#6915). The home cluster was retired
