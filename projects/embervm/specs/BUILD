@@ -1,6 +1,6 @@
 # EmberVM protocol TLA+ specs, checked by TLC in CI (ADR embervm/006).
 #
-# Nine specs, thirty-eight genrules run the //bazel/tla:tlc.sh driver:
+# Ten specs, fifty-five genrules run the //bazel/tla:tlc.sh driver:
 #   adoption.tla (protocol 1: VM lifecycle + adoption) with four cfgs: rich
 #     safety, positive liveness, and two NEGATIVE modes (expectation "fail") that
 #     prove the model still reproduces a historical bug.
@@ -35,6 +35,10 @@
 #     deletion on an inconsistent inventory, the two eligibility arms
 #     (parked expiry and the per-kind age floor), and the newest-reference
 #     retention of the DISPOSABLE stateful tier.
+#   dual_wake.tla (issue #4702: concurrent CP and brick wakes) with seventeen
+#     cfgs: three safety bounds, liveness, six single-mutation negatives, four
+#     non-vacuity witnesses, the current-main two-VM witness, and two PASS sensitivity checks
+#     (origin skip removal alone and orphan-before-adoption ordering alone).
 # The driver fails the build if a "fail" mode finds NO violation (the model went
 # blind). Safety and liveness are split across cfgs because exhaustive liveness over
 # the rich safety graph is too slow for CI; see README.md for the cfg matrix.
@@ -66,6 +70,297 @@ _JRE_SRCS = [
 _JAVA = "@temurin21_jre_linux_amd64//:bin/java"
 
 _JAR = "@tla2tools//file"
+
+genrule(
+    name = "tlc_dual_wake_vm_crash",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_vm_crash.cfg",
+    ],
+    outs = ["dual_wake_vm_crash.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_vm_crash.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_faults",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_faults.cfg",
+    ],
+    outs = ["dual_wake_faults.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_faults.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+
+
+genrule(
+    name = "tlc_dual_wake",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake.cfg",
+    ],
+    outs = ["dual_wake.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_liveness",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_liveness.cfg",
+    ],
+    outs = ["dual_wake_liveness.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_liveness.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_wrong_winner",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_wrong_winner.cfg",
+    ],
+    outs = ["dual_wake_wrong_winner.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_wrong_winner.cfg)\" " +
+          "\"$@\" fail OneWinnerPerFlight",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_untracked",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_untracked.cfg",
+    ],
+    outs = ["dual_wake_untracked.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_untracked.cfg)\" " +
+          "\"$@\" fail NoUntrackedServing",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_reap_activator",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_reap_activator.cfg",
+    ],
+    outs = ["dual_wake_reap_activator.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_reap_activator.cfg)\" " +
+          "\"$@\" fail NoLegitActivatorWakeReaped",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_early_register",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_early_register.cfg",
+    ],
+    outs = ["dual_wake_early_register.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_early_register.cfg)\" " +
+          "\"$@\" fail PublishAfterReady",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_silent_failure",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_silent_failure.cfg",
+    ],
+    outs = ["dual_wake_silent_failure.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_silent_failure.cfg)\" " +
+          "\"$@\" fail NoDeadSplice",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_leak",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_leak.cfg",
+    ],
+    outs = ["dual_wake_leak.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_leak.cfg)\" " +
+          "\"$@\" fail NoLeak",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_offline",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_offline.cfg",
+    ],
+    outs = ["dual_wake_offline.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_offline.cfg)\" " +
+          "\"$@\" fail NeverOfflineDelivery",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_return_adoption",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_return_adoption.cfg",
+    ],
+    outs = ["dual_wake_return_adoption.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_return_adoption.cfg)\" " +
+          "\"$@\" fail NeverReturnAdoption",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_duplicate_resolved",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_duplicate_resolved.cfg",
+    ],
+    outs = ["dual_wake_duplicate_resolved.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_duplicate_resolved.cfg)\" " +
+          "\"$@\" fail NeverDuplicateResolved",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_loud_failure",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_loud_failure.cfg",
+    ],
+    outs = ["dual_wake_loud_failure.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_loud_failure.cfg)\" " +
+          "\"$@\" fail NeverLoudFailure",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_two_vms",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_two_vms.cfg",
+    ],
+    outs = ["dual_wake_two_vms.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_two_vms.cfg)\" " +
+          "\"$@\" fail AtMostOneVMPerWorkload",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_origin_skip_disabled",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_origin_skip_disabled.cfg",
+    ],
+    outs = ["dual_wake_origin_skip_disabled.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_origin_skip_disabled.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_orphans_first",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_orphans_first.cfg",
+    ],
+    outs = ["dual_wake_orphans_first.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_orphans_first.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
 
 genrule(
     name = "tlc_adoption",
