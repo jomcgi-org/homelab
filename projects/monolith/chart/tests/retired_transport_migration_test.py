@@ -43,11 +43,14 @@ def _assert_retired(conn):
         "dr_jobs.nhs_vacancies",
     ):
         assert conn.exec_driver_sql(f"SELECT to_regclass('{name}')").scalar() == name
-    assert conn.exec_driver_sql(
-        "SELECT count(*) FROM information_schema.columns "
-        "WHERE table_schema = 'dr_jobs' AND table_name = 'nhs_vacancies' "
-        "AND column_name = 'notified_whatsapp'"
-    ).scalar() == 1
+    assert (
+        conn.exec_driver_sql(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_schema = 'dr_jobs' AND table_name = 'nhs_vacancies' "
+            "AND column_name = 'notified_whatsapp'"
+        ).scalar()
+        == 1
+    )
 
 
 @pytest.mark.parametrize("runtime_tables", [False, True])
@@ -97,9 +100,11 @@ def test_retirement_refuses_unexpected_objects_and_shared_dependencies(
         with conn.begin_nested():
             _retire(conn)
     # Failure rolls back the retirement, including its earlier table drops.
-    assert conn.exec_driver_sql(
-        "SELECT to_regclass('chat.whatsapp_outbox')"
-    ).scalar() == "chat.whatsapp_outbox"
-    assert conn.exec_driver_sql(
-        "SELECT to_regclass('whatsapp.whatsmeow_device')"
-    ).scalar() == "whatsapp.whatsmeow_device"
+    assert (
+        conn.exec_driver_sql("SELECT to_regclass('chat.whatsapp_outbox')").scalar()
+        == "chat.whatsapp_outbox"
+    )
+    assert (
+        conn.exec_driver_sql("SELECT to_regclass('whatsapp.whatsmeow_device')").scalar()
+        == "whatsapp.whatsmeow_device"
+    )
