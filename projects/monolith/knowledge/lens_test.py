@@ -54,19 +54,15 @@ def test_session_lens_requires_behavioural_shapes_and_no_padding():
     ) in lens
 
 
-def test_repo_diff_lens_is_unchanged():
-    assert _lens(_raw("repo-diff")) == (
-        "This is the diff merged into main between base and head. Emit repository "
-        "facts that the diff CHANGES or ADDS: configuration values, defaults, "
-        "contracts, invariants, behaviours, names. For each fact that replaces an "
-        "existing one among the related notes, set `edges.supersedes` to that note "
-        "id. Prefer verified with file:line evidence from the checkout at head. "
-        "Skip generated files, formatting, and anything already stated identically "
-        "by a related note. Also list `doc_drift`: places where a document in the "
-        "checkout (README.md files, docs/**, .claude/**, AGENTS.md, "
-        "ARCHITECTURE.md, runbooks, ADRs marked Accepted) makes a claim the diff "
-        "contradicts."
-    )
+def test_repo_diff_lens_requires_usefulness_and_retains_grounding():
+    lens = _lens(_raw("repo-diff"))
+    assert "contracts, invariants, behavior and decision rationale" in lens
+    assert "Apply the shared usefulness rules" in lens
+    assert "skip bare configuration values, names and change announcements" in lens
+    assert "set `edges.supersedes` to that note id" in lens
+    assert "file:line evidence from the checkout at head" in lens
+    assert "Skip generated files, formatting" in lens
+    assert "Also list `doc_drift`" in lens
 
 
 @pytest.mark.parametrize(
