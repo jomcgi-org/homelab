@@ -23,3 +23,12 @@ def sanitize_payload(obj: object) -> object:
     if isinstance(obj, tuple):
         return tuple(sanitize_payload(item) for item in obj)
     return obj
+
+
+def row_value(row: object, name: str) -> object:
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return mapping[name]
+    if isinstance(row, dict):
+        return row[name]
+    return getattr(row, name)
