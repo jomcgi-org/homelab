@@ -1,3 +1,4 @@
+-- Viewer-scoped facts remain private campaign state.
 CREATE TABLE grimoire.character_fact (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     campaign_id uuid NOT NULL REFERENCES grimoire.campaign(id) ON DELETE CASCADE,
