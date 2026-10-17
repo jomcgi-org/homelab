@@ -220,3 +220,24 @@ def test_all_review_workflows_serialize_and_capture_receipts(values):
                 }
             ]
         }
+
+
+@pytest.mark.parametrize("values", [(DEPLOY,), (DEPLOY, GKE)])
+def test_grimoire_workflows_reference_existing_s3_secret(values):
+    entries = yaml.safe_load((CHART / "values.yaml").read_text())["jobs"][
+        "cronWorkflows"
+    ]
+    jobs = _render(*values)
+    for entry in entries:
+        if not entry.get("grimoire"):
+            continue
+        container = jobs[entry["name"]]["workflowSpec"]["templates"][0]["container"]
+        env = {item["name"]: item for item in container["env"]}
+        for name, key in (
+            ("S3_ACCESS_KEY_ID", "access-key-id"),
+            ("S3_SECRET_ACCESS_KEY", "secret-access-key"),
+        ):
+            assert env[name]["valueFrom"]["secretKeyRef"] == {
+                "name": "monolith-r2-s3",
+                "key": key,
+            }

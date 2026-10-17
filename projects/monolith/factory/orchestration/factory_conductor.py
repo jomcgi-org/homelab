@@ -1139,12 +1139,12 @@ def _closing_instruction(task: dict, *, review: bool = False) -> str:
         )
     else:
         rule = (
-            f"The pull request body must contain the line Closes #{issue}, "
-            "whatever the node believes about remaining live checks. Finish is "
-            "refused with pr_missing_close_keyword otherwise. If live acceptance "
-            "appears to remain, report it in the implementation artifact summary "
-            "so the planner can record a live_validation gate; the PR body must "
-            f"still contain Closes #{issue} until that gate is recorded. "
+            f"When no operational acceptance remains, the pull request body must "
+            f"contain the line Closes #{issue}. If live acceptance remains, return "
+            "a typed live_validation gate with scope and live_checks in the "
+            "artifact, and use "
+            f"Refs #{issue} while that gate is being recorded. Finish is refused "
+            "until the durable acceptance contract and PR body agree. "
         )
     if review:
         return (
@@ -2414,6 +2414,13 @@ def verify_delivery(
     # Last, so a delivery that is unready for a bigger reason reports that
     # reason. A missing closing keyword is a defect in an otherwise finished
     # pull request, not a competing explanation for an unreviewed one.
+    if not factory_gates.live_checks(task) and factory_gates.pending_live_validation(
+        pr.get("body")
+    ):
+        raise DeliveryRefused(
+            "live_validation_gate_missing",
+            "record the outstanding operational checklist as a live_validation gate before finish",
+        )
     if factory_gates.live_checks(task):
         if issue_number is not None and closes_issue(
             pr.get("body"), task["repo"], issue_number
@@ -3919,6 +3926,51 @@ def _apply_decision(
             "and a decision cannot set them",
         )
         return
+    if decision.get("gate") is not None and action in (
+        "plan",
+        "add_node",
+        "discard_node",
+        "finish",
+    ):
+        gate = factory_gates.validate_gate(decision["gate"])
+        if gate["kind"] not in (
+            "parameter",
+            "live_validation",
+        ) or factory_gates.restricted(gate):
+            raise _EditRefused(
+                "gate_requires_pause",
+                "restricted or delivery-target gates require the explicit pause path",
+            )
+        # Keep a distinct cause: recording the gate must not mark the graph
+        # decision processed if the process exits before applying its edits.
+        try:
+            factory_gates.resolve(
+                task,
+                {
+                    **decision,
+                    "pr_number": decision.get("pr_number")
+                    or _latest_pr(runs)
+                    or delivery_pr_number(task),
+                },
+                cause + ":gate",
+            )
+        except httpx.HTTPError as exc:
+            # Gate persistence precedes GitHub synchronization. A transient
+            # sync failure must leave the graph cause available for retry,
+            # rather than reach apply_decision's terminal evidence rejection.
+            code = (
+                f"github_http_{exc.response.status_code}"
+                if isinstance(exc, httpx.HTTPStatusError)
+                else "github_sync_failed"
+            )
+            _audit_once(
+                task["id"],
+                cause + ":gate-sync",
+                "conductor_gate_sync_deferred",
+                {"cause": cause, "decision_action": action, "code": code},
+            )
+            return
+
     if action == "plan":
         edits = decision["edits"]
         if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_PLAN_EDITS:
@@ -6281,20 +6333,23 @@ def reconcile_task(
             )
             return
     for run in runs:
-        if not run["node_key"].startswith("investigate_") or run["status"] not in (
+        if not run["node_key"].startswith(
+            ("investigate_", "implement_", "correct_", "integrate_")
+        ) or run["status"] not in (
             "succeeded",
             "escalated",
         ):
             continue
         artifact = _artifact(run)
-        cause = f"investigate-gate:{run['node_key']}:{run['attempt']}"
+        role = run["node_key"].split("_", 1)[0]
+        cause = f"{role}-gate:{run['node_key']}:{run['attempt']}"
         if artifact.get("gate") and not _decision_processed(task_id, cause):
             try:
                 resolved = factory_gates.resolve(task, artifact, cause)
             except ValueError:
                 # In-flight artifacts can predate the required effects contract.
                 # Leave their question for the planner without wedging this tick.
-                logger.warning("invalid investigate gate for %s: %s", task_id, cause)
+                logger.warning("invalid work gate for %s: %s", task_id, cause)
                 resolved = False
             if resolved:
                 return

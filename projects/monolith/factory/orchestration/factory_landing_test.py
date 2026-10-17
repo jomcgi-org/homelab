@@ -175,6 +175,7 @@ def pull(number, *, merged=False, state="open", draft=False, armed=False, head=H
         "draft": draft,
         "merged": merged,
         "node_id": f"PR_{number}",
+        "body": "Closes #11",
         "head": {"sha": head, "ref": f"factory/t-{number}"},
         "auto_merge": {"merge_method": "REBASE"} if armed else None,
         "merge_commit_sha": "b" * 40 if merged else None,
@@ -2030,3 +2031,57 @@ def test_human_handoff_waits_for_positive_dequeue_observation(db, monkeypatch):
         ).one()
         assert row.cancellation_requested is True
     assert audits(db, "landing_error", "t-human")[-1]["stage"] == "human_ownership"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Refs #11\n## Live validation outstanding (not claimed)\n- Check archive acknowledgement",
+        "Closes #11\n## Live validation outstanding (not claimed)\n- Check archive acknowledgement",
+        "Refs #11\nRepository delivery only",
+        "Closes #12",
+    ],
+)
+def test_rollout_success_cannot_close_unrecorded_operational_acceptance(
+    db, monkeypatch, body
+):
+    delivered(db, "t-operations", 11, 3)
+    pr = {**pull(3, merged=True), "body": body}
+    calls = github(monkeypatch, pulls={3: pr}, issues={11: {"state": "open"}})
+    item = landing._deliveries(POLICY)[0]
+    assert item["conductor_gates"] == []
+    landing._close_issue("owner/repo", item)
+    assert calls["write"] == []
+    assert not audits(db, "issue_closed")
+    assert audits(db, "repository_delivery_complete")[0][
+        "operational_acceptance_pending"
+    ]
+    assert (
+        item["closed"] is True
+    )  # Repository landing is complete, issue acceptance is not.
+
+
+def test_close_reloads_live_gate_recorded_after_delivery_snapshot(db, monkeypatch):
+    delivered(db, "t-late-gate", 11, 3)
+    item = landing._deliveries(POLICY)[0]
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "t-late-gate")
+        ).one()
+        row.direction_json = json.dumps(
+            {
+                "conductor_gates": [
+                    {"kind": "live_validation", "live_checks": ["Verify live flow"]}
+                ]
+            }
+        )
+        session.add(row)
+        session.commit()
+    calls = github(
+        monkeypatch, pulls={3: pull(3, merged=True)}, issues={11: {"state": "open"}}
+    )
+    landing._close_issue("owner/repo", item)
+    assert calls["write"] == []
+    assert audits(db, "repository_delivery_complete")[0][
+        "operational_acceptance_pending"
+    ]

@@ -412,6 +412,7 @@ def get_public_entity_notes(
             continue
         note_rows[note.note_id] = note
         observed_at = as_utc(note.observed_at)
+        last_reviewed_at = as_utc(note.last_reviewed_at)
         notes.append(
             {
                 "note_id": note.note_id,
@@ -420,6 +421,11 @@ def get_public_entity_notes(
                 "confidence": note.confidence,
                 "observed_at": (
                     observed_at.isoformat() if observed_at is not None else None
+                ),
+                "last_reviewed_at": (
+                    last_reviewed_at.isoformat()
+                    if last_reviewed_at is not None
+                    else None
                 ),
                 "scope": note.scope,
                 "disputed": note.disputed,

@@ -170,6 +170,10 @@ def _fake_kubernetes(revisions: dict, freight_by_namespace: dict):
     class _Fake:
         def __init__(self):
             self.freight_calls = []
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
 
         async def get_argocd_app_deployed_revision(self, name):
             return revisions.get(name)
@@ -509,6 +513,10 @@ class _ObservationKubernetes:
     def __init__(self, app_results, freight_results):
         self.app_results = app_results
         self.freight_results = freight_results
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
 
     async def get_argocd_app_revisions(self, app):
         result = self.app_results[app]
@@ -684,5 +692,62 @@ async def test_per_app_write_failure_does_not_suppress_later_app(monkeypatch):
 
     await mod._record_deployment_observations(poll_time)
 
+    assert fake.closed
     assert [item["app"] for item in writes] == ["embervm"]
     assert writes[0]["observed_at"] == poll_time.isoformat()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "collection_error", "cancelled"])
+async def test_observation_cycle_closes_kubernetes_client(monkeypatch, outcome):
+    monkeypatch.setenv("CD_HEALTH_KARGO_APPS", _apps_config())
+    fake = _ObservationKubernetes({}, {})
+    monkeypatch.setattr("cluster.kubernetes.KubernetesClient", lambda: fake)
+    collected = []
+
+    async def _collect(client, entry, poll_time, probe_interval_s):
+        assert client is fake
+        collected.append(entry["app"])
+        if outcome == "collection_error":
+            raise RuntimeError("collection failed")
+        if outcome == "cancelled":
+            raise asyncio.CancelledError()
+        return {"app": entry["app"]}
+
+    async def _write(observation):
+        assert not fake.closed
+
+    monkeypatch.setattr(mod, "_collect_deployment_observation", _collect)
+    monkeypatch.setattr(mod, "_write_deployment_observation", _write)
+    if outcome == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await mod._record_deployment_observations(datetime.now(timezone.utc))
+        assert collected == ["monolith"]
+    else:
+        await mod._record_deployment_observations(datetime.now(timezone.utc))
+        assert collected == ["monolith", "embervm"]
+    assert fake.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "read_error", "cancelled"])
+async def test_chart_lag_closes_kubernetes_client(monkeypatch, outcome):
+    monkeypatch.setenv("CD_HEALTH_KARGO_APPS", _apps_config())
+    fake = _fake_kubernetes({}, {})
+    monkeypatch.setattr("cluster.kubernetes.KubernetesClient", lambda: fake)
+
+    async def _read(app):
+        if outcome == "read_error":
+            raise RuntimeError("read failed")
+        if outcome == "cancelled":
+            raise asyncio.CancelledError()
+        return None
+
+    monkeypatch.setattr(fake, "get_argocd_app_deployed_revision", _read)
+    if outcome == "success":
+        await mod._chart_lag_fault(7200)
+    else:
+        error = RuntimeError if outcome == "read_error" else asyncio.CancelledError
+        with pytest.raises(error):
+            await mod._chart_lag_fault(7200)
+    assert fake.closed

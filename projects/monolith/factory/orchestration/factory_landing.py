@@ -947,7 +947,8 @@ def _verify_rollout(repo: str, item: dict) -> bool:
 
 def _close_issue(repo: str, item: dict) -> None:
     issue, number = item["issue_number"], item["pr_number"]
-    from factory.orchestration.factory_gates import live_checks
+    from factory.orchestration.factory_gates import live_checks, pending_live_validation
+    from factory.orchestration.factory_conductor import closes_issue
 
     if not _verify_rollout(repo, item):
         return
@@ -961,6 +962,15 @@ def _close_issue(repo: str, item: dict) -> None:
             .order_by(FactoryAudit.id.desc())
         ).first()
         evidence = json.loads(ready.detail_json).get("evidence") if ready else None
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == item["task_id"])
+        ).one()
+        direction = json.loads(receipt.direction_json) if receipt.direction_json else {}
+        # The delivery snapshot may predate a gate recorded during this tick.
+        item["conductor_gates"] = [
+            *(item.get("conductor_gates") or []),
+            *direction.get("conductor_gates", []),
+        ]
     if ready is not None:
         result = finish_task(item["task_id"], "succeeded", ACTOR, evidence=evidence)
         if not result["ok"] or result.get("state", "succeeded") != "succeeded":
@@ -990,6 +1000,24 @@ def _close_issue(repo: str, item: dict) -> None:
         current = github_get(repo, f"issues/{issue}")
         closed_here = current.get("state") == "open"
         if closed_here:
+            pr = github_get(repo, f"pulls/{number}")
+            # Missing durable gates are not evidence that acceptance is complete.
+            # A repository-only PR must never acquire issue-closing authority just
+            # because the infrastructure rollout succeeded.
+            if pending_live_validation(pr.get("body")) or not closes_issue(
+                pr.get("body"), repo, issue
+            ):
+                _record(
+                    item["task_id"],
+                    "repository_delivery_complete",
+                    issue_number=issue,
+                    pr_number=number,
+                    closed_by_factory=False,
+                    operational_acceptance_pending=True,
+                    acceptance_evidence="pr_does_not_confirm_issue_completion",
+                )
+                item["closed"] = True
+                return
             github_write(
                 repo,
                 f"issues/{issue}/comments",

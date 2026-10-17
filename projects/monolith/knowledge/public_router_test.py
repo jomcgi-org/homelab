@@ -636,6 +636,29 @@ class TestPublicEntityNotes:
             "mention",
         ]
 
+    def test_reverification_is_visible_without_rewriting_observation(
+        self, client, session
+    ):
+        session.add(_make_entity())
+        note = _make_note("reviewed", "Reviewed fact")
+        note.observed_at = _NOW - timedelta(days=2)
+        session.add_all([note, _link_entity(1, "reviewed")])
+        session.commit()
+        path = "/api/knowledge/public/entities/project/embervm/notes"
+        before = client.get(path)
+        assert before.json()["notes"][0]["last_reviewed_at"] is None
+
+        note.last_reviewed_at = _NOW
+        session.add(note)
+        session.commit()
+        after = client.get(path, headers={"If-None-Match": before.headers["etag"]})
+        assert after.status_code == 200
+        row = after.json()["notes"][0]
+        assert row["observed_at"] == (_NOW - timedelta(days=2)).isoformat()
+        assert row["last_reviewed_at"] == _NOW.isoformat()
+        assert after.headers["etag"] != before.headers["etag"]
+        assert note.indexed_at.replace(tzinfo=_UTC) == _NOW
+
     def test_filters_states_and_shapes_snippet(self, client, session):
         session.add(_make_entity())
         verified = _make_note("verified", "Verified", content="one\n\n two")
@@ -1061,6 +1084,22 @@ class TestPublicRecordSearch:
 
 
 class TestPublicFactsDaily:
+    def test_review_does_not_count_as_a_new_observation(self, client, session):
+        now = datetime.now(_UTC)
+        note = _make_note("reviewed", "Reviewed fact", indexed_at=now)
+        note.observed_at = now - timedelta(days=2)
+        session.add(note)
+        session.commit()
+        before = client.get("/api/knowledge/public/facts/daily")
+        note.last_reviewed_at = now
+        session.add(note)
+        session.commit()
+        after = client.get("/api/knowledge/public/facts/daily")
+        assert after.json() == before.json()
+        assert after.json()["daily"] == [
+            {"d": note.observed_at.date().isoformat(), "verified": 1, "unverified": 0}
+        ]
+
     def test_returns_daily_state_totals_and_contradictions(self, client, session):
         now = datetime.now(_UTC)
         verified = _make_note("verified", "Verified")

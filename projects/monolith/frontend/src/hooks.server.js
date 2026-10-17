@@ -16,14 +16,11 @@
 // A note on `reroute`: it lives in the universal hooks.js (runs on both server
 // and client). `handle` is server-only and must live here.
 
-import { promisify } from "node:util";
+import { Readable, pipeline } from "node:stream";
 import zlib from "node:zlib";
 
-const gzip = promisify(zlib.gzip);
-const brotli = promisify(zlib.brotliCompress);
-
 // Below ~one MTU the framing + header overhead of compression outweighs the
-// savings, so small bodies (most API JSON, redirects, 304s) pass through.
+// savings, so bodies with a known small length pass through.
 const MIN_BYTES = 1400;
 
 // Only text-shaped payloads. Images/fonts/video are already compressed;
@@ -91,7 +88,7 @@ export async function handle({ event, resolve }) {
   }
 
   // HEAD must not have its body materialised; pass through untouched.
-  if (event.request.method === "HEAD") return response;
+  if (event.request.method === "HEAD" || !response.body) return response;
   // Respect anything upstream already encoded.
   if (response.headers.has("content-encoding")) return response;
 
@@ -108,36 +105,30 @@ export async function handle({ event, resolve }) {
   const declaredLen = Number(response.headers.get("content-length"));
   if (declaredLen && declaredLen < MIN_BYTES) return response;
 
-  // Buffer the body. Every browser-facing payload that reaches here is already
-  // buffered upstream (json(await res.json()) for proxies, an SSR string for
-  // pages), so this defeats no streaming we rely on -- and event-stream, the
-  // one thing we DO stream, was excluded above.
-  const original = new Uint8Array(await response.arrayBuffer());
-  if (original.byteLength < MIN_BYTES) {
-    // arrayBuffer() consumed the body; re-emit the small payload verbatim.
-    return new Response(original, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
-  }
-
-  const compressed =
+  // Stream through the compressor with backpressure. Buffering every complete
+  // response here multiplies memory during concurrent SSR/API requests.
+  // Unknown-length bodies are compressed even when small so finding their size
+  // never requires retaining the full response.
+  const compressor =
     encoding === "br"
-      ? await brotli(original, {
-          params: {
-            // Quality 5 lands near gzip-9's ratio at a fraction of brotli-11's
-            // CPU. The async API runs on the libuv threadpool, so a big body
-            // never blocks the Node event loop / other in-flight requests.
-            [zlib.constants.BROTLI_PARAM_QUALITY]: 5,
-            [zlib.constants.BROTLI_PARAM_SIZE_HINT]: original.byteLength,
-          },
+      ? zlib.createBrotliCompress({
+          params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 },
         })
-      : await gzip(original, { level: 6 });
+      : zlib.createGzip({ level: 6 });
+  const compressed = Readable.toWeb(compressor, {
+    strategy: {
+      highWaterMark: 64 * 1024,
+      size: (chunk) => chunk.byteLength,
+    },
+  });
+  // pipeline propagates source errors and destroys the source on downstream
+  // cancellation. The response reader observes errors through toWeb; consume
+  // the callback error so there is no unhandled background rejection.
+  pipeline(Readable.fromWeb(response.body), compressor, () => {});
 
   const headers = new Headers(response.headers);
   headers.set("content-encoding", encoding);
-  headers.set("content-length", String(compressed.byteLength));
+  headers.delete("content-length");
 
   // Caches (Cloudflare) must key on accept-encoding so a brotli body is never
   // handed to a gzip-only client. Add the token without clobbering an existing

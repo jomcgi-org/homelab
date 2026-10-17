@@ -1065,3 +1065,25 @@ async def factory_context(
         knowledge_limit,
         actor=principal.subject,
     )
+
+
+@mcp.tool
+async def factory_permit_diagnostics(
+    permit_ids: Annotated[
+        list[Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)]],
+        Field(min_length=1, max_length=20),
+    ],
+) -> dict:
+    """Read exact permit, session, lease and supervision refusal metadata.
+
+    Requires a standing human operator. Supply up to twenty distinct permit IDs.
+    Returns persisted metadata without prompts, results, payloads or credentials.
+    Does not contact guests, reconcile permits, rearm jobs or authorize recovery.
+    Missing or old observations are not evidence that execution has ceased.
+    """
+    refusal = _refuse(current_principal())
+    if refusal is not None:
+        return refusal
+    from factory.execution.admission_diagnostics import inspect_permits
+
+    return await asyncio.to_thread(inspect_permits, permit_ids)

@@ -150,6 +150,14 @@
       .at(-1),
   );
 
+  const lastReviewed = $derived(
+    (data.chapter?.notes ?? [])
+      .map((note) => note.last_reviewed_at)
+      .filter(Boolean)
+      .sort()
+      .at(-1),
+  );
+
   $effect(() => {
     let active = true;
     loadSearchIndex()
@@ -450,11 +458,17 @@
           <p class="meta">
             <span
               >{projectCopy(selected)?.scope ?? selected.scope ?? "repo"}</span
-            ><span>last observed {day(lastObserved)}</span><span
-              >{verified.length} verified</span
-            ><span>{unverified.length} unverified</span><span
-              >{data.chapter.contradictions.length} contradictions</span
-            >
+            ><span>last observed {day(lastObserved)}</span>
+            {#if lastReviewed}<span>last reviewed {day(lastReviewed)}</span
+              >{/if}
+            <span>{verified.length} verified</span><span
+              >{unverified.length} unverified</span
+            ><span>{data.chapter.contradictions.length} contradictions</span>
+          </p>
+
+          <p class="meta">
+            Dates describe the facts shown. A review keeps the original
+            observation date.
           </p>
 
           {#if showVerified}
@@ -474,7 +488,8 @@
                         <div class="body">
                           {fact.snippet}<span class="src"
                             >{fact.scope ?? "public record"} · confidence {fact.confidence ??
-                              "·"}</span
+                              "·"}{#if fact.last_reviewed_at}
+                              · reviewed {day(fact.last_reviewed_at)}{/if}</span
                           >
                         </div>
                       </details>
@@ -522,7 +537,8 @@
                         <div class="body">
                           {fact.snippet}<span class="src"
                             >{fact.scope ?? "public record"} · confidence {fact.confidence ??
-                              "·"}</span
+                              "·"}{#if fact.last_reviewed_at}
+                              · reviewed {day(fact.last_reviewed_at)}{/if}</span
                           >
                         </div>
                       </details>

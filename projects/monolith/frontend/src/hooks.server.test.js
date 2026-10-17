@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gunzipSync } from "node:zlib";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { handle, pickEncoding } from "./hooks.server.js";
 
 describe("response compression", () => {
@@ -153,7 +153,12 @@ describe("Activity index cache isolation", () => {
         "no-store",
       );
       expect(response.headers.has("etag")).toBe(false);
-      expect(await response.json()).toEqual({ daily: [] });
+      const body = Buffer.from(await response.arrayBuffer());
+      const decoded =
+        response.headers.get("content-encoding") === "gzip"
+          ? gunzipSync(body)
+          : body;
+      expect(JSON.parse(decoded.toString())).toEqual({ daily: [] });
     }
   });
 
@@ -231,4 +236,128 @@ describe("Grimoire invitation cache isolation", () => {
       }
     },
   );
+});
+
+describe("streaming compression", () => {
+  it.each([
+    ["gzip", gunzipSync],
+    ["br", brotliDecompressSync],
+  ])(
+    "streams %s without consuming the whole upstream body",
+    async (encoding, decode) => {
+      let pulled = 0;
+      const chunk = new TextEncoder().encode("response ".repeat(32768));
+      const body = new ReadableStream({
+        pull(controller) {
+          if (pulled === 32) controller.close();
+          else {
+            pulled++;
+            controller.enqueue(chunk);
+          }
+        },
+      });
+      const response = await handle({
+        event: {
+          request: new Request("https://example.com", {
+            headers: { "accept-encoding": encoding },
+          }),
+        },
+        resolve: async () =>
+          new Response(body, {
+            headers: {
+              "content-type": "text/plain",
+              "content-length": String(32 * chunk.length),
+            },
+          }),
+      });
+      expect(pulled).toBeLessThan(32);
+      expect(response.headers.has("content-length")).toBe(false);
+      const decoded = decode(Buffer.from(await response.arrayBuffer()));
+      expect(decoded.length).toBe(32 * chunk.length);
+      expect(decoded.subarray(0, chunk.length)).toEqual(Buffer.from(chunk));
+    },
+  );
+
+  it("cancels upstream when the downstream reader disconnects", async () => {
+    let cancelled = false;
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(65536));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = await handle({
+      event: {
+        request: new Request("https://example.com", {
+          headers: { "accept-encoding": "gzip" },
+        }),
+      },
+      resolve: async () =>
+        new Response(body, { headers: { "content-type": "text/plain" } }),
+    });
+    await response.body.cancel();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(cancelled).toBe(true);
+  });
+
+  it("propagates an upstream failure to the response reader", async () => {
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.error(new Error("upstream failed"));
+      },
+    });
+    const response = await handle({
+      event: {
+        request: new Request("https://example.com", {
+          headers: { "accept-encoding": "gzip" },
+        }),
+      },
+      resolve: async () =>
+        new Response(body, { headers: { "content-type": "text/plain" } }),
+    });
+    await expect(response.arrayBuffer()).rejects.toThrow("upstream failed");
+  });
+});
+
+describe("compression exclusions", () => {
+  it.each([
+    ["HEAD", "text/plain", {}],
+    ["GET", "text/event-stream", {}],
+    ["GET", "image/png", {}],
+    ["GET", "text/plain", { "content-encoding": "gzip" }],
+    ["GET", "text/plain", { "content-length": "5" }],
+  ])("passes through %s %s %j", async (method, type, headers) => {
+    const original = new Response("hello", {
+      headers: { "content-type": type, ...headers },
+    });
+    const response = await handle({
+      event: {
+        request: new Request("https://example.com", {
+          method,
+          headers: { "accept-encoding": "br" },
+        }),
+      },
+      resolve: async () => original,
+    });
+    expect(response).toBe(original);
+    expect(await response.text()).toBe("hello");
+  });
+
+  it("preserves a bodyless response", async () => {
+    const original = new Response(null, {
+      status: 204,
+      headers: { "content-type": "text/plain" },
+    });
+    const response = await handle({
+      event: {
+        request: new Request("https://example.com", {
+          headers: { "accept-encoding": "gzip" },
+        }),
+      },
+      resolve: async () => original,
+    });
+    expect(response).toBe(original);
+  });
 });
