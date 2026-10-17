@@ -1266,8 +1266,8 @@ def _usefulness_rejection(assertion: _Assertion) -> str | None:
 
 
 def _claim_key(body: str) -> str:
-    # Preserve identifier case, negation and qualifications.
-    return " ".join(body.split())
+    # Whitespace inside quoted values can be meaningful, as can identifier case.
+    return body.strip()
 
 
 def _claim_hash(body: str) -> str:
