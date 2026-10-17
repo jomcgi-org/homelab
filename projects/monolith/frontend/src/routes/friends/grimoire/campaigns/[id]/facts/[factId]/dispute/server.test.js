@@ -38,13 +38,11 @@ it.each([
   expect(fetch).not.toHaveBeenCalled();
 });
 it("never reflects private backend errors", async () => {
-  const fetch = vi
-    .fn()
-    .mockResolvedValue(
-      new Response(JSON.stringify({ detail: "OTHER-PC-SECRET" }), {
-        status: 404,
-      }),
-    );
+  const fetch = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({ detail: "OTHER-PC-SECRET" }), {
+      status: 404,
+    }),
+  );
   const result = await POST(event(fetch));
   expect(result.status).toBe(404);
   expect(await result.text()).not.toContain("OTHER-PC-SECRET");
