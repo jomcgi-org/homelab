@@ -147,6 +147,8 @@ def _prompt(runs):
     rules = rules.replace(
         "review ONE complete repository fact",
         "review EACH complete repository fact independently",
+    ).replace(
+        "every source subject supplied", "every source subject assigned to that claim"
     )
     return (
         rules
@@ -191,10 +193,15 @@ def _finish(session, key, now, *, transaction_guard=None):
 def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
     if not review.enabled():
         return review.NO_REVIEW
-    now = utc(now or datetime.now(UTC))
+    fixed_now = now
+
+    def completed_now():
+        return utc(fixed_now or datetime.now(UTC))
+
+    now = completed_now()
     keys = _reserve(session, key, now)
     if not keys:
-        _finish(session, key, now)
+        _finish(session, key, completed_now())
         return review.NO_REVIEW
     batch = _batch(session, key)
     if batch.status == "complete":
@@ -221,7 +228,7 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
                 k: batch.metrics.get(k, 0) + v for k, v in collector.metrics().items()
             }
             session.commit()
-            _finish(session, key, now)
+            _finish(session, key, completed_now())
             return SOURCE_UNAVAILABLE
         for member in keys:
             run = session.get(FactReviewRun, member)
@@ -301,7 +308,7 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
         session.commit()
     if prompt is not None:
         return prompt
-    result = _finish(session, key, now)
+    result = _finish(session, key, completed_now())
     return SOURCE_UNAVAILABLE if result["retry_required"] else review.NO_MODEL
 
 
