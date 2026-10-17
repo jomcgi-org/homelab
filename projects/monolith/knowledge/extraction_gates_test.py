@@ -604,11 +604,12 @@ def test_same_answer_duplicates_do_not_multiply_provenance_or_confidence(session
 
 
 @pytest.mark.parametrize(
-    "difference", ["scope", "negation", "identifier_case", "invalidated"]
+    "difference",
+    ["scope", "negation", "identifier_case", "literal_whitespace", "invalidated"],
 )
 def test_exact_dedup_preserves_claim_boundaries(session, difference):
     raw = _raw(session)
-    body = "The dispatcher must reject input Foo before sending it."
+    body = 'The dispatcher must reject input Foo containing "a b" before sending it.'
     result = apply_extraction(
         session, raw.raw_id, _result(_assertion("Dispatch contract", body))
     )
@@ -624,6 +625,8 @@ def test_exact_dedup_preserves_claim_boundaries(session, difference):
         other["body"] = body.replace("must reject", "must not reject")
     elif difference == "identifier_case":
         other["body"] = body.replace("Foo", "foo")
+    elif difference == "literal_whitespace":
+        other["body"] = body.replace('"a b"', '"a  b"')
     result = apply_extraction(session, second.raw_id, _result(other))
     assert len(result["atoms"]) == 1
     assert len(session.exec(select(Note)).all()) == 2
