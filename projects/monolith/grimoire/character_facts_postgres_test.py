@@ -9,9 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 @pytest.mark.parametrize("trial", range(4))
 @pytest.mark.parametrize("fresh", [False, True])
-def test_writer_retraction_and_embedding_collection_share_lock_order(
-    pg, trial, fresh
-):
+def test_writer_retraction_and_embedding_collection_share_lock_order(pg, trial, fresh):
     """Exercise real row locks and autoflush, which SQLite cannot establish."""
     from concurrent.futures import ThreadPoolExecutor
     from datetime import UTC, datetime
@@ -79,9 +77,7 @@ def test_writer_retraction_and_embedding_collection_share_lock_order(
         assert len(result.written) == 12 and not result.rejections
         race_candidates = (
             [
-                FactCandidate(
-                    statement=f"Fresh fact {i}", evidence_event_ids=[row.id]
-                )
+                FactCandidate(statement=f"Fresh fact {i}", evidence_event_ids=[row.id])
                 for i, row in enumerate(events)
             ]
             if fresh
