@@ -53,6 +53,12 @@ class Case:
 # $row.column values resolve against real persisted fixture rows. Bodies are
 # valid requests; no denial may pass through FastAPI's validation error (422).
 CASES = {
+    ("GET", PREFIX + "/facts"): Case(),
+    ("POST", PREFIX + "/facts/{fact_id}/dispute"): Case(
+        params={"fact_id": "$fact_a.id"},
+        caller="player_a",
+        denied_writers=("dm", "player_b", "no_character"),
+    ),
     ("GET", PREFIX + "/inventory"): Case(),
     ("GET", PREFIX + "/inventory/changes"): Case(),
     ("POST", PREFIX + "/inventory"): Case(body={"owner": "party", "name": "Rope"}),
@@ -337,8 +343,8 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    # Main's 58 plus two handout routes (upload, members-only image).
-    assert len(enumerated) == 60
+    # Main's 60 plus fact listing and own-fact dispute.
+    assert len(enumerated) == 62
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):

@@ -50,6 +50,7 @@ from grimoire.audience import (
     inventory_predicate,
     note_predicate,
 )
+from grimoire.character_facts import project_fact, visible_facts_predicate
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
 from grimoire.handouts import (
     IMAGE_CONTENT_TYPES,
@@ -75,6 +76,7 @@ from grimoire.models import (
     CampaignJoinLink,
     CampaignMember,
     CampaignVoice,
+    CharacterFact,
     CharacterSheetStatus,
     CharacterSheetVersion,
     Entity,
@@ -99,6 +101,7 @@ from grimoire.play_embeddings import (
 from grimoire.play_embeddings import (
     sync_event_embeddings,
     sync_events_embeddings,
+    sync_fact_embeddings,
     sync_note_embeddings,
 )
 from grimoire.reveals import reveal_items
@@ -2909,6 +2912,67 @@ async def search_knowledge_route(
 
 
 # --- Game sessions ---------------------------------------------------
+
+
+@router.get(
+    "/campaigns/{campaign_id}/facts", dependencies=[Depends(require_play_enabled)]
+)
+def list_character_facts(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+):
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    facts = session.exec(
+        select(CharacterFact)
+        .where(
+            visible_facts_predicate(campaign_id, viewer),
+            CharacterFact.status.in_(("active", "disputed")),
+        )
+        .order_by(CharacterFact.id)
+    ).all()
+    return [project_fact(fact, viewer, member) for fact in facts]
+
+
+@router.post(
+    "/campaigns/{campaign_id}/facts/{fact_id}/dispute",
+    dependencies=[Depends(require_play_enabled)],
+)
+def dispute_character_fact(
+    campaign_id: str,
+    fact_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+):
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    try:
+        UUID(fact_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Fact not found") from None
+    # An unreadable, foreign, party, retracted or missing fact has the same
+    # response. Neither a claimed viewer nor a frontend permission is authority.
+    if member.role != "player" or viewer is None:
+        raise HTTPException(status_code=404, detail="Fact not found")
+    fact = session.exec(
+        select(CharacterFact)
+        .where(
+            CharacterFact.id == fact_id,
+            CharacterFact.campaign_id == campaign_id,
+            CharacterFact.player_character_id == viewer,
+            CharacterFact.viewer_key == viewer,
+            CharacterFact.status.in_(("active", "disputed")),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if fact is None:
+        raise HTTPException(status_code=404, detail="Fact not found")
+    fact.status = "disputed"
+    sync_fact_embeddings(session, fact)
+    session.commit()
+    return project_fact(fact, viewer, member)
 
 
 class GameSessionUpdateRequest(BaseModel):

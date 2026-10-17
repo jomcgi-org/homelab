@@ -14,6 +14,7 @@ from grimoire import play_embeddings
 from grimoire.character_facts import (
     FactCandidate,
     build_fact_payload,
+    facts_for_context,
     write_character_facts,
 )
 from grimoire.models import CharacterFact, Embedding, GameSession, SessionEvent
@@ -69,6 +70,139 @@ def test_accepts_visible_fact_and_replay_preserves_status(harness):
     assert write(h, [fact]).written[0].id == stored.id
     assert write(h, [fact]).written[0].status == "disputed"
     assert len(write(h, [fact], version="test/v2").written) == 1
+
+
+@pytest.mark.parametrize(
+    "viewer",
+    ("dm", "player_a", "player_b", "no_character", "outsider", "other_campaign"),
+)
+def test_fact_list_and_search_only_project_owned_and_party_facts(
+    harness, viewer, monkeypatch
+):
+    from grimoire import search
+    from grimoire.testing.leak_harness import fake_knn
+
+    h = harness
+    monkeypatch.setattr(search, "knn_embeddings", fake_knn)
+    base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
+    with TestClient(h.app()) as client:
+        response = client.get(base + "/facts", headers=h.headers(viewer))
+        h.assert_no_leak(response, viewer)
+        assert response.status_code == (
+            404 if viewer in ("outsider", "other_campaign") else 200
+        )
+        if response.status_code != 200:
+            return
+        rows = response.json()
+        expected = {
+            "dm": {"fact_a", "fact_b", "fact_party", "fact_disputed"},
+            "player_a": {"fact_a", "fact_party", "fact_disputed"},
+            "player_b": {"fact_b", "fact_party"},
+            "no_character": set(),
+        }[viewer]
+        assert {row["id"] for row in rows} == {h.rows[key].id for key in expected}
+        assert all(
+            set(row) == {"id", "statement", "status", "ownership", "can_dispute"}
+            for row in rows
+        )
+        response = client.get(
+            base + "/knowledge/search?q=clue&k=50", headers=h.headers(viewer)
+        )
+        h.assert_no_leak(response, viewer)
+        facts = [row for row in response.json() if row["type"] == "fact"]
+        assert {row["id"] for row in facts} == {h.rows[key].id for key in expected}
+        assert all(set(row["source"]) == {"fact_id"} for row in facts)
+        assert all(
+            row["can_dispute"]
+            is (viewer in ("player_a", "player_b") and row["ownership"] == "you")
+            for row in facts
+        )
+
+
+@pytest.mark.parametrize(
+    "viewer,key",
+    [
+        ("player_b", "fact_a"),
+        ("player_a", "fact_b"),
+        ("player_a", "fact_party"),
+        ("dm", "fact_a"),
+        ("no_character", "fact_a"),
+        ("outsider", "fact_a"),
+        ("other_campaign", "fact_a"),
+        ("player_a", "fact_foreign"),
+        ("player_a", "fact_retracted"),
+    ],
+)
+def test_dispute_denies_other_pc_party_and_campaign_without_mutation(
+    harness, viewer, key
+):
+    h = harness
+    before = h.snapshot()
+    with TestClient(h.app()) as client:
+        response = client.post(
+            f"/api/grimoire/campaigns/{h.rows['campaign'].id}/facts/{h.rows[key].id}/dispute",
+            headers=h.headers(viewer),
+        )
+    assert response.status_code == 404
+    h.assert_no_leak(response, viewer)
+    assert h.snapshot() == before
+
+
+def test_dispute_idempotent_stale_search_and_context_exclusion(harness, monkeypatch):
+    import asyncio
+
+    from grimoire import search
+    from grimoire.testing.leak_harness import fake_knn
+
+    h = harness
+    monkeypatch.setattr(search, "knn_embeddings", fake_knn)
+    viewer = h.rows["character_a"].id
+    fact_id = h.rows["fact_a"].id
+    assert fact_id in {
+        row["id"] for row in facts_for_context(h.session, h.rows["campaign"].id, viewer)
+    }
+    base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
+    with capture_sql(h.session.get_bind()) as statements, TestClient(h.app()) as client:
+        for _ in range(2):
+            response = client.post(
+                base + f"/facts/{fact_id}/dispute", headers=h.headers("player_a")
+            )
+            assert response.status_code == 200
+            assert response.json()["status"] == "disputed"
+            h.assert_no_leak(response, "player_a")
+        response = client.get(
+            base + "/knowledge/search?q=clue&k=50", headers=h.headers("player_a")
+        )
+        # Search can show a dispute for correction, context cannot consume it.
+        assert (
+            next(row for row in response.json() if row["id"] == fact_id)["status"]
+            == "disputed"
+        )
+        context = facts_for_context(h.session, h.rows["campaign"].id, viewer)
+        assert {row["id"] for row in context} == {h.rows["fact_party"].id}
+        # The fake kNN ignores WHERE and returns stale disputed vectors too.
+        from grimoire.testing.leak_harness import FakeEmbedClient
+
+        results = asyncio.run(
+            search.search_knowledge(
+                h.session,
+                FakeEmbedClient(),
+                h.rows["campaign"].id,
+                viewer,
+                h.rows["member_player_a"],
+                "clue",
+                50,
+                for_context=True,
+            )
+        )
+        assert {row["id"] for row in results if row["type"] == "fact"} == {
+            h.rows["fact_party"].id
+        }
+        payload = build_fact_payload(
+            h.session, h.rows["campaign"].id, h.rows["campaign_session"].id, viewer
+        )
+        assert payload["facts"] == context
+    assert_no_knowledge_sql(statements)
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,7 @@ classes, sheet, properties, revealed_details).
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone
 from typing import Literal
 
 from pgvector.sqlalchemy import Vector

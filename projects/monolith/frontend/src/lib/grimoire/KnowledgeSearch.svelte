@@ -9,12 +9,14 @@
     note: "Note",
     event: "Event",
     chunk: "Lore",
+    fact: "Fact",
   };
   let query = $state("");
   let results = $state([]);
   let searched = $state(false);
   let loading = $state(false);
   let failure = $state("");
+  let disputing = $state(null);
   let request;
   // Clear private results on campaign navigation and abort an older request.
   $effect(() => {
@@ -44,6 +46,31 @@
     // The reader lives on the public tier; friends-host relative URLs reroute
     // under /friends and have no reader route.
     return `https://jomcgi.dev${chunkHref(source.book_id, source.chunk_id)}`;
+  }
+
+  async function dispute(result) {
+    if (disputing) return;
+    const currentCampaign = campaignId;
+    disputing = result.id;
+    failure = "";
+    try {
+      const response = await fetch(
+        `/grimoire/campaigns/${encodeURIComponent(currentCampaign)}/facts/${encodeURIComponent(result.id)}/dispute`,
+        { method: "POST", cache: "no-store" },
+      );
+      if (!response.ok)
+        throw new Error("The fact could not be disputed. Try again.");
+      if (campaignId !== currentCampaign) return;
+      results = results.map((item) =>
+        item.id === result.id && item.type === "fact"
+          ? { ...item, status: "disputed" }
+          : item,
+      );
+    } catch (cause) {
+      if (campaignId === currentCampaign) failure = cause.message;
+    } finally {
+      disputing = null;
+    }
   }
 
   // Entity hits are existing grant projections, with no preview field. Only
@@ -126,13 +153,33 @@
       {#each results as result (`${result.type}:${result.id}`)}
         <li>
           <span class="badge">{badges[result.type]}</span>
-          <a href={href(result)}
-            >{result.name ||
-              result.title ||
-              result.display_name ||
-              `Session event ${result.source.seq}`}</a
-          >
+          {#if result.type === "fact"}
+            <span
+              >{result.ownership === "party"
+                ? "Party fact"
+                : "Character fact"}</span
+            >
+            <span>{result.status === "disputed" ? "Disputed" : "Active"}</span>
+          {:else}<a href={href(result)}
+              >{result.name ||
+                result.title ||
+                result.display_name ||
+                `Session event ${result.source.seq}`}</a
+            >{/if}
           <p>{preview(result)}</p>
+          {#if result.type === "fact" && result.can_dispute}
+            {#if result.status === "disputed"}
+              <p>Excluded from your assistant's context.</p>
+            {:else}
+              <button
+                type="button"
+                disabled={!!disputing}
+                onclick={() => dispute(result)}
+              >
+                {disputing === result.id ? "Disputing…" : "Dispute fact"}
+              </button>
+            {/if}
+          {/if}
         </li>
       {/each}
     </ul>

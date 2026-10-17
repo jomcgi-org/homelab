@@ -28,7 +28,7 @@ import json
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone
 
 from auth.api import Authority, Principal, PrincipalKind
 from core.db import get_session

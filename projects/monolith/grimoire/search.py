@@ -226,6 +226,8 @@ def _resolve_knowledge_hits(
     viewer: Viewer,
     member: Member,
     hits: list[tuple[Embedding, float]],
+    *,
+    for_context: bool = False,
 ) -> list[dict[str, Any]]:
     """Resolve every candidate from live sources, ignoring cached audience copies."""
     results = []
@@ -267,11 +269,14 @@ def _resolve_knowledge_hits(
                     "source": {"note_id": note.id},
                 }
         elif kind == "fact":
+            from grimoire.character_facts import project_fact
+
             fact = session.get(CharacterFact, source_id, populate_existing=True)
             if (
                 fact is not None
                 and fact.campaign_id == campaign_id
-                and fact.status in ("active", "disputed")
+                and fact.status
+                in (("active",) if for_context else ("active", "disputed"))
                 and viewer is not None
                 and (
                     (fact.viewer_key == "party" and fact.player_character_id is None)
@@ -284,12 +289,13 @@ def _resolve_knowledge_hits(
                 )
             ):
                 resolved = {
+                    **project_fact(fact, viewer, member),
                     "type": "fact",
                     "id": fact.id,
                     "status": fact.status,
                     "preview": fact.statement[:_CHUNK_PREVIEW_LEN],
                     "score": 1.0 - distance,
-                    "source": {"fact_id": fact.id, "session_id": fact.session_id},
+                    "source": {"fact_id": fact.id},
                 }
         elif kind in ("event", "transcript"):
             event = session.get(SessionEvent, source_id)
@@ -339,6 +345,8 @@ async def search_knowledge(
     member: Member,
     q: str,
     k: int = 10,
+    *,
+    for_context: bool = False,
 ) -> list[dict[str, Any]]:
     """Search visible corpus and play knowledge, with a live-source re-check."""
     query_vector = await embed_client.embed(q)
@@ -349,6 +357,8 @@ async def search_knowledge(
         k * OVERFETCH_FACTOR,
         where=play_embedding_predicate(campaign_id, viewer, member),
     )
-    results = _resolve_knowledge_hits(session, campaign_id, viewer, member, hits)
+    results = _resolve_knowledge_hits(
+        session, campaign_id, viewer, member, hits, for_context=for_context
+    )
     results.sort(key=lambda item: item["score"], reverse=True)
     return results[:k]

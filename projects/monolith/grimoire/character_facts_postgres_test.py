@@ -7,6 +7,135 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 
+@pytest.mark.parametrize("trial", range(4))
+def test_writer_retraction_and_embedding_collection_share_lock_order(pg, trial):
+    """Exercise real row locks and autoflush, which SQLite cannot establish."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import UTC, datetime
+    from threading import Barrier
+
+    from sqlmodel import Session, select
+
+    from grimoire.character_facts import FactCandidate, write_character_facts
+    from grimoire.models import (
+        AppUser,
+        Campaign,
+        CampaignMember,
+        CharacterFact,
+        GameSession,
+        PlayerCharacter,
+        SessionEvent,
+    )
+    from grimoire.play_embeddings import (
+        collect_play_inputs,
+        persist_play_vectors,
+        sync_events_embeddings,
+    )
+
+    engine = create_engine(
+        pg.url,
+        connect_args={"options": "-c lock_timeout=5000 -c statement_timeout=10000"},
+    )
+    campaign = Campaign(name=f"Fact lock test {trial}")
+    user = AppUser(email=f"fact-lock-{uuid4()}@example.test")
+    with Session(engine) as session:
+        session.add_all([campaign, user])
+        session.flush()
+        campaign_id, user_id = campaign.id, user.id
+        pc = PlayerCharacter(campaign_id=campaign_id, character_name="Player")
+        game = GameSession(campaign_id=campaign_id, status="ended")
+        session.add_all([pc, game])
+        session.flush()
+        pc_id, game_id = pc.id, game.id
+        member = CampaignMember(
+            campaign_id=campaign_id,
+            app_user_id=user_id,
+            role="player",
+            player_character_id=pc_id,
+        )
+        events = [
+            SessionEvent(
+                campaign_id=campaign_id,
+                session_id=game_id,
+                seq=i + 1,
+                kind="narration",
+                audience="table",
+                body={"text": f"Evidence {i}"},
+            )
+            for i in range(12)
+        ]
+        session.add_all([member, *events])
+        session.flush()
+        candidates = [
+            FactCandidate(statement=f"Fact {i}", evidence_event_ids=[row.id])
+            for i, row in enumerate(events)
+        ]
+        result = write_character_facts(
+            session, campaign_id, game_id, pc_id, "lock/v1", candidates
+        )
+        assert len(result.written) == 12 and not result.rejections
+        inputs = collect_play_inputs(session, "fact-lock-test", 10000)
+        persist_play_vectors(
+            session, "fact-lock-test", inputs, [[0.1] * 1024 for _ in inputs]
+        )
+        session.commit()
+
+    barrier = Barrier(3)
+
+    def run(operation):
+        with Session(engine) as session:
+            barrier.wait(timeout=10)
+            if operation == "write":
+                write_character_facts(
+                    session, campaign_id, game_id, pc_id, "lock/v1", candidates
+                )
+            elif operation == "retract":
+                rows = session.exec(
+                    select(SessionEvent)
+                    .where(SessionEvent.campaign_id == campaign_id)
+                    .order_by(SessionEvent.id)
+                    .with_for_update()
+                ).all()
+                for row in rows:
+                    row.retracted_at = datetime.now(UTC)
+                sync_events_embeddings(session, rows)
+            else:
+                inputs = collect_play_inputs(session, "fact-lock-test", 10000)
+                persist_play_vectors(
+                    session, "fact-lock-test", inputs, [[0.1] * 1024 for _ in inputs]
+                )
+            session.commit()
+
+    try:
+        with ThreadPoolExecutor(max_workers=3) as workers:
+            list(workers.map(run, ("write", "retract", "embed")))
+        with Session(engine) as session:
+            facts = session.exec(
+                select(CharacterFact).where(CharacterFact.campaign_id == campaign_id)
+            ).all()
+            assert len(facts) == 12
+            assert all(row.status == "retracted" for row in facts)
+            assert (
+                session.scalar(
+                    text(
+                        "SELECT count(*) FROM grimoire.embedding WHERE campaign_id = :id"
+                    ),
+                    {"id": campaign_id},
+                )
+                == 0
+            )
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM grimoire.campaign WHERE id = :id"),
+                {"id": campaign_id},
+            )
+            connection.execute(
+                text("DELETE FROM grimoire.app_user WHERE id = :id"), {"id": user_id}
+            )
+        engine.dispose()
+
+
 def test_fact_migration_constraints_indexes_and_private_acl(pg):
     engine = create_engine(pg.url)
     try:
