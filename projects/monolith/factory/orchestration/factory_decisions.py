@@ -203,6 +203,10 @@ def _claim(
     context = _locked_session() if session is None else nullcontext((session, None))
     with context as (db, control):
         row = _receipt(db, receipt_id)
+        from factory.orchestration.factory_controls import review_recovery_held as held
+
+        if row.task_id and held(row.task_id, session=db):
+            raise DecisionError(409, "review_only_recovery")
         if not _pinned_and_active(row):
             _require_current_generation(db, row, control)
         if _pending_request(db, receipt_id):
@@ -941,6 +945,10 @@ def _requeue_blocker(db, row: FactoryReceipt, ignore_request=None) -> str | None
     a comment that reads like a request and a lane that never heard it is
     worse than a refusal.
     """
+    from factory.orchestration.factory_controls import review_recovery_held as held
+
+    if row.task_id and held(row.task_id, session=db):
+        return "review_only_recovery"
     if _pending_request(db, row.id, ignore_request):
         return "a durable decision request has an unresolved outcome"
     if row.state in _RUNNING_STATES:
@@ -1418,6 +1426,13 @@ def request_decision(
                 }
             return prior["result"]
         try:
+            from factory.orchestration.factory_controls import (
+                review_recovery_held as held,
+            )
+
+            recovery_row = _receipt(db, receipt_id)
+            if recovery_row.task_id and held(recovery_row.task_id, session=db):
+                raise DecisionError(409, "review_only_recovery")
             if _unsettled_legacy_claim(db, receipt_id, decision_id):
                 raise DecisionError(
                     409, "an earlier decision attempt needs reconciliation"

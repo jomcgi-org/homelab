@@ -543,6 +543,43 @@ remain held for an operator recovery decision; this fence does not resume,
 re-admit, cancel, or release the task. Ordinary funding leases retain their
 existing renewal path.
 
+Explicit review-only recovery is a separate paid episode on the escalated
+receipt, never a resumed DAG or a renewed landing-recovery deadline. The
+operator supplies an idempotency key, the existing PR and exact head, a new
+bounded deadline, and cumulative dollar/work-turn ceilings no higher than
+existing authority. The start ledger includes all objective history and
+unresolved reservations. Every explicitly requested retry consumes a new
+reservation and work turn. No planner, funding judge, correction or implicit
+retry runs. Missing money or turns returns the precise deficit.
+
+**Why.** The existing guest's read-only prompt does not attenuate its shared
+GitHub credential. Recovery instead sends bounded, immutable base/head evidence
+to a tool-free reviewer through one fixed provider endpoint. It creates no
+guest/session and exposes no shell, Git, MCP, HTTP tools or GitHub credential
+to the model. Only a dedicated recovery API key and explicitly configured
+reviewer alias are accepted, with no shared-key, model or provider fallback.
+The alias must belong to the receipt's reviewer pool; judgment-class recovery
+is unavailable on this OpenAI-only adapter. Fixed model identity and list
+pricing come from shared pricing. Unavailable configuration fails closed.
+
+The maximum input/output charge is reserved under the factory control lock.
+This first adapter conservatively commits that entire ceiling, also on a
+successful response; it does not claim a provider-reported actual cost.
+Uncertain calls retain the reservation and block retries. A proven no-post
+fence releases money. The bounded provider call is serialized with stop/hold
+under the same lock, for at most 120 seconds; client cancellation cannot prove
+remote provider cessation, so its reservation remains charged. Late results
+cannot approve. Exact-head CI and draft/queue state are rechecked before and
+after review. Head or base changes invalidate the result.
+
+The append-only episode audit supplies a sticky review-only hold independently
+of global auto-merge. Ordinary starts, funding, re-admission, delivery settlement
+and merge arming refuse it. Success records `awaiting_landing_approval` while
+the receipt remains escalated, with the old graph, deadline and audit intact.
+This control has no release/landing operation. Deployment, dedicated credential
+provisioning, live review spending and eventual landing each require their
+separate operator decision. No deployment values activate this path.
+
 **Why.** An escalation is a decision, not a message. The refine lane's
 `needs-human` verdict used to end at a warning and a question, so eleven of
 them in one hour on 2026-09-11 were eleven GitHub threads a person had to open,

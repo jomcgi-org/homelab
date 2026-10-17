@@ -1855,6 +1855,22 @@ def _landing_recovery_expired(db: Session, task_id: str) -> bool:
     return deadline is not None and _now() >= deadline
 
 
+def review_recovery_held(task_id: str, *, session=None) -> bool:
+    """Durable review-only fence, also available to the pruned executor."""
+    with _read_session(session) as db:
+        return (
+            db.exec(
+                select(FactoryAudit.id)
+                .where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "review_recovery_authorized",
+                )
+                .limit(1)
+            ).first()
+            is not None
+        )
+
+
 def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
     starts = _starts(db, row.task_id) if row.task_id else []
     result = {
@@ -1877,6 +1893,9 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
         )
     }
     result["task_class"] = receipt_task_class(row)
+    result["review_only_landing_held"] = bool(
+        row.task_id and review_recovery_held(row.task_id, session=db)
+    )
     result["routing_tier"] = row.routing_tier or lane_for(result["task_class"])
     # The escalation document, when this receipt raised one. It is read by the
     # board, by the decision endpoint, and by the next refine prompt when the
@@ -2946,6 +2965,8 @@ def _can_start(
     db: Session, control: FactoryControl, task_id: str, start_key: str | None = None
 ) -> dict:
     row = _receipt(db, task_id)
+    if review_recovery_held(task_id, session=db):
+        return {"ok": False, "reason": "review_only_recovery"}
     reason = None
     if control.state == "stopped":
         reason = "stopped"
@@ -3408,6 +3429,8 @@ def finish_task(
         row = _receipt(db, task_id)
         if row is None:
             return {"ok": False, "reason": "unknown_task"}
+        if outcome == "succeeded" and review_recovery_held(task_id, session=db):
+            return {"ok": False, "reason": "review_only_recovery"}
         if row.state in _SETTLED:
             last = db.exec(
                 select(FactoryAudit)
@@ -3617,6 +3640,8 @@ def request_landing_recovery(
     if reason not in ("merge_conflict", "queue_ejection"):
         raise ValueError("invalid landing recovery reason")
     with _locked_session(session) as (db, _control):
+        if review_recovery_held(task_id, session=db):
+            return {"ok": False, "reason": "review_only_recovery"}
         row = _receipt(db, task_id)
         if row is None:
             return {"ok": False, "reason": "unknown_task"}
