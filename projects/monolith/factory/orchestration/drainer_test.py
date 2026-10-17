@@ -3948,6 +3948,185 @@ def test_lost_before_session_sweep_keeps_unknown_outcome_lease(
     )
 
 
+def _unqueued_start(engine):
+    from factory.execution import store
+
+    workflow_id = "_drainer-worker:0:71"
+    permit_id, local = _lost_permit(engine, workflow_id=workflow_id, job="kg:unqueued")
+    with Session(engine) as db:
+        agent = store.create_session(
+            db,
+            local,
+            "<guest>",
+            "main",
+            "luna",
+            workflow_id=workflow_id,
+            node_key="kg-drain",
+            admission_tier="kg",
+        )
+        return permit_id, agent.id, local, workflow_id
+
+
+@pytest.mark.parametrize("path", ["cleanup", "sweep"])
+def test_unqueued_start_recovery_releases_capacity_and_fences_late_enqueue(
+    admission_database, monkeypatch, path
+):
+    from sqlmodel import select
+
+    from factory.execution import admission, store
+    from factory.execution.models import AgentSession, AgentTurn, PendingMessage
+
+    permit_id, sid, local, workflow_id = _unqueued_start(admission_database)
+    monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
+    _workflow_states(monkeypatch, {workflow_id: "SUCCESS"})
+    if path == "cleanup":
+        monkeypatch.setattr(
+            "factory.execution.mcp.get_engine", lambda: admission_database
+        )
+        drainer.destroy_drainer_session.__wrapped__(sid, local)
+        # The cycle's normal error handling owns its lease; cleanup only fences execution.
+        assert _lock_holder(admission_database, "kg:unqueued") is not None
+    else:
+        assert drainer.settle_lost_drainer_reservations("_drainer-worker:1:72") == [
+            permit_id
+        ]
+        assert _lock_holder(admission_database, "kg:unqueued") is None
+        assert drainer.settle_lost_drainer_reservations("_drainer-worker:1:72") == []
+    assert _permit_state(admission_database, permit_id) == (
+        "settled",
+        "cancelled_before_enqueue",
+    )
+    with Session(admission_database) as db:
+        assert db.get(AgentSession, sid).status == "failed"
+        assert db.exec(select(AgentTurn)).all() == []
+        assert db.exec(select(PendingMessage)).all() == []
+        assert "kg:unqueued" not in admission.reserved_routine_jobs(db)
+        with pytest.raises(store.PendingClaimLost, match="before enqueue"):
+            store.create_pending_message(db, sid, "late original writer", "luna")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "guest",
+        "prior_guest",
+        "owner",
+        "workload",
+        "pending",
+        "turn",
+        "receipt",
+        "fence",
+        "cleanup",
+        "unknown",
+        "other_permit",
+        "wrong_workflow",
+        "wrong_key",
+        "active_workflow",
+        "recent_workflow",
+        "flag_off",
+    ],
+)
+def test_unqueued_start_sweep_retains_any_execution_or_ownership_evidence(
+    admission_database, monkeypatch, case
+):
+    import time
+    from datetime import UTC, datetime, timedelta
+
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+
+    permit_id, sid, local, workflow_id = _unqueued_start(admission_database)
+    monkeypatch.setenv(
+        "DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED",
+        "false" if case == "flag_off" else "true",
+    )
+    _workflow_states(
+        monkeypatch,
+        {
+            workflow_id: (
+                "PENDING"
+                if case == "active_workflow"
+                else ("SUCCESS", int(time.time() * 1000))
+                if case == "recent_workflow"
+                else "SUCCESS"
+            )
+        },
+    )
+    with Session(admission_database) as db:
+        agent = db.get(AgentSession, sid)
+        permit = db.get(AgentCapacityReservation, permit_id)
+        if case == "guest":
+            agent.ember_session_id = "bound-guest"
+        if case == "prior_guest":
+            agent.prior_ember_lineage_id = "old-lineage"
+        if case == "owner":
+            permit.owner = "executor"
+        if case == "workload":
+            permit.workload = "claude-runtime"
+        if case == "pending":
+            db.add(PendingMessage(session_id=sid, seq=1, message_text="queued"))
+        if case == "turn":
+            db.add(
+                AgentTurn(
+                    session_id=sid,
+                    seq=1,
+                    prompt="ran",
+                    result_text="failed",
+                    terminal_reason="error",
+                )
+            )
+        if case == "receipt":
+            now = datetime.now(UTC)
+            db.add(
+                AgentResultReceipt(
+                    id="receipt",
+                    session_id=sid,
+                    seq=1,
+                    claim_owner="executor",
+                    dispatch_count=1,
+                    guest_id="guest",
+                    local_session_id=local,
+                    token_sha256="token",
+                    request_sha256="request",
+                    created_at=now,
+                    accept_until=now + timedelta(hours=1),
+                    retain_until=now + timedelta(days=1),
+                )
+            )
+        if case == "fence":
+            agent.result_receipt_fence_id = "receipt"
+        if case == "cleanup":
+            agent.guest_cleanup_id = "cleanup"
+        if case == "unknown":
+            permit.state = "uncertain"
+        if case == "wrong_workflow":
+            agent.workflow_id = "_drainer-worker:0:other"
+        if case == "wrong_key":
+            agent.node_key = "implement"
+        if case == "other_permit":
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=local,
+                    session_id=sid,
+                    pending_seq=2,
+                    tier="kg",
+                    state="settled",
+                )
+            )
+        db.add_all([agent, permit])
+        db.commit()
+    assert drainer.settle_lost_drainer_reservations("_drainer-worker:1:72") == []
+    assert _permit_state(admission_database, permit_id)[0] == (
+        "uncertain" if case == "unknown" else "reserved"
+    )
+    assert _lock_holder(admission_database, "kg:unqueued") is not None
+
+
 def test_a_job_payload_model_reaches_the_session(monkeypatch):
     jobs = [
         {"name": "retro", "payload": {"prompt": "go", "model": "sol"}},

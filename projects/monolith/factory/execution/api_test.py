@@ -13,6 +13,152 @@ from factory.execution.models import AgentSession
 from factory.execution.transport import EmberSessionGone, Turn
 
 
+@pytest.fixture
+def swarm_start_db(monkeypatch, tmp_path):
+    from factory.execution.models import (
+        AgentCapacityPool,
+        AgentCapacityReservation,
+        AgentTurn,
+        PendingMessage,
+    )
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'swarm-start.db'}",
+        execution_options={"schema_translate_map": {"agent_sessions": None}},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                AgentSession,
+                AgentCapacityPool,
+                AgentCapacityReservation,
+                AgentTurn,
+                PendingMessage,
+            )
+        ],
+    )
+    monkeypatch.setattr(api, "get_engine", lambda: engine)
+    monkeypatch.setattr(mcp, "get_engine", lambda: engine)
+    monkeypatch.setattr(mcp, "attach_recall", lambda system, *_a, **_kw: system)
+    monkeypatch.setattr(mcp, "defer_recall", lambda *_a, **_kw: False)
+    monkeypatch.setattr(api, "_schedule_next_message", lambda _id: None)
+    return engine
+
+
+def test_failed_first_enqueue_rolls_back_session_and_permit_binding(swarm_start_db):
+    from sqlalchemy import event
+    from sqlmodel import select
+
+    from factory.execution import admission, store
+    from factory.execution.models import PendingMessage
+
+    key = "_drainer-worker:0:1:kg-drain:kg:test"
+    with Session(swarm_start_db) as db:
+        assert admission.reserve_start(
+            db, key, tier="kg", model="luna", routine_job_name="kg:test"
+        )
+        db.commit()
+
+    def fail_enqueue(_conn, _cursor, statement, *_args):
+        if statement.startswith("INSERT INTO") and "pending_messages" in statement:
+            raise RuntimeError("enqueue storage unavailable")
+
+    event.listen(swarm_start_db, "before_cursor_execute", fail_enqueue)
+    try:
+        with pytest.raises(RuntimeError, match="enqueue storage unavailable"):
+            api.start_session_for_swarm(
+                key,
+                "extract",
+                "luna",
+                "jomcgi-org/homelab",
+                "main",
+                workflow_id="_drainer-worker:0:1",
+                node_key="kg-drain",
+                admission_tier="kg",
+            )
+    finally:
+        event.remove(swarm_start_db, "before_cursor_execute", fail_enqueue)
+
+    with Session(swarm_start_db) as db:
+        assert db.exec(select(AgentSession)).all() == []
+        assert db.exec(select(PendingMessage)).all() == []
+        permit = admission.reservation(db, key)
+        assert (permit.state, permit.session_id, permit.owner) == (
+            "reserved",
+            None,
+            None,
+        )
+
+    sid = api.start_session_for_swarm(
+        key,
+        "extract",
+        "luna",
+        "jomcgi-org/homelab",
+        "main",
+        workflow_id="_drainer-worker:0:1",
+        node_key="kg-drain",
+        admission_tier="kg",
+    )
+    assert (
+        api.start_session_for_swarm(
+            key, "different replay prompt", "luna", "jomcgi-org/homelab", "main"
+        )
+        == sid
+    )
+    with Session(swarm_start_db) as db:
+        assert admission.reservation(db, key).session_id == sid
+        assert [p.message_text for p in db.exec(select(PendingMessage)).all()] == [
+            "extract"
+        ]
+        assert store.get_session(db, sid).workflow_id == "_drainer-worker:0:1"
+
+
+@pytest.mark.parametrize("deferred_recall", [False, True])
+def test_swarm_first_message_sanitizes_nul_before_postgres_insert(
+    swarm_start_db, monkeypatch, deferred_recall
+):
+    from sqlalchemy import event
+    from sqlmodel import select
+
+    from factory.execution.models import PendingMessage
+
+    if deferred_recall:
+        monkeypatch.setattr(mcp, "defer_recall", lambda *_a, **_kw: True)
+        monkeypatch.setattr(mcp, "recall_prompt_ready", lambda _text: True)
+        monkeypatch.setattr(
+            mcp, "append_message_recall", lambda *_a, **_kw: "recalled\x00text"
+        )
+
+    def postgres_text_guard(_conn, _cursor, statement, parameters, *_args):
+        if statement.startswith("INSERT INTO") and any(
+            isinstance(value, str) and "\x00" in value for value in parameters
+        ):
+            raise ValueError("PostgreSQL text fields cannot contain NUL")
+
+    event.listen(swarm_start_db, "before_cursor_execute", postgres_text_guard)
+    try:
+        sid = api.start_session_for_swarm(
+            "nul-start",
+            "before\x00after",
+            "luna",
+            "jomcgi-org/homelab",
+            "main",
+            node_key="kg-drain",
+            admission_tier="kg",
+        )
+    finally:
+        event.remove(swarm_start_db, "before_cursor_execute", postgres_text_guard)
+    with Session(swarm_start_db) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        assert pending.session_id == sid
+        assert pending.message_text == (
+            "recalledtext" if deferred_recall else "beforeafter"
+        )
+        assert not db.get(AgentSession, sid).recall_pending
+
+
 def test_swarm_correction_requires_live_session_before_status_or_dispatch(monkeypatch):
     from factory.execution.store import PendingClaimLost
 
@@ -591,11 +737,6 @@ def test_start_session_for_swarm_passes_first_prompt_to_persistence(
     monkeypatch.setattr(api, "_persist_session", persist)
     monkeypatch.setattr(
         api,
-        "_persist_pending_message",
-        lambda _id, message, _model: captured.update(message=message) or 1,
-    )
-    monkeypatch.setattr(
-        api,
         "_factory_first_message",
         lambda prompt, task_id, _node_key: f"{prompt}\n\nrecall for {task_id}",
     )
@@ -618,7 +759,7 @@ def test_start_session_for_swarm_passes_first_prompt_to_persistence(
     expected_message = "the first swarm task prompt"
     if expected_task is not None:
         expected_message += f"\n\nrecall for {expected_task}"
-    assert captured["message"] == expected_message
+    assert captured["kwargs"]["first_message"] == expected_message
 
 
 def _factory_recall_engine(tmp_path, tasks):
@@ -672,10 +813,11 @@ def test_factory_node_sessions_keep_recall_out_of_the_system_prompt(
         lambda text: f"{recall.RECALL_HEADER}leads for: {text}",
     )
     monkeypatch.setattr(
-        api,
-        "_persist_pending_message",
-        lambda _id, message, _model: messages.append(message) or 1,
+        mcp.store,
+        "create_pending_message",
+        lambda _db, _id, message, _model: messages.append(message),
     )
+    monkeypatch.setattr(Session, "refresh", lambda *_a, **_kw: None)
     monkeypatch.setattr(api, "_schedule_next_message", lambda _session_id: None)
 
     for task_id in ("t-1", "t-2"):

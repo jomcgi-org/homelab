@@ -963,6 +963,11 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
                     ):
                         span.set_attribute("drain.destroyed", False)
                         return False
+                else:
+                    cancelled = store.cancel_unqueued_drainer_start(
+                        session, resolved_session_id, local_session_id
+                    )
+                    span.set_attribute("drain.cancelled_before_enqueue", cancelled)
                 for pending in session.exec(
                     select(PendingMessage).where(
                         PendingMessage.session_id == resolved_session_id
@@ -1143,7 +1148,7 @@ def _lost_owner_workflow(permit) -> str | None:
 def settle_lost_drainer_reservations(
     current_workflow_id: str, limit: int = LOST_BEFORE_SESSION_LIMIT
 ) -> list[int]:
-    """Settle drainer permits whose workflow ended before creating the session.
+    """Settle drainer permits whose workflow ended before queueing its first turn.
 
     A rollout can end a drain workflow between reserve_start and
     start_agent_session: the permit stays ``reserved`` with no session, holds
@@ -1153,12 +1158,12 @@ def settle_lost_drainer_reservations(
     lost-before-session sweep only sees factory tasks, so nothing settled
     these (permit 10732, 2026-10-01 01:59).
 
-    The proof, all re-read under the pool lock: the permit is still reserved
-    and unbound, no session row carries its key, its owning workflow is
-    terminal in DBOS (it can never run start_agent_session again) and has
-    been for the grace period, which also covers a step still finishing
-    after a cancel. The lease is released only from that exact dead holder
-    and never from a row parked on an unknown outcome.
+    The proof, all re-read under the pool lock: the permit is still reserved,
+    its owning workflow is terminal in DBOS and has been for the grace period.
+    An unbound reservation must have no session row. A legacy bound start must
+    have no queued message, turn, executor owner, guest history or receipt; its
+    cancelled permit fences any delayed queue writer. The lease is released
+    only from that exact dead holder and never from an unknown-outcome hold.
     """
     from datetime import datetime, timedelta, timezone
 
@@ -1168,7 +1173,8 @@ def settle_lost_drainer_reservations(
     from sqlmodel import Session, select
 
     from factory.execution.admission import cancel_unbound, lock_pool
-    from factory.execution.models import AgentCapacityReservation, AgentSession
+    from factory.execution.models import AgentCapacityReservation
+    from factory.execution.store import cancel_unqueued_drainer_start
 
     if not lost_before_session_sweep_enabled():
         return []
@@ -1185,7 +1191,9 @@ def settle_lost_drainer_reservations(
             select(AgentCapacityReservation)
             .where(
                 AgentCapacityReservation.state == "reserved",
-                AgentCapacityReservation.session_id.is_(None),
+                AgentCapacityReservation.pending_seq == 1,
+                AgentCapacityReservation.owner.is_(None),
+                AgentCapacityReservation.workload.is_(None),
                 AgentCapacityReservation.tier.in_(("kg", "project")),
                 AgentCapacityReservation.routine_job_name.isnot(None),
                 AgentCapacityReservation.local_session_id.startswith(
@@ -1215,18 +1223,18 @@ def settle_lost_drainer_reservations(
                 or state[1] > cutoff_ms
             ):
                 continue
-            if session.exec(
-                select(AgentSession.id).where(
-                    AgentSession.local_session_id == permit.local_session_id
+            if permit.session_id is not None:
+                cancelled = cancel_unqueued_drainer_start(
+                    session, permit.session_id, permit.local_session_id
                 )
-            ).first():
-                continue
-            if not cancel_unbound(
-                session,
-                permit.local_session_id,
-                permit.pending_seq,
-                outcome="lost_before_session",
-            ):
+            else:
+                cancelled = cancel_unbound(
+                    session,
+                    permit.local_session_id,
+                    permit.pending_seq,
+                    outcome="lost_before_session",
+                )
+            if not cancelled:
                 continue
             holder = f"{CLAIM_HOLDER}:{workflow_id}:"
             released = session.execute(
@@ -1245,7 +1253,7 @@ def settle_lost_drainer_reservations(
             ).rowcount
             settled.append(permit.id)
             logger.warning(
-                "Luna drainer settled permit %s lost before session: workflow %s "
+                "Luna drainer settled permit %s before dispatch: workflow %s "
                 "is %s, job %s lease released=%s",
                 permit.id,
                 workflow_id,
