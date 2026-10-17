@@ -992,7 +992,7 @@ def test_allowed_actions_have_authenticated_author(
     h, client = http_harness
     response = _post(h, client, viewer, audience=audience)
     assert response.status_code == 200, response.text
-    assert response.json()["seq"] == 9
+    assert response.json()["seq"] == 11
     assert response.json()["audience_pc_ids"] == []
     row = h.session.get(SessionEvent, response.json()["id"])
     assert row.author_member_id == h.rows[member_key].id
@@ -1071,6 +1071,8 @@ def test_foreign_and_mixed_pc_audiences_are_422(http_harness):
                 "event_character_a_retracted",
                 "event_table",
                 "event_table_retracted",
+                "utterance_whisper",
+                "utterance_table",
             ),
         ),
         (
@@ -1080,9 +1082,10 @@ def test_foreign_and_mixed_pc_audiences_are_422(http_harness):
                 "event_character_retracted",
                 "event_table",
                 "event_table_retracted",
+                "utterance_table",
             ),
         ),
-        ("no_character", ("event_table", "event_table_retracted")),
+        ("no_character", ("event_table", "event_table_retracted", "utterance_table")),
     ),
 )
 @pytest.mark.parametrize("limit", (1, 2))
@@ -1182,7 +1185,7 @@ def test_poll_scopes_campaign_and_session(http_harness):
     mismatched = SessionEvent(
         campaign_id=h.rows["other"].id,
         session_id=h.rows["campaign_session"].id,
-        seq=9,
+        seq=11,
         kind="system",
         audience="table",
         body={"foreign": "campaign"},
@@ -1191,7 +1194,7 @@ def test_poll_scopes_campaign_and_session(http_harness):
     h.session.commit()
     response = client.get(_url(h, "/events"), headers=h.headers("dm"))
     assert response.status_code == 200
-    assert [row["seq"] for row in response.json()] == list(range(1, 9))
+    assert [row["seq"] for row in response.json()] == list(range(1, 11))
     response = client.get(
         _url(h, "/events", game_session=second.id), headers=h.headers("dm")
     )
@@ -1239,7 +1242,7 @@ def test_poll_literal_default_maximum_and_strict_after(http_harness):
                 audience="table",
                 body={},
             )
-            for seq in range(9, 510)
+            for seq in range(11, 510)
         ]
     )
     h.session.commit()
@@ -1810,7 +1813,7 @@ def test_roll_audience_and_seeded_body(
     event_id = response.json()["id"]
     row = h.session.get(SessionEvent, event_id)
     assert row.kind == "roll"
-    assert row.seq == 9
+    assert row.seq == 11
     assert row.author_member_id == h.rows[member_key].id
     assert row.audience == audience
     assert row.audience_pc_ids == (

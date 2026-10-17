@@ -109,9 +109,11 @@ def event_embedding_kind(event: SessionEvent) -> str:
 def event_text(event: SessionEvent) -> str | None:
     if event.retracted_at is not None or event.kind not in EVENT_KINDS:
         return None
-    # Until utterance ingest defines another contract, only literal ooc=True is OOC.
-    if event.kind == "utterance" and event.body.get("ooc") is True:
-        return None
+    if event.kind == "utterance":
+        if event.body.get("ooc") is True:
+            return None
+        text = event.body.get("text")
+        return text.strip() or None if isinstance(text, str) else None
     if event.kind == "handout":
         # Title and markdown only: the image reference and entity id are
         # storage details that must never enter the index or search results.
