@@ -917,6 +917,29 @@ def test_every_role_default_is_a_cli_effort_level():
     assert model_pool.DEFAULT_ROLE_EFFORT in EFFORT_LEVELS
 
 
+def test_node_effort_can_raise_but_not_lower_role_floor():
+    configured = policy(role_effort={"implement": "medium", "correct": "xhigh"})
+    assert model_pool.effort_for("implement_fix", configured, "xhigh") == "xhigh"
+    assert model_pool.effort_for("implement_fix", configured) == "medium"
+    assert model_pool.effort_for("review_fix", configured, "medium") == "xhigh"
+    assert model_pool.effort_for("correct_1", configured, "medium") == "xhigh"
+    with pytest.raises(ValueError, match="invalid node effort"):
+        model_pool.effort_for("implement_fix", configured, "ultra")
+
+
+def test_astra_first_fallbacks_are_not_a_capability_escalation_ladder():
+    configured = ladder(["astra", "sol", "spark"])
+    assert model_pool.escalate("implement", configured, "astra", quota={}) is None
+    choice = model_pool.escalate("implement", configured, "sol", quota={})
+    assert choice["model"] == "astra"
+    assert (
+        model_pool.escalate(
+            "implement", configured, "sol", quota={"codex": {"exhausted": True}}
+        )
+        is None
+    )
+
+
 def test_sonnet_stays_below_the_judgment_floor():
     assert "sonnet" not in model_pool.JUDGMENT_MODELS
 

@@ -303,3 +303,95 @@ def test_existing_astra_members_keep_order_without_duplicates(session):
         "conductor": ["astra", "opus", "sol"],
         "refine": ["astra", "sol", "spark"],
     }
+
+
+CODING_MIGRATION = "20261017120000_factory_astra_coding_effort.sql"
+
+
+def _run_coding(session):
+    session.execute(text((_find_migrations_dir() / CODING_MIGRATION).read_text()))
+
+
+def test_astra_coding_policy_preserves_receipts_and_unrelated_controls(session):
+    from factory.orchestration.model_pool import effort_for
+
+    restore._seed(session, _live_policy(role_effort={"funding": "max"}))
+    _run(session)
+    before = json.loads(restore._control(session).policy_json)
+    receipt = FactoryReceipt(
+        id=9001,
+        repo="jomcgi-org/homelab",
+        issue_number=6992,
+        generation=14,
+        title="Pinned admission",
+        body="Keep accounting",
+        url="https://example.test/6992",
+        actor="factory:intake",
+        state="admitted",
+        policy_json=json.dumps(before),
+        allowance_json='{"turns":7,"budget_usd":50,"spent_usd":12}',
+    )
+    session.add(receipt)
+    session.flush()
+    pinned = receipt.model_dump()
+    _run_coding(session)
+    control = restore._control(session)
+    after = json.loads(control.policy_json)
+    expected_effort = {
+        "funding": "max",
+        "planner": "xhigh",
+        "reviewer": "xhigh",
+        "implement": "medium",
+        "integrate": "xhigh",
+        "correct": "xhigh",
+    }
+    assert after == {
+        **before,
+        "worker_model": "astra",
+        "role_effort": expected_effort,
+        "model_pools": {
+            **before["model_pools"],
+            "worker": ["astra", "sol", "spark", "sonnet"],
+            "implement": ["astra", "sol", "spark", "sonnet"],
+        },
+    }
+    assert validate_policy(after)["role_effort"] == expected_effort
+    assert control.version == 151
+    assert control.actor == "migration:" + CODING_MIGRATION.removesuffix(".sql")
+    session.refresh(receipt)
+    assert receipt.model_dump() == pinned
+    assert effort_for("implement_work", after) == "medium"
+    assert effort_for("implement_migration", after, "xhigh") == "xhigh"
+    assert effort_for("correct_1", after) == "xhigh"
+    assert effort_for("review_1", after) == "xhigh"
+    assert select_model("implement", after, quota={})["model"] == "astra"
+    assert select_model("reviewer", after, quota={})["model"] == "opus"
+    audits = _all_audits(session)
+    audit = json.loads(audits[-1]._mapping["detail_json"])
+    assert audit["before"]["worker_model"] == "sol"
+    assert audit["after"]["role_effort"] == expected_effort
+    _run_coding(session)
+    assert restore._control(session) == control
+    assert _all_audits(session) == audits
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"generation": 15},
+        {"worker_model": "spark"},
+        {"conductor_model": "opus"},
+        {"reviewer_model": "astra"},
+    ],
+)
+def test_astra_coding_migration_does_not_rewrite_other_operator_policies(
+    session, override
+):
+    restore._seed(session, _live_policy())
+    _run(session)
+    policy = json.loads(restore._control(session).policy_json)
+    restore._seed(session, {**policy, **override})
+    before, audits = restore._control(session), _all_audits(session)
+    _run_coding(session)
+    assert restore._control(session) == before
+    assert _all_audits(session) == audits

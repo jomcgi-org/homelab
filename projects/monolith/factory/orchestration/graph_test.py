@@ -150,6 +150,24 @@ def test_discarded_key_readd_and_historical_load(db):
     assert_recorded(db, readded, "add_node", "applied", None, 2, 3)
 
 
+def test_node_effort_survives_graph_history_and_readd(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0, effort="xhigh").ok
+    assert load_graph(task_id)[0]["effort"] == "xhigh"
+    assert discard(task_id, "one", 1).ok
+    assert add_work(task_id, "one", 2, effort="medium").ok
+    assert load_graph(task_id)[0]["effort"] == "medium"
+    assert load_graph(task_id, version=1)[0]["effort"] == "xhigh"
+
+
+@pytest.mark.parametrize("effort", ["ultra", "", 1, {}, True])
+def test_invalid_node_effort_is_refused_without_a_graph_change(db, effort):
+    task_id = make_task(db)
+    result = add_work(task_id, "one", 0, effort=effort)
+    assert not result.ok and result.refusal_code == "invalid_effort"
+    assert load_graph(task_id) == []
+
+
 def test_unknown_dependency_and_three_node_cycle_are_refused(db):
     task_id = make_task(db)
     unknown = add_work(task_id, "one", 0, deps=["missing"])

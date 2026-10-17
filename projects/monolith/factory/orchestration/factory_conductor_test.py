@@ -19508,6 +19508,58 @@ def test_policy_role_effort_overrides_the_pinned_effort(feedback_db, monkeypatch
     assert efforts == {"medium"}
 
 
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+def test_planned_complex_effort_is_persisted_and_dispatched(
+    feedback_db, monkeypatch, action
+):
+    task, policy = feedback_task(
+        allowed_models=["astra", "opus"],
+        worker_model="astra",
+        role_effort={"implement": "medium"},
+    )
+    edit = plan_edit("complex", "implement", effort="xhigh")
+    decision = (
+        {"action": "plan", "reason": "complex fix", "edits": [edit]}
+        if action == "plan"
+        else edit
+    )
+    assert not schema_errors(decision, conductor.DECISION_SCHEMA)
+    run = complete_feedback_node(task, policy, "conductor_1", decision)
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    node = next(
+        n
+        for n in conductor.graph.load_graph(task["id"])
+        if n["node_key"] == "implement_complex"
+    )
+    assert node["effort"] == "xhigh" and node["model"] == "astra"
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_: "main")
+    dispatched = dispatch_next(task, policy, "implement_complex")
+    assert dispatched["pin"]["effort"] == "xhigh"
+    assert dispatched["pin"]["model"] == "astra"
+
+
+def test_failed_astra_attempt_increases_effort_without_model_downgrade(
+    feedback_db, monkeypatch
+):
+    task, policy = escalation_task(monkeypatch, pool=["astra", "sol", "spark"])
+    policy = {**policy, "role_effort": {"implement": "medium"}}
+    complete_feedback_node(
+        task, policy, "implement_work", {}, model="astra", status="failed"
+    )
+    run = dispatch_next(task, policy, "implement_work")
+    assert run["pin"]["model"] == "astra"
+    assert run["pin"]["effort"] == "xhigh"
+    assert run["pin"]["escalated_from"] == "astra"
+
+
+@pytest.mark.parametrize("effort", ["ultra", "", 3, True, {}])
+def test_planner_schema_refuses_invalid_node_effort(effort):
+    edit = plan_edit("fix", "implement", effort=effort)
+    assert schema_errors(edit, conductor.EDIT_SCHEMA)
+    assert schema_errors(edit, conductor.DECISION_SCHEMA)
+
+
 @pytest.mark.parametrize(
     "new_field", [{"effort": "high"}, {"closing_instruction": "Refs #7"}]
 )

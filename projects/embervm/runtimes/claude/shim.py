@@ -3738,7 +3738,14 @@ url = %s
         model=DEFAULT_CODEX_MODEL,
         progress_token=None,
         system_prompt=None,
+        effort=None,
     ):
+        if effort is not None and effort not in CLAUDE_EFFORT_LEVELS:
+            raise ValueError("invalid Codex effort")
+        model_name, default_effort = CODEX_MODELS.get(
+            model, CODEX_MODELS[DEFAULT_CODEX_MODEL]
+        )
+        effort = default_effort if effort is None else effort
         with self.turn_lock:
             cli_ready_start = _turn_timing_now()
             if self.session_id and session_id and session_id != self.session_id:
@@ -3855,9 +3862,6 @@ url = %s
                 self._turn_id = None
                 self._rpc_id += 1
                 request_id = self._rpc_id
-            model_name, effort = CODEX_MODELS.get(
-                model, CODEX_MODELS[DEFAULT_CODEX_MODEL]
-            )
             _emit_elapsed("cli_ready", cli_ready_start, path=cli_ready_path)
             self._turn_timing_model_start = _turn_timing_now()
             self._send(
@@ -4081,6 +4085,8 @@ url = %s
                             "terminal_reason": terminal_reason,
                             "session_id": self.session_id,
                             "model": model,
+                            "provider_model": model_name,
+                            "effort": effort,
                             "usage": usage,
                             "voice": voice_summary(result_text),
                             "activities": activity_from_events(events),
@@ -4088,6 +4094,7 @@ url = %s
             finally:
                 if getattr(self, "_interrupt_requested", False):
                     self._partial_turn = _partial_turn(self, locals())
+                    self._partial_turn.update(provider_model=model_name, effort=effort)
                 if pusher and not getattr(self, "_drain_requested", False):
                     try:
                         pusher.stop()
@@ -6748,16 +6755,16 @@ class ProcessManager:
                         **(extra | prompt),
                     )
                 elif adapter is self.codex:
+                    effort_arg = {"effort": effort} if effort is not None else {}
                     record = adapter.turn(
                         message,
                         session_id,
                         model or DEFAULT_CODEX_MODEL,
-                        **(extra | prompt),
+                        **(extra | prompt | effort_arg),
                     )
                 else:
-                    # Effort is a Claude CLI flag. Codex takes its level from
-                    # CODEX_MODELS and Pi from thinking, so only this adapter
-                    # receives it.
+                    # Claude and Codex accept an effort override; Pi has its
+                    # separate thinking setting and Muse does not accept it.
                     effort_arg = {"effort": effort} if effort is not None else {}
                     record = adapter.turn(
                         message, session_id, model, **(extra | prompt | effort_arg)

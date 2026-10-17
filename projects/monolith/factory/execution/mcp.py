@@ -2114,12 +2114,16 @@ async def monolith_agent_detail(session_id: int, turn: int | None = None) -> dic
     """Return the verbatim result and tool activities for one session turn."""
     _, turns = await asyncio.to_thread(_load_session, session_id)
     selected = _select_turn(turns, turn)
+    usage = _decode_json(selected.usage_json, {})
+    usage = usage if isinstance(usage, dict) else {}
     return {
         "prompt": selected.prompt,
         "prompt_intent": selected.prompt_intent,
         "result_text": selected.result_text,
         "rationale": parse_rationale(selected.result_text),
         "model": selected.model,
+        "provider_model": usage.get("provider_model"),
+        "effort": usage.get("effort"),
         "activities": _activities(selected),
     }
 

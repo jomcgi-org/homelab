@@ -83,6 +83,7 @@ class SwarmPlanNode(SQLModel, table=True):
     kind: str
     prompt: str
     model: str | None = None
+    effort: str | None = None
     deps_json: str
     max_cost_usd: float
     side_effects: bool

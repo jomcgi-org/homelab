@@ -620,20 +620,32 @@ and moves `worker_model` to `sol`, putting `sol` first in the worker,
 implement and refine pools so delivery spends Codex quota before Muse and
 Claude.
 
-### Claude effort by role
+### Reasoning effort by role and node
 
-Every dispatch pins a Claude CLI `--effort` chosen by the node's role, beside
+Every dispatch pins reasoning effort chosen by the node's role, beside
 the model it settles on (#6461). Planner (`conductor_*`) and review nodes run
 at `xhigh`; funding judges (`conductor_funding_*`), implement, integrate and
 correct nodes at `high`; investigate and refine nodes at `medium`; any other
 role at `high`. The optional policy field `role_effort` overrides any of
 `planner`, `reviewer`, `funding`, `implement`, `integrate`, `correct`,
 `investigate` and `refine` with one of `low`, `medium`, `high`, `xhigh` or
-`max`. The guest applies effort to Claude turns only and records it on the
+`max`. The guest applies effort to Claude and Codex turns and records it on the
 turn with `provider_model`, the model that actually ran behind the alias; a
 session without an effort gets the guest's per-model default (`opus` and
 `fable` `high`, `sonnet` `medium`). Because xhigh costs more, a Claude
 planner node reserves 1.5x `turn_budget_usd` and the Opus review floor is $10.
+
+The Astra coding policy (#6992) makes new workers and implementers prefer Astra,
+with `implement` at `medium`, and `planner`, `reviewer`, `integrate`, and
+`correct` at `xhigh`. Opus remains the independent reviewer. A plan edit may
+set `effort` to raise the role floor, for example `xhigh` before implementing a
+migration, concurrency fix, security change, architectural change or difficult
+bug fix. The graph persists that choice and each dispatch pins its effective
+value. Failed Astra attempts stay on Astra at least at `xhigh`; fallback pool
+order never turns an Astra failure into a downgrade to Sol. Capacity denials
+and proven no-model starts do not trigger capability escalation. Existing
+receipt policies and admitted pins are not rewritten, and callers omitting
+effort retain the guest's per-model defaults.
 
 The `refine` default only applies to what a policy allows: a policy that allows
 neither `spark` nor `sol` falls back to the conductor pool, which is where

@@ -725,7 +725,7 @@ def validate_policy(policy: dict) -> dict:
 
 
 def _validate_role_effort(value: object) -> dict:
-    """Per-role Claude effort overrides, each one of the CLI's levels."""
+    """Per-role reasoning overrides supported by Claude and Codex."""
     from factory.execution import EFFORT_LEVELS
     from factory.orchestration.model_pool import ROLE_EFFORT
 

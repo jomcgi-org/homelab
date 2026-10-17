@@ -361,13 +361,17 @@ def test_execute_pending_message_forwards_session_effort(monkeypatch, session):
     assert "effort" not in delivered[1]
 
 
-def test_persisted_turn_records_the_provider_model_and_effort(monkeypatch, session):
+@pytest.mark.parametrize(
+    "model,provider_model,effort",
+    [("sonnet", "claude-sonnet-5-5", "high"), ("astra", "gpt-6-astra", "medium")],
+)
+def test_persisted_turn_records_the_provider_model_and_effort(
+    monkeypatch, session, model, provider_model, effort
+):
     async def mock_deliver(*args, **kwargs):
         turn, ember = _completed_delivery(args[2])
         return (
-            turn._replace(
-                model="sonnet", provider_model="claude-sonnet-5-5", effort="high"
-            ),
+            turn._replace(model=model, provider_model=provider_model, effort=effort),
             ember,
         )
 
@@ -378,16 +382,19 @@ def test_persisted_turn_records_the_provider_model_and_effort(monkeypatch, sessi
     monkeypatch.setattr(mcp.agent_api, "notify", mock_notify)
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
 
-    row = store.create_session(session, "provider", "/workspace", "main", "sonnet")
+    row = store.create_session(session, "provider", "/workspace", "main", model)
     seq = store.create_pending_message(session, row.id, "hello").seq
     asyncio.run(mcp._execute_pending_message(row.id))
 
     session.expire_all()
     turn = store.get_turn(session, row.id, seq)
     usage = json.loads(turn.usage_json)
-    assert turn.model == "sonnet"
-    assert usage["provider_model"] == "claude-sonnet-5-5"
-    assert usage["effort"] == "high"
+    assert turn.model == model
+    assert usage["provider_model"] == provider_model
+    assert usage["effort"] == effort
+    detail = asyncio.run(mcp.monolith_agent_detail(row.id, seq))
+    assert detail["provider_model"] == provider_model
+    assert detail["effort"] == effort
 
 
 def test_execute_pending_message_forwards_system_prompt_only_when_set(
