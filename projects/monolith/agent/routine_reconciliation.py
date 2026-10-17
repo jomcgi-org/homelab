@@ -319,7 +319,11 @@ def _reconcile(db, request):
         if turn_at.tzinfo is None:
             turn_at = turn_at.replace(tzinfo=timezone.utc)
         exact_dispatch = terminal_dispatch_cessation(
-            proof, state["latest_dispatch"], state["reservation_owner"], turn_at
+            proof,
+            state["latest_dispatch"],
+            state["reservation_owner"],
+            turn_at,
+            allow_failed=proof["state"] == "failed",
         )
         if "invoke_started_at" in proof and not exact_dispatch:
             raise ValueError("Terminal guest evidence does not match the held dispatch")
@@ -448,6 +452,8 @@ def reconcile_held_job(
     completion and never substitutes for cessation evidence. Optional
     invoke_started_at binds a terminal guest to the recorded dispatch when
     teardown preceded the client error; it is checked against durable ownership.
+    A failed guest additionally requires reason=failed, an explicit absent drain
+    interruption, and proof that this dispatch's invoke never completed.
     It is not accepted from guest/model output. Identical lost-response replays
     return the durable result, even after the ordinary job has run or disappeared.
     For KG jobs, retain_applied is additionally backed by extraction provenance.
@@ -478,17 +484,21 @@ def reconcile_held_job(
             "last_invoke_at",
             "evidence_sha256",
         }
+        if isinstance(cessation, dict) and cessation.get("state") == "failed":
+            required |= {"invoke_started_at", "terminal_reason", "interrupted_turn"}
         if not isinstance(cessation, dict) or set(cessation) not in (
             required,
             required | {"invoke_started_at"},
         ):
             raise ValueError("Exact cessation evidence fields are required")
         if (
-            cessation["state"] not in {"parked", "evicted", "destroyed"}
+            cessation["state"] not in {"parked", "evicted", "destroyed", "failed"}
             or type(cessation["generation"]) is not int
             or cessation["generation"] < 0
         ):
-            raise ValueError("Cessation requires a parked, evicted, or destroyed guest")
+            raise ValueError(
+                "Cessation requires a parked, evicted, destroyed, or failed guest"
+            )
         observed = _proof_time(cessation)
         updated_at = cessation["updated_at"]
         last_invoke_at = cessation["last_invoke_at"]

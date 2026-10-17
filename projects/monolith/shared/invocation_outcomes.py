@@ -7,7 +7,9 @@ It requires reconciliation before automatic execution can resume.
 UNKNOWN_INVOCATION = "invocation_outcome_unknown"
 
 
-def terminal_dispatch_cessation(observed, recovery, owner, failed_at) -> bool:
+def terminal_dispatch_cessation(
+    observed, recovery, owner, failed_at, *, allow_failed=False
+) -> bool:
     """Match terminal guest evidence to the dispatch that recorded a failure.
 
     Eviction or confirmed destruction can cause the client's error, so the
@@ -15,10 +17,22 @@ def terminal_dispatch_cessation(observed, recovery, owner, failed_at) -> bool:
     fall inside this exact dispatch's lifetime. A lost invocation response need
     not have a completion stamp. Callers still own guest identity, fresh reads,
     generation continuity, and atomic ownership revalidation.
+
+    Opting into failed invokes requires the same terminal reason, absent drain
+    interruption and incomplete invoke as factory supervision's failure proof.
     """
     from datetime import datetime
 
-    if observed.get("state") not in {"evicted", "destroyed"}:
+    invoke_failed = observed.get("state") == "failed"
+    if invoke_failed:
+        if (
+            not allow_failed
+            or observed.get("terminal_reason") != "failed"
+            or "interrupted_turn" not in observed
+            or observed["interrupted_turn"] is not None
+        ):
+            return False
+    elif observed.get("state") not in {"evicted", "destroyed"}:
         return False
     if not isinstance(recovery, dict) or not isinstance(owner, str) or not owner:
         return False
@@ -36,6 +50,8 @@ def terminal_dispatch_cessation(observed, recovery, owner, failed_at) -> bool:
     if last_invoke is not None and (
         type(last_invoke) is not int or not 0 < last_invoke <= updated
     ):
+        return False
+    if invoke_failed and last_invoke is not None and last_invoke >= started:
         return False
     try:
         dispatched = datetime.fromisoformat(

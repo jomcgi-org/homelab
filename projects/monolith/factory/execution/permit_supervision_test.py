@@ -1608,7 +1608,7 @@ def test_malformed_recovery_is_held_before_the_grace(database, monkeypatch):
         assert db.get(ProbeObservation, pid).reason == "stale_unbound_grace"
 
 
-@pytest.mark.parametrize("guest_state", ["evicted", "destroyed"])
+@pytest.mark.parametrize("guest_state", ["evicted", "destroyed", "failed"])
 @pytest.mark.parametrize(
     "change",
     [
@@ -1627,6 +1627,7 @@ def test_terminal_dispatch_can_precede_client_failure(
     database, monkeypatch, guest_state, change
 ):
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     now = datetime.now(timezone.utc)
     recovery = {"last_dispatch_at": (now - timedelta(seconds=120)).isoformat()}
     if change == "wrong_owner":
@@ -1643,6 +1644,8 @@ def test_terminal_dispatch_can_precede_client_failure(
     original = before(database, pid)
     evidence = proof(
         state=guest_state,
+        terminal_reason=guest_state,
+        interrupted_turn=None,
         invoke_started_at=int((now - timedelta(seconds=100)).timestamp() * 1000),
         last_invoke_at=None,
         updated_at=int((now - timedelta(seconds=11)).timestamp() * 1000),
@@ -1667,12 +1670,61 @@ def test_terminal_dispatch_can_precede_client_failure(
         assert after[0]["outcome"] == "guest_cessation_confirmed"
         with Session(database) as db:
             audit = db.get(ProbeObservation, pid)
-            assert (
-                json.loads(audit.evidence_json)["cessation_evidence"]
-                == "terminal_dispatch"
+            assert json.loads(audit.evidence_json)["cessation_evidence"] == (
+                "invoke_failure" if guest_state == "failed" else "terminal_dispatch"
             )
         sweep(evidence)
         assert before(database, pid) == after
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "disabled",
+        "wrong_reason",
+        "missing_interruption",
+        "interrupted",
+        "completed_invoke",
+    ],
+)
+def test_failed_invoke_requires_opt_in_and_exact_terminal_proof(
+    database, monkeypatch, change
+):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
+    now = datetime.now(timezone.utc)
+    pid = seed(
+        database,
+        tier="kg",
+        routine_job_name=None,
+        recovery_updates={
+            "last_dispatch_at": (now - timedelta(seconds=120)).isoformat()
+        },
+    )
+    original = before(database, pid)
+    started = int((now - timedelta(seconds=100)).timestamp() * 1000)
+    evidence = proof(
+        state="failed",
+        terminal_reason="failed",
+        interrupted_turn=None,
+        invoke_started_at=started,
+        last_invoke_at=started - 1,
+        updated_at=int((now - timedelta(seconds=11)).timestamp() * 1000),
+    )
+    if change == "disabled":
+        monkeypatch.delenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED")
+    elif change == "wrong_reason":
+        evidence["terminal_reason"] = "brick_gone"
+    elif change == "missing_interruption":
+        del evidence["interrupted_turn"]
+    elif change == "interrupted":
+        evidence["interrupted_turn"] = {"turn_seq": 1}
+    elif change == "completed_invoke":
+        evidence["last_invoke_at"] = started
+    sweep(evidence)
+    assert before(database, pid) == original
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).settled_at is None
 
 
 def _never_invoked_view(guest, **updates):

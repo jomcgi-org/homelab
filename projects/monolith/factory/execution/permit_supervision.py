@@ -798,6 +798,27 @@ def _record(candidate, observed, observed_at, node_names=None):
             audit.cp_updated_at = updated
             evidence["invoke_started_at"] = started
             audit.evidence_json = json.dumps(evidence, sort_keys=True)
+            try:
+                usage = json.loads(turn.usage_json or "{}")
+                recovery = usage.get("recovery") if isinstance(usage, dict) else None
+            except (TypeError, ValueError):
+                recovery = None
+            # Use the staged factory failure proof for this exact dispatch.
+            invoke_failed = (
+                _general_enabled()
+                and os.getenv(
+                    "FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "false"
+                ).lower()
+                == "true"
+                and observed.get("state") == "failed"
+                and terminal_dispatch_cessation(
+                    observed,
+                    recovery,
+                    permit.owner,
+                    _aware(turn.created_at),
+                    allow_failed=True,
+                )
+            )
             terminal_states = {"evicted"}
             if _general_enabled():
                 # Destroyed is trustworthy cessation proof only because
@@ -809,7 +830,7 @@ def _record(candidate, observed, observed_at, node_names=None):
             if never_invoked_live:
                 evidence["cessation_evidence"] = "never_invoked"
                 audit.evidence_json = json.dumps(evidence, sort_keys=True)
-            elif observed.get("state") not in terminal_states:
+            elif not invoke_failed and observed.get("state") not in terminal_states:
                 raise ValueError("awaiting_cessation")
             stop_completion = None
             if permit.outcome == "reservation_review_stop":
@@ -846,16 +867,23 @@ def _record(candidate, observed, observed_at, node_names=None):
                 stop_completion = _completion(observed, expected)
                 evidence["reviewed_stop_completion"] = stop_completion
                 audit.evidence_json = json.dumps(evidence, sort_keys=True)
-            try:
-                usage = json.loads(turn.usage_json or "{}")
-                recovery = usage.get("recovery") if isinstance(usage, dict) else None
-            except (TypeError, ValueError):
-                recovery = None
             exact_dispatch = _general_enabled() and terminal_dispatch_cessation(
-                observed, recovery, permit.owner, _aware(turn.created_at)
+                observed,
+                recovery,
+                permit.owner,
+                _aware(turn.created_at),
+                allow_failed=invoke_failed,
             )
             if exact_dispatch:
-                evidence["cessation_evidence"] = "terminal_dispatch"
+                evidence["cessation_evidence"] = (
+                    "invoke_failure" if invoke_failed else "terminal_dispatch"
+                )
+                if invoke_failed:
+                    evidence.update(
+                        terminal_state="failed",
+                        terminal_reason="failed",
+                        interrupted_turn=None,
+                    )
                 audit.evidence_json = json.dumps(evidence, sort_keys=True)
             if not never_invoked and stop_completion is None and not exact_dispatch:
                 last_invoke = observed.get("last_invoke_at")
@@ -935,7 +963,16 @@ def _reconcile_routine(db, permit, candidate, observed, observed_at, evidence):
             "evidence_sha256": _sha(evidence),
             **(
                 {"invoke_started_at": observed["invoke_started_at"]}
-                if evidence.get("cessation_evidence") == "terminal_dispatch"
+                if evidence.get("cessation_evidence")
+                in {"terminal_dispatch", "invoke_failure"}
+                else {}
+            ),
+            **(
+                {
+                    "terminal_reason": observed["terminal_reason"],
+                    "interrupted_turn": observed["interrupted_turn"],
+                }
+                if evidence.get("cessation_evidence") == "invoke_failure"
                 else {}
             ),
         },
