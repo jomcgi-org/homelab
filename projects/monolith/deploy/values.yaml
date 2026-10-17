@@ -150,8 +150,10 @@ cfIngress:
 knowledge:
   enabled: true
   factReview:
-    # Bounded repository review: one fact per run, at most 20 selected per day.
+    # One fact per run, within the shared 2000-job KG budget.
     enabled: true
+    maxDaily: 1000
+    intervalSeconds: 10
   audit:
     # Independent sampled quality checks feed the existing dispute resolver.
     enabled: true

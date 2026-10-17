@@ -1319,7 +1319,17 @@ the checkout.
 
 An independent `kg-fact-review` drain job handles due prose facts under
 `knowledge.factReview.enabled`. It uses the same KG permits and daily capacity,
-selecting one repository fact per 15-minute run, at most 20 in a rolling day.
+selecting one repository fact per run. `maxDaily` and `intervalSeconds` are
+configurable; production selects at most 1,000 facts in a rolling day with a
+10-second delay after completion, inside the shared 2,000-job KG allowance.
+The selection allowance includes unsupported sources and failed attempts.
+An empty eligible set or exhausted allowance backs off for 15 minutes.
+**Why.** A recurring job's session and review receipt key includes its worker
+cycle, so repeating the job inside that cycle only replays the same receipt.
+Protocol v2 rotates the cycle after review progress, retaining the existing
+permit ownership format and failure circuit breaker. A DBOS patch preserves
+older checkpoint histories. Registration updates only unlocked, scheduled rows
+and retains unknown-outcome holds and existing deadlines.
 The backend captures the claim revision and primary GitHub evidence in
 `knowledge.fact_review_runs`; Luna evaluates the complete claim against only
 that bundle. File evidence is pinned to main's SHA. Exact quotation checks,

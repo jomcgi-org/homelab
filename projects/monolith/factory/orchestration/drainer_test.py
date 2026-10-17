@@ -47,6 +47,10 @@ SETTINGS = {
 class FakeDBOS:
     workflow_id = "workflow-1"
 
+    @staticmethod
+    def patch(_name):
+        return True
+
 
 @pytest.fixture(autouse=True)
 def _clear_spans(monkeypatch):
@@ -478,6 +482,94 @@ def test_fact_review_mode_uses_existing_bounded_lane_without_raw_or_correction(
     assert prompts[0]["_review_invocation_key"]
     assert len(starts) == int(has_work) and len(applied) == int(has_work)
     assert completions[0][0:2] == ("kg-fact-review", "ok")
+
+
+@pytest.mark.parametrize("protocol,patch", [(1, True), (2, False), (2, True)])
+def test_fact_review_rotates_receipts_only_for_new_protocol_and_history(
+    monkeypatch, protocol, patch
+):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(FakeDBOS, "patch", lambda _: patch)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: "review prompt")
+    monkeypatch.setattr(
+        drainer, "apply_kg_extraction", lambda *_: {"summary": "renewed"}
+    )
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+    job = {
+        "name": "kg-fact-review",
+        "routine_kind": "kg-drain",
+        "interval_secs": 10,
+        "payload": {"mode": "fact-review", "review_protocol": protocol},
+    }
+    rotates = protocol == 2 and patch
+    result, claims, starts, _, _, destroys = _run(monkeypatch, [job, job])
+    assert result["processed"] == (1 if rotates else 2)
+    assert len(claims) == (1 if rotates else 3)
+    assert chained == ([True] if rotates else [])
+    assert starts[0][0] == "workflow-1:kg-drain:kg-fact-review"
+    assert destroys[0] == (101, starts[0][0])
+    if rotates:
+        monkeypatch.setattr(FakeDBOS, "workflow_id", "workflow-2")
+        _, _, next_starts, _, _, _ = _run(monkeypatch, [job])
+        assert next_starts[0][0] == "workflow-2:kg-drain:kg-fact-review"
+    else:
+        assert starts[1][0] == starts[0][0]
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_fact_review_source_only_progress_chains_but_empty_work_backs_off(
+    monkeypatch, completed
+):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    prompt = (
+        "Source review completed without model inference."
+        if completed
+        else "No source-grounded review is due."
+    )
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: prompt)
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+    job = {
+        "name": "kg-fact-review",
+        "routine_kind": "kg-drain",
+        "interval_secs": 10,
+        "payload": {"mode": "fact-review", "review_protocol": 2},
+    }
+    result, claims, starts, completions, _, destroys = _run(monkeypatch, [job, job])
+    assert result["processed"] == 1 and len(claims) == 1
+    assert starts == destroys == []
+    assert chained == ([True] if completed else [])
+    assert completions == [
+        ("kg-fact-review", "ok", prompt) + (() if completed else (900,))
+    ]
+
+
+def test_fact_review_rotation_retains_failure_circuit_breaker(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: "review prompt")
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+    deferred = []
+    monkeypatch.setattr(
+        drainer, "defer_drainer_job", lambda *args: deferred.append(args)
+    )
+    job = {
+        "name": "kg-fact-review",
+        "routine_kind": "kg-drain",
+        "interval_secs": 10,
+        "payload": {"mode": "fact-review", "review_protocol": 2},
+    }
+
+    def failed(*_):
+        raise RuntimeError("provider unavailable")
+
+    result, _, _, completions, _, destroys = _run(
+        monkeypatch, [job, job], await_turn=failed
+    )
+    assert result["processed"] == 1 and len(destroys) == 1
+    assert chained == completions == []
+    assert deferred == [("kg-fact-review", 900)]
 
 
 @pytest.mark.parametrize(

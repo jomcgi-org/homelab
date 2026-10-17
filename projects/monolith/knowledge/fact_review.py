@@ -34,12 +34,20 @@ from knowledge.review_sources import (
 JOB_NAME = "kg-fact-review"
 PREFIX = "source-review/v1: "
 NO_REVIEW = "No source-grounded review is due."
-MAX_DAILY = 20
+NO_MODEL = "Source review completed without model inference."
 MAX_EVIDENCE_AGE = timedelta(minutes=30)
 
 
 def enabled() -> bool:
     return os.environ.get("KG_FACT_REVIEW_ENABLED", "false").lower() == "true"
+
+
+def settings() -> tuple[int, int]:
+    max_daily = int(os.environ.get("KG_FACT_REVIEW_MAX_DAILY", "20"))
+    interval = int(os.environ.get("KG_FACT_REVIEW_INTERVAL_SECONDS", "900"))
+    if max_daily < 1 or interval < 1:
+        raise ValueError("source review limits must be positive")
+    return max_daily, interval
 
 
 def status() -> dict:
@@ -48,6 +56,7 @@ def status() -> dict:
         return {"enabled": False}
     from core.db import get_engine
 
+    max_daily, interval = settings()
     with Session(get_engine()) as session:
         rows = session.exec(
             select(FactReviewRun)
@@ -57,8 +66,8 @@ def status() -> dict:
         ).all()
         return {
             "enabled": True,
-            "max_daily": MAX_DAILY,
-            "interval_seconds": 900,
+            "max_daily": max_daily,
+            "interval_seconds": interval,
             "recent": [
                 {
                     "invocation_key": row.invocation_key,
@@ -75,18 +84,31 @@ def status() -> dict:
 
 def ensure_job(session: Session) -> bool:
     """Reconcile the existing drain lane; retain unknown outcomes and leases."""
+    from shared.invocation_outcomes import UNKNOWN_INVOCATION
+
     if not enabled():
         return False
     sqlite = session.get_bind().dialect.name == "sqlite"
     table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
     payload = ":payload" if sqlite else "CAST(:payload AS JSONB)"
+    changed = "IS NOT" if sqlite else "IS DISTINCT FROM"
     result = session.execute(
         text(
             f"INSERT INTO {table} (name, routine_kind, interval_secs, next_run_at, payload, created_by) "
-            f"VALUES (:name, 'kg-drain', 900, CURRENT_TIMESTAMP, {payload}, 'knowledge.fact_review') "
-            "ON CONFLICT (name) DO NOTHING"
+            f"VALUES (:name, 'kg-drain', :interval, CURRENT_TIMESTAMP, {payload}, 'knowledge.fact_review') "
+            "ON CONFLICT (name) DO UPDATE SET interval_secs = EXCLUDED.interval_secs, "
+            "payload = EXCLUDED.payload "
+            "WHERE routine_jobs.locked_by IS NULL AND routine_jobs.next_run_at IS NOT NULL "
+            "AND (routine_jobs.last_status IS NULL OR routine_jobs.last_status NOT IN (:unknown, 'factory_stopped')) "
+            f"AND (routine_jobs.interval_secs {changed} EXCLUDED.interval_secs "
+            f"OR routine_jobs.payload {changed} EXCLUDED.payload)"
         ),
-        {"name": JOB_NAME, "payload": json.dumps({"mode": "fact-review"})},
+        {
+            "name": JOB_NAME,
+            "interval": settings()[1],
+            "payload": json.dumps({"mode": "fact-review", "review_protocol": 2}),
+            "unknown": UNKNOWN_INVOCATION,
+        },
     )
     return result.rowcount > 0
 
@@ -143,8 +165,10 @@ def _digest(claim: dict) -> str:
     return hashlib.sha256(json.dumps(claim, sort_keys=True).encode()).hexdigest()
 
 
-def _prompt(run: FactReviewRun) -> str:
+def _prompt(run: FactReviewRun, progress_signal: bool = False) -> str:
     if run.status == "complete" or not run.note_id:
+        if progress_signal and run.note_id:
+            return NO_MODEL
         return NO_REVIEW
     data = {
         "claim": run.claim,
@@ -180,7 +204,12 @@ def _prompt(run: FactReviewRun) -> str:
 
 
 def prepare(
-    session: Session, invocation_key: str, *, collector=collect_sources, now=None
+    session: Session,
+    invocation_key: str,
+    *,
+    collector=collect_sources,
+    now=None,
+    progress_signal: bool = False,
 ) -> str:
     """Pin the claim first; perform network reads outside a database transaction."""
     if not enabled():
@@ -192,7 +221,7 @@ def prepare(
         )
     run = session.get(FactReviewRun, invocation_key)
     if run is not None and (run.status == "complete" or run.sources):
-        return _prompt(run)
+        return _prompt(run, progress_signal)
     if run is None:
         used = session.exec(
             select(func.count())
@@ -202,7 +231,7 @@ def prepare(
                 FactReviewRun.note_id.is_not(None),
             )
         ).one()
-        note = _candidate(session, now) if used < MAX_DAILY else None
+        note = _candidate(session, now) if used < settings()[0] else None
         run = FactReviewRun(invocation_key=invocation_key, created_at=now)
         if note is None:
             run.status = "complete"
@@ -247,7 +276,7 @@ def prepare(
     if run.sources or run.status == "complete":
         # A recovered executor may have completed the same read-only fetch.
         # Keep the first durable evidence bundle, including after application.
-        prompt = _prompt(run)
+        prompt = _prompt(run, progress_signal)
         session.commit()
         return prompt
     run.sources, run.observed_at = sources, observed
@@ -267,7 +296,7 @@ def prepare(
             "outcome": status,
         }
     session.commit()
-    return _prompt(run)
+    return _prompt(run, progress_signal)
 
 
 class Citation(BaseModel):
