@@ -331,3 +331,107 @@ export function snapshotFreshness(
     stale: minutes == null || minutes > staleAfterMinutes,
   };
 }
+
+const quotaNumber = (value) =>
+  typeof value === "number" && Number.isFinite(value);
+
+export function quotaDuration(seconds) {
+  if (!quotaNumber(seconds) || seconds < 0) return "unknown";
+  if (seconds >= 86400)
+    return `${(seconds / 86400).toFixed(1).replace(/\.0$/, "")}d`;
+  if (seconds >= 3600)
+    return `${(seconds / 3600).toFixed(1).replace(/\.0$/, "")}h`;
+  return `${Math.ceil(seconds / 60)}m`;
+}
+
+// Snapshots contain only aggregates. Once the first account resets we cannot
+// subtract that account from the mean, so await a new snapshot for the group.
+export function quotaGroups(quota, now) {
+  const clock = new Date(now).getTime();
+  const sampled = Date.parse(quota?.sampled_at);
+  const sampleAge = (clock - sampled) / 1000;
+  const validSnapshot =
+    quota?.available === true && Number.isFinite(sampleAge) && sampleAge >= 0;
+  return ["codex", "claude"].map((name) => {
+    const provider = quota?.providers?.find((item) => item.provider === name);
+    return {
+      provider: name,
+      label: name === "codex" ? "Codex" : "Claude",
+      unknownWindows: provider?.unknown_windows ?? 0,
+      windows: [
+        ...(provider?.windows ?? []),
+        ...(quota?.history ?? [])
+          .filter(
+            (group) =>
+              group.provider === name &&
+              !(provider?.windows ?? []).some(
+                (row) => row.window_seconds === group.window_seconds,
+              ),
+          )
+          .map((group) => ({
+            window_seconds: group.window_seconds,
+            reported_accounts: 0,
+          })),
+      ].map((row) => {
+        const reset = Date.parse(row.next_reset_at);
+        const lastReset = Date.parse(row.last_reset_at);
+        const age = (clock - Date.parse(row.oldest_observed_at)) / 1000;
+        const active = validSnapshot && reset > clock;
+        const used =
+          active && quotaNumber(row.used_percent) ? row.used_percent : null;
+        const remaining =
+          active && quotaNumber(row.remaining_seconds)
+            ? Math.max(0, row.remaining_seconds - sampleAge)
+            : null;
+        const elapsed =
+          remaining !== null && row.window_seconds > 0
+            ? Math.min(
+                100,
+                Math.max(0, 100 * (1 - remaining / row.window_seconds)),
+              )
+            : null;
+        const fresh =
+          active &&
+          Number.isFinite(age) &&
+          age >= 0 &&
+          age <= quota.stale_after_seconds;
+        const comparable =
+          fresh && row.complete && used !== null && elapsed !== null;
+        const delta = comparable ? used - elapsed : null;
+        const coverage =
+          provider?.source === "accounts"
+            ? `${row.reported_accounts}/${provider.configured_accounts} accounts${provider.inventory_complete ? "" : " · inventory unknown"}`
+            : "Provider report · account coverage unknown";
+        return {
+          window: quotaDuration(row.window_seconds),
+          history:
+            (quota?.history ?? []).find(
+              (group) =>
+                group.provider === name &&
+                group.window_seconds === row.window_seconds,
+            )?.points ?? [],
+          used,
+          elapsed,
+          remaining: remaining === null ? "unknown" : quotaDuration(remaining),
+          resetRange: active
+            ? `${quotaDuration((reset - clock) / 1000)}${lastReset > reset ? `–${quotaDuration((lastReset - clock) / 1000)}` : ""}`
+            : null,
+          staggered: lastReset > reset,
+          coverage,
+          measured:
+            Number.isFinite(age) && age >= 0
+              ? `measured ${quotaDuration(age)} ago`
+              : "measurement age unknown",
+          stale: used !== null && !fresh,
+          comparable,
+          pace:
+            delta === null
+              ? "pace unavailable"
+              : Math.abs(delta) < 1
+                ? "on pace"
+                : `${Math.abs(delta).toFixed(0)}pp ${delta > 0 ? "ahead of" : "behind"} time`,
+        };
+      }),
+    };
+  });
+}

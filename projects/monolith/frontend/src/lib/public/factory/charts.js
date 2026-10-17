@@ -205,3 +205,79 @@ export function window(rows, now, count = 30) {
 export function last14(rows, key, now) {
   return window(rows, now, 14).map((row) => finite(row[key]));
 }
+
+// Actual points are measurements. The dashed baseline is the matching reset
+// clock, with the same gaps and cycle breaks; neither line extrapolates usage.
+export function quotaChartSvg(points, label) {
+  const rows = (Array.isArray(points) ? points : [])
+    .map((point) => ({ ...point, time: Date.parse(point.sampled_at) }))
+    .filter((point) => Number.isFinite(point.time))
+    .sort((a, b) => a.time - b.time);
+  const valid = (value) =>
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 100;
+  const measured = rows.filter(
+    (point) => point.fresh && valid(point.used_percent),
+  );
+  if (!measured.length) return "";
+  const width = 360,
+    height = 128,
+    left = 37,
+    right = 8,
+    top = 10,
+    bottom = 24;
+  const first = rows[0].time,
+    last = rows.at(-1).time;
+  const x = (time) =>
+    last === first
+      ? (left + width - right) / 2
+      : left + ((time - first) / (last - first)) * (width - left - right);
+  const y = (used) => top + (used / 100) * (height - top - bottom);
+  const path = (key) => {
+    let connected = false;
+    return rows
+      .map((point) => {
+        if (!point.fresh || !valid(point[key])) {
+          connected = false;
+          return "";
+        }
+        const command = connected && !point.break_before ? "L" : "M";
+        connected = true;
+        return `${command}${x(point.time).toFixed(1)} ${y(point[key]).toFixed(1)}`;
+      })
+      .join("");
+  };
+  const tick = (time) =>
+    new Date(time)
+      .toISOString()
+      .slice(
+        last - first >= 86400000 ? 5 : 11,
+        last - first >= 86400000 ? 10 : 16,
+      );
+  const axes = [0, 50, 100]
+    .map((remaining) => {
+      const at = y(100 - remaining);
+      return `<line class="quota-grid" x1="${left}" y1="${at}" x2="${width - right}" y2="${at}"/><text x="${left - 5}" y="${at + 4}" text-anchor="end">${remaining}%</text>`;
+    })
+    .join("");
+  const resets = rows
+    .filter((point) => point.reset_before)
+    .map(
+      (point) =>
+        `<line class="quota-reset" x1="${x(point.time).toFixed(1)}" x2="${x(point.time).toFixed(1)}" y1="${top}" y2="${height - bottom}"><title>Reset observed</title></line>`,
+    )
+    .join("");
+  const dots = measured
+    .map(
+      (point) =>
+        `<circle class="quota-point" cx="${x(point.time).toFixed(1)}" cy="${y(point.used_percent).toFixed(1)}" r="2"><title>${escapeText(new Date(point.time).toISOString())}: ${(100 - point.used_percent).toFixed(1)}% remaining</title></circle>`,
+    )
+    .join("");
+  const dates =
+    first === last
+      ? `<text x="${x(first)}" y="${height - 5}" text-anchor="middle">${tick(first)} UTC</text>`
+      : `<text x="${left}" y="${height - 5}">${tick(first)}</text><text x="${width - right}" y="${height - 5}" text-anchor="end">${tick(last)} UTC</text>`;
+  return `<svg class="quota-history" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeText(label)}: actual quota remaining versus expected remaining at a steady pace. ${measured.length} measurements.">${axes}${resets}<path class="quota-expected" d="${path("elapsed_percent")}"/><path class="quota-actual" d="${path("used_percent")}"/>${dots}${dates}</svg>`;
+}

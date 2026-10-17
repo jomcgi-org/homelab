@@ -75,6 +75,12 @@ describe("same-commit factory server-load fixtures", () => {
           const book = ledger(data.board, NOW);
           expect(book.live).toHaveLength(scenario === "live" ? 2 : 0);
           if (scenario === "live") {
+            expect(
+              data.board.quota.providers.map((provider) => provider.provider),
+            ).toEqual(["codex", "claude"]);
+            expect(data.board.quota.providers[0].windows[0].used_percent).toBe(
+              42,
+            );
             expect(book.live[0].title).toBe(LONG_TITLE);
             expect(ledgerMeta(book.live[0], data.board.policy, NOW)).toContain(
               "review",

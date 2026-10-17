@@ -688,3 +688,142 @@ def test_agent_activity_counts_each_local_run_once_at_its_latest_snapshot(sessio
     local = payload["totals_7d"]["local"]
     assert local["sessions"] == 2
     assert local["list_cost_usd"] == 30.0
+
+
+def test_quota_is_published_with_the_board_without_account_identity(session):
+    _seed_board(session)
+    now = datetime.now(timezone.utc)
+    raw = {
+        "available": True,
+        "fetched_at": now.isoformat(),
+        "grants_complete": True,
+        "grants_valid": True,
+        "providers": {},
+        "grants": {
+            SEEDED_EMAIL: {
+                "provider": "codex",
+                "observed": True,
+                "age_seconds": 30,
+                "credential": "never-publish-this",
+                "windows": [
+                    {
+                        "name": "primary",
+                        "window_minutes": 300,
+                        "used_percent": 42,
+                        "resets_at": (now + timedelta(hours=2)).isoformat(),
+                    }
+                ],
+            }
+        },
+    }
+    write_public_snapshot(session, provider_quota=raw)
+    payload, _ = _activity_row(session)
+    assert payload["quota"]["providers"][0]["windows"][0]["used_percent"] == 42
+    assert SEEDED_EMAIL not in json.dumps(payload["quota"])
+    assert "never-publish-this" not in json.dumps(payload)
+
+
+def test_writer_keeps_bounded_quota_history_through_refresh_outage_and_recovery(
+    session, monkeypatch
+):
+    clock = [datetime(2026, 10, 17, 12, tzinfo=timezone.utc)]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromtimestamp(clock[0].timestamp(), tz=tz)
+
+    monkeypatch.setattr(publication, "datetime", Clock)
+
+    def quota(used):
+        return {
+            "available": True,
+            "fetched_at": clock[0].isoformat(),
+            "grants_complete": True,
+            "grants_valid": True,
+            "providers": {},
+            "grants": {
+                SEEDED_EMAIL: {
+                    "provider": "codex",
+                    "observed": True,
+                    "age_seconds": 30,
+                    "windows": [
+                        {
+                            "window_minutes": 10080,
+                            "used_percent": used,
+                            "resets_at": "2026-10-21T12:00:00Z",
+                        }
+                    ],
+                }
+            },
+        }
+
+    raw = quota(20)
+    write_public_snapshot(session, provider_quota=raw)
+    first = _activity_row(session)[0]["quota"]["history"]
+    assert len(first) == 1
+    assert len(first[0]["points"]) == 1
+    clock[0] += timedelta(minutes=2)
+    write_public_snapshot(session, provider_quota=raw)
+    assert _activity_row(session)[0]["quota"]["history"] == first
+    for used in (25, 30):
+        clock[0] += timedelta(minutes=5)
+        write_public_snapshot(session, provider_quota=quota(used))
+    points = _activity_row(session)[0]["quota"]["history"][0]["points"]
+    assert [point["used_percent"] for point in points] == [20, 30]
+    clock[0] += timedelta(minutes=5)
+    write_public_snapshot(session)
+    points = _activity_row(session)[0]["quota"]["history"][0]["points"]
+    assert points[-1]["status"] == "unavailable"
+    assert points[-1]["used_percent"] is None
+    clock[0] += timedelta(minutes=5)
+    write_public_snapshot(session, provider_quota=quota(35))
+    points = _activity_row(session)[0]["quota"]["history"][0]["points"]
+    assert points[-1]["used_percent"] == 35
+    assert points[-1]["break_before"] is True
+    assert SEEDED_EMAIL not in json.dumps(points)
+
+
+def test_writer_does_not_republish_private_or_malformed_stored_quota_history(session):
+    write_public_snapshot(session)
+    now = datetime.now(timezone.utc)
+    bad_history = [
+        {
+            "provider": "codex",
+            "window_seconds": 604800,
+            "account_id": SEEDED_EMAIL,
+            "points": [
+                {
+                    "sampled_at": now.isoformat(),
+                    "observed_at": now.isoformat(),
+                    "used_percent": "private-token",
+                    "elapsed_percent": 50,
+                    "next_reset_at": (now + timedelta(days=3)).isoformat(),
+                    "last_reset_at": (now + timedelta(days=3)).isoformat(),
+                    "configured_accounts": 1,
+                    "reported_accounts": 1,
+                    "source": "accounts",
+                    "complete": True,
+                    "fresh": True,
+                    "status": "complete",
+                    "credential": "private-token",
+                    "account_id": SEEDED_EMAIL,
+                }
+            ],
+        }
+    ]
+    session.execute(
+        text(
+            "UPDATE public_api.factory_activity_snapshot "
+            "SET payload = jsonb_set(payload, '{quota,history}', CAST(:history AS jsonb)) WHERE id = 1"
+        ),
+        {"history": json.dumps(bad_history)},
+    )
+    write_public_snapshot(session)
+    history = _activity_row(session)[0]["quota"]["history"]
+    assert history[0]["points"][0]["used_percent"] is None
+    encoded = json.dumps(history)
+    assert SEEDED_EMAIL not in encoded
+    assert "private-token" not in encoded
+    assert "credential" not in encoded
+    assert "account_id" not in encoded

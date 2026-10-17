@@ -12,7 +12,9 @@ import { payloads } from "./fixtures.js";
 // Never fall through to network fetch; the CSP also denies all connections.
 window.__fixtureUnexpectedFetches = [];
 window.fetch = async (input) => {
-  if (input !== "/slop/factory/search-index") {
+  if (
+    !["/slop/factory/search-index", "/slop/factory/data/board"].includes(input)
+  ) {
     window.__fixtureUnexpectedFetches.push(String(input));
     throw new Error(`Unexpected fixture fetch: ${input}`);
   }

@@ -767,17 +767,20 @@ def factory_public_snapshot() -> None:
     factory code in its image, so it cannot build a board. This job does it on
     the private side and upserts the three payload kinds (the board, one task's
     walkthrough, one session's full record) into public_api tables the public
-    router reads with plain SQL. Needs only DATABASE_URL. The writer commits its
-    own transaction."""
+    router reads with plain SQL. Quota observations come from the private broker
+    before opening the database session. Broker failure publishes unavailable
+    quota without blocking the board. The writer commits its own transaction."""
     from sqlmodel import Session
 
     from factory.publication import write_public_snapshot
+    from factory.execution.provider_quota import fetch_provider_quota_sync
     from core.db import get_engine
 
     configure_logging()
     logger.info("factory-public-snapshot: starting")
+    quota = fetch_provider_quota_sync()
     with Session(get_engine()) as session:
-        report = write_public_snapshot(session)
+        report = write_public_snapshot(session, provider_quota=quota)
 
     log_level = (
         logging.WARNING

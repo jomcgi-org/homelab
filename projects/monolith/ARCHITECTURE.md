@@ -22,6 +22,31 @@ companion, require the operator group. The earlier anonymous companion
 exception is retired; anonymous catalogue discovery remains available to the
 gateway, while anonymous tool calls are denied.
 
+The existing private `factory-public-snapshot` job also fetches broker quota
+before opening its database session. `factory.publication.shape_quota` adds an
+allowlisted `quota` object to the board JSON: provider, window duration, account
+counts, mean usage, mean time remaining, reset range and observation age. Grant
+names, account identifiers and credentials never enter the published object.
+The public reader continues to serve the snapshot without broker access.
+
+**Why.** Subscription capacities are unknown, so the overview labels usage as an
+equal-account mean. Per-account reports take precedence over provider rollups;
+provider-only reports expose unknown account coverage. Windows group by reported
+duration, since Codex's `primary` label can describe a week. Expired or invalid
+reports cannot become zero usage. Incomplete coverage and reports older than
+15 minutes retain their measured usage without a fresh pace comparison. The
+browser refreshes the board every minute and hides the current aggregate after
+its first account reset until a new snapshot arrives. The same board JSON keeps
+eight days of bounded observations for a quota-remaining graph, with a steady
+consumption baseline calculated from the matching reset clocks. History begins
+with collected observations and breaks across missing evidence and reset cycles.
+It preserves provider-only observations with their coverage label. This extends
+the existing publication contract without another database table or scheduled
+job (Refs #6998).
+Broker failure leaves quota unavailable while the rest of the board publishes.
+The cron job respects the broker's SPIFFE mode; missing workload credentials in
+that mode fail closed without an HTTP fallback.
+
 Routine-job reconciliation and knowledge interventions use the narrow existing
 contracts in `factory.api`. The domain boundary test checks factory internals
 and requires its dependencies on other domains to pass through their APIs.

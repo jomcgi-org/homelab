@@ -730,3 +730,351 @@ def test_agent_activity_sums_ember_and_local_at_list_price_over_both_windows():
     month = payload["totals_30d"]["combined"]
     assert month["spend_usd"] == 2.0 + 1.0 + 4.0 + 10.0 + 20.0 + 0.5
     assert month["unpriced"] == 4
+
+
+def _quota_fixture():
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 10, 17, 12, tzinfo=timezone.utc)
+
+    def account(used, reset, age=60):
+        return {
+            "provider": "codex",
+            "observed": True,
+            "age_seconds": age,
+            "account_id": "never-public",
+            "windows": [
+                {
+                    "name": "primary",
+                    "used_percent": used,
+                    "window_minutes": 10080,
+                    "resets_at": reset,
+                }
+            ],
+        }
+
+    return now, {
+        "available": True,
+        "fetched_at": now.isoformat(),
+        "grants_valid": True,
+        "grants_complete": True,
+        "grants": {
+            "secret-account-a": account(20, "2026-10-21T00:00:00Z"),
+            "secret-account-b": account(40, "2026-10-22T18:00:00Z"),
+        },
+        "providers": {"codex": account(99, "2026-10-21T00:00:00Z")},
+    }
+
+
+def test_quota_equal_account_mean_uses_actual_duration_and_staggered_resets():
+    from factory.publication import shape_quota
+
+    now, raw = _quota_fixture()
+    result = shape_quota(raw, now)
+    codex = result["providers"][0]
+    assert codex["configured_accounts"] == 2
+    window = codex["windows"][0]
+    assert window["window_seconds"] == 604800  # primary is weekly here
+    assert window["used_percent"] == 30  # provider's 99 is not a third account
+    assert window["elapsed_percent"] == 37.5
+    assert window["remaining_seconds"] == 378000
+    assert window["pace_delta_percent"] == -7.5
+    assert window["next_reset_at"] == "2026-10-21T00:00:00+00:00"
+    assert window["last_reset_at"] == "2026-10-22T18:00:00+00:00"
+    assert window["complete"] is True
+    assert "secret-account" not in str(result)
+    assert "never-public" not in str(result)
+    assert "account_id" not in str(result)
+
+
+def test_quota_provider_fallback_has_unknown_coverage_and_no_total_pace():
+    from factory.publication import shape_quota
+
+    now, raw = _quota_fixture()
+    raw["providers"]["claude"] = {**raw["providers"]["codex"], "provider": "claude"}
+    claude = shape_quota(raw, now)["providers"][1]
+    assert claude["source"] == "provider"
+    assert claude["configured_accounts"] is None
+    assert claude["inventory_complete"] is False
+    assert claude["windows"][0]["used_percent"] == 99
+    assert claude["windows"][0]["pace_delta_percent"] is None
+
+
+def test_quota_unobserved_account_never_becomes_zero_usage_or_complete_coverage():
+    from factory.publication import shape_quota
+
+    now, raw = _quota_fixture()
+    raw["grants"]["secret-account-b"] = {"provider": "codex", "observed": False}
+    window = shape_quota(raw, now)["providers"][0]["windows"][0]
+    assert window["used_percent"] == 20
+    assert window["reported_accounts"] == 1
+    assert window["complete"] is False
+    assert window["pace_delta_percent"] is None
+
+
+def test_quota_stale_report_is_visible_without_fresh_pace():
+    from factory.publication import shape_quota
+
+    now, raw = _quota_fixture()
+    raw["grants"]["secret-account-a"]["age_seconds"] = 10000
+    window = shape_quota(raw, now)["providers"][0]["windows"][0]
+    assert window["used_percent"] == 30
+    assert window["fresh_accounts"] == 1
+    assert window["pace_delta_percent"] is None
+
+
+def test_quota_expired_invalid_duplicate_and_unknown_windows_are_not_averaged():
+    from factory.publication import shape_quota
+
+    invalid = [float("nan"), float("inf"), -1, 101, True, "20"]
+    for value in invalid:
+        now, raw = _quota_fixture()
+        raw["grants"]["secret-account-a"]["windows"][0]["used_percent"] = value
+        window = shape_quota(raw, now)["providers"][0]["windows"][0]
+        assert window["used_percent"] == 40
+        assert window["reported_accounts"] == 1
+        assert window["pace_delta_percent"] is None
+    for reset in (
+        "2026-10-17T12:00:00Z",
+        "2026-10-17T11:00:00Z",
+        "invalid",
+        None,
+        "2027-01-01T00:00:00Z",
+    ):
+        now, raw = _quota_fixture()
+        raw["grants"]["secret-account-a"]["windows"][0]["resets_at"] = reset
+        window = shape_quota(raw, now)["providers"][0]["windows"][0]
+        assert window["reported_accounts"] == 1
+    now, raw = _quota_fixture()
+    first = raw["grants"]["secret-account-a"]["windows"]
+    first.append(dict(first[0]))
+    raw["grants"]["secret-account-b"]["windows"].append(
+        {"name": "secondary", "used_percent": 0}
+    )
+    codex = shape_quota(raw, now)["providers"][0]
+    assert codex["windows"][0]["reported_accounts"] == 1
+    assert codex["unknown_windows"] == 1
+    assert len(codex["windows"]) == 1
+
+
+def test_quota_separates_short_and_weekly_limits_and_gates_unknown_inventory():
+    from factory.publication import shape_quota
+
+    now, raw = _quota_fixture()
+    for account in raw["grants"].values():
+        account["windows"].append(
+            {
+                "name": "secondary",
+                "window_minutes": 300,
+                "used_percent": 10,
+                "resets_at": "2026-10-17T14:30:00Z",
+            }
+        )
+    raw["grants_complete"] = False
+    codex = shape_quota(raw, now)["providers"][0]
+    assert [window["window_seconds"] for window in codex["windows"]] == [18000, 604800]
+    assert all(window["pace_delta_percent"] is None for window in codex["windows"])
+    assert codex["windows"][0]["used_percent"] == 10
+    assert codex["windows"][0]["elapsed_percent"] == 50
+
+
+def test_quota_failure_and_all_missing_values_have_no_zero_mean():
+    from factory.publication import shape_quota
+
+    now, raw = _quota_fixture()
+    for account in raw["grants"].values():
+        account["windows"][0]["expired"] = True
+    window = shape_quota(raw, now)["providers"][0]["windows"][0]
+    assert window["used_percent"] is None
+    assert window["reported_accounts"] == 0
+    raw["available"] = False
+    result = shape_quota(raw, now)
+    assert result["available"] is False
+    assert all(provider["windows"] == [] for provider in result["providers"])
+    assert shape_quota(None, now)["available"] is False
+
+
+def test_quota_history_starts_at_the_first_real_observation_and_deduplicates_cache():
+    from datetime import timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    now, raw = _quota_fixture()
+    history = shape_quota_history(shape_quota(raw, now), None)
+    points = history[0]["points"]
+    assert len(points) == 1
+    assert points[0]["sampled_at"] == now.isoformat()
+    assert points[0]["used_percent"] == 30
+    assert points[0]["elapsed_percent"] == 37.5
+    assert points[0]["status"] == "complete"
+    assert (
+        shape_quota_history(shape_quota(raw, now + timedelta(minutes=5)), history)
+        == history
+    )
+
+
+def test_quota_history_stale_and_unavailable_samples_are_gaps_until_recovery():
+    from datetime import timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    now, raw = _quota_fixture()
+    history = shape_quota_history(shape_quota(raw, now), None)
+    history = shape_quota_history(
+        shape_quota(raw, now + timedelta(minutes=20)), history
+    )
+    stale = history[0]["points"][-1]
+    assert stale["status"] == "stale"
+    assert stale["used_percent"] is None
+    assert stale["elapsed_percent"] is None
+    assert (
+        shape_quota_history(shape_quota(raw, now + timedelta(minutes=25)), history)
+        == history
+    )
+    history = shape_quota_history(
+        shape_quota(None, now + timedelta(minutes=30)), history
+    )
+    assert history[0]["points"][-1]["status"] == "unavailable"
+    raw["fetched_at"] = (now + timedelta(minutes=35)).isoformat()
+    history = shape_quota_history(
+        shape_quota(raw, now + timedelta(minutes=35)), history
+    )
+    recovered = history[0]["points"][-1]
+    assert recovered["used_percent"] == 30
+    assert recovered["break_before"] is True
+    assert recovered["reset_before"] is False
+
+
+def test_quota_history_partial_account_coverage_is_a_gap_but_provider_observation_is_usable():
+    from datetime import timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    now, raw = _quota_fixture()
+    history = shape_quota_history(shape_quota(raw, now), None)
+    raw["grants"]["secret-account-b"] = {"provider": "codex", "observed": False}
+    raw["providers"]["claude"] = {**raw["providers"]["codex"], "provider": "claude"}
+    history = shape_quota_history(shape_quota(raw, now + timedelta(minutes=2)), history)
+    claude, codex = history
+    assert claude["points"][0]["status"] == "observed"
+    assert claude["points"][0]["used_percent"] == 99
+    assert claude["points"][0]["complete"] is False
+    assert claude["points"][0]["configured_accounts"] is None
+    assert codex["points"][-1]["status"] == "partial"
+    assert codex["points"][-1]["used_percent"] is None
+    assert codex["points"][-1]["elapsed_percent"] is None
+    assert codex["points"][-1]["break_before"] is True
+
+
+def test_quota_history_reset_and_usage_correction_break_the_line_without_false_reset_labels():
+    from datetime import timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    now, raw = _quota_fixture()
+    initial = shape_quota_history(shape_quota(raw, now), None)
+    first_window = raw["grants"]["secret-account-a"]["windows"][0]
+    first_window["used_percent"] = 10
+    # Give the correction a fresh observation so it is a measured decrease.
+    raw["fetched_at"] = (now + timedelta(minutes=20)).isoformat()
+    corrected = shape_quota_history(
+        shape_quota(raw, now + timedelta(minutes=20)), initial
+    )
+    assert corrected[0]["points"][-1]["break_before"] is True
+    assert corrected[0]["points"][-1]["reset_before"] is False
+    first_window["resets_at"] = "2026-10-23T00:00:00Z"
+    reset = shape_quota_history(
+        shape_quota(raw, now + timedelta(minutes=21)), corrected
+    )
+    assert reset[0]["points"][-1]["break_before"] is True
+    assert reset[0]["points"][-1]["reset_before"] is True
+
+
+def test_quota_history_retains_first_latest_and_breaks_within_fifteen_minute_buckets():
+    from datetime import timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    now, raw = _quota_fixture()
+    history = shape_quota_history(shape_quota(raw, now), None)
+    history = shape_quota_history(
+        shape_quota(None, now + timedelta(minutes=2)), history
+    )
+    for minute in (4, 8, 12):
+        raw["fetched_at"] = (now + timedelta(minutes=minute)).isoformat()
+        raw["grants"]["secret-account-a"]["windows"][0]["used_percent"] = 20 + minute
+        history = shape_quota_history(
+            shape_quota(raw, now + timedelta(minutes=minute)), history
+        )
+    points = history[0]["points"]
+    assert len(points) == 2
+    assert points[0]["sampled_at"] == now.isoformat()
+    assert points[-1]["sampled_at"] == (now + timedelta(minutes=12)).isoformat()
+    assert points[-1]["used_percent"] == 36
+    assert points[-1]["break_before"] is True
+
+
+def test_quota_history_bounds_retention_and_revalidates_every_stored_public_field():
+    import json
+    from datetime import timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    now, raw = _quota_fixture()
+    original = shape_quota_history(shape_quota(raw, now), None)[0]
+    template = original["points"][0]
+    rows = []
+    for minute in range(0, 9 * 24 * 60, 5):
+        sampled = now - timedelta(minutes=minute)
+        rows.append(
+            {
+                **template,
+                "sampled_at": sampled.isoformat(),
+                "observed_at": sampled.isoformat(),
+                "next_reset_at": (sampled + timedelta(days=1)).isoformat(),
+                "last_reset_at": (sampled + timedelta(days=2)).isoformat(),
+                "account_id": "private-identity",
+                "credential": "private-token",
+            }
+        )
+    rows.extend(
+        [
+            None,
+            {**template, "status": {"private-identity": True}},
+            {**template, "sampled_at": "private-identity"},
+        ]
+    )
+    previous = [
+        {**original, "points": rows, "account_id": "private-identity"},
+        {"provider": "private-identity", "window_seconds": 1, "points": rows},
+    ]
+    result = shape_quota_history(shape_quota(None, now), previous)
+    points = result[0]["points"]
+    assert len(points) <= 2 * (8 * 24 * 4 + 1)
+    assert points[0]["sampled_at"] >= (now - timedelta(days=8)).isoformat()
+    assert points[-1]["sampled_at"] == now.isoformat()
+    encoded = json.dumps(result, allow_nan=False)
+    assert "private-identity" not in encoded
+    assert "private-token" not in encoded
+    assert "account_id" not in encoded
+    assert "credential" not in encoded
+
+
+def test_quota_history_rejects_nonfinite_values_and_forged_complete_coverage():
+    from datetime import timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    now, raw = _quota_fixture()
+    for bad in (float("nan"), float("inf"), 10**400, True, "secret"):
+        history = shape_quota_history(shape_quota(raw, now), None)
+        history[0]["points"][0]["used_percent"] = bad
+        result = shape_quota_history(
+            shape_quota(None, now + timedelta(minutes=1)), history
+        )
+        assert result[0]["points"][0]["used_percent"] is None
+    history = shape_quota_history(shape_quota(raw, now), None)
+    history[0]["points"][0]["reported_accounts"] = 1
+    result = shape_quota_history(shape_quota(None, now + timedelta(minutes=1)), history)
+    assert result[0]["points"][0]["complete"] is False
+    assert result[0]["points"][0]["used_percent"] is None

@@ -140,6 +140,25 @@ spec:
             - name: MONOLITH_INTERNAL_URL
               value: "http://{{ include "monolith.fullname" $ }}.{{ $.Release.Namespace }}.svc:{{ $.Values.service.apiPort }}"
             {{- end }}
+            {{- if and .providerQuota (or $.Values.tokenBroker.url $.Values.tokenBroker.spiffe.enabled) }}
+            # Read-only quota snapshots use the broker's configured transport.
+            # SPIFFE needs a separately provisioned workflow identity. Without
+            # it, fail closed rather than fall back to the plaintext listener.
+            - name: EMBER_TOKENBROKER_URL
+              value: {{ ternary $.Values.tokenBroker.spiffe.url $.Values.tokenBroker.url $.Values.tokenBroker.spiffe.enabled | quote }}
+            - name: EMBER_TOKENBROKER_SPIFFE_ENABLED
+              value: {{ $.Values.tokenBroker.spiffe.enabled | quote }}
+            {{- if $.Values.tokenBroker.spiffe.enabled }}
+            - name: EMBER_TOKENBROKER_SPIFFE_ID
+              value: {{ $.Values.tokenBroker.spiffe.serverId | quote }}
+            - name: EMBER_TOKENBROKER_SVID_CERT
+              value: /run/tokenbroker-svid/svid.pem
+            - name: EMBER_TOKENBROKER_SVID_KEY
+              value: /run/tokenbroker-svid/svid_key.pem
+            - name: EMBER_TOKENBROKER_SVID_BUNDLE
+              value: /run/tokenbroker-svid/svid_bundle.pem
+            {{- end }}
+            {{- end }}
             {{- range $k, $v := .env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

@@ -205,3 +205,92 @@ def test_all_checked_in_environment_overlays_keep_spiffe_default_off() -> None:
     for path in paths:
         values = yaml.safe_load(path.read_text())
         assert values["tokenBroker"]["spiffe"]["enabled"] is False, path
+
+
+def _quota_job_settings() -> list[str]:
+    return [
+        "jobs.image.repository=registry.example/monolith-jobs",
+        "jobs.image.digest=sha256:" + "a" * 64,
+    ]
+
+
+def _job_container(workflow: dict) -> dict:
+    return workflow["spec"]["workflowSpec"]["templates"][0]["container"]
+
+
+def test_only_factory_snapshot_receives_configured_provider_quota_transport() -> None:
+    objects = _render(
+        "monolith",
+        _quota_job_settings() + ["tokenBroker.url=http://configured-broker:8080"],
+    )
+    workflows = [obj for obj in objects if obj.get("kind") == "CronWorkflow"]
+    quota_workflows = [
+        workflow
+        for workflow in workflows
+        if "EMBER_TOKENBROKER_URL" in _env(_job_container(workflow))
+    ]
+
+    assert [workflow["metadata"]["name"] for workflow in quota_workflows] == [
+        "factory-public-snapshot"
+    ]
+    workflow = quota_workflows[0]
+    env = _env(_job_container(workflow))
+    assert env["EMBER_TOKENBROKER_URL"] == "http://configured-broker:8080"
+    assert env["EMBER_TOKENBROKER_SPIFFE_ENABLED"] == "false"
+    assert not any(name.startswith("EMBER_TOKENBROKER_SVID_") for name in env)
+    assert workflow["spec"]["workflowSpec"]["serviceAccountName"] == "argo-workflow"
+    assert workflow["spec"]["schedules"] == ["*/2 * * * *"]
+
+
+def test_unconfigured_broker_omits_provider_quota_transport() -> None:
+    objects = _render("monolith", _quota_job_settings() + ["tokenBroker.url="])
+    workflow = _object(objects, "CronWorkflow", "factory-public-snapshot")
+
+    assert not any(
+        name.startswith("EMBER_TOKENBROKER_")
+        for name in _env(_job_container(workflow))
+    )
+
+
+def test_quota_job_preserves_spiffe_transport_without_granting_job_identity() -> None:
+    objects = _render(
+        "monolith",
+        _quota_job_settings()
+        + [
+            "tokenBroker.spiffe.enabled=true",
+            "tokenBroker.url=http://plaintext-broker:8080",
+            "tokenBroker.spiffe.url=https://secure-broker:8443",
+            "tokenBroker.spiffe.serverId=spiffe://example.test/broker",
+        ],
+    )
+    workflow = _object(objects, "CronWorkflow", "factory-public-snapshot")
+    spec = workflow["spec"]["workflowSpec"]
+    container = _job_container(workflow)
+    env = _env(container)
+
+    assert env["EMBER_TOKENBROKER_URL"] == "https://secure-broker:8443"
+    assert env["EMBER_TOKENBROKER_SPIFFE_ENABLED"] == "true"
+    assert env["EMBER_TOKENBROKER_SPIFFE_ID"] == "spiffe://example.test/broker"
+    assert env["EMBER_TOKENBROKER_SVID_CERT"] == "/run/tokenbroker-svid/svid.pem"
+    assert env["EMBER_TOKENBROKER_SVID_KEY"] == "/run/tokenbroker-svid/svid_key.pem"
+    assert env["EMBER_TOKENBROKER_SVID_BUNDLE"] == (
+        "/run/tokenbroker-svid/svid_bundle.pem"
+    )
+    assert "http://plaintext-broker:8080" not in env.values()
+    assert "volumes" not in spec
+    assert "volumeMounts" not in container
+    assert "sidecars" not in spec["templates"][0]
+    assert spec["serviceAccountName"] == "argo-workflow"
+    assert [
+        entry["name"]
+        for entry in container["env"]
+        if "secretKeyRef" in entry.get("valueFrom", {})
+    ] == ["DATABASE_URL"]
+
+    for other in objects:
+        if other.get("kind") != "CronWorkflow" or other is workflow:
+            continue
+        assert not any(
+            name.startswith("EMBER_TOKENBROKER_")
+            for name in _env(_job_container(other))
+        ), other["metadata"]["name"]
