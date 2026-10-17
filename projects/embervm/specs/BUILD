@@ -1,6 +1,6 @@
 # EmberVM protocol TLA+ specs, checked by TLC in CI (ADR embervm/006).
 #
-# Ten specs, fifty-five genrules run the //bazel/tla:tlc.sh driver:
+# Ten specs, fifty-six genrules run the //bazel/tla:tlc.sh driver:
 #   adoption.tla (protocol 1: VM lifecycle + adoption) with four cfgs: rich
 #     safety, positive liveness, and two NEGATIVE modes (expectation "fail") that
 #     prove the model still reproduces a historical bug.
@@ -35,10 +35,11 @@
 #     deletion on an inconsistent inventory, the two eligibility arms
 #     (parked expiry and the per-kind age floor), and the newest-reference
 #     retention of the DISPOSABLE stateful tier.
-#   dual_wake.tla (issue #4702: concurrent CP and brick wakes) with seventeen
+#   dual_wake.tla (issue #4702: concurrent CP and brick wakes) with eighteen
 #     cfgs: three safety bounds, liveness, six single-mutation negatives, four
 #     non-vacuity witnesses, the current-main two-VM witness, and two PASS sensitivity checks
-#     (origin skip removal alone and orphan-before-adoption ordering alone).
+#     (origin skip removal alone and orphan-before-adoption ordering alone),
+#     plus a composite negative disabling both redundant orphan guards.
 # The driver fails the build if a "fail" mode finds NO violation (the model went
 # blind). Safety and liveness are split across cfgs because exhaustive liveness over
 # the rich safety graph is too slow for CI; see README.md for the cfg matrix.
@@ -185,6 +186,23 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location dual_wake.tla)\" " +
           "\"$(location dual_wake_reap_activator.cfg)\" " +
+          "\"$@\" fail NoLegitActivatorWakeReaped",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_dual_wake_unguarded_orphans",
+    srcs = _JRE_SRCS + [
+        "dual_wake.tla",
+        "dual_wake_unguarded_orphans.cfg",
+    ],
+    outs = ["dual_wake_unguarded_orphans.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location dual_wake.tla)\" " +
+          "\"$(location dual_wake_unguarded_orphans.cfg)\" " +
           "\"$@\" fail NoLegitActivatorWakeReaped",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
