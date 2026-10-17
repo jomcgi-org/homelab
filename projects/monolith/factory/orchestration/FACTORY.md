@@ -591,6 +591,17 @@ A GitOps policy change is a one-shot guarded migration that bumps `version`
 and writes a `swarm.factory_audit` row (for example
 `20260924060000_factory_policy_no_astra.sql`); the operator control surface
 remains the normal path for changing policy.
+`20261017070000_factory_policy_restore_astra.sql` restores Astra to planning
+and advisory refinement for the generation-14 Opus/Sol policy (#6983). It adds
+Astra to implementation and reviewer pools while Sol and Opus retain those
+roles' first preference. The temporary September quota-saving exclusion had
+outlived its reset; both Codex grants had headroom on 2026-10-17. It preserves
+all task bounds, quota floors and pinned receipts, and audits the policy change.
+An operator-changed role or generation, an existing Astra allowance, or a full
+affected pool makes the migration a no-op. Verify the live policy after rollout.
+Rollback uses the normal policy control to restore the audited prior routing;
+do not rerun or rewrite the historical migration. Existing tasks keep their
+pinned model choices in either direction.
 `20260930060100_factory_policy_claude_55.sql` stages `sonnet` (pinned to
 `claude-sonnet-5-5`) behind `spark` in existing worker and implement pools and
 raises `task_budget_usd` to at least $50, without moving `worker_model`.
