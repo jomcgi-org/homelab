@@ -16,7 +16,8 @@ available to every campaign member, including members without a character.
 It accepts a 1 to 200 character query and returns at most `k` (1 to 50, default
 10) scored hits with `type` (`entity`, `note`, `event`, `fact`, or `chunk`) and `source`
 link fields: `entity_id`, `note_id`, `session_id` plus `seq`, or `book_id` plus
-`chunk_id`. The existing corpus `/search` endpoint is unchanged.
+`chunk_id`. Facts carry only `fact_id` as their source, with no lore link.
+The existing corpus `/search` endpoint is unchanged.
 
 **Why.** The candidate predicate uses the copied audience columns and the
 existing audience and note SQL contracts. Each candidate is resolved from the
@@ -72,6 +73,8 @@ disabled before prompt assembly, retries or any Ember extraction session.
 instruction or empty checkout cannot keep campaign text out of generic knowledge
 tools. The tool-free transport choice and live acceptance remain in #6991.
 Repository delivery on PR #6958 is staged and default-off; #6627 stays open.
+
+### Shared corpus and play state
 
 The `grimoire` schema uses a typed entity spine rather than the standalone
 prototype's Firestore and polymorphic JSON model:
