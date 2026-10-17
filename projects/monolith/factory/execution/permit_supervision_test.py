@@ -1105,14 +1105,101 @@ def test_interactive_reservation_past_the_failed_turn_is_ambiguous(
         assert db.get(ProbeObservation, pid).reason == "ambiguous_ownership"
 
 
-def test_drainer_history_is_reported_as_unsupported_shape(database, monkeypatch):
-    """A kg drainer session is created per job by swarm/drainer.py and carries
-    exactly one turn, so history on one is a shape this loop does not model.
-    """
+@pytest.mark.parametrize(
+    "tier,job_name,history",
+    [
+        ("project", "job:project", 1),
+        ("kg", "kg:raw", 2),
+        ("kg", "kg-audit:scheduled", 1),
+    ],
+)
+def test_other_drainer_history_is_reported_as_unsupported_shape(
+    database, monkeypatch, tier, job_name, history
+):
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    pid = seed(database, "kg-history", tier="kg", history=1)
+    pid = seed(
+        database, "other-history", tier=tier, history=history, routine_job_name=job_name
+    )
     original = before(database, pid)
-    sweep(proof("guest-kg-history"))
+    sweep(proof("guest-other-history"))
+    assert before(database, pid) == original
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "unsupported_shape"
+
+
+def test_kg_correction_with_settled_history_reaches_cessation(database, monkeypatch):
+    """drain_cycle sends a correction in the first extraction's session."""
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database, "kg-correction", tier="kg", history=1, routine_job_name="kg:raw"
+    )
+    original = before(database, pid)
+    sweep(proof("guest-kg-correction"))
+    after = before(database, pid)
+    assert after[0]["state"] == "settled"
+    assert after[1:] == original[1:]
+    with Session(database) as db:
+        prior = db.exec(
+            select(AgentCapacityReservation).where(
+                AgentCapacityReservation.session_id == after[0]["session_id"],
+                AgentCapacityReservation.pending_seq == 1,
+            )
+        ).one()
+        assert (prior.state, prior.outcome) == ("settled", "completed")
+
+
+def test_kg_correction_still_requires_guest_cessation(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "kg-live", tier="kg", history=1, routine_job_name="kg:raw")
+    original = before(database, pid)
+    sweep(proof("guest-kg-live", state="running"))
+    assert before(database, pid) == original
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).settled_at is None
+
+
+@pytest.mark.parametrize("state", ["reserved", "running", "uncertain"])
+def test_kg_correction_cannot_settle_an_earlier_live_permit(
+    database, monkeypatch, state
+):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database, "kg-live-history", tier="kg", history=1, routine_job_name="kg:raw"
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        prior = db.exec(
+            select(AgentCapacityReservation).where(
+                AgentCapacityReservation.session_id == permit.session_id,
+                AgentCapacityReservation.pending_seq == 1,
+            )
+        ).one()
+        prior.state = state
+        db.add(prior)
+    original = before(database, pid)
+    sweep(proof("guest-kg-live-history"))
+    assert before(database, pid) == original
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "ambiguous_ownership"
+
+
+@pytest.mark.parametrize(
+    "field,value", [("node_key", "qwen-drain"), ("workflow_id", "other")]
+)
+def test_kg_correction_requires_routine_session_identity(
+    database, monkeypatch, field, value
+):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database, "kg-wrong-identity", tier="kg", history=1, routine_job_name="kg:raw"
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        setattr(agent, field, value)
+        db.add(agent)
+    original = before(database, pid)
+    sweep(proof("guest-kg-wrong-identity"))
     assert before(database, pid) == original
     with Session(database) as db:
         assert db.get(ProbeObservation, pid).reason == "unsupported_shape"
