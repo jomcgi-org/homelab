@@ -14,12 +14,13 @@ only ask a person when it doubts the work, never raise them.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
 import re
 from collections import Counter
+
+from factory.orchestration.turn_artifact import run_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -147,17 +148,6 @@ def deficit_refusal(deficit: object, bound: dict) -> str | None:
     return None
 
 
-def _artifact(run: dict) -> dict:
-    try:
-        outcome = json.loads(run.get("outcome_json") or "{}")
-    except (TypeError, ValueError):
-        return {}
-    if not isinstance(outcome, dict):
-        return {}
-    value = outcome.get("value") or outcome.get("artifact") or {}
-    return value if isinstance(value, dict) else {}
-
-
 def progress(runs: list[dict]) -> dict:
     """Verified progress, from node runs alone (no GitHub read)."""
     statuses = Counter(run.get("status") for run in runs)
@@ -169,7 +159,7 @@ def progress(runs: list[dict]) -> dict:
     ]
     heads = []
     for run in sorted(runs, key=lambda item: item.get("id") or 0):
-        sha = _artifact(run).get("head_sha") or run.get("head_sha")
+        sha = run_artifact(run).get("head_sha") or run.get("head_sha")
         if (
             isinstance(sha, str)
             and _SHA.fullmatch(sha)
@@ -185,7 +175,7 @@ def progress(runs: list[dict]) -> dict:
         and run.get("status") == "succeeded"
     ]
     verdicts = [
-        _artifact(run).get("verdict")
+        run_artifact(run).get("verdict")
         for run in sorted(reviews, key=lambda item: item.get("id") or 0)
     ]
     failures = Counter(

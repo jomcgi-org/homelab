@@ -2564,6 +2564,16 @@ py_test(
 )
 
 py_test(
+    name = "clock_test",
+    srcs = ["core/clock_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "identity_test",
     srcs = ["core/identity_test.py"],
     imports = ["."],
@@ -6471,6 +6481,16 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "grimoire_images_test",
+    srcs = ["grimoire/images_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//pytest",
     ],
 )
 

@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
+from core.clock import as_utc
 from core.db import get_session
 from dr_jobs.models import Vacancy
 
@@ -44,23 +45,9 @@ _LISTINGS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalid
 _LISTINGS_SCHEMA_VERSION = "v1"
 
 
-def _as_utc(value: datetime | None) -> datetime | None:
-    """Coerce a datetime to tz-aware UTC.
-
-    Postgres returns tz-aware values; SQLite (tests) can return naive ones even
-    though we always write tz-aware UTC. Treat naive as UTC so ETag stamps and
-    the live cutoff comparison stay stable across both backends.
-    """
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 def _is_live(row: Vacancy, cutoff: datetime, today: date) -> bool:
     """Live = seen in the latest scrape AND not past its closing date."""
-    last_seen = _as_utc(row.last_seen_at)
+    last_seen = as_utc(row.last_seen_at)
     if last_seen is None or last_seen < cutoff:
         return False
     return row.closing_date is None or row.closing_date >= today
@@ -87,7 +74,7 @@ def _serialize(row: Vacancy, is_live: bool) -> dict:
         "posted_date": row.posted_date.isoformat() if row.posted_date else None,
         "closing_date": row.closing_date.isoformat() if row.closing_date else None,
         "url": row.url,
-        "first_seen_at": _as_utc(row.first_seen_at).isoformat()
+        "first_seen_at": as_utc(row.first_seen_at).isoformat()
         if row.first_seen_at
         else None,
         "is_live": is_live,
@@ -114,7 +101,7 @@ def get_listings(
 
     max_seen: datetime | None = None
     for row in rows:
-        seen = _as_utc(row.last_seen_at)
+        seen = as_utc(row.last_seen_at)
         if seen is not None and (max_seen is None or seen > max_seen):
             max_seen = seen
 

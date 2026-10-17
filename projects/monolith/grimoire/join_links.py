@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 from uuid import uuid4
 
+from core.clock import aware
 from auth.api import Principal
 from core.db import get_session
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -88,10 +89,6 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def _utc(value):
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-
-
 def _digest(token: str) -> str:
     if not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token):
         raise HTTPException(404, "Invitation not found.")
@@ -142,7 +139,7 @@ def _token_row(session: Session, token: str, *, lock=False) -> CampaignJoinLink:
 def _pending(row: CampaignJoinLink):
     if row.status != "pending":
         raise HTTPException(409, "This invitation is no longer available.")
-    if _utc(row.expires_at) <= _now():
+    if aware(row.expires_at) <= _now():
         raise HTTPException(410, "This invitation has expired. Ask for a new link.")
 
 
@@ -153,9 +150,9 @@ def _view(session: Session, row: CampaignJoinLink) -> LinkView:
         campaign_id=row.campaign_id,
         campaign_name=campaign.name,
         invitee_email=row.invitee_email,
-        expires_at=_utc(row.expires_at),
+        expires_at=aware(row.expires_at),
         status="expired"
-        if row.status == "pending" and _utc(row.expires_at) <= _now()
+        if row.status == "pending" and aware(row.expires_at) <= _now()
         else row.status,
         enrollment_cleanup_pending=row.status == "revoked"
         and row.enrollment_id is not None,
@@ -392,7 +389,7 @@ def enroll(body: TokenBody, session: DatabaseSession):
             link_id=row.id,
             email=row.invitee_email,
             username=row.enrollment_username,
-            expires=_utc(row.expires_at),
+            expires=aware(row.expires_at),
         )
         session.add(row)
         try:

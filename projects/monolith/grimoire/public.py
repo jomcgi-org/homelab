@@ -30,7 +30,8 @@ from typing import Any
 from sqlalchemy import and_, func, or_, union_all
 from sqlmodel import Session, select
 
-from grimoire.library import _iso, _PREVIEW_LEN
+from core.clock import aware_iso
+from grimoire.library import _PREVIEW_LEN
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     Book,
@@ -162,7 +163,7 @@ def get_chunk_public(session: Session, chunk_id: str) -> dict[str, Any] | None:
         "prev_id": prev_id,
         "next_id": next_id,
         "entities": entities,
-        "created_at": _iso(chunk.created_at),
+        "created_at": aware_iso(chunk.created_at),
     }
 
 

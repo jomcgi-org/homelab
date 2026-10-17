@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timezone
 import os
 
 from sqlalchemy import text
 from sqlmodel import Session
 
+from core.clock import aware_iso
 from knowledge.burst import kg_burst_state
 from knowledge.recall_metrics import snapshot as recall_metrics
 from knowledge.extraction import EXTRACTION_VERSION, KG_JOB_KIND, KG_NODE_KEY
@@ -16,14 +16,6 @@ from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
 _STALE_SECONDS = 6 * 60 * 60
 _DISPUTE_STALE_SECONDS = 48 * 60 * 60
-
-
-def _iso(value) -> str | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.isoformat()
 
 
 def _kg_health_core(session: Session, cap: int) -> dict:
@@ -195,7 +187,7 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         "atoms_24h": atoms_24h,
         "rejected_24h": int(quality.rejected_24h),
         "corrected_24h": int(quality.corrected_24h),
-        "last_success_at": _iso(provenance.last_success_at),
+        "last_success_at": aware_iso(provenance.last_success_at),
         "jobs_today": int(jobs_today),
         "cap": cap,
         # Mirror admission's full active grant size in kg_effective_cap (#5778).
@@ -206,15 +198,15 @@ def _kg_health_core(session: Session, cap: int) -> dict:
             "extra_jobs": burst.extra_jobs,
             "used_jobs": burst.used_jobs,
             "remaining_jobs": burst.remaining_jobs,
-            "created_at": _iso(burst.created_at),
-            "expires_at": _iso(burst.expires_at),
+            "created_at": aware_iso(burst.created_at),
+            "expires_at": aware_iso(burst.expires_at),
             "created_by": burst.created_by,
         },
         "open_disputes": int(disputes.open_disputes),
         "resolution_failed_disputes": int(disputes.resolution_failed_disputes),
         "oldest_open_dispute_seconds": oldest_dispute,
         "repo_diff_last_sha": repo_diff.last_sha,
-        "repo_diff_last_run_at": _iso(repo_diff.last_run_at),
+        "repo_diff_last_run_at": aware_iso(repo_diff.last_run_at),
         "agent_reports": {
             "written_24h_by_reporter_kind": {
                 str(kind): int(count)

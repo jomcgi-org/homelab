@@ -67,7 +67,7 @@ def _patch_common(monkeypatch, jobs, sessions=None, cycles=None, stats=None):
     monkeypatch.setattr(
         drain_console_router, "_load_step_stats", lambda ids: stats or {}
     )
-    monkeypatch.setattr(drain_console_router, "_server_app_version", lambda: "v1")
+    monkeypatch.setattr(drain_console_router, "running_app_version", lambda: "v1")
 
 
 def test_console_composes_jobs_and_lane(monkeypatch):

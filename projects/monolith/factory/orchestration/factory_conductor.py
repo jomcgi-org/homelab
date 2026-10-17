@@ -8,6 +8,7 @@ are the recovery state, so losing this process cannot lose a task or its pin.
 
 from __future__ import annotations
 
+from factory.orchestration.runtime import running_app_version
 from factory.orchestration import dependency_prs
 
 import asyncio
@@ -28,6 +29,7 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
+from core.clock import aware
 from core.db import get_engine
 from core.github import GITHUB_API
 from factory.orchestration import config as swarm_config
@@ -5306,23 +5308,6 @@ def _insert_integration(
     return False, result.refusal_code
 
 
-def _running_app_version() -> str:
-    """The running DBOS application version, or "" when it cannot be resolved.
-
-    Mirrors _current_app_version in swarm/drainer_router.py and
-    _server_app_version in swarm/router.py, including the discipline that
-    matters here: an unresolvable version means "cannot tell", never evidence
-    that a workflow is stranded.
-    """
-    try:
-        from dbos._utils import GlobalParams
-
-        return GlobalParams.app_version or ""
-    except Exception:  # noqa: BLE001
-        logger.warning("could not read the DBOS app version", exc_info=True)
-        return ""
-
-
 def _stranded_versions(state) -> tuple[str, str] | None:
     """Return (workflow version, running version) when no worker can run it.
 
@@ -5337,7 +5322,7 @@ def _stranded_versions(state) -> tuple[str, str] | None:
     will ever pick it up again. An unresolvable version on either side also
     returns None, because cancelling on a guess would reap a healthy node.
     """
-    running = _running_app_version()
+    running = running_app_version()
     if not running:
         return None
     version = getattr(state, "app_version", None) or getattr(
@@ -5353,10 +5338,6 @@ def _stranded_versions(state) -> tuple[str, str] | None:
 # database error stand in as "no progress since the workflow was created",
 # which cancels a live node that is merely waiting a long time for a guest.
 UNREADABLE_STEPS = object()
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
 def _current_replica_claim(owner: str | None) -> bool:
@@ -5410,7 +5391,7 @@ def _abandon_recovering_factory_session(
             ).first()
             if pending is None:
                 return False
-            stale_claim = pending.claimed_at is not None and _aware(
+            stale_claim = pending.claimed_at is not None and aware(
                 pending.claimed_at
             ) < datetime.now(timezone.utc) - timedelta(
                 seconds=FACTORY_RECOVERY_ABANDON_SECONDS
@@ -7304,7 +7285,7 @@ def _expire_reconciler_pause(task_id: str) -> bool:
             if (
                 pause is None
                 or pause.actor != ACTOR
-                or _aware(pause.created_at)
+                or aware(pause.created_at)
                 >= datetime.now(timezone.utc)
                 - timedelta(seconds=FACTORY_RECONCILER_PAUSE_TTL_SECONDS)
                 or db.exec(
@@ -7372,7 +7353,7 @@ def _deadline_backstop_due(task: dict) -> bool:
     if not isinstance(stamp, str):
         return False
     try:
-        deadline = _aware(datetime.fromisoformat(stamp))
+        deadline = aware(datetime.fromisoformat(stamp))
     except ValueError:
         return False
     grace = timedelta(seconds=FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS)

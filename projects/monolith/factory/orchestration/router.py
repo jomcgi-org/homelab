@@ -15,6 +15,7 @@ from core.identity import verified_email
 from goosecracker.api import REPO_CATALOG
 from framework import log_task_exception
 import shared.inference
+from factory.orchestration.runtime import running_app_version
 from factory.orchestration import config, runtime
 from factory.orchestration.budget import effective_budget
 from factory.orchestration.compare_router import router as compare_router
@@ -177,35 +178,6 @@ def _dbos_read():
     return client
 
 
-def _server_app_version() -> str:
-    """The app version DBOS is actually running, asked of DBOS itself.
-
-    A workflow's `app_version` is a value DBOS computes (a hash over registered
-    workflow source) unless `DBOS__APPVERSION` overrides it, and it is stored on
-    `GlobalParams` at launch. It is not a chart version and not a git sha, so
-    comparing it against an environment variable compares two different
-    namespaces and can only ever be unequal.
-
-    This previously read `APP_VERSION` then `GIT_SHA`, neither of which this
-    chart sets, so it returned the literal "unknown" on every call. No real DBOS
-    version equals "unknown", which made `compose_run` mark every PENDING or
-    ENQUEUED run stranded, banner and all, while the run was still running.
-
-    Returns "" when the version cannot be resolved, which the caller treats as
-    "cannot tell" rather than as evidence of stranding. `GlobalParams` is a
-    private module, hence the guarded import: there is no public accessor in
-    dbos 2.29.0, and a restructure upstream must degrade to "cannot tell"
-    instead of resurrecting the false positive.
-    """
-    try:
-        from dbos._utils import GlobalParams
-
-        return GlobalParams.app_version or ""
-    except Exception:
-        logger.warning("could not read the DBOS app version", exc_info=True)
-        return ""
-
-
 def _session_rows(workflow_id: str):
     from core.db import get_engine
     from sqlmodel import Session
@@ -268,7 +240,7 @@ def _compose_run_view(dbos, workflow_id: str) -> dict:
             dbos,
             workflow_id,
             _session_rows(workflow_id),
-            _server_app_version(),
+            running_app_version(),
             _decision_rows(workflow_id),
         )
     except Exception as exc:  # DBOS uses a runtime-specific missing-workflow error.
@@ -1163,7 +1135,7 @@ def list_runs(request: Request, active: bool = True, limit: int = 50) -> dict:
         _dbos_read(),
         active,
         session_costs,
-        _server_app_version(),
+        running_app_version(),
         limit=limit,
         decision_loader=_decision_rows_for,
     )

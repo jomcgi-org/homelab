@@ -19,8 +19,9 @@ from threading import BoundedSemaphore
 from opentelemetry import trace
 from sqlmodel import Session, select
 
+from core.clock import iso
 from factory.orchestration import factory_controls as controls
-from factory.orchestration.factory_decisions import _iso, _request_records
+from factory.orchestration.factory_decisions import _request_records
 from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
 from factory.orchestration.tracing import set_attributes
 
@@ -362,8 +363,8 @@ def _current_records(
             "state": control.state,
             "version": control.version,
             "actor": control.actor,
-            "updated_at": _iso(control.updated_at),
-            "stopped_at": _iso(control.stopped_at) if control.stopped_at else None,
+            "updated_at": iso(control.updated_at),
+            "stopped_at": iso(control.stopped_at) if control.stopped_at else None,
             "policy_generation": control_policy.get("generation"),
             "auto_merge": control_policy.get("auto_merge", False) is True,
         }
@@ -417,7 +418,7 @@ def _factory_context(receipt_id: int, *, actor: str) -> dict:
         return {
             "ok": True,
             "observed_at": _now(),
-            "updated_at": _iso(row.updated_at),
+            "updated_at": iso(row.updated_at),
             "source": "factory_records",
             # This is the stable receipt-scoped conversation supported by the
             # shared context contract. It deliberately does not pretend a
@@ -774,7 +775,7 @@ def _planner_factory_context(task_id: str) -> dict:
                 "repo": row.repo,
             },
             "observed_at": _now(),
-            "receipt_updated_at": _iso(row.updated_at),
+            "receipt_updated_at": iso(row.updated_at),
             "acceptance": {
                 "source": "factory_receipt",
                 "title": row.title,

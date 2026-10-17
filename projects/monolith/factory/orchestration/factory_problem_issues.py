@@ -8,7 +8,7 @@ blindly repeat the create request.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import hashlib
 import json
 import logging
@@ -19,6 +19,7 @@ import httpx
 from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
+from core.clock import aware
 from core.github import GITHUB_API
 from factory.orchestration.factory_controls import (
     PROBLEM_ISSUE_SOURCES,
@@ -51,10 +52,6 @@ _EVENT_ACTIONS = {
     "workflow_stranded": "workflow_stranded",
     "landing_recovery_exhausted": "merge_arm_refused",
 }
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
 def github_list(repo: str, suffix: str) -> list:
@@ -475,8 +472,7 @@ def _reconcile_pending(block: dict, started: FactoryAudit, detail: dict):
         if last is not None
         else {
             "next_retry_at": (
-                _aware(started.created_at)
-                + timedelta(minutes=block["retry_minutes"][0])
+                aware(started.created_at) + timedelta(minutes=block["retry_minutes"][0])
             ).isoformat()
         }
     )
@@ -722,7 +718,7 @@ def problem_issues_tick(policy: dict) -> None:
             .order_by(FactoryAudit.created_at)
         ).all()
         if len(started) >= block["max_per_24_hours"]:
-            next_retry = _aware(started[0].created_at) + timedelta(hours=24)
+            next_retry = aware(started[0].created_at) + timedelta(hours=24)
             _audit(
                 db,
                 ACTOR,

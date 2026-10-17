@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 
 from sqlmodel import select
 
+from core.clock import aware
 from factory.orchestration import factory_landing as landing
 from factory.orchestration.factory_controls import _read_session
 from factory.orchestration.factory_models import FactoryAudit
@@ -80,7 +81,7 @@ def _candidates(db, now) -> list[dict]:
                 "task_id": row.task_id,
                 "pr_number": detail["pr_number"],
                 "merge_commit_sha": detail.get("merge_commit_sha"),
-                "merged_at": landing._aware(row.created_at),
+                "merged_at": aware(row.created_at),
             }
         )
     return result
@@ -107,7 +108,7 @@ def _parse_time(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        return landing._aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        return aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
     except ValueError:
         return None
 

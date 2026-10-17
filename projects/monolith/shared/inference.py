@@ -188,3 +188,8 @@ def structured_output(schema: dict[str, Any], *, name: str) -> dict[str, Any]:
             },
         },
     }
+
+
+def extract_json(raw: str) -> str:
+    start, end = raw.find("{"), raw.rfind("}")
+    return raw[start : end + 1] if start != -1 and end > start else raw

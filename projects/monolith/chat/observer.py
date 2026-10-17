@@ -11,6 +11,8 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 
+from shared.inference import extract_json
+
 logger = logging.getLogger(__name__)
 
 _FRICTION_PROMPT = (
@@ -42,13 +44,6 @@ def _format_exchanges(exchanges: list[dict]) -> str:
     )
 
 
-def _extract_json(raw: str) -> str:
-    """Pull the first {...} object out of a model reply (tolerates stray text)."""
-    s = raw.find("{")
-    e = raw.rfind("}")
-    return raw[s : e + 1] if s != -1 and e != -1 and e > s else raw
-
-
 async def find_style_friction(
     exchanges: list[dict],
     caller: Callable[[str], Awaitable[str]],
@@ -73,7 +68,7 @@ async def find_style_friction(
         known_ids = {e["message_id"] for e in exchanges}
         prompt = _FRICTION_PROMPT.format(exchanges=_format_exchanges(exchanges))
         raw = await caller(prompt)
-        data = json.loads(_extract_json(raw))
+        data = json.loads(extract_json(raw))
 
         if not data.get("friction"):
             return None

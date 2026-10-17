@@ -16,28 +16,13 @@ keeping the snapshot reads a plain select(LatestPosition) is worth far more
 than shaving a dialect-specific INSERT ... ON CONFLICT.
 """
 
+from core.clock import as_utc
 from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
 from ships.ais import PriorPosition, should_insert_position
 from ships.models import LatestPosition, Position, Vessel
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """Coerce a datetime to tz-aware UTC.
-
-    Postgres returns tz-aware datetimes, but SQLite (used in unit tests) returns
-    naive ones even though we always write tz-aware UTC. Treat naive values as
-    UTC so the dedup time math (new.recorded_at minus prior.recorded_at) never
-    mixes aware and naive operands (which would raise TypeError and wrongly
-    force an insert).
-    """
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) -> int:
@@ -64,8 +49,8 @@ def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) 
                 lat=row.lat,
                 lon=row.lon,
                 speed=row.speed,
-                recorded_at=_as_utc(row.recorded_at),
-                first_seen_at_location=_as_utc(row.first_seen_at_location),
+                recorded_at=as_utc(row.recorded_at),
+                first_seen_at_location=as_utc(row.first_seen_at_location),
             )
 
     history: list[Position] = []

@@ -17,6 +17,7 @@ renders as a single strip above the job list instead of as a collection.
 from __future__ import annotations
 
 import re
+from core.clock import as_utc
 from datetime import datetime, timedelta, timezone
 
 from factory.execution.constants import DRAINER_NODE_KEY, KG_NODE_KEY
@@ -48,16 +49,8 @@ _PR_URL_RE = re.compile(
 )
 
 
-def _as_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 def iso_dt(value: datetime | None) -> str | None:
-    value = _as_utc(value)
+    value = as_utc(value)
     return value.isoformat() if value is not None else None
 
 
@@ -108,7 +101,7 @@ def classify_outcome(job: dict) -> tuple[str, dict | None]:
 
 
 def lock_is_live(job: dict, now: datetime) -> bool:
-    locked_at = _as_utc(job.get("locked_at"))
+    locked_at = as_utc(job.get("locked_at"))
     return (
         job.get("locked_by") is not None
         and locked_at is not None
@@ -127,7 +120,7 @@ def job_state(job: dict, now: datetime) -> str:
     """
     if lock_is_live(job, now):
         return "running"
-    next_run_at = _as_utc(job.get("next_run_at"))
+    next_run_at = as_utc(job.get("next_run_at"))
     if next_run_at is not None:
         if next_run_at <= now:
             return "due"
