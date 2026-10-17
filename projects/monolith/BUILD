@@ -5200,14 +5200,21 @@ py_test(
     name = "knowledge_fact_review_test",
     srcs = ["knowledge/fact_review_test.py"],
     imports = ["."],
-    deps = [":pkg_knowledge", "@pip//pytest", "@pip//sqlmodel"],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
 )
 
 py_test(
     name = "knowledge_review_sources_test",
     srcs = ["knowledge/review_sources_test.py"],
     imports = ["."],
-    deps = [":pkg_knowledge", "@pip//pytest"],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+    ],
 )
 
 # Real PostgreSQL row-lock ordering for review, dispute and extraction writers.
