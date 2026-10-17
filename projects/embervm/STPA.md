@@ -1,6 +1,6 @@
 # STPA Control Analysis: embervm
 
-_logic @ b1514fe38 · security @ ccaba452d_
+_logic @ b1514fe38 · security @ c05e43f66_
 
 _Auto-generated STPA safety model: unsafe states this system can reach and control actions that get it there. Single or multiple lenses: logic (mission failure), security (deliberate attack), governance (data safety)._
 
@@ -176,9 +176,9 @@ flowchart TD
 <details>
 <summary>Maturity detail</summary>
 
-- **Built:** bearer-token authentication on every unary and streaming gRPC call (#4693); the inert Cilium ingress policy was removed in #5816 and supplies no network isolation; SigV4-authenticated access to S3 artifact store enforced by gateway (#4708); brick dial-home registration bound to the noded pod's projected token claim identity (#4707, closed by #5049); per-principal envelope encryption of mutable state and capability-gated restore authorization (#4691, armed in production and dev 2026-08); the brick silence timeout (ADR embervm/037) bounding node-local authority once control-plane contact goes stale, armed at 21600s in production and dev; warmth ownership transition guard (#4962) refreshing .alive claims and reaping unclaimed pre-heartbeat directories
+- **Built:** bearer-token authentication on every unary and streaming gRPC call (#4693); the inert Cilium ingress policy was removed in #5816 and supplies no network isolation; SigV4-authenticated access to S3 artifact store enforced by gateway (#4708); brick dial-home registration bound to the noded pod's projected token claim identity (#4707, closed by #5049); per-principal envelope encryption of mutable state and capability-gated restore authorization (#4691, armed in production and dev 2026-08); the brick silence timeout (ADR embervm/037) bounding node-local authority once control-plane contact goes stale, armed at 21600s in production and dev; warmth ownership transition guard (#4962) refreshing .alive claims and reaping unclaimed pre-heartbeat directories; the Firecracker jailer (per-VM chroot, a uid and gid from a per-daemon leased block, a cgroup leaf with memory.oom.group, its own PID namespace), fail-closed at startup and per launch, shipped off until each stage arms it (#5255, #6965)
 - **Designed-only:** mTLS/SPIFFE certificate-based mutual transport auth for noded, request-scoped GitHub tool mediation replacing host-keyed injection (ADR agents/055), digest-verified manifests for restored artifact integrity (ADR embervm/033 decision 3), per-workload egress allowlist scoping (ADR embervm/035)
-- **Note:** Policy-removal corrections for #5816 only; other findings retain their earlier review stamp.
+- **Note:** Jailer hazard refreshed for #5255; policy-removal corrections for #5816; other findings retain their earlier review stamp.
 </details>
 
 ### Losses
@@ -195,7 +195,7 @@ flowchart TD
 
 | ID | View | Hazard (unsafe state) | → Losses | Maturity | Status | Issue |
 |----|----|----|----|----|----|----|
-| `firecracker-no-jailer` | physical | noded execs the firecracker binary directly, as root, inside a privileged pod; the only per-VM containment added is a mount namespace for vsock isolation. Firecracker's built-in seccomp filter is active, but a VMM escape lands in a process holding /dev/kvm, the fleet-shared store credential, and the noded bearer token, becoming the compromised-brick adversary instantly. | L.host-compromise | built | none | #5255 |
+| `firecracker-no-jailer` | physical | in production noded execs the firecracker binary directly, as root, inside a privileged pod; the only per-VM containment added is a mount namespace for vsock isolation. Firecracker's built-in seccomp filter is active, but a VMM escape lands in a process holding /dev/kvm, the fleet-shared store credential, and the noded bearer token, becoming the compromised-brick adversary instantly. The jailer (per-VM chroot, leased uid and gid, cgroup leaf, PID namespace) is built and shipped off: once armed, a brick that cannot contain guests exits before registering and conformance S7 fails on any unjailed launch; embervm-dev arms it first and production after a dev soak (#6965). | L.host-compromise | built | shipped-off | #5255 |
 | `host-keyed-credential-overreach` | physical | host-keyed egress credential injection authorizes by destination host only, so a prompt-injected or compromised guest can shape any request to an allowlisted host and have the credential attached to it | L.credential-theft | built | designed |  |
 | `identity-hijack` | physical | an actor holding the shared noded ServiceAccount token can re-register an existing brick's (node, pod_uid) at an address it controls and become the dial-home source the control plane treats as authoritative for that brick | L.credential-theft, L.host-compromise | built | enforced-prod |  |
 | `shared-egress-allowlist-widening` | physical | egress.internal.allowlist is global to the shared sidecar rather than scoped per workload, so shotter's two new frontend destinations become reachable by every other egress-enabled workload (today the claude runtime, later pi if granted egress) with no per-workload authorization check | L.credential-theft | built | none | #5320 |

@@ -482,6 +482,20 @@ defmodule Embervm.StatefulSweeper do
     GenServer.call(server, {:drain_node, node_id}, :infinity)
   end
 
+  @doc """
+  Force-banks the live stateful instances on ONE draining brick instance
+  (`node_id/pod_uid`) rather than the whole node, with `drain_node/2`'s
+  semantics. An instance a co-located sibling brick reports is left serving and
+  its workload is never marked draining
+  (`Embervm.WakeInstance.drains_with_instance?/6`); the rest bank through the
+  draining instance, whose capacity fact the registry has already dropped. An
+  empty `pod_uid` is `drain_node/2`.
+  """
+  @spec drain_instance(GenServer.server(), String.t(), String.t()) :: non_neg_integer()
+  def drain_instance(server \\ __MODULE__, node_id, pod_uid) do
+    GenServer.call(server, {:drain_instance, node_id, pod_uid}, :infinity)
+  end
+
   @impl true
   def handle_call(:sweep, _from, state) do
     {:reply, :ok, do_sweep(state)}
@@ -494,6 +508,11 @@ defmodule Embervm.StatefulSweeper do
 
   def handle_call({:drain_node, node_id}, _from, state) do
     {count, state} = force_bank_node(state, node_id)
+    {:reply, count, state}
+  end
+
+  def handle_call({:drain_instance, node_id, pod_uid}, _from, state) do
+    {count, state} = force_bank_node(state, node_id, pod_uid)
     {:reply, count, state}
   end
 
@@ -1234,19 +1253,26 @@ defmodule Embervm.StatefulSweeper do
   # workload draining (so recheck skips the raced-in/scrape/cap aborts and
   # decide_resolve forces COMMIT despite a parked connection) then begins its bank,
   # bypassing the idle predicate. Instances already banking are skipped (idempotent
-  # under a repeated drain edge). Returns {count_started, state}.
-  defp force_bank_node(state, node_id) do
+  # under a repeated drain edge). A `pod_uid` scopes the drain to that brick
+  # instance: an instance a sibling reports is filtered out BEFORE any workload is
+  # marked draining, and the rest carry the draining instance's dial to their bank
+  # workers. Returns {count_started, state}.
+  defp force_bank_node(state, node_id, pod_uid \\ nil) do
     now = state.clock.()
+    banking_meta = %{drain_dial: Embervm.WakeInstance.draining_dial(node_id, pod_uid)}
 
     instances =
       StatefulStore.all(state.store)
       |> Enum.filter(&(&1.state == :serving and &1.node_id == node_id))
       |> Enum.reject(&Map.has_key?(state.banking, &1.instance_id))
+      |> Enum.filter(
+        &Embervm.WakeInstance.drains_with_instance?(state.capacity_table, node_id, pod_uid, :stateful_vms, :vm_id, &1.vm_id)
+      )
 
     state =
       Enum.reduce(instances, state, fn instance, acc ->
         acc = %{acc | draining_workloads: MapSet.put(acc.draining_workloads, instance.workload)}
-        begin_bank(acc, instance, now)
+        begin_bank(acc, instance, now, banking_meta)
       end)
 
     {length(instances), state}
@@ -1415,7 +1441,9 @@ defmodule Embervm.StatefulSweeper do
     banking_entry = %{
       workload: instance.workload,
       brick_id: Map.get(banking_meta, :brick_id),
-      mem_mib: Map.get(banking_meta, :mem_mib)
+      mem_mib: Map.get(banking_meta, :mem_mib),
+      # The draining brick instance a scoped drain banks through (nil otherwise).
+      drain_dial: Map.get(banking_meta, :drain_dial)
     }
 
     state = incr_bank_inflight(state, instance.node_id)
@@ -1457,14 +1485,17 @@ defmodule Embervm.StatefulSweeper do
     # arbitrary sibling brick). Falls back to node_id for a legacy/single-instance
     # fact, preserving single-instance behaviour exactly. Resolved here on the
     # owner process so the worker reads a settled key.
-    dial_key = dial_for_vm(state, node_id, vm_id)
+    owner_dial = dial_for_vm(state, node_id, vm_id)
     # Whether the dial resolved to a SPECIFIC owning instance (a live owner fact
     # reported the vm_id) versus falling open to the bare node name. Task #12: an
     # unknown-vm FAILED_PRECONDITION only terminalizes the instance when we dialled
     # the owner; a fail-open dial to the node alias could be hitting the WRONG sibling
     # (a stale-fact race), so terminalizing there could fail a still-live instance and
-    # split-brain a second VM on the same volume. See finish_bank_active.
-    owner_resolved = dial_key != node_id
+    # split-brain a second VM on the same volume. See finish_bank_active. A scoped
+    # drain's dial to the draining instance is inferred from absence, not reported
+    # ownership, so it does not count as resolved either.
+    owner_resolved = owner_dial != node_id
+    dial_key = bank_dial(state, instance_id, node_id, vm_id)
     ip = instance.ip
     port = instance.port
 
@@ -1526,7 +1557,7 @@ defmodule Embervm.StatefulSweeper do
     node_id = instance.node_id
     vm_id = instance.vm_id
     # Same owning-instance dial resolution as the atomic bank worker.
-    dial_key = dial_for_vm(state, node_id, vm_id)
+    dial_key = bank_dial(state, instance_id, node_id, vm_id)
     ip = instance.ip
     port = instance.port
 
@@ -1860,7 +1891,7 @@ defmodule Embervm.StatefulSweeper do
     invalidate_fun = state.invalidate_fun
     resolve_fun = state.resolve_stateful_fun
     # The paused VM is still on its owning instance: dial that, not the alias.
-    dial_key = dial_for_vm(state, node_id, vm_id)
+    dial_key = bank_dial(state, instance_id, node_id, vm_id)
 
     spawn(fn ->
       outcome =
@@ -2465,6 +2496,18 @@ defmodule Embervm.StatefulSweeper do
   # bank against the alias misroutes to a brick that never owned the VM and loops.
   defp dial_for_vm(state, node_id, vm_id) do
     Embervm.WakeInstance.dial_for_vm(state.capacity_table, node_id, vm_id)
+  end
+
+  # The live-VM dial for a bank in flight (bank/checkpoint/resolve): the owning
+  # instance, or, when no owner reports the VM, the draining brick instance a
+  # scoped drain recorded on the banking entry. The registry drops the draining
+  # instance's capacity fact on the drain edge, so the owner lookup falls open to
+  # the bare node name, which resolves to no channel under co-location.
+  defp bank_dial(state, instance_id, node_id, vm_id) do
+    case dial_for_vm(state, node_id, vm_id) do
+      ^node_id -> get_in(state.banking, [instance_id, :drain_dial]) || node_id
+      owner -> owner
+    end
   end
 
   # The channel key for a bundle dial (EvictSnapshot/EvictArtifact): the instance

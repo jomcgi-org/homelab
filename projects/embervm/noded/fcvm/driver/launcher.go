@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,7 +21,26 @@ const (
 	VMMMemoryOverheadMib = 192
 	vmUIDBase            = 20000
 	vmUIDCount           = 40000
+	// vmUIDBlockSize is the slice of the node-wide uid range one daemon leases:
+	// 40 daemons per node, each with 1000 concurrently live VMs.
+	vmUIDBlockSize = 1000
+	// JailUIDBlocks is how many uid blocks the node's range holds, the bound
+	// ExecLauncher.UIDBlockBase must stay under.
+	JailUIDBlocks = vmUIDCount / vmUIDBlockSize
+	// defaultJailerBin is the jailer baked beside Firecracker in the noded image.
+	defaultJailerBin = "/opt/fc/jailer"
 )
+
+// ErrJailerContainment marks a jailed launch the launcher refused because it
+// could not contain the guest: no unique jail uid, no jail root, no VM cgroup,
+// no PID namespace, a VMM that did not join its cgroup, or a legacy bundle with
+// no jail resource metadata to stage. An armed jailer never falls back to
+// running the guest unjailed.
+var ErrJailerContainment = errors.New("driver: jailer containment unavailable")
+
+// errVMMExitedBeforeSocket reports a VMM (or its jailer) that exited before its
+// API socket accepted a connection.
+var errVMMExitedBeforeSocket = errors.New("driver: firecracker exited before its API socket was ready")
 
 // LaunchSpec contains the per-VM facts which must be applied before Firecracker
 // can accept API configuration.
@@ -31,6 +51,9 @@ type LaunchSpec struct {
 	Phase      string
 	MemMib     int
 	Resources  []JailResource
+	// DirectExec marks a legacy bundle whose metadata names no rootfs, so it
+	// can only run without the jailer. A disarmed launcher execs it directly,
+	// as it does every guest; an armed launcher refuses it.
 	DirectExec bool
 	// SerialPath and OnExit are host-owned observation facts, never guest identity.
 	SerialPath string
@@ -52,6 +75,18 @@ type ExecLauncher struct {
 	// JailerEnabled selects the production jailer path. False is the direct-exec
 	// escape hatch and preserves the previous launch behavior.
 	JailerEnabled bool
+	// DaemonReserveMib is the brick memory kept back for noded itself. The shared
+	// VM cgroup parent is capped at the brick's memory.max minus this reserve, so
+	// guests in aggregate OOM inside their own parent, never the container.
+	DaemonReserveMib int
+	// UIDLeaseDir is the directory holding the jail uid block locks (the
+	// release's snapshot root, shared by every brick of that release on the
+	// node). Jailed launches fail closed without it.
+	UIDLeaseDir string
+	// UIDBlockBase is the first uid block this daemon may lease. Releases that
+	// share a node lease under different snapshot roots, so each one needs its
+	// own disjoint range of blocks (production 0, embervm-dev 20).
+	UIDBlockBase int
 	// ReadyTimeout bounds how long Launch waits for the API socket to accept
 	// connections before giving up.
 	ReadyTimeout time.Duration
@@ -79,6 +114,36 @@ type ExecLauncher struct {
 	createCgroup func(vmID string, limitBytes int64) (*vmCgroup, error)
 	// allocateJailUID is the narrow uid-allocation seam used by lifecycle tests.
 	allocateJailUID func() (int, func(), error)
+	// jailerPIDNamespace applies the jailer's PID namespace to its command. nil
+	// selects setNewPIDNS; unprivileged tests substitute a no-op because
+	// CLONE_NEWPID needs CAP_SYS_ADMIN.
+	jailerPIDNamespace func(*exec.Cmd)
+	// launchModes overrides the daemon-wide launch-mode counters for tests.
+	launchModes *launchModeCounters
+}
+
+// launchModeCounters are cumulative launch outcomes since daemon start, keyed
+// by mode only, never by VM or workload. jailed and directExec count launches
+// that returned a running VMM; refused counts every launch an armed launcher
+// failed or would not contain, a legacy bundle without jail metadata included,
+// since none of them falls back to running the guest unjailed. directExec
+// therefore moves only on a disarmed brick.
+type launchModeCounters struct {
+	jailed     atomic.Uint64
+	directExec atomic.Uint64
+	refused    atomic.Uint64
+}
+
+// productionLaunchModes is shared by every ExecLauncher in the daemon, like the
+// uid pool: the restore driver and each per-build driver hold their own
+// launcher, and NodeStatus reports the daemon's total.
+var productionLaunchModes launchModeCounters
+
+func (l *ExecLauncher) modeCounters() *launchModeCounters {
+	if l.launchModes != nil {
+		return l.launchModes
+	}
+	return &productionLaunchModes
 }
 
 // firecrackerEnv is the environment a launched VMM receives when the launcher
@@ -101,8 +166,33 @@ var productionLaunchState = struct {
 	sync.Mutex
 	nextUID  int
 	usedUIDs map[int]bool
+	// uidBlock is this daemon's block of the node's uid range, leased on
+	// first use and held for the process lifetime.
+	uidBlock *uidBlockLease
 	cgroups  *cgroupManager
 }{usedUIDs: make(map[int]bool), cgroups: newCgroupManager()}
+
+// PrepareJailer proves at daemon start, before anything forks, that this
+// process can contain guests: the jailer binary is an executable regular file
+// and the cgroup v2 memory delegation below the brick's container cgroup is in
+// place. A brick that fails it must not start; noded.jailer.enabled=false is the
+// escape hatch, never a silent unjailed launch.
+func PrepareJailer(jailerBin string) error {
+	if jailerBin == "" {
+		jailerBin = defaultJailerBin
+	}
+	info, err := os.Stat(jailerBin)
+	if err != nil {
+		return fmt.Errorf("%w: jailer binary: %w", ErrJailerContainment, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("%w: jailer binary %q is not an executable regular file (mode %s)", ErrJailerContainment, jailerBin, info.Mode())
+	}
+	if err := productionLaunchState.cgroups.prepare(); err != nil {
+		return fmt.Errorf("%w: delegate VM cgroups: %w", ErrJailerContainment, err)
+	}
+	return nil
+}
 
 type execProcess struct {
 	cmd             *exec.Cmd
@@ -124,6 +214,13 @@ type execProcess struct {
 	exited          bool
 	hostRequested   bool
 	processEvidence string
+	// exitCh, when set, is closed once wait has collected the exit status, so a
+	// launch still waiting for the API socket learns of an early exit at once.
+	exitCh chan struct{}
+	// reaped is set, under exitMu, once the process is waited and its jail,
+	// cgroup and uid are released. A VMM that exited on its own then stops
+	// counting toward the driver's live projections before Release runs.
+	reaped bool
 	// Narrow process seams let lifecycle tests avoid real VMMs and cgroups.
 	killProcess  func() error
 	waitProcess  func() error
@@ -201,6 +298,9 @@ func (p *execProcess) wait() error {
 				p.stderr.Flush()
 			}
 		})
+		if p.exitCh != nil {
+			close(p.exitCh)
+		}
 	})
 	return p.waitErr
 }
@@ -222,7 +322,31 @@ func (p *execProcess) cleanup() {
 		if p.releaseID != nil {
 			p.releaseID()
 		}
+		p.exitMu.Lock()
+		p.reaped = true
+		p.exitMu.Unlock()
 	})
+}
+
+// Exited reports whether the VMM has exited and been fully reaped: waited, with
+// its jail, cgroup and uid released. Until then its memory stays charged, which
+// is the same rule Release follows.
+func (p *execProcess) Exited() bool {
+	p.exitMu.Lock()
+	defer p.exitMu.Unlock()
+	return p.reaped
+}
+
+// exitCause describes why the process exited, for a launch that saw it die
+// before its API socket was ready. Call only after wait has returned.
+func (p *execProcess) exitCause() string {
+	if p.waitErr != nil {
+		return p.waitErr.Error()
+	}
+	if p.cmd != nil && p.cmd.ProcessState != nil {
+		return p.cmd.ProcessState.String()
+	}
+	return "exit status 0"
 }
 
 // Jail returns the launch's path mapper when this process is jailed.
@@ -256,6 +380,35 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 	if spec.Phase != guestPhaseInit && spec.Phase != guestPhaseVM {
 		return nil, fmt.Errorf("driver: launch phase must be %q or %q", guestPhaseInit, guestPhaseVM)
 	}
+	counters := l.modeCounters()
+	if l.JailerEnabled && spec.DirectExec {
+		// A legacy bundle names no rootfs the jail could stage, so it could only
+		// run direct: root, no chroot, no VM cgroup. An armed brick refuses it
+		// like any other launch it cannot contain, and never execs it.
+		err := fmt.Errorf("%w: legacy bundle without jail resource metadata", ErrJailerContainment)
+		counters.refused.Add(1)
+		slog.Error("driver: refusing jailed launch", "vm", spec.VMID, "workload", spec.Workload, "err", err)
+		return nil, err
+	}
+	jailed := l.JailerEnabled
+	proc, err := l.launch(ctx, spec, jailed)
+	switch {
+	case err != nil && jailed:
+		counters.refused.Add(1)
+		if errors.Is(err, ErrJailerContainment) {
+			// Every refusal is logged: each one is a guest that did not run.
+			slog.Error("driver: refusing jailed launch", "vm", spec.VMID, "workload", spec.Workload, "err", err)
+		}
+	case err != nil:
+	case jailed:
+		counters.jailed.Add(1)
+	default:
+		counters.directExec.Add(1)
+	}
+	return proc, err
+}
+
+func (l *ExecLauncher) launch(ctx context.Context, spec LaunchSpec, jailed bool) (Process, error) {
 	_ = os.Remove(spec.SocketPath)
 
 	var (
@@ -264,21 +417,21 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 		cg        *vmCgroup
 		releaseID func()
 	)
-	if l.JailerEnabled && !spec.DirectExec {
+	if jailed {
 		allocateUID := l.allocateUID
 		if l.allocateJailUID != nil {
 			allocateUID = l.allocateJailUID
 		}
 		uid, release, err := allocateUID()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: allocate jail uid: %w", ErrJailerContainment, err)
 		}
 		gid := jailResourceGID(spec.Resources, uid)
 		releaseID = release
 		jail, err = prepareJail(filepath.Dir(spec.SocketPath), l.Bin, spec.VMID, uid, gid, spec.SocketPath)
 		if err != nil {
 			releaseID()
-			return nil, err
+			return nil, fmt.Errorf("%w: prepare jail: %w", ErrJailerContainment, err)
 		}
 		for _, resource := range spec.Resources {
 			if _, err := jail.stageResource(resource); err != nil {
@@ -292,25 +445,27 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 		if cgroups == nil {
 			cgroups = productionLaunchState.cgroups
 		}
-		createCgroup := cgroups.Create
+		createCgroup := func(vmID string, limitBytes int64) (*vmCgroup, error) {
+			return cgroups.Create(vmID, limitBytes, l.DaemonReserveMib)
+		}
 		if l.createCgroup != nil {
 			createCgroup = l.createCgroup
 		}
 		cg, err = createCgroup(spec.VMID, memoryLimitBytes(spec.MemMib))
 		if err != nil {
+			// Fail closed: a guest that cannot get its own memory ceiling is
+			// refused, never run directly as root in the daemon's cgroup.
 			_ = jail.Cleanup()
 			_ = os.Remove(spec.SocketPath)
 			releaseID()
-			jail = nil
-			releaseID = nil
-			if cgroups.shouldLogFailure(err) {
-				slog.Error("driver: jailer disabled for launch after cgroup setup failure",
-					"vm", spec.VMID, "err", err)
-			}
-			cmd = exec.Command(l.Bin, buildDirectArgs(spec.VMID, spec.SocketPath)...)
-		} else {
-			cmd = exec.Command(l.jailerBin(), buildJailerArgs(l.Bin, spec.VMID, uid, gid, jail.BaseDir, cg.ParentArg(), jail.APISocketPath())...)
+			return nil, fmt.Errorf("%w: create VM cgroup: %w", ErrJailerContainment, err)
 		}
+		cmd = exec.Command(l.jailerBin(), buildJailerArgs(l.Bin, spec.VMID, uid, gid, jail.BaseDir, cg.ParentArg(), jail.APISocketPath())...)
+		newPIDNS := l.jailerPIDNamespace
+		if newPIDNS == nil {
+			newPIDNS = setNewPIDNS
+		}
+		newPIDNS(cmd)
 	} else {
 		cmd = exec.Command(l.Bin, buildDirectArgs(spec.VMID, spec.SocketPath)...)
 		if l.MountNamespace {
@@ -340,19 +495,27 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 			releaseID()
 		}
 		_ = os.Remove(spec.SocketPath)
+		if jailed {
+			// The jailer, in its own PID namespace, is the containment. A spawn
+			// failure (including EPERM on CLONE_NEWPID) is never retried without it.
+			return nil, fmt.Errorf("%w: start jailer: %w", ErrJailerContainment, err)
+		}
 		return nil, fmt.Errorf("driver: start firecracker: %w", err)
 	}
 	proc := &execProcess{
 		cmd: cmd, vmID: spec.VMID, jail: jail, releaseID: releaseID,
 		stdout: stdout, stderr: stderr,
 		logger: l.Logger, workload: spec.Workload, serialPath: spec.SerialPath, onExit: spec.OnExit,
+		exitCh: make(chan struct{}),
 	}
 	if cg != nil {
 		proc.cgroup = cg
 	}
 	// Observe unexpected death immediately, not only when Release eventually
-	// runs. Wait is cached and remains the sole reaper. This watcher changes no
-	// driver ownership, admission or Release error semantics.
+	// runs. Wait is cached and remains the sole reaper. Once a VMM that exited on
+	// its own is reaped it stops counting toward the driver's live and claimed
+	// projections, but this watcher changes no ownership or Release semantics:
+	// the live entry stays until Release.
 	go func() { _ = proc.Wait() }()
 
 	if l.OOMScoreAdj > 0 {
@@ -367,10 +530,33 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	if err := waitForSocket(ctx, spec.SocketPath, timeout); err != nil {
+	if err := waitForSocketOrExit(ctx, spec.SocketPath, timeout, proc.exitCh); err != nil {
+		if errors.Is(err, errVMMExitedBeforeSocket) {
+			err = fmt.Errorf("%w (API socket %q): %s", errVMMExitedBeforeSocket, spec.SocketPath, proc.exitCause())
+			if jailed {
+				// The jailer exits before Firecracker binds its socket when it
+				// cannot build the jail: chroot, device nodes, cgroup join, uid drop.
+				err = fmt.Errorf("%w: %w", ErrJailerContainment, err)
+			}
+		}
 		_ = proc.Kill()
 		_ = os.Remove(spec.SocketPath)
 		return nil, err
+	}
+	if cg != nil {
+		// The jailer joins its leaf before it execs Firecracker, and Firecracker
+		// binds the API socket only after that exec, so a ready socket means the
+		// join has already happened. The jailer skips the join silently when the
+		// leaf is missing, so membership is checked, not assumed.
+		contained, err := cg.contains(cmd.Process.Pid)
+		if err != nil || !contained {
+			if err == nil {
+				err = fmt.Errorf("firecracker pid %d is not in VM cgroup %q", cmd.Process.Pid, cg.Path())
+			}
+			_ = proc.Kill()
+			_ = os.Remove(spec.SocketPath)
+			return nil, fmt.Errorf("%w: verify VM cgroup membership: %w", ErrJailerContainment, err)
+		}
 	}
 	return proc, nil
 }
@@ -379,15 +565,28 @@ func (l *ExecLauncher) jailerBin() string {
 	if l.JailerBin != "" {
 		return l.JailerBin
 	}
-	return "/opt/fc/jailer"
+	return defaultJailerBin
 }
 
+// allocateUID hands out a jail uid from this daemon's leased block. The block
+// is leased on first use and kept for the process lifetime, so uids stay unique
+// across every brick of this release on the node, and across releases as long
+// as each leases from its own disjoint block range (UIDBlockBase).
 func (l *ExecLauncher) allocateUID() (int, func(), error) {
 	productionLaunchState.Lock()
 	defer productionLaunchState.Unlock()
-	for range vmUIDCount {
-		uid := vmUIDBase + productionLaunchState.nextUID%vmUIDCount
-		productionLaunchState.nextUID = (productionLaunchState.nextUID + 1) % vmUIDCount
+	if productionLaunchState.uidBlock == nil {
+		lease, err := leaseUIDBlock(l.UIDLeaseDir, l.UIDBlockBase)
+		if err != nil {
+			return 0, nil, err
+		}
+		productionLaunchState.uidBlock = lease
+		productionLaunchState.nextUID = 0
+	}
+	base := productionLaunchState.uidBlock.base
+	for range vmUIDBlockSize {
+		uid := base + productionLaunchState.nextUID%vmUIDBlockSize
+		productionLaunchState.nextUID = (productionLaunchState.nextUID + 1) % vmUIDBlockSize
 		if !productionLaunchState.usedUIDs[uid] {
 			productionLaunchState.usedUIDs[uid] = true
 			return uid, func() {
@@ -397,7 +596,7 @@ func (l *ExecLauncher) allocateUID() (int, func(), error) {
 			}, nil
 		}
 	}
-	return 0, nil, fmt.Errorf("driver: jailer uid pool exhausted (%d concurrent VMs)", vmUIDCount)
+	return 0, nil, fmt.Errorf("driver: jailer uid block %d-%d exhausted (%d concurrent VMs)", base, base+vmUIDBlockSize-1, vmUIDBlockSize)
 }
 
 func memoryLimitBytes(guestMemMib int) int64 {
@@ -408,6 +607,9 @@ func buildDirectArgs(vmID, socketPath string) []string {
 	return []string{"--api-sock", socketPath, "--id", vmID}
 }
 
+// buildJailerArgs never passes --new-pid-ns or --daemonize: noded creates the
+// PID namespace itself (setNewPIDNS) so the jailer execs Firecracker in place
+// and the launched process remains the VMM.
 func buildJailerArgs(bin, vmID string, uid, gid int, chrootBase, parentCgroup, apiSocket string) []string {
 	return []string{
 		"--id", vmID,
@@ -431,6 +633,14 @@ func setOOMScoreAdj(pid, score int) error {
 }
 
 func waitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error {
+	return waitForSocketOrExit(ctx, socketPath, timeout, nil)
+}
+
+// waitForSocketOrExit is waitForSocket that also gives up as soon as exited is
+// closed: a VMM or jailer that died before binding its socket never will, so
+// waiting out the full timeout only delays the failure. A nil channel never
+// fires.
+func waitForSocketOrExit(ctx context.Context, socketPath string, timeout time.Duration, exited <-chan struct{}) error {
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
@@ -446,6 +656,9 @@ func waitForSocket(ctx context.Context, socketPath string, timeout time.Duration
 		select {
 		case <-waitCtx.Done():
 			timer.Stop()
+		case <-exited:
+			timer.Stop()
+			return errVMMExitedBeforeSocket
 		case <-timer.C:
 		}
 	}

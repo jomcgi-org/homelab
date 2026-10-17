@@ -519,6 +519,9 @@ data:
     link_cached_rootfs() {
       # Materialize under the same lock: siblings can share this link path too.
       # Both names refer to the immutable cache inode used by banked snapshots.
+      # A jailed Firecracker opens that inode as its per-VM uid (#5255), so it
+      # must be world-readable; this also heals a 0600 cache on its next hit.
+      chmod 0644 "$cache"
       ln -f "$cache" "$BASE_ROOTFS_PATH"
       echo "linked $BASE_ROOTFS_PATH -> $cache"
     }
@@ -628,6 +631,10 @@ data:
         rm -f "$cache_tmp"
       else
         mv_error="$(mktemp)"
+        # mktemp and rootfs-store both create 0600, and a jailed Firecracker
+        # opens this shared inode as its per-VM uid (#5255). The guard keeps
+        # the missing-file diagnostic below reachable under set -e.
+        [ ! -f "$cache_tmp" ] || chmod 0644 "$cache_tmp"
         if mv -f "$cache_tmp" "$cache" 2>"$mv_error"; then
           if [ "$baked" -eq 1 ]; then
             echo "rootfs baked at $cache ($size)"

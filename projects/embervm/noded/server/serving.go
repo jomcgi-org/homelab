@@ -22,8 +22,9 @@ import (
 // over the tap, starts the per-VM health probe, and returns {vm_id, ip, port}. A
 // readiness failure DESTROYS the VM and its tap and returns the error: there is no
 // half-alive endpoint a caller could publish. FAILED_PRECONDITION on an unknown or
-// unrestorable ref; RESOURCE_EXHAUSTED at the node live-VM cap. The daemon is off the
-// request hit path after this: requests reach the guest directly over ip:port.
+// unrestorable ref; INVALID_ARGUMENT without a nonzero ResourceSpec;
+// RESOURCE_EXHAUSTED when admission refuses. The daemon is off the request hit
+// path after this: requests reach the guest directly over ip:port.
 func (s *Server) StartServing(ctx context.Context, req *nodev1.StartServingRequest) (*nodev1.StartServingResponse, error) {
 	if err := requireIDs("workload", req.GetTrace().GetWorkload()); err != nil {
 		return nil, err
@@ -41,16 +42,31 @@ func (s *Server) startServing(ctx context.Context, req *nodev1.StartServingReque
 	if s.isDraining() {
 		return nil, status.Error(codes.Unavailable, "noded: draining")
 	}
-	// Cheap rejection under real memory/tap pressure (ADR embervm/014 decision 3),
-	// BEFORE the tap allocation and cold boot below. Serving is tap-bearing, so
-	// both mem headroom and the tap freelist are checked; the workload's mem need
-	// comes from the request's ResourceSpec.
-	if s.slotsExhausted() {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
-	}
-	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classTapBearing); err != nil {
+	// The ResourceSpec is the admission need for both modes and the boot size for
+	// FRESH; without it the VM would be charged 0 MiB and booted at the driver
+	// default, so refuse rather than guess.
+	if err := requireBootResources("StartServing", req.GetResources()); err != nil {
 		return nil, err
 	}
+	// Admission (ADR embervm/014 decision 3), BEFORE the tap allocation and cold
+	// boot below. Serving is tap-bearing, so slots, memory and the tap freelist
+	// are all checked. The ticket rides ctx to the driver call of either mode,
+	// which releases it the moment the VM is booted or has failed; the defer
+	// covers every early return in between. A RELIGHT is charged at least the
+	// banked bundle's recorded size, which is what the restored VM lands at.
+	// Only a control-plane boot counts toward the placed in-flight figure: an
+	// activator wake has no control-plane claim to net against.
+	need := s.servingAdmitMib(req)
+	var placed uint64
+	if origin == nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
+		placed = placedShare(uint64(req.GetResources().GetMemMib()), need)
+	}
+	ticket, err := s.admit(ctx, "StartServing", need, placed, classTapBearing)
+	if err != nil {
+		return nil, err
+	}
+	defer ticket.release()
+	ctx = withAdmissionTicket(ctx, ticket)
 	port := req.GetPort()
 	if port == 0 {
 		return nil, status.Error(codes.InvalidArgument, "noded: port required")
@@ -134,6 +150,7 @@ func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServing
 		handlerSizeBytes = simg.sizeBytes
 	}
 	h, err := s.servingDriver.ClaimServing(ctx, workload, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, handlerPath, handlerSizeBytes)
+	admissionLanded(ctx)
 	if err != nil {
 		s.servingNet.ReleaseTap(ctx, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot serving vm: %v", err)
@@ -173,6 +190,7 @@ func (s *Server) startServingRelight(ctx context.Context, req *nodev1.StartServi
 	}
 
 	h, err := s.servingDriver.RestoreServing(ctx, workload, ref)
+	admissionLanded(ctx)
 	if err != nil {
 		s.servingNet.ReleaseTap(ctx, ip)
 		// The snapshot is left on disk (never deleted on a failed restore).

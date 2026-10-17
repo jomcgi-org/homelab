@@ -57,12 +57,18 @@ defmodule Embervm.BrickControllerDecisionSpanTest do
         classes: [class("span-at-max", %{max: 2})],
         scale_get_fun: fn _ns, _name -> {:ok, 2} end,
         registered_fun: fn -> %{"span-at-max" => 2} end,
+        condition_fun: fn _workload, _condition -> :ok end,
         up_threshold: 1
       )
 
     BrickController.note_denial(pid, "wl", 512)
 
     attrs = decision_span(fn -> BrickController.reconcile_now(pid) end, "span-at-max")
+
+    # The only fitting class is at its fixed max, so the demand is exhausted
+    # even with no ceiling bound configured.
+    assert [%{workload: "wl", reason: :ceiling_exhausted}] =
+             BrickController.capacity_health(pid).conditions
 
     assert attrs["ember.reason"] == "at_max"
     assert attrs["ember.brick.mode"] == "up"

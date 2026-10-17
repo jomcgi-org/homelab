@@ -147,6 +147,9 @@ spec:
             # session on its node (co-located bricks share a node).
             - name: EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS
               value: {{ if .Values.drainInstanceScopedSessions }}"true"{{ else }}"false"{{ end }}
+            # The same scoping for serving, stateful and group workloads.
+            - name: EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS
+              value: {{ if .Values.drainInstanceScopedWorkloads }}"true"{{ else }}"false"{{ end }}
             - name: EMBERVM_CROSS_NODE_REJOIN
               value: {{ if .Values.crossNodeRejoin }}"true"{{ else }}"false"{{ end }}
             # SpecTrace gate for spec validation (GitHub issue #4770):
@@ -420,9 +423,15 @@ spec:
             # Brick capacity (PR-3): the per-size-class DESIRED replica counts the
             # Embervm.BrickController reconciles the brick Deployments to, as a JSON
             # array of {name,desired,min,max,ceiling_bound,usable_mib,
-            # mem_reject_floor_mib,slots};
+            # mem_reject_floor_mib,vm_overhead_mib,slots,floors};
             # capacities are declared here rather than observed because classes
-            # must work before any brick exists.
+            # must work before any brick exists. vm_overhead_mib is the per-VM
+            # charge every brick's admission makes: noded.vmOverheadMib under the
+            # reserved model, 0 under observed (noded reports the value but does
+            # not charge it), so a class fits a need only when its empty brick
+            # would admit one. floors counts the bricks.nodeFloors
+            # pinned to the class, so the controller looks for floor pods only
+            # where some exist.
             # desired from the bricks.desiredReplicas
             # map, default 0 for an unlisted class; min/max are the Axis C autoscale
             # clamp from bricks.autoscale.minReplicas/maxReplicas, unlisted min reads
@@ -438,12 +447,19 @@ spec:
             {{- $bounds := $auto.ceilingBound | default dict }}
             {{- $daemonReserve := .Values.bricks.daemonReserveMib | default 512 | int }}
             {{- $rejectFloor := .Values.noded.memRejectFloorMib | default 512 | int }}
+            {{- $vmOverhead := 0 }}
+            {{- if eq (.Values.noded.admissionModel | default "") "reserved" }}
+            {{- $vmOverhead = .Values.noded.vmOverheadMib | default 0 | int }}
+            {{- end }}
             {{- $classes := list }}
             {{- range .Values.bricks.classes }}
+            {{- $className := .name }}
+            {{- $floors := 0 }}
+            {{- range $.Values.bricks.nodeFloors }}{{ if eq .class $className }}{{ $floors = add1 $floors }}{{ end }}{{ end }}
             {{- $nameplateMib := trimSuffix "Gi" .resources.limits.memory | int | mul 1024 }}
             {{- $usableMib := max 0 (sub $nameplateMib $daemonReserve) }}
             {{- $slots := ternary .maxLiveVMs $.Values.noded.maxLiveVMs (not (kindIs "invalid" .maxLiveVMs)) }}
-            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0)) "ceiling_bound" (index $bounds .name | default 0) "usable_mib" $usableMib "mem_reject_floor_mib" $rejectFloor "slots" $slots) }}
+            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0)) "ceiling_bound" (index $bounds .name | default 0) "usable_mib" $usableMib "mem_reject_floor_mib" $rejectFloor "vm_overhead_mib" $vmOverhead "slots" $slots "floors" $floors) }}
             {{- end }}
             - name: EMBERVM_BRICK_CLASSES
               value: {{ $classes | toJson | quote }}

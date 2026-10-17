@@ -67,6 +67,12 @@ spec:
             - { name: S6_ENABLED, value: {{ .Values.conformance.s6.enabled | quote }} }
             - { name: S6_BUDGET, value: {{ .Values.conformance.budgets.s6 | quote }} }
             - { name: S6_MIN_TRACE_EVENTS, value: {{ .Values.conformance.s6.minTraceEvents | quote }} }
+            # S7 jailer and admission facts and S8 jailed egress probe (#5255).
+            # Both read "true" only; anything else leaves the scenario out.
+            - { name: S7_REQUIRE_JAILER, value: {{ .Values.conformance.requireJailer | quote }} }
+            - { name: S7_BUDGET, value: {{ .Values.conformance.budgets.s7 | quote }} }
+            - { name: S8_EGRESS_PROBE, value: {{ .Values.conformance.egressProbe | quote }} }
+            - { name: S8_BUDGET, value: {{ .Values.conformance.budgets.s8 | quote }} }
             {{- if $s6.enabled }}
             # The TLC toolchain the image ships under /opt/tla (conformance BUILD
             # :tla_tar_amd64). Only rendered with S6 on, so the S1..S5 pod is

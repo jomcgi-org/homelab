@@ -55,13 +55,16 @@ go_test(
     name = "cmd_test",
     srcs = [
         "auth_test.go",
+        "launcher_config_test.go",
         "main_test.go",
         "spiffe_test.go",
+        "startup_gate_test.go",
         "trace_test.go",
     ],
     embed = [":cmd_lib"],
     deps = [
         "//projects/embervm/noded/config",
+        "//projects/embervm/noded/fcvm/driver",
         "//projects/embervm/noded/server",
         "//projects/embervm/proto/embervm/node/v1:nodev1",
         "@com_github_spiffe_go_spiffe_v2//bundle/x509bundle",

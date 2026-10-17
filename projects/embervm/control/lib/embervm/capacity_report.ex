@@ -16,6 +16,18 @@ defmodule Embervm.CapacityReport do
   whether a guest allocation can fit and is deliberately not the same value as
   kubelet working set or `kubectl top`.
 
+  Each instance row also carries the admission view placement acts on:
+  `admittable_mib` (`Embervm.Brick.admittable_mib/1`, the daemon's own
+  `mem_admittable_mib` when it reports one, else the per-model fallback; nil for
+  a wildcard or a blind brick, which the memory gate does not evaluate),
+  `pending_mib` (the debit placement subtracts from it: control-plane claims the
+  brick's report does not count yet, `Embervm.Scheduler.Inflight.debit_mib/3`),
+  `inflight_claims_mib` (every unexpired control-plane claim on it, gross), the
+  daemon's in-flight boots and the part of them it admitted for a control-plane
+  placement, its cumulative admission refusals by reason, and its jailer facts
+  (`jailer_armed` and the cumulative `launch_modes` counts; an armed brick whose
+  `direct_exec` count moves is running a guest without containment).
+
   Instance rows remain keyed and labeled by `instance_id` and `pod_uid`. A
   surge can have two instances with the same `node_id`, so grouping by node id
   would erase real capacity. Aggregate headroom and free-slot counts are
@@ -23,7 +35,8 @@ defmodule Embervm.CapacityReport do
   The observable gauges land in Honeycomb through the collector metrics pipeline.
   """
 
-  alias Embervm.{BrickController, Cron, Dispatcher, NodeCapacity, WorkloadCatalog}
+  alias Embervm.{Brick, BrickController, Cron, Dispatcher, NodeCapacity, WorkloadCatalog}
+  alias Embervm.Scheduler.Inflight
 
   @default_horizon_seconds 3_600
   @max_horizon_seconds 86_400
@@ -56,7 +69,8 @@ defmodule Embervm.CapacityReport do
     dispatcher_stats = Keyword.get_lazy(opts, :dispatcher_stats, &safe_dispatcher_stats/0)
     capacity_health = Keyword.get_lazy(opts, :capacity_health, &safe_capacity_health/0)
 
-    instances = facts |> Enum.map(&instance_row/1) |> Enum.sort_by(& &1.instance_id)
+    inflight_table = Keyword.get(opts, :inflight_table, Inflight.table())
+    instances = facts |> Enum.map(&instance_row(&1, inflight_table)) |> Enum.sort_by(& &1.instance_id)
     catalog = catalog_map(entries)
     queue_depth = queue_depth(dispatcher_stats)
 
@@ -181,11 +195,12 @@ defmodule Embervm.CapacityReport do
   defp unavailable_capacity_health,
     do: %{ok: false, conditions: [%{reason: :controller_unavailable}], ceilings: []}
 
-  defp instance_row(facts) do
+  defp instance_row(facts, inflight_table) do
     node_id = text(Map.get(facts, :node_id))
     pod_uid = text(Map.get(facts, :pod_uid))
     live_vms = non_negative(Map.get(facts, :live_vms))
     max_live_vms = non_negative(Map.get(facts, :max_live_vms))
+    brick = Brick.to_brick(facts)
 
     %{
       instance_id: instance_id(facts, node_id, pod_uid),
@@ -199,6 +214,18 @@ defmodule Embervm.CapacityReport do
       live_vms: live_vms,
       max_live_vms: max_live_vms,
       free_vm_slots: max(max_live_vms - live_vms, 0),
+      mem_reserved_mib: brick.mem_reserved_mib,
+      admits_on_reservation: brick.admits_on_reservation,
+      vm_overhead_mib: brick.vm_overhead_mib,
+      admission_reported: brick.admission_reported,
+      admittable_mib: admittable_mib(brick),
+      pending_mib: Inflight.debit_mib(Brick.dial_id(brick), brick, table: inflight_table),
+      inflight_claims_mib: Inflight.pending_mib(Brick.dial_id(brick), table: inflight_table),
+      mem_inflight_mib: brick.mem_inflight_mib,
+      inflight_vms: brick.inflight_vms,
+      mem_inflight_placed_mib: brick.mem_inflight_placed_mib,
+      inflight_placed_vms: brick.inflight_placed_vms,
+      jailer_armed: brick.jailer_armed,
       workloads:
         facts
         |> Map.get(:workloads, %{})
@@ -208,6 +235,11 @@ defmodule Embervm.CapacityReport do
         |> Enum.sort_by(& &1.workload)
     }
     |> Map.merge(Embervm.NodeRegistry.diagnostic_facts(facts))
+  end
+
+  # Signed, like the daemon's own field: a negative value admits nothing.
+  defp admittable_mib(brick) do
+    if Brick.wildcard?(brick) or Brick.blind?(brick), do: nil, else: Brick.admittable_mib(brick)
   end
 
   defp instance_id(facts, node_id, pod_uid) do

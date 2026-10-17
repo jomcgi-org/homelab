@@ -39,14 +39,26 @@ defmodule Embervm.Retry do
   # well-formed HTTP error: the request itself is wrong, so retrying it would
   # just reproduce the same 4xx. That's always permanent regardless of what
   # retry_on says, which is why this check comes before the retry_on lookup.
+  #
+  # :capacity is the opposite: every brick the dispatcher tried refused to boot
+  # a VM under node pressure, so no guest ran and a retry has no side effect.
+  # It is always retryable whatever retry_on says.
   @spec retryable?(reason(), retry_config()) :: boolean()
   def retryable?(:guest4xx, _retry_config), do: false
+  def retryable?(:capacity, _retry_config), do: true
   def retryable?(reason, retry_config), do: reason in retry_config.retry_on
 
   # attempt is the CURRENT attempt count (1-based: the first try is attempt
   # 1). A failure on the attempt that reaches max_attempts has exhausted its
   # budget and is permanent even if the reason class is otherwise retryable.
+  #
+  # A :capacity failure never exhausts the budget: it does not count as an
+  # attempt (TaskStore classifies later failures net of capacity retries). Like a
+  # task held queued for capacity, it waits until its TTL if it has one, and the
+  # backoff below caps its pace.
   @spec classify(reason(), pos_integer(), retry_config()) :: :fail_retryable | :fail_permanent
+  def classify(:capacity, _attempt, _retry_config), do: :fail_retryable
+
   def classify(reason, attempt, retry_config) do
     if retryable?(reason, retry_config) and attempt < retry_config.max_attempts do
       :fail_retryable
@@ -60,14 +72,17 @@ defmodule Embervm.Retry do
   # sampled uniformly from [0, bound] rather than always sleeping the full
   # bound. This spreads a thundering herd of simultaneously-failed tasks
   # across the whole window instead of retrying them all in lockstep.
+  #
+  # Integer math with a capped exponent: :capacity retries leave attempt
+  # unbounded, and the float form raised badarith once 2^(attempt - 1)
+  # overflowed a double (attempt 1016 at the default base), inside TaskStore.
+  @max_backoff_exponent 32
+
   @spec backoff_ms(pos_integer(), retry_config(), (non_neg_integer() -> non_neg_integer())) ::
           non_neg_integer()
   def backoff_ms(attempt, retry_config, rand_fun \\ &default_rand/1) do
-    bound =
-      min(
-        retry_config.backoff_cap_ms,
-        trunc(retry_config.backoff_ms * :math.pow(2, attempt - 1))
-      )
+    exponent = attempt |> Kernel.-(1) |> max(0) |> min(@max_backoff_exponent)
+    bound = min(retry_config.backoff_cap_ms, retry_config.backoff_ms * Integer.pow(2, exponent))
 
     rand_fun.(bound)
   end

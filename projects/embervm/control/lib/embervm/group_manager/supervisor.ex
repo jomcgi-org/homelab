@@ -16,11 +16,22 @@ defmodule Embervm.GroupManager.Supervisor do
   create for the same workload finds the registry key taken and refuses
   `{:error, :already_live}` (the singleton at the process level; the GroupStore's own
   singleton gate is the durable backstop).
+
+  ## anchor probes record demand once
+
+  Picking the anchor probes every group-capable node in turn, and each probe is
+  a placement pinned to that node, so a probe miss is not fleet demand. The
+  probes record nothing; a create or wake that no node can host records ONE
+  unpinned miss over the group-capable fleet (a denial, or a base build where a
+  node has room but not the base). A bank or adoption re-finds a group that
+  already runs, so its miss records nothing at all.
   """
 
   use Supervisor
 
   alias Embervm.{GroupManager, NodeCapacity, WorkloadCatalog}
+  alias Embervm.Scheduler
+  alias Embervm.Scheduler.Request
 
   @registry Embervm.GroupRegistry
   @dyn_sup Embervm.GroupManager.DynamicSupervisor
@@ -61,7 +72,7 @@ defmodule Embervm.GroupManager.Supervisor do
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
     with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
-         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, nil),
+         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, nil, anchor_opts(opts, true)),
          {:ok, pid} <- start_child(workload, entry, node_id, dial_id, opts) do
       result = GroupManager.create_group(pid)
       # On a failed create the group is torn down to failed; retire the process so a
@@ -98,7 +109,7 @@ defmodule Embervm.GroupManager.Supervisor do
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
     with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
-         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, instance_id),
+         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, instance_id, anchor_opts(opts, true)),
          {:ok, pid} <- start_or_get_child(workload, instance_id, entry, node_id, dial_id, opts) do
       result = GroupManager.wake_group(pid)
 
@@ -122,6 +133,8 @@ defmodule Embervm.GroupManager.Supervisor do
   `running` and the sweeper re-publishes). A group with no live owner process (e.g.
   a CP restart that has not re-adopted it yet) spawns one bound to the instance so
   the bank has a driver. A missing catalog entry / anchor node is `{:error, reason}`.
+  `opts[:anchor]` (`{node_id, dial_id}`) pins the anchor a drain already knows,
+  for a group whose brick instance no longer reports capacity.
   """
   @spec bank_group(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def bank_group(workload, instance_id, opts \\ []) do
@@ -132,7 +145,7 @@ defmodule Embervm.GroupManager.Supervisor do
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
     with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
-         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, instance_id),
+         {:ok, node_id, dial_id} <- bank_anchor(capacity_table, entry, workload, instance_id, opts),
          {:ok, pid} <- start_or_get_child(workload, instance_id, entry, node_id, dial_id, opts) do
       case GroupManager.bank_group(pid) do
         {:ok, _} = ok ->
@@ -164,7 +177,7 @@ defmodule Embervm.GroupManager.Supervisor do
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
     with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
-         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, instance_id) do
+         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, instance_id, anchor_opts(opts, false)) do
       _ = start_or_get_child(workload, instance_id, entry, node_id, dial_id, opts)
       :ok
     else
@@ -245,6 +258,7 @@ defmodule Embervm.GroupManager.Supervisor do
       :store,
       :publisher,
       :capacity_table,
+      :inflight_table,
       :tenant,
       :supernet,
       :port_base,
@@ -279,9 +293,23 @@ defmodule Embervm.GroupManager.Supervisor do
   # group's total member memory. Returns {:ok, node_id, dial_id} or
   # {:error, :no_capacity} (no group-capable node) / {:error, :no_eligible_instance}
   # (a node exists but no instance on it can host the group).
-  defp anchor_instance(capacity_table, entry, workload, group_instance_id) do
+  #
+  # Each per-node probe is pinned, so it records no demand. `opts[:demand]` (true
+  # for a create or wake) classifies a miss on EVERY node once, unpinned; a bank
+  # or adoption passes false. `opts[:inflight]` is the ledger the probes read.
+  # Public (undocumented) so the probe and demand contract is testable directly.
+  @doc false
+  def anchor_instance(capacity_table, entry, workload, group_instance_id, opts \\ []) do
     need_mib = group_mem_mib(entry)
-    select_opts = [table: capacity_table, workload: workload, need_mib: need_mib] ++ warmth_opts(group_instance_id)
+
+    select_opts =
+      [
+        table: capacity_table,
+        workload: workload,
+        need_mib: need_mib,
+        record_demand: false,
+        inflight: Keyword.get(opts, :inflight, :default)
+      ] ++ warmth_opts(group_instance_id)
 
     NodeCapacity.all(capacity_table)
     |> Enum.filter(&group_capable?/1)
@@ -300,12 +328,54 @@ defmodule Embervm.GroupManager.Supervisor do
         facts
         |> prefer_warm_nodes(group_instance_id)
         |> Enum.uniq_by(& &1.configured_id)
-        |> Enum.find_value({:error, :no_eligible_instance}, fn fact ->
+        |> Enum.find_value(:none, fn fact ->
           case Embervm.WakeInstance.select(fact.configured_id, select_opts) do
             {:ok, dial_id} -> {:ok, fact.configured_id, dial_id}
             {:error, _reason} -> false
           end
         end)
+        |> case do
+          :none ->
+            if Keyword.get(opts, :demand, false), do: note_anchor_miss(capacity_table, workload, need_mib, select_opts)
+            {:error, :no_eligible_instance}
+
+          found ->
+            found
+        end
+    end
+  end
+
+  # The one demand signal for a create or wake no group-capable node can host: an
+  # unpinned placement over the group-capable fleet (require_subnet is exactly
+  # group_capable?/1), whose own miss records a denial, or a base build on the
+  # node that has room but not the base. Its result is discarded.
+  defp note_anchor_miss(capacity_table, workload, need_mib, select_opts) do
+    _ =
+      Scheduler.place_with_demand(%Request{
+        table: capacity_table,
+        workload: workload,
+        need_mib: need_mib,
+        require_subnet: true,
+        base: :ready,
+        inflight: Keyword.fetch!(select_opts, :inflight)
+      })
+
+    :ok
+  end
+
+  defp anchor_opts(opts, demand?) do
+    [demand: demand?, inflight: Keyword.get(opts, :inflight_table, :default)]
+  end
+
+  # The anchor a bank drives. A drain of the group's brick instance hands its dial
+  # (`opts[:anchor]`, `{node_id, dial_id}`): the registry has already dropped that
+  # instance's capacity fact, so re-finding the group by its reported members
+  # would miss it and cold-pick a sibling that holds no member. Otherwise the
+  # bank re-finds the running group like an adoption does, recording no demand.
+  defp bank_anchor(capacity_table, entry, workload, instance_id, opts) do
+    case Keyword.get(opts, :anchor) do
+      {node_id, dial_id} when is_binary(node_id) and is_binary(dial_id) -> {:ok, node_id, dial_id}
+      _ -> anchor_instance(capacity_table, entry, workload, instance_id, anchor_opts(opts, false))
     end
   end
 

@@ -2330,4 +2330,51 @@ message NodeStatus {
   // Sum of positive oom_kill deltas within individual host activations since
   // daemon start. The first report of every activation is a baseline only.
   uint64 guest_oom_count = 42;
+
+  // -- Admission ledger (one predicate, evaluated by the daemon) -------------
+  // admission_reported is true when the daemon fills mem_admittable_mib. A
+  // daemon that predates these fields leaves it false, and the control plane
+  // falls back to evaluating the per-model predicate on the facts above, so a
+  // half-rolled fleet stays placeable.
+  bool admission_reported = 44;
+  // mem_admittable_mib is the largest guest memMib this brick would admit for
+  // ONE more VM at the instant of the report, computed by the same function the
+  // daemon's boot verbs call. The reserved model subtracts declared claims, boots
+  // still in flight and the per-VM overhead of every live and in-flight VM plus
+  // the new one from the budget; both models are also bounded by observed
+  // headroom minus in-flight boots minus the reject floor whenever headroom is
+  // known. Signed: a negative value admits nothing, not even a zero-need probe.
+  // The control plane admits need N here iff N is at most this value minus its
+  // own placements the daemon has not yet acknowledged.
+  int64 mem_admittable_mib = 45;
+  // mem_inflight_mib and inflight_vms are boots the daemon has admitted whose VM
+  // has not yet joined its live map. They are already reflected in
+  // mem_admittable_mib; they are reported for diagnosis and parity tests.
+  uint64 mem_inflight_mib = 46;
+  uint32 inflight_vms = 47;
+  // mem_inflight_placed_mib and inflight_placed_vms are the part of the
+  // in-flight boots above that answer a control-plane placement whose RPC is
+  // still open, each at the memMib the control plane declared for it. A
+  // node-local wake (the activators), the excess of a restore over its declared
+  // size, and a boot that outlives its RPC are left out: no control-plane claim
+  // stands behind them. The control plane nets its own unsettled claims against
+  // these two, never against the totals above, so a boot it did not place can
+  // never cancel one of its claims.
+  uint64 mem_inflight_placed_mib = 51;
+  uint32 inflight_placed_vms = 52;
+  // admission_refusals is cumulative since daemon start, keyed by the stable
+  // refusal token: "pressure:mem", "pressure:taps", "slots". Never labelled by
+  // VM or workload IDs.
+  map<string, uint64> admission_refusals = 48;
+
+  // -- Jailer facts (#5255) ---------------------------------------------------
+  // jailer_armed is the daemon's configured jailer flag after its startup
+  // preflight passed. A daemon whose preflight fails never registers, so a
+  // registered brick with jailer_armed true has proven containment at start.
+  bool jailer_armed = 49;
+  // launch_modes is cumulative since daemon start, keyed "jailed",
+  // "direct_exec" (jailer disarmed) and "refused" (a jailed launch that failed
+  // closed, or a legacy bundle with no jail metadata that an armed brick will
+  // not run unjailed). An armed brick never moves direct_exec.
+  map<string, uint64> launch_modes = 50;
 }

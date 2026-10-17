@@ -28,7 +28,8 @@ defmodule Embervm.PoolManager do
 
   Primes prefer the fullest eligible instance so load concentrates and empty
   bricks can drain. Instances must also satisfy the workload's memory need
-  according to `Embervm.Scheduler.mem_eligible?/2`.
+  according to `Embervm.Scheduler.mem_eligible?/2`, which reads each brick's own
+  admission model (`Embervm.Brick.admittable_mib/1`).
 
   ## backpressure
 
@@ -38,6 +39,13 @@ defmodule Embervm.PoolManager do
   restores. `free_primed_slots` from the daemon's own heartbeat is the authority
   for "how many are already parked"; in-flight primes this loop has issued but the
   daemon has not yet reported are added so a burst of ticks does not over-prime.
+
+  Every prime also CLAIMS its declared memory in the shared in-flight ledger
+  (`Embervm.Scheduler.Inflight`) before its worker starts, settles it when the
+  Prime succeeds and releases it when it fails. `Scheduler.place/1` subtracts
+  those claims, so the memory a prime still restoring will use is charged on
+  every later tick, and the session, task and serving placers see it too.
+  Within one pass `consume/2` charges the same thing on the pass's own copy.
 
   ## destroy-on-assign
 
@@ -70,10 +78,10 @@ defmodule Embervm.PoolManager do
   use GenServer
   require Logger
 
-  alias Embervm.{NodeCapacity, WorkloadCatalog}
+  alias Embervm.{Brick, NodeCapacity, WorkloadCatalog}
   alias Embervm.PrimedOp
   alias Embervm.Scheduler
-  alias Embervm.Scheduler.Request
+  alias Embervm.Scheduler.{Inflight, Request}
   alias Embervm.Node.V1.{PrimeRequest, PrimeResponse, Trace}
 
   @refill_interval_ms 1_000
@@ -124,6 +132,8 @@ defmodule Embervm.PoolManager do
       deposit_fun: Keyword.get(opts, :deposit_fun, &Embervm.Dispatcher.deposit/4),
       reservation_target_fun:
         Keyword.get(opts, :reservation_target_fun, &Embervm.Scheduler.Reservation.set_pool_target_shadow/4),
+      # The in-flight ledger every prime claims against (tests pass a private one).
+      inflight_table: Keyword.get(opts, :inflight_table, Inflight.table()),
       op_log: Keyword.get(opts, :op_log, nil),
       op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
       tenant: Keyword.get(opts, :tenant, "homelab"),
@@ -176,14 +186,18 @@ defmodule Embervm.PoolManager do
 
         case result do
           {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" ->
+            # The VM exists now: hold the debit until the daemon's next report
+            # counts it, then let it drop.
+            Inflight.settle(node_id, meta.claim_ref, table: state.inflight_table)
             _ = safe(fn -> append_primed(state, wl, vm_id, node_id) end)
             _ = safe(fn -> state.deposit_fun.(state.dispatcher, node_id, wl, vm_id) end)
 
           {:error, reason} ->
+            Inflight.release(node_id, meta.claim_ref, table: state.inflight_table)
             Logger.warning("embervm pool: Prime for #{wl} on #{node_id} failed: #{inspect(reason)}")
 
           _ ->
-            :ok
+            Inflight.release(node_id, meta.claim_ref, table: state.inflight_table)
         end
 
         {:noreply, %{state | prime_workers: workers} |> dec_prime(node_id, wl)}
@@ -198,6 +212,7 @@ defmodule Embervm.PoolManager do
         {:noreply, state}
 
       {meta, workers} ->
+        Inflight.release(meta.node_id, meta.claim_ref, table: state.inflight_table)
         Logger.warning("embervm pool: prime worker for #{meta.workload} died: #{inspect(reason)}")
         {:noreply, %{state | prime_workers: workers} |> dec_prime(meta.node_id, meta.workload)}
     end
@@ -207,7 +222,11 @@ defmodule Embervm.PoolManager do
 
   @impl true
   def terminate(_reason, state) do
-    for {pid, _meta} <- state.prime_workers, do: Process.exit(pid, :shutdown)
+    for {pid, meta} <- state.prime_workers do
+      Process.exit(pid, :shutdown)
+      Inflight.release(meta.node_id, meta.claim_ref, table: state.inflight_table)
+    end
+
     :ok
   end
 
@@ -272,33 +291,29 @@ defmodule Embervm.PoolManager do
     # fails "unknown snapshot_ref" and loops at the refill cadence. Fall back to the
     # node name for a legacy/single-instance fact (no instance_id), unchanged. This
     # key is also the per-instance bookkeeping key (inflight primes, floor status)
-    # so two co-located instances track independently.
+    # and the in-flight ledger key, so two co-located instances track independently.
     node_id = dial_id(facts)
     node_inflight = node_inflight_primes(state, node_id)
     budget = max(0, Map.get(facts, :max_live_vms, 0) - Map.get(facts, :live_vms, 0) - node_inflight)
-    %{
+
+    # Normalized BY `Embervm.Brick.to_brick/1`, so the shared
+    # `Scheduler.mem_eligible?/2` predicate and `Brick.admittable_mib/1` read the
+    # same shape here as on every other placement path, including the admission
+    # model and ledger facts. to_brick/1 reads a key PRESENT holding nil as 0:
+    # Elixir orders nil above every number, so a nil headroom would otherwise
+    # satisfy EVERY memory need rather than none. An empty size_class reads as the
+    # WILDCARD (the legacy DaemonSet), which is always mem-eligible by design; a
+    # classed brick with a zero budget is blind and never is (see the Scheduler
+    # moduledoc). In-flight primes are NOT subtracted from memory here:
+    # Scheduler.place/1 charges their ledger claims.
+    facts
+    |> Brick.to_brick()
+    |> Map.merge(%{
       node_id: node_id,
       instance_id: node_id,
       free_slots: budget,
-      # Normalized exactly as `Embervm.Brick.to_brick/1` does, so the shared
-      # `Scheduler.mem_eligible?/2` predicate reads the same shape here as on every
-      # other placement path. `||` rather than a Map.get default because the key can
-      # be PRESENT holding nil, which a default never covers.
-      #
-      # mem_headroom_mib is the one that MUST be normalized: mem_eligible?/2 compares
-      # `mem_headroom_mib >= need_mib + mem_reject_floor_mib`, and Elixir orders atoms above numbers, so a
-      # nil headroom would satisfy EVERY memory need rather than none. Empty
-      # size_class and zero mem_budget_mib deliberately read as the WILDCARD (the
-      # legacy DaemonSet, or a brick under no cgroup limit), which is always
-      # mem-eligible by design: see the Scheduler moduledoc.
-      size_class: Map.get(facts, :size_class) || "",
-      mem_headroom_mib: Map.get(facts, :mem_headroom_mib) || 0,
-      mem_reject_floor_mib: Map.get(facts, :mem_reject_floor_mib) || 0,
-      mem_budget_mib: Map.get(facts, :mem_budget_mib) || 0,
-      live_vms: Map.get(facts, :live_vms) || 0,
-      max_live_vms: Map.get(facts, :max_live_vms) || 0,
       workloads: ready_workloads(state, facts)
-    }
+    })
   end
 
   # Workloads this node has a ready base for, paired with their catalog entry
@@ -341,14 +356,14 @@ defmodule Embervm.PoolManager do
         {wl, max(0, w.floor - Map.get(fleet_totals, wl, 0) - inflight)}
       end
 
-    {floor_plan, instances, remaining} = allocate_phase(floor_deficits, instances, budget, %{})
+    {floor_plan, instances, remaining} = allocate_phase(floor_deficits, instances, budget, %{}, state.inflight_table)
     depths =
       Map.new(workloads, fn wl ->
         capacity = Enum.sum(for i <- instances, do: if(Map.has_key?(i.workloads, wl), do: i.free_slots, else: 0))
         {wl, min(queue_depth(state, wl), capacity)}
       end)
     surplus = allocate_proportional(depths, remaining)
-    {surplus_plan, _instances, _remaining} = allocate_phase(surplus, instances, remaining, %{})
+    {surplus_plan, _instances, _remaining} = allocate_phase(surplus, instances, remaining, %{}, state.inflight_table)
 
     Map.merge(floor_plan, surplus_plan, fn _key, a, b -> a + b end)
     |> Enum.map(fn {{node_id, wl}, count} ->
@@ -359,19 +374,21 @@ defmodule Embervm.PoolManager do
       # (the same trap instance_facts/2 documents for the node-name alias). This
       # fleet is mixed-vendor, so a fleet-wide scan would be actively wrong.
       ref = get_in(by_node, [node_id, :workloads, wl, :snapshot_ref])
-      %{node_id: node_id, workload: wl, snapshot_ref: ref, count: count}
+      instance = Map.get(by_node, node_id, %{})
+      charge = Brick.charge_mib(instance, get_in(instance, [:workloads, wl, :mem_mib]))
+      %{node_id: node_id, workload: wl, snapshot_ref: ref, count: count, charge_mib: charge}
     end)
   end
 
-  defp allocate_phase(demands, instances, budget, plan) do
+  defp allocate_phase(demands, instances, budget, plan, inflight) do
     keys = demands |> Enum.filter(fn {_wl, n} -> n > 0 end) |> Enum.map(&elem(&1, 0))
-    allocate_phase_round(keys, demands, instances, budget, plan)
+    allocate_phase_round(keys, demands, instances, budget, plan, inflight)
   end
 
-  defp allocate_phase_round(_keys, _demands, instances, budget, plan) when budget <= 0,
+  defp allocate_phase_round(_keys, _demands, instances, budget, plan, _inflight) when budget <= 0,
     do: {plan, instances, 0}
 
-  defp allocate_phase_round(keys, demands, instances, budget, plan) do
+  defp allocate_phase_round(keys, demands, instances, budget, plan, inflight) do
     {plan, instances, budget, granted} =
       Enum.reduce(keys, {plan, instances, budget, false}, fn wl, {p, is, b, g} ->
         allocated = p |> Enum.filter(fn {{_node, key}, _n} -> key == wl end) |> Enum.map(&elem(&1, 1)) |> Enum.sum()
@@ -379,7 +396,7 @@ defmodule Embervm.PoolManager do
         if allocated >= Map.get(demands, wl, 0) or b <= 0 do
           {p, is, b, g}
         else
-          case place_one(is, wl) do
+          case place_one(is, wl, inflight) do
             :none -> {p, is, b, g}
             {index, next} ->
               node_id = Enum.at(next, index).node_id
@@ -388,15 +405,17 @@ defmodule Embervm.PoolManager do
         end
       end)
 
-    if granted and budget > 0, do: allocate_phase_round(keys, demands, instances, budget, plan), else: {plan, instances, budget}
+    if granted and budget > 0,
+      do: allocate_phase_round(keys, demands, instances, budget, plan, inflight),
+      else: {plan, instances, budget}
   end
 
-  defp place_one([], _wl), do: :none
-  defp place_one(instances, wl) do
+  defp place_one([], _wl, _inflight), do: :none
+  defp place_one(instances, wl, inflight) do
     need = Enum.find_value(instances, fn i -> get_in(i, [:workloads, wl, :mem_mib]) end)
     candidates = Enum.filter(instances, &Map.has_key?(&1.workloads, wl))
 
-    case Scheduler.place(%Request{bricks: candidates, key: wl, need_mib: need}) do
+    case Scheduler.place(%Request{bricks: candidates, key: wl, need_mib: need, inflight: inflight}) do
       [] ->
         :none
 
@@ -408,34 +427,48 @@ defmodule Embervm.PoolManager do
 
   # Charge one placement to the instance: a slot, AND the workload's memory.
   #
-  # Decrementing headroom is what makes the memory gate CUMULATIVE within a pass.
+  # Charging memory is what makes the memory gate CUMULATIVE within a pass.
   # A single tick can place several VMs on one instance (a floor deficit, or the
   # queue-depth surplus), and the capacity facts only refresh on the next
-  # heartbeat, so checking a static `mem_headroom_mib` per placement would happily
-  # commit three 1024 MiB guests to a brick reporting 1933 MiB: each one passes the
-  # gate alone, and the daemon then refuses all but the first with pressure:mem.
+  # heartbeat, so checking static facts per placement would happily commit three
+  # 1024 MiB guests to a brick reporting 1933 MiB: each one passes the gate
+  # alone, and the daemon then refuses all but the first with pressure:mem.
   # That is the failure this whole change exists to stop (issue #4121), so it has
-  # to hold within the pass and not just across ticks.
+  # to hold within the pass; across ticks the in-flight ledger claims hold it.
+  #
+  # Every input of Brick.admittable_mib/1 moves, so the pass stays cumulative in
+  # whichever model the brick admits on: observed headroom drops by the need, the
+  # declared reservation grows by it (live_vms + 1 advances the reserved model's
+  # per-VM overhead term), and a daemon-reported admittable value drops by what
+  # a claim charges (Brick.charge_mib/2: the need, plus that overhead only under
+  # the reserved model).
   defp consume(instance, wl) do
     need = instance.workloads[wl].mem_mib || 0
     %{instance |
       free_slots: instance.free_slots - 1,
       live_vms: instance.live_vms + 1,
-      mem_headroom_mib: max(0, instance.mem_headroom_mib - need)
+      mem_headroom_mib: max(0, instance.mem_headroom_mib - need),
+      mem_reserved_mib: instance.mem_reserved_mib + need,
+      mem_admittable_mib: instance.mem_admittable_mib - Brick.charge_mib(instance, need)
     }
   end
 
   defp spawn_primes(state, allocation) do
-    Enum.reduce(allocation, state, fn %{node_id: node_id, workload: wl, snapshot_ref: ref, count: n}, acc ->
-      Enum.reduce(1..n//1, acc, fn _i, acc2 -> start_prime_worker(acc2, node_id, wl, ref) end)
+    Enum.reduce(allocation, state, fn %{node_id: node_id, workload: wl, snapshot_ref: ref, count: n} = a, acc ->
+      Enum.reduce(1..n//1, acc, fn _i, acc2 -> start_prime_worker(acc2, node_id, wl, ref, a.charge_mib) end)
     end)
   end
 
-  defp start_prime_worker(state, node_id, wl, snapshot_ref) do
+  defp start_prime_worker(state, node_id, wl, snapshot_ref, charge_mib) do
     owner = self()
     channel_fun = state.channel_fun
     invalidate_fun = state.invalidate_fun
     prime_fun = state.prime_fun
+
+    # Assume-time claim, BEFORE the worker can issue the Prime, so every later
+    # placement (this loop's next tick, or any other placer) sees the memory.
+    claim_ref = {:pool, make_ref()}
+    Inflight.claim(node_id, claim_ref, charge_mib, table: state.inflight_table)
 
     {pid, ref} =
       spawn_monitor(fn ->
@@ -465,7 +498,7 @@ defmodule Embervm.PoolManager do
         send(owner, {:prime_result, self(), node_id, wl, result})
       end)
 
-    meta = %{ref: ref, node_id: node_id, workload: wl}
+    meta = %{ref: ref, node_id: node_id, workload: wl, claim_ref: claim_ref}
 
     %{state | prime_workers: Map.put(state.prime_workers, pid, meta)}
     |> inc_prime(node_id, wl)

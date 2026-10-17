@@ -206,9 +206,13 @@ type Server struct {
 	// calls). 0 until a second sample exists. Overridable in tests.
 	cpuHeadroom func() uint64
 	// slotCeiling maps the configured MaxLiveVMs backstop to the value advertised
-	// in NodeStatus. Memory admission is enforced separately by admitOrReject.
+	// in NodeStatus. Memory admission is enforced separately by admit.
 	// Overridable in tests.
 	slotCeiling func(configured uint64) uint64
+	// admission is the in-flight boot ledger behind admit (pressure.go): boots
+	// admitted whose VM has not yet joined the driver's live map, plus the
+	// cumulative refusal counters NodeStatus reports.
+	admission admissionLedger
 
 	// httpClient fetches zip-lane archives from the in-cluster SeaweedFS read path
 	// over the pod network. Overridable in tests (a fake archive server).
@@ -903,6 +907,23 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	if resp, ok := s.adoptSiblingBaseBundle(baseKey, workload, imageDigest, img.RootfsPath, readyPath); ok {
 		return resp, nil
 	}
+	// Admission, after every AlreadyBuilt and sibling-adoption short-circuit (so
+	// an idempotent repair call is never refused) and before any staging or
+	// registry bookkeeping (so a refusal leaves no FAILED base or build_error).
+	// The build guest runs on its own driver, outside LiveCount and ClaimedMib, so
+	// its ticket is held for the whole build rather than released at boot. Once
+	// the guest has booted, runBuild moves the ticket out of the observed term
+	// (buildGuestBooted), because the cgroup headroom then charges the guest.
+	res := req.GetResources()
+	buildNeedMib := uint64(res.GetMemMib())
+	if buildNeedMib == 0 {
+		buildNeedMib = s.primeNeedMib(workload)
+	}
+	ticket, err := s.admit(ctx, "BuildBase", buildNeedMib, buildNeedMib, classMemOnly)
+	if err != nil {
+		return nil, err
+	}
+	defer ticket.release()
 	if reclaimed, err := s.reclaimStaleBaseStaging(baseKey, existed); err != nil {
 		return nil, status.Errorf(codes.Internal, "noded: reclaim stale base staging for %q: %v", baseKey, err)
 	} else if reclaimed {
@@ -929,7 +950,6 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	if harnessInit == "" {
 		harnessInit = s.cfg.HarnessInit
 	}
-	res := req.GetResources()
 	bd := s.newBuildDriver(BuildDriverSpec{
 		RootfsPath:  img.RootfsPath,
 		HarnessInit: harnessInit,
@@ -937,7 +957,10 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		MemMib:      int(res.GetMemMib()),
 	})
 
-	sizeBytes, err := s.runBuild(buildCtx, bd, baseKey, workload, readyPath, archive)
+	sizeBytes, err := s.runBuild(buildCtx, bd, ticket, baseKey, workload, readyPath, archive)
+	// runBuild has torn the build guest down (its deferred Release) on every
+	// path, so the reservation is no longer backing any memory.
+	ticket.release()
 	if err != nil {
 		s.bases.failBuild(baseKey, workload, img.RootfsPath, readyPath, err.Error())
 		s.signalChange()
@@ -1230,12 +1253,17 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 // Sequence: Claim (cold boot) -> Prime (drain the vsock path via /shim/healthz)
 // -> Hydrate (POST the archive; zip lane only) -> WaitReady (/shim/ready flips 200
 // only after the shim unpacks + imports the handler) -> SnapshotBase.
-func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload, readyPath string, archive []byte) (int64, error) {
+//
+// ticket is the build's admission ticket. The caller releases it after runBuild
+// returns; runBuild only marks the guest booted once Claim succeeds, so the
+// observed admission term stops counting it on top of the cgroup headroom.
+func (s *Server) runBuild(ctx context.Context, bd BuildDriver, ticket *admissionTicket, baseKey, workload, readyPath string, archive []byte) (int64, error) {
 	spec := substrate.ClaimSpec{Workload: workload, Arch: s.cfg.Arch, ThreadID: newID("build")}
 	h, err := bd.Claim(ctx, spec)
 	if err != nil {
 		return 0, fmt.Errorf("cold boot: %w", err)
 	}
+	ticket.buildGuestBooted()
 	egressCancel := func() {}
 	defer func() {
 		egressCancel()
@@ -1359,7 +1387,8 @@ func (s *Server) fetchAndVerifyArchive(ctx context.Context, archiveURL, wantSha2
 // ---- Prime -----------------------------------------------------------------
 
 // Prime restores one pristine VM from snapshot_ref, waits for the guest ready
-// path, and parks it idle. Prime admission gates on memory headroom only.
+// path, and parks it idle. Prime admission gates on memory and the live-VM
+// backstop only (it allocates no tap).
 func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.PrimeResponse, error) {
 	if s.isDraining() {
 		return nil, status.Error(codes.Unavailable, "noded: draining")
@@ -1413,17 +1442,19 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if req.GetLineageId() != "" && (req.GetVolumeMount() == "" || req.GetVolumeSizeBytes() == 0) {
 		return nil, status.Error(codes.InvalidArgument, "noded: complete session volume fields required")
 	}
-	// Cheap rejection under real memory pressure (ADR embervm/014 decision 3), read
-	// AFTER the base is resolved (so the workload's mem footprint is known) but
-	// BEFORE the expensive Claim/restore. Prime is vsock-only (no tap), so it is
-	// memory-only. The base is resolved above; its workload's registry sizing gives
-	// the need (0 when unknown, gating on the floor alone).
-	if s.slotsExhausted() {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
-	}
-	if err := s.admitOrReject(s.primeNeedMib(base.workload), classMemOnly); err != nil {
+	// Admission (ADR embervm/014 decision 3), AFTER the base is resolved (so the
+	// workload's mem footprint is known) but BEFORE the expensive Claim/restore.
+	// Prime is vsock-only (no tap), so it checks slots and memory only. The need
+	// is the larger of the workload's registry sizing and the size the base was
+	// built at. The ticket holds the reservation until Claim returns; the defer
+	// covers every early return in between.
+	sizeVCPUs, sizeMemMib := s.primeSizing(base.workload, ref)
+	primeNeed := s.primeAdmitMib(sizeMemMib, ref)
+	ticket, err := s.admit(ctx, "Prime", primeNeed, placedShare(uint64(sizeMemMib), primeNeed), classMemOnly)
+	if err != nil {
 		return nil, err
 	}
+	defer ticket.release()
 	// While the registry is stale, a Prime that would be the FIRST warm VM for a
 	// workload is cold placement (refused); a Prime that refills an already-warm
 	// workload keeps existing warmth topped up (allowed). This preserves "serve
@@ -1509,7 +1540,15 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 			return s.cfg.HarnessInit
 		}(),
 	}
+	if volumeDiskPath != "" {
+		// A volume-forced cold boot must run at the size admission charged (the
+		// size the warm restore would have run at), not the shared restore
+		// driver's default.
+		spec.ColdBootVCPUs = int(sizeVCPUs)
+		spec.ColdBootMemMib = int(sizeMemMib)
+	}
 	h, err := s.driver.Claim(ctx, spec)
+	ticket.release()
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore snapshot %q: %v", ref, err)
 	}
@@ -1801,23 +1840,6 @@ func (s *Server) reapServingEntry(e *servingEntry) error {
 		s.signalChange()
 		return nil
 	})
-}
-
-// liveVMCount is the node-wide count of live microVMs for the backstop cap:
-// task-pool VMs plus live session VMs. The fcvm driver's own live map is the
-// authority (both Prime and RestoreSession claim through the same driver), so its
-// LiveCount already sums both; this helper names the invariant at the call site
-// (session VMs count against max_live_vms exactly like task VMs).
-func (s *Server) liveVMCount() int {
-	return s.driver.LiveCount()
-}
-
-// slotsExhausted is the node-side runaway backstop enforced by all boot verbs
-// (Prime, Relight, StartServing, StartGroupMember) and the stateful path. Admission
-// applies both the configured backstop and the memory predicate.
-func (s *Server) slotsExhausted() bool {
-	ceiling := s.SlotCeiling()
-	return ceiling > 0 && s.liveVMCount() >= ceiling
 }
 
 // ---- Session verbs (R2) ----------------------------------------------------
@@ -2150,8 +2172,8 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	if err := requireIDs("session_id", req.GetSessionId()); err != nil {
 		return nil, err
 	}
-	if s.slotsExhausted() {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
+	if err := s.refuseIfSlotsExhausted("Relight"); err != nil {
+		return nil, err
 	}
 	snapshot, ok := s.sessionSnap.get(ref)
 	if !ok {
@@ -2165,15 +2187,21 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		workload = req.GetTrace().GetWorkload()
 	}
 	// Memory admission charges the workload's declared need, resolved from the
-	// registry exactly as Prime does (#4186). A restore faults the whole banked
-	// memory back in, so asking with need=0 admitted a 4 GiB session onto a brick
-	// with floor-only headroom. The lookup runs after the ref check so an unknown
-	// ref still reports FAILED_PRECONDITION rather than a spurious pressure reject.
-	if err := s.admitOrReject(s.primeNeedMib(workload), classMemOnly); err != nil {
+	// registry exactly as Prime does (#4186), else the size recorded with the
+	// banked bundle. A restore faults the whole banked memory back in, so asking
+	// with need=0 admitted a 4 GiB session onto a brick with floor-only headroom.
+	// The lookup runs after the ref check so an unknown ref still reports
+	// FAILED_PRECONDITION rather than a spurious pressure reject. The ticket holds
+	// the reservation until RestoreSession returns.
+	relightNeed := s.relightNeedMib(workload, ref)
+	ticket, err := s.admit(ctx, "Relight", relightNeed, placedShare(s.primeNeedMib(workload), relightNeed), classMemOnly)
+	if err != nil {
 		return nil, err
 	}
+	defer ticket.release()
 	trackDirtyPages := s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, workload)
 	h, err := s.sessionDriver.RestoreSession(ctx, workload, ref, trackDirtyPages)
+	ticket.release()
 	if err != nil {
 		// The snapshot is left on disk (never deleted on a failed restore).
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight session snapshot %q: %v", ref, err)
@@ -2431,8 +2459,9 @@ func (s *Server) RegistrySynced() bool {
 }
 
 // SlotCeiling returns the configured live-VM backstop, the same value nodeStatus
-// reports as MaxLiveVms. Memory admission is enforced by admitOrReject; this
-// value is only a runaway backstop and tap-preallocation limit.
+// reports as MaxLiveVms. Memory admission is enforced by admit; this value is
+// only a runaway backstop (live plus in-flight boots) and tap-preallocation
+// limit.
 func (s *Server) SlotCeiling() int {
 	maxLive := s.cfg.MaxLiveVMs
 	if maxLive < 0 {
@@ -2520,10 +2549,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	snaps := s.sessionSnapshotsStatus()
 	sessionVolumes, sessionVolumesComplete := s.sessionVolumesStatus()
 	freeBytes, usedBytes := s.snapshotDiskUsage()
-	vmOverheadMib := uint64(0)
-	if s.cfg.VMOverheadMib > 0 {
-		vmOverheadMib = uint64(s.cfg.VMOverheadMib)
-	}
+	admission := s.admissionStatus()
 	ns := &nodev1.NodeStatus{
 		NodeId:                 s.cfg.Node,
 		PodUid:                 s.cfg.PodUID,
@@ -2556,13 +2582,26 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		StoreReachable:         s.storeReachableNow(),
 		MemBudgetMib:           s.memBudget(),
 		MemReservedMib:         s.claimedMib(),
-		AdmitsOnReservation:    s.cfg.AdmissionModel == "reserved",
-		VmOverheadMib:          vmOverheadMib,
+		AdmitsOnReservation:    s.cfg.AdmissionModel == admissionModelReserved,
+		VmOverheadMib:          s.vmOverheadMib(),
 		CpuBudgetMillicores:    s.cpuBudget(),
 		CpuSku:                 s.cpuSku(),
 		LocalBases:             s.localBasesStatus(),
 		ScratchGeneration:      scratchGeneration,
 		VmmExitCounts:          s.vmmExitCounts(),
+		// The admission ledger: the daemon's own predicate for one more VM, the
+		// boots it has admitted that are still in flight, and every refusal.
+		AdmissionReported:    admission.reported,
+		MemAdmittableMib:     admission.admittableMib,
+		MemInflightMib:       admission.inflightMib,
+		InflightVms:          uint32(admission.inflightVMs),
+		MemInflightPlacedMib: admission.placedMib,
+		InflightPlacedVms:    uint32(admission.placedVMs),
+		AdmissionRefusals:    admission.refusals,
+		// The daemon registers only after its jailer preflight passes, so the
+		// configured flag is the armed state.
+		JailerArmed: s.cfg.JailerEnabled,
+		LaunchModes: s.jailerLaunchModes(),
 	}
 	if s.cfg.GuestMemoryFeedbackEnabled {
 		memory := s.guestMemory.Snapshot()
@@ -2595,6 +2634,24 @@ func (s *Server) vmmExitCounts() map[string]uint64 {
 		return observer.VMMExitCounts()
 	}
 	return nil
+}
+
+// jailerLaunchCounter is the optional driver surface behind
+// NodeStatus.launch_modes: cumulative launches since daemon start by mode.
+type jailerLaunchCounter interface {
+	JailerLaunchCounts() (armed bool, jailed, directExec, refused uint64)
+}
+
+// jailerLaunchModes projects the driver's launch counters. A driver without the
+// counters leaves launch_modes absent, which must not read as zero unjailed
+// launches.
+func (s *Server) jailerLaunchModes() map[string]uint64 {
+	counter, ok := s.driver.(jailerLaunchCounter)
+	if !ok {
+		return nil
+	}
+	_, jailed, directExec, refused := counter.JailerLaunchCounts()
+	return map[string]uint64{"jailed": jailed, "direct_exec": directExec, "refused": refused}
 }
 
 // localBasesStatus projects the daemon's FULL on-disk base inventory into the

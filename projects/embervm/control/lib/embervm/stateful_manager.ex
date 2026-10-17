@@ -66,11 +66,13 @@ defmodule Embervm.StatefulManager do
       (the durable `stateful_evicted` op, reason `pair_broken`), then the wake
       falls through to cold or exported-volume recovery. If a missing anchor has
       no recovery path, the bank is retained and the wake is refused.
-    * no bundle at all: cold or fresh, `{:cold, node_id, boot_ref, mode}`, `mode`
-      is `FRESH` when the workload has never had a volume (no volume row yet:
-      the daemon must create it) and `COLD` when a volume row already exists
-      (an explicit cold boot against existing data, no bundle to resume). A fresh
-      plan also carries its selected dial key so placement and boot target match.
+    * no bundle at all: `{:fresh, candidates}` when the workload has never had
+      a volume (no volume row yet: the daemon must create it), or `{:cold,
+      node_id, boot_ref, :cold, reason}` when a volume row already exists (an
+      explicit cold boot against existing data, no bundle to resume). A fresh
+      plan carries the whole ordered placement frontier, each candidate with its
+      own dial key and base ref, so a brick that refuses the boot at admission
+      hands it to the next one (`Embervm.Scheduler.Retry`).
 
   Unlike serving (whose cold placement is a rendezvous hash over any eligible
   node), a stateful wake is NOT a free placement choice once the workload has a
@@ -139,13 +141,25 @@ defmodule Embervm.StatefulManager do
   cleanly (idempotent). After every reconcile pass, `EndpointPublisher.publish/1`
   re-derives the L4 fan-out so a control-plane restart with a live stateful VM
   republishes the identical endpoint without ever touching the VM.
+
+  ## in-flight claims
+
+  Every wake boots a new VM, so it claims the brick it boots on in the in-flight
+  ledger (`Embervm.Scheduler.Inflight`) on this serialized process before the
+  worker sends StartStateful, under one ref per wake. A fresh boot claims its
+  placement head and the worker claims each further hop; a relight, a cold boot
+  on the volume's anchor and a volume restore claim the instance they dial. The
+  worker settles the claim when the VM boots and releases it when the brick
+  refuses or the boot fails, and a wake that ends without a VM drops whatever is
+  left. Only the fresh boot is free placement: every other wake is pinned to the
+  node holding its volume or bundle, so its miss records no autoscaler demand.
   """
 
   use GenServer
   require Logger
 
   alias Embervm.Scheduler
-  alias Embervm.Scheduler.Request
+  alias Embervm.Scheduler.{Inflight, Request}
 
   require OpenTelemetry.Tracer, as: Tracer
 
@@ -387,6 +401,12 @@ defmodule Embervm.StatefulManager do
       start_stateful_fun: Keyword.get(opts, :start_stateful_fun, &default_start_stateful/3),
       stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, &default_stop_stateful/2),
       delete_volume_fun: Keyword.get(opts, :delete_volume_fun, &default_delete_volume/2),
+      # The in-flight ledger every wake claims its brick in (the shared table in
+      # production; tests pass a private one).
+      inflight_table: Keyword.get(opts, :inflight_table, Inflight.table()),
+      # The fresh-boot reject/retry gate. nil reads EMBERVM_PLACEMENT_RETRY like
+      # every other placer; a boolean pins it (tests, which run async).
+      placement_retry: Keyword.get(opts, :placement_retry),
       # Restore-on-miss seam (R6, Task 8): (channel, %RestoreArtifactRequest{}) ->
       # {:ok, %RestoreArtifactResponse{}} | {:error, _}. Fetches a banked STATEFUL
       # bundle or a VOLUME back onto local disk from the object store before a wake
@@ -535,6 +555,7 @@ defmodule Embervm.StatefulManager do
   @impl true
   def handle_info({:wake_done, workload, wake_token, outcome}, state) do
     claim_wake_result(state, workload, outcome)
+    release_failed_wake_claim(state, workload, wake_token, outcome)
 
     if current_wake_token(state, workload) == wake_token do
       {:noreply, finish_wake(state, workload, wake_result(outcome))}
@@ -622,6 +643,7 @@ defmodule Embervm.StatefulManager do
   def handle_info({:wake_timeout, workload, wake_token}, state) do
     if current_wake_token(state, workload) == wake_token do
       Logger.warning("embervm stateful wake timed out at bound", workload: workload)
+      Inflight.release_ref(wake_claim_ref(workload, wake_token), table: state.inflight_table)
       {:noreply, finish_wake(state, workload, {:error, {:wake_timeout, workload}})}
     else
       {:noreply, state}
@@ -957,6 +979,24 @@ defmodule Embervm.StatefulManager do
   defp wake_result({:started_on, _dial_id, outcome}), do: outcome
   defp wake_result(outcome), do: outcome
 
+  # The in-flight claim ref of one wake: every claim its placement and boot hops
+  # take lands under it, so a wake that ends without a VM can drop them all.
+  defp wake_claim_ref(workload, wake_token), do: {:stateful_wake, workload, wake_token}
+
+  # A wake that did not boot a VM leaves nothing worth debiting. The worker
+  # already released each brick it tried; this drops a claim that a crashed
+  # worker, a refused dispatch or a failed restore left behind. A boot keeps its
+  # settled claim until the daemon's next report counts the VM, even when its
+  # outcome is stale (the VM exists until the stale cleanup destroys it).
+  defp release_failed_wake_claim(state, workload, wake_token, outcome) do
+    case wake_result(outcome) do
+      {:created, _, _, _, _, _} -> :ok
+      {:relit, _, _, _} -> :ok
+      {:relight_fell_back, _, _, _, _} -> :ok
+      _ -> Inflight.release_ref(wake_claim_ref(workload, wake_token), table: state.inflight_table)
+    end
+  end
+
   defp wake_endpoint({:created, _, endpoint, _, _, _}), do: endpoint
   defp wake_endpoint({:relit, _, _, endpoint}), do: endpoint
   defp wake_endpoint({:relight_fell_back, _, _, endpoint, _}), do: endpoint
@@ -1166,7 +1206,7 @@ defmodule Embervm.StatefulManager do
     state = mark_restore_plan(state, workload, plan)
     cold =
       match?({:cold, _, _, _, _}, plan) or
-        match?({:cold, _, _, _, _, _}, plan) or
+        match?({:fresh, _}, plan) or
         match?({:restore_volume_then_cold, _, _, _}, plan) or
         match?({:restore_volume_then_cold, _, _, _, _}, plan) or
         match?({:consult_volume_store, _, _}, plan)
@@ -1293,7 +1333,7 @@ defmodule Embervm.StatefulManager do
   defp wake_plan_node_id({:relight, _instance, node_id, _ref}), do: node_id
   defp wake_plan_node_id({:restore_then_relight, _instance, node_id, _ref}), do: node_id
   defp wake_plan_node_id({:cold, node_id, _boot_ref, _mode, _reason}), do: node_id
-  defp wake_plan_node_id({:cold, node_id, _dial_id, _boot_ref, _mode, _reason}), do: node_id
+  defp wake_plan_node_id({:fresh, [%{node_id: node_id} | _]}), do: node_id
   defp wake_plan_node_id({:restore_volume_then_cold, _workload, node_id, _volume}), do: node_id
   defp wake_plan_node_id({:restore_volume_then_cold, _workload, node_id, _volume, _consult}), do: node_id
   defp wake_plan_node_id(_), do: "unknown"
@@ -1303,6 +1343,7 @@ defmodule Embervm.StatefulManager do
   # StartStatefulRequest this wake sends.
   defp start_wake_dispatch(state, workload, entry, plan, blessed_generation, arm_timeout?) do
     owner = self()
+    claim_ref = wake_claim_ref(workload, current_wake_token(state, workload))
 
     # Stamp the wake's start (for the adoption stuck-check + park_full age) and arm the
     # wake-worker bound: if the worker has not reported a {:wake_done} by then,
@@ -1321,7 +1362,7 @@ defmodule Embervm.StatefulManager do
         # BANKED this bundle on disk (per-instance-on-disk, PR-2.5), so dial the
         # bundle-owning instance's instance_id, not the bare node name. No owning
         # instance on the node -> a mem-eligible one; none at all -> fail cleanly.
-        case dial_instance(state, workload, entry, node_id, warmth_ref: snapshot_ref) do
+        case dial_instance(state, workload, entry, node_id, warmth_ref: snapshot_ref, claim_ref: claim_ref) do
           {:ok, dial_id} ->
             case StatefulStore.mark(state.store, instance.instance_id, :relight) do
               {:ok, _} ->
@@ -1333,7 +1374,7 @@ defmodule Embervm.StatefulManager do
                 # so the fallback ref belongs to the SAME instance.
                 fallback_ref = boot_image_ref(state, dial_id, workload)
                 req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
-                spawn_wake(owner, workload, current_wake_token(state, workload), fn -> run_relight(state, instance, node_id, dial_id, req) end)
+                spawn_wake(owner, workload, current_wake_token(state, workload), fn -> run_relight(state, instance, node_id, dial_id, req, claim_ref) end)
 
               {:error, reason} ->
                 # The instance moved off banked concurrently: report a wake failure
@@ -1356,7 +1397,7 @@ defmodule Embervm.StatefulManager do
         # the bundle-owning instance when one still reports it, else a mem-eligible
         # cold candidate the restore lands the bundle onto (warmth_ref matches
         # nothing when the local bundle is gone, so this falls to the cold pick).
-        case dial_instance(state, workload, entry, node_id, warmth_ref: snapshot_ref) do
+        case dial_instance(state, workload, entry, node_id, warmth_ref: snapshot_ref, claim_ref: claim_ref) do
           {:ok, dial_id} ->
             case StatefulStore.mark(state.store, instance.instance_id, :relight) do
               {:ok, _} ->
@@ -1370,7 +1411,7 @@ defmodule Embervm.StatefulManager do
                   # so restoring onto an arbitrary co-located instance while the boot
                   # runs on another leaves the boot's local disk empty (cold-fails).
                   _ = restore_bundle(state, dial_id, node_id, instance, snapshot_ref)
-                  run_relight(state, instance, node_id, dial_id, req)
+                  run_relight(state, instance, node_id, dial_id, req, claim_ref)
                 end)
 
               {:error, reason} ->
@@ -1381,16 +1422,21 @@ defmodule Embervm.StatefulManager do
             notify_wake_done(state, workload, {:error, reason})
         end
 
-      {:cold, node_id, dial_id, boot_ref, :fresh, reason} ->
-        req = cold_request(state, entry, workload, boot_ref, :fresh, blessed_generation)
-        spawn_wake(owner, workload, current_wake_token(state, workload), fn -> run_cold(state, workload, node_id, dial_id, boot_ref, :fresh, reason, req) end)
+      # A true first boot: free placement over the whole frontier. The head is
+      # claimed here, on this serialized process, so the next wake this manager
+      # plans already sees it; the worker claims each further hop itself. The
+      # request (and its one secret read) is built once, off the head.
+      {:fresh, [head | _] = candidates} ->
+        Inflight.claim(head.instance_id, claim_ref, head.charge_mib, table: state.inflight_table)
+        req = cold_request(state, entry, workload, head.boot_ref, :fresh, blessed_generation)
+        spawn_wake(owner, workload, current_wake_token(state, workload), fn -> run_fresh(state, workload, candidates, req, claim_ref) end)
 
       {:cold, node_id, _plan_boot_ref, mode, reason} ->
         # A cold boot has no owning bundle: select a mem-eligible instance on the
         # node (a too-small classed brick is skipped; the DS wildcard is always
         # eligible), and fail cleanly if none has room rather than dialling a
         # too-small one.
-        case dial_instance(state, workload, entry, node_id, []) do
+        case dial_instance(state, workload, entry, node_id, claim_ref: claim_ref) do
           {:ok, dial_id} ->
             # Resolve the base snapshot_ref from the CHOSEN instance's fact (dial_id),
             # not the node-name alias the plan phase used: under co-location the
@@ -1400,7 +1446,7 @@ defmodule Embervm.StatefulManager do
             # RPC target are the same instance.
             boot_ref = boot_image_ref(state, dial_id, workload)
             req = cold_request(state, entry, workload, boot_ref, mode, blessed_generation)
-            spawn_wake(owner, workload, current_wake_token(state, workload), fn -> run_cold(state, workload, node_id, dial_id, boot_ref, mode, reason, req) end)
+            spawn_wake(owner, workload, current_wake_token(state, workload), fn -> run_cold(state, workload, node_id, dial_id, boot_ref, mode, reason, req, claim_ref) end)
 
           {:error, select_reason} ->
             notify_wake_done(state, workload, {:error, select_reason})
@@ -1456,7 +1502,9 @@ defmodule Embervm.StatefulManager do
          blessed_generation,
          consult
        ) do
-    case dial_instance(state, wl, entry, node_id, []) do
+    claim_ref = wake_claim_ref(workload, current_wake_token(state, workload))
+
+    case dial_instance(state, wl, entry, node_id, claim_ref: claim_ref) do
       {:ok, dial_id} ->
         boot_ref = boot_image_ref(state, dial_id, wl)
         req = cold_request(state, entry, wl, boot_ref, :cold, blessed_generation)
@@ -1469,7 +1517,7 @@ defmodule Embervm.StatefulManager do
           case restore_volume(state, dial_id, node_id, wl, restore_generation) do
             :ok ->
               _ = StatefulStore.upsert_volume(state.store, wl, %{node_id: node_id})
-              run_cold(state, wl, node_id, dial_id, boot_ref, :cold, reason, req)
+              run_cold(state, wl, node_id, dial_id, boot_ref, :cold, reason, req, claim_ref)
 
             {:error, restore_reason} when source_anchor_gone? ->
               Logger.warning(
@@ -1489,7 +1537,7 @@ defmodule Embervm.StatefulManager do
                 reason: inspect(restore_reason)
               )
 
-              run_cold(state, wl, node_id, dial_id, boot_ref, :cold, reason, req)
+              run_cold(state, wl, node_id, dial_id, boot_ref, :cold, reason, req, claim_ref)
           end
         end)
 
@@ -1729,11 +1777,11 @@ defmodule Embervm.StatefulManager do
             if confirmed_anchor_gone?({state, volume}) do
               # Reuse the nil-volume cold planner only to select a live target.
               # Its serving-subnet, base-readiness, slot, and memory gates are
-              # exactly the eligibility a restored COLD attach still needs. The
-              # returned :fresh mode is discarded: restore creates the local
-              # volume pair before the downstream arm issues a :cold request.
+              # exactly the eligibility a restored COLD attach still needs. Only
+              # the frontier's head is used: restore creates the local volume pair
+              # before the downstream arm issues a :cold request on that node.
               case cold_plan(state, workload, nil, cold_reason(volume)) do
-                {:cold, target, _dial_id, _boot_ref, :fresh, _reason} ->
+                {:fresh, [%{node_id: target} | _]} ->
                   if store_reachable?(state, target) do
                     # No eviction is attempted because the source is confirmed
                     # absent. The restore worker writes the exported pair on target
@@ -2167,7 +2215,10 @@ defmodule Embervm.StatefulManager do
   # Cold placement: FRESH (no volume row exists yet, the daemon must create it)
   # when `volume` is nil; COLD (an existing volume, no bundle to resume) otherwise.
   # `reason` is the discarded-warmth reason threaded into the boot op (nil for a
-  # fresh first boot). Both modes are anchored to the resolved node.
+  # fresh first boot). FRESH is free placement and keeps the whole ordered
+  # frontier (net of in-flight claims), each candidate carrying its own dial key,
+  # node, base ref (read off that brick's own fact) and claim cost. COLD is
+  # anchored to the volume's node. Planning claims nothing: the dispatch does.
   defp cold_plan(state, workload, nil, _reason) do
     %ResourceSpec{mem_mib: need_mib} = resource_spec(catalog_entry(state, workload))
 
@@ -2177,12 +2228,23 @@ defmodule Embervm.StatefulManager do
            key: workload,
            need_mib: need_mib,
            require_subnet: true,
-           base: {:ready, :snapshot_ref}
+           base: {:ready, :snapshot_ref},
+           inflight: state.inflight_table
          }) do
-      {:ok, [brick | _]} ->
-        node_id = brick.configured_id
-        dial_id = Brick.dial_id(brick)
-        {:cold, node_id, dial_id, boot_image_ref(state, dial_id, workload), :fresh, nil}
+      {:ok, bricks} ->
+        candidates =
+          Enum.map(bricks, fn brick ->
+            dial_id = Brick.dial_id(brick)
+
+            %{
+              instance_id: dial_id,
+              node_id: brick.configured_id,
+              boot_ref: boot_image_ref(state, dial_id, workload),
+              charge_mib: Brick.charge_mib(brick, need_mib)
+            }
+          end)
+
+        {:fresh, candidates}
 
       {:error, :capacity} ->
         {:error, :no_capacity}
@@ -2277,7 +2339,9 @@ defmodule Embervm.StatefulManager do
   # (instance_id, or the node name for a legacy fact without one) so the caller
   # dials by instance_id instead of the collapsing node-name alias. `opts` may
   # carry `:warmth_ref` (the snapshot_ref a relight must land on); a cold boot omits
-  # it and goes straight to the mem-eligible pick.
+  # it and goes straight to the mem-eligible pick. `:claim_ref` claims the chosen
+  # instance for the wake. Every caller is pinned to the node holding the volume or
+  # bundle, so a miss here is not fleet demand (record_demand: false).
   defp dial_instance(state, workload, entry, node_id, opts) do
     %ResourceSpec{mem_mib: need_mib} = resource_spec(entry)
 
@@ -2287,7 +2351,9 @@ defmodule Embervm.StatefulManager do
         table: state.capacity_table,
         workload: workload,
         need_mib: need_mib,
-        warmth_key: :stateful_bundles
+        warmth_key: :stateful_bundles,
+        record_demand: false,
+        inflight: state.inflight_table
       ] ++ opts
     )
   end
@@ -2393,9 +2459,18 @@ defmodule Embervm.StatefulManager do
   defp start_mode(:fresh), do: :START_STATEFUL_MODE_FRESH
   defp start_mode(:cold), do: :START_STATEFUL_MODE_COLD
 
+  # The declared size placement charges and StartStateful boots at. The
+  # Workload watcher's catalog entry carries spec.resources as TOP-LEVEL
+  # :vcpus / :mem_mib (workload_watcher catalog_entry); a nested :resources map
+  # is read as a fallback. Reading only the nested map sized every real
+  # stateful workload at the 1 vCPU / 512 MiB default whatever its CR declared.
   defp resource_spec(entry) do
-    resources = Map.get(entry, :resources, %{})
-    %ResourceSpec{vcpus: Map.get(resources, :vcpus, 1), mem_mib: Map.get(resources, :mem_mib, 512)}
+    resources = Map.get(entry, :resources) || %{}
+
+    %ResourceSpec{
+      vcpus: Map.get(entry, :vcpus) || Map.get(resources, :vcpus) || 1,
+      mem_mib: Map.get(entry, :mem_mib) || Map.get(resources, :mem_mib) || 512
+    }
   end
 
   defp gib_to_bytes(nil), do: 0
@@ -2403,7 +2478,7 @@ defmodule Embervm.StatefulManager do
 
   # -- wake RPC workers ---------------------------------------------------------
 
-  defp run_relight(state, instance, node_id, dial_id, req) do
+  defp run_relight(state, instance, node_id, dial_id, req, claim_ref) do
     workload = instance.workload
     # Node-anchored: a stateful RELIGHT can ONLY land on the instance that holds the
     # volume + banked bundle on disk (ADR embervm/014: "placement never picks a
@@ -2417,6 +2492,7 @@ defmodule Embervm.StatefulManager do
       case safe_start_stateful(state, dial_id, workload, req) do
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: true}}
         when is_binary(vm_id) and vm_id != "" ->
+          settle_claim(state, dial_id, claim_ref)
           {:ok, {:started_on, dial_id, {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}}}}
 
         # A RELIGHT call that fell back to a cold boot on the daemon side
@@ -2426,12 +2502,15 @@ defmodule Embervm.StatefulManager do
         # a RELIGHT-mode response is exactly that fallback signal.
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: false, cold_boot_reason: reason}}
         when is_binary(vm_id) and vm_id != "" ->
+          settle_claim(state, dial_id, claim_ref)
           {:ok, {:started_on, dial_id, {:relight_fell_back, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}, reason}}}
 
         {:error, %GRPC.RPCError{status: 8}} = rejected ->
+          release_claim(state, dial_id, claim_ref)
           {:reject, rejected}
 
         other ->
+          release_claim(state, dial_id, claim_ref)
           {:error, {:relight_failed, instance.instance_id, other}}
       end
     end
@@ -2439,38 +2518,103 @@ defmodule Embervm.StatefulManager do
     single_candidate_boot(dial_id, attempt_fun, {:relight_failed, instance.instance_id, {:error, :no_capacity}})
   end
 
-  defp run_cold(state, workload, node_id, dial_id, boot_ref, mode, reason, req) do
-    # Node-anchored (volume-anchored): a stateful boot targets the node that owns the
+  defp run_cold(state, workload, node_id, dial_id, boot_ref, mode, reason, req, claim_ref) do
+    # Node-anchored (volume-anchored): a COLD boot targets the node that owns the
     # workload's volume, so the reject/retry frontier is a SINGLE element. Same
     # one-policy routing as run_relight; one attempt by construction. Do NOT expand:
-    # the volume lives on exactly this node.
+    # the volume lives on exactly this node. (A FRESH first boot has no volume yet
+    # and walks the whole frontier in run_fresh/5.)
     attempt_fun = fn _only ->
       case safe_start_stateful(state, dial_id, workload, req) do
-        {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation}}
-        when is_binary(vm_id) and vm_id != "" ->
-          attrs = %{
-            tenant: state.tenant,
-            principal: wake_principal(workload),
-            workload: workload,
-            node_id: node_id,
-            generation: generation,
-            # The volume the daemon reported it created/attached at (size the request
-            # asked for); FRESH boots record a volume_created off this (see finish_created).
-            volume_size_bytes: cold_volume_size_bytes(state, workload)
-          }
-
-          {:ok, {:started_on, dial_id, {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}, mode, boot_ref, reason}}}
+        {:ok, %StartStatefulResponse{vm_id: vm_id} = resp} when is_binary(vm_id) and vm_id != "" ->
+          settle_claim(state, dial_id, claim_ref)
+          {:ok, created_outcome(state, workload, node_id, dial_id, resp, mode, boot_ref, reason)}
 
         {:error, %GRPC.RPCError{status: 8}} = rejected ->
+          release_claim(state, dial_id, claim_ref)
           {:reject, rejected}
 
         other ->
+          release_claim(state, dial_id, claim_ref)
           {:error, {:start_failed, other}}
       end
     end
 
     single_candidate_boot(dial_id, attempt_fun, {:start_failed, {:error, :no_capacity}})
   end
+
+  # A FRESH first boot (no volume row yet, so nothing anchors it) walks the
+  # ordered placement frontier through the shared Embervm.Scheduler.Retry policy,
+  # the way the serving cold create does: a brick that refuses at admission hands
+  # the boot to the next candidate (gate on), and gate off is one attempt on the
+  # head. Each hop claims its brick first (the head re-claims the claim dispatch
+  # made), boots from that brick's own base ref, settles the claim on success and
+  # releases it otherwise.
+  #
+  # Only an admission refusal is retryable. noded refuses those (pressure:mem,
+  # pressure:taps, the live-VM cap) before it creates the volume or bumps its
+  # generation, so the blessed generation is still unused and the next brick can
+  # take it. A RESOURCE_EXHAUSTED from the tap allocator comes AFTER the volume was
+  # created and stamped, so it is terminal: retrying elsewhere would put a second
+  # volume at the same blessed generation on another node.
+  defp run_fresh(state, workload, candidates, base_req, claim_ref) do
+    attempt_fun = fn %{instance_id: dial_id, node_id: node_id, boot_ref: boot_ref} = candidate ->
+      Inflight.claim(dial_id, claim_ref, Map.get(candidate, :charge_mib, 0), table: state.inflight_table)
+      req = %{base_req | boot_image_ref: boot_ref || ""}
+
+      case safe_start_stateful(state, dial_id, workload, req) do
+        {:ok, %StartStatefulResponse{vm_id: vm_id} = resp} when is_binary(vm_id) and vm_id != "" ->
+          settle_claim(state, dial_id, claim_ref)
+          {:ok, created_outcome(state, workload, node_id, dial_id, resp, :fresh, boot_ref, nil)}
+
+        {:error, %GRPC.RPCError{status: 8, message: message}} = rejected ->
+          release_claim(state, dial_id, claim_ref)
+          if admission_refusal?(message), do: {:reject, rejected}, else: {:error, {:start_failed, rejected}}
+
+        other ->
+          release_claim(state, dial_id, claim_ref)
+          {:error, {:start_failed, other}}
+      end
+    end
+
+    case Embervm.Scheduler.Retry.run(candidates, attempt_fun, retry_opts(state)) do
+      {:ok, outcome} -> outcome
+      {:error, :no_capacity} -> {:error, {:start_failed, {:error, :no_capacity}}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # noded's admission refusals, the stable tokens its pressure predicate puts in
+  # every RESOURCE_EXHAUSTED it returns before a boot touches any state.
+  defp admission_refusal?(message) when is_binary(message) do
+    String.contains?(message, ["pressure:mem", "pressure:taps", "live-VM cap"])
+  end
+
+  defp admission_refusal?(_message), do: false
+
+  defp retry_opts(%{placement_retry: enabled?}) when is_boolean(enabled?), do: [enabled?: enabled?]
+  defp retry_opts(_state), do: []
+
+  # The worker's wake outcome for a booted COLD or FRESH VM on `dial_id`.
+  defp created_outcome(state, workload, node_id, dial_id, resp, mode, boot_ref, reason) do
+    %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation} = resp
+
+    attrs = %{
+      tenant: state.tenant,
+      principal: wake_principal(workload),
+      workload: workload,
+      node_id: node_id,
+      generation: generation,
+      # The volume the daemon reported it created/attached at (size the request
+      # asked for); FRESH boots record a volume_created off this (see finish_created).
+      volume_size_bytes: cold_volume_size_bytes(state, workload)
+    }
+
+    {:started_on, dial_id, {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}, mode, boot_ref, reason}}
+  end
+
+  defp settle_claim(state, dial_id, claim_ref), do: Inflight.settle(dial_id, claim_ref, table: state.inflight_table)
+  defp release_claim(state, dial_id, claim_ref), do: Inflight.release(dial_id, claim_ref, table: state.inflight_table)
 
   # Route a NODE-ANCHORED boot (stateful volume-anchored, no cross-node move) through
   # the shared Embervm.Scheduler.Retry policy with a SINGLE-element candidate list, so

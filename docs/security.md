@@ -375,13 +375,16 @@ pool with nested virtualization; `projects/embervm/ARCHITECTURE.md` section
 10 is the threat table.
 
 **The jailer is built and off.** noded launches every VM through the
-Firecracker jailer when `noded.jailer.enabled` is true, and the chart
-default is false with no hub override ("land dark, then arm with a
-values-only change", `projects/embervm/chart/values.yaml`). Today noded
-execs the VMM directly, as root, inside the privileged brick pod: a VMM
-escape lands in a process holding `/dev/kvm`, the store credential and the
-noded bearer token (#5255). Arming it is a values flip after live
-verification on one brick.
+Firecracker jailer when `noded.jailer.enabled` is true: a per-VM chroot, a
+uid and gid from a block each daemon leases, a cgroup leaf under a capped
+parent and its own PID namespace. It fails closed: an armed brick that cannot
+contain guests exits before it registers, and a launch that cannot be
+contained is refused rather than run unjailed. The chart default is false
+with no override yet, so today noded execs the VMM directly, as root, inside
+the privileged brick pod: a VMM escape lands in a process holding
+`/dev/kvm`, the store credential and the noded bearer token (#5255). Arming
+is a values flip per stage, embervm-dev first and production after a dev
+soak (#6965).
 
 **gVisor is not in use.** The hub carries a `gvisor` RuntimeClass because
 GKE registers one, but it selects nodes labelled `sandbox.gke.io/runtime`

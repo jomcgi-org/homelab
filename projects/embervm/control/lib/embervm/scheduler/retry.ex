@@ -90,6 +90,11 @@ defmodule Embervm.Scheduler.Retry do
       returned verbatim (today's single-attempt behaviour); a `{:reject, _}` from
       it maps to `{:error, :no_capacity}` exactly as a single-attempt miss does
       today, never a retry.
+    * `:return_rejects` - when true, an exhausted frontier returns
+      `{:error, {:no_capacity, rejects}}`, where `rejects` is
+      `[{instance_id, reason}]` in attempt order, so a caller can tell a node
+      that refused under pressure from one it could not reach. Default false
+      keeps the bare `{:error, :no_capacity}` every other caller matches.
 
   Returns `{:ok, result}` on the first success, `{:error, reason}` on a terminal
   attempt error, or `{:error, :no_capacity}` when the candidate list is empty or
@@ -117,7 +122,10 @@ defmodule Embervm.Scheduler.Retry do
       # brick's headroom in ITS view so a later pick in the same burst does not
       # re-choose it as if it still had room. Default no-op (the retry list itself
       # already drops the brick, which is the in-attempt "mark ineligible").
-      on_reject: Keyword.get(opts, :on_reject, fn _brick, _reason -> :ok end)
+      on_reject: Keyword.get(opts, :on_reject, fn _brick, _reason -> :ok end),
+      return_rejects: Keyword.get(opts, :return_rejects, false),
+      # Rejections so far, most recent first; reversed on the way out.
+      rejects: []
     }
 
     attempt(candidates, ctx, 0)
@@ -125,10 +133,10 @@ defmodule Embervm.Scheduler.Retry do
 
   # No candidate left, or the budget is spent: fast, explicit no-capacity. Never a
   # wedge, never a retry storm (the bound is the ceiling on chased rejections).
-  defp attempt([], _ctx, _tried), do: {:error, :no_capacity}
+  defp attempt([], ctx, _tried), do: no_capacity(ctx)
 
-  defp attempt(_candidates, %{max: max}, tried) when tried >= max do
-    {:error, :no_capacity}
+  defp attempt(_candidates, %{max: max} = ctx, tried) when tried >= max do
+    no_capacity(ctx)
   end
 
   defp attempt([brick | rest], ctx, tried) do
@@ -163,9 +171,12 @@ defmodule Embervm.Scheduler.Retry do
         end)
 
         safe_on_reject(ctx.on_reject, brick, reason)
-        attempt(rest, ctx, next)
+        attempt(rest, %{ctx | rejects: [{Map.get(brick, :instance_id), reason} | ctx.rejects]}, next)
     end
   end
+
+  defp no_capacity(%{return_rejects: true, rejects: rejects}), do: {:error, {:no_capacity, Enum.reverse(rejects)}}
+  defp no_capacity(_ctx), do: {:error, :no_capacity}
 
   # The caller's advisory-refresh hook must never crash the retry loop: a bad
   # callback is a caller bug, not a reason to fail an otherwise-progressing

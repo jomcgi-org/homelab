@@ -124,6 +124,66 @@ defmodule Embervm.CapacityReportTest do
     assert report.demand.observed.by_workload == %{"orphan" => 2, "wl-a" => 3, "wl-b" => 0}
   end
 
+  test "each instance row exposes the admission view placement acts on" do
+    opts = seed_tables()
+    inflight = Embervm.Scheduler.Inflight.create(table("capacity_report_inflight"))
+
+    NodeCapacity.put(opts[:capacity_table], {"node-5", "pod-ledger"}, %{
+      node_id: "node-5",
+      pod_uid: "pod-ledger",
+      instance_id: "node-5/pod-ledger",
+      size_class: "8gi",
+      mem_budget_mib: 7_936,
+      mem_headroom_mib: 6_800,
+      mem_reserved_mib: 3_072,
+      admits_on_reservation: true,
+      vm_overhead_mib: 192,
+      admission_reported: true,
+      mem_admittable_mib: 4_000,
+      mem_inflight_mib: 1_024,
+      inflight_vms: 1,
+      mem_inflight_placed_mib: 1_024,
+      inflight_placed_vms: 1,
+      admission_refusals: %{"pressure:mem" => 3},
+      jailer_armed: true,
+      launch_modes: %{"jailed" => 7, "direct_exec" => 0},
+      live_vms: 1,
+      max_live_vms: 16,
+      workloads: %{}
+    })
+
+    Embervm.Scheduler.Inflight.claim("node-5/pod-ledger", {:create, 1}, 3_264, table: inflight)
+
+    report = CapacityReport.build(Keyword.put(opts, :inflight_table, inflight))
+    row = Enum.find(report.instances, &(&1.pod_uid == "pod-ledger"))
+
+    assert row.admission_reported
+    assert row.admittable_mib == 4_000
+    # pending_mib is the debit placement subtracts: the 3_264 MiB claim less the
+    # boot the brick already reports as placed in flight (1_024 + 192 overhead).
+    assert row.pending_mib == 3_264 - (1_024 + 192)
+    assert row.inflight_claims_mib == 3_264
+    assert row.mem_inflight_mib == 1_024
+    assert row.inflight_vms == 1
+    assert row.mem_inflight_placed_mib == 1_024
+    assert row.inflight_placed_vms == 1
+    assert row.admission_refusals == %{"pressure:mem" => 3}
+    assert row.jailer_armed
+    assert row.launch_modes == %{"jailed" => 7, "direct_exec" => 0}
+    assert row.mem_reserved_mib == 3_072
+    assert row.admits_on_reservation
+    assert row.vm_overhead_mib == 192
+
+    # A daemon that predates the ledger: the observed fallback, nothing pending.
+    old = Enum.find(report.instances, &(&1.pod_uid == "pod-old"))
+    refute old.admission_reported
+    assert old.admittable_mib == 1_024
+    assert old.pending_mib == 0
+    refute old.jailer_armed
+    assert old.admission_refusals == nil
+    assert old.launch_modes == nil
+  end
+
   test "cron committed demand stops at the inclusive configurable horizon" do
     opts = seed_tables()
 

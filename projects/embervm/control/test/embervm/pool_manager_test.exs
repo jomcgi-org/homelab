@@ -11,6 +11,7 @@ defmodule Embervm.PoolManagerTest do
   use ExUnit.Case, async: true
 
   alias Embervm.{NodeCapacity, PoolManager, WorkloadCatalog}
+  alias Embervm.Scheduler.Inflight
   alias Embervm.Node.V1.{PrimeRequest, PrimeResponse, Trace}
 
   defmodule OpLogRecorder do
@@ -25,6 +26,9 @@ defmodule Embervm.PoolManagerTest do
     cap_table = :"pcap_#{suffix}"
     cat_table = :"pcat_#{suffix}"
     depth_table = :"pdepth_#{suffix}"
+    # A private in-flight ledger: this module is async, and a shared one would
+    # let one test's held claims debit another test's identically named bricks.
+    inflight_table = Inflight.create(:"pinfl_#{suffix}")
 
     NodeCapacity.create(cap_table)
     WorkloadCatalog.create(cat_table)
@@ -54,6 +58,7 @@ defmodule Embervm.PoolManagerTest do
           capacity_table: cap_table,
           catalog_table: cat_table,
           depth_table: depth_table,
+          inflight_table: inflight_table,
           clock: fn -> 1_000_000 end,
           channel_fun: channel_fun,
           invalidate_fun: invalidate_fun,
@@ -71,7 +76,15 @@ defmodule Embervm.PoolManagerTest do
         ]
       )
 
-    %{pool: pool, cap_table: cap_table, cat_table: cat_table, depth_table: depth_table, primes: primes, status: status}
+    %{
+      pool: pool,
+      cap_table: cap_table,
+      cat_table: cat_table,
+      depth_table: depth_table,
+      inflight_table: inflight_table,
+      primes: primes,
+      status: status
+    }
   end
 
   defp put_catalog(ctx, wl, floor, opts \\ []) do
@@ -118,7 +131,8 @@ defmodule Embervm.PoolManagerTest do
       mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 0),
       draining: false,
       updated_at: 1_000_000
-    })
+    }
+    |> Map.merge(Keyword.get(opts, :extra, %{})))
   end
 
   defp set_depth(ctx, wl, n), do: :ets.insert(ctx.depth_table, {{wl, "p"}, n})
@@ -528,5 +542,215 @@ defmodule Embervm.PoolManagerTest do
     counts = prime_counts(ctx)
     assert counts["wl-b"] == 2
     assert counts["wl-a"] >= 2
+  end
+
+  # -- in-flight memory (the shared Scheduler.Inflight ledger) ---------------
+
+  # A prime_fun that reports each Prime and parks until released, so a prime
+  # stays IN FLIGHT across refill ticks.
+  defp blocking_prime(parent, result \\ {:ok, %PrimeResponse{vm_id: "vm-held"}}) do
+    fn node, %PrimeRequest{trace: %Trace{workload: wl}} ->
+      send(parent, {:prime, node, wl, self()})
+
+      receive do
+        :release -> result
+      end
+    end
+  end
+
+  test "an in-flight prime's memory is charged on the next refill" do
+    # The #4121 shape across TICKS: one 1024 MiB prime fits a brick reporting
+    # 1933 MiB, and the fact does not move while it restores. Without the ledger
+    # the second tick would see 1933 again and place a second prime.
+    parent = self()
+    ctx = start_pool(channel_fun: fn node -> {:ok, node} end, prime_fun: blocking_prime(parent))
+    put_catalog(ctx, "wl-a", 2, resources: %{"memMib" => 1024})
+    put_instance_facts(ctx, "b", [{"wl-a", 0}], max: 10, size_class: "4gi", mem_budget_mib: 3_840, mem_headroom_mib: 1_933)
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert_receive {:prime, "b", "wl-a", worker}
+    assert Inflight.pending_mib("b", table: ctx.inflight_table) == 1_024
+
+    :ok = PoolManager.refill(ctx.pool)
+    refute_receive {:prime, _, _, _}, 200
+    assert PoolManager.stats(ctx.pool).inflight_primes == %{{"b", "wl-a"} => 1}
+
+    # Success settles: the debit is HELD until the daemon's next report counts
+    # the VM, so a refill in that window still places nothing new here.
+    send(worker, :release)
+    assert eventually(fn -> PoolManager.stats(ctx.pool).inflight_primes == %{} end)
+    assert Inflight.pending_mib("b", table: ctx.inflight_table) == 1_024
+    :ok = PoolManager.refill(ctx.pool)
+    refute_receive {:prime, _, _, _}, 200
+  end
+
+  test "an in-flight prime spreads the next tick onto a sibling brick" do
+    parent = self()
+    ctx = start_pool(channel_fun: fn node -> {:ok, node} end, prime_fun: blocking_prime(parent))
+    put_catalog(ctx, "wl-a", 2, resources: %{"memMib" => 1024})
+    put_instance_facts(ctx, "a", [{"wl-a", 0}], max: 10, size_class: "4gi", mem_budget_mib: 3_840, mem_headroom_mib: 1_933)
+    put_instance_facts(ctx, "b", [{"wl-a", 0}], max: 10, size_class: "4gi", mem_budget_mib: 3_840, mem_headroom_mib: 1_933)
+
+    # One pass places one prime per brick (each fits exactly one).
+    :ok = PoolManager.refill(ctx.pool)
+    assert_receive {:prime, first, "wl-a", w1}
+    assert_receive {:prime, second, "wl-a", w2}
+    assert Enum.sort([first, second]) == ["a", "b"]
+
+    :ok = PoolManager.refill(ctx.pool)
+    refute_receive {:prime, _, _, _}, 200
+    send(w1, :release)
+    send(w2, :release)
+  end
+
+  test "a failed prime releases its claim at once" do
+    parent = self()
+    refusal = {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+
+    ctx =
+      start_pool(channel_fun: fn node -> {:ok, node} end, prime_fun: blocking_prime(parent, refusal))
+
+    put_catalog(ctx, "wl-a", 1, resources: %{"memMib" => 1024})
+    put_instance_facts(ctx, "b", [{"wl-a", 0}], max: 10, size_class: "4gi", mem_budget_mib: 3_840, mem_headroom_mib: 1_933)
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert_receive {:prime, "b", "wl-a", worker}
+    assert Inflight.pending_mib("b", table: ctx.inflight_table) == 1_024
+
+    send(worker, :release)
+    assert eventually(fn -> Inflight.pending_mib("b", table: ctx.inflight_table) == 0 end)
+    assert eventually(fn -> PoolManager.stats(ctx.pool).inflight_primes == %{} end)
+
+    # Placeable again on the next tick.
+    :ok = PoolManager.refill(ctx.pool)
+    assert_receive {:prime, "b", "wl-a", again}
+    send(again, :release)
+  end
+
+  test "a prime worker that dies releases its claim" do
+    parent = self()
+
+    ctx =
+      start_pool(
+        channel_fun: fn node -> {:ok, node} end,
+        prime_fun: fn node, _req ->
+          send(parent, {:prime, node, self()})
+
+          receive do
+            :die -> exit(:boom)
+          end
+        end
+      )
+
+    put_catalog(ctx, "wl-a", 1, resources: %{"memMib" => 1024})
+    put_instance_facts(ctx, "b", [{"wl-a", 0}], max: 10, size_class: "4gi", mem_budget_mib: 3_840, mem_headroom_mib: 1_933)
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert_receive {:prime, "b", worker}
+    assert Inflight.pending_mib("b", table: ctx.inflight_table) == 1_024
+
+    # The worker catches the prime_fun exit and reports it as a failed result;
+    # either way (result or DOWN) the claim must not outlive the prime.
+    send(worker, :die)
+    assert eventually(fn -> Inflight.pending_mib("b", table: ctx.inflight_table) == 0 end)
+  end
+
+  test "another placer's claim on a brick lowers what the pool sees there" do
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 1, resources: %{"memMib" => 1024})
+    put_instance_facts(ctx, "b", [{"wl-a", 0}], max: 10, size_class: "4gi", mem_budget_mib: 3_840, mem_headroom_mib: 3_000)
+
+    # A session create committed 2048 MiB here that the brick has not reported.
+    Inflight.claim("b", {:create, 1}, 2_048, table: ctx.inflight_table)
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{}
+
+    Inflight.release("b", {:create, 1}, table: ctx.inflight_table)
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{"wl-a" => 1}
+  end
+
+  test "the in-pass gate stays cumulative on a reserved brick" do
+    # Reserved: 7936 budget - 3072 declared = 4864 admittable, so ONE more 3072
+    # MiB guest fits, however much observed headroom the brick reports.
+    reserved = %{admits_on_reservation: true, mem_reserved_mib: 3_072}
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 3, resources: %{"memMib" => 3072})
+
+    put_instance_facts(ctx, "r", [{"wl-a", 0}],
+      max: 16,
+      size_class: "8gi",
+      mem_budget_mib: 7_936,
+      mem_headroom_mib: 7_300,
+      extra: reserved
+    )
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{"wl-a" => 1}
+
+    # Control: the same brick in the observed model admits on headroom and
+    # takes two (7300 -> 4228 -> 1156).
+    ctx2 = start_pool()
+    put_catalog(ctx2, "wl-a", 3, resources: %{"memMib" => 3072})
+
+    put_instance_facts(ctx2, "o", [{"wl-a", 0}],
+      max: 16,
+      size_class: "8gi",
+      mem_budget_mib: 7_936,
+      mem_headroom_mib: 7_300,
+      extra: %{reserved | admits_on_reservation: false}
+    )
+
+    :ok = PoolManager.refill(ctx2.pool)
+    assert prime_counts(ctx2) == %{"wl-a" => 2}
+  end
+
+  test "the in-pass gate stays cumulative on a brick that reports its own admission" do
+    reported = %{admission_reported: true, admits_on_reservation: true, mem_admittable_mib: 5_000, vm_overhead_mib: 100}
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 3, resources: %{"memMib" => 2048})
+
+    put_instance_facts(ctx, "d", [{"wl-a", 0}],
+      max: 16,
+      size_class: "8gi",
+      mem_budget_mib: 7_936,
+      mem_headroom_mib: 7_900,
+      extra: reported
+    )
+
+    # 5000 -> 2852 (2048 + 100 overhead) -> 704: two primes.
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{"wl-a" => 2}
+  end
+
+  test "an observed brick's reported overhead is not charged in the pass" do
+    # noded reports vm_overhead_mib under observed but admits on the need alone:
+    # 4100 -> 2052 -> 4, two primes. Charging the 100 MiB overhead would stop
+    # at one (4100 -> 1952).
+    observed = %{admission_reported: true, admits_on_reservation: false, mem_admittable_mib: 4_100, vm_overhead_mib: 100}
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 3, resources: %{"memMib" => 2048})
+
+    put_instance_facts(ctx, "d", [{"wl-a", 0}],
+      max: 16,
+      size_class: "8gi",
+      mem_budget_mib: 7_936,
+      mem_headroom_mib: 7_900,
+      extra: observed
+    )
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{"wl-a" => 2}
+  end
+
+  test "a classed brick reporting no budget is blind and never primed onto" do
+    # Deliberately fail-closed: this shape used to read as the unlimited wildcard.
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 2, resources: %{"memMib" => 512})
+    put_instance_facts(ctx, "blind", [{"wl-a", 0}], max: 10, size_class: "4gi", mem_budget_mib: 0, mem_headroom_mib: 0)
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{}
   end
 end

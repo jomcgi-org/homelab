@@ -11,20 +11,30 @@ defmodule Embervm.Scheduler.Score do
   embervm/016 section 4) and have a real budget, so they PACK: k8s MostAllocated,
   `(slot_ratio + mem_ratio) / 2`, range [0.0, 1.0], higher = fuller = preferred.
 
-  Wildcards (empty `size_class`, or an unreadable cgroup reporting zero budget)
-  are neither reclaimable nor measurable, so they SPREAD: k8s LeastAllocated,
-  `-1.0 - slot_ratio`, range [-2.0, -1.0], higher = emptier = preferred. That
-  keeps every wildcard below every classed brick while spreading among
-  themselves. Packing them would concentrate a workload onto one arbitrary brick
-  with the memory gate disabled (`Scheduler.mem_eligible?/2` short-circuits true
-  for a wildcard) for none of the reclaim benefit that justifies packing.
+  Wildcards (empty `size_class`) are neither reclaimable nor measurable, so they
+  SPREAD: k8s LeastAllocated, `-1.0 - slot_ratio`, range [-2.0, -1.0], higher =
+  emptier = preferred. That keeps every wildcard below every classed brick while
+  spreading among themselves. Packing them would concentrate a workload onto one
+  arbitrary brick with the memory gate disabled (`Scheduler.mem_eligible?/2`
+  short-circuits true for a wildcard) for none of the reclaim benefit that
+  justifies packing. A BLIND classed brick (`Embervm.Brick.blind?/1`, zero
+  budget) has no memory signal either, so it scores on the same spread scale;
+  the memory gate already refuses it, so this only orders a no-memory-gate
+  (`need_mib: nil`) request.
 
   `slot_ratio` is an exact count and is the only signal trusted for wildcards.
-  `mem_ratio` is derived from OBSERVED cgroup headroom, which lags: memory.max
-  and memory.current are read separately and a just-restored Firecracker guest
-  faults its pages in lazily. The clamp exists for that race. Issue #4140 Phase B
-  replaces that term with a reserved/allocatable reservation ledger, so do not
-  try to fix the lag here.
+  `mem_ratio` follows the brick's admission model, net of the in-flight debit
+  `Scheduler.place/1` charges (`:pending_mib`, absent reads as 0), so an assumed
+  placement counts as allocated exactly as k8s counts an assumed pod:
+
+    * reserved model (`admits_on_reservation`): DECLARED use,
+      `(budget - (Brick.admittable_mib/1 - pending)) / budget`, the same
+      quantity the daemon admits on, so packing follows commitments rather
+      than lagging residency.
+    * observed model: `(budget - (headroom - pending)) / budget`. OBSERVED cgroup
+      headroom lags: memory.max and memory.current are read separately and a
+      just-restored Firecracker guest faults its pages in lazily. The clamp
+      exists for that race.
   """
   @spec score(map()) :: float()
   def score(brick) do
@@ -32,12 +42,18 @@ defmodule Embervm.Scheduler.Score do
     live = Map.get(brick, :live_vms, 0)
     slot_ratio = if max_live == 0, do: 0.0, else: live / max_live
 
-    if Embervm.Brick.wildcard?(brick) do
+    if Embervm.Brick.wildcard?(brick) or Embervm.Brick.blind?(brick) do
       -1.0 - slot_ratio
     else
       budget = Map.get(brick, :mem_budget_mib, 0)
-      headroom = Map.get(brick, :mem_headroom_mib, 0)
-      mem_ratio = ((budget - headroom) / budget) |> clamp(0.0, 1.0)
+      pending = pending_mib(brick)
+
+      free =
+        if Embervm.Brick.reservation?(brick),
+          do: Embervm.Brick.admittable_mib(brick) - pending,
+          else: Map.get(brick, :mem_headroom_mib, 0) - pending
+
+      mem_ratio = ((budget - free) / budget) |> clamp(0.0, 1.0)
       (slot_ratio + mem_ratio) / 2.0
     end
   end
@@ -85,4 +101,11 @@ defmodule Embervm.Scheduler.Score do
   end
 
   defp clamp(value, low, high), do: value |> max(low) |> min(high)
+
+  defp pending_mib(brick) do
+    case Map.get(brick, :pending_mib) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> 0
+    end
+  end
 end

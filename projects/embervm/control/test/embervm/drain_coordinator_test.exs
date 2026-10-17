@@ -135,4 +135,59 @@ defmodule Embervm.DrainCoordinatorTest do
     # The coordinator itself did not crash.
     assert Process.alive?(pid)
   end
+
+  # A 4-arity drain_fun receives the pod_uid the class should scope to ("" for a
+  # node-wide drain), the same seam the production default dispatches on.
+  defp start_scoped(scoped?) do
+    test = self()
+
+    {:ok, pid} =
+      DrainCoordinator.start_link(
+        name: nil,
+        instance_scoped: scoped?,
+        drain_fun: fn class, _server, node_id, pod_uid ->
+          send(test, {:drained, class, node_id, pod_uid})
+          1
+        end,
+        session_drain_fun: fn _server, _node, _pod_uid, _deadline -> 0 end,
+        append_fun: fn _op_log, op ->
+          send(test, {:op, op.kind, op.payload})
+          {:ok, 1}
+        end
+      )
+
+    pid
+  end
+
+  describe "instance-scoped class drains" do
+    test "on, the stateful, group and serving sweepers get the draining instance's pod_uid" do
+      pid = start_scoped(true)
+      send(pid, {:node_draining, "node-4", "uid-2gi", 1_700_000_120_000})
+
+      assert_receive {:op, :node_drain_finished, _finished}
+      assert_received {:drained, :stateful, "node-4", "uid-2gi"}
+      assert_received {:drained, :group, "node-4", "uid-2gi"}
+      assert_received {:drained, :serving, "node-4", "uid-2gi"}
+    end
+
+    test "off, every class drains the whole node" do
+      pid = start_scoped(false)
+      send(pid, {:node_draining, "node-4", "uid-2gi", 1_700_000_120_000})
+
+      assert_receive {:op, :node_drain_finished, _finished}
+      assert_received {:drained, :stateful, "node-4", ""}
+      assert_received {:drained, :group, "node-4", ""}
+      assert_received {:drained, :serving, "node-4", ""}
+    end
+
+    test "a legacy edge without a pod_uid drains the whole node even when on" do
+      pid = start_scoped(true)
+      send(pid, {:node_draining, "node-5", 1_700_000_120_000})
+
+      assert_receive {:op, :node_drain_finished, _finished}
+      assert_received {:drained, :stateful, "node-5", ""}
+      assert_received {:drained, :group, "node-5", ""}
+      assert_received {:drained, :serving, "node-5", ""}
+    end
+  end
 end

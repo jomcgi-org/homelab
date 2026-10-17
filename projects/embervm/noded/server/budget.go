@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 )
 
 // budgetFsRoot is the cgroup v2 mount point the reader inspects. A package
@@ -28,13 +30,25 @@ var budgetFsRoot = "/sys/fs/cgroup"
 // and /proc/self/cgroup names it. Under a PRIVATE cgroup namespace the line is
 // "0::/" and budgetFsRoot already IS the pod's cgroup, so resolution falls
 // back to budgetFsRoot and behaves exactly as before.
+//
+// Once the jailer delegates cgroups, noded itself lives in the daemon-only
+// child (driver.DaemonCgroupName) and /proc/self/cgroup names that child, whose
+// memory.max is "max". cgroupDir therefore resolves the brick cgroup, the
+// delegation root, not noded's own leaf.
 var selfCgroupPath = "/proc/self/cgroup"
 
 // cgroupDir resolves the directory whose cgroup v2 controller files (memory.max,
-// cpu.max, ...) describe THIS daemon's cgroup. It parses selfCgroupPath for the
-// "0::<path>" entry and joins <path> under budgetFsRoot. It degrades gracefully:
-//   - a "0::/" self-path (private cgroupns) or an unreadable/absent
-//     /proc/self/cgroup falls back to budgetFsRoot;
+// cpu.max, ...) describe THIS daemon's brick cgroup. It parses selfCgroupPath
+// for the "0::<path>" entry, maps a trailing jailer daemon child back to the
+// brick cgroup that contains it (driver.BrickCgroupPath), and joins the result
+// under budgetFsRoot. The brick cgroup is the delegation root: its memory.max
+// is the brick ceiling, and its memory.current, memory.stat and cpu.stat are
+// hierarchical over the daemon child and every VM leaf, so the reader reports
+// the same budget and headroom before and after the jailer's first launch. It
+// degrades gracefully:
+//   - a "0::/" self-path (private cgroupns), including "0::/embervm-noded-daemon"
+//     after delegation, or an unreadable/absent /proc/self/cgroup falls back to
+//     budgetFsRoot;
 //   - a joined dir that lacks memory.max (e.g. the host-root join does not
 //     exist, or a fixture wrote files at budgetFsRoot itself) also falls back
 //     to budgetFsRoot.
@@ -43,7 +57,7 @@ var selfCgroupPath = "/proc/self/cgroup"
 // namespace probe: the join is only preferred when it actually carries the
 // controller files.
 func cgroupDir() string {
-	rel := parseSelfCgroupV2Path(readSelfCgroup())
+	rel := driver.BrickCgroupPath(parseSelfCgroupV2Path(readSelfCgroup()))
 	if rel == "" || rel == "/" {
 		return budgetFsRoot
 	}
@@ -127,11 +141,12 @@ func (b *budget) MemBudgetMib() uint64 {
 	return parseMemBudgetMib(string(maxRaw), b.reserveMib)
 }
 
-// MemHeadroomMib returns free schedulable guest memory in MiB. Identical
-// semantics to the retired readMemHeadroomMib, folded in here so the daemon
-// has one cgroup reader instead of two. An unreadable memory.stat falls back
-// to max minus current, which is conservative because it does not subtract
-// any unverified reclaimable cache.
+// MemHeadroomMib returns free schedulable guest memory in MiB. 0 means unknown
+// (unlimited cgroup, or memory.max or memory.current unreadable), never "full":
+// a cgroup whose numeric limit is exhausted reports at least 1 MiB (see
+// parseMemHeadroomMib), so admission can fail open on unknown and closed on
+// exhausted. An unreadable memory.stat falls back to max minus current, which is
+// conservative because it does not subtract any unverified reclaimable cache.
 func (b *budget) MemHeadroomMib() uint64 {
 	dir := cgroupDir()
 	maxRaw, err := os.ReadFile(filepath.Join(dir, "memory.max"))
@@ -161,9 +176,9 @@ func (b *budget) CpuBudgetMillicores() uint64 {
 }
 
 // SlotCeiling returns the configured live-VM backstop unchanged. Memory admission
-// is enforced separately by admitOrReject using measured headroom, the workload's
-// need, and the configured reject floor. A zero or unreadable memory budget does
-// not change the backstop.
+// is enforced separately by admit (pressure.go) from the workload's declared
+// need, the boots in flight, and this reader's headroom and budget. A zero or
+// unreadable memory budget does not change the backstop.
 func (b *budget) SlotCeiling(configured uint64) uint64 {
 	return configured
 }
@@ -253,7 +268,12 @@ func (s *Server) StartBudgetLoop(ctx context.Context) {
 
 // parseMemHeadroomMib computes headroom in MiB from cgroup v2 memory.max,
 // memory.current, and memory.stat contents. "max" (unlimited) or a parse
-// error yields 0. Folded in from the retired free-function readMemHeadroomMib.
+// error yields 0, which means UNKNOWN. Once both numbers parse, the reading is
+// known, and a known result is never 0: non-reclaimable memory at or over
+// memory.max, or less than 1 MiB free, reports 1. That keeps a full cgroup from
+// colliding with the unknown sentinel, which admission fails open on; 1 MiB is
+// always below any need plus the reject floor, so it refuses. Folded in from the
+// retired free-function readMemHeadroomMib.
 func parseMemHeadroomMib(maxRaw, curRaw, statRaw string) uint64 {
 	maxStr := strings.TrimSpace(maxRaw)
 	if maxStr == "max" || maxStr == "" {
@@ -300,10 +320,11 @@ func parseMemHeadroomMib(maxRaw, curRaw, statRaw string) uint64 {
 	// because the kernel evicts it long before it OOM-kills. shmem is excluded
 	// because it is not reclaimable without swap.
 	// Subtracting only inactive_file was the incomplete earlier fix for #4058.
-	if uint64(maxB) <= nonReclaimableB {
-		return 0
+	var freeMib uint64
+	if uint64(maxB) > nonReclaimableB {
+		freeMib = (uint64(maxB) - nonReclaimableB) / (1 << 20)
 	}
-	return (uint64(maxB) - nonReclaimableB) / (1 << 20)
+	return max(freeMib, 1)
 }
 
 // parseMemBudgetMib computes (max - reserve) in MiB from cgroup v2

@@ -339,6 +339,29 @@ defmodule Embervm.GroupWakeManagerTest do
     assert Enum.any?(ops, &(&1.kind == :artifact_restored and &1.payload["ref"] == "set-r"))
   end
 
+  test "a restore probe the set's node cannot host records no autoscaler demand" do
+    {:ok, restore_calls} = Agent.start_link(fn -> [] end)
+    restore_fun = fn _ch, _req -> Agent.update(restore_calls, &[:called | &1]) && {:error, :unused} end
+
+    ctx = start_stack(instance_id: "g-full", restore_artifact_fun: restore_fun)
+    _ = seed_banked(ctx, "g-full", "set-f")
+
+    # A local set miss with a reachable store, on a node with no free slot: the probe
+    # for a restore target finds nothing. It is pinned to the set's node, so that is
+    # not fleet demand; the delegated wake's own anchor pick records any.
+    seed_node(ctx, %{group_bundle_sets: [], store_reachable: true, live_vms: 10})
+
+    # The probe runs in the wake worker the manager spawns, so trace its spawns too.
+    :erlang.trace(ctx.mgr, true, [:send, :set_on_spawn])
+    assert {:ok, _} = GroupWakeManager.wake(ctx.mgr, "grp-a", "system:group:grp-a")
+    :erlang.trace(ctx.mgr, false, [:send, :set_on_spawn])
+    ref = :erlang.trace_delivered(:all)
+    assert_receive {:trace_delivered, :all, ^ref}
+
+    refute_received {:trace, _, _, {:"$gen_cast", {:denial, "grp-a", _}}, _}
+    assert Agent.get(restore_calls, & &1) == []
+  end
+
   test "an unreachable store on a set miss attempts no restore and relights (fresh-fallback) as before" do
     {:ok, restore_calls} = Agent.start_link(fn -> [] end)
     restore_fun = fn _ch, _req -> Agent.update(restore_calls, &[:called | &1]) && {:error, :unused} end

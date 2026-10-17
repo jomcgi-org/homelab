@@ -12,8 +12,9 @@ defmodule Embervm.GroupManagerTest do
   """
   use ExUnit.Case, async: true
 
-  alias Embervm.{GroupManager, GroupStore}
+  alias Embervm.{GroupManager, GroupStore, NodeCapacity}
   alias Embervm.OpLog.SQLite
+  alias Embervm.Scheduler.Inflight
 
   alias Embervm.Node.V1.{CreateGroupNetworkResponse, StartGroupMemberResponse}
 
@@ -191,6 +192,11 @@ defmodule Embervm.GroupManagerTest do
       end)
 
     entry = Keyword.get(opts, :entry, default_entry())
+    # Private capacity and in-flight tables: member starts claim on the anchor,
+    # and the shared ledger would let one test's claims debit another's brick.
+    cap_table = NodeCapacity.create(:"gm_cap_#{suffix}")
+    inflight_table = Keyword.get_lazy(opts, :inflight_table, fn -> Inflight.create(:"gm_inflight_#{suffix}") end)
+    start_group_member_fun = Keyword.get(opts, :start_group_member_fun, start_group_member_fun)
 
     mgr_opts = [
       instance_id: "g-1",
@@ -198,6 +204,9 @@ defmodule Embervm.GroupManagerTest do
       principal: "system:group:grp-a",
       entry: entry,
       node_id: "node-4",
+      dial_id: Keyword.get(opts, :dial_id),
+      capacity_table: cap_table,
+      inflight_table: inflight_table,
       store: store,
       publisher: pub,
       supernet: "10.101.0.0/16",
@@ -218,7 +227,17 @@ defmodule Embervm.GroupManagerTest do
 
     {:ok, mgr} = GroupManager.start_link(mgr_opts)
 
-    %{mgr: mgr, store: store, pub: pub, rec: rec, op_log: op_log, secret_reads: secret_reads, alloc: alloc}
+    %{
+      mgr: mgr,
+      store: store,
+      pub: pub,
+      rec: rec,
+      op_log: op_log,
+      secret_reads: secret_reads,
+      alloc: alloc,
+      cap_table: cap_table,
+      inflight_table: inflight_table
+    }
   end
 
   defp default_entry do
@@ -636,5 +655,178 @@ defmodule Embervm.GroupManagerTest do
     atom = String.to_existing_atom(kind)
     {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
     Enum.filter(ops, &(&1.kind == atom))
+  end
+
+  # -- in-flight claims on the anchor ------------------------------------------
+
+  # The member names holding a claim in `ledger`, sorted (one per claim row).
+  defp claimed_members(ledger) do
+    for({_dial, {:group_member, _gid, name, _ref}, _mib, _exp} <- Inflight.entries(table: ledger), do: name)
+    |> Enum.sort()
+  end
+
+  test "every member start claims its memory on the anchor before StartGroupMember and settles it" do
+    test = self()
+    ledger = Inflight.create(:"gm_claims_#{System.unique_integer([:positive])}")
+
+    start_fun = fn _ch, req ->
+      # The claim is already in the ledger when the daemon is asked to boot.
+      send(test, {:pending_at_start, req.member_name, Inflight.pending_mib("node-4", table: ledger)})
+      {:ok, %StartGroupMemberResponse{vm_id: "vm-#{req.member_name}", ip: req.ip, was_relight: false}}
+    end
+
+    ctx = start_group(start_group_member_fun: start_fun, inflight_table: ledger)
+    assert {:ok, _endpoint} = GroupManager.create_group(ctx.mgr)
+
+    # The leader starts alone (order 0), so it sees exactly its own 512 MiB claim.
+    assert_received {:pending_at_start, "leader", 512}
+    assert_received {:pending_at_start, "worker-0", w0} when w0 >= 1_024
+    assert_received {:pending_at_start, "worker-1", w1} when w1 >= 1_024
+
+    # Settled, the claims hold until the brick's next report counts the VMs.
+    assert claimed_members(ledger) == ["leader", "worker-0", "worker-1"]
+    assert Inflight.pending_mib("node-4", table: ledger) == 1_536
+  end
+
+  test "a member the anchor refuses releases its claim" do
+    ledger = Inflight.create(:"gm_refused_#{System.unique_integer([:positive])}")
+
+    start_fun = fn _ch, req ->
+      if req.member_name == "leader" do
+        {:ok, %StartGroupMemberResponse{vm_id: "vm-leader", ip: req.ip, was_relight: false}}
+      else
+        {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem (need 512 MiB, admittable 0 MiB, model reserved)"}}
+      end
+    end
+
+    ctx = start_group(start_group_member_fun: start_fun, inflight_table: ledger)
+    assert {:error, {:member_start_failed, _name, {:error, :no_capacity}}} = GroupManager.create_group(ctx.mgr)
+
+    # Only the leader booted; the refused workers left nothing debiting the brick.
+    assert claimed_members(ledger) == ["leader"]
+    assert Inflight.pending_mib("node-4", table: ledger) == 512
+  end
+
+  # -- anchor probes (Supervisor.anchor_instance) --------------------------------
+
+  # Runs `fun` in a traced child process and returns `{result, casts}`, where
+  # `casts` is the autoscaler demand it recorded (the BrickController casts it
+  # sent), as `{tag, workload, need}`. Async-safe: only the child is traced.
+  defp demand_casts(fun) do
+    parent = self()
+
+    {pid, mon} =
+      spawn_monitor(fn ->
+        receive do
+          :go -> send(parent, {:demand_result, fun.()})
+        end
+      end)
+
+    :erlang.trace(pid, true, [:send])
+    send(pid, :go)
+    assert_receive {:demand_result, result}
+    assert_receive {:DOWN, ^mon, :process, ^pid, _}
+    ref = :erlang.trace_delivered(:all)
+    assert_receive {:trace_delivered, :all, ^ref}
+
+    casts =
+      Stream.repeatedly(fn ->
+        receive do
+          {:trace, ^pid, _kind, {:"$gen_cast", {tag, wl, need}}, _to} when tag in [:denial, :empty_demand] -> {tag, wl, need}
+          {:trace, ^pid, _kind, _msg, _to} -> :skip
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+      |> Enum.reject(&(&1 == :skip))
+
+    {result, casts}
+  end
+
+  # A group-capable brick (it carries a serving subnet) with the group's base READY.
+  defp group_brick(table, node_id, headroom_mib, opts \\ []) do
+    pod_uid = "pod-#{node_id}"
+
+    NodeCapacity.put(table, {node_id, pod_uid}, %{
+      node_id: node_id,
+      configured_id: node_id,
+      pod_uid: pod_uid,
+      instance_id: "#{node_id}/#{pod_uid}",
+      size_class: "8gi",
+      mem_headroom_mib: headroom_mib,
+      mem_budget_mib: 8_192,
+      live_vms: 0,
+      max_live_vms: 4,
+      serving_subnet_cidr: "10.99.0.0/24",
+      workloads:
+        if(Keyword.get(opts, :base_ready, true),
+          do: %{"gwl" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-gwl"}},
+          else: %{}
+        )
+    })
+  end
+
+  # Two members of 1500 MiB: the anchor must fit 3000 MiB.
+  defp anchor_entry, do: %{group: %{members: [%{mem_mib: 1_500}, %{mem_mib: 1_500}]}}
+
+  describe "anchor_instance" do
+    setup do
+      suffix = System.unique_integer([:positive])
+      %{table: NodeCapacity.create(:"gm_anchor_#{suffix}"), ledger: Inflight.create(:"gm_anchor_infl_#{suffix}")}
+    end
+
+    test "probing nodes that cannot host the group records no demand when a later one can", ctx do
+      group_brick(ctx.table, "node-a", 1_000)
+      group_brick(ctx.table, "node-b", 2_000)
+      group_brick(ctx.table, "node-c", 8_000)
+
+      assert {{:ok, "node-c", "node-c/pod-node-c"}, []} =
+               demand_casts(fn ->
+                 Embervm.GroupManager.Supervisor.anchor_instance(ctx.table, anchor_entry(), "gwl", nil,
+                   demand: true,
+                   inflight: ctx.ledger
+                 )
+               end)
+    end
+
+    test "a create no node can host records exactly one denial for the whole group", ctx do
+      group_brick(ctx.table, "node-a", 1_000)
+      group_brick(ctx.table, "node-b", 2_000)
+      group_brick(ctx.table, "node-c", 2_500)
+
+      assert {{:error, :no_eligible_instance}, [{:denial, "gwl", 3_000}]} =
+               demand_casts(fn ->
+                 Embervm.GroupManager.Supervisor.anchor_instance(ctx.table, anchor_entry(), "gwl", nil,
+                   demand: true,
+                   inflight: ctx.ledger
+                 )
+               end)
+    end
+
+    test "a bank or adoption miss (demand: false) records nothing", ctx do
+      group_brick(ctx.table, "node-a", 1_000)
+      group_brick(ctx.table, "node-b", 2_000)
+
+      assert {{:error, :no_eligible_instance}, []} =
+               demand_casts(fn ->
+                 Embervm.GroupManager.Supervisor.anchor_instance(ctx.table, anchor_entry(), "gwl", "g-1",
+                   demand: false,
+                   inflight: ctx.ledger
+                 )
+               end)
+    end
+
+    test "the probes read in-flight claims: a node another create filled is skipped", ctx do
+      group_brick(ctx.table, "node-a", 4_000)
+      group_brick(ctx.table, "node-b", 4_000)
+      Inflight.claim("node-a/pod-node-a", :other_group, 3_000, table: ctx.ledger)
+
+      assert {:ok, "node-b", "node-b/pod-node-b"} =
+               Embervm.GroupManager.Supervisor.anchor_instance(ctx.table, anchor_entry(), "gwl", nil,
+                 demand: true,
+                 inflight: ctx.ledger
+               )
+    end
   end
 end

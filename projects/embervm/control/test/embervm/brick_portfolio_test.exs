@@ -160,6 +160,88 @@ defmodule Embervm.Brick.PortfolioTest do
              Portfolio.floors(Enum.reverse(catalog), Enum.reverse(classes))
   end
 
+  test "a class with no authorized bound does not receive an item another class fits" do
+    catalog = [%{name: "pi", floor: 1, mem_mib: 256}]
+    classes = [class("1gi", 256, 6, %{max: 0}), class("2gi", 1_280, 14, %{max: 4})]
+
+    assert Portfolio.floors(catalog, classes) == %{
+             "1gi" => %{computed_floor: 0, effective_min: 0, flag: nil},
+             "2gi" => %{computed_floor: 1, effective_min: 1, flag: nil}
+           }
+  end
+
+  test "a positive ceiling bound authorizes a zero-max class" do
+    catalog = [%{name: "mid", floor: 1, mem_mib: 1_500}]
+
+    classes = [
+      class("2gi", 1_280, 14, %{max: 4}),
+      class("4gi", 3_328, 16, %{max: 0, ceiling_bound: 1})
+    ]
+
+    assert Portfolio.floors(catalog, classes)["4gi"] == %{
+             computed_floor: 1,
+             effective_min: 1,
+             flag: nil
+           }
+  end
+
+  test "an item only an unauthorized class can hold still overflows there" do
+    catalog = [%{name: "big", floor: 1, mem_mib: 8_000}]
+    classes = [class("2gi", 1_280, 14, %{max: 4}), class("16gi", 15_616, 16, %{max: 0})]
+
+    assert Portfolio.floors(catalog, classes) == %{
+             "2gi" => %{computed_floor: 0, effective_min: 0, flag: nil},
+             "16gi" => %{computed_floor: 1, effective_min: 1, flag: :floor_overflow}
+           }
+  end
+
+  test "the per-VM overhead is charged once per item alongside the per-bin cushion" do
+    # 2gi: usable 1792, cushion 512. Ten 128 MiB items fit the cushion bound
+    # (1280 + 512), but with a 64 MiB overhead each, nine use 9 * 192 = 1728
+    # and a tenth would need 1920 > 1792.
+    catalog = [%{name: "tiny", floor: 10, mem_mib: 128}]
+
+    assert Portfolio.floors(catalog, [class("2gi", 1_280, 14)])["2gi"].computed_floor == 1
+
+    assert Portfolio.floors(catalog, [class("2gi", 1_280, 14, %{vm_overhead_mib: 64})])["2gi"].computed_floor ==
+             2
+  end
+
+  test "an overhead above the cushion decides whether a class fits at all" do
+    # 3072 + 512 fits 4gi (usable 3840), but 3072 + 1024 does not.
+    catalog = [%{name: "runtime", floor: 1, mem_mib: 3_072}]
+
+    classes = fn overhead ->
+      [
+        class("4gi", 3_328, 16, %{vm_overhead_mib: overhead}),
+        class("8gi", 7_424, 16, %{vm_overhead_mib: overhead})
+      ]
+    end
+
+    assert Portfolio.floors(catalog, classes.(192))["4gi"].computed_floor == 1
+    assert Portfolio.floors(catalog, classes.(1_024))["4gi"].computed_floor == 0
+    assert Portfolio.floors(catalog, classes.(1_024))["8gi"].computed_floor == 1
+  end
+
+  test "class authorization keeps the result independent of input order" do
+    catalog = [
+      %{name: "zeta", floor: 2, mem_mib: 200},
+      %{name: "alpha", floor: 1, mem_mib: 600}
+    ]
+
+    classes = [
+      class("1gi", 256, 6, %{max: 0}),
+      class("4gi", 3_328, 16, %{max: 2}),
+      class("2gi", 1_280, 14, %{max: 4})
+    ]
+
+    result = Portfolio.floors(catalog, classes)
+
+    assert result == Portfolio.floors(Enum.reverse(catalog), Enum.reverse(classes))
+    assert result["1gi"].computed_floor == 0
+    assert result["2gi"].computed_floor == 1
+  end
+
   test "a zero slot limit retains noded's unlimited-slot meaning" do
     catalog = [%{name: "tiny", floor: 3, mem_mib: 100}]
 

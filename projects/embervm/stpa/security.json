@@ -1,12 +1,12 @@
 {
   "lens": "security",
-  "commit": "ccaba452d",
+  "commit": "c05e43f66",
   "system_dir": "projects/embervm",
   "scope": {
     "summary": "Deliberate attacks on EmberVM's control structure: an adversary who forges, withholds, or replays control actions or feedback. Same control structure as the logic lens, analyzed for attack rather than honest failure.",
-    "built": "bearer-token authentication on every unary and streaming gRPC call (#4693); the inert Cilium ingress policy was removed in #5816 and supplies no network isolation; SigV4-authenticated access to S3 artifact store enforced by gateway (#4708); brick dial-home registration bound to the noded pod's projected token claim identity (#4707, closed by #5049); per-principal envelope encryption of mutable state and capability-gated restore authorization (#4691, armed in production and dev 2026-08); the brick silence timeout (ADR embervm/037) bounding node-local authority once control-plane contact goes stale, armed at 21600s in production and dev; warmth ownership transition guard (#4962) refreshing .alive claims and reaping unclaimed pre-heartbeat directories",
+    "built": "bearer-token authentication on every unary and streaming gRPC call (#4693); the inert Cilium ingress policy was removed in #5816 and supplies no network isolation; SigV4-authenticated access to S3 artifact store enforced by gateway (#4708); brick dial-home registration bound to the noded pod's projected token claim identity (#4707, closed by #5049); per-principal envelope encryption of mutable state and capability-gated restore authorization (#4691, armed in production and dev 2026-08); the brick silence timeout (ADR embervm/037) bounding node-local authority once control-plane contact goes stale, armed at 21600s in production and dev; warmth ownership transition guard (#4962) refreshing .alive claims and reaping unclaimed pre-heartbeat directories; the Firecracker jailer (per-VM chroot, a uid and gid from a per-daemon leased block, a cgroup leaf with memory.oom.group, its own PID namespace), fail-closed at startup and per launch, shipped off until each stage arms it (#5255, #6965)",
     "designed": "mTLS/SPIFFE certificate-based mutual transport auth for noded, request-scoped GitHub tool mediation replacing host-keyed injection (ADR agents/055), digest-verified manifests for restored artifact integrity (ADR embervm/033 decision 3), per-workload egress allowlist scoping (ADR embervm/035)",
-    "note": "Policy-removal corrections for #5816 only; other findings retain their earlier review stamp."
+    "note": "Jailer hazard refreshed for #5255; policy-removal corrections for #5816; other findings retain their earlier review stamp."
   },
   "losses": [
     {
@@ -34,12 +34,12 @@
     {
       "key": "firecracker-no-jailer",
       "view": "physical",
-      "statement": "noded execs the firecracker binary directly, as root, inside a privileged pod; the only per-VM containment added is a mount namespace for vsock isolation. Firecracker's built-in seccomp filter is active, but a VMM escape lands in a process holding /dev/kvm, the fleet-shared store credential, and the noded bearer token, becoming the compromised-brick adversary instantly.",
+      "statement": "in production noded execs the firecracker binary directly, as root, inside a privileged pod; the only per-VM containment added is a mount namespace for vsock isolation. Firecracker's built-in seccomp filter is active, but a VMM escape lands in a process holding /dev/kvm, the fleet-shared store credential, and the noded bearer token, becoming the compromised-brick adversary instantly. The jailer (per-VM chroot, leased uid and gid, cgroup leaf, PID namespace) is built and shipped off: once armed, a brick that cannot contain guests exits before registering and conformance S7 fails on any unjailed launch; embervm-dev arms it first and production after a dev soak (#6965).",
       "losses": [
         "L.host-compromise"
       ],
       "maturity": "built",
-      "status": "none",
+      "status": "shipped-off",
       "issue": "#5255"
     },
     {

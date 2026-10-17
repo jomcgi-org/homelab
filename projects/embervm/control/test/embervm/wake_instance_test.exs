@@ -13,6 +13,7 @@ defmodule Embervm.WakeInstanceTest do
   use ExUnit.Case, async: true
 
   alias Embervm.{NodeCapacity, WakeInstance}
+  alias Embervm.Scheduler.Inflight
 
   setup do
     table = :"wi_cap_#{System.unique_integer([:positive])}"
@@ -55,6 +56,10 @@ defmodule Embervm.WakeInstanceTest do
         serving_snapshots: Keyword.get(opts, :serving_snapshots, []),
         group_bundle_sets: Keyword.get(opts, :group_bundle_sets, []),
         group_member_vms: Keyword.get(opts, :group_member_vms, []),
+        serving_vms: Keyword.get(opts, :serving_vms, []),
+        stateful_vms: Keyword.get(opts, :stateful_vms, []),
+        vm_overhead_mib: Keyword.get(opts, :vm_overhead_mib, 0),
+        admits_on_reservation: Keyword.get(opts, :admits_on_reservation, false),
         updated_at: Keyword.get(opts, :updated_at, 0)
       }
 
@@ -308,7 +313,7 @@ defmodule Embervm.WakeInstanceTest do
     end
   end
 
-  describe "DS wildcard is always mem-eligible" do
+  describe "DS wildcard is always mem-eligible, a blind classed brick never is" do
     test "an empty-size-class instance is eligible even with zero headroom", %{table: table} do
       wildcard =
         put_instance(table, "node-4", "ds", size_class: "", mem_headroom_mib: 0, mem_budget_mib: 0, max_live_vms: 10)
@@ -317,12 +322,15 @@ defmodule Embervm.WakeInstanceTest do
                WakeInstance.select("node-4", table: table, workload: "wl-a", need_mib: 4_000)
     end
 
-    test "a zero-budget (no cgroup limit) instance is eligible even with a non-empty class", %{table: table} do
-      # Non-empty class but mem_budget_mib 0 (no cgroup limit): treated as the big
-      # burst envelope, always mem-eligible.
-      wildcard = put_instance(table, "node-4", "burst", size_class: "8gi", mem_headroom_mib: 0, mem_budget_mib: 0)
+    test "a zero-budget CLASSED instance is blind and never eligible (fail closed)", %{table: table} do
+      # Deliberately inverted from the old fail-open reading. A classed brick
+      # reporting mem_budget_mib 0 used to count as the unlimited burst envelope,
+      # but that is also exactly what a jailer-armed brick whose cgroup readout
+      # broke reports, and placing on it would admit every guest. Only an EMPTY
+      # class is the wildcard now; a classed zero budget is blind.
+      _blind = put_instance(table, "node-4", "burst", size_class: "8gi", mem_headroom_mib: 0, mem_budget_mib: 0)
 
-      assert {:ok, ^wildcard} =
+      assert {:error, :no_eligible_instance} =
                WakeInstance.select("node-4", table: table, workload: "wl-a", need_mib: 4_000)
     end
   end
@@ -578,6 +586,188 @@ defmodule Embervm.WakeInstanceTest do
       summary = WakeInstance.rejection_summary(512, true, [], "wl-a")
       assert summary =~ "brick_count=0"
       assert summary =~ "bricks=[none]"
+    end
+  end
+
+  # Runs `fun` in a traced child process and returns `{result, casts}`, where
+  # `casts` is the autoscaler demand it recorded, as `{tag, workload, need}`: the
+  # BrickController casts it sent. Async-safe (only the child's sends are seen),
+  # and trace_delivered makes the read deterministic.
+  defp demand_casts(fun) do
+    parent = self()
+
+    {pid, mon} =
+      spawn_monitor(fn ->
+        receive do
+          :go -> send(parent, {:demand_result, fun.()})
+        end
+      end)
+
+    :erlang.trace(pid, true, [:send])
+    send(pid, :go)
+    assert_receive {:demand_result, result}
+    assert_receive {:DOWN, ^mon, :process, ^pid, _}
+    ref = :erlang.trace_delivered(:all)
+    assert_receive {:trace_delivered, :all, ^ref}
+    {result, collect_demand_casts([])}
+  end
+
+  defp collect_demand_casts(acc) do
+    receive do
+      {:trace, _pid, kind, {:"$gen_cast", {tag, workload, need}}, _to}
+      when kind in [:send, :send_to_non_existing_process] and tag in [:denial, :empty_demand] ->
+        collect_demand_casts([{tag, workload, need} | acc])
+
+      {:trace, _pid, _kind, _msg, _to} ->
+        collect_demand_casts(acc)
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
+  describe "in-flight claims" do
+    setup do
+      %{ledger: Inflight.create(:"wi_inflight_#{System.unique_integer([:positive])}")}
+    end
+
+    test "a cold pick with a claim_ref charges the picked brick its need plus overhead", %{table: table, ledger: ledger} do
+      dial = put_instance(table, "node-4", "pod-a", vm_overhead_mib: 64, admits_on_reservation: true)
+
+      assert {:ok, ^dial} =
+               WakeInstance.select("node-4", table: table, workload: "wl-a", need_mib: 1_000, claim_ref: :wake, inflight: ledger)
+
+      assert Inflight.pending_mib(dial, table: ledger) == 1_064
+    end
+
+    test "without a claim_ref the pick charges nothing", %{table: table, ledger: ledger} do
+      dial = put_instance(table, "node-4", "pod-a", [])
+      assert {:ok, ^dial} = WakeInstance.select("node-4", table: table, workload: "wl-a", need_mib: 1_000, inflight: ledger)
+      assert Inflight.entries(table: ledger) == []
+    end
+
+    test "serial picks spread across bricks by their claims, then run out", %{table: table, ledger: ledger} do
+      a = put_instance(table, "node-4", "pod-a", size_class: "4gi", mem_headroom_mib: 4_000, mem_budget_mib: 4_096)
+      b = put_instance(table, "node-4", "pod-b", size_class: "4gi", mem_headroom_mib: 4_000, mem_budget_mib: 4_096)
+      opts = [table: table, workload: "wl-a", need_mib: 3_000, inflight: ledger]
+
+      # Both bricks read the same stale headroom; only the first wake's claim tells
+      # the second that its head is already spoken for.
+      assert {:ok, first} = WakeInstance.select("node-4", [claim_ref: :one] ++ opts)
+      assert {:ok, second} = WakeInstance.select("node-4", [claim_ref: :two] ++ opts)
+      assert Enum.sort([first, second]) == Enum.sort([a, b])
+      assert Inflight.pending_mib(a, table: ledger) == 3_000
+      assert Inflight.pending_mib(b, table: ledger) == 3_000
+
+      assert {:error, :no_eligible_instance} =
+               WakeInstance.select("node-4", [claim_ref: :three, record_demand: false] ++ opts)
+
+      # A release (the brick refused, or the boot failed) makes it placeable again.
+      Inflight.release(first, :one, table: ledger)
+      assert {:ok, ^first} = WakeInstance.select("node-4", [claim_ref: :four] ++ opts)
+    end
+
+    test "a relight claims the owning instance without re-gating it on capacity", %{table: table, ledger: ledger} do
+      owner =
+        put_instance(table, "node-4", "pod-b",
+          mem_headroom_mib: 100,
+          stateful_bundles: [%{snapshot_ref: "stateful/wl-a", workload: "wl-a", generation: 3}]
+        )
+
+      assert {:ok, ^owner} =
+               WakeInstance.select("node-4",
+                 table: table,
+                 workload: "wl-a",
+                 need_mib: 2_000,
+                 warmth_key: :stateful_bundles,
+                 warmth_ref: "stateful/wl-a",
+                 claim_ref: :relight,
+                 inflight: ledger
+               )
+
+      assert Inflight.pending_mib(owner, table: ledger) == 2_000
+    end
+
+    test "cold_candidates with a claim_ref claims only the head of the frontier", %{table: table, ledger: ledger} do
+      put_instance(table, "node-4", "pod-a", [])
+      put_instance(table, "node-4", "pod-b", [])
+
+      assert {:ok, [head, tail]} =
+               WakeInstance.cold_candidates("node-4", table: table, workload: "wl-a", need_mib: 1_000, claim_ref: :c, inflight: ledger)
+
+      assert Inflight.pending_mib(head, table: ledger) == 1_000
+      assert Inflight.pending_mib(tail, table: ledger) == 0
+    end
+
+    test "claim/4 charges the brick's overhead, and the bare need for a dial with no fact", %{table: table, ledger: ledger} do
+      dial = put_instance(table, "node-4", "pod-a", vm_overhead_mib: 64, admits_on_reservation: true)
+
+      assert :ok = WakeInstance.claim(dial, :m, 512, table: table, inflight: ledger)
+      assert :ok = WakeInstance.claim("node-9/gone", :m, 512, table: table, inflight: ledger)
+      assert :ok = WakeInstance.claim(dial, :off, 512, table: table, inflight: false)
+
+      assert Inflight.pending_mib(dial, table: ledger) == 576
+      assert Inflight.pending_mib("node-9/gone", table: ledger) == 512
+    end
+  end
+
+  describe "pinned demand" do
+    test "a pinned miss records no demand with record_demand: false, and one denial by default", %{table: table} do
+      # The only brick on the node is out of slots: a capacity wall, not a base wait.
+      put_instance(table, "node-4", "pod-a", live_vms: 4, max_live_vms: 4)
+      opts = [table: table, workload: "wl-a", need_mib: 512]
+
+      assert {{:error, :no_eligible_instance}, []} =
+               demand_casts(fn -> WakeInstance.select("node-4", [record_demand: false] ++ opts) end)
+
+      assert {{:error, :no_eligible_instance}, []} =
+               demand_casts(fn -> WakeInstance.cold_candidates("node-4", [record_demand: false] ++ opts) end)
+
+      assert {{:error, :no_eligible_instance}, [{:denial, "wl-a", 512}]} =
+               demand_casts(fn -> WakeInstance.select("node-4", opts) end)
+
+      assert {{:error, :no_eligible_instance}, [{:denial, "wl-a", 512}]} =
+               demand_casts(fn -> WakeInstance.cold_candidates("node-4", opts) end)
+    end
+  end
+
+  describe "drains_with_instance?" do
+    test "spares only a guest a co-located sibling positively reports", %{table: table} do
+      # pod-2gi is draining, so the registry already dropped its fact.
+      put_instance(table, "node-4", "pod-8gi", serving_vms: [%{vm_id: "vm-a"}])
+
+      refute WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :serving_vms, :vm_id, "vm-a")
+      assert WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :serving_vms, :vm_id, "vm-b")
+    end
+
+    test "the draining instance's own report and a node-scoped drain still drain", %{table: table} do
+      put_instance(table, "node-4", "pod-2gi", stateful_vms: [%{vm_id: "vm-b"}])
+      put_instance(table, "node-4", "pod-8gi", stateful_vms: [%{vm_id: "vm-a"}])
+
+      assert WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :stateful_vms, :vm_id, "vm-b")
+      assert WakeInstance.drains_with_instance?(table, "node-4", "", :stateful_vms, :vm_id, "vm-a")
+      assert WakeInstance.drains_with_instance?(table, "node-4", nil, :stateful_vms, :vm_id, "vm-a")
+    end
+
+    test "a reporting fact without an instance_id, or on another node, is no proof", %{table: table} do
+      NodeCapacity.put(table, "node-4", %{node_id: "node-4", configured_id: "node-4", serving_vms: [%{vm_id: "vm-a"}]})
+      put_instance(table, "node-5", "pod-8gi", serving_vms: [%{vm_id: "vm-c"}])
+
+      assert WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :serving_vms, :vm_id, "vm-a")
+      assert WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :serving_vms, :vm_id, "vm-c")
+    end
+
+    test "a group is spared by a sibling's live members, never by a banked set", %{table: table} do
+      put_instance(table, "node-4", "pod-8gi", group_bundle_sets: [%{group_instance_id: "g-1", set_id: "s-1"}])
+      assert WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :group_member_vms, :group_instance_id, "g-1")
+
+      put_instance(table, "node-4", "pod-4gi", group_member_vms: [%{group_instance_id: "g-1", member_name: "db"}])
+      refute WakeInstance.drains_with_instance?(table, "node-4", "pod-2gi", :group_member_vms, :group_instance_id, "g-1")
+    end
+
+    test "draining_dial names the draining instance, or nothing for a node-scoped drain" do
+      assert WakeInstance.draining_dial("node-4", "pod-2gi") == "node-4/pod-2gi"
+      assert WakeInstance.draining_dial("node-4", "") == nil
+      assert WakeInstance.draining_dial("node-4", nil) == nil
     end
   end
 end

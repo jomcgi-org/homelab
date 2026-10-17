@@ -81,10 +81,10 @@ func TestCgroupManagerRetriesInitializationAfterFailure(t *testing.T) {
 		manager.parentArg = "test-parent"
 		return nil
 	}
-	if _, err := manager.Create("vm-retry", 1024); err == nil {
+	if _, err := manager.Create("vm-retry", 1024, 0); err == nil {
 		t.Fatal("first cgroup creation unexpectedly succeeded")
 	}
-	if _, err := manager.Create("vm-retry", 1024); err != nil {
+	if _, err := manager.Create("vm-retry", 1024, 0); err != nil {
 		t.Fatalf("second cgroup creation did not recover: %v", err)
 	}
 	if attempts != 2 {
@@ -103,20 +103,5 @@ func TestVMCgroupRemoveWalksJailerChildren(t *testing.T) {
 	}
 	if _, err := os.Stat(top); !os.IsNotExist(err) {
 		t.Fatalf("cgroup tree remains after Remove: %v", err)
-	}
-}
-
-func TestCgroupFailureLoggingDeduplicatesPathSpecificErrors(t *testing.T) {
-	manager := newCgroupManager()
-	first := &os.PathError{Op: "open", Path: "/sys/fs/cgroup/vm-a/memory.max", Err: os.ErrPermission}
-	second := &os.PathError{Op: "open", Path: "/sys/fs/cgroup/vm-b/memory.max", Err: os.ErrPermission}
-	if !manager.shouldLogFailure(first) {
-		t.Fatal("first permission failure was suppressed")
-	}
-	if manager.shouldLogFailure(second) {
-		t.Fatal("same failure cause at a different VM path was logged twice")
-	}
-	if !manager.shouldLogFailure(os.ErrNotExist) {
-		t.Fatal("distinct failure cause was suppressed")
 	}
 }

@@ -2713,6 +2713,85 @@ defmodule Embervm.StatefulSweeperTest do
     end
   end
 
+  # node-4 hosts two bricks. pod-8gi keeps running vm-1 (it reports it); pod-2gi is
+  # draining, so the registry already dropped its fact and nothing reports vm-2.
+  defp co_located_drain(ctx) do
+    stateful_workload(ctx, "pg-sibling", 5433)
+    stateful_workload(ctx, "pg-draining", 5434)
+
+    put_brick(ctx, "node-4", "pod-8gi",
+      stateful_vms: [%{vm_id: "vm-1", workload: "pg-sibling", ip: "10.98.0.5", port: 5432, healthy: true, generation: 0}]
+    )
+
+    serving_instance(ctx, "i1", "pg-sibling", "vm-1", "10.98.0.5")
+    serving_instance(ctx, "i2", "pg-draining", "vm-2", "10.98.0.6")
+  end
+
+  describe "drain_instance/3 (one brick of a shared node)" do
+    test "banks only the draining brick's guest, through that brick, and never marks the sibling's workload" do
+      {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+      ctx =
+        start_stack(
+          channel_fun: fn key ->
+            Agent.update(dialed, &[key | &1])
+            {:ok, :ch}
+          end
+        )
+
+      co_located_drain(ctx)
+
+      assert StatefulSweeper.drain_instance(ctx.sweeper, "node-4", "pod-2gi") == 1
+      refute MapSet.member?(:sys.get_state(ctx.sweeper).draining_workloads, "pg-sibling")
+
+      wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "i2")) end)
+      assert {:ok, %{state: :serving}} = StatefulStore.get(ctx.store, "i1")
+      assert [%{mode: :STOP_STATEFUL_MODE_BANK, vm_id: "vm-2"}] = stop_calls(ctx)
+      # The draining brick's fact is gone, so the bank dials it by instance id
+      # rather than the bare node name, which resolves to no channel.
+      assert "node-4/pod-2gi" in Agent.get(dialed, & &1)
+      refute "node-4" in Agent.get(dialed, & &1)
+    end
+
+    test "the draining brick's own report and an unknown placement both drain" do
+      ctx = start_stack()
+      co_located_drain(ctx)
+
+      # Draining pod-8gi: it still reports vm-1 itself (a drain racing the fact drop),
+      # and nobody reports vm-2, so both fail toward banking.
+      assert StatefulSweeper.drain_instance(ctx.sweeper, "node-4", "pod-8gi") == 2
+      wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "i1")) end)
+    end
+
+    test "an unknown-vm refusal on the inferred drain dial does not terminalize the instance" do
+      ctx = start_stack(bank_backoff_base_ms: 10_000, bank_backoff_cap_ms: 30_000)
+      co_located_drain(ctx)
+
+      # The drain dial is inferred from absence, not reported ownership: an unknown-vm
+      # reply there is not authoritative (task #12), so the instance must not fail.
+      :sys.replace_state(ctx.sweeper, fn s ->
+        %{
+          s
+          | stop_stateful_fun: fn _ch, req ->
+              if req.mode == :STOP_STATEFUL_MODE_BANK,
+                do: {:error, %GRPC.RPCError{status: 9, message: "not bankable (unknown vm)"}},
+                else: {:ok, %StopStatefulResponse{}}
+            end
+        }
+      end)
+
+      assert StatefulSweeper.drain_instance(ctx.sweeper, "node-4", "pod-2gi") == 1
+      wait_until(ctx, fn -> match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "i2")) end)
+      assert load_ops(ctx, "stateful_failed") == []
+    end
+
+    test "an empty pod_uid is the node-wide drain" do
+      ctx = start_stack()
+      co_located_drain(ctx)
+      assert StatefulSweeper.drain_instance(ctx.sweeper, "node-4", "") == 2
+    end
+  end
+
   defp restore_system_env(key, nil), do: System.delete_env(key)
   defp restore_system_env(key, value), do: System.put_env(key, value)
 

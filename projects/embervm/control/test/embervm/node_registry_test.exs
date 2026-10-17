@@ -386,6 +386,100 @@ defmodule Embervm.NodeRegistryTest do
     assert facts.cpu_headroom_millicores == 1500
   end
 
+  test "registry projects the admission ledger and jailer facts (NodeStatus 37, 44-50)" do
+    {reg, table} = start_registry([])
+
+    # A daemon that predates the fields: every one reads as the legacy default,
+    # which makes Brick.admittable_mib/1 fall back to the per-model predicate.
+    :ok = NodeRegistry.inject_status(reg, "node-4", node_status())
+    assert [old] = NodeRegistry.capacity(table)
+    assert old.vm_overhead_mib == 0
+    assert old.admission_reported == false
+    assert old.mem_admittable_mib == 0
+    assert old.mem_inflight_mib == 0
+    assert old.inflight_vms == 0
+    assert old.mem_inflight_placed_mib == 0
+    assert old.inflight_placed_vms == 0
+    assert old.admission_refusals == nil
+    assert old.jailer_armed == false
+    assert old.launch_modes == nil
+
+    status = %{
+      node_status()
+      | vm_overhead_mib: 192,
+        admission_reported: true,
+        mem_admittable_mib: -64,
+        mem_inflight_mib: 3_072,
+        inflight_vms: 1,
+        mem_inflight_placed_mib: 2_048,
+        inflight_placed_vms: 1,
+        admission_refusals: %{"pressure:mem" => 2, "slots" => 0, "vm-evil" => 9},
+        jailer_armed: true,
+        launch_modes: %{"jailed" => 5, "direct_exec" => 1, "guest-label" => 3}
+    }
+
+    :ok = NodeRegistry.inject_status(reg, "node-4", status)
+    assert [facts] = NodeRegistry.capacity(table)
+    assert facts.vm_overhead_mib == 192
+    assert facts.admission_reported == true
+    assert facts.mem_admittable_mib == -64
+    assert facts.mem_inflight_mib == 3_072
+    assert facts.inflight_vms == 1
+    assert facts.mem_inflight_placed_mib == 2_048
+    assert facts.inflight_placed_vms == 1
+    # Closed key sets, like the exit reasons: an unknown key never becomes a label.
+    assert facts.admission_refusals == %{"pressure:mem" => 2, "slots" => 0}
+    assert facts.jailer_armed == true
+    assert facts.launch_modes == %{"jailed" => 5, "direct_exec" => 1}
+
+    # The normalized brick reads the daemon's own verdict.
+    assert Embervm.Brick.admittable_mib(Embervm.Brick.to_brick(facts)) == -64
+  end
+
+  test "a brick keeps its in-flight claims across a retract and drops them when forgotten" do
+    inflight = Embervm.Scheduler.Inflight.create(:"nr_inflight_#{System.unique_integer([:positive])}")
+    {reg, table} = start_registry(inflight_table: inflight)
+
+    :ok = NodeRegistry.inject_status(reg, "node-4", node_status())
+    assert [facts] = NodeRegistry.capacity(table)
+    dial_id = Embervm.Brick.dial_id(facts)
+
+    Embervm.Scheduler.Inflight.claim(dial_id, {:create, 1}, 3_072, table: inflight)
+    Embervm.Scheduler.Inflight.claim("some/other-brick", {:create, 2}, 512, table: inflight)
+
+    # Not dispatchable for now (a drain, a stream blip): the boot racing it may
+    # still land, so its debit stays.
+    :ok = NodeRegistry.inject_status(reg, "node-4", node_status(draining: true))
+    assert NodeRegistry.capacity(table) == []
+    assert Embervm.Scheduler.Inflight.pending_mib(dial_id, table: inflight) == 3_072
+
+    # Forgotten: its debits go with it, and nobody else's do.
+    assert :ok = NodeRegistry.unregister(reg, "node-4", "")
+    assert Embervm.Scheduler.Inflight.pending_mib(dial_id, table: inflight) == 0
+    assert Embervm.Scheduler.Inflight.pending_mib("some/other-brick", table: inflight) == 512
+  end
+
+  test "a report drops a settled claim on a reserved brick and keeps its hold on an observed one" do
+    inflight = Embervm.Scheduler.Inflight.create(:"nr_inflight_#{System.unique_integer([:positive])}")
+    {reg, table} = start_registry(inflight_table: inflight)
+
+    :ok = NodeRegistry.inject_status(reg, "node-4", node_status())
+    assert [facts] = NodeRegistry.capacity(table)
+    dial_id = Embervm.Brick.dial_id(facts)
+    Embervm.Scheduler.Inflight.claim(dial_id, {:create, 1}, 3_072, table: inflight)
+    Embervm.Scheduler.Inflight.settle(dial_id, {:create, 1}, table: inflight)
+
+    # Observed: the report does not charge the landed guest until it faults its
+    # memory in, so the settled claim keeps its hold across reports.
+    :ok = NodeRegistry.inject_status(reg, "node-4", %{node_status() | admits_on_reservation: false})
+    :ok = NodeRegistry.inject_status(reg, "node-4", %{node_status() | admits_on_reservation: false})
+    assert Embervm.Scheduler.Inflight.pending_mib(dial_id, table: inflight) == 3_072
+
+    # Reserved: the report charges it through the live map, so it drops.
+    :ok = NodeRegistry.inject_status(reg, "node-4", %{node_status() | admits_on_reservation: true})
+    assert Embervm.Scheduler.Inflight.pending_mib(dial_id, table: inflight) == 0
+  end
+
   test "a draining NodeStatus stops new assignments immediately (fail-closed, zero facts)" do
     {clock, _advance} = new_clock()
     {reg, table} = start_registry(clock: clock)

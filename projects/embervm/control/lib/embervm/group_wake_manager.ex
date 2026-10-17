@@ -520,12 +520,15 @@ defmodule Embervm.GroupWakeManager do
   # Resolve the instance the delegated boot will dial (see maybe_restore_set), keyed
   # identically to Embervm.GroupManager.Supervisor.anchor_instance: the workload as
   # the deterministic choose key and the group's total member memory as need_mib. The
-  # set is absent locally on this path, so there is no warmth owner to prefer.
+  # set is absent locally on this path, so there is no warmth owner to prefer. It is
+  # a probe pinned to the set's node, so its miss records no demand: the delegated
+  # wake's own anchor pick records it once if no node can host the group.
   defp select_restore_instance(state, node_id, workload) do
     Embervm.WakeInstance.select(node_id,
       table: state.capacity_table,
       workload: workload,
-      need_mib: group_mem_mib(state, workload)
+      need_mib: group_mem_mib(state, workload),
+      record_demand: false
     )
   end
 

@@ -73,15 +73,31 @@ func (s *Server) startStateful(ctx context.Context, req *nodev1.StartStatefulReq
 	if s.isDraining() {
 		return nil, status.Error(codes.Unavailable, "noded: draining")
 	}
-	if s.slotsExhausted() {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
-	}
-	// Cheap rejection under real memory/tap pressure (ADR embervm/014 decision 3),
-	// BEFORE the tap allocation and boot below. Stateful is tap-bearing; the
-	// workload's mem need comes from the request's ResourceSpec.
-	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classTapBearing); err != nil {
+	// The ResourceSpec is the admission need for every mode and the boot size for
+	// a cold boot; without it the VM would be charged 0 MiB and booted at the
+	// driver default, so refuse rather than guess.
+	if err := requireBootResources("StartStateful", req.GetResources()); err != nil {
 		return nil, err
 	}
+	// Admission (ADR embervm/014 decision 3), BEFORE the tap allocation and boot
+	// below. Stateful is tap-bearing, so slots, memory and the tap freelist are
+	// all checked. The ticket rides ctx to the driver call of whichever mode
+	// boots, which releases it; the defer covers every early return in between.
+	// A RELIGHT is charged at least the banked bundle's recorded size, which is
+	// what the restored VM lands at.
+	// Only a control-plane boot counts toward the placed in-flight figure: an
+	// activator wake has no control-plane claim to net against.
+	need := s.statefulAdmitMib(req)
+	var placed uint64
+	if origin == nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
+		placed = placedShare(uint64(req.GetResources().GetMemMib()), need)
+	}
+	ticket, err := s.admit(ctx, "StartStateful", need, placed, classTapBearing)
+	if err != nil {
+		return nil, err
+	}
+	defer ticket.release()
+	ctx = withAdmissionTicket(ctx, ticket)
 	workload := req.GetTrace().GetWorkload()
 	if workload == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: trace.workload required")
@@ -286,6 +302,7 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 		}
 	}
 	h, err := s.statefulDriver.RestoreStateful(ctx, workload, ref, s.volumes.VolumePath(workload))
+	admissionLanded(ctx)
 	if err != nil {
 		s.servingNet.ReleaseTap(ctx, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight stateful snapshot %q: %v", ref, err)
@@ -377,6 +394,7 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 	// writable volume attaches as drive 2 -> /dev/vdb, which the driver signals to
 	// the guest dynamically). Pass an empty handler path / zero size.
 	h, err := s.statefulDriver.ClaimStateful(ctx, workload, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, "", 0, s.volumes.VolumePath(workload), req.GetVolumeMount(), mmdsEnv)
+	admissionLanded(ctx)
 	if err != nil {
 		s.servingNet.ReleaseTap(ctx, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot stateful vm: %v", err)

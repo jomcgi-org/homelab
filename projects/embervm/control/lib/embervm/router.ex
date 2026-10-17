@@ -1588,6 +1588,30 @@ defmodule Embervm.Router do
           retryable: true
         })
 
+      # A node-pressure Prime refusal is a capacity outcome. The manager already
+      # turns one into :no_capacity after walking its candidates; this keeps the
+      # wire contract if a refusal ever reaches here unmapped.
+      {:prime_failed, {:error, %GRPC.RPCError{status: 8}}} ->
+        send_json(conn, 429, %{
+          error: "session create denied",
+          reason: "no_capacity",
+          workload: workload,
+          retryable: true
+        })
+
+      # Any other Prime failure, or a brick the manager could not dial, is a
+      # transient brick or transport fault (a dropped noded connection, a brick
+      # that left between placement and dial), not a control-plane bug: a
+      # retryable 503 that names the step, with the underlying error as detail.
+      {step, detail} when step in [:prime_failed, :prime_dial_failed] ->
+        send_json(conn, 503, %{
+          error: "session create failed",
+          reason: to_string(step),
+          detail: inspect(detail, limit: 10, printable_limit: 200),
+          workload: workload,
+          retryable: true
+        })
+
       other ->
         send_json(conn, 500, %{error: "session create failed", reason: inspect(other), workload: workload, retryable: true})
     end

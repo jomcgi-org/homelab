@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -41,6 +43,47 @@ func startEchoSidecar(t *testing.T) (addr string, stop func()) {
 	return ln.Addr().String(), func() { _ = ln.Close() }
 }
 
+type socketChown struct {
+	path     string
+	uid, gid int
+}
+
+// recordSocketChowns swaps chownSocket for the test. Calls are recorded and
+// then passed to fail, or applied with os.Chown when fail is nil.
+func recordSocketChowns(t *testing.T, fail error) func() []socketChown {
+	t.Helper()
+	var (
+		mu    sync.Mutex
+		calls []socketChown
+	)
+	previous := chownSocket
+	chownSocket = func(path string, uid, gid int) error {
+		mu.Lock()
+		calls = append(calls, socketChown{path: path, uid: uid, gid: gid})
+		mu.Unlock()
+		if fail != nil {
+			return fail
+		}
+		return os.Chown(path, uid, gid)
+	}
+	t.Cleanup(func() { chownSocket = previous })
+	return func() []socketChown {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]socketChown(nil), calls...)
+	}
+}
+
+func dirOwner(t *testing.T, path string) (int, int) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := info.Sys().(*syscall.Stat_t)
+	return int(st.Uid), int(st.Gid)
+}
+
 // TestServeEgressTunnelsBidirectionally asserts that a guest connection to
 // <uds>_<EgressPort> is tunnelled bidirectionally to the sidecar: bytes written
 // by the guest reach the (echo) sidecar and its reply is copied back to the
@@ -50,6 +93,7 @@ func startEchoSidecar(t *testing.T) (addr string, stop func()) {
 func TestServeEgressTunnelsBidirectionally(t *testing.T) {
 	sidecarAddr, stopSidecar := startEchoSidecar(t)
 	defer stopSidecar()
+	chowns := recordSocketChowns(t, nil)
 
 	// The base UDS path the driver would return for a thread; ServeEgress
 	// listens on "<uds>_<EgressPort>".
@@ -90,6 +134,10 @@ func TestServeEgressTunnelsBidirectionally(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("ServeEgress did not return after ctx cancel")
 	}
+	// An unjailed socket keeps the daemon's ownership.
+	if got := chowns(); len(got) != 0 {
+		t.Fatalf("unjailed egress socket was chowned: %+v", got)
+	}
 }
 
 // TestServeEgressAcceptsGuestConnectionAtJailedTarget proves the connection
@@ -101,6 +149,7 @@ func TestServeEgressAcceptsGuestConnectionAtJailedTarget(t *testing.T) {
 	}
 	sidecarAddr, stopSidecar := startEchoSidecar(t)
 	defer stopSidecar()
+	chowns := recordSocketChowns(t, nil)
 
 	tmp := t.TempDir()
 	udsPath := filepath.Join(tmp, "host", "vsock.sock")
@@ -144,6 +193,38 @@ func TestServeEgressAcceptsGuestConnectionAtJailedTarget(t *testing.T) {
 	cancel()
 	if err := <-serveErr; err != nil {
 		t.Fatalf("ServeEgress: %v", err)
+	}
+	// The jailed Firecracker connects as the jail uid, which owns the jail root.
+	uid, gid := dirOwner(t, filepath.Dir(jailedPath))
+	if got, want := chowns(), []socketChown{{path: jailedPath, uid: uid, gid: gid}}; len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("socket chowns = %+v, want %+v", got, want)
+	}
+}
+
+// TestServeEgressFailsWhenJailHandoffFails keeps an unreachable lane from
+// looking healthy: if the jailed socket cannot be handed to the jail uid,
+// ServeEgress returns the error instead of accepting nothing.
+func TestServeEgressFailsWhenJailHandoffFails(t *testing.T) {
+	recordSocketChowns(t, os.ErrPermission)
+	tmp := t.TempDir()
+	udsPath := filepath.Join(tmp, "host", "vsock.sock")
+	jailedPath := filepath.Join(tmp, "jail", "vsock.sock_"+itoa(int(vsockproto.EgressPort)))
+	for _, dir := range []string{filepath.Dir(udsPath), filepath.Dir(jailedPath)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(jailedPath, egressListenPath(udsPath)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := ServeEgress(ctx, slog.Default(), udsPath, "127.0.0.1:1")
+	if !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "jail owner") {
+		t.Fatalf("ServeEgress = %v, want a jail handoff failure", err)
+	}
+	if _, statErr := os.Lstat(jailedPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("socket after a failed handoff: %v, want removed", statErr)
 	}
 }
 

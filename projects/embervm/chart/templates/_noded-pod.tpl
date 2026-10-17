@@ -595,6 +595,8 @@ containers:
         value: {{ $ctx.Values.noded.firecracker.guestOomScoreAdj | quote }}
       - name: EMBERVM_NODED_JAILER_ENABLED
         value: {{ $ctx.Values.noded.jailer.enabled | quote }}
+      - name: EMBERVM_NODED_JAILER_UID_BLOCK_BASE
+        value: {{ $ctx.Values.noded.jailer.uidBlockBase | quote }}
       - name: EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_ENABLED
         value: {{ $ctx.Values.noded.guestMemoryFeedback.enabled | quote }}
       - name: EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_INTERVAL

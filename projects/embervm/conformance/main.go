@@ -72,6 +72,12 @@ func runLoop(ctx context.Context, cfg config, client *controlPlaneClient, store 
 			if cfg.s6Enabled {
 				totalBudget += cfg.budgets["S6"]
 			}
+			if cfg.egressProbe {
+				totalBudget += cfg.budgets["S8"]
+			}
+			if cfg.requireJailer {
+				totalBudget += cfg.budgets["S7"]
+			}
 			suiteCtx, cancelSuite := context.WithTimeout(ctx, totalBudget)
 			scenarios := runScenarios(suiteCtx, cfg, client, started)
 			cancelSuite()
@@ -124,13 +130,15 @@ func loadConfig() (config, error) {
 	if cfg.cloneStartupHeadroom >= cfg.cloneHold {
 		return config{}, fmt.Errorf("S1_CLONE_STARTUP_HEADROOM must be shorter than S1_CLONE_HOLD to reject two serialized holds")
 	}
-	for key, fallback := range map[string]time.Duration{"S1": 90 * time.Second, "S2": 2 * time.Minute, "S3": time.Minute, "S4": 10 * time.Second, "S5": time.Minute, "S6": time.Minute} {
+	for key, fallback := range map[string]time.Duration{"S1": 90 * time.Second, "S2": 2 * time.Minute, "S3": time.Minute, "S4": 10 * time.Second, "S5": time.Minute, "S6": time.Minute, "S7": 15 * time.Second, "S8": 20 * time.Second} {
 		cfg.budgets[key], err = durationEnv(key+"_BUDGET", fallback)
 		if err != nil {
 			return config{}, err
 		}
 	}
 	cfg.s6Enabled = os.Getenv("S6_ENABLED") == "true"
+	cfg.requireJailer = os.Getenv("S7_REQUIRE_JAILER") == "true"
+	cfg.egressProbe = os.Getenv("S8_EGRESS_PROBE") == "true"
 	if cfg.minTraceEvents, err = intEnv("S6_MIN_TRACE_EVENTS", 4); err != nil {
 		return config{}, err
 	}

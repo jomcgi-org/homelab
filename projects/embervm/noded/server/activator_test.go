@@ -517,6 +517,7 @@ func TestActivatorAndControlPlaneOrigins(t *testing.T) {
 	}
 	s.servingImage.add(servingImageEntry{baseKey: "cp-image", workload: "cp-workload", handlerPath: "/handler", runtimeImageRef: "img-a"})
 	if _, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Resources:  &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:      &nodev1.Trace{Workload: "cp-workload"},
 		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "cp-image"}},
 		Port:       port,

@@ -17,6 +17,7 @@ defmodule Embervm.StatefulManagerTest do
 
   alias Embervm.{NodeCapacity, NodeRegistry, StatefulManager, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
+  alias Embervm.Scheduler.Inflight
   alias Embervm.Node.V1.{NodeStatus, StartStatefulResponse, StatefulVm, Volume}
 
   defmodule FakePublisher do
@@ -35,6 +36,9 @@ defmodule Embervm.StatefulManagerTest do
     suffix = System.unique_integer([:positive])
     cap_table = :"mcap_#{suffix}"
     cat_table = :"mcat_#{suffix}"
+    # A private in-flight ledger: the module runs async, and a claim settled into
+    # the shared table holds for seconds against another test's same-named brick.
+    inflight_table = Inflight.create(:"minfl_#{suffix}")
 
     NodeCapacity.create(cap_table)
     WorkloadCatalog.create(cat_table)
@@ -83,6 +87,7 @@ defmodule Embervm.StatefulManagerTest do
         publisher: pub,
         capacity_table: cap_table,
         catalog_table: cat_table,
+        inflight_table: inflight_table,
         node_registry: registry || Keyword.get(opts, :node_registry, NodeRegistry),
         node_registry_status_fun:
           Keyword.get(opts, :node_registry_status_fun, fn _ -> %{} end),
@@ -109,7 +114,8 @@ defmodule Embervm.StatefulManagerTest do
           :node_confirmed_destroy,
           :destroying_alarm_ms,
           :destroying_escape_ms,
-          :orphan_grace_ms
+          :orphan_grace_ms,
+          :placement_retry
         ])
 
     {:ok, mgr} = StatefulManager.start_link(mgr_opts)
@@ -119,6 +125,7 @@ defmodule Embervm.StatefulManagerTest do
       store: store,
       cap_table: cap_table,
       cat_table: cat_table,
+      inflight_table: inflight_table,
       starts: starts,
       pub: pub,
       op_log: op_log,
@@ -3795,6 +3802,31 @@ defmodule Embervm.StatefulManagerTest do
     assert Agent.get(dialed, & &1) == ["node-4/pod-b"]
   end
 
+  test "StartStateful carries the size the Workload watcher's catalog entry declares" do
+    # The watcher flattens spec.resources into TOP-LEVEL :vcpus / :mem_mib. The
+    # manager used to read only a nested :resources map, so every real stateful
+    # workload booted (and was placed) at the 1 vCPU / 512 MiB default.
+    {:ok, reqs} = Agent.start_link(fn -> [] end)
+
+    cold_fun = fn _ch, req ->
+      Agent.update(reqs, &[req | &1])
+      {:ok, %StartStatefulResponse{vm_id: "vm-sized", ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+    end
+
+    ctx = start_stack(start_stateful_fun: cold_fun)
+    stateful_workload(ctx, "wl-a")
+    {:ok, entry} = WorkloadCatalog.fetch(ctx.cat_table, "wl-a")
+    WorkloadCatalog.upsert(ctx.cat_table, "wl-a", Map.merge(entry, %{vcpus: 2, mem_mib: 4_000}))
+
+    # Only the big brick fits 4000 MiB, which also proves placement read the size.
+    put_brick(ctx, "node-4", "pod-small", size_class: "2gi", mem_headroom_mib: 100, mem_budget_mib: 2_048)
+    put_brick(ctx, "node-4", "pod-big", size_class: "8gi", mem_headroom_mib: 8_000, mem_budget_mib: 8_192)
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert [req] = Agent.get(reqs, & &1)
+    assert req.resources == %Embervm.Node.V1.ResourceSpec{vcpus: 2, mem_mib: 4_000}
+  end
+
   test "a cold wake dials a mem-eligible co-located instance and skips a too-small classed brick" do
     {:ok, dialed} = Agent.start_link(fn -> [] end)
 
@@ -4625,5 +4657,205 @@ defmodule Embervm.StatefulManagerTest do
 
     assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
     assert_receive {:start_timeout_ms, 35_000}
+  end
+
+  # -- in-flight claims, the FRESH frontier, and pinned demand -------------------
+
+  defp fresh_ok(vm_id),
+    do: {:ok, %StartStatefulResponse{vm_id: vm_id, ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+
+  # Two bricks on two nodes, each advertising wl-a READY under its OWN base ref, so
+  # a request shows which brick's ref it carries.
+  defp two_fresh_bricks(ctx) do
+    put_brick(ctx, "node-a", "x", workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-x"}})
+    put_brick(ctx, "node-b", "y", workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-y"}})
+    %{"node-a/x" => "snap-x", "node-b/y" => "snap-y"}
+  end
+
+  # A StartStateful seam that records {dial, request} per call (the channel is the
+  # dial key) and answers the Nth call with `reply.(n)`.
+  defp recording_start(reply) do
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+
+    fun = fn dial, req ->
+      n = Agent.get_and_update(calls, fn c -> {length(c), c ++ [{dial, req}]} end)
+      reply.(n)
+    end
+
+    {fun, calls}
+  end
+
+  # The BrickController demand casts the manager process sent while `fun` ran, as
+  # {tag, workload, need}. Only the manager is traced, so the read is async-safe.
+  defp manager_demand_casts(ctx, fun) do
+    :erlang.trace(ctx.mgr, true, [:send])
+    result = fun.()
+    :erlang.trace(ctx.mgr, false, [:send])
+    ref = :erlang.trace_delivered(ctx.mgr)
+    assert_receive {:trace_delivered, _, ^ref}
+
+    casts =
+      Stream.repeatedly(fn ->
+        receive do
+          {:trace, _, _kind, {:"$gen_cast", {tag, wl, need}}, _to} when tag in [:denial, :empty_demand] -> {tag, wl, need}
+          {:trace, _, _kind, _msg, _to} -> :skip
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+      |> Enum.reject(&(&1 == :skip))
+
+    {result, casts}
+  end
+
+  test "FRESH: a head that refuses at admission hands the boot to the next brick, which anchors the volume" do
+    pressure = {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem (need 512 MiB, admittable 100 MiB, model reserved)"}}
+    {start_fun, calls} = recording_start(fn n -> if n == 0, do: pressure, else: fresh_ok("vm-fresh") end)
+
+    ctx = start_stack(start_stateful_fun: start_fun, channel_fun: fn key -> {:ok, key} end, placement_retry: true)
+    stateful_workload(ctx, "wl-a")
+    refs = two_fresh_bricks(ctx)
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    [{first, first_req}, {second, second_req}] = Agent.get(calls, & &1)
+    refute first == second
+    # Each hop boots from ITS brick's base, FRESH, under the one generation blessed
+    # for this wake (the refusing brick never touched it).
+    assert first_req.boot_image_ref == refs[first]
+    assert second_req.boot_image_ref == refs[second]
+    assert second_req.mode == :START_STATEFUL_MODE_FRESH
+    assert second_req.create_if_missing
+    assert second_req.blessed_generation == first_req.blessed_generation
+
+    [second_node, _pod] = String.split(second, "/")
+    assert StatefulStore.get_volume(ctx.store, "wl-a").node_id == second_node
+    assert [%{node_id: ^second_node}] = StatefulStore.list(ctx.store, "wl-a")
+
+    # The refusing brick's claim was released; the booted one's settled and holds.
+    assert Inflight.pending_mib(first, table: ctx.inflight_table) == 0
+    assert Inflight.pending_mib(second, table: ctx.inflight_table) == 512
+  end
+
+  test "FRESH: with placement retry off one refusal fails the wake and releases its claim" do
+    pressure = {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem (need 512 MiB, admittable 0 MiB, model reserved)"}}
+    {start_fun, calls} = recording_start(fn _n -> pressure end)
+
+    ctx = start_stack(start_stateful_fun: start_fun, channel_fun: fn key -> {:ok, key} end, placement_retry: false)
+    stateful_workload(ctx, "wl-a")
+    _ = two_fresh_bricks(ctx)
+
+    assert {:error, {:wake_failed, {:start_failed, {:error, :no_capacity}}}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert [_one_dial] = Agent.get(calls, & &1)
+    assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+    assert Inflight.entries(table: ctx.inflight_table) == []
+  end
+
+  test "FRESH: a tap exhaustion after the volume was created is terminal, never retried elsewhere" do
+    tap = {:error, %GRPC.RPCError{status: 8, message: "noded: allocate stateful tap: exhausted"}}
+    {start_fun, calls} = recording_start(fn n -> if n == 0, do: tap, else: fresh_ok("vm-second") end)
+
+    ctx = start_stack(start_stateful_fun: start_fun, channel_fun: fn key -> {:ok, key} end, placement_retry: true)
+    stateful_workload(ctx, "wl-a")
+    _ = two_fresh_bricks(ctx)
+
+    assert {:error, {:wake_failed, _}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert [_one_dial] = Agent.get(calls, & &1)
+    assert Inflight.entries(table: ctx.inflight_table) == []
+  end
+
+  test "a wake in flight debits its brick, so another workload's concurrent wake places elsewhere" do
+    test = self()
+
+    start_fun = fn dial, req ->
+      send(test, {:started, req.trace.workload, dial, self()})
+
+      receive do
+        :go -> fresh_ok("vm-#{req.trace.workload}")
+      end
+    end
+
+    ctx = start_stack(start_stateful_fun: start_fun, channel_fun: fn key -> {:ok, key} end)
+    both = %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a"}, "wl-b" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-b"}}
+    stateful_workload(ctx, "wl-a", %{resources: %{vcpus: 1, mem_mib: 3_000}})
+    stateful_workload(ctx, "wl-b", %{resources: %{vcpus: 1, mem_mib: 3_000}, listen_port: 9101})
+    # Two 4Gi bricks that each fit ONE 3000 MiB guest on the headroom they report.
+    put_brick(ctx, "node-a", "x", size_class: "4gi", mem_headroom_mib: 4_000, mem_budget_mib: 4_096, workloads: both)
+    put_brick(ctx, "node-b", "y", size_class: "4gi", mem_headroom_mib: 4_000, mem_budget_mib: 4_096, workloads: both)
+
+    wake_a = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    assert_receive {:started, "wl-a", dial_a, worker_a}
+    assert Inflight.pending_mib(dial_a, table: ctx.inflight_table) == 3_000
+
+    # Neither brick has reported wl-a's VM yet; only the claim steers wl-b away.
+    wake_b = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-b", "p") end)
+    assert_receive {:started, "wl-b", dial_b, worker_b}
+    refute dial_b == dial_a
+
+    send(worker_a, :go)
+    send(worker_b, :go)
+    assert {:ok, _} = Task.await(wake_a)
+    assert {:ok, _} = Task.await(wake_b)
+  end
+
+  test "a relight claims the bundle-owning instance and settles it when the guest resumes" do
+    relit_fun = fn _ch, _req ->
+      {:ok, %StartStatefulResponse{vm_id: "vm-relit", ip: "10.88.0.5", port: 5432, generation: 3, was_relight: true}}
+    end
+
+    ctx = start_stack(start_stateful_fun: relit_fun, channel_fun: fn key -> {:ok, key} end)
+    stateful_workload(ctx, "wl-a")
+
+    put_brick(ctx, "node-4", "pod-b",
+      stateful_bundles: [%{snapshot_ref: "stateful/stf-banked", workload: "wl-a", generation: 3, size_bytes: 10, created_at_unix_ms: 1}],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10}]
+    )
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Inflight.pending_mib("node-4/pod-b", table: ctx.inflight_table) == 512
+  end
+
+  test "a failed relight releases its claim" do
+    ctx = start_stack(start_stateful_fun: fn _ch, _req -> {:error, :unavailable} end, channel_fun: fn key -> {:ok, key} end)
+    stateful_workload(ctx, "wl-a")
+
+    put_brick(ctx, "node-4", "pod-b",
+      stateful_bundles: [%{snapshot_ref: "stateful/stf-banked", workload: "wl-a", generation: 3, size_bytes: 10, created_at_unix_ms: 1}],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10}]
+    )
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+
+    assert {:error, {:wake_failed, _}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Inflight.entries(table: ctx.inflight_table) == []
+  end
+
+  test "a COLD wake pinned to a full volume anchor records no autoscaler demand" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    # The volume lives on node-a, whose only brick is out of slots. node-b has room
+    # but cannot take a writable attach of a volume it does not hold.
+    put_brick(ctx, "node-a", "x", live_vms: 4, max_live_vms: 4)
+    put_brick(ctx, "node-b", "y", [])
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-a", generation: 1, size_bytes: 1, allocated_bytes: 1})
+
+    assert {{:error, {:wake_failed, :no_eligible_instance}}, []} =
+             manager_demand_casts(ctx, fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+
+    assert Agent.get(ctx.starts, & &1) == 0
+    assert Inflight.entries(table: ctx.inflight_table) == []
+  end
+
+  test "a FRESH wake the whole fleet cannot host records one denial" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    put_brick(ctx, "node-a", "x", live_vms: 4, max_live_vms: 4)
+    put_brick(ctx, "node-b", "y", live_vms: 4, max_live_vms: 4)
+
+    assert {{:error, {:wake_failed, :no_capacity}}, [{:denial, "wl-a", 512}]} =
+             manager_demand_casts(ctx, fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
   end
 end

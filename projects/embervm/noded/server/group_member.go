@@ -53,20 +53,29 @@ func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	if s.isDraining() {
 		return nil, status.Error(codes.Unavailable, "noded: draining")
 	}
-	// Cheap rejection under real memory pressure (ADR embervm/014 decision 3),
-	// BEFORE the member cold boot below. A group member's tap is pinned on its
-	// PER-GROUP bridge (groupNet), not the serving IP allocator (servingNet), and
-	// group tap pre-provisioning is explicitly out of scope (ADR 014 PR 4: "group
-	// bridges/taps stay on-demand"), so this predicate is memory-only here: the
-	// serving-allocator tap freelist is the wrong pool for a group member and
-	// checking it would reject on unrelated serving pressure. Its mem need comes
-	// from the request's ResourceSpec.
-	if s.slotsExhausted() {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
-	}
-	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classMemOnly); err != nil {
+	// The ResourceSpec is the admission need for both modes and the boot size for
+	// FRESH; without it the member would be charged 0 MiB and booted at the
+	// driver default, so refuse rather than guess.
+	if err := requireBootResources("StartGroupMember", req.GetResources()); err != nil {
 		return nil, err
 	}
+	// Admission (ADR embervm/014 decision 3), BEFORE the member boot below. A
+	// group member's tap is pinned on its PER-GROUP bridge (groupNet), not the
+	// serving IP allocator (servingNet), and group tap pre-provisioning is
+	// explicitly out of scope (ADR 014 PR 4: "group bridges/taps stay
+	// on-demand"), so this check is slots and memory only: the serving-allocator
+	// tap freelist is the wrong pool for a group member and checking it would
+	// reject on unrelated serving pressure. The ticket rides ctx to the driver
+	// call of either mode, which releases it; the defer covers early returns. A
+	// RELIGHT is charged at least the member bundle's recorded size, which is
+	// what the restored VM lands at.
+	need := s.groupMemberAdmitMib(req)
+	ticket, err := s.admit(ctx, "StartGroupMember", need, placedShare(uint64(req.GetResources().GetMemMib()), need), classMemOnly)
+	if err != nil {
+		return nil, err
+	}
+	defer ticket.release()
+	ctx = withAdmissionTicket(ctx, ticket)
 	groupInstanceID := req.GetGroupInstanceId()
 	if groupInstanceID == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: group_instance_id required")
@@ -143,6 +152,7 @@ func (s *Server) startGroupMemberFresh(ctx context.Context, req *nodev1.StartGro
 		s.logger.Info("noded: group member fresh boot carrying env", "group", groupInstanceID, "member", memberName, "keys", mmdsEnvKeyNamesSorted(env))
 	}
 	h, err := s.groupDriver.ClaimGroupMember(ctx, req.GetTrace().GetWorkload(), rootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, env)
+	admissionLanded(ctx)
 	if err != nil {
 		s.groupNet.RemoveMemberTap(ctx, groupInstanceID, tap, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot group member: %v", err)
@@ -191,6 +201,7 @@ func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartG
 		return nil, err
 	}
 	h, err := s.groupDriver.RestoreGroupMember(ctx, req.GetTrace().GetWorkload(), setID, memberName)
+	admissionLanded(ctx)
 	if err != nil {
 		s.groupNet.RemoveMemberTap(ctx, groupInstanceID, tap, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight group member %q: %v", ref, err)

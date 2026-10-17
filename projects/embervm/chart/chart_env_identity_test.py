@@ -919,7 +919,7 @@ def test_noded_admission_model_defaults_observed_and_accepts_reserved():
             ["bricks.enabled=true"],
             {
                 "EMBERVM_NODED_ADMISSION_MODEL": "observed",
-                "EMBERVM_NODED_VM_OVERHEAD_MIB": "0",
+                "EMBERVM_NODED_VM_OVERHEAD_MIB": "64",
                 "EMBERVM_NODED_MEM_REJECT_FLOOR_MIB": "512",
             },
         ),
@@ -2866,3 +2866,159 @@ def test_shared_scratch_refuses_unsafe_shapes() -> None:
     ]:
         with pytest.raises(RuntimeError, match=message):
             _render_with_set("shared", base + extra)
+
+
+def test_brick_classes_carry_the_per_vm_overhead_noded_charges() -> None:
+    """The control plane's class fit charges what every brick charges.
+
+    BrickController fits a need into a class only when an empty brick of that
+    class would admit it, which under the reserved model includes the per-VM
+    overhead. Each EMBERVM_BRICK_CLASSES entry must therefore carry the same
+    noded.vmOverheadMib the brick pods render when they admit on reservation,
+    at the default and under an override. Under observed noded still renders
+    and reports the value but charges none, so the classes carry 0.
+    """
+    for settings, charged in (
+        (["bricks.enabled=true"], False),
+        (["bricks.enabled=true", "noded.vmOverheadMib=96"], False),
+        (["bricks.enabled=true", "noded.admissionModel=reserved"], True),
+        (
+            [
+                "bricks.enabled=true",
+                "noded.admissionModel=reserved",
+                "noded.vmOverheadMib=96",
+            ],
+            True,
+        ),
+    ):
+        rendered = _render_with_set("brick-overhead", settings)
+        noded = set(
+            re.findall(
+                r'name:\s*EMBERVM_NODED_VM_OVERHEAD_MIB\s+value:\s*"([^"]+)"', rendered
+            )
+        )
+        assert len(noded) == 1, f"bricks disagree on the per-VM overhead: {noded}"
+        configured = int(noded.pop())
+        assert configured > 0, "the bricks render no overhead; this test is inert"
+
+        declared = [
+            json.loads(entry["value"])
+            for document in yaml.safe_load_all(rendered)
+            if isinstance(document, dict) and document.get("kind") == "Deployment"
+            for container in document["spec"]["template"]["spec"].get("containers", [])
+            for entry in container.get("env", [])
+            if entry.get("name") == "EMBERVM_BRICK_CLASSES"
+        ]
+        assert len(declared) == 1, "expected one control-plane brick class environment"
+        assert declared[0], "the brick class environment is empty; this test is inert"
+        expected = configured if charged else 0
+        assert {entry["vm_overhead_mib"] for entry in declared[0]} == {expected}, (
+            settings
+        )
+
+
+def test_brick_classes_count_the_node_floors_pinned_to_each_class() -> None:
+    """BrickController looks for same-class floor pods only where floors exist.
+
+    Each EMBERVM_BRICK_CLASSES entry carries how many bricks.nodeFloors are
+    pinned to its class; a class with none must read 0 so the controller never
+    lists pods for it.
+    """
+
+    def floors(settings: list[str]) -> dict[str, int]:
+        rendered = _render_with_set("brick-floors", ["bricks.enabled=true", *settings])
+        declared = [
+            json.loads(entry["value"])
+            for document in yaml.safe_load_all(rendered)
+            if isinstance(document, dict) and document.get("kind") == "Deployment"
+            for container in document["spec"]["template"]["spec"].get("containers", [])
+            for entry in container.get("env", [])
+            if entry.get("name") == "EMBERVM_BRICK_CLASSES"
+        ]
+        assert len(declared) == 1, "expected one control-plane brick class environment"
+        return {entry["name"]: entry["floors"] for entry in declared[0]}
+
+    unpinned = floors([])
+    assert unpinned, "the brick class environment is empty; this test is inert"
+    assert set(unpinned.values()) == {0}
+
+    pinned = floors(
+        [
+            "bricks.nodeFloors[0].node=node-a",
+            "bricks.nodeFloors[0].class=2gi",
+            "bricks.nodeFloors[1].node=node-b",
+            "bricks.nodeFloors[1].class=2gi",
+            "bricks.nodeFloors[2].node=node-c",
+            "bricks.nodeFloors[2].class=16gi",
+        ]
+    )
+    assert pinned == {name: 0 for name in unpinned} | {"2gi": 2, "16gi": 1}
+
+
+# The committed hub overlays and their releases (the Applications' releaseName).
+_HUB_OVERLAYS = {
+    "prod": ("embervm", ["PROD_VALUES", "GKE_VALUES"]),
+    "dev": ("embervm-dev", ["DEV_VALUES", "DEV_GKE_VALUES"]),
+}
+
+
+def _overlay_documents(release: str, value_keys: list[str]) -> list[dict]:
+    rendered = _render(
+        release,
+        [_chart_dir() / "values.yaml", *[Path(os.environ[key]) for key in value_keys]],
+    )
+    return [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+
+
+def _containers(documents: list[dict], component: str | None = None):
+    for doc in documents:
+        if doc.get("kind") not in {"Deployment", "DaemonSet"}:
+            continue
+        template = doc["spec"]["template"]
+        labels = template["metadata"].get("labels", {})
+        if component and labels.get("app.kubernetes.io/component") != component:
+            continue
+        for container in template["spec"].get("containers", []):
+            yield doc["metadata"]["name"], container
+
+
+def _plain_env(container: dict) -> dict[str, str | None]:
+    return {entry["name"]: entry.get("value") for entry in container.get("env", [])}
+
+
+def test_jailer_scenario_gates_default_off() -> None:
+    values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert values["noded"]["jailer"]["enabled"] is False
+    assert values["conformance"]["requireJailer"] is False
+    assert values["conformance"]["egressProbe"] is False
+    for key in ("PROD_VALUES", "GKE_VALUES"):
+        prod = yaml.safe_load(Path(os.environ[key]).read_text()) or {}
+        assert ((prod.get("noded") or {}).get("jailer") or {}).get(
+            "enabled", False
+        ) is False
+        assert "conformance" not in prod
+
+
+def test_jailer_uid_block_base_renders_on_every_noded() -> None:
+    """Each release leases jail uid blocks from its own base (default 0).
+
+    The lease locks live under each release's snapshot root, so two releases
+    on one node never see each other's leases; only disjoint bases keep their
+    jail uids apart. Every noded container renders the base, and an override
+    reaches it.
+    """
+    chart = _chart_dir()
+    values = yaml.safe_load((chart / "values.yaml").read_text())
+    assert values["noded"]["jailer"]["uidBlockBase"] == 0
+    rendered = _render("uid-base", [chart / "values.yaml"], ["bricks.enabled=true"])
+    bases = _rendered_noded_env_values(rendered, "EMBERVM_NODED_JAILER_UID_BLOCK_BASE")
+    assert bases, "rendered no noded container; this test is inert"
+    assert set(bases) == {"0"}
+    rendered = _render(
+        "uid-base",
+        [chart / "values.yaml"],
+        ["bricks.enabled=true", "noded.jailer.uidBlockBase=20"],
+    )
+    bases = _rendered_noded_env_values(rendered, "EMBERVM_NODED_JAILER_UID_BLOCK_BASE")
+    assert bases
+    assert set(bases) == {"20"}

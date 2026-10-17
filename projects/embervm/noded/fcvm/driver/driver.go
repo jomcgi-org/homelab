@@ -1132,11 +1132,13 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 			if placeholderErr != nil {
 				return substrate.Handle{}, placeholderErr
 			}
-			resources = append(resources, JailResource{Role: "legacy-placeholder-backing", HostPath: placeholder, JailPath: placeholder, Writable: true})
+			resources = append(resources, JailResource{Role: "legacy-placeholder-backing", HostPath: placeholder, JailPath: placeholder, Writable: true, PrivateCopy: true})
 		}
 		if !hasResourceRole(resources, "rootfs") {
+			// Only a direct exec can run it. A disarmed launcher does; an armed
+			// launcher refuses it (ErrJailerContainment), never running it unjailed.
 			directExec = true
-			slog.Warn("driver: restoring legacy bundle without jail resource metadata via direct exec",
+			slog.Warn("driver: legacy bundle without jail resource metadata can only run via direct exec",
 				"snapshot", snapPath, "vm", vmID)
 		}
 	}
@@ -1300,8 +1302,8 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 			return d.coldBoot(ctx, threadID, coldBootSpec{
 				workload:        spec.Workload,
 				rootfsPath:      coldBootRootfsPath,
-				vcpus:           d.cfg.VCPUs,
-				memMib:          d.cfg.MemMib,
+				vcpus:           orDefault(spec.ColdBootVCPUs, d.cfg.VCPUs),
+				memMib:          orDefault(spec.ColdBootMemMib, d.cfg.MemMib),
 				trackDirtyPages: trackDirtyPages,
 				nic:             spec.NIC,
 				volumeDiskPath:  spec.VolumeDiskPath,
@@ -1321,8 +1323,8 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	return d.coldBoot(ctx, threadID, coldBootSpec{
 		workload:        spec.Workload,
 		rootfsPath:      coldBootRootfsPath,
-		vcpus:           d.cfg.VCPUs,
-		memMib:          d.cfg.MemMib,
+		vcpus:           orDefault(spec.ColdBootVCPUs, d.cfg.VCPUs),
+		memMib:          orDefault(spec.ColdBootMemMib, d.cfg.MemMib),
 		trackDirtyPages: trackDirtyPages,
 		nic:             spec.NIC,
 		volumeDiskPath:  spec.VolumeDiskPath,
@@ -3209,6 +3211,19 @@ type jailProvider interface {
 	Jail() *Jail
 }
 
+// exitReporter is implemented by processes that know their VMM has exited on
+// its own and been reaped. Processes without it are always treated as live.
+type exitReporter interface {
+	Exited() bool
+}
+
+// vmmExited reports whether this instance's VMM has exited and been reaped.
+// inst.proc never changes after construction.
+func (inst *instance) vmmExited() bool {
+	reporter, ok := inst.proc.(exitReporter)
+	return ok && reporter.Exited()
+}
+
 func (d *Driver) clientForProcess(socketPath string, proc Process) fcAPI {
 	client := d.newClient(socketPath)
 	if provider, ok := proc.(jailProvider); ok && provider.Jail() != nil {
@@ -3332,27 +3347,52 @@ func (d *Driver) RemoveBundle(threadID string) error {
 	return nil
 }
 
-// LiveCount reports how many microVMs the driver is currently supervising.
+// LiveCount reports how many microVMs the driver is currently supervising. A
+// VMM that exited on its own stops counting once it is reaped, although its
+// entry stays until Release.
 func (d *Driver) LiveCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return len(d.live)
+	n := 0
+	for _, inst := range d.live {
+		if !inst.vmmExited() {
+			n++
+		}
+	}
+	return n
 }
 
 // ClaimedMib derives the declared memory sum from the live map. It is a
 // projection, never a counter, so it cannot leak: Release removes the live-map
 // entry, and a daemon restart starts with an empty map because Firecracker
 // children are owned by noded and there is no adoption path for pre-existing VMs.
+// A VMM that exits on its own (a guest panic, a per-VM cgroup OOM) stops
+// counting once it is reaped and its cgroup is gone; its entry stays until
+// Release, so ownership and teardown are unchanged.
 func (d *Driver) ClaimedMib() uint64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var total uint64
 	for _, inst := range d.live {
-		if inst.memMib > 0 {
+		if inst.memMib > 0 && !inst.vmmExited() {
 			total += uint64(inst.memMib)
 		}
 	}
 	return total
+}
+
+// JailerLaunchCounts reports whether this driver's launcher arms the jailer and
+// the daemon's cumulative launches by mode: jailed, direct exec (the jailer
+// disarmed) and refused (a jailed launch that failed closed, or a legacy bundle
+// with no jail metadata that an armed launcher will not run unjailed). The counts are shared by every launcher in the
+// daemon. A launcher other than ExecLauncher reports disarmed and zero.
+func (d *Driver) JailerLaunchCounts() (armed bool, jailed, directExec, refused uint64) {
+	launcher, ok := d.launcher.(*ExecLauncher)
+	if !ok {
+		return false, 0, 0, 0
+	}
+	counts := launcher.modeCounters()
+	return launcher.JailerEnabled, counts.jailed.Load(), counts.directExec.Load(), counts.refused.Load()
 }
 
 func bundleSize(paths ...string) int64 {

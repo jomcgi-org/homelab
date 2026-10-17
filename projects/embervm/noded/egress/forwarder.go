@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
@@ -48,6 +49,14 @@ func ServeEgress(ctx context.Context, logger *slog.Logger, udsPath, sidecarAddr 
 		_ = ln.Close()
 		_ = os.Remove(path)
 	}()
+	if path != alias {
+		// The alias resolved into a jail. Firecracker connects from inside its
+		// chroot as the per-VM jail uid, and connect(2) needs write permission
+		// on the socket inode, which a root-bound 0755 socket denies.
+		if err := chownToParent(path); err != nil {
+			return fmt.Errorf("egress: hand %s to the jail owner: %w", path, err)
+		}
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -64,6 +73,25 @@ func ServeEgress(ctx context.Context, logger *slog.Logger, udsPath, sidecarAddr 
 		}
 		go tunnelToSidecar(logger, guestConn, sidecarAddr)
 	}
+}
+
+// chownSocket is the ownership seam; tests record the jail handoff without
+// needing root to chown to a foreign uid.
+var chownSocket = os.Chown
+
+// chownToParent gives a jailed socket the owner of its directory: the jail
+// root, which prepareJail chowned to the jail uid and gid. The mode is left
+// alone, so only that uid can connect.
+func chownToParent(path string) error {
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("no owner for %s", filepath.Dir(path))
+	}
+	return chownSocket(path, int(st.Uid), int(st.Gid))
 }
 
 // listenUnix uses a short /proc path when a jailed socket's host-visible path

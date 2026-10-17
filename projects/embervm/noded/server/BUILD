@@ -14,6 +14,7 @@ go_library(
         "group_registry.go",
         "guest_memory.go",
         "ids.go",
+        "jail_preflight.go",
         "preemption.go",
         "pressure.go",
         "register.go",
@@ -35,6 +36,7 @@ go_library(
     deps = [
         "//projects/embervm/noded/config",
         "//projects/embervm/noded/egress",
+        "//projects/embervm/noded/fcvm/driver",
         "//projects/embervm/noded/groupclock",
         "//projects/embervm/noded/guestmem",
         "//projects/embervm/noded/serving",
@@ -55,6 +57,7 @@ go_test(
     srcs = [
         "activator_redirect_test.go",
         "activator_test.go",
+        "budget_delegation_test.go",
         "budget_test.go",
         "capability_test.go",
         "datakeys_test.go",
@@ -67,6 +70,7 @@ go_test(
         "group_test.go",
         "guest_memory_test.go",
         "ids_test.go",
+        "jail_preflight_test.go",
         "pressure_test.go",
         "register_test.go",
         "registry_workload_test.go",
