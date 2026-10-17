@@ -10,6 +10,7 @@ JobId is what counts as "new".
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from inspect import signature
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -100,6 +101,11 @@ def _insert(engine, job_id, *, closing, notified_discord=None):
         s.commit()
 
 
+def test_active_vacancy_fixtures_have_no_retired_notification_state():
+    assert "notified_whatsapp" not in _vac("A")
+    assert "notified_whatsapp" not in signature(_insert).parameters
+
+
 @pytest.fixture(name="captured")
 def captured_fixture(monkeypatch):
     """Capture the direct-to-outbox enqueue calls _notify_pending_sync makes.
@@ -135,6 +141,25 @@ class TestSeedStamping:
 
 
 class TestNotifyPending:
+    def test_mixed_batch_preserves_delivered_state_and_does_not_repeat(
+        self, engine, captured
+    ):
+        stamp = datetime(2026, 7, 14, 5, tzinfo=timezone.utc)
+        _insert(engine, "DELIVERED", closing=None, notified_discord=stamp)
+        _insert(engine, "PENDING", closing=None)
+        _insert(engine, "CLOSED", closing=date.today() - timedelta(days=1))
+        with Session(engine) as s:
+            before = s.get(Vacancy, "DELIVERED").notified_discord
+        jobs._notify_pending_sync()
+        jobs._notify_pending_sync()
+        assert len(captured["discord"]) == 1
+        assert "1 new NHS Scotland" in captured["discord"][0][1]
+        with Session(engine) as s:
+            assert s.get(Vacancy, "DELIVERED").notified_discord == before
+            assert s.get(Vacancy, "PENDING").notified_discord is not None
+            assert s.get(Vacancy, "CLOSED").notified_discord is None
+            assert len(s.exec(select(Vacancy)).all()) == 3
+
     def test_enqueues_and_stamps_open_pending(self, engine, captured):
         _insert(engine, "A", closing=date.today() + timedelta(days=5))
         jobs._notify_pending_sync()

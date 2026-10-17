@@ -83,3 +83,10 @@ def test_defaults(session: Session):
     assert row.salary_band == ""
     assert row.posted_date is None
     assert row.closing_date is None
+
+
+def test_active_model_has_only_discord_notification_state():
+    assert "notified_whatsapp" not in Vacancy.model_fields
+    assert {
+        c.name for c in Vacancy.__table__.columns if c.name.startswith("notified_")
+    } == {"notified_discord"}
