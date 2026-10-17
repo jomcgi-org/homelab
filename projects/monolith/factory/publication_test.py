@@ -966,6 +966,30 @@ def test_quota_history_partial_account_coverage_is_a_gap_but_provider_observatio
     assert codex["points"][-1]["break_before"] is True
 
 
+def test_quota_history_losing_earliest_reset_account_breaks_without_claiming_reset():
+    from datetime import timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    for removed in (False, True):
+        now, raw = _quota_fixture()
+        history = shape_quota_history(shape_quota(raw, now), None)
+        if removed:
+            del raw["grants"]["secret-account-a"]
+        else:
+            raw["grants"]["secret-account-a"] = {
+                "provider": "codex",
+                "observed": False,
+            }
+        history = shape_quota_history(
+            shape_quota(raw, now + timedelta(minutes=2)), history
+        )
+        point = history[0]["points"][-1]
+        assert point["next_reset_at"] == "2026-10-22T18:00:00+00:00"
+        assert point["break_before"] is True
+        assert point["reset_before"] is False
+
+
 def test_quota_history_reset_and_usage_correction_break_the_line_without_false_reset_labels():
     from datetime import timedelta
 
