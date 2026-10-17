@@ -105,8 +105,6 @@ genrule(
     tools = ["//bazel/tla:tlc.sh"],
 )
 
-
-
 genrule(
     name = "tlc_dual_wake",
     srcs = _JRE_SRCS + [
