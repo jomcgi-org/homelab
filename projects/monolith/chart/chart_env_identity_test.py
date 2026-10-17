@@ -1341,7 +1341,9 @@ _NOTIFICATION_ENV = {
 }
 
 
-@pytest.mark.parametrize("environment", ["default", "prod", "gke", "dev", "recovery-gke"])
+@pytest.mark.parametrize(
+    "environment", ["default", "prod", "gke", "dev", "recovery-gke"]
+)
 def test_retired_gateway_has_no_resources_or_credentials(
     environment, renders, recovery_gke_render
 ):
@@ -1354,9 +1356,9 @@ def test_retired_gateway_has_no_resources_or_credentials(
     documents = [doc for doc in yaml.safe_load_all(rendered) if doc]
     for document in documents:
         # Applied SQL and its checksum remain immutable historical evidence.
-        if document.get("kind") == "ConfigMap" and document["metadata"]["name"].endswith(
-            "-migrations"
-        ):
+        if document.get("kind") == "ConfigMap" and document["metadata"][
+            "name"
+        ].endswith("-migrations"):
             document = {key: value for key, value in document.items() if key != "data"}
         serialized = yaml.safe_dump(document).lower()
         assert "whatsapp" not in serialized

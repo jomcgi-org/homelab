@@ -230,7 +230,6 @@ def _notify_pending_sync() -> None:
             )
 
 
-
 async def scrape_nhs_handler(session) -> datetime | None:
     """Daily NHS Scotland scrape: full network phase, then one upsert pass.
 
