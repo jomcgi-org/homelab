@@ -67,7 +67,7 @@ def test_concurrent_batches_reserve_distinct_claims_and_replay_once(pg, monkeypa
                         scope=scope,
                         verification_state="verified",
                         observed_at=now - timedelta(days=100),
-                        review_after=now - timedelta(days=1),
+                        review_after=now - timedelta(days=10),
                         review_policy=STANDARD,
                     )
                     for i in range(4)
