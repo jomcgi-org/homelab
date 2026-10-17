@@ -23,4 +23,3 @@ def sanitize_payload(obj: object) -> object:
     if isinstance(obj, tuple):
         return tuple(sanitize_payload(item) for item in obj)
     return obj
-
