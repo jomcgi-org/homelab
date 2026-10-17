@@ -62,6 +62,7 @@
         if (!response.ok) throw new Error("quota snapshot unavailable");
         const board = await response.json();
         if (!stopped) {
+          quotaNow = new Date().toISOString();
           quota = board.quota;
           quotaRefreshFailed = false;
         }

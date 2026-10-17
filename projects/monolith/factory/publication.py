@@ -429,11 +429,18 @@ def _quota_history_append(points: list[dict], point: dict) -> list[dict]:
             and (same_observation or point["used_percent"] is None)
         ):
             return points
-        advanced_reset = any(
-            old is not None and new is not None and new > old
-            for old, new in (
-                (_quota_time(prior[key]), _quota_time(point[key]))
-                for key in ("next_reset_at", "last_reset_at")
+        # Losing the earliest-reset account also advances the reset range.
+        # Only comparable measured populations support a reset annotation.
+        advanced_reset = (
+            not scope_changed
+            and prior["used_percent"] is not None
+            and point["used_percent"] is not None
+            and any(
+                old is not None and new is not None and new > old
+                for old, new in (
+                    (_quota_time(prior[key]), _quota_time(point[key]))
+                    for key in ("next_reset_at", "last_reset_at")
+                )
             )
         )
         usage_drop = (

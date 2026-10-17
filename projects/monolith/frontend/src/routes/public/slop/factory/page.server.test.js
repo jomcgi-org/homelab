@@ -187,6 +187,55 @@ describe("subscription quota display", () => {
     expect(panel.textContent).toContain("stale");
     expect(panel.querySelectorAll("svg.quota-history")).toHaveLength(2);
   });
+  it("uses the response-time clock for a snapshot published during refresh", async () => {
+    const target = await mountOverview();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        vi.setSystemTime(new Date(Date.now() + 1000));
+        const sampledAt = new Date().toISOString();
+        return new Response(
+          JSON.stringify({
+            quota: {
+              available: true,
+              sampled_at: sampledAt,
+              stale_after_seconds: 900,
+              providers: [
+                {
+                  provider: "codex",
+                  source: "accounts",
+                  configured_accounts: 2,
+                  inventory_complete: true,
+                  windows: [
+                    {
+                      window_seconds: 18000,
+                      reported_accounts: 2,
+                      used_percent: 43,
+                      remaining_seconds: 7200,
+                      complete: true,
+                      oldest_observed_at: sampledAt,
+                      next_reset_at: new Date(
+                        Date.now() + 7200000,
+                      ).toISOString(),
+                      last_reset_at: new Date(
+                        Date.now() + 7200000,
+                      ).toISOString(),
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
+        );
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(60000);
+    flushSync();
+    const panel = target.querySelector('[aria-label="Subscription quota"]');
+    expect(panel.textContent).toContain("43.0% used");
+    expect(panel.textContent).not.toContain("Awaiting quota report");
+    expect(panel.textContent).not.toContain("pace unavailable");
+  });
   it("refreshes each minute and preserves the last report when fetching fails", async () => {
     const target = await mountOverview();
     const fetch = vi.fn().mockResolvedValue(new Response("", { status: 503 }));
