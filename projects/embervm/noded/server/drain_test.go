@@ -3,10 +3,12 @@ package server
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -115,43 +117,132 @@ func TestPreemptionNoticeStartsShortDrain(t *testing.T) {
 	}
 }
 
-func TestPreemptionWatcherErrorDisablesAfterOneLog(t *testing.T) {
+func TestPreemptionWatcherStartupRetries(t *testing.T) {
+	for _, statuses := range [][]int{
+		{404, 404, 200, 200},
+		{404, 503, 200},
+	} {
+		t.Run(fmt.Sprint(statuses), func(t *testing.T) {
+			var requests atomic.Int32
+			metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				i := int(requests.Add(1)) - 1
+				if i >= len(statuses) {
+					t.Error("unexpected extra metadata request")
+					return
+				}
+				wantETag := "0"
+				if i > 0 && statuses[i-1] == 200 {
+					wantETag = "false-etag"
+				}
+				if got := r.URL.Query().Get("last_etag"); got != wantETag {
+					t.Errorf("etag = %q, want %q", got, wantETag)
+				}
+				if statuses[i] != 200 {
+					w.WriteHeader(statuses[i])
+					return
+				}
+				w.Header().Set("ETag", "false-etag")
+				if i == len(statuses)-1 {
+					_, _ = io.WriteString(w, "TRUE")
+					return
+				}
+				_, _ = io.WriteString(w, "FALSE")
+			}))
+			defer metadata.Close()
+			_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 10)
+			s.cfg.PreemptionNoticeEnabled = true
+			s.cfg.PreemptionDrainTimeout = time.Second
+			var shutdowns int
+			var delays []time.Duration
+			before := time.Now()
+			s.watchPreemptionNotices(context.Background(), metadata.Client(), metadata.URL, func() { shutdowns++ }, func(_ context.Context, delay time.Duration) bool { delays = append(delays, delay); return true })
+			if requests.Load() != int32(len(statuses)) || shutdowns != 1 || !s.isDraining() {
+				t.Fatalf("requests=%d shutdowns=%d draining=%v", requests.Load(), shutdowns, s.isDraining())
+			}
+			if !reflect.DeepEqual(delays, []time.Duration{2 * time.Second, 4 * time.Second}) {
+				t.Fatalf("retry delays: %v", delays)
+			}
+			deadline := time.UnixMilli(s.drainDeadline())
+			if deadline.Before(before.Add(time.Second-time.Millisecond)) || deadline.After(time.Now().Add(time.Second)) {
+				t.Fatalf("unexpected drain deadline %s", deadline)
+			}
+		})
+	}
+}
+
+func TestPreemptionWatcherPersistent404Cancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	var requests atomic.Int32
 	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
-		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer metadata.Close()
-
-	var logs bytes.Buffer
-	s := New(Options{
-		Config: config.Config{
-			PreemptionNoticeEnabled: true,
-			PreemptionDrainTimeout:  20 * time.Second,
-		},
-		Driver:    &fakeDriver{},
-		Transport: &fakeTransport{},
-		Logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 10)
+	s.cfg.PreemptionNoticeEnabled = true
+	var retries int
+	s.watchPreemptionNotices(ctx, metadata.Client(), metadata.URL, func() { t.Error("404 started drain") }, func(ctx context.Context, delay time.Duration) bool {
+		retries++
+		if retries < 3 {
+			return true
+		}
+		cancel()
+		return waitPreemptionRetry(ctx, delay)
 	})
+	if requests.Load() != 3 || retries != 3 || s.isDraining() {
+		t.Fatalf("requests=%d retries=%d draining=%v", requests.Load(), retries, s.isDraining())
+	}
+}
+
+func TestPreemptionRetryWaitCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	done := make(chan bool, 1)
+	go func() { done <- waitPreemptionRetry(ctx, preemptionRetryMax) }()
+	cancel()
+	select {
+	case retry := <-done:
+		if retry {
+			t.Fatal("cancelled backoff requested another attempt")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not interrupt backoff")
+	}
+}
 
-	s.WatchPreemptionNotices(ctx, metadata.Client(), metadata.URL, cancel)
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("metadata requests = %d, want 1", got)
-	}
-	// Exactly one line, at INFO: a metadata server that never answered means this
-	// is not GCP, which is a fact about the environment rather than a fault. The
-	// assertion is on the count and the level, not on the wording, so renaming a
-	// message does not fail a test about behaviour.
-	if got := strings.Count(logs.String(), "level=INFO"); got != 1 {
-		t.Fatalf("info log count = %d, want 1; logs: %s", got, logs.String())
-	}
-	if strings.Contains(logs.String(), "level=WARN") {
-		t.Fatalf("a server that never answered must not warn; logs: %s", logs.String())
-	}
-	if s.isDraining() {
-		t.Fatal("metadata error should not start draining")
+func TestPreemptionWatcherBackoffCapAndReset(t *testing.T) {
+	var requests atomic.Int32
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i := requests.Add(1)
+		if i <= 7 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if i == 8 {
+			w.Header().Set("ETag", "valid")
+			_, _ = io.WriteString(w, "FALSE")
+			return
+		}
+		if got := r.URL.Query().Get("last_etag"); got != "valid" {
+			t.Errorf("last_etag = %q, want valid", got)
+		}
+		// Missing ETags must neither replace the previous ETag nor reset backoff.
+		if i <= 11 {
+			_, _ = io.WriteString(w, "FALSE")
+			return
+		}
+		w.Header().Set("ETag", "final")
+		_, _ = io.WriteString(w, "TRUE")
+	}))
+	defer metadata.Close()
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 10)
+	s.cfg.PreemptionNoticeEnabled = true
+	var delays []time.Duration
+	s.watchPreemptionNotices(context.Background(), metadata.Client(), metadata.URL, func() {}, func(_ context.Context, delay time.Duration) bool { delays = append(delays, delay); return true })
+	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second, 30 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
+	if !reflect.DeepEqual(delays, want) {
+		t.Fatalf("delays = %v, want %v", delays, want)
 	}
 }
 
@@ -436,5 +527,15 @@ func TestPreemptionWatcherRetriesAfterAnEarlierSuccess(t *testing.T) {
 	}
 	if !s.isDraining() {
 		t.Fatal("the notice seen on the retry should have started the drain")
+	}
+}
+
+func TestPreemptionWatcherRejectsInvalidEndpointWithoutRetry(t *testing.T) {
+	for _, endpoint := range []string{"", "/relative", "ftp://metadata.example/path", "http:///path", "://bad"} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+			s.cfg.PreemptionNoticeEnabled = true
+			s.watchPreemptionNotices(t.Context(), http.DefaultClient, endpoint, func() { t.Error("invalid endpoint initiated drain") }, func(context.Context, time.Duration) bool { t.Error("invalid endpoint retried"); return false })
+		})
 	}
 }
