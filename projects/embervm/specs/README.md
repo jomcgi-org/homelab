@@ -852,7 +852,9 @@ Each single-mutation negative lists only its intended invariant, and the
 driver requires that exact invariant, so another safety failure cannot
 satisfy the expectation. The two liveness wedges are the exception: they run
 as bare `fail` (no named invariant, as temporal violations name none), matching
-the adoption wedge precedent.
+the adoption wedge precedent. The two wedge rows are Linux 2-worker runs with
+the SHA-verified pinned jar and JRE; counts vary with worker count. Required
+Linux PR CI also passes both wedge genrules in bare-`fail` mode.
 
 | cfg | changed switch | expect | checked result | generated / distinct / queue | depth |
 | --- | --- | --- | --- | --- | --- |
@@ -874,8 +876,8 @@ the adoption wedge precedent.
 | `dual_wake_duplicate_resolved.cfg` | `Witness = "duplicate"` | FAIL | witness: `NeverDuplicateResolved` violated | 3,115,788 / 631,251 / 100,086 | 19 |
 | `dual_wake_loud_failure.cfg` | `Witness = "loud"` | FAIL | witness: `NeverLoudFailure` violated | 26 / 21 / 14 | 3 |
 | `dual_wake_two_vms.cfg` | none (current-main reachability) | FAIL | witness: `AtMostOneVMPerWorkload` violated | 1,528 / 751 / 538 | 5 |
-| `dual_wake_accounting_wedge.cfg` | `Leak = TRUE`, `FairSpec` | FAIL | temporal `EventualAccounting` violated (bare `fail`) | pending Linux CI | pending |
-| `dual_wake_requests_wedge.cfg` | `SilentFailure = TRUE`, `FairSpec` | FAIL | temporal `RequestsResolve` violated (bare `fail`) | pending Linux CI | pending |
+| `dual_wake_accounting_wedge.cfg` | `Leak = TRUE`, `FairSpec` | FAIL | temporal `EventualAccounting` violated (bare `fail`) | 304,453 / 67,018 / 0 | 39 |
+| `dual_wake_requests_wedge.cfg` | `SilentFailure = TRUE`, `FairSpec` | FAIL | temporal `RequestsResolve` violated (bare `fail`) | 87,487 / 20,832 / 2,740 | 16 |
 
 The four `Never*` rows are deliberately false non-vacuity checks: offline
 delivery, return-mid-boot adoption, resolved duplicate flights and loud failure
