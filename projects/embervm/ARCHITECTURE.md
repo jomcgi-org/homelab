@@ -589,6 +589,9 @@ two-waker model ([#4702](https://github.com/jomcgi-org/homelab/issues/4702)),
 then runtime evidence before the separately gated retirement decision in
 [#4013](https://github.com/jomcgi-org/homelab/issues/4013). No earlier step
 authorizes deletion, and the sequence does not imply Fork B.
+The two-waker model is `projects/embervm/specs/dual_wake.tla`, model-checked
+under TLC within its stated bounds. It establishes neither implementation
+conformance nor authority to retire either wake path.
 
 ### Base snapshot device compatibility
 

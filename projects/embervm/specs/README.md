@@ -2,9 +2,10 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of ADR embervm/006 ([ARCHITECTURE.md, section 6](../ARCHITECTURE.md#6-control-plane-internals)):
-the seven tracked specs are `adoption.tla`, `bank_relight.tla`, `quota.tla`,
-`session_create.tla`, `generation_issuance.tla`, `stateful.tla`, and
-`session_lineage.tla`. The directory also contains their registered
+the ten tracked specs are `adoption.tla`, `adoption_trace.tla`,
+`bank_relight.tla`, `quota.tla`, `session_create.tla`,
+`generation_issuance.tla`, `stateful.tla`, `session_lineage.tla`,
+`warmth_gc.tla`, and `dual_wake.tla`. The directory also contains their registered
 configurations and the layer-1 vocabulary sync guard. This inventory records
 what exists, not proof that a model corresponds to the current implementation or
 that an issue's closure establishes its evidence. Bounds and completed results
@@ -64,7 +65,19 @@ are documented with the individual specs below.
   `warmth_gc_unexpired.cfg`, `warmth_gc_age_floor.cfg`,
   `warmth_gc_newest_ref.cfg` : the positive model and seven focused negative
   mutations for issue #4705 (below).
-- `BUILD` : thirty-eight genrules run TLC over the nine specs, one per cfg, via the
+- `dual_wake.tla` : the pure TLA+ model of CP auto-wake and two brick activators,
+  independent local single-flights, CP absence and return mid-wake, and ordered
+  serving adoption, orphan cleanup, publication and parked-request resolution.
+- `dual_wake.cfg`, `dual_wake_vm_crash.cfg`, `dual_wake_faults.cfg`,
+  `dual_wake_liveness.cfg`, `dual_wake_wrong_winner.cfg`,
+  `dual_wake_untracked.cfg`, `dual_wake_reap_activator.cfg`,
+  `dual_wake_unguarded_orphans.cfg`, `dual_wake_early_register.cfg`,
+  `dual_wake_silent_failure.cfg`, `dual_wake_leak.cfg`,
+  `dual_wake_offline.cfg`, `dual_wake_return_adoption.cfg`,
+  `dual_wake_duplicate_resolved.cfg`, `dual_wake_loud_failure.cfg`,
+  `dual_wake_two_vms.cfg`, `dual_wake_origin_skip_disabled.cfg`,
+  `dual_wake_orphans_first.cfg` : the eighteen dual-wake configurations (below).
+- `BUILD` : fifty-six genrules run TLC over the ten specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -748,9 +761,150 @@ A2 and A3 at the modeled observation points; A1 remains outside the results.
   destructive gate stays default-off; no live activation or storage redesign is
   part of this correction.
 
+## Dual wake paths (`dual_wake.tla`)
+
+The bounded serving model permits independent wake flights and accounts for
+their VM handles. It also exposes two redundant protections against orphan
+cleanup reaping an activator-origin wake. Issue
+[#4702](https://github.com/jomcgi-org/homelab/issues/4702) models source revision
+`bf9f3a1338d3b5f809c04e40df491adb2bfaa7ef` on main. The implementation paths and
+`bazel/tla` were unchanged from that revision when this mapping was revalidated.
+
+CP auto-wake and two brick activators each have their own per-workload
+single-flight. There is no cross-waker lock. A follower retains its flight's
+result after the leader completes and deletes the flight map entry. The CP may
+be absent, crash with volatile state loss, or return while a brick boot is
+still running. Envoy retains the last rendered route during a CP gap.
+
+The serialized `do_reconcile` pass captures node facts, adopts existing rows,
+adopts activator VMs and attempts durable backfill, then runs the gated orphan
+destroyer before publishing endpoints. Node effects and CP crashes can
+interleave between stages. Publication follows VM readiness. Parked requests
+either reach a ready live guest or receive an explicit failure; selecting or
+dialing an endpoint is distinct from delivery.
+
+The header's line-level prose map, state map and class correspondence table
+are the mapping authority. `CheckMiss`/`Join` and `CPMiss` model flight admission;
+`Ready`/`Register`/`Complete` separate boot readiness, inventory and callback
+completion. `AdoptExisting`/`AdoptActivator`/`Backfill`/`Orphans`/`Publish` follow
+the reconcile stages. `Forward`/`DialResult`/`Timeout` model parked requests,
+while `LeaveCP`/`ReturnCP` and `CrashVM` model the fault boundaries.
+
+The issue's winner and loser-accounting requirement maps to
+`OneWinnerPerFlight`, `NoUntrackedServing`, `NoLeak` and `EventualAccounting`.
+Winning is local to a flight: independent flights may coexist, and every
+allocated handle must eventually have a row or be destroyed. `NoLeak` checks
+that accounting at every settled, complete-inventory reconcile cut.
+`NoLegitActivatorWakeReaped` covers the orphan-destroy exception.
+`PublishAfterReady` checks readiness history, including failed splice attempts.
+`NoDeadSplice` checks delivery-time readiness and life, and `RequestsResolve`
+requires every parked request to deliver or fail eventually.
+
+The serving model carries only shared readiness, independent-flight,
+explicit-failure and origin-skip abstractions into its stateful/group mapping.
+Stateful anchor placement, writable-volume ownership, stale wake tokens and
+exact-instance cleanup are excluded. Generation-issuance composition and the
+activator self-bump belong to a follow-on pairwise model. Group aggregate
+adoption, member-set readiness and teardown require more than one VM to refine
+a group and are excluded. Fork B and the snapshot/bank lifecycle are also out
+of scope. The stateful L4 fallback chooses an anchor node rather than serving's
+first eligible advertiser.
+
+### Bounds, assumptions, and results
+
+All configurations use two ordered nodes, one eligible `nodeLocalWake` serving
+workload and non-recycled flight/VM identities. Nodes are non-silenced, hold the
+same image, retain stable identities and eventually report their status.
+Confirmed teardown is atomic in this wake episode; RPC failure and destroy
+redrive are covered separately by the adoption/stateful models.
+
+The three safety bounds are two requests/VMs with one CP absence or crash and
+no post-ready guest crash (`dual_wake.cfg`); two requests/VMs with no CP outage
+and one post-ready guest crash (`dual_wake_vm_crash.cfg`); and one request/VM
+with one CP absence or crash and one post-ready guest crash
+(`dual_wake_faults.cfg`). Two competing flights plus both fault classes together
+are outside the checked bounds. The liveness cfg uses the last safety bound
+with fair return, RPC completion and reconciliation. Serialized CP callbacks
+need strong fairness because idle opportunities are intermittent; other
+progress obligations use weak fairness. Fault budgets are finite.
+
+The negative and sensitivity cfgs use the one-request bound except
+`wrong_winner`, `duplicate_resolved` and `two_vms`, which use two requests with
+both fault budgets. Admission caps (16 boots, 64 parked requests, 30/minute)
+are abstracted above the two-request bound; overflow adds an explicit failure.
+There is no symmetry reduction because node order affects fallback preference,
+and there are no state constraints or simulation runs.
+
+The results below use Linux, the SHA-verified TLC 1.7.4 jar and Temurin
+21.0.11+10 JRE pinned in `bazel/tla/repositories.bzl`, and each registered
+genrule's exact `tlc.sh` expectation. Only fully drained PASS runs are called
+exhaustive. FAIL rows are completed expected counterexamples, not exhaustive
+safety passes. Their depth is TLC's reported search depth at the violation.
+Each negative lists only its intended invariant, and the driver requires that
+exact invariant, so another safety failure cannot satisfy the expectation.
+
+| cfg | changed switch | expect | checked result | generated / distinct / queue | depth |
+| --- | --- | --- | --- | --- | --- |
+| `dual_wake.cfg` | none | PASS | exhaustive pass | 28,270,169 / 4,765,924 / 0 | 57 |
+| `dual_wake_vm_crash.cfg` | `MaxLeaves = 0`, `MaxFailures = 1` | PASS | exhaustive pass | 31,520,551 / 5,425,684 / 0 | 64 |
+| `dual_wake_faults.cfg` | `MaxRequests = 1`, `MaxFailures = 1` | PASS | exhaustive pass | 379,281 / 82,388 / 0 | 48 |
+| `dual_wake_liveness.cfg` | `FairSpec`, two temporal properties | PASS | exhaustive pass, both temporal properties | 379,281 / 82,388 / 0 | 48 |
+| `dual_wake_wrong_winner.cfg` | `WrongWinner = TRUE` | FAIL | `OneWinnerPerFlight` violated | 266,112 / 76,200 / 33,470 | 12 |
+| `dual_wake_untracked.cfg` | `UnownedPublish = TRUE` | FAIL | `NoUntrackedServing` violated | 36,238 / 9,142 / 1,971 | 12 |
+| `dual_wake_reap_activator.cfg` | `ReapActivator = TRUE` | FAIL | `NoLegitActivatorWakeReaped` violated | 193,613 / 45,186 / 4,730 | 23 |
+| `dual_wake_unguarded_orphans.cfg` | `SkipOriginGuard = TRUE`, `OrphansFirst = TRUE` | FAIL | `NoLegitActivatorWakeReaped` violated | 90,245 / 21,613 / 2,965 | 18 |
+| `dual_wake_early_register.cfg` | `EarlyRegister = TRUE` | FAIL | `PublishAfterReady` violated | 818 / 428 / 294 | 6 |
+| `dual_wake_silent_failure.cfg` | `SilentFailure = TRUE` | FAIL | `NoDeadSplice` violated | 26 / 21 / 14 | 3 |
+| `dual_wake_leak.cfg` | `Leak = TRUE` | FAIL | `NoLeak` violated | 244,789 / 55,402 / 3,403 | 26 |
+| `dual_wake_origin_skip_disabled.cfg` | `SkipOriginGuard = TRUE` | PASS | exhaustive pass, sensitivity | 379,281 / 82,388 / 0 | 48 |
+| `dual_wake_orphans_first.cfg` | `OrphansFirst = TRUE` | PASS | exhaustive pass, sensitivity | 376,135 / 81,893 / 0 | 48 |
+| `dual_wake_offline.cfg` | `Witness = "offline"` | FAIL | witness: `NeverOfflineDelivery` violated | 109,384 / 26,360 / 3,862 | 19 |
+| `dual_wake_return_adoption.cfg` | `Witness = "return"` | FAIL | witness: `NeverReturnAdoption` violated | 129,726 / 31,272 / 4,614 | 20 |
+| `dual_wake_duplicate_resolved.cfg` | `Witness = "duplicate"` | FAIL | witness: `NeverDuplicateResolved` violated | 3,115,788 / 631,251 / 100,086 | 19 |
+| `dual_wake_loud_failure.cfg` | `Witness = "loud"` | FAIL | witness: `NeverLoudFailure` violated | 26 / 21 / 14 | 3 |
+| `dual_wake_two_vms.cfg` | none (current-main reachability) | FAIL | witness: `AtMostOneVMPerWorkload` violated | 1,528 / 751 / 538 | 5 |
+
+The four `Never*` rows are deliberately false non-vacuity checks: offline
+delivery, return-mid-boot adoption, resolved duplicate flights and loud failure
+must be reachable. `AtMostOneVMPerWorkload` is a current-main reachability
+witness with no mutation. It documents the independent-flight behavior; it is
+not a production safety invariant.
+
+### Implementation correspondence notes found by the mapping
+
+`destroy_orphan_serving_vms` skips activator origin. Earlier in the same pass,
+`adopt_activator_vms` consumes the same captured inventory and
+`ServingStore.adopt_activator` inserts the ETS row before durable backfill.
+Backfill failure keeps that row. The `origin_skip_disabled` and `orphans_first`
+PASS sensitivity checks each retain one protection. The `unguarded_orphans`
+composite removes both and violates `NoLegitActivatorWakeReaped` at one request;
+`reap_activator` is the stronger negative that reaps even owned activator facts.
+These checks demonstrate redundant defense in depth within the mapped model.
+They do not make either implementation guard safe to remove in production.
+
+The brick pre-check and flight admission are separate. The source documents
+the pre-check/complete/delete/join window in which a second leader can boot a
+second VM. Independent flights can coexist and their handles must be adopted
+or destroyed. A recent healthy probe can also outlive its guest; the model
+distinguishes observed probe health from actual delivery-time life and models
+an explicit network error when the latter is gone.
+
+CP endpoint lookup and flight admission share a serialized callback.
+ServingStore precedes ServingManager under `rest_for_one`: a store restart
+also aborts the manager's in-progress reconcile. Durable published rows rebuild
+with initial healthy status, while unbackfilled ETS rows can be lost on crash.
+Publication and route snapshots survive a CP gap in the model.
+
+These source mappings support a correspondence argument. The table reports
+bounded model results. No runtime conformance trace or live fault injection
+was performed or required by #4702, and this change contains no runtime edits.
+A passing bounded model is no implementation-conformance proof and gives no
+authority to retire either wake path
+([#4013](https://github.com/jomcgi-org/homelab/issues/4013)).
+
 ## Running TLC
 
-CI runs all thirty-eight genrules through the repository's affected-target
+CI runs all fifty-six genrules through the repository's affected-target
 Linux path. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
@@ -769,7 +923,7 @@ Never hand-edit the translation region.
 
 ## Scope
 
-The pilot now models eight protocols: protocol 1 (VM lifecycle + adoption,
+The pilot now models nine protocols: protocol 1 (VM lifecycle + adoption,
 `adoption.tla`), protocol 2 (session bank/relight generation pairing,
 `bank_relight.tla`, added by the ADR embervm/014 PR 5 follow-through since the
 pilot earned its keep), protocol 3 (the fail-closed quota gate, `quota.tla`),
@@ -780,6 +934,8 @@ covers issue #5051 alongside them. The stateful lifecycle model `stateful.tla`
 covers the bounded destroy and writable-attach escapes. The session lineage
 model covers issue #4701's handoff and no-loss invariants, and the warmth GC
 model `warmth_gc.tla` covers issue #4705's durable-workspace retention contract
-against the S3 sweep. Layer-2 trace validation
+against the S3 sweep. The dual wake model `dual_wake.tla` covers issue #4702's
+independent CP/brick wake flights, serving reconciliation and parked requests
+within the stated bounds. Layer-2 trace validation
 (op-log events mapped to TLA+ actions and checked against a drill trace) is a
 separate follow-up and is deliberately not built here.

@@ -175,20 +175,25 @@ is included; admission overflow adds only the same loud failure. Readiness,
 registration, flight completion, forwarding and delivery are separate actions.
 No symmetry: node order affects Preferred. No state constraints truncate TLC.
 
-MUTATIONS. Each negative cfg flips exactly one boolean. WrongWinner binds a
+MUTATIONS. Single-mutation negatives flip exactly one boolean; the composite
+unguarded_orphans cfg deliberately disables both redundant guards below.
+WrongWinner binds a
 parked caller to another successful node result. UnownedPublish bypasses ownership.
 EarlyRegister removes waitServingReady ordering. SilentFailure swallows a
 transport failure. Leak skips activator adoption while its orphan exemption
 remains. ReapActivator makes the destroyer reap activator facts even if owned.
 The latter is deliberately stronger than removing ONLY the origin skip.
 
-The origin_skip_disabled and orphans_first cfgs are PASS sensitivity checks:
-with total serving ETS adoption and the same captured inventory, either guard
-alone is redundant. Removing the skip alone cannot produce the requested
-NoLegitActivatorWakeReaped counterexample; reordering alone still has the skip.
-Backfill failure does not erase the ETS row. The spec records this acceptance
-limitation instead of inventing an adoption-failure guard absent from current
-main. It does not make either implementation guard safe to remove in production.
+The origin_skip_disabled and orphans_first cfgs are PASS sensitivity checks.
+Current main has redundant defense in depth: the orphan destroyer skips
+activator origin, and adopt_activator_vms runs earlier over the same captured
+facts. ServingStore.adopt_activator inserts the ETS row before backfill;
+backfill failure keeps that row. Removing either guard alone is safe within
+this model. The unguarded_orphans composite removes the origin skip AND runs
+orphans before adoption, exposing NoLegitActivatorWakeReaped. ReapActivator
+remains the stronger destroyer mutation that ignores ownership too. This is
+a correspondence finding, not an acceptance gap. It does not make either
+implementation guard safe to remove in production.
 ***************************************************************************)
 EXTENDS Naturals, FiniteSets, TLC
 
