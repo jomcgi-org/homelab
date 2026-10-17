@@ -330,7 +330,9 @@ def request(task, reason, *, recover=False):
     # No funding decision can extend an expired landing-recovery cap.
     # Avoid even preparing a paid review; recheck under the write lock below.
     with controls._read_session() as db:
-        if controls._landing_recovery_expired(db, task["id"]):
+        if controls.review_recovery_held(
+            task["id"], session=db
+        ) or controls._landing_recovery_expired(db, task["id"]):
             return False
     if not enabled():
         with controls._read_session() as db:
@@ -355,7 +357,9 @@ def request(task, reason, *, recover=False):
             }
     with controls._locked_session() as (db, control):
         row = controls._receipt(db, task["id"])
-        if controls._landing_recovery_expired(db, task["id"]):
+        if controls.review_recovery_held(
+            task["id"], session=db
+        ) or controls._landing_recovery_expired(db, task["id"]):
             return False
         if (
             row is None

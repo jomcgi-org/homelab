@@ -1516,3 +1516,31 @@ def test_permit_diagnostics_wire_schema_rejects_invalid_ids(monkeypatch):
         assert calls == [[11254]]
 
     _as(_principal(), exercise)
+
+
+def test_review_recovery_requires_human_operator_and_uses_subject(monkeypatch):
+    from factory.orchestration import review_recovery
+
+    calls = []
+    monkeypatch.setattr(
+        review_recovery,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"ok": True},
+    )
+
+    async def invoke():
+        return await mcp.factory_review_recovery(
+            receipt_id=822,
+            pr_number=6953,
+            head_sha="a" * 40,
+            request_key="explicit",
+            deadline_at="2026-10-12T00:00:00Z",
+            cumulative_budget_usd=80,
+            cumulative_turn_limit=18,
+        )
+
+    assert _as(_principal(), invoke)["ok"]
+    assert calls[0][1]["actor"] == "joe"
+    calls.clear()
+    assert not _as(_principal(groups=()), invoke)["ok"]
+    assert calls == []

@@ -2388,6 +2388,12 @@ def verify_delivery(
     should be unreachable; the gate refuses it anyway, because a completion
     gate that trusts an upstream check is not a gate.
     """
+    from factory.orchestration.factory_controls import review_recovery_held as held
+
+    if held(task["id"]):
+        raise DeliveryRefused(
+            "review_only_recovery", "Awaiting separate landing approval"
+        )
     granted_pr = delivery_pr_number(task)
     if granted_pr is not None and number != granted_pr:
         raise ValueError("delivery PR does not match the operator-granted PR")

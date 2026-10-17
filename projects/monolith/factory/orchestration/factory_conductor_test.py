@@ -130,6 +130,12 @@ def delivery(
     extra_statuses=(),
     combined_state=None,
 ):
+    # Pure GitHub/evidence tests. The durable hold is exercised with a real
+    # receipt in factory_controls_test's bounded recovery regressions.
+    monkeypatch.setattr(
+        "factory.orchestration.factory_controls.review_recovery_held",
+        lambda *_args, **_kwargs: False,
+    )
     monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     head = "a" * 40
     task = {

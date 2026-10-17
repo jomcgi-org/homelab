@@ -964,6 +964,52 @@ def _decide(
 
 
 @mcp.tool
+async def factory_review_recovery(
+    receipt_id: Annotated[MCPInteger, Field(gt=0)],
+    pr_number: Annotated[MCPInteger, Field(gt=0)],
+    head_sha: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")],
+    request_key: Annotated[str, Field(min_length=1, max_length=128)],
+    deadline_at: str,
+    cumulative_budget_usd: float,
+    cumulative_turn_limit: Annotated[MCPInteger, Field(gt=0)],
+) -> dict:
+    """Explicitly authorize ONE paid, tool-free review of an escalated receipt.
+
+    Requires an independently configured restricted reviewer. Supply the exact
+    draft PR head, a timezone-aware future deadline, and the cumulative dollar
+    and work-turn ceilings INCLUDING old attempts. No default budget, lease,
+    funding review, DAG resume, source changes or landing permission is implied.
+    These ceilings cannot increase existing authority. Reuse request_key after
+    a lost response. A new key authorizes another paid review. An unresolved
+    attempt refuses retries. The receipt stays escalated and a durable landing
+    hold remains after success, awaiting a separate landing decision.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+
+    def run_review():
+        from factory.orchestration.review_recovery import run
+
+        try:
+            return run(
+                receipt_id,
+                pr_number,
+                head_sha,
+                request_key=request_key,
+                deadline_at=deadline_at,
+                cumulative_budget_usd=cumulative_budget_usd,
+                cumulative_turn_limit=cumulative_turn_limit,
+                actor=principal.subject,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    return await asyncio.to_thread(run_review)
+
+
+@mcp.tool
 async def factory_decide(
     receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
     decision_id: Annotated[str, Field(pattern=r"^decision:[0-9a-f]{64}$")],

@@ -656,6 +656,11 @@ def _refuse(item: dict, reason: str, **detail: object) -> None:
 
 
 def _arm(repo: str, item: dict) -> None:
+    from factory.orchestration.factory_controls import review_recovery_held as held
+
+    if held(item["task_id"]):
+        _refuse(item, "review_only_recovery")
+        return
     number = item["pr_number"]
     try:
         pr = github_get(repo, f"pulls/{number}")
@@ -701,7 +706,12 @@ def _arm(repo: str, item: dict) -> None:
         if not isinstance(node_id, str) or not node_id:
             _refuse(item, "pull request has no node id")
             return
-        github_graphql(_ARM_AUTO_MERGE, {"pullRequestId": node_id})
+        from factory.orchestration.factory_controls import _locked_session
+
+        with _locked_session() as (db, _control):
+            if held(item["task_id"], session=db):
+                return
+            github_graphql(_ARM_AUTO_MERGE, {"pullRequestId": node_id})
     except GraphQLRefused as exc:
         # A refused arming is final for this task. Retrying a mutation GitHub
         # has already declined would spend the request budget to be declined
