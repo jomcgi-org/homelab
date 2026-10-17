@@ -44,7 +44,8 @@ from sqlalchemy import BigInteger, Integer, String, bindparam
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select, text
 
-from factory.utils import row_value, sanitize_payload
+from core.db import row_value
+from factory.utils import sanitize_payload
 
 logger = logging.getLogger(__name__)
 

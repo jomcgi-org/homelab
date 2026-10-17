@@ -14,8 +14,7 @@ import json
 import logging
 from typing import Any
 
-from factory.utils import row_value
-from core.db import get_session
+from core.db import get_session, row_value
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, text
