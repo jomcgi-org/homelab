@@ -126,6 +126,17 @@ def test_writer_retraction_and_embedding_collection_share_lock_order(pg, trial):
             )
     finally:
         with engine.begin() as connection:
+            # The original campaign schema deliberately does not cascade its
+            # game-session and PC foreign keys. Remove only this trial's rows
+            # in dependency order before cleaning up the isolated campaign.
+            connection.execute(
+                text("DELETE FROM grimoire.game_session WHERE campaign_id = :id"),
+                {"id": campaign_id},
+            )
+            connection.execute(
+                text("DELETE FROM grimoire.player_character WHERE campaign_id = :id"),
+                {"id": campaign_id},
+            )
             connection.execute(
                 text("DELETE FROM grimoire.campaign WHERE id = :id"),
                 {"id": campaign_id},
