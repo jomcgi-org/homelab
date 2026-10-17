@@ -30,6 +30,7 @@ from sqlmodel import Session, select
 
 from core.db import get_engine
 from core.github import GITHUB_API
+from factory.execution import EFFORT_LEVELS
 from factory.orchestration import config as swarm_config
 from factory.orchestration import deviations, graph, runtime, factory_gates
 from factory.orchestration.factory_controls import (
@@ -184,6 +185,7 @@ EDIT_SCHEMA = {
         "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
         "node_key": {"type": "string", "pattern": _KEY},
         "role": {"enum": ["investigate", "implement", "review", "integrate"]},
+        "effort": {"enum": list(EFFORT_LEVELS)},
         "model": {"type": "string", "pattern": r"^[a-z][a-z0-9_.-]{0,63}$"},
         "prompt": {"type": "string", "minLength": 1, "maxLength": 16000},
         "deps": {
@@ -233,6 +235,7 @@ DECISION_SCHEMA = {
         },
         "node_key": {"type": "string", "pattern": _KEY},
         "role": {"enum": ["investigate", "implement", "review", "integrate"]},
+        "effort": {"enum": list(EFFORT_LEVELS)},
         "model": {"type": "string", "pattern": r"^[a-z][a-z0-9_.-]{0,63}$"},
         "prompt": {"type": "string", "minLength": 1, "maxLength": 16000},
         "deps": {
@@ -1221,6 +1224,7 @@ def _add(
     max_attempts: int | None = None,
     max_cost_usd: float | None = None,
     turn_timeout_seconds: int | None = None,
+    effort: str | None = None,
     expected_version: int | None = None,
     session: Session | None = None,
 ) -> graph.GraphOp:
@@ -1265,6 +1269,7 @@ def _add(
         kind="gate" if review else "work",
         prompt=boundary + prompt,
         model=model,
+        effort=effort,
         deps=deps,
         max_cost_usd=max_cost_usd,
         side_effects=not review and not task.get("dependency_review"),
@@ -1558,6 +1563,7 @@ def _planner_context(
                 "node_key",
                 "kind",
                 "model",
+                "effort",
                 "max_cost_usd",
                 "max_attempts",
                 "turn_timeout_seconds",
@@ -1932,6 +1938,11 @@ _PLANNER_CHARTER = (
     "Planning and result artifacts are transient output, not repository changes. "
     "The task section below states which graph actions this task may use and "
     "any task-specific model floor. "
+    "Leave routine coding on the policy's preferred worker model and effort. "
+    "Set effort to xhigh before dispatch for non-trivial work: architecture, "
+    "concurrency, migrations, security, cross-system changes, or difficult "
+    "debugging. Explain the choice in the node reason. Node effort may raise "
+    "the role's floor, never lower it; independent review keeps its own floor. "
     "On your first "
     "decision emit a complete plan: one plan action whose edits add every "
     "investigate, implement and review node the requested outcome needs, with "
@@ -3291,6 +3302,9 @@ def _prepare_add(
         )
     if model not in policy["allowed_models"]:
         raise _EditRefused("model_not_allowed", "model is not allowed")
+    effort = source.get("effort")
+    if effort is not None and effort not in EFFORT_LEVELS:
+        raise _EditRefused("invalid_effort", "invalid node effort")
     review = role == "review"
     review_cost = (
         snapshot.review_costs[model]
@@ -3311,6 +3325,7 @@ def _prepare_add(
         "prompt": _boundary(task, review=review) + source["prompt"],
         "raw_prompt": source["prompt"],
         "model": model,
+        "effort": effort,
         "deps": list(source["deps"]),
         "max_cost_usd": bounds["max_cost_usd"],
         "side_effects": not review and not task.get("dependency_review"),
@@ -4034,6 +4049,7 @@ def _apply_decision(
             max_attempts=edit["max_attempts"],
             max_cost_usd=edit["max_cost_usd"],
             turn_timeout_seconds=edit["turn_timeout_seconds"],
+            effort=edit.get("effort"),
             expected_version=decision.get("expected_version"),
         )
         if result.ok:
@@ -6788,6 +6804,16 @@ def _attempt_escalation(
     # floor put it.
     if task_class_for(task["id"]) in JUDGMENT_CLASSES:
         return None
+    # Astra is the preferred coder, not the bottom rung of a cheap-first
+    # escalation ladder. Its fallback pool is for availability, not ability.
+    # Keep failed Astra work on Astra and increase reasoning instead.
+    if failed == "astra" and "astra" in policy["allowed_models"]:
+        return {
+            "model": "astra",
+            "effort": "xhigh",
+            "escalated_from": "astra",
+            "escalation_reason": reason,
+        }
     choice = escalate(role, policy, failed) if failed else None
     if choice is not None and choice["model"] in policy["allowed_models"]:
         return {
@@ -6802,6 +6828,7 @@ def _attempt_escalation(
             "model": carried["model"],
             "escalated_from": carried["escalated_from"],
             "escalation_reason": carried.get("escalation_reason"),
+            **({"effort": carried["effort"]} if carried.get("effort") else {}),
         }
     return None
 
@@ -7038,10 +7065,19 @@ def _dispatch_ready(
             "retry_context": json.dumps(
                 [r for r in runs if r["node_key"] == node_key], default=str
             )[-MAX_RETRY_CONTEXT_CHARS:],
-            # Effort follows the role, not the model: it rides the pin beside
-            # the model this dispatch settles on, and the guest applies it to
-            # Claude turns only.
-            "effort": effort_for(node_key, policy),
+            # Carry the effective effort through the immutable dispatch pin.
+            # Explicit complexity and failed Astra work can raise the floor.
+            "effort": effort_for(
+                node_key,
+                policy,
+                max(
+                    filter(
+                        None, (node.get("effort"), (escalation or {}).get("effort"))
+                    ),
+                    key=EFFORT_LEVELS.index,
+                    default=None,
+                ),
+            ),
             # Pin the current receipt contract, never the insertion-time one.
             # Refinement briefs do not deliver a PR or check its body.
             "closing_instruction": (

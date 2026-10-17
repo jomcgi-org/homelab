@@ -2471,6 +2471,8 @@ def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
         "result": "Done <voice>Codex completed the work.</voice>",
         "terminal_reason": "completed",
         "model": "luna",
+        "provider_model": "gpt-6-luna",
+        "effort": "medium",
         "session_id": "codex-thread",
         "usage": {
             "input_tokens": 3,
@@ -6740,7 +6742,9 @@ def test_manager_passes_claude_model_to_adapter():
     assert manager.turn("hello", "sid", "fable") == ("hello", "sid", "fable")
 
 
-def test_manager_passes_effort_only_to_claude_adapter():
+@pytest.mark.parametrize("model", ["opus", "astra"])
+def test_manager_passes_effort_to_claude_and_codex_adapters(model, monkeypatch):
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
     manager = _new_process_manager()
     seen = {}
 
@@ -6750,10 +6754,35 @@ def test_manager_passes_effort_only_to_claude_adapter():
             return {}
 
     manager.claude = Claude()
-    manager.codex = object()
+    manager.codex = Claude()
     manager.pi = object()
-    manager.turn("hello", "sid", "opus", effort="xhigh")
+    manager.turn("hello", "sid", model, effort="xhigh")
     assert seen == {"effort": "xhigh"}
+
+
+def test_codex_effort_override_reaches_each_turn_and_usage(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    for effort in ("medium", "xhigh", None):
+        record = manager.turn("hello", model="astra", effort=effort)
+        assert record["provider_model"] == "gpt-6-astra"
+        assert record["effort"] == (effort or "high")
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    starts = [r["params"] for r in requests if r["method"] == "turn/start"]
+    assert [r["effort"] for r in starts] == ["medium", "xhigh", "high"]
+    assert {r["model"] for r in starts} == {"gpt-6-astra"}
+    assert {r["threadId"] for r in starts} == {"codex-thread"}
+    manager._close_process()
+
+
+@pytest.mark.parametrize("effort", ["ultra", "", 3, True, {}])
+def test_codex_rejects_invalid_effort_before_starting(tmp_path, monkeypatch, effort):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(manager, "_spawn", lambda: pytest.fail("must not start"))
+    with pytest.raises(ValueError, match="invalid Codex effort"):
+        manager.turn("hello", model="astra", effort=effort)
 
 
 def test_first_turn_is_sent_before_delayed_cli_init_and_only_once(

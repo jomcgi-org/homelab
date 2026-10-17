@@ -1524,7 +1524,7 @@ class EmberVmShimTransport:
             system_prompt: The caller's system prompt, appended to the shim's
                 own sandbox prompt. Omitted from the payload if None.
             reasoning: Whether the guest should use high thinking for each invoke.
-            effort: The Claude CLI effort level for this session's turns, or
+            effort: Claude/Codex reasoning effort for this session's turns, or
                 None for the guest's per-model default. Other adapters ignore it.
             artifact_path: Declared artifact file the guest should read from the
                 checkout after the turn and deliver beside the diff. None means

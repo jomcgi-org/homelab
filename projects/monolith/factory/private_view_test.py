@@ -80,6 +80,17 @@ def test_node_without_runs_is_pending_and_retired_wins():
     assert retired["state"] == "retired"
 
 
+def test_node_view_distinguishes_planned_and_dispatched_effort():
+    run = {
+        **_run("implement_fix", 2, "admitted"),
+        "pin": {"model": "astra", "effort": "xhigh"},
+    }
+    view = shape_node(_node("implement_fix", model="astra", effort="medium"), [run], {})
+    assert view["effort"] == "medium"
+    assert view["attempts"][0]["model"] == "astra"
+    assert view["attempts"][0]["effort"] == "xhigh"
+
+
 def test_shape_receipt_joins_nodes_runs_and_sessions():
     receipt = {
         "id": 11,
@@ -182,6 +193,8 @@ def test_shape_policy_keeps_the_board_keys_only():
         "max_parallel_nodes": None,
         "task_budget_usd": 36.0,
         "max_attempts": 2,
+        "model_pools": {"worker": ["sol"]},
+        "role_effort": None,
     }
     assert shape_policy(None) is None
 

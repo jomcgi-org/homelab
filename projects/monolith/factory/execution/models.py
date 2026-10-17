@@ -46,8 +46,8 @@ class AgentSession(SQLModel, table=True):
     # Set only by the server entry point, never from the submitted prompt.
     admission_tier: str = Field(default="interactive")
     reasoning: bool = Field(default=False)
-    # The Claude CLI effort every turn of this session runs at, set by the
-    # factory from the node's role. None leaves the guest's model default.
+    # Claude/Codex reasoning effort, pinned by the factory for this attempt.
+    # None leaves the guest's model default.
     effort: str | None = Field(default=None)
     cli_session_id: str | None = Field(
         default=None

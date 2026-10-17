@@ -31,6 +31,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from core.db import get_engine
+from factory.execution import EFFORT_LEVELS
 from factory.orchestration.factory_models import (
     MAX_CAPACITY_DENIED_ATTEMPTS,
     FactoryStart,
@@ -125,6 +126,8 @@ def _valid_bound(value: Any, ceiling: int) -> bool:
 
 def _bounds_error(node: SwarmPlanNode | dict) -> str | None:
     values = node if isinstance(node, dict) else vars(node)
+    if values.get("effort") is not None and values["effort"] not in EFFORT_LEVELS:
+        return "invalid_effort"
     if not _valid_cost(values.get("max_cost_usd")):
         return "invalid_node_budget"
     if not _valid_bound(values.get("max_attempts"), MAX_ATTEMPTS):
@@ -192,6 +195,7 @@ def load_graph(
                 "kind": node.kind,
                 "prompt": node.prompt,
                 "model": node.model,
+                "effort": node.effort,
                 "deps": _node_deps(node),
                 "max_cost_usd": node.max_cost_usd,
                 "side_effects": node.side_effects,
@@ -235,6 +239,7 @@ def _historical_nodes(db: Session, task_id: str, version: int) -> list[dict]:
             "kind": node.kind,
             "prompt": node.prompt,
             "model": node.model,
+            "effort": node.effort,
             "deps": _node_deps(node),
             "max_cost_usd": node.max_cost_usd,
             "side_effects": node.side_effects,
@@ -404,6 +409,7 @@ def add_node(
     side_effects: bool,
     max_attempts: int | None,
     turn_timeout_seconds: int | None,
+    effort: str | None = None,
     session: Session | None = None,
 ) -> GraphOp:
     """Add or re-add one node after validating the complete semantic change."""
@@ -413,6 +419,7 @@ def add_node(
         "kind": kind,
         "prompt": prompt,
         "model": model,
+        "effort": effort,
         "deps": deps,
         "max_cost_usd": max_cost_usd,
         "side_effects": side_effects,
@@ -551,6 +558,7 @@ def _add_node_locked(
             kind=kind,
             prompt=prompt,
             model=model,
+            effort=node_fields.get("effort"),
             deps_json=_json(deps),
             max_cost_usd=max_cost_usd,
             side_effects=side_effects,
@@ -565,6 +573,7 @@ def _add_node_locked(
         existing.kind = kind
         existing.prompt = prompt
         existing.model = model
+        existing.effort = node_fields.get("effort")
         existing.deps_json = _json(deps)
         existing.max_cost_usd = max_cost_usd
         existing.side_effects = side_effects
@@ -1056,6 +1065,7 @@ def _apply_one_edit(
         "kind": edit["kind"],
         "prompt": edit["prompt"],
         "model": edit.get("model"),
+        "effort": edit.get("effort"),
         "deps": list(edit["deps"]),
         "max_cost_usd": edit.get("max_cost_usd"),
         "side_effects": bool(edit.get("side_effects")),

@@ -52,11 +52,11 @@ QUOTA_PROVIDERS = {"codex": "codex", "claude": "claude"}
 # Models at or above the ADR agents/038 judgment floor. Adapter family is NOT
 # the test: sonnet shares the claude family with opus and sits below the floor.
 JUDGMENT_MODELS = ("opus", "fable")
-# Claude effort by the role a node plays, not by its model (#6461). One plan
+# Reasoning effort by the role a node plays, not by its model (#6461). One plan
 # sizes every downstream node and review is the correctness gate before
 # landing, so both think hardest. Policy may override any role through
 # ``role_effort``; a node whose role is unknown gets DEFAULT_ROLE_EFFORT. The
-# guest applies effort only to Claude turns, and keeps a per-model default
+# guest applies effort to Claude and Codex turns, and keeps a per-model default
 # for callers that name no role.
 ROLE_EFFORT = {
     "planner": "xhigh",
@@ -172,9 +172,16 @@ def effort_for_role(role: str | None, policy: dict | None) -> str:
     return ROLE_EFFORT.get(role, DEFAULT_ROLE_EFFORT)
 
 
-def effort_for(node_key: str, policy: dict | None) -> str:
-    """The Claude effort one node attempt is dispatched at."""
-    return effort_for_role(effort_role(node_key), policy)
+def effort_for(node_key: str, policy: dict | None, requested: str | None = None) -> str:
+    """A node may raise its role's effort floor, never lower it."""
+    from factory.execution import EFFORT_LEVELS
+
+    default = effort_for_role(effort_role(node_key), policy)
+    if requested is None:
+        return default
+    if requested not in EFFORT_LEVELS:
+        raise ValueError("invalid node effort")
+    return max((default, requested), key=EFFORT_LEVELS.index)
 
 
 def pool_for(role: str, policy: dict) -> list[str]:
@@ -656,6 +663,10 @@ def escalate(
     if not failed_model or failed_model not in pool:
         return None
     later = pool[pool.index(failed_model) + 1 :]
+    if pool[0] == "astra":
+        # An Astra-first pool orders availability fallbacks, not increasing
+        # capability. A failed fallback can return to Astra when it has room.
+        later = [] if failed_model == "astra" else ["astra"]
     if not later:
         return None
     if quota is None:
