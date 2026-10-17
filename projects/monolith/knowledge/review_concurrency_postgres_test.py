@@ -42,7 +42,7 @@ WAIT_SECONDS = 5
 HOLDER_WAIT_SECONDS = 15
 NOW = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
 VECTOR = [1.0] + [0.0] * 1023
-TITLE = "PR #6821 is open"
+TITLE = "Source changes require replacement evidence"
 BODY = (
     "When the source changes, the review must inspect the replacement evidence "
     "because an earlier observation cannot establish the changed claim."
@@ -143,7 +143,7 @@ def _review(session, lane, *, observed=NOW, revision=None):
         note_id=lane.note_id,
         expected_revision=lane.revision if revision is None else revision,
         expected_content_hash=lane.content_hash,
-        evidence=["GitHub reports PR #6821 open"],
+        evidence=["Fresh source confirms replacement evidence is required"],
         evidence_observed_at=observed,
         now=NOW + timedelta(minutes=5),
     )
