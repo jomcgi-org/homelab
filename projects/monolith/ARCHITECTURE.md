@@ -1816,6 +1816,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | guarded policy migration prepared; deployment and a new Astra planning node remain to verify |
 | Platform invitations create Authentik-linked platform users; application grants and campaign membership remain separate, with reusable HTTP/MCP management commands | [Platform enrollment and access](auth/architecture.md) | #6858 | design recorded; API, enrollment binding, permissions and MCP implementation remain unbuilt; signup remains disabled |
 | The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
 | Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
@@ -1954,6 +1955,13 @@ required context and CI credential isolation are unverified. Adopting the
 original PR preserves Dependabot's history without replacement changes.
 
 ### The factory conductor
+
+**Why.** The September policy removed Astra to conserve Codex quota before a
+reset. On 2026-10-17 both grants had substantial headroom and Joe chose to use
+Astra for more planning and difficult work (#6983). Restore that routing for
+new admissions while preserving Sol's routine implementation role, Opus's
+independent review role, task bounds and pinned receipts. Available quota is
+capacity for useful delivery, not permission to repeat a stalled funding loop.
 
 One logical Conductor per operator sits above every per-task Planner and drain
 lane. It runs in a replaceable fenced EmberVM session, on Astra since policy
