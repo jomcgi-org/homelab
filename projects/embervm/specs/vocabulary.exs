@@ -27,11 +27,12 @@
   # RestoreArtifact side of a cross-brick lineage handoff. warmth_gc.tla models
   # the same two verbs against the S3 warmth sweep, plus ExportArtifact's
   # files-first/meta.json-last publication order.
+  # dual_wake.tla models R3 StartServing and exact-instance StopServing DESTROY.
   proto_rpcs: %{
     modeled:
       ~w(Prime Assign Destroy WatchNode GetNodeStatus Bank Relight
          StartStateful StopStateful ResolveStateful RetireVolume
-         RestoreArtifact ExportArtifact)a,
+         RestoreArtifact ExportArtifact StartServing StopServing)a,
     excluded:
       ~w(
         BuildBase
@@ -42,8 +43,6 @@
         # snapshot-only GC verb) are out of the protocol-2 generation-pairing
         # subset; Bank and Relight moved to `modeled` above.
         ~w(SessionAssign SessionInterrupt EvictSnapshot)a ++
-        # R3 serving: long-lived HTTP-over-tap VMs, out of scope.
-        ~w(StartServing StopServing)a ++
         # R4 explicit data deletion is outside stateful.tla's instance lifecycle.
         ~w(DeleteVolume)a ++
         # R5 groups: composite multi-member workloads, out of scope.
@@ -112,7 +111,10 @@
            checkpoint_resolved)a ++
         # R0 quota gate protocol 3: quota.tla models the submit-time quota
         # denial audit append, while dispatch-side skips are counters only.
-        ~w(quota_enforced)a,
+        ~w(quota_enforced)a ++
+        # R3 dual_wake.tla: CP create/publish and activator durable backfill.
+        # Only these serving op names appear verbatim in the model's prose map.
+        ~w(serving_started serving_published)a,
     excluded:
       # R0 task/VM lifecycle kinds the spec does NOT model as distinct actions.
       # vm_destroyed is the durable audit kind for a VM teardown; the spec models
@@ -141,9 +143,9 @@
         # ADR 006 protocol 2). Invoke lifecycle edges remain outside the focused
         # bank/relight and lineage-handoff protocols.
         ~w(session_invoke_started session_invoked)a ++
-        # R3 serving lifecycle kinds, out of scope. serving_destroying is the
+        # Remaining R3 serving lifecycle kinds, out of scope. serving_destroying is the
         # ADR embervm/014 destroy-intent kind (see session_destroying).
-        ~w(serving_started serving_published serving_unpublished serving_banked
+        ~w(serving_unpublished serving_banked
            serving_relit serving_evicted serving_destroying serving_destroyed
            serving_failed serving_stats)a ++
         # R4 volume and observation kinds remain out of scope. generation_blessed
@@ -205,6 +207,8 @@
     # is the checker's assertion (zero :primed alongside :assigned is vacuous, not passing).
     primed: "primed_op.ex",
     quota_enforced: "metering.ex",
+    serving_started: "serving_store.ex",
+    serving_published: "serving_store.ex",
     session_created: "session_store.ex",
     session_banked: "session_manager.ex",
     session_relit: "session_manager.ex",
