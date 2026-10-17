@@ -151,10 +151,11 @@ knowledge:
   enabled: true
   factReview:
     # Catch-up allowance. Actual coverage is reported separately from retries;
-    # per-fact sessions and shared admission still bound achieved throughput.
+    # bounded batches retain an independent evidence verdict for each fact.
     enabled: true
     maxDaily: 20000
     intervalSeconds: 1
+    batchSize: 32
   audit:
     # Independent sampled quality checks feed the existing dispute resolver.
     enabled: true

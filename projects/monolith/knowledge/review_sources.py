@@ -46,7 +46,7 @@ class EvidenceUnsupported(EvidenceUnavailable):
 
 
 def collect_sources(
-    claim: dict, *, fetch=None, repo: str = GITHUB_REPO
+    claim: dict, *, fetch=None, repo: str = GITHUB_REPO, main_sha: str | None = None
 ) -> tuple[list[dict], datetime | None]:
     """No retries; one shared request, byte and elapsed-time bound per claim."""
     if fetch is None:
@@ -58,7 +58,7 @@ def collect_sources(
                     raise EvidenceUnavailable(f"GitHub returned {response.status_code}")
                 return response.json()
 
-            return collect_sources(claim, fetch=read, repo=repo)
+            return collect_sources(claim, fetch=read, repo=repo, main_sha=main_sha)
     prose = f"{claim['title']}\n{claim.get('content') or ''}"
     if claim.get("scope") not in (None, f"repo:{repo}"):
         raise EvidenceUnsupported("claim scope does not match the evidence repository")
@@ -213,7 +213,9 @@ def collect_sources(
                 }
             add(subject, f"https://api.github.com{path}", checks)
     if paths:
-        main = get(f"/repos/{repo}/git/ref/heads/main").get("object", {}).get("sha")
+        main = main_sha or get(f"/repos/{repo}/git/ref/heads/main").get(
+            "object", {}
+        ).get("sha")
         if not re.fullmatch(r"[0-9a-f]{40}", str(main)):
             raise EvidenceUnavailable("missing main commit")
         for path in paths:

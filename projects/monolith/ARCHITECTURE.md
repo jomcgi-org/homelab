@@ -1334,34 +1334,49 @@ note's verification, confidence or validity. Repo scope limits v1 evidence to
 the checkout.
 
 An independent `kg-fact-review` drain job handles due prose facts under
-`knowledge.factReview.enabled`. It uses the same KG permits and daily capacity,
-selecting one repository fact per run. `maxDaily` and `intervalSeconds` are
-configurable; production permits at most 20,000 selections in a rolling day with
-a one-second delay after completion, inside the shared 22,000-job KG allowance.
-The selection allowance includes unsupported sources and failed attempts.
-Claims with fewer attempts at their current revision are selected first, so
-retrying an old failure cannot keep untouched claims behind it. Operator status
-reports attempts, distinct facts, repeat attempts and distinct facts by outcome
-over the last 24 hours. The single review job and per-fact session overhead
-still bound achieved throughput; the allowance is not a measured daily rate.
-An empty eligible set or exhausted allowance backs off for 15 minutes.
-**Why.** A recurring job's session and review receipt key includes its worker
-cycle, so repeating the job inside that cycle only replays the same receipt.
-Protocol v2 rotates the cycle after review progress, retaining the existing
-permit ownership format and failure circuit breaker. A DBOS patch preserves
-older checkpoint histories. Registration updates only unlocked, scheduled rows
-and retains unknown-outcome holds and existing deadlines.
-The backend captures the claim revision and primary GitHub evidence in
-`knowledge.fact_review_runs`; Luna evaluates the complete claim against only
-that bundle. File evidence is pinned to main's SHA. Exact quotation checks,
-source-subject coverage, a 30-minute evidence-age limit and the existing
-revision/dispute-safe renewal transaction constrain its output. Semantic support
-is still a model judgment, unlike the unchanged strict GitHub template verifier.
-Changed claims create ordinary disputes, unsupported claims wait for a new
-revision, and source outages back off. This reviewer never changes the original
-observation, confidence, verification label or publication policy. Its receipts
-are exposed by the operator-only review inspection tool. The sampled audit
-remains unable to renew its own findings.
+`knowledge.factReview.enabled`. Protocol v3 groups up to `batchSize` claims
+(32 in production) into one Luna session under the existing KG permit. Each
+fact retains its own pinned revision, evidence, verdict and renewal transaction
+in `knowledge.fact_review_runs`. `knowledge.fact_review_batches` preserves
+membership, main's SHA, the first model response and resource measurements.
+Production permits at most 20,000 fact selections in a rolling day with a
+one-second delay after completion, inside the shared 22,000-job KG allowance.
+The fact allowance counts every selected member, including failures and
+unsupported sources. Prepared claim revisions cannot be selected again while
+their outcomes remain unresolved. Fewer-attempted revisions precede retries.
+
+A batch shares source responses only during its bounded preparation, at the
+same pinned main revision. Collection permits at most 64 requests, 512 KB of
+cached responses and 90 seconds; the complete prompt is bounded to 256 KB.
+Existing per-claim source and byte limits remain. A shared source pool carries
+an explicit allowed-source list for every claim. The reviewer must support
+every clause and qualification, and cite exact quotations from that claim's
+sources. Partial coverage cannot renew a fact. Oversized files are still
+unavailable until the source coverage work in #6995 is resolved.
+
+Each verdict passes the existing source-subject, quotation, 30-minute evidence
+age and revision/dispute checks. A missing, duplicate or malformed verdict
+records an unavailable outcome only for its claim; valid sibling verdicts can
+still commit. Recovery uses the first durable model response and applies each
+receipt once. Changed claims create ordinary disputes. Unsupported claims wait
+for a new revision. Known session failures release unfinished receipts with
+backoff; unknown invocations retain their fences. A wholly unavailable batch,
+empty eligible set or exhausted allowance backs off for 15 minutes.
+
+**Why.** Batching amortizes session startup and repeated source reads while
+retaining the freshness owner's per-fact renewal contract. One model judgment
+cannot grant freshness to the rest of a batch. Protocol v3 retains v2's worker
+cycle rotation, permit ownership and failure circuit breaker. Existing
+single-fact receipts still replay through their original path. Registration
+updates only unlocked, scheduled rows and preserves unknown-outcome holds.
+
+Operator inspection reports rolling attempts, distinct facts and outcomes,
+plus last-hour completions, batch latency, source requests/cache hits and
+reported model cost. Missing provider cost stays unreported. These measurements
+must establish sustained throughput before claiming the 20,000/day target in
+#6996. Semantic support remains a model judgment. Review never changes the
+original observation, confidence, verification label or publication policy.
+The independent sampled audit remains unable to renew its own findings.
 (see: /projects/monolith/knowledge/audit.py)
 (see: /projects/monolith/knowledge/audit_feedback.py)
 (see: /projects/monolith/knowledge/disputes.py)
@@ -1855,6 +1870,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
 | Retire the household gateway and its exclusively owned schema, retaining shared data | section 5, Household gateway retired | #6915 | repository retirement staged; merge, rollout, migration and shared-job acceptance remain |
 | Platform invitations create Authentik-linked platform users; application grants and campaign membership remain separate, with reusable HTTP/MCP management commands | [Platform enrollment and access](auth/architecture.md) | #6858 | design recorded; API, enrollment binding, permissions and MCP implementation remain unbuilt; signup remains disabled |

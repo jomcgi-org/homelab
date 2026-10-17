@@ -490,7 +490,7 @@ def test_registration_scales_only_unlocked_scheduled_jobs(db, monkeypatch, state
     expected = before | (
         {
             "interval_secs": 10,
-            "payload": json.dumps({"mode": "fact-review", "review_protocol": 2}),
+            "payload": json.dumps({"mode": "fact-review", "review_protocol": 3}),
         }
         if state == "scheduled"
         else {}
