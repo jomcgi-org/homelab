@@ -57,6 +57,9 @@ Every action below has a serving implementation correspondence:
   LeaveCP / ReturnCP: ServingManager process availability and rebuild. Absence
     suspends callbacks; crash loses waking and unbackfilled ETS rows, preserves
     durable ServingStore rows, and can leave an RPC's node effect running.
+    serving_store.ex rebuild marks durable published rows healthy initially.
+    application.ex:297-339,511 uses rest_for_one with ServingStore BEFORE the
+    manager: losing the store also aborts the manager's in-progress reconcile.
     Envoy retains its last rendered routes while the CP is absent.
   BeginReconcile: serving_manager.ex:990 do_reconcile captures NodeCapacity facts.
   AdoptExisting: adopt_one, including the waking exemption, maps row health from
@@ -97,7 +100,7 @@ STATE MAP. s is the full finite product, vars is its stuttering/fairness tuple.
     target evidence never disappears when rows/probes/VMs later change.
   failures: finite VM-crash budget. Boot failure consumes its flight, not a crash.
   returnedBoots, witnesses: HISTORY for return-mid-boot and non-vacuity checks.
-    Witness selects one observation per witness cfg; "none" erases only these
+    Observe selects one observation per Witness cfg; "none" erases only these
     auxiliary histories in safety/liveness runs. It never restricts a transition.
   stranded: unaccounted handles at a settled, complete-inventory reconcile cut.
 
@@ -129,7 +132,7 @@ CLASS CORRESPONDENCE (one row for every action; filenames in server/ are under
   Init/Advertise          stateful_manager init, registry    group_wake_manager init
   ChooseRoute             endpoint_publisher stateful L4    group render (CP fallback)
   CheckMiss/CheckStraggler server/stateful_activator.go       server/group_activator.go
-  CPMiss/CPStraggler       stateful_manager handle_miss      group manager handle_miss
+  CPMiss/CPStraggler       stateful_manager handle_wake      group manager handle_wake
   UnavailableCP           CP fallback dial failure          CP fallback dial failure
   Join                    stateful activator flights        group activator flights
   Ready/Register          server/stateful.go finish start    server/group_member.go finish
@@ -344,7 +347,7 @@ LeaveCP(mode) ==
               !.flight = [v \in Requests |-> IF mode = "crashed" /\ s.flight[v].waker = "CP" /\ s.flight[v].state = "running"
                                              THEN [s.flight[v] EXCEPT !.state = "lost"] ELSE s.flight[v]],
               !.rows = IF mode = "crashed" THEN s.durable ELSE @,
-              !.rowHealthy = IF mode = "crashed" THEN @ \cap s.durable ELSE @,
+              !.rowHealthy = IF mode = "crashed" THEN s.durable ELSE @,
               !.pc = IF mode = "crashed" THEN "idle" ELSE @]
 ReturnCP == /\ s.cp # "up"
             /\ s' = [s EXCEPT !.cp = "up",
