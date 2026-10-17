@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from sqlalchemy import and_, exists, func, or_, text, update
 from sqlalchemy.exc import IntegrityError
@@ -15,7 +15,9 @@ from sqlmodel import Session, select
 
 from factory.execution.constants import (
     CLEAN_TERMINAL_REASONS,
+    DRAINER_NODE_KEY,
     INTERRUPTED_TERMINAL_REASONS,
+    KG_NODE_KEY,
     LEGACY_QWEN_SYNTHETIC_PROMPT,
     RESPONSE_LOST,
     RESPONSE_LOST_BACKSTOP_SECONDS,
@@ -109,6 +111,99 @@ def claim_heartbeat_session_lock_enabled() -> bool:
 def _assert_sendable(session: Session, session_id: int) -> None:
     if session.exec(select(_unknown_outcome_exists(session_id))).one():
         raise SessionOutcomeUnknown(UNKNOWN_INVOCATION_MESSAGE)
+    if (
+        session.exec(
+            select(AgentCapacityReservation.id).where(
+                AgentCapacityReservation.session_id == session_id,
+                AgentCapacityReservation.outcome == "cancelled_before_enqueue",
+            )
+        ).first()
+        is not None
+    ):
+        raise PendingClaimLost("Session start was cancelled before enqueue")
+
+
+def cancel_unqueued_drainer_start(
+    session: Session, session_id: int, local_session_id: str
+) -> bool:
+    """Fence a drainer start that never queued work, without inventing a turn.
+
+    The caller owns cleanup, or has proved the owning workflow terminal. All
+    execution and ownership evidence is re-read under the enqueue/dispatch locks.
+    The retained permit outcome also fences any delayed original queue writer.
+    Commit is left to the caller so lease recovery can be atomic with this fence.
+    """
+    agent = _lock_session(session, session_id)
+    if agent is None or agent.local_session_id != local_session_id:
+        return False
+    node_key = {"kg": KG_NODE_KEY, "project": DRAINER_NODE_KEY}.get(
+        agent.admission_tier
+    )
+    if (
+        node_key is None
+        or agent.node_key != node_key
+        or not (agent.workflow_id or "").startswith("_drainer-worker:")
+        or agent.status != "running"
+        or any(
+            value is not None
+            for value in (
+                agent.ember_session_id,
+                agent.ember_session_token,
+                agent.ember_session_expires_at,
+                agent.ember_lineage_id,
+                agent.cli_session_id,
+                agent.prior_ember_lineage_id,
+                agent.prior_cli_session_id,
+                agent.result_receipt_fence_id,
+                agent.guest_cleanup_id,
+                agent.guest_cleanup_guest_id,
+                agent.guest_cleanup_workflow_id,
+                agent.guest_cleanup_dispatch_json,
+                agent.guest_cleanup_started_at,
+                agent.recovery_completed_at,
+                agent.recovery_workspace_loss,
+            )
+        )
+    ):
+        return False
+    permits = session.exec(
+        select(AgentCapacityReservation).where(
+            or_(
+                AgentCapacityReservation.session_id == session_id,
+                AgentCapacityReservation.local_session_id == local_session_id,
+            )
+        )
+    ).all()
+    if len(permits) != 1:
+        return False
+    permit = permits[0]
+    if (
+        permit.session_id != session_id
+        or permit.local_session_id != local_session_id
+        or permit.pending_seq != 1
+        or permit.tier != agent.admission_tier
+        or permit.state != "reserved"
+        or permit.owner is not None
+        or permit.workload is not None
+        or not permit.routine_job_name
+        or local_session_id
+        != f"{agent.workflow_id}:{node_key}:{permit.routine_job_name}"
+    ):
+        return False
+    if any(
+        session.exec(select(model.id).where(model.session_id == session_id)).first()
+        is not None
+        for model in (PendingMessage, AgentTurn, AgentResultReceipt)
+    ):
+        return False
+    now = datetime.now(UTC)
+    agent.status = "failed"
+    agent.last_turn_at = now
+    permit.state = "settled"
+    permit.outcome = "cancelled_before_enqueue"
+    permit.settled_at = now
+    session.add_all([agent, permit])
+    return True
 
 
 def has_unknown_outcome(session: Session, session_id: int) -> bool:
@@ -2367,7 +2462,7 @@ def create_pending_message(
                 session_id=session_id,
                 seq=seq,
                 model=model,
-                message_text=text,
+                message_text=sanitize_payload(text),
             )
             session.add(row)
             session.commit()

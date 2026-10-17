@@ -524,6 +524,9 @@ def start_session_for_swarm(
         parts = local_session_id.split(":", 3)
         if len(parts) == 4 and parts[1]:
             task_id = parts[1]
+    first_message = prompt
+    if task_id is not None:
+        first_message = _factory_first_message(prompt, task_id, node_key)
     row = _persist_session(
         local_session_id,
         "<guest>",
@@ -538,12 +541,9 @@ def start_session_for_swarm(
         node_attempt=node_attempt,
         admission_tier=admission_tier,
         task_id=task_id,
+        first_message=first_message,
     )
     assert row.id is not None
-    first_message = prompt
-    if task_id is not None:
-        first_message = _factory_first_message(prompt, task_id, node_key)
-    _persist_pending_message(row.id, first_message, model)
     try:
         _schedule_next_message(row.id)
     except RuntimeError:

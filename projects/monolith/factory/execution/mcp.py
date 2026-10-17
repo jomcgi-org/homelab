@@ -436,13 +436,24 @@ def _persist_session(
     node_attempt: int | None = None,
     admission_tier: str = "interactive",
     task_id: str | None = None,
+    first_message: str | None = None,
 ) -> AgentSession:
     # A factory node session (task_id set) keeps recall out of its system
     # prompt: see _factory_first_message.
     if task_id is None:
         system_prompt = attach_recall(system_prompt, prompt, node_key=node_key)
+    recall_pending = task_id is None and defer_recall(prompt, node_key=node_key)
+    if (
+        first_message is not None
+        and recall_pending
+        and recall_prompt_ready(first_message)
+    ):
+        first_message = append_message_recall(
+            first_message, first_message, node_key=node_key
+        )
+        recall_pending = False
     with Session(get_engine()) as db_session:
-        return store.create_session(
+        row = store.create_session(
             db_session,
             local_session_id,
             workspace,
@@ -459,8 +470,16 @@ def _persist_session(
             node_key=node_key,
             node_attempt=node_attempt,
             admission_tier=admission_tier,
-            recall_pending=task_id is None and defer_recall(prompt, node_key=node_key),
+            recall_pending=recall_pending,
+            **({"commit": False} if first_message is not None else {}),
         )
+        if first_message is not None:
+            # The first queue insert commits the session and permit binding too.
+            # A storage failure must leave no visible session for a retry to mistake
+            # for an already scheduled start. Recall was prepared before the lock.
+            store.create_pending_message(db_session, row.id, first_message, model)
+            db_session.refresh(row)
+        return row
 
 
 def _turn_status(turn: Turn) -> str:
