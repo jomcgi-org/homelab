@@ -57,6 +57,8 @@ def status() -> dict:
         return {"enabled": False}
     from core.db import get_engine
 
+    from knowledge.fact_review_batch import status as batch_status
+
     max_daily, interval = settings()
     with Session(get_engine()) as session:
         now = datetime.now(UTC)
@@ -73,6 +75,7 @@ def status() -> dict:
             "public_facts": fact_summary(session, now=now),
             "coverage": coverage(session, now=now),
             "throughput": throughput(session, now=now),
+            "batches": batch_status(session, now=now),
             "recent": [
                 {
                     "invocation_key": row.invocation_key,
@@ -111,7 +114,7 @@ def ensure_job(session: Session) -> bool:
         {
             "name": JOB_NAME,
             "interval": settings()[1],
-            "payload": json.dumps({"mode": "fact-review", "review_protocol": 2}),
+            "payload": json.dumps({"mode": "fact-review", "review_protocol": 3}),
             "unknown": UNKNOWN_INVOCATION,
         },
     )
@@ -205,7 +208,7 @@ def throughput(session: Session, *, now: datetime) -> dict:
     }
 
 
-def _candidate(session: Session, now: datetime):
+def _candidates(session: Session, now: datetime, *, limit: int = 1):
     newer = aliased(ReviewOutcome)
     # The deterministic verifier's unsupported outcome is eligible for this
     # separate reviewer. Its own unsupported outcomes wait for a new revision.
@@ -236,11 +239,22 @@ def _candidate(session: Session, now: datetime):
         .correlate(Note)
         .scalar_subquery()
     )
+    pending = (
+        select(FactReviewRun.invocation_key)
+        .where(
+            FactReviewRun.note_id == Note.note_id,
+            FactReviewRun.revision == Note.revision,
+            FactReviewRun.status == "prepared",
+        )
+        .correlate(Note)
+        .exists()
+    )
     return session.exec(
         select(Note)
         .where(
             *_review_pool(now),
             ~blocked,
+            ~pending,
         )
         .order_by(
             attempts.asc(),
@@ -250,8 +264,12 @@ def _candidate(session: Session, now: datetime):
             Note.review_after.asc().nulls_first(),
             Note.id,
         )
-        .limit(1)
-    ).first()
+        .limit(limit)
+    ).all()
+
+
+def _candidate(session: Session, now: datetime):
+    return next(iter(_candidates(session, now)), None)
 
 
 def _digest(claim: dict) -> str:
@@ -383,6 +401,7 @@ def prepare(
             now=now,
         )
         run.status = "complete"
+        run.completed_at = now
         run.result = {
             "summary": f"Source review: {status}",
             "note_id": run.note_id,
@@ -414,6 +433,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
         select(FactReviewRun)
         .where(FactReviewRun.invocation_key == invocation_key)
         .with_for_update()
+        .execution_options(populate_existing=True)
     ).first()
     if run is None:
         raise ExtractionOutputInvalid("source review was not prepared")
@@ -453,6 +473,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
             now=now,
         )
         run.status = "complete"
+        run.completed_at = now
         run.result = {
             "summary": "Source review: unavailable (invalid reviewer output)",
             "note_id": run.note_id,
@@ -526,6 +547,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
                 },
             )
     run.status = "complete"
+    run.completed_at = now
     run.result = {
         "summary": f"Source review: {outcome} ({run.note_id})",
         "note_id": run.note_id,

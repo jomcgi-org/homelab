@@ -862,7 +862,9 @@ def test_fact_review_mode_uses_existing_bounded_lane_without_raw_or_correction(
     assert completions[0][0:2] == ("kg-fact-review", "ok")
 
 
-@pytest.mark.parametrize("protocol,patch", [(1, True), (2, False), (2, True)])
+@pytest.mark.parametrize(
+    "protocol,patch", [(1, True), (2, False), (2, True), (3, True)]
+)
 def test_fact_review_rotates_receipts_only_for_new_protocol_and_history(
     monkeypatch, protocol, patch
 ):
@@ -880,7 +882,7 @@ def test_fact_review_rotates_receipts_only_for_new_protocol_and_history(
         "interval_secs": 10,
         "payload": {"mode": "fact-review", "review_protocol": protocol},
     }
-    rotates = protocol == 2 and patch
+    rotates = protocol in {2, 3} and patch
     result, claims, starts, _, _, destroys = _run(monkeypatch, [job, job])
     assert result["processed"] == (1 if rotates else 2)
     assert len(claims) == (1 if rotates else 3)
@@ -948,6 +950,85 @@ def test_fact_review_rotation_retains_failure_circuit_breaker(monkeypatch):
     assert result["processed"] == 1 and len(destroys) == 1
     assert chained == completions == []
     assert deferred == [("kg-fact-review", 900)]
+
+
+def test_batch_source_outage_backs_off_without_starting_or_chaining(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    prompt = "Source review deferred after source unavailability."
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: prompt)
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+    job = {
+        "name": "kg-fact-review",
+        "routine_kind": "kg-drain",
+        "interval_secs": 1,
+        "payload": {"mode": "fact-review", "review_protocol": 3},
+    }
+    result, _, starts, completions, _, _ = _run(monkeypatch, [job, job])
+    assert result["processed"] == 1 and starts == chained == []
+    assert completions == [("kg-fact-review", "ok", prompt, 900)]
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+def test_batch_known_failure_releases_receipts_but_unknown_holds_them(
+    monkeypatch, unknown
+):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: "review batch")
+    released, held, deferred = [], [], []
+    monkeypatch.setattr(
+        drainer, "fail_kg_fact_review", lambda *args: released.append(args)
+    )
+    monkeypatch.setattr(drainer, "hold_drainer_job", lambda *args: held.append(args))
+    monkeypatch.setattr(
+        drainer, "defer_drainer_job", lambda *args: deferred.append(args)
+    )
+    job = {
+        "name": "kg-fact-review",
+        "routine_kind": "kg-drain",
+        "interval_secs": 1,
+        "payload": {"mode": "fact-review", "review_protocol": 3},
+    }
+
+    def fail(*_):
+        if unknown:
+            raise drainer.InvocationOutcomeUnknown("outcome unavailable")
+        raise RuntimeError("provider failed")
+
+    _run(monkeypatch, [job], await_turn=fail)
+    assert bool(released) is (not unknown)
+    assert bool(held) is unknown
+    assert bool(deferred) is (not unknown)
+
+
+def test_batch_model_cost_reaches_durable_result_application(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: "review batch")
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: None)
+    applied = []
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda name, payload, output: (
+            applied.append(payload) or {"summary": "batch completed"}
+        ),
+    )
+    job = {
+        "name": "kg-fact-review",
+        "routine_kind": "kg-drain",
+        "interval_secs": 1,
+        "payload": {"mode": "fact-review", "review_protocol": 3},
+    }
+    _run(
+        monkeypatch,
+        [job],
+        await_turn=lambda *_: {
+            "result_text": "reviews",
+            "terminal_reason": "stop",
+            "cost_usd": 0.25,
+        },
+    )
+    assert applied[0]["_review_cost_usd"] == 0.25
 
 
 @pytest.mark.parametrize(

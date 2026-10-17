@@ -1,7 +1,7 @@
 """SQLModel definitions for the knowledge schema."""
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from typing import Any, Literal, NewType
 
 from pgvector.sqlalchemy import Vector
@@ -117,6 +117,38 @@ class FactReviewRun(SQLModel, table=True):
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
     status: str = "prepared"
+    result: dict = Field(default_factory=dict, sa_column=Column(_JSONB, nullable=False))
+    completed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+
+
+class FactReviewBatch(SQLModel, table=True):
+    """Immutable membership and first model response for a bounded review session."""
+
+    __tablename__ = "fact_review_batches"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    invocation_key: str = Field(primary_key=True)
+    member_keys: list[str] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    repo_revision: str | None = None
+    observed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    completed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    status: str = "prepared"
+    response: dict | None = Field(default=None, sa_column=Column(_JSONB))
+    metrics: dict = Field(
+        default_factory=dict, sa_column=Column(_JSONB, nullable=False)
+    )
     result: dict = Field(default_factory=dict, sa_column=Column(_JSONB, nullable=False))
 
 

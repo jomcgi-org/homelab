@@ -1424,6 +1424,7 @@ knowledge:
     enabled: false
     maxDaily: 20
     intervalSeconds: 900
+    batchSize: 32
   audit:
     # Single kill switch. Uses ordinary kg-drain admission and daily caps.
     enabled: false

@@ -743,6 +743,7 @@ def build_kg_prompt(payload: dict) -> str:
         return build_fact_review_prompt(
             payload["_review_invocation_key"],
             progress_signal=payload.get("_review_progress", False),
+            batched=payload.get("review_protocol") == 3,
         )
     if payload.get("mode") == "audit":
         with Session(get_engine()) as session:
@@ -819,7 +820,11 @@ def apply_kg_extraction(
         check_claim(session)
         if payload.get("mode") == "fact-review":
             return apply_fact_review(
-                session, payload["_review_invocation_key"], result_text
+                session,
+                payload["_review_invocation_key"],
+                result_text,
+                transaction_guard=check_claim,
+                cost_usd=payload.get("_review_cost_usd"),
             )
         if payload.get("mode") == "repo-diff":
             return apply_repo_diff(session, name, result_text)
@@ -833,6 +838,23 @@ def apply_kg_extraction(
             correction=correction,
             transaction_guard=check_claim if expected_holder is not None else None,
         )
+
+
+@DBOS.step()
+def fail_kg_fact_review(
+    name: str, invocation_key: str, reason: str, *, expected_holder: str | None = None
+) -> None:
+    from agent.api import lock_claim
+    from core.db import get_engine
+    from knowledge.api import fail_fact_review_batch
+    from sqlmodel import Session
+
+    def guard(session):
+        if not lock_claim(session, name, expected_holder):
+            raise RuntimeError("routine job claim ownership changed")
+
+    with Session(get_engine()) as session:
+        fail_fact_review_batch(session, invocation_key, reason, transaction_guard=guard)
 
 
 @DBOS.step()
@@ -1834,6 +1856,7 @@ def drain_cycle() -> dict:
                 start_attempted = False
                 outcome_unknown = False
                 raw_id = None
+                batch_review_key = None
                 recurring = job.get("interval_secs") is not None
                 try:
                     if job_kind == KG_JOB_KIND:
@@ -1871,7 +1894,7 @@ def drain_cycle() -> dict:
                             # ownership or replaying a completed session.
                             review_rotation = (
                                 recurring
-                                and job_payload.get("review_protocol") == 2
+                                and job_payload.get("review_protocol") in {2, 3}
                                 and DBOS.patch("fact-review-cycle-v2")
                             )
                             job_payload = {
@@ -1883,12 +1906,15 @@ def drain_cycle() -> dict:
                                     else {}
                                 ),
                             }
+                            if job_payload.get("review_protocol") == 3:
+                                batch_review_key = local_session_id
                         elif not _is_repo_diff(job_payload):
                             raw_id = _kg_raw_id(job_payload)
                         prompt = build_kg_prompt(job_payload)
                         if job_payload.get("mode") == "fact-review" and prompt in {
                             "No source-grounded review is due.",
                             "Source review completed without model inference.",
+                            "Source review deferred after source unavailability.",
                         }:
                             completed = (
                                 prompt
@@ -1970,6 +1996,14 @@ def drain_cycle() -> dict:
                             job_payload = {
                                 **job_payload,
                                 "_audit_cost_usd": turn.get("cost_usd"),
+                            }
+                        if (
+                            job_payload.get("mode") == "fact-review"
+                            and job_payload.get("review_protocol") == 3
+                        ):
+                            job_payload = {
+                                **job_payload,
+                                "_review_cost_usd": turn.get("cost_usd"),
                             }
                         applied = apply_kg_extraction(
                             name, job_payload, result_text, **ownership
@@ -2082,6 +2116,8 @@ def drain_cycle() -> dict:
                     _report_drainer_failure(settings, name, _summary(exc))
                 except ExtractionOutputInvalid as exc:
                     error = _summary(exc)
+                    if batch_review_key is not None:
+                        fail_kg_fact_review(name, batch_review_key, error, **ownership)
                     _retry_or_dead_letter_kg(
                         name,
                         raw_id,
@@ -2092,6 +2128,8 @@ def drain_cycle() -> dict:
                     _report_drainer_failure(settings, name, error)
                 except Exception as exc:  # noqa: BLE001 - one job must not stop the cycle
                     error = _summary(exc)
+                    if batch_review_key is not None:
+                        fail_kg_fact_review(name, batch_review_key, error, **ownership)
                     if job_kind == KG_JOB_KIND:
                         _retry_or_dead_letter_kg(
                             name,

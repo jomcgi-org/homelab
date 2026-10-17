@@ -63,6 +63,7 @@ __all__ = [
     "defer_recall",
     "enqueue_extraction",
     "expire_recall",
+    "fail_fact_review_batch",
     "freshness_state",
     "get_embedding_client",
     "get_store",
@@ -170,21 +171,53 @@ def audit_enabled() -> bool:
 
 
 def build_fact_review_prompt(
-    invocation_key: str, *, progress_signal: bool = False
+    invocation_key: str, *, progress_signal: bool = False, batched: bool = False
 ) -> str:
     from core.db import get_engine
     from sqlmodel import Session
 
     from knowledge.fact_review import prepare
+    from knowledge.models import FactReviewRun
 
     with Session(get_engine()) as session:
+        if batched and session.get(FactReviewRun, invocation_key) is None:
+            from knowledge.fact_review_batch import prepare as prepare_batch
+
+            return prepare_batch(session, invocation_key)
         return prepare(session, invocation_key, progress_signal=progress_signal)
 
 
-def apply_fact_review(session: Session, invocation_key: str, result_text: str) -> dict:
+def apply_fact_review(
+    session: Session,
+    invocation_key: str,
+    result_text: str,
+    *,
+    transaction_guard=None,
+    cost_usd=None,
+) -> dict:
     from knowledge.fact_review import apply
+    from knowledge.models import FactReviewBatch
+
+    if session.get(FactReviewBatch, invocation_key) is not None:
+        from knowledge.fact_review_batch import apply as apply_batch
+
+        return apply_batch(
+            session,
+            invocation_key,
+            result_text,
+            transaction_guard=transaction_guard,
+            cost_usd=cost_usd,
+        )
 
     return apply(session, invocation_key, result_text)
+
+
+def fail_fact_review_batch(
+    session: Session, invocation_key: str, reason: str, *, transaction_guard=None
+) -> None:
+    from knowledge.fact_review_batch import fail
+
+    fail(session, invocation_key, reason, transaction_guard=transaction_guard)
 
 
 def defer_audit_if_over_budget(

@@ -547,6 +547,8 @@ spec:
               value: {{ .Values.knowledge.factReview.maxDaily | quote }}
             - name: KG_FACT_REVIEW_INTERVAL_SECONDS
               value: {{ .Values.knowledge.factReview.intervalSeconds | quote }}
+            - name: KG_FACT_REVIEW_BATCH_SIZE
+              value: {{ .Values.knowledge.factReview.batchSize | quote }}
             - name: KG_AUDIT_INTERVAL_SECONDS
               value: {{ .Values.knowledge.audit.intervalSeconds | quote }}
             - name: KG_AUDIT_SAMPLES_PER_DAY
