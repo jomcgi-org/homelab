@@ -5068,6 +5068,15 @@ bdd_test(
     srcs = ["factory/orchestration/factory_policy_restore_astra_postgres_test.py"],
 )
 
+# Real PostgreSQL covers the already-allowed Astra planner follow-up and harness.
+bdd_test(
+    name = "swarm_factory_policy_astra_planner_postgres_test",
+    srcs = [
+        "factory/orchestration/factory_policy_astra_planner_postgres_test.py",
+        "factory/orchestration/factory_policy_restore_astra_postgres_test.py",
+    ],
+)
+
 # Hand-registered real-PostgreSQL coverage for the no-new-notes pending
 # provenance write: the atom_raw_provenance_pending partial unique index
 # only exists in Postgres, so a SQLite test cannot prove the retry is

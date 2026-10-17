@@ -1824,7 +1824,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | guarded policy migration prepared; deployment and a new Astra planning node remain to verify |
+| Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
 | Retire the household gateway and its exclusively owned schema, retaining shared data | section 5, Household gateway retired | #6915 | repository retirement staged; merge, rollout, migration and shared-job acceptance remain |
 | Platform invitations create Authentik-linked platform users; application grants and campaign membership remain separate, with reusable HTTP/MCP management commands | [Platform enrollment and access](auth/architecture.md) | #6858 | design recorded; API, enrollment binding, permissions and MCP implementation remain unbuilt; signup remains disabled |
 | The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
