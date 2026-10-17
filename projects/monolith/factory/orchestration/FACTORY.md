@@ -602,6 +602,15 @@ affected pool makes the migration a no-op. Verify the live policy after rollout.
 Rollback uses the normal policy control to restore the audited prior routing;
 do not rerun or rewrite the historical migration. Existing tasks keep their
 pinned model choices in either direction.
+
+`20261017100000_factory_policy_astra_planner.sql` handles the live policy that
+070000 skipped because Astra was already allowed as a reviewer fallback. It
+puts Astra first for planning and refinement, appends it to implementation
+pools when absent, and preserves the existing Astra reviewer pool. Pinned
+receipts and all bounds stay untouched. Rollback uses the normal operator
+policy control to restore the audited prior routing; never rerun or rewrite
+a migration.
+
 `20260930060100_factory_policy_claude_55.sql` stages `sonnet` (pinned to
 `claude-sonnet-5-5`) behind `spark` in existing worker and implement pools and
 raises `task_budget_usd` to at least $50, without moving `worker_model`.
