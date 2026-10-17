@@ -691,8 +691,9 @@ def test_existing_extraction_retained_without_false_correction_success(
 
 
 @pytest.mark.parametrize("delivery_error", [False, True])
+@pytest.mark.parametrize("guest_state", ["destroyed", "failed"])
 def test_supervision_recovers_held_kg_correction_atomically(
-    database, monkeypatch, delivery_error
+    database, monkeypatch, delivery_error, guest_state
 ):
     """Recover a failed correction without reapplying its first extraction."""
     from factory.execution import permit_supervision as supervision
@@ -723,6 +724,7 @@ def test_supervision_recovers_held_kg_correction_atomically(
     )
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     request, _ = held(engine, applied=True, delivery_error=True)
     sid = request["session_id"]
@@ -782,11 +784,23 @@ def test_supervision_recovers_held_kg_correction_atomically(
         assert guest == "guest"
         return {
             "session_id": guest,
-            "state": "destroyed",
+            "state": guest_state,
+            "terminal_reason": guest_state,
+            "interrupted_turn": None,
             "generation": 0,
             "invoke_started_at": int((at - timedelta(seconds=15)).timestamp() * 1000),
-            "last_invoke_at": int((at - timedelta(seconds=5)).timestamp() * 1000),
-            "updated_at": int((at + timedelta(seconds=5)).timestamp() * 1000),
+            "last_invoke_at": int(
+                (
+                    at - timedelta(seconds=25 if guest_state == "failed" else 5)
+                ).timestamp()
+                * 1000
+            ),
+            "updated_at": int(
+                (
+                    at + timedelta(seconds=-1 if guest_state == "failed" else 5)
+                ).timestamp()
+                * 1000
+            ),
         }
 
     from types import SimpleNamespace
