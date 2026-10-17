@@ -653,6 +653,7 @@ def build_kg_prompt(payload: dict) -> str:
     from knowledge.api import (
         RawInput,
         build_audit_prompt,
+        build_fact_review_prompt,
         build_extraction_prompt,
         build_repo_diff_prompt,
     )
@@ -660,6 +661,8 @@ def build_kg_prompt(payload: dict) -> str:
 
     if payload.get("mode") == "repo-diff":
         return build_repo_diff_prompt(payload.get("last_sha"))
+    if payload.get("mode") == "fact-review":
+        return build_fact_review_prompt(payload["_review_invocation_key"])
     if payload.get("mode") == "audit":
         with Session(get_engine()) as session:
             return build_audit_prompt(
@@ -719,7 +722,12 @@ def apply_kg_extraction(
 ) -> dict:
     from agent.api import lock_claim
     from core.db import get_engine
-    from knowledge.api import apply_audit, apply_extraction, apply_repo_diff
+    from knowledge.api import (
+        apply_audit,
+        apply_extraction,
+        apply_repo_diff,
+        apply_fact_review,
+    )
     from sqlmodel import Session
 
     def check_claim(session: Session) -> None:
@@ -728,6 +736,10 @@ def apply_kg_extraction(
 
     with Session(get_engine()) as session:
         check_claim(session)
+        if payload.get("mode") == "fact-review":
+            return apply_fact_review(
+                session, payload["_review_invocation_key"], result_text
+            )
         if payload.get("mode") == "repo-diff":
             return apply_repo_diff(session, name, result_text)
         if payload.get("mode") == "audit":
@@ -1667,9 +1679,23 @@ def drain_cycle() -> dict:
                                     )
                                     cancel_drainer_reservation(local_session_id)
                                     continue
+                        elif job_payload.get("mode") == "fact-review":
+                            job_payload = {
+                                **job_payload,
+                                "_review_invocation_key": local_session_id,
+                            }
                         elif not _is_repo_diff(job_payload):
                             raw_id = _kg_raw_id(job_payload)
                         prompt = build_kg_prompt(job_payload)
+                        if (
+                            job_payload.get("mode") == "fact-review"
+                            and prompt == "No source-grounded review is due."
+                        ):
+                            finish_drainer_job(
+                                name, "ok", "No eligible source review", **ownership
+                            )
+                            cancel_drainer_reservation(local_session_id)
+                            continue
                         repo = settings["repo"]
                         branch = settings["branch"]
                         reasoning = settings.get("reasoning", False)
@@ -1740,7 +1766,11 @@ def drain_cycle() -> dict:
                             and job_payload.get("stream") == "scheduled"
                         ):
                             file_kg_audit_process_issues()
-                        if _is_repo_diff(job_payload) or _is_audit(job_payload):
+                        if (
+                            _is_repo_diff(job_payload)
+                            or _is_audit(job_payload)
+                            or job_payload.get("mode") == "fact-review"
+                        ):
                             summary = applied["summary"]
                         else:
                             rejected = list(applied.get("rejected") or [])

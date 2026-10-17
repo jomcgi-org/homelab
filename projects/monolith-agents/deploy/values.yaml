@@ -50,5 +50,5 @@ agents:
 
 knowledge:
   audit:
-    # Keep the monolith audit kill switch mirrored off until live validation.
-    enabled: false
+    # Mirror the backend audit switch for best-effort retrieval accounting.
+    enabled: true

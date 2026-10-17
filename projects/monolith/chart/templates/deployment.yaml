@@ -579,6 +579,8 @@ spec:
               value: {{ .Values.knowledge.feeds.repoDiff.enabled | quote }}
             - name: KG_AUDIT_ENABLED
               value: {{ .Values.knowledge.audit.enabled | quote }}
+            - name: KG_FACT_REVIEW_ENABLED
+              value: {{ .Values.knowledge.factReview.enabled | quote }}
             - name: KG_AUDIT_INTERVAL_SECONDS
               value: {{ .Values.knowledge.audit.intervalSeconds | quote }}
             - name: KG_AUDIT_SAMPLES_PER_DAY

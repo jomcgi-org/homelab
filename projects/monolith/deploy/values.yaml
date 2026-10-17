@@ -149,9 +149,12 @@ cfIngress:
 
 knowledge:
   enabled: true
+  factReview:
+    # Bounded repository review: one fact per run, at most 20 selected per day.
+    enabled: true
   audit:
-    # Staged repository-only audit. Enabling requires operational validation.
-    enabled: false
+    # Independent sampled quality checks feed the existing dispute resolver.
+    enabled: true
     intervalSeconds: 86400
     samplesPerDay: 12
     cooldownDays: 14

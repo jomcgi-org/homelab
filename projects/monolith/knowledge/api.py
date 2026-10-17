@@ -48,11 +48,13 @@ __all__ = [
     "append_message_recall",
     "apply_audit",
     "apply_extraction",
+    "apply_fact_review",
     "apply_repo_diff",
     "attach_recall",
     "audit_enabled",
     "build_audit_prompt",
     "build_extraction_prompt",
+    "build_fact_review_prompt",
     "build_repo_diff_prompt",
     "count_gaps_review_queue",
     "count_notes_review_queue",
@@ -165,6 +167,21 @@ def audit_enabled() -> bool:
     from knowledge.audit import audit_enabled as _enabled
 
     return _enabled()
+
+
+def build_fact_review_prompt(invocation_key: str) -> str:
+    from core.db import get_engine
+    from knowledge.fact_review import prepare
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        return prepare(session, invocation_key)
+
+
+def apply_fact_review(session: Session, invocation_key: str, result_text: str) -> dict:
+    from knowledge.fact_review import apply
+
+    return apply(session, invocation_key, result_text)
 
 
 def defer_audit_if_over_budget(
