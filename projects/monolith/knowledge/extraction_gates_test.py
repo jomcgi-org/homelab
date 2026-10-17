@@ -550,7 +550,7 @@ def test_usefulness_keeps_actionable_contracts(session, claim):
     assert result["rejected"] == []
 
 
-def test_exact_claim_dedup_ignores_changed_title_and_evidence(session):
+def test_exact_claim_dedup_preserves_new_evidence(session):
     body = "Present Bearer credentials do not fall back to anonymous in monolith auth."
     first = _raw(session)
     result = apply_extraction(
@@ -565,7 +565,7 @@ def test_exact_claim_dedup_ignores_changed_title_and_evidence(session):
         second.raw_id,
         _result(
             _assertion(
-                "Bearer validation",
+                "Auth contract",
                 body,
                 evidence=["projects/monolith/auth/tokens.py:50"],
             )
@@ -592,9 +592,7 @@ def test_same_answer_duplicates_do_not_multiply_provenance_or_confidence(session
     result = apply_extraction(
         session,
         raw.raw_id,
-        _result(
-            _assertion("Auth contract", body), _assertion("Bearer validation", body)
-        ),
+        _result(_assertion("Auth contract", body), _assertion("Auth contract", body)),
     )
     assert len(result["atoms"]) == 1
     assert result["rejected"][0]["reason_code"] == "duplicate"
@@ -605,7 +603,14 @@ def test_same_answer_duplicates_do_not_multiply_provenance_or_confidence(session
 
 @pytest.mark.parametrize(
     "difference",
-    ["scope", "negation", "identifier_case", "literal_whitespace", "invalidated"],
+    [
+        "scope",
+        "negation",
+        "identifier_case",
+        "literal_whitespace",
+        "title_qualification",
+        "invalidated",
+    ],
 )
 def test_exact_dedup_preserves_claim_boundaries(session, difference):
     raw = _raw(session)
@@ -627,6 +632,8 @@ def test_exact_dedup_preserves_claim_boundaries(session, difference):
         other["body"] = body.replace("Foo", "foo")
     elif difference == "literal_whitespace":
         other["body"] = body.replace('"a b"', '"a  b"')
+    elif difference == "title_qualification":
+        other["title"] = "Dispatch contract only applies to authenticated callers"
     result = apply_extraction(session, second.raw_id, _result(other))
     assert len(result["atoms"]) == 1
     assert len(session.exec(select(Note)).all()) == 2

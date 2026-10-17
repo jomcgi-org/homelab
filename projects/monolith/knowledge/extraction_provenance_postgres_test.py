@@ -143,7 +143,7 @@ def test_concurrent_identical_claims_share_note_and_keep_both_sources(pg, monkey
             payload = {
                 "assertions": [
                     {
-                        "title": raw_id,
+                        "title": f"Dispatch contract {suffix}",
                         "body": body,
                         "scope": "repo:jomcgi-org/homelab",
                         "verification_state": "unverified",
