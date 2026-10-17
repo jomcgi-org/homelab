@@ -447,6 +447,39 @@ def test_repo_diff_mode_dispatches_through_repo_apply(monkeypatch):
     assert completions == [("kg-repo-diff", "ok", "no changes", False)]
 
 
+@pytest.mark.parametrize("has_work", [True, False])
+def test_fact_review_mode_uses_existing_bounded_lane_without_raw_or_correction(
+    monkeypatch, has_work
+):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    prompts = []
+    applied = []
+
+    def prompt(payload):
+        prompts.append(payload)
+        return "review prompt" if has_work else "No source-grounded review is due."
+
+    monkeypatch.setattr(drainer, "build_kg_prompt", prompt)
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda name, payload, output: (
+            applied.append((name, payload, output))
+            or {"summary": "Source review: renewed"}
+        ),
+    )
+    job = {
+        "name": "kg-fact-review",
+        "routine_kind": "kg-drain",
+        "interval_secs": 900,
+        "payload": {"mode": "fact-review"},
+    }
+    _, _, starts, completions, _, _ = _run(monkeypatch, [job])
+    assert prompts[0]["_review_invocation_key"]
+    assert len(starts) == int(has_work) and len(applied) == int(has_work)
+    assert completions[0][0:2] == ("kg-fact-review", "ok")
+
+
 @pytest.mark.parametrize(
     "stream,cost", [("scheduled", None), ("scheduled", 2.25), ("expansion", 0.5)]
 )

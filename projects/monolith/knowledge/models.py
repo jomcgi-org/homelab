@@ -95,6 +95,31 @@ AUDIT_CAUSES = (
 )
 
 
+class FactReviewRun(SQLModel, table=True):
+    """Pinned claim and server-collected evidence for one independent review."""
+
+    __tablename__ = "fact_review_runs"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    invocation_key: str = Field(primary_key=True)
+    note_id: str | None = None
+    revision: int | None = None
+    content_hash: str | None = None
+    claim: dict = Field(default_factory=dict, sa_column=Column(_JSONB, nullable=False))
+    sources: list[dict] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    observed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    status: str = "prepared"
+    result: dict = Field(default_factory=dict, sa_column=Column(_JSONB, nullable=False))
+
+
 class AuditRun(SQLModel, table=True):
     __tablename__ = "audit_runs"
     __table_args__ = (

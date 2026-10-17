@@ -303,7 +303,13 @@ async def inspect(request_id: str | None = None) -> dict:
                     **receipt,
                     "warning": "workflow absent; submission remains fenced",
                 }
-        return {"controls": summary, "receipt": receipt}
+        from knowledge.fact_review import status as review_status
+
+        return {
+            "controls": summary,
+            "receipt": receipt,
+            "source_review": await asyncio.to_thread(review_status),
+        }
     finally:
         await client.close()
 

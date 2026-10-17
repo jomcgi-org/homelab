@@ -1263,8 +1263,8 @@ evolves.
 (see: /projects/monolith/knowledge/docfix.py)
 (see: /projects/monolith/knowledge/recall.py)
 
-The sampled KG audit (#6721) is staged behind `knowledge.audit.enabled`, false
-in both chart defaults and the hub values. Its scheduled `kg-audit` row uses
+The sampled KG audit (#6721) is controlled by `knowledge.audit.enabled`, false
+in chart defaults and enabled in the hub values. Its scheduled `kg-audit` row uses
 the ordinary `kg-drain` lane and admission caps. Each invocation pins a
 repository-only sample before Luna starts: six uniform notes and six weighted
 by recent retrievals, observation age and provenance count, with a daily
@@ -1307,7 +1307,22 @@ retrieval popularity. Weighted sampling finds defects in frequently recalled
 or poorly supported notes. Reusing dispute resolution preserves its evidence
 and public visibility contracts; the audit cannot confirm itself or edit a
 note's verification, confidence or validity. Repo scope limits v1 evidence to
-the checkout. Live validation is required before enabling the loop.
+the checkout.
+
+An independent `kg-fact-review` drain job handles due prose facts under
+`knowledge.factReview.enabled`. It uses the same KG permits and daily capacity,
+selecting one repository fact per 15-minute run, at most 20 in a rolling day.
+The backend captures the claim revision and primary GitHub evidence in
+`knowledge.fact_review_runs`; Luna evaluates the complete claim against only
+that bundle. File evidence is pinned to main's SHA. Exact quotation checks,
+source-subject coverage, a 30-minute evidence-age limit and the existing
+revision/dispute-safe renewal transaction constrain its output. Semantic support
+is still a model judgment, unlike the unchanged strict GitHub template verifier.
+Changed claims create ordinary disputes, unsupported claims wait for a new
+revision, and source outages back off. This reviewer never changes the original
+observation, confidence, verification label or publication policy. Its receipts
+are exposed by the operator-only review inspection tool. The sampled audit
+remains unable to renew its own findings.
 (see: /projects/monolith/knowledge/audit.py)
 (see: /projects/monolith/knowledge/audit_feedback.py)
 (see: /projects/monolith/knowledge/disputes.py)

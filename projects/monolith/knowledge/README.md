@@ -109,6 +109,39 @@ evidence-backed review (below) renews a deadline.
 
 ### Evidence-backed review
 
+Source-grounded prose review runs independently of both the strict GitHub
+template verifier and the sampled quality audit. `knowledge.factReview.enabled`
+admits one repository-scoped fact to the existing KG drain lane every 15 minutes,
+with a hard limit of 20 selected facts in a rolling 24 hours and the unchanged
+shared KG capacity limit. It prefers facts with repository file pointers, then
+orders by review deadline. The chart default is off.
+
+The server pins the complete claim, scope, revision and content hash before
+collecting primary sources outside a database transaction. Coverage is limited
+to at most three GitHub PR/issue references and four explicit `projects/`,
+`docs/` or `bazel/` file paths in the configured repository. Files are read at one main SHA;
+GitHub state, head, labels, statuses and check runs come from current API reads.
+Collection is bounded to 16 requests, 48 KB and a 90-second admission cutoff
+(individual requests time out after 10 seconds). Incomplete pages, source
+failures and oversized evidence never become truncated confirmation.
+
+A separate Luna turn sees only that captured evidence and the full claim. A
+positive verdict requires exact source quotations covering every supplied
+subject. This remains a semantic model judgment, not a deterministic proof of
+the claim; the strict template verifier is unchanged. The commit owner rejects
+changed revisions, disputes, invalidation and stale evidence, preserves the
+original observation and verification label, and grants a deadline only from
+the server's observation time. A changed verdict opens an ordinary dispute.
+Unsupported claims stay due until their revision changes, and unavailable
+sources use the existing backoff. The audit cannot renew its own findings.
+
+`inspect_kg_review_pilot` includes the latest 20 source-review receipts without
+claim bodies or source payloads. The kill switch disables admission and apply;
+unknown invocation holds are retained. The strict GitHub renewal CronWorkflow
+and backfill remain separately controlled and suspended until their own pilot
+acceptance. Full corpus coverage and sources outside this repository are not
+provided by this bounded reviewer.
+
 `Note.revision` is a monotonic counter advanced by every ORM update that
 changes the claim or its support (content, confidence, state, validity,
 a duplicate retelling through `bump_revision`) and by supersession. The review
