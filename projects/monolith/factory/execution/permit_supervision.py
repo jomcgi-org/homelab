@@ -21,7 +21,11 @@ from sqlalchemy import exists, or_, text
 from sqlmodel import Session, select
 
 from factory.execution import admission
-from factory.execution.constants import SYNTHETIC_SESSION_PREFIX, UNKNOWN_INVOCATION
+from factory.execution.constants import (
+    KG_NODE_KEY,
+    SYNTHETIC_SESSION_PREFIX,
+    UNKNOWN_INVOCATION,
+)
 from factory.execution.models import (
     AgentCapacityReservation,
     AgentSession,
@@ -310,8 +314,21 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         or (turn.terminal_reason != "error" and not stale_unbound_shape)
     ):
         raise ValueError("changed_attempt")
+    # Raw extraction may send one correction in the same session. Its first
+    # turn and settled permit are ordinary history, not a second live owner.
+    # Scout/audit jobs and other drainer kinds still have a single-turn shape.
+    kg_correction = (
+        permit.tier == "kg"
+        and permit.pending_seq == 2
+        and agent.node_key == KG_NODE_KEY
+        and bool(agent.workflow_id)
+        and (permit.routine_job_name or "").startswith("kg:")
+        and agent.local_session_id
+        == f"{agent.workflow_id}:{KG_NODE_KEY}:{permit.routine_job_name}"
+    )
     if (
         permit.tier != "interactive"
+        and not kg_correction
         and not (reviewed_stop and permit.routine_job_name is not None)
         and db.exec(
             select(AgentTurn.seq)
@@ -320,8 +337,8 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         ).first()
         is not None
     ):
-        # Probe and drainer sessions carry exactly one turn by construction, so
-        # history here is a shape this loop does not model, not a race.
+        # History outside interactive sessions and the raw KG correction is
+        # a shape this loop does not model, not a race.
         raise ValueError("unsupported_shape")
     if permit.tier == "probe":
         unknown = agent.status == "failed" and turn.stop_reason == UNKNOWN_INVOCATION
@@ -407,8 +424,10 @@ def _identity(db, permit, *, allow_stale_unbound=False):
             )
         )
     ).all()
-    if permit.tier == "interactive" or (
-        reviewed_stop and permit.routine_job_name is not None
+    if (
+        permit.tier == "interactive"
+        or kg_correction
+        or (reviewed_stop and permit.routine_job_name is not None)
     ):
         # admission.claim_pending reserves a start for every turn and a settled
         # reservation is never deleted, so a third-turn conversation owns three
@@ -425,6 +444,22 @@ def _identity(db, permit, *, allow_stale_unbound=False):
             and (row.state != "settled" or row.pending_seq >= permit.pending_seq)
             for row in reservations
         )
+        if kg_correction:
+            # Require the first turn's exact settled reservation, rather than
+            # interpreting absent or unrelated history as a completed start.
+            prior = [row for row in reservations if row.id != permit.id]
+            ambiguous = (
+                ambiguous
+                or len(prior) != 1
+                or any(
+                    row.pending_seq != 1
+                    or row.session_id != agent.id
+                    or row.local_session_id != agent.local_session_id
+                    or row.tier != "kg"
+                    or row.routine_job_name != permit.routine_job_name
+                    for row in prior
+                )
+            )
     else:
         # Probe and drainer sessions carry exactly one turn by construction, so
         # a second reservation of any state is a shape this loop does not model.

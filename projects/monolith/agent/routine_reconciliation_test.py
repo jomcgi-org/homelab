@@ -690,6 +690,138 @@ def test_existing_extraction_retained_without_false_correction_success(
         assert permit.state == "settled"
 
 
+@pytest.mark.parametrize("delivery_error", [False, True])
+def test_supervision_recovers_held_kg_correction_atomically(
+    database, monkeypatch, delivery_error
+):
+    """Recover a failed correction without reapplying its first extraction."""
+    from factory.execution import permit_supervision as supervision
+    from factory.execution.models import ProbeObservation
+    from factory.execution.review_leases import ReservationReview
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
+
+    engine = database.execution_options(
+        schema_translate_map={
+            "agent_sessions": None,
+            "claude_agent": None,
+            "swarm": None,
+        }
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (
+                ProbeObservation,
+                ReservationReview,
+                FactoryStart,
+                SwarmNodeRun,
+                SwarmTask,
+            )
+        ],
+    )
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
+    monkeypatch.setattr(supervision, "get_engine", lambda: engine)
+    request, _ = held(engine, applied=True, delivery_error=True)
+    sid = request["session_id"]
+    at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    with Session(engine) as db, db.begin():
+        agent = db.get(AgentSession, sid)
+        agent.status = "warn" if delivery_error else "failed"
+        agent.last_turn_at = at
+        first = db.exec(select(AgentTurn).where(AgentTurn.session_id == sid)).one()
+        first.terminal_reason = "completed"
+        first.stop_reason = None
+        first.usage_json = "{}"
+        prior = db.exec(select(AgentCapacityReservation)).one()
+        prior.state = "settled"
+        prior.outcome = "completed"
+        prior.settled_at = at - timedelta(seconds=20)
+        permit = AgentCapacityReservation(
+            local_session_id=agent.local_session_id,
+            session_id=sid,
+            pending_seq=2,
+            tier="kg",
+            state="uncertain",
+            outcome="delivery_error"
+            if delivery_error
+            else "response_lost_guest_ceased",
+            owner="worker",
+            routine_job_name=request["job_name"],
+        )
+        correction = AgentTurn(
+            session_id=sid,
+            seq=2,
+            prompt="correction",
+            result_text="lost",
+            terminal_reason="error",
+            stop_reason=None if delivery_error else UNKNOWN_INVOCATION,
+            cost_usd=None,
+            created_at=at,
+            usage_json=json.dumps(
+                {
+                    "recovery": {
+                        "claim_owner": "worker",
+                        "dispatch_count": 1,
+                        "last_dispatch_at": (at - timedelta(seconds=20)).isoformat(),
+                    }
+                }
+            ),
+        )
+        db.add_all([agent, first, prior, permit, correction])
+        db.flush()
+        permit_id = permit.id
+        prior_id = prior.id
+    with Session(engine) as db:
+        prior_snapshot = db.get(AgentCapacityReservation, prior_id).model_dump()
+        before = reconciliation.read_reconciliation_state(db, request["job_name"], sid)
+
+    async def get_session(guest):
+        assert guest == "guest"
+        return {
+            "session_id": guest,
+            "state": "destroyed",
+            "generation": 0,
+            "invoke_started_at": int((at - timedelta(seconds=15)).timestamp() * 1000),
+            "last_invoke_at": int((at - timedelta(seconds=5)).timestamp() * 1000),
+            "updated_at": int((at + timedelta(seconds=5)).timestamp() * 1000),
+        }
+
+    from types import SimpleNamespace
+
+    transport = SimpleNamespace(get_session=get_session)
+    asyncio.run(supervision.sweep_once(transport))
+    asyncio.run(supervision.sweep_once(transport))
+    with Session(engine) as db:
+        after = reconciliation.read_reconciliation_state(db, request["job_name"], sid)
+        assert db.get(AgentCapacityReservation, permit_id).state == "settled"
+        assert db.get(ProbeObservation, permit_id).reason == "guest_cessation_confirmed"
+        prior = db.exec(
+            select(AgentCapacityReservation).where(
+                AgentCapacityReservation.session_id == sid,
+                AgentCapacityReservation.pending_seq == 1,
+            )
+        ).one()
+        assert prior.model_dump() == prior_snapshot
+        assert after["job_status"] == "reconciled_unknown"
+        assert after["next_run_at"] is None
+        assert after["guest_id"] is None
+        assert after["latest_terminal_reason"] == "error"
+        assert after["latest_stop_reason"] == (
+            None if delivery_error else UNKNOWN_INVOCATION
+        )
+        for key in (
+            "turns_sha256",
+            "payload_sha256",
+            "raw_sha256",
+            "provenance_sha256",
+        ):
+            assert after[key] == before[key]
+        assert db.exec(select(RoutineReconciliation)).one().unknown_turn_seq == 2
+
+
 @pytest.mark.parametrize("completion_recorded", [True, False])
 @pytest.mark.parametrize("delivery_error", [False, True])
 def test_same_request_replay_survives_job_deletion_and_stale_observation(
