@@ -3,8 +3,8 @@
 One read endpoint backs the /app/dr-jobs listing:
 
 - ``GET /api/dr-jobs/listings`` returns every scraped vacancy with a server
-  computed ``is_live`` flag. Live = seen in the most recent scrape (last_seen_at
-  within LIVE_GRACE) AND not past its closing date; everything else is history.
+  computed ``is_live`` flag. Live = seen within LIVE_GRACE of the current time
+  AND not past its closing date; everything else is history.
   The page renders both from one payload and toggles between them client-side,
   so the History button needs no second request.
 
@@ -29,12 +29,12 @@ logger = logging.getLogger("monolith.dr_jobs")
 
 router = APIRouter(prefix="/api/dr-jobs", tags=["dr_jobs"])
 
-# A vacancy counts as "live" if it was seen within this window of the last
-# scrape. The scrape runs daily, so 36 h tolerates a single missed/late run
-# before a post ages out of the live view; a longer gap correctly demotes it.
-LIVE_GRACE = timedelta(hours=36)
+# A vacancy counts as "live" if it was seen within this window of now.
+# Three hourly scrape intervals allow slack for a missed or late run before
+# a post ages out of the live view.
+LIVE_GRACE = timedelta(hours=3)
 
-# Scrape runs daily, so 30 min edge freshness with a 1 h SWR window is plenty.
+# The scrape runs hourly; edge freshness is 30 min with a 1 h SWR window.
 # Mirrors DR_JOBS_LISTINGS_CACHE_CONTROL in
 # frontend/src/lib/cache-headers.js, keep in sync.
 _LISTINGS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
@@ -59,7 +59,7 @@ def _as_utc(value: datetime | None) -> datetime | None:
 
 
 def _is_live(row: Vacancy, cutoff: datetime, today: date) -> bool:
-    """Live = seen in the latest scrape AND not past its closing date."""
+    """Live = seen at or after the cutoff AND not past its closing date."""
     last_seen = _as_utc(row.last_seen_at)
     if last_seen is None or last_seen < cutoff:
         return False

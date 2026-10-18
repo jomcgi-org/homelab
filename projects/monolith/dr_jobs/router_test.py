@@ -1,6 +1,6 @@
 """Unit tests for dr_jobs/router.py: /api/dr-jobs/listings.
 
-In-memory SQLite seeded with live, closed, and aged-out rows, mounted on a
+File-backed SQLite seeded with live, closed, and aged-out rows, mounted on a
 minimal FastAPI app via app.dependency_overrides[get_session], mirroring
 hikes/router_test. Asserts the server-computed is_live split, the live/history
 ordering, and the ETag/304 path.
@@ -8,29 +8,38 @@ ordering, and the ETag/304 path.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
+import dr_jobs.router as jobs_router
 from core.db import get_session
 from dr_jobs.models import Vacancy
 from dr_jobs.router import router
 
-NOW = datetime.now(timezone.utc)
+NOW = datetime(2026, 10, 18, 12, tzinfo=timezone.utc)
 TODAY = NOW.date()
-STALE_SEEN = NOW - timedelta(hours=48)  # older than LIVE_GRACE (36h)
+STALE_SEEN = NOW - timedelta(hours=4)  # beyond three hourly scrape intervals
+
+
+@pytest.fixture(autouse=True)
+def fixed_clock(monkeypatch):
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(jobs_router, "datetime", FixedDatetime)
 
 
 @pytest.fixture(name="session")
-def session_fixture():
+def session_fixture(tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'vacancies.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -42,6 +51,7 @@ def session_fixture():
         with Session(engine) as session:
             yield session
     finally:
+        engine.dispose()
         for table in SQLModel.metadata.tables.values():
             if table.name in original_schemas:
                 table.schema = original_schemas[table.name]
@@ -85,6 +95,46 @@ def _seed(session):
 
 
 class TestListings:
+    def test_live_grace_is_three_hourly_intervals(self):
+        assert jobs_router.LIVE_GRACE == timedelta(hours=3)
+
+    @pytest.mark.parametrize(
+        ("age", "within_grace"),
+        [
+            (timedelta(hours=3) - timedelta(microseconds=1), True),
+            (timedelta(hours=3), True),
+            (timedelta(hours=3) + timedelta(microseconds=1), False),
+        ],
+        ids=["just-inside", "exact-cutoff", "just-outside"],
+    )
+    @pytest.mark.parametrize(
+        ("closing", "still_open"),
+        [
+            (None, True),
+            (TODAY + timedelta(days=1), True),
+            (TODAY, True),
+            (TODAY - timedelta(days=1), False),
+        ],
+        ids=["no-closing-date", "closes-tomorrow", "closes-today", "closed"],
+    )
+    def test_live_cutoff_is_inclusive(
+        self, client, session, age, within_grace, closing, still_open
+    ):
+        session.add(
+            _vac("BOUNDARY", title="Cutoff", closing=closing, last_seen=NOW - age)
+        )
+        session.commit()
+
+        response = client.get("/api/dr-jobs/listings")
+        assert response.status_code == 200
+        body = response.json()
+        expected_live = within_grace and still_open
+        # Expired rows remain in the payload as history, including closed ones.
+        assert body["count"] == 1
+        assert body["live_count"] == int(expected_live)
+        assert body["jobs"][0]["job_id"] == "BOUNDARY"
+        assert body["jobs"][0]["is_live"] is expected_live
+
     def test_split_and_ordering(self, client, session):
         _seed(session)
         body = client.get("/api/dr-jobs/listings").json()
