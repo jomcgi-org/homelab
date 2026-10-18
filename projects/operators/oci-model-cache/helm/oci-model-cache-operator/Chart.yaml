@@ -15,7 +15,7 @@ maintainers:
   - name: jomcgi
     url: https://github.com/jomcgi/homelab
 sources:
-  - https://github.com/jomcgi/homelab/tree/main/operators/oci-model-cache
+  - https://github.com/jomcgi-org/homelab/tree/main/projects/operators/oci-model-cache
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
   org.opencontainers.image.url: "https://github.com/jomcgi/homelab"

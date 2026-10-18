@@ -24,8 +24,7 @@ package main
 // resolve all fields are correctly mapped across the adapter boundary, and that
 // the "no weight files found" permanent-error path works for non-HTTP errors.
 //
-// The main() function itself starts a controller-runtime manager and is not
-// unit-testable; all other logic in this package lives inside hf2ociResolver.
+// chart_startup_test.go exercises main() in a subprocess with a local API fixture.
 
 import (
 	"context"

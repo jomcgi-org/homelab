@@ -1,10 +1,9 @@
 # Operators
 
-Custom Kubernetes operators built for this cluster: controllers that watch a
-CRD and reconcile cluster state to match it, following the conventions in
-[`best-practices.md`](best-practices.md) (idempotent, level-based
-reconciliation; finalizer lifecycle for cleanup on delete; least-privilege
-RBAC; non-root containers; OpenTelemetry tracing on every phase change).
+This directory retains one Kubernetes operator, `oci-model-cache`, with no
+deployment after the home cluster was retired. Its controller watches
+`ModelCache` resources and reconciles sync Jobs. It follows the reconciliation,
+error-handling and security patterns in [`best-practices.md`](best-practices.md).
 
 ## Operators
 
@@ -14,9 +13,12 @@ RBAC; non-root containers; OpenTelemetry tracing on every phase change).
 
 ## Conventions
 
-Each operator is a self-contained Go module: a `cmd/` entrypoint, `api/` CRD
-type definitions, `internal/` reconciliation logic, and a `helm/` chart for
-deploying the operator itself (distinct from the charts of the resources it
-manages). New operators should follow this layout and the reconciliation,
-error-handling, and security patterns in `best-practices.md` rather than
-inventing new ones.
+The operator belongs to the repository's root Go module. It has a `cmd/`
+entrypoint, `api/` CRD type definitions, `internal/` reconciliation logic and
+a `helm/` chart.
+
+Sync Jobs have controller owner references to their `ModelCache`. Kubernetes
+garbage collection removes those Jobs when the owning resource is deleted.
+The TTL sweeper deletes expired `ModelCache` resources using `spec.ttl`;
+absent or non-positive TTLs do not expire. The operator has no finalizers and
+does not delete cached artifacts from the OCI registry.

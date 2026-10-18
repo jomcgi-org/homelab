@@ -59,9 +59,8 @@ controllerManager:
 
   env:
     ociRegistry: "ghcr.io/jomcgi/models"
-    syncServiceAccount: ""
 
-  healthProbeBindAddress: ":8081"
+  # The chart binds health probes to :8081.
   livenessProbe:
     initialDelaySeconds: 15
     periodSeconds: 20
@@ -91,9 +90,6 @@ syncServiceAccount:
 
 rbac:
   create: true
-
-crds:
-  install: true
 
 createNamespace: false
 

@@ -3,7 +3,6 @@ package config
 import (
 	"flag"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,7 +44,6 @@ func TestBindFlags_Defaults(t *testing.T) {
 
 	assert.Equal(t, "ghcr.io/jomcgi/models", cfg.Registry)
 	assert.Equal(t, "ghcr.io/jomcgi/homelab/bazel/tools/hf2oci:main", cfg.CopyImage)
-	assert.Equal(t, time.Duration(0), cfg.DefaultTTL, "default TTL should be 0 (no expiry)")
 	assert.Equal(t, "oci-model-cache", cfg.Namespace, "namespace falls back to literal default")
 }
 
@@ -54,7 +52,6 @@ func TestBindFlags_FlagOverrides(t *testing.T) {
 	args := []string{
 		"--oci-registry", "registry.example.com/models",
 		"--copy-image", "registry.example.com/hf2oci:v1.2.3",
-		"--default-ttl", "48h",
 		"--sync-service-account", "model-sync-sa",
 	}
 
@@ -62,7 +59,6 @@ func TestBindFlags_FlagOverrides(t *testing.T) {
 
 	assert.Equal(t, "registry.example.com/models", cfg.Registry)
 	assert.Equal(t, "registry.example.com/hf2oci:v1.2.3", cfg.CopyImage)
-	assert.Equal(t, 48*time.Hour, cfg.DefaultTTL)
 	assert.Equal(t, "model-sync-sa", cfg.SyncServiceAccount)
 }
 
@@ -182,33 +178,4 @@ func TestBindFlags_EmptyOptionalFields(t *testing.T) {
 	assert.Empty(t, cfg.SyncMemoryRequest)
 	assert.Empty(t, cfg.SyncMemoryLimit)
 	assert.Empty(t, cfg.SyncMaxParallel)
-}
-
-// TestBindFlags_DefaultTTLZeroMeansNoExpiry verifies that parsing an explicit
-// zero duration leaves DefaultTTL as 0.
-func TestBindFlags_DefaultTTLZeroMeansNoExpiry(t *testing.T) {
-	cfg := newBoundConfig(t, []string{"--default-ttl", "0"}, nil)
-
-	assert.Equal(t, time.Duration(0), cfg.DefaultTTL)
-}
-
-// TestBindFlags_TableDriven exercises various TTL values via flag parsing.
-func TestBindFlags_TableDriven(t *testing.T) {
-	tests := []struct {
-		name    string
-		ttlFlag string
-		want    time.Duration
-	}{
-		{"zero", "0", 0},
-		{"one hour", "1h", time.Hour},
-		{"24 hours", "24h", 24 * time.Hour},
-		{"30 minutes", "30m", 30 * time.Minute},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := newBoundConfig(t, []string{"--default-ttl", tt.ttlFlag}, nil)
-			assert.Equal(t, tt.want, cfg.DefaultTTL)
-		})
-	}
 }
