@@ -2375,6 +2375,29 @@ def test_owned_merged_delivery_drains_live_review_before_settlement(
     from factory.orchestration.factory_merged_delivery import reconcile_merged_delivery
 
     delivered(db, "t-1", 11, 3, state="admitted")
+    # This admitted receipt may now take the paused deadline path, which reads
+    # the policy captured by real admission rather than the landing-only stub.
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "t-1").policy_json = json.dumps(
+            controls.validate_policy(
+                {
+                    **POLICY,
+                    "issue_numbers": [11],
+                    "generation": 0,
+                    "max_tasks": 2,
+                    "max_turns_per_task": 3,
+                    "task_budget_usd": 5.0,
+                    "turn_budget_usd": 2.0,
+                    "allowed_models": ["opus", "luna"],
+                    "conductor_model": "opus",
+                    "base_branch": "main",
+                    "turn_timeout_seconds": 60,
+                    "max_attempts": 2,
+                    "worker_model": "luna",
+                    "task_timeout_seconds": 3600,
+                }
+            )
+        )
     task = {
         "id": "t-1",
         "repo": "owner/repo",
