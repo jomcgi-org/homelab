@@ -38,7 +38,7 @@ substrate:
 | `noded/`    | Go node daemon: Firecracker driver, vsock, tap/DNAT, node-local activators |
 | `crd/`      | Workload CRD samples                                                   |
 | `proto/`    | gRPC contract between the control plane and noded                      |
-| `runtimes/` | Guest runtimes: bazel, claude, k3s, pi, ping, postgres, python (zip lane), and shotter; each has its own README |
+| `runtimes/` | Guest runtimes: bazel, claude, k3s, pi, ping, postgres, python (zip lane), and shotter; see the bazel, claude, k3s, and python READMEs |
 | `tokenbroker/`, `image/`, `scratch-prep/` | Token broker, base image build, scratch provisioning |
 | `xds/`      | Envoy endpoint publisher sidecar                                       |
 | `chart/`, `deploy/` | Helm chart and ArgoCD wiring                                   |

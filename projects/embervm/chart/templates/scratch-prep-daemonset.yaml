@@ -14,8 +14,8 @@
 #
 #   An existing dedicated-device bind mount is left untouched. Even
 #   with migration enabled, only the exact managed loop image is eligible.
-#   The masters (node-1/2/3) have nothing mounted there, so they get the loop
-#   cap from day one (near-empty scratch, hard-capped so a leak cannot spill onto
+#   A selected brick host with no mount there gets the loop cap from day one
+#   (near-empty scratch, hard-capped so a leak cannot spill onto
 #   the root/etcd disk).
 #
 # Tool boundary: the container does only file-level work (fallocate the backing
