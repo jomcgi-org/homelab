@@ -278,6 +278,43 @@ def test_tick_aged_reconciler_pause_records_hold_without_settling_live_work(
             assert json.loads(held[0].detail_json)["refusal"] == "unresolved_starts"
 
 
+@pytest.mark.parametrize("start_status", ["reserved", "uncertain"])
+@pytest.mark.parametrize("run_status", [None, "admitted", "dispatched"])
+def test_merged_delivery_keeps_aged_pause_hold_audit(
+    paused_settlement, monkeypatch, start_status, run_status
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    age_reconciler_pause(s, monkeypatch)
+    pause_trigger(s, "combined")
+    pause_blocker(s, start_status)
+    if run_status:
+        pause_blocker(s, run_status)
+    before = controls.task_snapshot(s.task["id"])
+    runs_before = conductor.graph.node_runs(s.task["id"])
+    for _ in range(3):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    for field in ("state", "task_paused", "starts", "committed_cost_usd", "evidence"):
+        assert after[field] == before[field]
+    assert after["state"] == "admitted" and after["task_paused"]
+    assert conductor.graph.node_runs(s.task["id"]) == runs_before
+    assert not s.cards
+    with Session(s.engine) as db:
+        audits = db.exec(
+            select(FactoryAudit).where(FactoryAudit.task_id == s.task["id"])
+        ).all()
+        held = [a for a in audits if a.action == "reconciler_pause_expiry_held"]
+        assert len(held) == 1
+        assert json.loads(held[0].detail_json)["refusal"] == "unresolved_starts"
+        assert any(a.action == "owned_pr_merged" for a in audits)
+        assert not any(
+            a.action in ("finish_task", "reconciler_pause_expired") for a in audits
+        )
+
+
 @pytest.mark.parametrize(
     "change",
     [
