@@ -16115,8 +16115,9 @@ def test_discard_and_rename_cannot_reset_exhausted_allocation(feedback_db, monke
     assert conductor.graph.load_graph(task["id"]) == []
 
 
+@pytest.mark.parametrize("single_node", [False, True])
 def test_exact_operator_recovery_admits_one_feasible_plan_without_refunding(
-    feedback_db, monkeypatch
+    feedback_db, monkeypatch, single_node
 ):
     from sqlmodel import SQLModel
     from factory.execution.models import AgentSession, PendingMessage
@@ -16183,9 +16184,14 @@ def test_exact_operator_recovery_admits_one_feasible_plan_without_refunding(
             ),
         ],
     }
+    if single_node:
+        decision = decision["edits"][0]
+    preview = conductor.preview_decision(task["id"], decision, expected_revision=1)
+    assert preview["ok"]
     oversized = {
-        **decision,
-        "edits": decision["edits"]
+        "action": "plan",
+        "reason": "Cannot exceed the authorized envelope",
+        "edits": ([decision] if single_node else decision["edits"])
         + [plan_edit(f"extra{i}", "implement") for i in range(8)],
     }
     preview = conductor.preview_decision(task["id"], oversized, expected_revision=1)
@@ -16218,11 +16224,13 @@ def test_exact_operator_recovery_admits_one_feasible_plan_without_refunding(
         )
     conductor._apply_decision(task, policy, decision, "authorized-recovery", original)
     nodes = conductor.graph.load_graph(task["id"])
-    assert {n["node_key"] for n in nodes} == {
+    expected_keys = {
         "implement_manifest",
         "implement_replacement",
-        "review_replacement",
     }
+    if not single_node:
+        expected_keys.add("review_replacement")
+    assert {n["node_key"] for n in nodes} == expected_keys
     assert (
         next(n for n in nodes if n["node_key"] == "implement_manifest")["max_cost_usd"]
         == 4
@@ -20769,22 +20777,20 @@ def test_normal_graph_decision_persists_live_gate_before_edits(
     decision["gate"] = live_gate()
     run = complete_feedback_node(task, policy, "conductor_1", decision)
     cause = "factory-decision:conductor_1:1"
-    original = conductor.graph.apply_edits if action == "plan" else conductor._add
-    target = conductor.graph if action == "plan" else conductor
-    name = "apply_edits" if action == "plan" else "_add"
+    original = conductor.graph.apply_edits
 
     def crash(*args, **kwargs):
         assert conductor._task(task["id"])["conductor_gates"] == [live_gate()]
         raise RuntimeError("process lost after gate persistence")
 
-    monkeypatch.setattr(target, name, crash)
+    monkeypatch.setattr(conductor.graph, "apply_edits", crash)
     with pytest.raises(RuntimeError, match="process lost"):
         conductor.apply_decision(task, policy, run, [])
     assert not conductor._decision_processed(task["id"], cause)
     assert conductor._decision_processed(task["id"], cause + ":gate")
     # A restart loads the durable contract and still applies the unfinished edit.
     task = conductor._task(task["id"])
-    monkeypatch.setattr(target, name, original)
+    monkeypatch.setattr(conductor.graph, "apply_edits", original)
     conductor.apply_decision(task, policy, run, [])
     conductor.apply_decision(conductor._task(task["id"]), policy, run, [])
     assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])].count(

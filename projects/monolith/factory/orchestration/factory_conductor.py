@@ -4128,10 +4128,11 @@ def _apply_decision(
             )
             return
 
-    if action == "plan":
-        edits = decision["edits"]
-        if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_PLAN_EDITS:
-            raise ValueError("plan edits are not a bounded list")
+    if action in ("plan", "add_node"):
+        if action == "plan":
+            edits = decision["edits"]
+            if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_PLAN_EDITS:
+                raise ValueError("plan edits are not a bounded list")
         projection = _submission_projection(task, policy, decision)
         if projection.refusal is not None:
             _reject_plan_decision(
@@ -4164,47 +4165,6 @@ def _apply_decision(
                 action,
                 result.refusal_code,
                 result.detail or "graph plan refused",
-                runs,
-            )
-    elif action == "add_node":
-        projection = _submission_projection(task, policy, decision)
-        if projection.refusal is not None:
-            _reject_plan_decision(
-                task,
-                cause,
-                action,
-                projection.refusal["code"],
-                projection.refusal["detail"],
-                runs,
-            )
-            return
-        edit = projection.prepared[0]
-        result = _add(
-            task,
-            policy,
-            edit["node_key"],
-            edit["raw_prompt"],
-            edit["deps"],
-            edit["model"],
-            cause,
-            edit["stated_reason"],
-            review=edit["role"] == "review",
-            max_attempts=edit["max_attempts"],
-            max_cost_usd=edit["max_cost_usd"],
-            turn_timeout_seconds=edit["turn_timeout_seconds"],
-            effort=edit.get("effort"),
-            expected_version=decision.get("expected_version"),
-        )
-        if result.ok:
-            _audit_clamped_bounds(task["id"], cause, [edit])
-            _record_allowance(task["id"], policy, cause)
-        else:
-            _reject_plan_decision(
-                task,
-                cause,
-                action,
-                result.refusal_code,
-                result.detail or "graph operation refused",
                 runs,
             )
     elif action == "discard_node":
