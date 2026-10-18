@@ -33,7 +33,7 @@ def _mock_k8s_client():
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
 
 
-def _mock_dcgm(handler):
+def _mock_http(handler):
     """Patch the stats client to use an httpx MockTransport."""
     transport = httpx.MockTransport(handler)
     return patch.object(
@@ -61,38 +61,43 @@ def _mock_session():
 
 
 @pytest.mark.asyncio
-async def test_build_stats_returns_expected_shape():
+@pytest.mark.parametrize("exporter_url", ["", "http://retired-exporter.test:9400"])
+async def test_build_stats_returns_expected_shape_without_exporter(exporter_url):
     mock_client = _mock_k8s_client()
+    mock_client.get_argocd_app_status = AsyncMock(
+        return_value={"operationState": {"finishedAt": "2026-04-25T10:05:00Z"}}
+    )
     mock_session = _mock_session()
+    requests = []
+
+    def handler(request):
+        requests.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "sha": "abc1234567890",
+                "commit": {"committer": {"date": "2026-04-25T10:00:00Z"}},
+            },
+        )
 
     with (
+        patch.dict("os.environ", {"DCGM_EXPORTER_URL": exporter_url}),
+        _mock_http(handler),
         patch("home.observability.stats.KubernetesClient", return_value=mock_client),
-        patch(
-            "home.observability.stats._query_gpu",
-            new_callable=AsyncMock,
-            return_value={
-                "utilization_pct": 73.5,
-                "memory_used_gb": 18.0,
-                "memory_total_gb": 24.0,
-            },
-        ),
         patch("home.observability.stats.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch(
-            "home.observability.stats._query_deploy",
-            new_callable=AsyncMock,
-            return_value={
-                "latest_commit_sha": "abc1234",
-                "latest_commit_at": "2026-04-25T10:00:00Z",
-                "deployed_at": "2026-04-25T10:05:00Z",
-            },
-        ),
     ):
         mock_session.__enter__ = MagicMock(return_value=mock_session)
         mock_session.__exit__ = MagicMock(return_value=False)
 
         result = await stats.build_stats()
 
+    # Keep the real collector path: even a leftover exporter URL cannot cause
+    # another HTTP request or resurrect the retired GPU payload.
+    assert requests == [f"{stats.GITHUB_API}/repos/{stats.GITHUB_REPO}/commits/main"]
+    assert set(result) == {"cluster", "knowledge", "deploy", "platform", "cached_at"}
+    assert "gpu" not in result
+    json.dumps(result, allow_nan=False)
     assert result["cluster"]["nodes"] == 4
     assert result["cluster"]["pods"] == 135
     assert result["cluster"]["deployments"] == 64
@@ -101,9 +106,6 @@ async def test_build_stats_returns_expected_shape():
     assert result["cluster"]["cpu_capacity_cores"] == 32.0
     assert result["cluster"]["memory_used_gb"] == 62.5
     assert result["cluster"]["memory_capacity_gb"] == 108.0
-    assert result["gpu"]["utilization_pct"] == 73.5
-    assert result["gpu"]["memory_used_gb"] == 18.0
-    assert result["gpu"]["memory_total_gb"] == 24.0
     assert result["knowledge"]["facts"] == 1309
     assert result["knowledge"]["chunks"] == 5948
     assert result["knowledge"]["raw_inputs"] == 366
@@ -111,6 +113,40 @@ async def test_build_stats_returns_expected_shape():
     assert result["deploy"]["deployed_at"] == "2026-04-25T10:05:00Z"
     assert result["platform"]["in_production_since"] == "2025-01"
     assert "cached_at" in result
+
+
+@pytest.mark.asyncio
+async def test_build_stats_preserves_remaining_sources_when_dependencies_fail():
+    mock_client = _mock_k8s_client()
+    mock_client.count_nodes.side_effect = RuntimeError("k8s nodes unavailable")
+    mock_client.aggregate_node_resources.side_effect = RuntimeError(
+        "metrics unavailable"
+    )
+    mock_client.get_argocd_app_status = AsyncMock(
+        side_effect=RuntimeError("ArgoCD unavailable")
+    )
+    mock_session = MagicMock()
+    mock_session.__enter__.return_value = mock_session
+    mock_session.exec.side_effect = RuntimeError("knowledge counts unavailable")
+    with (
+        patch("home.observability.stats.KubernetesClient", return_value=mock_client),
+        patch("home.observability.stats.get_engine", return_value=MagicMock()),
+        patch("sqlmodel.Session", return_value=mock_session),
+        _mock_http(lambda request: httpx.Response(503)),
+    ):
+        result = await stats.build_stats()
+
+    assert result["cluster"] == {
+        "nodes": 0,
+        "deployments": 64,
+        "pods": 135,
+        "argocd_apps": 28,
+    }
+    assert result["knowledge"] == {"facts": 0, "chunks": 0, "raw_inputs": 0}
+    assert result["deploy"] == {}
+    assert result["platform"] == {"in_production_since": "2025-01"}
+    assert "cached_at" in result
+    assert "gpu" not in result
 
 
 @pytest.mark.asyncio
@@ -201,195 +237,6 @@ async def test_cluster_counts_handles_k8s_errors():
         resources_error,
         exc_info=False,
     )
-
-
-# ---------------------------------------------------------------------------
-# _query_gpu
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_query_gpu_returns_correct_values():
-    """One GPU produces the exact ticker keys and rounded values."""
-    body = """\
-# HELP DCGM_FI_DEV_GPU_UTIL GPU utilization.
-# TYPE DCGM_FI_DEV_GPU_UTIL gauge
-DCGM_FI_DEV_GPU_UTIL{gpu="0",modelName="NVIDIA GeForce RTX 4090"} 73.54
-DCGM_FI_DEV_FB_USED{gpu="0"} 18432.2
-DCGM_FI_DEV_FB_FREE{gpu="0"} 6143.6
-"""
-
-    def handler(request):
-        assert request.url == "http://dcgm.test:9400/metrics"
-        return httpx.Response(200, text=body)
-
-    with (
-        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
-        _mock_dcgm(handler),
-    ):
-        result = await stats._query_gpu()
-
-    assert result == {
-        "utilization_pct": 73.5,
-        "memory_used_gb": 18.0,
-        "memory_total_gb": 24.0,
-    }
-
-
-@pytest.mark.asyncio
-async def test_query_gpu_averages_two_gpus_before_rounding():
-    body = """\
-DCGM_FI_DEV_GPU_UTIL{gpu="0"} 10.04
-DCGM_FI_DEV_GPU_UTIL{gpu="1"} 20.07
-DCGM_FI_DEV_FB_USED{gpu="0"} 1100.2
-DCGM_FI_DEV_FB_USED{gpu="1"} 1101.6
-DCGM_FI_DEV_FB_FREE{gpu="0"} 500.2
-DCGM_FI_DEV_FB_FREE{gpu="1"} 501.6
-DCGM_FI_DEV_FB_USED_TOTAL{gpu="0"} 999999
-"""
-
-    with (
-        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
-        _mock_dcgm(lambda request: httpx.Response(200, text=body)),
-    ):
-        result = await stats._query_gpu()
-
-    assert result == {
-        "utilization_pct": 15.1,
-        "memory_used_gb": 1.1,
-        "memory_total_gb": 1.6,
-    }
-
-
-@pytest.mark.asyncio
-async def test_query_gpu_skips_help_and_type_lines():
-    body = """\
-# HELP DCGM_FI_DEV_GPU_UTIL GPU utilization.
-# TYPE DCGM_FI_DEV_GPU_UTIL gauge
-DCGM_FI_DEV_GPU_UTIL 40
-# HELP DCGM_FI_DEV_FB_USED Frame buffer used.
-# TYPE DCGM_FI_DEV_FB_USED gauge
-DCGM_FI_DEV_FB_USED 2048
-# HELP DCGM_FI_DEV_FB_FREE Frame buffer free.
-# TYPE DCGM_FI_DEV_FB_FREE gauge
-DCGM_FI_DEV_FB_FREE 6144
-"""
-
-    with (
-        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
-        _mock_dcgm(lambda request: httpx.Response(200, text=body)),
-    ):
-        result = await stats._query_gpu()
-
-    assert result == {
-        "utilization_pct": 40.0,
-        "memory_used_gb": 2.0,
-        "memory_total_gb": 8.0,
-    }
-
-
-@pytest.mark.asyncio
-async def test_query_gpu_missing_metric_omits_memory_keys():
-    body = """\
-DCGM_FI_DEV_GPU_UTIL{gpu="0"} 60
-DCGM_FI_DEV_FB_FREE{gpu="0"} 4096
-"""
-
-    with (
-        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
-        _mock_dcgm(lambda request: httpx.Response(200, text=body)),
-    ):
-        result = await stats._query_gpu()
-
-    assert result == {"utilization_pct": 60.0}
-
-
-@pytest.mark.asyncio
-async def test_query_gpu_non_200_returns_none_utilization():
-    with (
-        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
-        _mock_dcgm(lambda request: httpx.Response(503, text="unavailable")),
-    ):
-        result = await stats._query_gpu()
-
-    assert result == {"utilization_pct": None}
-
-
-@pytest.mark.asyncio
-async def test_query_gpu_connection_error_returns_none_utilization():
-    def handler(request):
-        raise httpx.ConnectError("connection refused", request=request)
-
-    with (
-        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
-        _mock_dcgm(handler),
-    ):
-        result = await stats._query_gpu()
-
-    assert result == {"utilization_pct": None}
-
-
-@pytest.mark.asyncio
-async def test_query_gpu_malformed_value_drops_only_its_own_line():
-    """One unparseable sample must not discard the metrics that did parse.
-
-    The ClickHouse path queried each metric independently, so a bad value could
-    only ever affect its own metric. That property has to survive the move to a
-    single scrape.
-    """
-    body = """\
-DCGM_FI_DEV_GPU_UTIL{gpu="0"} 50
-DCGM_FI_DEV_FB_USED{gpu="0"} oops
-DCGM_FI_DEV_FB_FREE{gpu="0"} 100
-"""
-
-    with (
-        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
-        _mock_dcgm(lambda request: httpx.Response(200, text=body)),
-    ):
-        result = await stats._query_gpu()
-
-    # Utilization survives; the memory keys are omitted because FB_USED had no
-    # usable sample, exactly as when the metric is absent entirely.
-    assert result == {"utilization_pct": 50.0}
-
-
-@pytest.mark.asyncio
-async def test_query_gpu_non_finite_value_is_discarded():
-    """NaN and inf must never reach the payload.
-
-    float() accepts both, round() preserves them, and json.dumps then emits a
-    bare NaN token that the jsonb column rejects. That would fail the write for
-    the entire stats snapshot, not just the GPU block.
-    """
-    body = """\
-DCGM_FI_DEV_GPU_UTIL{gpu="0"} NaN
-DCGM_FI_DEV_FB_USED{gpu="0"} +Inf
-DCGM_FI_DEV_FB_FREE{gpu="0"} 100
-"""
-
-    with (
-        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
-        _mock_dcgm(lambda request: httpx.Response(200, text=body)),
-    ):
-        result = await stats._query_gpu()
-
-    assert result == {"utilization_pct": None}
-    # Serializable is the actual requirement being protected here.
-    json.dumps(result)
-
-
-@pytest.mark.asyncio
-async def test_query_gpu_unset_url_returns_none_utilization():
-    """An unset DCGM_EXPORTER_URL must fail soft, not raise.
-
-    Every consumer of build_stats writes its result straight into the snapshot
-    row, so a raise here would take down the whole rollup.
-    """
-    with patch.dict("os.environ", {"DCGM_EXPORTER_URL": ""}):
-        result = await stats._query_gpu()
-
-    assert result == {"utilization_pct": None}
 
 
 # ---------------------------------------------------------------------------

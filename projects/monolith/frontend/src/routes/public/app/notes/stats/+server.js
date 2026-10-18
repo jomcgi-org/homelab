@@ -14,11 +14,11 @@ const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
 // Same-origin proxy for the public cluster stats snapshot, the exact payload
 // the homepage renders (home/observability/stats). The notes ticker SSR-seeds
-// and then polls this for its live GPU readout, so the browser never calls the
-// backend directly (the gateway only routes to the frontend; mirrors the
+// and then polls this for cluster and knowledge statistics. The browser never
+// calls the backend directly (the gateway only routes to the frontend; mirrors the
 // graph/body +server.js proxies).
 //
-// The backend serves a precomputed snapshot row (no DCGM/K8s call per
+// The backend serves a precomputed snapshot row (no GitHub/K8s call per
 // request), so a short shared cache is plenty and shields it from poll storms.
 export async function GET({ fetch, setHeaders }) {
   const res = await fetch(`${API_BASE}/api/home/observability/stats`, {

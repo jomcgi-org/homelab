@@ -39,10 +39,6 @@ backend:
   # Keep serving while endpoint removal reaches the gateway and peer proxies.
   preStopDelaySeconds: 10
   minReadySeconds: 10
-  # DCGM exporter scraped for the public stats ticker's GPU block. Empty here so
-  # the chart stays inert; set per environment in deploy/values.yaml. The
-  # observability-stats-rollup job carries its own copy under jobs.
-  dcgmExporterUrl: ""
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/backend
     tag: main
@@ -419,8 +415,8 @@ jobs:
     # the 2.7GiB peak with growth headroom; cpu:1 (single-threaded FA2).
     # stats_rollup counts cluster resources via the in-cluster K8s API, so it
     # runs under the dedicated least-privilege monolith-stats SA (defined in the
-    # argo-workflows platform chart) instead of the shared executor SA. Also
-    # scrapes the DCGM exporter for GPU metrics. 5-min cadence (was 2-min, originally
+    # argo-workflows platform chart) instead of the shared executor SA.
+    # 5-min cadence (was 2-min, originally
     # 120s): a rollup of counters nobody reads sub-minute did not justify 720
     # pods/day at ~10s per-run overhead. Deadline widened 120 -> 240s because
     # the old 120 was only ~6-12x a normal 10-20s run, so a brief upstream
@@ -435,8 +431,6 @@ jobs:
       activeDeadlineSeconds: 240
       suspend: false
       serviceAccountName: monolith-stats
-      env:
-        DCGM_EXPORTER_URL: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400"
       resources:
         requests:
           cpu: 250m
@@ -2310,13 +2304,6 @@ networkPolicy:
           app.kubernetes.io/instance: embervm
           app.kubernetes.io/component: serving-envoy
         port: 5401
-      # The NVIDIA GPU operator owns this pod label. Confirm it again during
-      # the audit window whenever the operator chart changes.
-      dcgmExporter:
-        namespace: gpu-operator
-        matchLabels:
-          app: nvidia-dcgm-exporter
-        port: 9400
       # Tailscale operator proxy for frontend.qwenApiBase (FreeToken on node-4).
       # These ownership labels identify one egress Service proxy rather than the
       # whole namespace.

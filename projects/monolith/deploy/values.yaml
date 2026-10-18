@@ -5,7 +5,6 @@ backend:
   replicas: 0
   autoscaling:
     enabled: false
-  dcgmExporterUrl: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400"
   # Repointed off SigNoz onto the replacement collector (#5362). Cleared when
   # SigNoz was deleted, which left the backend with no traces destination at
   # all: the chart only renders OTEL_EXPORTER_OTLP_TRACES_ENDPOINT when this is

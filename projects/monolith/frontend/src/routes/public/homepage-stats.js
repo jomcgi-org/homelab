@@ -1,14 +1,13 @@
 export const STATS_REFRESH_INTERVAL_MS = 5 * 60_000;
 export const STATS_AGE_TICK_INTERVAL_MS = 30_000;
 
-const STATS_SECTIONS = ["cluster", "gpu", "knowledge", "deploy"];
+const STATS_SECTIONS = ["cluster", "knowledge", "deploy"];
 
 /** Build marquee items from /stats data, skipping any item whose source
  *  is unavailable so the ticker never shows fabricated numbers. */
 export function buildMarquee(stats) {
   const items = ["~/homelab"];
   const c = stats?.cluster;
-  const g = stats?.gpu;
   const k = stats?.knowledge;
   const d = stats?.deploy;
 
@@ -19,13 +18,6 @@ export function buildMarquee(stats) {
   }
   if (c?.memory_used_gb != null && c?.memory_capacity_gb != null) {
     items.push(`mem: ${c.memory_used_gb} / ${c.memory_capacity_gb} gb`);
-  }
-  if (g?.utilization_pct != null) {
-    const memPart =
-      g?.memory_used_gb != null && g?.memory_total_gb != null
-        ? ` · ${g.memory_used_gb} / ${g.memory_total_gb} gb`
-        : "";
-    items.push(`gpu: ${g.utilization_pct}%${memPart}`);
   }
   if (c?.argocd_apps != null) items.push(`argocd: ${c.argocd_apps} apps`);
   if (k?.facts != null) items.push(`kg: ${k.facts.toLocaleString()} notes`);

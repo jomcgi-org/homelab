@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { render } from "svelte/server";
+import HomepageRack from "./HomepageRack.svelte";
 import {
   STATS_AGE_TICK_INTERVAL_MS,
   STATS_REFRESH_INTERVAL_MS,
   buildMarquee,
+  isStatsSnapshot,
   startHomepageStatsPolling,
 } from "./homepage-stats.js";
 
@@ -19,6 +22,63 @@ const refreshedStats = {
     deployed_at: "2026-09-11T00:05:00Z",
   },
 };
+
+const freshStats = {
+  cluster: {
+    nodes: 2,
+    pods: 135,
+    cpu_used_cores: 4.99,
+    cpu_capacity_cores: 32,
+    memory_used_gb: 62.5,
+    memory_capacity_gb: 108,
+    argocd_apps: 28,
+  },
+  knowledge: { facts: 1309, chunks: 5948, raw_inputs: 366 },
+  deploy: { latest_commit_sha: "abc1234" },
+  platform: { in_production_since: "2025-01" },
+  cached_at: "2026-10-18T00:00:00Z",
+};
+const cachedStats = {
+  ...freshStats,
+  gpu: { utilization_pct: 50, memory_used_gb: 12, memory_total_gb: 24 },
+};
+
+describe("GPU-free stats contract", () => {
+  it.each([freshStats, cachedStats])(
+    "validates and renders non-GPU statistics from fresh or transitional snapshots",
+    async (stats) => {
+      expect(isStatsSnapshot(stats)).toBe(true);
+      expect(buildMarquee(stats)).toEqual([
+        "~/homelab",
+        "2 nodes · 135 pods",
+        "cpu: 4.99 / 32 cores",
+        "mem: 62.5 / 108 gb",
+        "argocd: 28 apps",
+        `kg: ${(1309).toLocaleString()} notes`,
+        "last commit: abc1234",
+      ]);
+      const { html } = await render(HomepageRack, { props: { stats } });
+      expect(html).toContain("2 nodes · 32 CPUs · 108 GB");
+      expect(html).toContain("NODE-1");
+      expect(html).toContain("NODE-2");
+      expect(html).toContain("NODE-3");
+      expect(html).toContain("/ember/firecracker");
+      expect(html).not.toMatch(/gpu|rtx|4090|NODE-4|27B/i);
+    },
+  );
+
+  it("ignores a GPU-only legacy payload as an unusable snapshot", () => {
+    const stats = { gpu: cachedStats.gpu };
+    expect(isStatsSnapshot(stats)).toBe(false);
+    expect(buildMarquee(stats)).toEqual(["~/homelab"]);
+  });
+
+  it("keeps the rack fallback without GPU claims when stats are unavailable", async () => {
+    const { html } = await render(HomepageRack, { props: { stats: null } });
+    expect(html).toContain("HOMELAB");
+    expect(html).not.toMatch(/gpu|rtx|4090|NODE-4|27B/i);
+  });
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -81,6 +141,10 @@ describe("homepage stats polling", () => {
     [
       "a malformed response",
       async () => ({ ok: true, json: async () => ["not", "stats"] }),
+    ],
+    [
+      "a GPU-only legacy response",
+      async () => ({ ok: true, json: async () => ({ gpu: cachedStats.gpu }) }),
     ],
   ])("retains the usable snapshot after %s", async (_name, request) => {
     vi.useFakeTimers();

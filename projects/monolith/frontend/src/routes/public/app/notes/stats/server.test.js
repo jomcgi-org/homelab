@@ -3,24 +3,30 @@ import { GET } from "./+server.js";
 
 const stats = {
   cluster: { nodes: 4 },
-  gpu: { utilization_pct: 50.0 },
+  knowledge: { facts: 1309 },
+  deploy: { latest_commit_sha: "abc1234" },
+  platform: { in_production_since: "2025-01" },
+  cached_at: "2026-10-18T00:00:00Z",
 };
 
 describe("/public/app/notes/stats GET", () => {
-  it("proxies the observability stats endpoint unchanged", async () => {
-    const setHeaders = vi.fn();
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => stats,
-    });
+  it.each([stats, { ...stats, gpu: { utilization_pct: 50.0 } }])(
+    "proxies fresh and transitional snapshots unchanged",
+    async (payload) => {
+      const setHeaders = vi.fn();
+      const fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => payload,
+      });
 
-    const response = await GET({ fetch, setHeaders });
+      const response = await GET({ fetch, setHeaders });
 
-    expect(fetch.mock.calls[0][0]).toMatch(
-      /\/api\/home\/observability\/stats$/,
-    );
-    expect(await response.json()).toEqual(stats);
-  });
+      expect(fetch.mock.calls[0][0]).toMatch(
+        /\/api\/home\/observability\/stats$/,
+      );
+      expect(await response.json()).toEqual(payload);
+    },
+  );
 
   it("sets the shared browser and Cloudflare cache policies", async () => {
     const setHeaders = vi.fn();

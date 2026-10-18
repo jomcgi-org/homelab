@@ -252,7 +252,6 @@ def _expected_endpoints(release: str, namespace: str, embervm: str) -> set[tuple
             ),
             tcp(5401),
         ),
-        ("gpu-operator", (("app", "nvidia-dcgm-exporter"),), tcp(9400)),
         (
             "tailscale",
             (
@@ -309,6 +308,51 @@ def test_shipped_overlays_render_only_their_supported_egress_policy():
     assert not _cnps(gke_docs)
     native_names = {doc["metadata"]["name"] for doc in _network_policies(gke_docs)}
     assert "monolith-app-egress-native" not in native_names
+
+
+@pytest.mark.parametrize("profile", ["defaults", "deploy", "gke", "dev", "recovery"])
+def test_stats_exporter_is_absent_from_values_and_rendered_workloads(profile):
+    values = [_chart_dir() / "values.yaml"]
+    if profile in {"deploy", "gke", "dev"}:
+        values.append(_deploy_values())
+    if profile == "gke":
+        values.append(_gke_values())
+    if profile == "dev":
+        values.append(_dev_values())
+    if profile == "recovery":
+        values.append(_recovery_gke_values())
+
+    for path in values:
+        config = yaml.safe_load(path.read_text())
+        assert "dcgmExporterUrl" not in config.get("backend", {})
+        targets = config.get("networkPolicy", {}).get("egress", {}).get("targets", {})
+        assert "dcgmExporter" not in targets
+        assert "DCGM_EXPORTER_URL" not in path.read_text()
+
+    # Exercise the removed backend template even with an old values key.
+    override = {"backend": {"dcgmExporterUrl": "http://retired-exporter.test:9400"}}
+    if profile in {"defaults", "deploy", "gke"}:
+        # Production injects this map at chart build time. Dev and recovery
+        # intentionally suppress jobs, so keep their image gate untouched.
+        override["jobs"] = {
+            "image": {"repository": "registry.invalid/jobs", "tag": "test"}
+        }
+    docs = _render("monolith", "monolith", values, override)
+    assert any(doc["kind"] == "Deployment" for doc in docs)
+    if profile in {"defaults", "deploy", "gke"}:
+        assert any(
+            doc["kind"] == "CronWorkflow"
+            and "observability-stats-rollup" in doc["metadata"]["name"]
+            for doc in docs
+        )
+    rendered = yaml.safe_dump_all(docs)
+    for retired in (
+        "DCGM_EXPORTER_URL",
+        "dcgmExporter",
+        "nvidia-dcgm-exporter",
+        "gpu-operator",
+    ):
+        assert retired not in rendered
 
 
 def test_dev_overlay_retargets_only_its_embervm_dependencies():

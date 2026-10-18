@@ -1779,12 +1779,20 @@ dropped after they arrive. The frontend exports nothing and there is no trace
 query API. The public Firecracker story still serves its committed measurements,
 but its former bake workflow depended on the retired private demos API and the
 removed SigNoz ClickHouse store, so it cannot regenerate those measurements.
-The public stats ticker scrapes the DCGM exporter directly for GPU utilization
-and frame buffer usage.
+The public stats ticker reads a Postgres snapshot of Kubernetes resource counts
+and usage, knowledge counts and GitHub/deploy metadata. The private stats rollup
+collects those sources; public requests only read the snapshot.
 (see: /projects/monolith/deploy/values.yaml)
 (see: /projects/monolith/frontend/src/lib/public/fcstory/bake-fc-story.sh)
 (see: /projects/monolith/home/observability/stats.py)
 (see: /projects/platform/ARCHITECTURE.md)
+
+**Why.** The hub has no GPU exporter after the home GPU operator's retirement
+(#6914). Removing the DCGM scrape, its configuration and the public GPU
+presentation together stops new snapshots from carrying unsupported GPU status
+(#7028). Cached snapshots can retain the old field until refreshed; the frontend
+ignores it. This is repository-only staged delivery, with live acceptance still
+tracked on #7028.
 
 **Why.** Process liveness alone stayed green through downstream failures, while
 alert-only maintenance failures could remain unread for days (ADR embervm/031).
@@ -1872,6 +1880,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
 | Retire the household gateway and its exclusively owned schema, retaining shared data | section 5, Household gateway retired | #6915 | repository retirement staged; merge, rollout, migration and shared-job acceptance remain |

@@ -1,10 +1,10 @@
 """Scheduled rollup that snapshots the public stats payload into Postgres
 (ADR 004 Layer 4).
 
-The private monolith is the only DCGM exporter and Kubernetes caller: this job builds
-the full payload with ``build_stats`` and upserts it into the ``observability``
-schema. The read endpoint (and the Phase 5 public service) then reads the snapshot
-row, so nothing scrapes DCGM or queries the K8s API at request time.
+The private monolith collects Kubernetes, database and GitHub statistics. This job
+builds the full payload with ``build_stats`` and upserts it into the ``observability``
+schema. The read endpoint, including the public service, reads the snapshot
+row without calling GitHub or the K8s API at request time.
 
 Follows the monolith scheduled-handler rule: do the network I/O with ``await`` first,
 then delegate the synchronous DB write to a worker thread with its own session.
@@ -24,7 +24,7 @@ from scheduler.api import register_job
 
 logger = logging.getLogger(__name__)
 
-# Stats is cheap and changes often (pod counts, GPU), so refresh it frequently.
+# Stats is cheap and changes often (pod and knowledge counts), so refresh it frequently.
 STATS_ROLLUP_INTERVAL_SECS = 120
 
 
@@ -45,7 +45,7 @@ def _write_stats_snapshot(payload: dict) -> None:
 
 
 async def stats_rollup() -> None:
-    """Build the stats payload (DCGM + K8s) and snapshot it to Postgres."""
+    """Build the cluster and knowledge stats payload and snapshot it to Postgres."""
     payload = await build_stats()
     await asyncio.to_thread(_write_stats_snapshot, payload)
     logger.info("Stats snapshot refreshed")

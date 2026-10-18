@@ -33,6 +33,13 @@ _UPSERT_STATS = text(
 
 def test_snapshot_upsert_idempotent_and_public_reader_can_read(pg):
     engine = create_engine(pg.url)
+    fresh_stats = {
+        "cluster": {"nodes": 4},
+        "knowledge": {"facts": 1309},
+        "deploy": {"latest_commit_sha": "abc1234"},
+        "platform": {"in_production_since": "2025-01"},
+        "cached_at": "2026-10-18T00:00:00Z",
+    }
     try:
         with Session(engine) as session:
             session.execute(
@@ -53,8 +60,16 @@ def test_snapshot_upsert_idempotent_and_public_reader_can_read(pg):
                 },
             )
             session.execute(
-                _UPSERT_STATS, {"payload": json.dumps({"cluster": {"nodes": 4}})}
+                _UPSERT_STATS,
+                {
+                    "payload": json.dumps(
+                        {**fresh_stats, "gpu": {"utilization_pct": 50}}
+                    )
+                },
             )
+            # A normal refresh replaces the old payload without a schema change
+            # or a migration deleting stored rows.
+            session.execute(_UPSERT_STATS, {"payload": json.dumps(fresh_stats)})
             session.execute(
                 text(
                     """
@@ -100,7 +115,8 @@ def test_snapshot_upsert_idempotent_and_public_reader_can_read(pg):
             stats = session.execute(
                 text("SELECT payload FROM observability.stats_snapshot WHERE id = 1")
             ).first()
-            assert stats[0]["cluster"]["nodes"] == 4
+            assert stats[0] == fresh_stats
+            assert "gpu" not in stats[0]
             merged_pr = session.execute(
                 text("SELECT title FROM observability.merged_prs WHERE number = 5898")
             ).first()

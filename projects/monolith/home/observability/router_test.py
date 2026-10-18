@@ -3,12 +3,13 @@
 After ADR 004 Layer 4 the endpoints no longer call external metrics services: they read a
 precomputed snapshot row from Postgres. These tests override the DB session so
 they assert the read-and-return behaviour without a database. The metrics
-build logic is covered by stats_test / slo_test, and the write + grant
+build logic is covered by stats_test, and the write + grant
 round-trip by observability_snapshot_grants_test (real Postgres).
 """
 
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from core.db import get_session
@@ -42,8 +43,18 @@ def _clear():
     app.dependency_overrides.pop(get_session, None)
 
 
-def test_stats_returns_snapshot_payload():
-    payload = {"cluster": {"nodes": 4}, "gpu": {"utilization_pct": 50.0}}
+@pytest.mark.parametrize("legacy_gpu", [False, True])
+def test_stats_returns_snapshot_payload(legacy_gpu):
+    payload = {
+        "cluster": {"nodes": 4},
+        "knowledge": {"facts": 1309},
+        "deploy": {"latest_commit_sha": "abc1234"},
+        "platform": {"in_production_since": "2025-01"},
+        "cached_at": "2026-10-18T00:00:00Z",
+    }
+    if legacy_gpu:
+        # Transitional rows remain readable without rewriting production data.
+        payload["gpu"] = {"utilization_pct": 50.0}
     _with_session((payload,))
     try:
         resp = TestClient(app).get("/api/home/observability/stats")

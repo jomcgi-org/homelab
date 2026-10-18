@@ -112,9 +112,10 @@ the service is admitted through the allowlist above.
 
 The public stats ticker (`/app/notes/stats`) reads a snapshot the
 `observability.stats_rollup` job fills from the Kubernetes API, Postgres and
-GitHub. Its GPU source scrapes a DCGM exporter (`dcgmExporterUrl`); the hub has
-no GPU pool, so that source has nothing to read there. That exporter came with the home GPU
-operator, retired in #6914.
+GitHub. The repository removes the DCGM source and GPU presentation in #7028:
+the hub has no GPU pool, and the home GPU operator was retired in #6914.
+Rollout verification remains on #7028. Snapshot reads and the public read-only
+boundary are unchanged.
 
 ## Pod logs
 
