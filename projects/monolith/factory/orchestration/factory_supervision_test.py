@@ -817,6 +817,7 @@ def _backstop_harness(
     permit_seqs=None,
     permit_missing=False,
     permit_error=False,
+    cancellation_requested=False,
 ):
     import contextlib
     from types import SimpleNamespace
@@ -898,6 +899,13 @@ def _backstop_harness(
     monkeypatch.setattr(conductor, "Session", lambda _engine: _Db())
     monkeypatch.setattr(conductor, "get_engine", lambda: None)
     monkeypatch.setattr(controls, "_locked_session", locked)
+    monkeypatch.setattr(
+        controls,
+        "_receipt",
+        lambda db, task_id: SimpleNamespace(
+            cancellation_requested=cancellation_requested
+        ),
+    )
     monkeypatch.setattr(controls, "_starts", lambda db, task_id: starts)
     monkeypatch.setattr(
         controls,
@@ -1213,6 +1221,21 @@ def test_the_backstop_refuses_an_operator_paused_task(monkeypatch):
     assert finishes == []
     assert escalations == []
     assert commits == []
+
+
+def test_the_backstop_refuses_cancellation_after_a_stale_task_snapshot(monkeypatch):
+    released, finishes, outcomes, escalations, notifies, commits, permits = (
+        _backstop_harness(
+            monkeypatch,
+            starts=[_Start("uncertain")],
+            task=dict(_task(), cancellation_requested=False),
+            cancellation_requested=True,
+        )
+    )
+
+    assert released is False
+    assert not finishes and not outcomes and not escalations
+    assert not notifies and not commits and not permits
 
 
 def test_the_escalation_names_the_permits_it_cannot_release(monkeypatch):

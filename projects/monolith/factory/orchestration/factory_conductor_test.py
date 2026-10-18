@@ -960,8 +960,9 @@ def test_operator_cancel_keeps_unresolved_start_with_terminal_graph(
     )
 
 
+@pytest.mark.parametrize("workflow_status", ["PENDING", None])
 def test_operator_cancel_reconciles_live_run_without_new_dispatch(
-    paused_settlement, monkeypatch
+    paused_settlement, monkeypatch, workflow_status
 ):
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import FactoryStart
@@ -976,13 +977,20 @@ def test_operator_cancel_reconciles_live_run_without_new_dispatch(
         run.status, run.outcome_json = "dispatched", None
         start = db.exec(select(FactoryStart).where(FactoryStart.start_key == key)).one()
         start.status, start.cost_usd = "reserved", None
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
     request_task_cancellation(s)
     seen = []
+    submissions = []
 
     class Running:
         def get_workflow_status(self, workflow_id):
             seen.append(workflow_id)
-            return SimpleNamespace(status="PENDING", application_version=None)
+            if workflow_status is None:
+                return None
+            return SimpleNamespace(status=workflow_status, application_version=None)
+
+        def start_workflow(self, *args):
+            submissions.append(args)
 
     # Exercise the normal reconciliation path for a still-running invocation.
     monkeypatch.setattr(conductor, "_submit_or_reconcile", s.submit_or_reconcile)
@@ -994,6 +1002,7 @@ def test_operator_cancel_reconciles_live_run_without_new_dispatch(
     assert seen == [key]
     assert controls.task_snapshot(s.task["id"])["state"] == "admitted"
     assert controls.task_snapshot(s.task["id"])["starts"] == before["starts"]
+    assert not submissions
     # Completion is recorded by the normal graph owner; the next tick accounts it.
     result = {"status": "succeeded", "session_id": 102, "cost_usd": 0.5, "value": {}}
     assert conductor.graph.record_outcome(
