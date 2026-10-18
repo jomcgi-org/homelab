@@ -1106,7 +1106,7 @@ async def factory_review_recovery(
     draft PR head, a timezone-aware future deadline, and the cumulative dollar
     and work-turn figures INCLUDING old attempts. No default budget, lease,
     funding review, DAG resume, source changes or landing permission is implied.
-    The turn limit cannot increase existing authority; the dollar figure is
+    The turn limit cannot increase existing authority. The dollar figure is
     recorded for accounting and never refuses the review. Reuse request_key after
     a lost response. A new key authorizes another paid review. An unresolved
     attempt refuses retries. The receipt stays escalated and a durable landing
