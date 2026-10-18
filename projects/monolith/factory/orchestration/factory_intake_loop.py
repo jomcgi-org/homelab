@@ -20,6 +20,7 @@ from factory.orchestration.factory_controls import (
     delivery_admissions,
     enabled_repos,
     execution_slot_holders,
+    in_flight_task_ids,
     intake_policy,
     intake_state,
     is_advisory,
@@ -225,7 +226,7 @@ def _idle(detail: dict) -> None:
     _throttled("intake_idle", detail)
 
 
-def _slot_holders(rows, policy: dict) -> list:
+def _slot_holders(rows, policy: dict, db=None) -> list:
     """Receipts that really hold a lane slot for this intake tick.
 
     A queued receipt holds a slot only if admit_next could admit it, which
@@ -233,8 +234,14 @@ def _slot_holders(rows, policy: dict) -> list:
     one whose issue is on the policy allowlist. An operator receipt outside
     the allowlist can never admit, so counting it let four such receipts
     fill a delivery lane and stall intake with no audit (#6483).
+
+    A paused active task holds no slot unless a start is still in flight
+    (#7163); that needs the session, so callers pass db.
     """
-    return execution_slot_holders(policy, rows, include_queued=True)
+    in_flight = in_flight_task_ids(db, rows) if db is not None else None
+    return execution_slot_holders(
+        policy, rows, include_queued=True, in_flight=in_flight
+    )
 
 
 def _listing_due(now: datetime) -> bool:
@@ -499,6 +506,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     )
                 ).all(),
                 {**policy, "generation": generation},
+                db,
             )
             room = open_lanes(policy, held, lanes)
             if not any(room.values()):
@@ -992,6 +1000,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                         )
                     ).all(),
                     {**policy, "generation": generation},
+                    db,
                 )
                 room = open_lanes(policy, held, lanes)
                 held_counts: dict[str, int] = {}

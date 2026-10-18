@@ -2583,7 +2583,10 @@ def test_human_ownership_excludes_both_intake_lanes_without_policy_exclusion(
         ("landing", False, False, 1),
         ("landing", True, False, 1),
         ("admitted", True, False, 0),
-        ("admitted", True, True, 0),
+        # A paused task gives its slot back, whatever its generation (#7163).
+        ("admitted", True, True, 1),
+        ("admitted", False, True, 1),
+        ("admitted", False, False, 0),
         ("uncertain", True, False, 0),
         ("queued", True, False, 1),
         ("queued", False, False, 0),
