@@ -1,3 +1,15 @@
+<script>
+  import { page } from "$app/state";
+
+  const sections = $derived([
+    { label: "Home", href: "/" },
+    { label: "CV", href: "/cv" },
+    { label: "Engineering", href: "/engineering" },
+    ...(page.data?.hasBlog ? [{ label: "Blog", href: "/blog" }] : []),
+    { label: "Docs", href: "/docs" },
+  ]);
+</script>
+
 <footer class="edition" aria-labelledby="contact-heading">
   <div class="ed-head">Get in touch</div>
   <div class="ed-lead">
@@ -14,9 +26,8 @@
   </div>
   <!-- These destinations remain reachable on phones, where the spine folds. -->
   <nav class="ed-foot" aria-label="Continue reading">
-    <a href="/">Home</a>
-    <a href="/cv">CV</a>
-    <a href="/engineering">Engineering</a>
-    <a href="/docs">Docs</a>
+    {#each sections as section (section.href)}
+      <a href={section.href}>{section.label}</a>
+    {/each}
   </nav>
 </footer>
