@@ -5,10 +5,6 @@ These functions preserve the routine-job and knowledge intervention contracts.
 """
 
 from factory.execution import SUPPORTED_MODELS as SUPPORTED_MODELS
-from factory.access import (
-    OPERATOR_REQUIRED as OPERATOR_REQUIRED,
-    is_operator as is_operator,
-)
 from factory.execution.api import (
     DRAINER_NODE_KEY as DRAINER_NODE_KEY,
     KG_NODE_KEY as KG_NODE_KEY,
@@ -18,3 +14,10 @@ from factory.execution.api import (
     lock_cessation_session as lock_cessation_session,
 )
 from factory.orchestration.api import get_decision_reference as get_decision_reference
+
+
+def operator_access_error(principal) -> str | None:
+    """Share the private operator gate without expanding admission-only imports."""
+    from factory.access import OPERATOR_REQUIRED, is_operator
+
+    return None if is_operator(principal) else OPERATOR_REQUIRED

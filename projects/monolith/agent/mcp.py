@@ -36,7 +36,7 @@ from agent import notify as notify_mod
 from agent import routine_jobs
 from core.mcp_app import mcp
 from auth.api import current_principal
-from factory.api import is_operator, OPERATOR_REQUIRED
+from factory.api import operator_access_error
 import chat.api as chat_api
 
 
@@ -88,8 +88,9 @@ async def monolith_agent_schema_retirement_inventory() -> dict:
     absence of dependencies. This does not authorize migration or establish a
     future DDL-free window, consumer compatibility or public route health.
     """
-    if not is_operator(current_principal()):
-        return {"complete": False, "error": OPERATOR_REQUIRED}
+    refusal = operator_access_error(current_principal())
+    if refusal:
+        return {"complete": False, "error": refusal}
     from agent.schema_retirement import read_inventory
 
     return await asyncio.to_thread(read_inventory)
