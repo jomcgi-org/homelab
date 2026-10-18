@@ -353,7 +353,13 @@
                 <span>{provider.scope}</span>
               </div>
               <p class="quota-status">{provider.status}</p>
-              {#each provider.windows as window}
+              {#if provider.guidance?.budget}<p class="quota-guidance num">
+                  {provider.guidance.budget}
+                </p>{/if}
+              {#if provider.guidance?.resets}<p class="quota-guidance">
+                  {provider.guidance.resets}
+                </p>{/if}
+              {#each provider.summaryWindows as window}
                 <div class="quota-window" data-state={window.state}>
                   <div class="quota-values">
                     <strong>{window.label}</strong>
@@ -403,7 +409,11 @@
           <p class="quota-method">
             The marker shows steady usage toward 100% at reset. Within 5
             percentage points counts as on pace. This is a comparison with
-            elapsed time, not a usage forecast.
+            elapsed time, not a usage forecast. Daily budget is percentage
+            points of the longest reported quota window, averaged per account.
+            Short-reset counts estimate continuous use until that budget resets;
+            idle time can reduce the count. Short resets do not replenish weekly
+            quota.
           </p>
           {#each quotas as provider}
             {#each provider.windows as window}
@@ -416,6 +426,13 @@
                 {#if historySvg}{@html historySvg}{:else}<p class="quota-meta">
                     History starts with the first fresh measurement.
                   </p>{/if}
+                <p class="quota-meta">
+                  {window.usedText}{window.used === null
+                    ? ""
+                    : " used"}{window.resetRange
+                    ? ` · reset in ${window.resetRange}`
+                    : ""}
+                </p>
                 <p class="quota-meta">
                   {window.coverage} · {window.measured}{window.stale
                     ? " · stale"

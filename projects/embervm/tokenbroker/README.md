@@ -44,6 +44,32 @@ validated, durably committed snapshot and recompute time-derived fields. A
 startup load failure or a write/reload failure marks that snapshot unreadable,
 so subsequent reads stay unobserved until a newer report commits successfully.
 
+Observed quota responses also include a read-time `pacing` object. It selects
+the longest valid reported duration as the budget, so a `primary` window can
+be weekly. `state` is `use_more`, `on_pace`, `conserve`, `wait_for_reset`,
+`unknown`, `stale` or `awaiting_report`. Usage more than five percentage points
+above elapsed budget time means `conserve`; more than five points below means
+`use_more`. An exhausted short limit means `wait_for_reset` even with weekly
+budget left. `blocked_until` is the latest known binding reset and is omitted
+if any binding reset is unknown. A passed reset needs a fresh report.
+
+`budget_window_minutes`, `budget_used_percent`, `budget_remaining_percent`,
+`budget_resets_at`, `budget_remaining_seconds`, `target_used_percent` and
+`pace_delta_percent` describe that reported budget at `evaluated_at`.
+`budget_per_day_percent` divides its remaining percentage points by days to
+reset. With one unambiguous shorter window, `short_window_minutes` and
+`short_resets_before_budget` estimate reset instants strictly before the budget
+reset, assuming continuous use and immediate restart of each short window.
+`estimate_basis: "continuous_use"` identifies that assumption. These fields
+neither predict demand nor convert short-window quota into weekly capacity.
+
+Unknown fields are omitted. Guidance requires observations no older than
+900 seconds, usage from 0 to 100, and reported durations from one minute to
+one year. Missing or conflicting windows suppress spare-capacity advice;
+known budget overuse can still be reported. Expired windows need another
+report. These checks affect advice only: the raw observation, persistence,
+exhaustion, grant ranking, admission and refresh rules are unchanged.
+
 ## Permission profiles
 
 All profiles have metadata, contents and pull requests read access unless the

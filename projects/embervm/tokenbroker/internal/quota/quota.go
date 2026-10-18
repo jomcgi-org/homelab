@@ -55,6 +55,25 @@ type ViewWindow struct {
 	Expired       bool    `json:"expired"`
 }
 
+// Pacing is read-time advice for the longest reported budget. It does not
+// participate in exhaustion, admission, grant selection or token refresh.
+type Pacing struct {
+	State                   string   `json:"state"`
+	EvaluatedAt             string   `json:"evaluated_at"`
+	BudgetWindowMinutes     *int     `json:"budget_window_minutes,omitempty"`
+	BudgetUsedPercent       *float64 `json:"budget_used_percent,omitempty"`
+	BudgetRemainingPercent  *float64 `json:"budget_remaining_percent,omitempty"`
+	BudgetResetsAt          string   `json:"budget_resets_at,omitempty"`
+	BudgetRemainingSeconds  *float64 `json:"budget_remaining_seconds,omitempty"`
+	TargetUsedPercent       *float64 `json:"target_used_percent,omitempty"`
+	PaceDeltaPercent        *float64 `json:"pace_delta_percent,omitempty"`
+	BudgetPerDayPercent     *float64 `json:"budget_per_day_percent,omitempty"`
+	BlockedUntil            string   `json:"blocked_until,omitempty"`
+	ShortWindowMinutes      *int     `json:"short_window_minutes,omitempty"`
+	ShortResetsBeforeBudget *int     `json:"short_resets_before_budget,omitempty"`
+	EstimateBasis           string   `json:"estimate_basis,omitempty"`
+}
+
 // View is the latest observation plus state derived when it is read.
 type View struct {
 	Provider      string
@@ -68,6 +87,7 @@ type View struct {
 	ReceivedAt    time.Time
 	AgeSeconds    float64
 	Exhausted     bool
+	Pacing        *Pacing
 }
 
 // MarshalJSON keeps the unobserved shape deliberately small while preserving
@@ -92,10 +112,12 @@ func (v View) MarshalJSON() ([]byte, error) {
 		ReceivedAt    time.Time    `json:"received_at"`
 		AgeSeconds    float64      `json:"age_seconds"`
 		Exhausted     bool         `json:"exhausted"`
+		Pacing        *Pacing      `json:"pacing"`
 	}{
 		Provider: v.Provider, Grant: v.Grant, ObservedAt: v.ObservedAt, Status: v.Status,
 		ReachedType: v.ReachedType, OverageStatus: v.OverageStatus, Windows: v.Windows, Observed: true,
 		ReceivedAt: v.ReceivedAt, AgeSeconds: v.AgeSeconds, Exhausted: v.Exhausted,
+		Pacing: v.Pacing,
 	})
 }
 
@@ -392,6 +414,7 @@ func makeView(stored storedObservation, now time.Time) View {
 		Status: obs.Status, ReachedType: obs.ReachedType, OverageStatus: obs.OverageStatus,
 		ReceivedAt: stored.ReceivedAt, Exhausted: obs.Status == "rejected",
 		Windows: make([]ViewWindow, 0, len(obs.Windows)),
+		Pacing: derivePacing(obs, now),
 	}
 	if observedAt, err := time.Parse(time.RFC3339, obs.ObservedAt); err == nil {
 		view.AgeSeconds = now.Sub(observedAt).Seconds()
@@ -411,6 +434,144 @@ func makeView(stored storedObservation, now time.Time) View {
 		}
 	}
 	return view
+}
+
+// derivePacing uses the provider's reported durations, never window names.
+// Limits with missing or contradictory metadata cannot establish spare capacity.
+func derivePacing(obs Observation, now time.Time) *Pacing {
+	pacing := &Pacing{State: "unknown", EvaluatedAt: now.UTC().Format(time.RFC3339Nano)}
+	observedAt, err := time.Parse(time.RFC3339, obs.ObservedAt)
+	if err != nil || observedAt.After(now) {
+		return pacing
+	}
+	if now.Sub(observedAt) > 900*time.Second {
+		pacing.State = "stale"
+		return pacing
+	}
+
+	type candidate struct {
+		window Window
+		reset  time.Time
+	}
+	windows := make(map[int]candidate)
+	reported := make(map[int]Window)
+	ambiguous := make(map[int]bool)
+	longest := 0
+	unknown := len(obs.Windows) == 0
+	expired := false
+	binding, unknownBindingReset := false, false
+	var blockedUntil time.Time
+	for _, window := range obs.Windows {
+		validUsage := !math.IsNaN(window.UsedPercent) && !math.IsInf(window.UsedPercent, 0) && window.UsedPercent >= 0 && window.UsedPercent <= 100
+		// Match the public publisher's one-year advisory bound before any
+		// duration arithmetic. The stored provider contract stays unchanged.
+		validDuration := window.WindowMinutes > 0 && window.WindowMinutes <= 525600
+		resetLimit := 365 * 24 * time.Hour
+		if validDuration {
+			resetLimit = time.Duration(window.WindowMinutes) * time.Minute
+		}
+		reset, resetErr := time.Parse(time.RFC3339, window.ResetsAt)
+		// Providers round reset timestamps to seconds. Permit that rounding
+		// without using a contradictory reset as a claimed unblock time.
+		validReset := resetErr == nil && !reset.IsZero() && !reset.After(observedAt.Add(resetLimit+time.Second))
+		if validReset && !reset.After(now) {
+			expired = true
+		}
+		// A known exhausted window can block even when its duration is unknown.
+		if validUsage && window.UsedPercent == 100 && (!validReset || reset.After(now)) {
+			binding = true
+			if !validReset {
+				unknownBindingReset = true
+			} else if reset.After(blockedUntil) {
+				blockedUntil = reset
+			}
+		}
+		if validDuration && window.WindowMinutes > longest {
+			longest = window.WindowMinutes
+		}
+		if validDuration {
+			if previous, exists := reported[window.WindowMinutes]; exists {
+				previousReset, previousErr := time.Parse(time.RFC3339, previous.ResetsAt)
+				if previous.UsedPercent != window.UsedPercent || previousErr != nil || !validReset || !previousReset.Equal(reset) {
+					ambiguous[window.WindowMinutes] = true
+					unknown = true
+				}
+			} else {
+				reported[window.WindowMinutes] = window
+			}
+		}
+		if !validUsage || !validDuration || !validReset {
+			unknown = true
+			continue
+		}
+		if !reset.After(now) {
+			continue
+		}
+		if _, exists := windows[window.WindowMinutes]; !exists {
+			windows[window.WindowMinutes] = candidate{window: window, reset: reset}
+		}
+	}
+
+	budget, haveBudget := windows[longest]
+	if haveBudget && !ambiguous[longest] {
+		remainingSeconds := budget.reset.Sub(now).Seconds()
+		remainingPercent := 100 - budget.window.UsedPercent
+		target := math.Max(0, 100*(1-remainingSeconds/(float64(longest)*60)))
+		delta := budget.window.UsedPercent - target
+		daily := remainingPercent * 86400 / remainingSeconds
+		pacing.BudgetWindowMinutes = &budget.window.WindowMinutes
+		pacing.BudgetUsedPercent = &budget.window.UsedPercent
+		pacing.BudgetRemainingPercent = &remainingPercent
+		pacing.BudgetResetsAt = budget.reset.UTC().Format(time.RFC3339Nano)
+		pacing.BudgetRemainingSeconds = &remainingSeconds
+		pacing.TargetUsedPercent = &target
+		pacing.PaceDeltaPercent = &delta
+		pacing.BudgetPerDayPercent = &daily
+		if !unknown && !expired {
+			// More than one distinct short duration has no single reset cadence.
+			var short candidate
+			shortCount := 0
+			for minutes, current := range windows {
+				if minutes < longest {
+					short, shortCount = current, shortCount+1
+				}
+			}
+			if shortCount == 1 {
+				count := 0
+				gap := budget.reset.Sub(short.reset)
+				if gap > 0 {
+					// Count reset instants strictly before the budget reset. Integer
+					// nanoseconds keep exact equality and second-level jitter stable.
+					count = 1 + int((gap-1)/(time.Duration(short.window.WindowMinutes)*time.Minute))
+				}
+				pacing.ShortWindowMinutes = &short.window.WindowMinutes
+				pacing.ShortResetsBeforeBudget = &count
+				pacing.EstimateBasis = "continuous_use"
+			}
+		}
+	}
+
+	switch {
+	case binding:
+		pacing.State = "wait_for_reset"
+		if !unknownBindingReset {
+			pacing.BlockedUntil = blockedUntil.UTC().Format(time.RFC3339Nano)
+		}
+	case expired:
+		pacing.State = "awaiting_report"
+	case obs.Status == "rejected":
+		// A rejection without an identified binding window has no known end.
+		pacing.State = "wait_for_reset"
+	case pacing.PaceDeltaPercent == nil:
+	case *pacing.PaceDeltaPercent > 5:
+		pacing.State = "conserve"
+	case unknown:
+	case *pacing.PaceDeltaPercent < -5:
+		pacing.State = "use_more"
+	default:
+		pacing.State = "on_pace"
+	}
+	return pacing
 }
 
 // ValidObservation checks wire and durable-record invariants. Future

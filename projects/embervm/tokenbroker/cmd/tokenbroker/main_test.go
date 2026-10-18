@@ -262,6 +262,35 @@ func TestQuotaPostThenGetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestQuotaGetIncludesResetAwarePacing(t *testing.T) {
+	s, _ := quotaTestServer("codex")
+	now := time.Now().UTC().Add(-time.Second)
+	observation := quota.Observation{
+		ObservedAt: now.Format(time.RFC3339Nano), Status: "allowed",
+		Windows: []quota.Window{
+			{Name: "primary", WindowMinutes: 10080, UsedPercent: 70, ResetsAt: now.Add(6 * 24 * time.Hour).Format(time.RFC3339Nano)},
+			{Name: "secondary", WindowMinutes: 300, UsedPercent: 40, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339Nano)},
+		},
+	}
+	body, err := json.Marshal(observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	posted := requestQuota(t, s, http.MethodPost, "/quota/codex", string(body))
+	if posted.Code != http.StatusNoContent {
+		t.Fatalf("POST = %d %s", posted.Code, posted.Body.String())
+	}
+	response := requestQuota(t, s, http.MethodGet, "/quota/codex", "")
+	decoded := decodeBody(t, response)
+	pacing, ok := decoded["pacing"].(map[string]any)
+	if response.Code != http.StatusOK || !ok || pacing["state"] != "conserve" || pacing["budget_window_minutes"] != float64(10080) || pacing["short_resets_before_budget"] != float64(28) || pacing["estimate_basis"] != "continuous_use" {
+		t.Fatalf("GET = %d %s", response.Code, response.Body.String())
+	}
+	if decoded["exhausted"] != false || decoded["status"] != "allowed" {
+		t.Fatalf("advice changed control fields: %#v", decoded)
+	}
+}
+
 type failingQuotaPersistence struct{}
 
 func (failingQuotaPersistence) Load() ([]byte, string, error) {

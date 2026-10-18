@@ -43,6 +43,18 @@ with collected observations and breaks across missing evidence and reset cycles.
 It preserves provider-only observations with their coverage label. This extends
 the existing publication contract without another database table or scheduled
 job (Refs #6998).
+Broker pacing adds advisory state counts without account identities. Complete,
+fresh reports with the same longest budget duration expose an equal-account
+mean of remaining percentage points per day. A short-window burst does not
+imply weekly overspend; an exhausted short window still blocks that account.
+Mixed account states remain visible in the headline. Estimated short resets use
+each account's actual next reset and report a count range under continuous use,
+never an average reset schedule. Unknown duration blocks reassuring guidance,
+while a known fast weekly budget can still advise conservation. The browser
+expires this advice at the earliest reset or when observations age past 15
+minutes. Older broker snapshots retain measured usage without invented guidance.
+These fields do not change admission, dispatch, routing or paid API authority
+(Refs #7122).
 Broker failure leaves quota unavailable while the rest of the board publishes.
 The cron job respects the broker's SPIFFE mode; missing workload credentials in
 that mode fail closed without an HTTP fallback.

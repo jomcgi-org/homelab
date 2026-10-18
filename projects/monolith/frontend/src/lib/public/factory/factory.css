@@ -2016,6 +2016,7 @@
 .factory-page .quota-meta,
 .factory-page .quota-method,
 .factory-page .quota-warning,
+.factory-page .quota-guidance,
 .factory-page .quota-refresh {
   font-family: var(--font-code);
   font-size: 0.7rem;
@@ -2169,6 +2170,7 @@
   .factory-page .quota-meta,
   .factory-page .quota-method,
   .factory-page .quota-warning,
+  .factory-page .quota-guidance,
   .factory-page .quota-refresh,
   .factory-page .quota-details > summary {
     font-size: 0.8rem;

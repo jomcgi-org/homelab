@@ -512,3 +512,117 @@ describe("subscription pace toward full usage by reset", () => {
     expect(quotaGroups(value, now)[0].windows[0].resetRange).toBe("2h");
   });
 });
+
+describe("broker reset guidance", () => {
+  const now = "2026-10-17T12:00:00Z";
+  const quota = () => ({
+    available: true,
+    sampled_at: now,
+    stale_after_seconds: 900,
+    providers: [
+      {
+        provider: "codex",
+        source: "accounts",
+        configured_accounts: 2,
+        inventory_complete: true,
+        windows: [
+          {
+            window_seconds: 18000,
+            used_percent: 90,
+            remaining_seconds: 3600,
+            next_reset_at: "2026-10-17T13:00:00Z",
+            last_reset_at: "2026-10-17T13:00:00Z",
+            oldest_observed_at: now,
+            reported_accounts: 2,
+            complete: true,
+          },
+          {
+            window_seconds: 604800,
+            used_percent: 20,
+            remaining_seconds: 302400,
+            next_reset_at: "2026-10-21T00:00:00Z",
+            last_reset_at: "2026-10-21T00:00:00Z",
+            oldest_observed_at: now,
+            reported_accounts: 2,
+            complete: true,
+          },
+        ],
+        pacing: {
+          complete: true,
+          reported_accounts: 2,
+          state_counts: { use_more: 2 },
+          evaluated_at: now,
+          oldest_observed_at: now,
+          valid_until: "2026-10-17T13:00:00Z",
+          budget_window_seconds: 604800,
+          budget_remaining_percent: 80,
+          budget_per_day_percent: 22.9,
+          short_window_seconds: 18000,
+          short_resets_min: 16,
+          short_resets_max: 18,
+          estimate_basis: "continuous_use",
+        },
+      },
+    ],
+  });
+  it("uses the weekly budget for guidance despite a high non-exhausted short-window burn", () => {
+    const group = quotaGroups(quota(), now)[0];
+    expect(group.status).toBe("Room to use more");
+    expect(group.guidance.budget).toBe("Weekly: 80% left · 22.9 points/day");
+    expect(group.guidance.resets).toBe(
+      "~16–18 short resets before weekly reset",
+    );
+    expect(group.summaryWindows.map((row) => row.label)).toEqual(["Weekly"]);
+    expect(group.windows.map((row) => row.label)).toEqual(["5-hour", "Weekly"]);
+  });
+  it("keeps a hot account visible when the mean has room", () => {
+    const value = quota();
+    value.providers[0].pacing.state_counts = { use_more: 1, conserve: 1 };
+    expect(quotaGroups(value, now)[0].status).toBe("1 of 2 burning fast");
+  });
+  it("does not call every account unavailable when only one is waiting for reset", () => {
+    const value = quota();
+    value.providers[0].pacing.state_counts = { wait_for_reset: 1, use_more: 1 };
+    expect(quotaGroups(value, now)[0].status).toBe("1 of 2 at limit");
+    value.providers[0].pacing.state_counts = { wait_for_reset: 2 };
+    expect(quotaGroups(value, now)[0].status).toBe("Wait for reset");
+  });
+  it("invalidates broker advice when a reset passes or its observation becomes stale", () => {
+    for (const clock of ["2026-10-17T12:15:01Z", "2026-10-17T13:00:00Z"]) {
+      const group = quotaGroups(quota(), clock)[0];
+      expect(group.status).toBe("Pace unavailable");
+      expect(group.guidance.budget).toBeNull();
+      expect(group.guidance.resets).toBeNull();
+    }
+  });
+  it("rejects incomplete, mismatched or malformed summaries without reassuring", () => {
+    const value = quota();
+    for (const mutation of [
+      () => (value.providers[0].pacing.complete = false),
+      () => (value.providers[0].pacing.state_counts = { use_more: 1 }),
+      () => (value.providers[0].pacing.evaluated_at = "2026-10-17T12:01:00Z"),
+    ]) {
+      mutation();
+      const group = quotaGroups(value, now)[0];
+      expect(group.status).toBe("Pace unavailable");
+      expect(group.guidance.budget).toBeNull();
+    }
+  });
+  it("suppresses reassurance for missing duration and malformed budget metrics", () => {
+    for (const change of [
+      (provider) => (provider.unknown_windows = 1),
+      (provider) => (provider.pacing.budget_per_day_percent = NaN),
+      (provider) => (provider.pacing.budget_window_seconds = 0),
+      (provider) => (provider.pacing.budget_remaining_percent = true),
+    ]) {
+      const value = quota();
+      change(value.providers[0]);
+      expect(quotaGroups(value, now)[0].status).toBe("Pace unavailable");
+    }
+  });
+  it("does not invent reset counts or daily guidance for older broker snapshots", () => {
+    const value = quota();
+    delete value.providers[0].pacing;
+    expect(quotaGroups(value, now)[0].guidance).toBeNull();
+  });
+});

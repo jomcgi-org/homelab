@@ -251,6 +251,193 @@ def _quota_windows(
     return result, unknown
 
 
+_QUOTA_PACING_STATES = (
+    "use_more",
+    "on_pace",
+    "conserve",
+    "wait_for_reset",
+    "unknown",
+    "stale",
+    "awaiting_report",
+)
+
+
+def _quota_pacing_view(
+    view: dict, now: datetime, fetched: datetime | None
+) -> dict | None:
+    """Validate advisory broker fields before exposing an anonymous aggregate."""
+    pacing = view.get("pacing")
+    if not isinstance(pacing, dict) or view.get("observed") is not True:
+        return None
+    state = pacing.get("state")
+    evaluated = _quota_time(pacing.get("evaluated_at"))
+    age = _quota_number(view.get("age_seconds"))
+    if (
+        state not in _QUOTA_PACING_STATES
+        or evaluated is None
+        or fetched is None
+        or age is None
+        or not 0 <= age <= 315360000
+        or not 0 <= (now - evaluated).total_seconds() <= QUOTA_STALE_AFTER_SECONDS
+    ):
+        return None
+    observed = fetched - timedelta(seconds=age)
+    if not 0 <= (now - observed).total_seconds() <= QUOTA_STALE_AFTER_SECONDS:
+        return None
+    result = {"state": state, "evaluated_at": evaluated, "observed_at": observed}
+    if state in ("unknown", "stale", "awaiting_report"):
+        return result
+    minutes = _quota_number(pacing.get("budget_window_minutes"))
+    reset = _quota_time(pacing.get("budget_resets_at"))
+    used = _quota_number(pacing.get("budget_used_percent"))
+    remaining = _quota_number(pacing.get("budget_remaining_percent"))
+    daily = _quota_number(pacing.get("budget_per_day_percent"))
+    target = _quota_number(pacing.get("target_used_percent"))
+    delta = _quota_number(pacing.get("pace_delta_percent"))
+    reported_seconds = _quota_number(pacing.get("budget_remaining_seconds"))
+    windows = view.get("windows")
+    windows = windows if isinstance(windows, list) else []
+    budget = [
+        window
+        for window in windows
+        if isinstance(window, dict) and window.get("window_minutes") == minutes
+    ]
+    if (
+        minutes is None
+        or reset is None
+        or used is None
+        or remaining is None
+        or daily is None
+        or target is None
+        or delta is None
+        or reported_seconds is None
+    ):
+        return result if state == "wait_for_reset" else None
+    seconds_left = (reset - evaluated).total_seconds()
+    if (
+        not 0 < minutes <= 525600
+        or not 0 <= used <= 100
+        or not 0 <= remaining <= 100
+        or not 0 < seconds_left <= minutes * 60
+        or reset <= now
+        or not math.isclose(reported_seconds, seconds_left, abs_tol=0.01)
+        or not math.isclose(
+            target, 100 * (1 - seconds_left / (minutes * 60)), abs_tol=0.01
+        )
+        or not math.isclose(delta, used - target, abs_tol=0.01)
+        or not math.isclose(used + remaining, 100, abs_tol=0.01)
+        or not math.isclose(daily, remaining * 86400 / seconds_left, abs_tol=0.01)
+        or len(budget) != 1
+        or budget[0].get("used_percent") != used
+        or _quota_time(budget[0].get("resets_at")) != reset
+        or budget[0].get("expired") not in (None, False)
+        or any(
+            (_quota_number(window.get("window_minutes")) or 0) > minutes
+            for window in windows
+            if isinstance(window, dict)
+        )
+    ):
+        return None
+    result.update(
+        budget_window_seconds=minutes * 60,
+        budget_remaining_percent=remaining,
+        budget_per_day_percent=daily,
+        budget_resets_at=reset,
+    )
+    short = _quota_number(pacing.get("short_window_minutes"))
+    count = pacing.get("short_resets_before_budget")
+    short_windows = [
+        window
+        for window in windows
+        if isinstance(window, dict) and window.get("window_minutes") == short
+    ]
+    short_reset = (
+        _quota_time(short_windows[0].get("resets_at"))
+        if len(short_windows) == 1
+        else None
+    )
+    if (
+        short is not None
+        and 1 <= short < minutes
+        and isinstance(count, int)
+        and not isinstance(count, bool)
+        and 0 <= count <= 525600
+        and count <= math.ceil(minutes / short)
+        and pacing.get("estimate_basis") == "continuous_use"
+        and short_reset is not None
+        and short_reset > now
+        and count
+        == max(0, math.ceil((reset - short_reset).total_seconds() / (short * 60)))
+    ):
+        result.update(short_window_seconds=short * 60, short_resets=count)
+    return result
+
+
+def _quota_pacing(
+    views: list[dict], now: datetime, fetched: datetime | None, inventory: bool
+) -> dict | None:
+    # Absence remains absence during rollout or when reading an old snapshot.
+    if not any(isinstance(view.get("pacing"), dict) for view in views):
+        return None
+    samples = [_quota_pacing_view(view, now, fetched) for view in views]
+    valid = [sample for sample in samples if sample is not None]
+    counts: dict[str, int] = {}
+    for sample in samples:
+        state = sample["state"] if sample else "unknown"
+        counts[state] = counts.get(state, 0) + 1
+    result = {
+        "reported_accounts": len(valid),
+        "complete": False,
+        "state_counts": counts,
+        "evaluated_at": _iso(min(sample["evaluated_at"] for sample in valid))
+        if valid
+        else None,
+        "oldest_observed_at": _iso(min(sample["observed_at"] for sample in valid))
+        if valid
+        else None,
+    }
+    resets = [
+        reset
+        for view in views
+        for window in (view["windows"] if isinstance(view.get("windows"), list) else [])
+        if isinstance(window, dict)
+        and (reset := _quota_time(window.get("resets_at"))) is not None
+    ]
+    result["valid_until"] = _iso(min(resets)) if resets else None
+    budgets = [sample for sample in valid if "budget_window_seconds" in sample]
+    if (
+        not inventory
+        or len(budgets) != len(views)
+        or len({sample["budget_window_seconds"] for sample in budgets}) != 1
+    ):
+        return result
+    result.update(
+        complete=True,
+        budget_window_seconds=budgets[0]["budget_window_seconds"],
+        budget_remaining_percent=sum(
+            sample["budget_remaining_percent"] for sample in budgets
+        )
+        / len(budgets),
+        budget_per_day_percent=sum(
+            sample["budget_per_day_percent"] for sample in budgets
+        )
+        / len(budgets),
+    )
+    # Count each account's actual short reset schedule before taking the range.
+    # Averaging reset timestamps first would invent a reset schedule no account has.
+    if (
+        all("short_resets" in sample for sample in budgets)
+        and len({sample["short_window_seconds"] for sample in budgets}) == 1
+    ):
+        result.update(
+            short_window_seconds=budgets[0]["short_window_seconds"],
+            short_resets_min=min(sample["short_resets"] for sample in budgets),
+            short_resets_max=max(sample["short_resets"] for sample in budgets),
+            estimate_basis="continuous_use",
+        )
+    return result
+
+
 def shape_quota(payload: dict | None, now: datetime) -> dict:
     """Public allowlist: account means and coverage, without account identity.
 
@@ -310,6 +497,9 @@ def shape_quota(payload: dict | None, now: datetime) -> dict:
                 "inventory_complete": bool(accounts) and inventory,
                 "unknown_windows": unknown,
                 "windows": windows,
+                "pacing": _quota_pacing(
+                    views, now, fetched, inventory if accounts else True
+                ),
             }
         )
     return {
