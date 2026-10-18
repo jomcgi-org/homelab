@@ -129,6 +129,13 @@ def test_stars_grid_snapshot_and_verifier_without_source_repo(tmp_path):
     shutil.copyfile(ROLLOUT_TASKS / task_id / "task.yaml", task_dir / "task.yaml")
     task = load_tasks(task_dir.parent)[0]
     assert task.id == task_id and task.version == "v1"
+    report, _ = _leaderboard_task_data(
+        cells=[_agentic_cell(task_id, "m", True, 1, 100, True, score=0.75)],
+        tasks=[task],
+    )
+    assert report[0]["real_test"] is False
+    # A snapshot's provenance is not a gold fix commit for pairwise judging.
+    assert task.source_commit is None
     assert task.agent.exec and task.agent.max_turns == 40
     assert task.target_files == ["stars/grid_gen/generate_grid.py"]
     assert task.verifier.kind == "speedup"

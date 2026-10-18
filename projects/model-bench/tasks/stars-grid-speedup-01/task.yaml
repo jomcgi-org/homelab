@@ -14,7 +14,6 @@ version: v1
 class: code-fix
 tier: hard
 mode: agentic
-source_commit: 6a3d40b914e46be9c07c2393f831665261efa006
 snapshot:
   files:
     stars/grid_gen/generate_grid.py: &baseline |
