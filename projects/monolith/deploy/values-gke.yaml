@@ -1,9 +1,6 @@
-# GKE cutover destination. Keep application workloads dormant until cutover;
-# CNPG stays up for data staging and bootstraps by recovery from the
-# off-cluster GCS Barman object store. Consumed by the gke-apps Applications.
+# Hub production overrides, layered after deploy/values.yaml by gke-apps.
 backend:
-  # WINDOW: GKE serving. Autoscaling stays off until an HPA (and its
-  # ignoreDifferences companion) is deliberately reintroduced.
+  # Fixed replica count on the hub; backend autoscaling remains disabled.
   replicas: 2
   autoscaling:
     enabled: false

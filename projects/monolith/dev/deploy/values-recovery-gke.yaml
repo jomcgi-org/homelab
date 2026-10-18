@@ -155,8 +155,6 @@ cfIngress:
     enabled: false
     githubWebhook:
       enabled: false
-  public:
-    enabled: false
   friends:
     enabled: false
 networkPolicy:

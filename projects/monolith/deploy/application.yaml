@@ -1,3 +1,5 @@
+# Publication metadata retained for chart-version write-back. The hub deploys
+# projects/gke-apps/monolith/application.yaml with both production value files.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -41,42 +43,12 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: monolith
-  # The Kyverno inject-otel-env-vars ClusterPolicy that these entries existed
-  # for is GONE (kubectl get clusterpolicy inject-otel-env-vars returns
-  # NotFound; only clone-monolith-workflows-secrets and
-  # require-resource-requests remain). Nothing re-injects
-  # OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_PROTOCOL any more, so
-  # ignoring them no longer hides an unavoidable mutation, it pins a dead value:
-  # the live Deployment still carries
-  # OTEL_EXPORTER_OTLP_ENDPOINT=signoz-otel-collector.signoz.svc.cluster.local:4317,
-  # and the signoz namespace no longer exists either.
-  #
-  # 6d7e4ffa2 removed the matching global block from argocd-cm so the stale
-  # values would be pruned, but this app-level copy survived, and being read
-  # fresh every reconcile it kept winning. Dropping it lets ArgoCD prune what
-  # the policy left behind, which is the point of the traces fix in this PR:
-  # a stale endpoint sitting next to the real one is exactly how a
-  # misconfiguration hides.
-  #
-  # The restartedAt annotation entry goes with them: it existed for an April
-  # manual restart, and a rolled Deployment no longer carries it.
-  # WINDOW: the Deployment /spec/replicas ignoreDifferences entry is removed
-  # so the writer-stop (and later the GKE scale-up) actually applies; with
-  # RespectIgnoreDifferences it suppressed APPLYING too. Restore the entry
-  # alongside the HPA when home comes back or the GKE autoscaler arrives.
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
-      # The ignoreDifferences above suppresses DIFFING, not APPLYING.
-      # Without this option a sync still writes the chart's version of
-      # those fields, stripping the env Kyverno injects; Kyverno
-      # re-injects, and the Deployment never settles. `canada` already
-      # carries this option one level up so Kargo's targetRevision patch
-      # on Application resources survives; the child apps declared
-      # ignoreDifferences without it.
       - RespectIgnoreDifferences=true
     retry:
       limit: 5

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 from pathlib import Path
@@ -37,8 +38,12 @@ def _value_file(env_name: str, relative: str) -> Path:
     raise FileNotFoundError(f"{relative} not found and {env_name} is unset")
 
 
-def _render() -> list[dict]:
+def _render(overlays=("DEPLOY_VALUES", "GKE_VALUES")) -> list[dict]:
     chart = _chart_dir()
+    value_files = {
+        "DEPLOY_VALUES": "values.yaml",
+        "GKE_VALUES": "values-gke.yaml",
+    }
     result = subprocess.run(
         [
             os.environ.get("HELM_BIN", "helm"),
@@ -49,10 +54,11 @@ def _render() -> list[dict]:
             "monolith-public",
             "--values",
             str(chart / "values.yaml"),
-            "--values",
-            str(_value_file("DEPLOY_VALUES", "values.yaml")),
-            "--values",
-            str(_value_file("GKE_VALUES", "values-gke.yaml")),
+            *[
+                arg
+                for name in overlays
+                for arg in ("--values", str(_value_file(name, value_files[name])))
+            ],
         ],
         capture_output=True,
         text=True,
@@ -140,3 +146,60 @@ def test_public_web_renders_otel_traces_endpoint():
     env = {item["name"]: item.get("value") for item in container["env"]}
     endpoint = env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
     assert endpoint.endswith(":4318/v1/traces")
+
+
+def test_public_retrieval_env_matches_reader_in_every_layer():
+    reader = Path(__file__).resolve().parent / "grimoire_chat" / "retrieval.py"
+    tree = ast.parse(reader.read_text())
+    assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "RETRIEVAL_K" for t in node.targets)
+    )
+    lookup = assignment.value.args[0]
+    assert ast.unparse(lookup.func) == "os.environ.get"
+    name = ast.literal_eval(lookup.args[0])
+    assert name == "GRIMOIRE_CHAT_RETRIEVAL_K"
+
+    for overlays in ((), ("DEPLOY_VALUES",), ("DEPLOY_VALUES", "GKE_VALUES")):
+        docs = _render(overlays)
+        web = _one(docs, "Deployment", "-web")
+        entries = web["spec"]["template"]["spec"]["containers"][0]["env"]
+        env = {item["name"]: item for item in entries}
+        assert len(env) == len(entries), "duplicate environment variable"
+        assert env[name] == {"name": name, "value": "6"}
+        assert "CHAT_PUBLIC_RETRIEVAL_K" not in env
+
+
+def test_public_gke_preserves_complete_env_and_secret_boundaries():
+    defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    base = yaml.safe_load(_value_file("DEPLOY_VALUES", "values.yaml").read_text())
+    gke = yaml.safe_load(_value_file("GKE_VALUES", "values-gke.yaml").read_text())
+    expected = {item["name"]: item for item in defaults["web"]["env"]}
+    expected["CHAT_PUBLIC_INFERENCE_URL"] = {
+        "name": "CHAT_PUBLIC_INFERENCE_URL",
+        "value": "https://api.meta.ai",
+    }
+    expected["META_SPARK_API_KEY"]["valueFrom"]["secretKeyRef"].pop("optional")
+    assert {item["name"]: item for item in gke["web"]["env"]} == expected
+    expected["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = {
+        "name": "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "value": gke["otelEndpoint"],
+    }
+    docs = _render()
+    web = _one(docs, "Deployment", "-web")
+    container = web["spec"]["template"]["spec"]["containers"][0]
+    assert {item["name"]: item for item in container["env"]} == expected
+    frontend = _one(docs, "Deployment", "-frontend")
+    frontend_env = frontend["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert frontend_env == defaults["frontend"]["env"]
+    for component in (web, frontend):
+        env = component["spec"]["template"]["spec"]["containers"][0]["env"]
+        assert len(env) == len({item["name"] for item in env})
+    turnstile = _one(docs, "OnePasswordItem", "-turnstile")
+    assert turnstile["spec"]["itemPath"] == base["turnstile"]["onepassword"]["itemPath"]
+    for route in (doc for doc in docs if doc.get("kind") == "HTTPRoute"):
+        for rule in route["spec"]["rules"]:
+            for match in rule.get("matches", []):
+                assert not match.get("path", {}).get("value", "").startswith("/api")

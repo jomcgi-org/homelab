@@ -98,13 +98,6 @@ spec:
             # mismatch.
             - name: MONOLITH_CHART_VERSION
               value: {{ .Chart.Version | quote }}
-            {{- if .Values.onepassword.enabled }}
-            - name: ICAL_FEED_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-secrets
-                  key: ICAL_FEED_URL
-            {{- end }}
             {{- if .Values.marine.enabled }}
             - name: AISSTREAM_API_KEY
               valueFrom:

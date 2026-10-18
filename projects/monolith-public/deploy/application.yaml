@@ -1,3 +1,5 @@
+# Publication metadata retained for chart-version write-back. The hub deploys
+# projects/gke-apps/monolith-public/application.yaml with both production value files.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -21,25 +23,12 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: monolith-public
-  # The HPA owns replica counts; without this, selfHeal would revert the
-  # Deployments to the chart's replicas and fight the autoscaler.
-  # WINDOW: the Deployment /spec/replicas ignoreDifferences entry is removed
-  # so the writer-stop (and later the GKE scale-up) actually applies; with
-  # RespectIgnoreDifferences it suppressed APPLYING too. Restore the entry
-  # alongside the HPA when home comes back or the GKE autoscaler arrives.
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
-      # The ignoreDifferences above suppresses DIFFING, not APPLYING.
-      # Without this option a sync still writes the chart's version of
-      # those fields, stripping the env Kyverno injects; Kyverno
-      # re-injects, and the Deployment never settles. `canada` already
-      # carries this option one level up so Kargo's targetRevision patch
-      # on Application resources survives; the child apps declared
-      # ignoreDifferences without it.
       - RespectIgnoreDifferences=true
     retry:
       limit: 5

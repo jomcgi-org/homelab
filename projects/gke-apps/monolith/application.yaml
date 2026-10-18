@@ -8,8 +8,7 @@ metadata:
   annotations:
     # Kargo will not update an Application that has not named the Stage allowed
     # to touch it. Without this the promotion errors with "is not authorized"
-    # and the pin never moves, which is exactly how this cluster's first three
-    # promotions failed. Mirrors projects/monolith/deploy/application.yaml.
+    # and the pin never moves.
     kargo.akuity.io/authorized-stage: kargo-monolith:prod
     argocd.argoproj.io/sync-wave: "2"
 spec:
@@ -17,8 +16,8 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith
-      # This pin is a deliberate bootstrap floor. Write-back does NOT maintain gke-apps pins.
-      # The cutover window (issue #5458) advances it manually from this frozen baseline.
+      # Kargo owns the live hub revision. This git pin is a manually maintained
+      # bootstrap/revert floor; chart-version write-back does not advance it.
       targetRevision: 0.407.29
       helm:
         releaseName: monolith

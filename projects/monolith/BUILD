@@ -7429,6 +7429,7 @@ py_test(
     name = "public_faas_token_projection_test",
     srcs = ["public_faas_token_projection_test.py"],
     data = [
+        "grimoire_chat/retrieval.py",
         "//projects/monolith-public/chart:chart_render_inputs",
         "//projects/monolith-public/deploy:deploy_values",
         "//projects/monolith-public/deploy:gke_values",

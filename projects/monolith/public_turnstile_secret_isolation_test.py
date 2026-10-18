@@ -96,8 +96,16 @@ def test_frontend_carries_only_the_public_site_key_literal():
     assert "CHAT_PUBLIC_IP_HASH_SALT" not in frontend_env
 
 
-def test_site_key_literal_matches_the_values_ssot():
-    """The frontend literal mirrors turnstile.siteKey (the documented SSOT)."""
+def test_frontend_is_the_only_site_key_setting():
+    """Keep the active literal and the backend secret producer independent."""
     values = _load_values()
     frontend_env = _env_by_name(values["frontend"])
-    assert frontend_env["TURNSTILE_SITE_KEY"]["value"] == values["turnstile"]["siteKey"]
+    assert frontend_env["TURNSTILE_SITE_KEY"] == {
+        "name": "TURNSTILE_SITE_KEY",
+        "value": "0x4AAAAAADm59tvOGWo09IYc",
+    }
+    assert values["turnstile"] == {
+        "secretName": TURNSTILE_SECRET_NAME,
+        "onepassword": {"itemPath": ""},
+    }
+    assert "chatPublic" not in values
