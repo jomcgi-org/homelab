@@ -19,6 +19,18 @@ CronWorkflow templates consume the `RENOVATE_TOKEN` key of the
 `renovate-github` Secret through `secretKeyRef`. The apko script uses that token
 for Git and the GitHub API. There is no App-token minting implementation here.
 
+The intended, unverified repository permission contract for the dedicated
+identity is:
+
+- Contents: read and write
+- Commit statuses: read and write
+- Issues: read and write
+- Pull requests: read and write
+- Workflows: read and write
+
+Read-only organization member access is also required. Workflows write lets
+the GitHub Actions manager update checked-in workflows.
+
 The Renovate template and apko script still target `jomcgi/homelab`; the hub
 Application reads configuration from `jomcgi-org/homelab`. A separately
 authorized operator must verify Secret materialization and the dedicated
@@ -36,7 +48,9 @@ forbidden, each run has a two-hour deadline, failed runs retry twice, successful
 pods are removed promptly, and failed workflow state remains available for one
 day.
 
-The main Renovate scan requests and limits memory at 4 GiB.
+The main Renovate scan requests and limits memory at 4 GiB. Scans of more than
+500 extracted dependencies were repeatedly OOM-killed at a 2 GiB limit during
+registry metadata resolution.
 
 Package lifecycle scripts and plugins are disabled. Two repository-owned
 maintenance commands are explicitly allowlisted: wrapper chart version bumps
@@ -62,8 +76,7 @@ suspension flags and the existing credential references. The base render with
 `dependency_policy_test.py` preserves chart exclusions, upstream eligibility,
 manager labels, and the unconditional auto-merge prohibitions.
 
-Linux renders and CI provide repository evidence only. The delivery PR for
-this cleanup stays draft and unmerged under the operator landing hold.
+Linux renders and CI provide repository evidence only.
 
 ## Outstanding acceptance
 
