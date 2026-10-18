@@ -8,7 +8,6 @@ backend:
   leaderSingletons: true
   primeObservabilitySnapshots: false
   otelEndpoint: ""
-  dcgmExporterUrl: ""
   resources:
     requests:
       cpu: "250m"

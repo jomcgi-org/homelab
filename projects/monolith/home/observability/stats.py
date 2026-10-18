@@ -1,24 +1,21 @@
 """Public stats endpoint exposing non-sensitive cluster and knowledge metrics.
 
-Gathers data from four sources:
-1. Kubernetes API — node, deployment, pod, ArgoCD application counts
+Gathers data from three sources:
+1. Kubernetes API: node, deployment, pod, ArgoCD application counts
    plus aggregate CPU/memory usage and capacity from the metrics API,
    and the monolith ArgoCD Application's last sync time.
-2. DCGM exporter Prometheus text, GPU utilization and frame buffer usage.
-3. PostgreSQL — knowledge.notes, knowledge.chunks, knowledge.raw_inputs counts.
-4. GitHub API — latest commit on main (unauthenticated; public repo).
+2. PostgreSQL: knowledge.notes, knowledge.chunks, knowledge.raw_inputs counts.
+3. GitHub API: latest commit on main (unauthenticated; public repo).
 
 build_stats() assembles the payload; the observability.stats_rollup job snapshots
-it into Postgres (ADR 004) so the read endpoint never calls external metrics or
-the K8s API. Kept here because it is the only DCGM/K8s caller for stats.
+it into Postgres (ADR 004) so the read endpoint never calls GitHub or
+the K8s API. Kept here because it is the private collector for stats.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
-import os
 from datetime import datetime, timezone
 
 import httpx
@@ -31,13 +28,6 @@ from core.github import GITHUB_API, GITHUB_REPO
 ARGOCD_APP_NAME = "monolith"
 
 logger = logging.getLogger(__name__)
-
-
-_GPU_METRICS = (
-    "DCGM_FI_DEV_GPU_UTIL",
-    "DCGM_FI_DEV_FB_USED",
-    "DCGM_FI_DEV_FB_FREE",
-)
 
 
 async def _query_knowledge_counts(engine) -> dict:
@@ -103,73 +93,6 @@ async def _query_cluster_counts() -> dict:
         return result
     finally:
         await k8s.close()
-
-
-async def _query_gpu() -> dict:
-    """Scrape DCGM GPU utilization and frame buffer usage."""
-    # The old query averaged samples over five minutes. This instantaneous
-    # exporter scrape is a deliberate behavior change.
-    try:
-        base_url = os.environ.get("DCGM_EXPORTER_URL", "")
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{base_url}/metrics")
-            response.raise_for_status()
-
-        samples: dict[str, list[float]] = {name: [] for name in _GPU_METRICS}
-        for raw_line in response.text.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            for name in _GPU_METRICS:
-                if not line.startswith(name):
-                    continue
-                suffix = line[len(name) :]
-                if not suffix or suffix[0] not in "{ \t":
-                    continue
-                if suffix.startswith("{"):
-                    label_end = suffix.rfind("}")
-                    if label_end < 0:
-                        continue
-                    suffix = suffix[label_end + 1 :]
-                fields = suffix.split()
-                if fields:
-                    # Parse per line, not per scrape. The old ClickHouse path
-                    # queried each metric independently, so one bad value could
-                    # not take the others down, and that stays true here: a
-                    # malformed sample drops only its own line.
-                    #
-                    # isfinite also rejects NaN and inf, which float() accepts
-                    # happily. A NaN would survive round(), then json.dumps
-                    # would emit the bare token NaN, which the jsonb column
-                    # rejects: one bad GPU sample would fail the write for the
-                    # whole stats snapshot, cluster counts included.
-                    try:
-                        value = float(fields[0])
-                    except ValueError:
-                        break
-                    if math.isfinite(value):
-                        samples[name].append(value)
-                break
-
-        def _average(name: str) -> float | None:
-            values = samples[name]
-            return sum(values) / len(values) if values else None
-
-        util_v = _average("DCGM_FI_DEV_GPU_UTIL")
-        used_v = _average("DCGM_FI_DEV_FB_USED")
-        free_v = _average("DCGM_FI_DEV_FB_FREE")
-        result: dict = {
-            "utilization_pct": round(util_v, 1) if util_v is not None else None
-        }
-        if used_v is not None and free_v is not None:
-            used_v = round(used_v, 0)
-            free_v = round(free_v, 0)
-            result["memory_used_gb"] = round(used_v / 1024, 1)
-            result["memory_total_gb"] = round((used_v + free_v) / 1024, 1)
-        return result
-    except Exception:
-        logger.exception("GPU scrape failed")
-        return {"utilization_pct": None}
 
 
 async def _query_github_latest_commit() -> dict | None:
@@ -241,17 +164,15 @@ async def build_stats() -> dict:
     """Collect all stats and return the response payload."""
     engine = get_engine()
 
-    cluster_counts, knowledge_counts, gpu, deploy = await asyncio.gather(
+    cluster_counts, knowledge_counts, deploy = await asyncio.gather(
         _query_cluster_counts(),
         _query_knowledge_counts(engine),
-        _query_gpu(),
         _query_deploy(),
     )
 
     return {
         "cluster": cluster_counts,
         "knowledge": knowledge_counts,
-        "gpu": gpu,
         "deploy": deploy,
         "platform": {
             "in_production_since": "2025-01",

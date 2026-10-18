@@ -731,8 +731,7 @@ def observability_stats_rollup() -> None:
 
     One-shot form of ``observability.stats_rollup``. build_stats counts cluster
     resources via the in-cluster K8s API, so this job runs under a dedicated
-    least-privilege SA (monolith-stats) rather than the shared executor SA. Also
-    needs DCGM_EXPORTER_URL for the GPU metrics scrape. No session
+    least-privilege SA (monolith-stats) rather than the shared executor SA. No session
     (the snapshot writer opens its own)."""
     from home.observability.rollup import stats_rollup
 

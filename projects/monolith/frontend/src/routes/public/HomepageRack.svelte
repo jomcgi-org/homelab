@@ -21,13 +21,11 @@
   function buildEyebrow(statsData) {
     if (!statsData?.cluster) return "HOMELAB";
     const c = statsData.cluster;
-    const g = statsData.gpu;
     const parts = [];
     if (c.nodes != null) parts.push(`${c.nodes} nodes`);
     if (c.cpu_capacity_cores != null)
       parts.push(`${c.cpu_capacity_cores} CPUs`);
     if (c.memory_capacity_gb != null) parts.push(`${c.memory_capacity_gb} GB`);
-    if (g != null) parts.push("one RTX 4090");
     return parts.length > 0 ? parts.join(" · ") : "HOMELAB";
   }
 
@@ -58,12 +56,6 @@
         <span class="nname">NODE-3</span>
         <div class="nrole">12 cpu &middot; 16 gb &middot; storage replicas</div>
       </div>
-      <div class="node gpu">
-        <span class="nname">NODE-4</span>
-        <div class="nrole">
-          16 cpu &middot; 64 gb &middot; rtx 4090 &middot; microvms
-        </div>
-      </div>
       <div class="maps">
         <span class="lbl">Live maps</span>
         <div class="chips">
@@ -79,9 +71,9 @@
         <div class="callout featured">
           <div class="chead">
             <h3>{app.label.toUpperCase()}</h3>
-            <span class="where"
-              >{app.slug === "grimoire" ? "NODE-2" : "NODE-4"}</span
-            >
+            {#if app.slug === "grimoire"}
+              <span class="where">NODE-2</span>
+            {/if}
           </div>
           {#if app.slug === "grimoire"}
             <p>
@@ -111,10 +103,6 @@
             <b>EmberVM</b>
             gives every job its own microVM.
             <a class="more" href="/ember">how &rarr;</a>
-          </li>
-          <li>
-            A <b>27B model</b> runs on the RTX 4090; chat, the agents, and note search
-            share it.
           </li>
           <li>
             One Postgres backs every app; <a class="more" href="/app/notes"
@@ -187,15 +175,6 @@
     color: var(--ink-2);
     margin-top: 4px;
     letter-spacing: 0.03em;
-  }
-  .node.gpu {
-    background: var(--ink);
-  }
-  .node.gpu .nname {
-    color: var(--accent);
-  }
-  .node.gpu .nrole {
-    color: var(--paper);
   }
   .maps {
     margin-top: 14px;
