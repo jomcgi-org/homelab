@@ -27,6 +27,10 @@ go_test(
         "generate_test.go",
         "language_test.go",
     ],
+    data = [
+        "//projects/mcp/context-forge-gateway/deploy:BUILD",
+        "//projects/mcp/context-forge-gateway/deploy:application.yaml",
+    ],
     embed = [":gazelle"],
     deps = [
         "@gazelle//config",
