@@ -296,9 +296,12 @@ class TestReplayDeadLetterIntegration:
         assert resp.json() == {"replayed": True}
 
         assert session.get(RawInput, raw.id) is not None
-        assert session.exec(
-            select(AtomRawProvenance).where(AtomRawProvenance.raw_fk == raw.id)
-        ).all() == []
+        assert (
+            session.exec(
+                select(AtomRawProvenance).where(AtomRawProvenance.raw_fk == raw.id)
+            ).all()
+            == []
+        )
 
     def test_replay_endpoint_returns_404_and_preserves_raw(self, client, session):
         """A non-dead-lettered raw remains stored after a refused replay."""

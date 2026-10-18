@@ -95,8 +95,7 @@ class TestIndexNoteFromRaw:
         assert "generated-only" not in kwargs["content"]
         assert kwargs["links"] == []
         assert all(
-            "generated-only" not in text
-            for text in embed.embed_batch.call_args.args[0]
+            "generated-only" not in text for text in embed.embed_batch.call_args.args[0]
         )
 
 

@@ -1090,6 +1090,7 @@ class TestEntityLinks:
         ]
         assert store.get_note_by_id("entity-note")["entities"] == expected
 
+
 class TestGetNoteLinks:
     def test_edge_resolved_when_target_exists(self, store):
         """Typed edges include resolved_note_id when target note exists."""
