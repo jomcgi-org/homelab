@@ -238,7 +238,7 @@ def test_s6_stays_off_outside_staged_hub_values() -> None:
     assert hub["conformance"]["s6"]["enabled"] is True
 
 
-def test_staged_s1_s8_fit_two_suites_without_reducing_assertions() -> None:
+def test_staged_s1_s8_preserves_assertions_and_scenario_budgets() -> None:
     pod = _runner_pod(
         _render("embervm-dev", _dev_values() + [Path(os.environ["DEV_GKE_VALUES"])])
     )
@@ -259,5 +259,5 @@ def test_staged_s1_s8_fit_two_suites_without_reducing_assertions() -> None:
     assert suite_seconds == 495
     assert env["READY_WAIT"] == "30m0s"
     assert env["RUN_INTERVAL"] == "25m"
-    # projects/platform/kargo/values.yaml keeps verdictTimeout at 1h15m0s.
-    assert 30 * 60 + 2 * suite_seconds + 25 * 60 == 4290 < 75 * 60
+    # runLoop waits after each suite, then repeats readiness. These rendered
+    # budgets do not prove that two cycles finish inside Kargo's verdict window.

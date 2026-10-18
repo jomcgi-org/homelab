@@ -2675,7 +2675,7 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
 def test_s6_trace_runner_is_default_off_outside_staged_hub() -> None:
     """S6 stays off in the shared base and recovery preset.
 
-    The hub-only overlay stages S1-S8 together under #6965's landing hold.
+    The hub-only overlay stages S1-S8 together after the feature chart deploys.
     Reads the values files directly (no helm render), so a
     missing key fails here rather than at template time.
     """
@@ -3227,7 +3227,30 @@ def test_jailer_uid_block_base_renders_on_every_noded() -> None:
 
 @pytest.fixture(scope="module")
 def staged_hub_dev() -> list[dict]:
-    return _overlay_documents(*_HUB_OVERLAYS["dev"])
+    return _hub_application_documents("dev")
+
+
+def _hub_application_values(environment: str) -> tuple[str, list[Path]]:
+    """Use the Application's ordered stack, with no enabling CLI overrides."""
+    key = "DEV_GKE_APPLICATION" if environment == "dev" else "GKE_APPLICATION"
+    application = yaml.safe_load(Path(os.environ[key]).read_text())["spec"]
+    (source,) = [s for s in application["sources"] if s.get("chart") == "embervm"]
+    helm = source["helm"]
+    paths = {
+        "$values/projects/embervm/dev/deploy/values.yaml": "DEV_VALUES",
+        "$values/projects/embervm/dev/deploy/values-gke.yaml": "DEV_GKE_VALUES",
+        "$values/projects/embervm/deploy/values.yaml": "PROD_VALUES",
+        "$values/projects/embervm/deploy/values-gke.yaml": "GKE_VALUES",
+    }
+    assert helm["releaseName"] == application["destination"]["namespace"]
+    assert not helm.get("parameters") and not helm.get("valuesObject")
+    assert not helm.get("values") and not helm.get("fileParameters")
+    return helm["releaseName"], [Path(os.environ[paths[p]]) for p in helm["valueFiles"]]
+
+
+def _hub_application_documents(environment: str) -> list[dict]:
+    rendered = _render(*_hub_application_values(environment))
+    return [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
 
 
 def test_staged_dev_reserved_jailer_and_drain_consumers(staged_hub_dev) -> None:
@@ -3307,6 +3330,8 @@ def test_staged_dev_s8_has_a_reachable_isolated_ca(staged_hub_dev) -> None:
         assert env["EGRESS_EXTERNAL"] == env["EGRESS_INTERNAL_DEFAULT"] == "deny"
         assert not env.get("EGRESS_INTERNAL_ALLOWLIST")
         assert "EGRESS_TOKEN_BROKER_URL" not in env
+        # The mirror is another reserved-name path before ordinary deny policy.
+        assert not env.get("EGRESS_GIT_MIRROR_ADDR")
         # main.go loads the CA only for a nonempty, valid catalog. swap.go
         # retains a dead optional entry when its env is absent; it does not
         # contact a broker. ca.egress.internal is answered before DNS/policy.
@@ -3339,11 +3364,15 @@ def test_staged_dev_s8_has_a_reachable_isolated_ca(staged_hub_dev) -> None:
         } in sidecar["volumeMounts"]
         (volume,) = [v for v in pod["volumes"] if v["name"] == "egress-ca"]
         assert volume["secret"]["secretName"] == ca_secret
+        # The mount does not order certificate issuance before sidecar startup.
+        # S8 remains a live gate: an initially missing CA is not reloaded.
+        assert volume["secret"]["optional"] is True
         assert not any(m["name"] == "egress-ca" for m in noded["volumeMounts"])
 
     (certificate,) = [d for d in staged_hub_dev if d["kind"] == "Certificate"]
     (issuer,) = [d for d in staged_hub_dev if d["kind"] == "Issuer"]
     assert certificate["spec"]["secretName"] == ca_secret
+    assert certificate["spec"]["isCA"] is True
     assert certificate["spec"]["issuerRef"]["name"] == issuer["metadata"]["name"]
     assert issuer["spec"] == {"selfSigned": {}}
     assert not any(
@@ -3351,6 +3380,23 @@ def test_staged_dev_s8_has_a_reachable_isolated_ca(staged_hub_dev) -> None:
         and d["metadata"]["name"] == unresolved_secret
         for d in staged_hub_dev
     ), "the deferred catalog entry must never provision a credential"
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        ["egress.secrets[0].env="],
+        ["egress.secrets[0].secretRef=null"],
+        ["egress.secrets[0].brokerGrant=forbidden-extra-source"],
+        ["egress.secrets[0].brokerGrants[0]=forbidden-extra-source"],
+    ],
+)
+def test_staged_dev_rejects_broken_deferred_catalog(settings) -> None:
+    release, values = _hub_application_values("dev")
+    with pytest.raises(
+        RuntimeError, match="exactly one of secretRef, brokerGrant or brokerGrants"
+    ):
+        _render(release, values, settings)
 
 
 @pytest.mark.parametrize(
@@ -3391,8 +3437,8 @@ def test_staged_dev_activation_does_not_leak_to_other_stacks(value_keys) -> None
     assert "embervm-dev-s8-unresolved" not in json.dumps(docs)
 
 
-def test_staged_dev_and_production_uid_ranges_are_disjoint(staged_hub_dev) -> None:
-    prod = _overlay_documents(*_HUB_OVERLAYS["prod"])
+def test_configured_fleets_fit_separate_uid_blocks(staged_hub_dev) -> None:
+    prod = _hub_application_documents("prod")
     prod_bases = {
         int(_plain_env(c)["EMBERVM_NODED_JAILER_UID_BLOCK_BASE"])
         for _, c in _containers(prod)
@@ -3404,8 +3450,25 @@ def test_staged_dev_and_production_uid_ranges_are_disjoint(staged_hub_dev) -> No
         if c["name"] == "noded"
     }
     assert prod_bases == {0} and dev_bases == {20}
-    # launcher.go leases upward in 1000-UID blocks starting at 20000.
-    # This contract requires production to stay below 20 bricks per node.
-    prod_last_uid = 20000 + (next(iter(prod_bases)) + 20) * 1000 - 1
+    def configured_bricks(documents):
+        (control,) = [c for _, c in _containers(documents) if c["name"] == "control-plane"]
+        classes = json.loads(_plain_env(control)["EMBERVM_BRICK_CLASSES"])
+        for doc in documents:
+            if doc["kind"] == "Deployment" and "-noded-brick-" in doc["metadata"]["name"]:
+                assert doc["spec"]["strategy"]["rollingUpdate"]["maxSurge"] == 0
+        return sum(
+            max(c["desired"], c["min"], c["max"], c["ceiling_bound"]) + c["floors"]
+            for c in classes
+        )
+
+    # uidlease_linux.go scans from the base up to block 39, not just to the
+    # other release's base. Bound the configured fleet, even if it all shares
+    # one node. Terminating pods, old leases and manual scale remain live checks;
+    # this is not evidence of current lease separation.
+    prod_count = configured_bricks(prod)
+    dev_count = configured_bricks(staged_hub_dev)
+    assert prod_count == 9 < 20
+    assert dev_count == 2 <= 40 - 20
+    prod_last_uid = 20000 + (next(iter(prod_bases)) + prod_count) * 1000 - 1
     dev_first_uid = 20000 + next(iter(dev_bases)) * 1000
-    assert prod_last_uid == 39999 < dev_first_uid == 40000
+    assert prod_last_uid == 28999 < dev_first_uid == 40000

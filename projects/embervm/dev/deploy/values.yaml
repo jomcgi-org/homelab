@@ -302,8 +302,9 @@ conformance:
   # projects/platform/kargo/values.yaml (1h15m0s), which also has to cover the
   # suite after this wait ends and, when the first cycle is red, one more
   # runInterval plus suite. The base S1-S5 budget is 6m40s; the staged hub's
-  # S1-S8 budget is 8m15s, with runInterval 25m in values-gke.yaml to fit two
-  # suites in that verdict window. It is a bound on waiting for bricks,
+  # S1-S8 budget is 8m15s, with runInterval 25m in values-gke.yaml. Two suites
+  # fit only if repeat readiness and polling use the remaining 3m30s. The runner
+  # repeats readiness on each cycle. It is a bound on waiting for bricks,
   # not a budget for the suite, so a fast roll is unaffected: readiness is
   # polled, not slept.
   readyWait: 30m0s

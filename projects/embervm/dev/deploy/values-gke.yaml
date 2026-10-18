@@ -23,8 +23,8 @@
 # release; activating either one means replacing this Application's value
 # files, not stacking a second release.
 
-# Staged step 1 of #6965. Keep this PR unmerged until an authorized operator
-# verifies the #6961 feature chart and running images in dev. These settings
+# Staged step 1 of #6965. The #6961 feature chart and running images must be
+# verified in dev before these values are activated. These settings
 # live here because the base dev file also feeds the separate store-validation
 # preset. Production and the alternative presets remain unarmed.
 dispatcher:
@@ -36,8 +36,10 @@ conformance:
   # S1-S8 requires TLC too; without this flag S6 is absent from the verdict.
   s6:
     enabled: true
-  # 30m readiness + two 8m15s suites + 25m between runs = 71m30s, below
-  # Kargo's unchanged 75m verdict timeout. No scenario budget is reduced.
+  # The runner waits after each suite and repeats readiness on every cycle.
+  # 30m first readiness + two 8m15s suites + 25m delay leaves 3m30s of
+  # Kargo's 75m timeout for second readiness and polling, not a retry guarantee.
+  # No scenario budget is reduced.
   runInterval: 25m
 
 # S8 fetches the public CA over vsock; no network destination is allowed.
@@ -45,6 +47,9 @@ conformance:
 # secret state retains an unresolved entry and denies that entry's hosts.
 # Never provision this optional Secret: it carries no provider credential or
 # broker grant. cert-manager's CA is scoped to this dev release, not production.
+# The CA mount is optional and the sidecar loads it only at startup. Issuing it
+# after startup does not recover S8: activation needs the CA present when the
+# sidecar starts, or a separately authorized restart. An absent CA fails S8.
 egress:
   enabled: true
   workloads: [sandbox-python]
@@ -151,8 +156,10 @@ noded:
   admissionModel: reserved
   jailer:
     enabled: true
-    # UID 40000 onward; production starts at 20000 and must stay below 20
-    # bricks per shared node. Leases are local to each release's scratch root.
+    # UID 40000 onward; production starts at 20000. Its configured ceiling is
+    # nine bricks, but live leases must remain in blocks 0-19 on shared nodes.
+    # Each allocator scans to block 39; the base alone is not an upper bound.
+    # Leases are local to each release's scratch root.
     uidBlockBase: 20
   # Armed bricks refuse legacy banked bundles without jail-resource metadata.
   # Account for those bundles before rollout; do not repair them or fall back
