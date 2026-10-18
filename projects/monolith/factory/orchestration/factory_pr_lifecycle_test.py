@@ -20,6 +20,7 @@ from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
     FactoryReceipt,
+    FactoryStart,
     WorkItem,
 )
 from factory.orchestration.models import SwarmNodeRun, SwarmTask
@@ -50,6 +51,7 @@ def db(tmp_path, monkeypatch):
                 SwarmNodeRun,
                 FactoryControl,
                 FactoryReceipt,
+                FactoryStart,
                 FactoryAudit,
                 WorkItem,
             )
@@ -683,3 +685,39 @@ def test_human_issue_prevents_automatic_duplicate_pr_retirement(monkeypatch):
         lambda *_: pytest.fail("human ownership must be checked first"),
     )
     assert lifecycle._retirement_reason(REPO, pull(12, 7)) is None
+
+
+@pytest.mark.parametrize("closed_issue", [False, True])
+def test_operator_cancel_leaves_pr_untouched_by_settlement_and_sweep(
+    db, github, closed_issue
+):
+    task_receipt(db, "t-cancel", 7, "admitted", branch="factory/t-cancel", pr_number=12)
+    assert controls.request_control(
+        "cancel_task",
+        "joe",
+        task_id="t-cancel",
+        request_key="cancel",
+        expected_version=0,
+        cancellation_reason="Keep this PR for later",
+    )["ok"]
+    assert controls.finish_task(
+        "t-cancel",
+        "cancelled",
+        "reconciler",
+        evidence=controls.cancellation_evidence("t-cancel"),
+    )["ok"]
+    original = pull(12, 7, branch="factory/t-cancel")
+    api = github(
+        Github(
+            pulls=[original],
+            issues={7: {"state": "closed" if closed_issue else "open"}},
+        )
+    )
+    lifecycle.draft_settled_prs(REPO)
+    lifecycle._retire_pull(REPO, original)
+    assert api.pulls[12] == original
+    assert not api.writes and not api.comments
+    assert (
+        audit_details(db, "factory_pr_settlement_complete")[-1]["outcome"]
+        == "operator_cancelled"
+    )

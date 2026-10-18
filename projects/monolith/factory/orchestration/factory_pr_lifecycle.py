@@ -14,6 +14,7 @@ from sqlmodel import select
 
 from factory.orchestration.factory_controls import (
     _audit,
+    _cancellation_evidence,
     _locked_session,
     _read_session,
     delivery_branch_owner,
@@ -304,6 +305,8 @@ def _retire_pull(repo: str, listed: dict) -> None:
     pull = github_get(repo, f"pulls/{number}")
     if not _same_repo_factory_pull(pull, repo):
         return
+    if _operator_preserved_pull(repo, pull):
+        return
     if _owner_of_pull(repo, pull) is not None:
         return
     reason = _retirement_reason(repo, pull)
@@ -340,7 +343,11 @@ def _retire_pull(repo: str, listed: dict) -> None:
     # delivery target from the older observation would be the unsafe retry this
     # path exists to prevent.
     fresh = github_get(repo, f"pulls/{number}")
-    if not _same_repo_factory_pull(fresh, repo) or _owner_of_pull(repo, fresh):
+    if (
+        not _same_repo_factory_pull(fresh, repo)
+        or _owner_of_pull(repo, fresh)
+        or _operator_preserved_pull(repo, fresh)
+    ):
         return
     fresh_reason = _retirement_reason(repo, fresh)
     if fresh_reason is None:
@@ -480,10 +487,36 @@ def _settlement_successor(repo: str, row: FactoryReceipt, pull: dict) -> str | N
         return delivery_branch_owner(db, repo, branch, exclude_receipt_id=row.id)
 
 
+def _operator_preserved_pull(repo: str, pull: dict) -> bool:
+    """Cancellation retains its exact delivery surface for the operator."""
+    with _read_session() as db:
+        rows = db.exec(
+            select(FactoryReceipt).where(
+                FactoryReceipt.repo == repo,
+                FactoryReceipt.cancellation_requested.is_(True),
+                FactoryReceipt.task_id.in_(
+                    select(FactoryAudit.task_id).where(
+                        FactoryAudit.action == "cancel_task"
+                    )
+                ),
+            )
+        ).all()
+        for row in rows:
+            branch, number = _owned_surface(row)
+            if (
+                pull["head"]["ref"] == branch
+                and (number is None or number == pull["number"])
+                and _cancellation_evidence(db, row) is not None
+            ):
+                return True
+    return False
+
+
 def _draft_settled_pull(repo: str, row: FactoryReceipt) -> None:
     if not row.task_id or _settlement_done(row.task_id):
         return
     with _read_session() as db:
+        cancellation = _cancellation_evidence(db, db.get(FactoryReceipt, row.id))
         handed_off = (
             db.exec(
                 select(FactoryAudit.id).where(
@@ -493,13 +526,13 @@ def _draft_settled_pull(repo: str, row: FactoryReceipt) -> None:
             ).first()
             is not None
         )
-    if handed_off:
+    if handed_off or cancellation is not None:
         _record(
             "factory_pr_settlement_complete",
             task_id=row.task_id,
             repo=repo,
             receipt_id=row.id,
-            outcome="human_handoff",
+            outcome="human_handoff" if handed_off else cancellation["state"],
         )
         return
     number, reason = _settlement_candidate(row)

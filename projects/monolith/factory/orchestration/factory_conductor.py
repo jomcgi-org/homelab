@@ -487,6 +487,7 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
             "dependency_review": (direction or {}).get("dependency_review"),
             "landing_hold": landing_held(receipt),
             "task_paused": bool(receipt and receipt.task_paused),
+            "cancellation_requested": bool(receipt and receipt.cancellation_requested),
             "nonrenewable_recovery": nonrenewable_recovery(receipt),
             "work_item_id": None if receipt is None else receipt.work_item_id,
             "funding_enrolled": latest(db, task_id, "funding_review_requested")
@@ -6394,7 +6395,6 @@ def reconcile_task(
         set_control,
     )
 
-    _consume_intervention_notifications(task_id)
     task = _task(task_id)
     runs = graph.node_runs(task_id)
     from factory.orchestration.factory_refine import task_class_for
@@ -6403,7 +6403,6 @@ def reconcile_task(
     # verdicts.
     from factory.orchestration.factory_feedback import record_first_pass
 
-    record_first_pass(task_id, runs)
     # A crash may fall between graph settlement and the factory reservation
     # settlement. Reconcile terminal facts before attempting any further work.
     for run in runs:
@@ -6423,10 +6422,14 @@ def reconcile_task(
                 raise ValueError(f"factory outcome refused: {charged['reason']}")
     from factory.orchestration.factory_controls import (
         HUMAN_HANDOFF_EVIDENCE,
+        cancellation_evidence,
         finish_task,
     )
 
-    if human_owned:
+    cancellation = (
+        cancellation_evidence(task_id) if task.get("cancellation_requested") else None
+    )
+    if human_owned or cancellation is not None:
         # Drain existing invocations through their normal outcome accounting.
         # Do not plan, retry, dispatch, verify a brief or claim delivery here.
         for run in runs:
@@ -6435,8 +6438,15 @@ def reconcile_task(
         if all(
             r["status"] in graph.TERMINAL_RUN_STATUSES for r in graph.node_runs(task_id)
         ):
-            finish_task(task_id, "cancelled", ACTOR, evidence=HUMAN_HANDOFF_EVIDENCE)
+            finish_task(
+                task_id,
+                "cancelled",
+                ACTOR,
+                evidence=HUMAN_HANDOFF_EVIDENCE if human_owned else cancellation,
+            )
         return
+    _consume_intervention_notifications(task_id)
+    record_first_pass(task_id, runs)
     parallel = parallel_limit(policy)
     active = [r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")]
     if active:
@@ -7818,6 +7828,11 @@ def _expire_task_deadline(task: dict) -> bool:
 
     def stranded(db):
         """The uncertain starts, or None when the backstop must not act."""
+        from factory.orchestration.factory_controls import _receipt
+
+        receipt = _receipt(db, task_id)
+        if receipt is None or receipt.cancellation_requested:
+            return None
         rows = _starts(db, task_id)
         if any(row.status == "reserved" for row in rows):
             return None
@@ -8080,7 +8095,11 @@ def _escalate_ceased_task(task: dict) -> bool:
 
     def eligible(db) -> bool:
         receipt = _receipt(db, task_id)
-        if receipt is None or receipt.state not in _ACTIVE:
+        if (
+            receipt is None
+            or receipt.state not in _ACTIVE
+            or receipt.cancellation_requested
+        ):
             return False
         if any(row.status in ("reserved", "uncertain") for row in _starts(db, task_id)):
             return False
@@ -8191,7 +8210,9 @@ def _escalate_ceased_task(task: dict) -> bool:
     return True
 
 
-def _supervise_cessation(task: dict, dbos, *, human_owned: bool = False) -> None:
+def _supervise_cessation(
+    task: dict, dbos, *, human_owned: bool = False, cancelling: bool = False
+) -> None:
     """Produce cessation evidence for this task's stranded attempts, then escalate.
 
     Runs after reconcile_task, so every proof that waits for evidence has
@@ -8201,7 +8222,7 @@ def _supervise_cessation(task: dict, dbos, *, human_owned: bool = False) -> None
     from factory.orchestration import factory_cessation
 
     factory_cessation.supervise_task(task, dbos)
-    if not human_owned:
+    if not human_owned and not cancelling:
         _escalate_ceased_task(task)
 
 
@@ -8271,9 +8292,12 @@ def tick() -> None:
                     task["task_id"],
                 )
         owned = False
+        cancelling = bool(task.get("cancellation_requested"))
         try:
-            owned = _observe_human_ownership(task)
-            if owned:
+            if cancelling:
+                reconcile_task(task["task_id"], task["policy"], dbos)
+            elif _observe_human_ownership(task):
+                owned = True
                 reconcile_task(task["task_id"], task["policy"], dbos, human_owned=True)
             else:
                 _watch_progress(task)
@@ -8283,7 +8307,9 @@ def tick() -> None:
         # Its own guard as well: a control plane that cannot be read must not
         # keep the backstop below, or the next task, from its tick.
         try:
-            if owned:
+            if cancelling:
+                _supervise_cessation(task, dbos, cancelling=True)
+            elif owned:
                 _supervise_cessation(task, dbos, human_owned=True)
             else:
                 _supervise_cessation(task, dbos)
@@ -8291,7 +8317,7 @@ def tick() -> None:
             logger.exception(
                 "factory supervised cessation failed for task %s", task["task_id"]
             )
-        if owned:
+        if owned or cancelling:
             continue
         # Last, and in its own guard. Proof-based release always gets this
         # tick first, and a task whose reconcile raises every time is exactly

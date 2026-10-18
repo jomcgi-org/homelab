@@ -530,6 +530,16 @@ def test_escalations_payload_passes_through_an_uninitialised_factory(monkeypatch
             "factory_control",
             {"action": "stop", "request_key": "stop", "expected_version": 1},
         ),
+        (
+            "factory_control",
+            {
+                "action": "cancel_task",
+                "request_key": "cancel",
+                "expected_version": 1,
+                "task_id": "t",
+                "cancellation_reason": "No longer needed",
+            },
+        ),
         ("factory_task_detail", {"receipt_id": 1}),
         (
             "factory_amend_policy",
@@ -844,6 +854,7 @@ def test_control_attributes_authenticated_actor_and_preserves_owner_result(monke
                 "expected_version": 3,
                 "task_id": None,
                 "receipt_id": None,
+                "cancellation_reason": None,
             },
         )
     ]
@@ -884,6 +895,41 @@ def test_control_passes_receipt_id_for_cancel_receipt(monkeypatch):
                 "expected_version": 3,
                 "task_id": None,
                 "receipt_id": 9,
+                "cancellation_reason": None,
+            },
+        )
+    ]
+
+
+def test_cancel_task_control_preserves_reason_and_verified_actor(monkeypatch):
+    calls = []
+
+    def request(action, actor, **kwargs):
+        calls.append((action, actor, kwargs))
+        return {"ok": True, "state": "enabled"}
+
+    monkeypatch.setattr(controls, "request_control", request)
+    result = _as(
+        _principal(),
+        lambda: mcp.factory_control(
+            "cancel_task",
+            "cancel",
+            3,
+            task_id="t",
+            cancellation_reason="No longer needed",
+        ),
+    )
+    assert result["ok"]
+    assert calls == [
+        (
+            "cancel_task",
+            "joe",
+            {
+                "request_key": "cancel",
+                "expected_version": 3,
+                "task_id": "t",
+                "receipt_id": None,
+                "cancellation_reason": "No longer needed",
             },
         )
     ]
@@ -1085,6 +1131,10 @@ def test_mcp_client_lists_and_calls_controls_with_schema_validation(monkeypatch)
                 "factory_task_detail",
             } <= tools.keys()
             assert "actor" not in tools["factory_control"].inputSchema["properties"]
+            schema = tools["factory_control"].inputSchema["properties"]
+            assert "cancel_task" in schema["action"]["enum"]
+            assert "cancellation_reason" in schema
+            assert "cancel_task" in tools["factory_control"].description
             result = await client.call_tool(
                 "factory_control",
                 {
@@ -1115,7 +1165,21 @@ def test_mcp_client_lists_and_calls_controls_with_schema_validation(monkeypatch)
                     raise_on_error=False,
                 )
                 assert invalid.is_error
-            assert calls == [("pause_admissions", "pause", 1, None, "joe", None)]
+            cancelled = await client.call_tool(
+                "factory_control",
+                {
+                    "action": "cancel_task",
+                    "request_key": "cancel",
+                    "expected_version": 2,
+                    "task_id": "t",
+                    "cancellation_reason": "No longer needed",
+                },
+            )
+            assert cancelled.data["ok"]
+            assert calls == [
+                ("pause_admissions", "pause", 1, None, "joe", None, None),
+                ("cancel_task", "cancel", 2, "t", "joe", None, "No longer needed"),
+            ]
 
     _as(_principal(), exercise)
 

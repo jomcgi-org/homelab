@@ -103,6 +103,7 @@ def paused_settlement(feedback_db, monkeypatch, request):
         (conductor_context, "report_receipt_with_deadline"),
     ):
         monkeypatch.setattr(module, name, lambda *a, **kw: None)
+    submit_or_reconcile = conductor._submit_or_reconcile
     monkeypatch.setattr(conductor, "_submit_or_reconcile", lambda *a: None)
     monkeypatch.setattr(
         conductor,
@@ -128,6 +129,7 @@ def paused_settlement(feedback_db, monkeypatch, request):
         checks=checks,
         cards=cards,
         engine=feedback_db,
+        submit_or_reconcile=submit_or_reconcile,
     )
 
 
@@ -844,6 +846,199 @@ def test_paused_human_handoff_precedes_all_terminal_facts(paused_settlement):
     assert snapshot["state"] == "cancelled"
     assert snapshot["evidence"] == controls.HUMAN_HANDOFF_EVIDENCE
     assert not s.cards
+
+
+def request_task_cancellation(s):
+    from factory.orchestration import factory_controls as controls
+
+    result = controls.request_control(
+        "cancel_task",
+        "operator-subject",
+        task_id=s.task["id"],
+        cancellation_reason="Work is no longer needed",
+        request_key="cancel",
+        expected_version=controls.status()["version"],
+    )
+    assert result["ok"]
+    return result
+
+
+@pytest.mark.parametrize("paused_settlement", ["empty"], indirect=True)
+@pytest.mark.parametrize("paused", [False, True])
+def test_operator_cancel_paused_task_next_tick_releases_slot_and_keeps_cooldown(
+    paused_settlement, monkeypatch, paused
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_intake_loop import _receipt_exclusion
+
+    s = paused_settlement
+    if not paused:
+        assert controls.set_control("resume_task", "operator", task_id=s.task["id"])[
+            "ok"
+        ]
+    before = controls.status()
+    issue_before, pr_before = dict(s.issue), dict(s.pr)
+    request_task_cancellation(s)
+    for name in (
+        "github_get",
+        "_watch_progress",
+        "_consume_intervention_notifications",
+        "_expire_task_deadline",
+    ):
+        monkeypatch.setattr(
+            conductor,
+            name,
+            lambda *a, **kw: pytest.fail("Cancellation must only drain"),
+        )
+    conductor.tick()
+    current = controls.status()
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "cancelled"
+    assert snapshot["evidence"] == {
+        "state": "operator_cancelled",
+        "reason": "Work is no longer needed",
+    }
+    assert not current["active_tasks"]
+    assert (
+        current["lanes"]["delivery"]["active"]
+        == before["lanes"]["delivery"]["active"] - 1
+    )
+    assert current["state"] == before["state"]
+    assert current["policy"] == before["policy"]
+    assert s.issue == issue_before and s.pr == pr_before and not s.cards
+    with Session(s.engine) as db:
+        receipt = controls._receipt(db, s.task["id"])
+        assert (
+            _receipt_exclusion(
+                [receipt],
+                generation=1,
+                task_class="bug-fix",
+                cooldown_cutoff=s.clock[0] - timedelta(hours=1),
+            )
+            == "cooldown"
+        )
+        assert (
+            _receipt_exclusion(
+                [receipt],
+                generation=1,
+                task_class="bug-fix",
+                cooldown_cutoff=s.clock[0] + timedelta(hours=1),
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize("start_status", ["reserved", "uncertain"])
+def test_operator_cancel_keeps_unresolved_start_with_terminal_graph(
+    paused_settlement, start_status
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    pause_blocker(s, start_status)
+    request_task_cancellation(s)
+    before = controls.task_snapshot(s.task["id"])
+    conductor.tick()
+    held = controls.task_snapshot(s.task["id"])
+    assert held["state"] == "admitted"
+    assert held["starts"] == before["starts"]
+    assert held["committed_cost_usd"] == before["committed_cost_usd"]
+    assert held["cancellation_requested"] and not s.cards
+    assert controls.record_start_outcome(
+        s.task["id"],
+        "unresolved",
+        "failed",
+        "reconciler",
+        cost_usd=0.25,
+        reconciled=True,
+    )["ok"]
+    conductor.tick()
+    assert (
+        controls.task_snapshot(s.task["id"])["evidence"]["state"]
+        == "operator_cancelled"
+    )
+
+
+def test_operator_cancel_reconciles_live_run_without_new_dispatch(
+    paused_settlement, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    s = paused_settlement
+    key = f"factory-node:{s.task['id']}:review_fix:1"
+    with Session(s.engine) as db, db.begin():
+        run = db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.node_key == "review_fix")
+        ).one()
+        run.status, run.outcome_json = "dispatched", None
+        start = db.exec(select(FactoryStart).where(FactoryStart.start_key == key)).one()
+        start.status, start.cost_usd = "reserved", None
+    request_task_cancellation(s)
+    seen = []
+
+    class Running:
+        def get_workflow_status(self, workflow_id):
+            seen.append(workflow_id)
+            return SimpleNamespace(status="PENDING", application_version=None)
+
+    # Exercise the normal reconciliation path for a still-running invocation.
+    monkeypatch.setattr(conductor, "_submit_or_reconcile", s.submit_or_reconcile)
+    monkeypatch.setattr(conductor, "_stranded_versions", lambda _: None)
+    monkeypatch.setattr(conductor, "_stalled_seconds", lambda *a: None)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: Running())
+    before = controls.task_snapshot(s.task["id"])
+    conductor.tick()
+    assert seen == [key]
+    assert controls.task_snapshot(s.task["id"])["state"] == "admitted"
+    assert controls.task_snapshot(s.task["id"])["starts"] == before["starts"]
+    # Completion is recorded by the normal graph owner; the next tick accounts it.
+    result = {"status": "succeeded", "session_id": 102, "cost_usd": 0.5, "value": {}}
+    assert conductor.graph.record_outcome(
+        s.task["id"], "review_fix", 1, "succeeded", 0.5, None, json.dumps(result)
+    ).ok
+    conductor.tick()
+    current = controls.task_snapshot(s.task["id"])
+    assert current["state"] == "cancelled"
+    assert current["evidence"]["state"] == "operator_cancelled"
+    assert len(current["starts"]) == len(before["starts"])
+    assert not current["unresolved_starts"] and not s.cards
+
+
+def test_operator_cancel_is_seen_after_stale_tick_snapshot(
+    paused_settlement, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    original_status = controls.status
+    snapshot = original_status()
+    request_task_cancellation(s)
+    monkeypatch.setattr(controls, "status", lambda: snapshot)
+    conductor.tick()
+    assert (
+        controls.task_snapshot(s.task["id"])["evidence"]["state"]
+        == "operator_cancelled"
+    )
+
+
+def test_operator_cancellation_supervises_without_escalation(monkeypatch):
+    from factory.orchestration import factory_cessation
+
+    seen = []
+    monkeypatch.setattr(
+        factory_cessation, "supervise_task", lambda task, _: seen.append(task)
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_escalate_ceased_task",
+        lambda *a: pytest.fail("Already cancelled by operator"),
+    )
+    task = {"task_id": "t-cancel"}
+    conductor._supervise_cessation(task, object(), cancelling=True)
+    assert seen == [task]
 
 
 def test_paused_deadline_preserves_existing_open_question(paused_settlement):
