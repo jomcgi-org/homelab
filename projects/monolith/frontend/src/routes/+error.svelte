@@ -5,6 +5,16 @@
   // mono token set) but not the technical-drawing sheet or its webfont (those
   // arrive with the public layout, which a 404 never reaches), so this page
   // pulls both in itself.
+  //
+  // The brutalist sheet stays imported here even though nothing on this page
+  // uses it: SvelteKit's client preloads the root error node on every page,
+  // so this import is what delivers design-system.css (its reset, body font
+  // and .btn vocabulary) to the friends and private tiers, whose pages use
+  // them without importing the sheet. Dropping it set the Grimoire session
+  // screen in the browser's serif and overflowed its phone layout (#7016
+  // records the dependency). It leaves with those tiers' migration, not
+  // before. It loads first so the sheet below overrides what the two share.
+  import "$lib/public/styles/design-system.css";
   import "$lib/public/styles/technical-drawing.css";
   import { TechnicalDrawingChrome, Trail } from "$lib/public/components";
   import { page } from "$app/stores";
