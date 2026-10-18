@@ -16,7 +16,6 @@ under SQLite's create_all too) and Postgres.
 
 from __future__ import annotations
 
-from collections import deque
 from typing import Any
 
 from sqlalchemy import and_, or_
@@ -111,69 +110,14 @@ def scope_entity_ids(session: Session, scope: str, lens: str) -> set[str]:
 _LENS_NAMES = ("world", "story", "quests", "rules")
 
 
-def _lens_counts(
-    session: Session, scope: str, current_lens: str, current_ids: set[str]
-) -> dict[str, int]:
-    """Entity count per lens for ``scope``, via ``scope_entity_ids`` per lens
-    (id-set sized queries, never a full graph fetch) so the frontend can grey
-    out lens buttons with no entities in the current scope. Reuses the
-    caller's already-computed ``current_ids`` for ``current_lens`` instead of
-    re-querying it, so this is 3 extra queries, not 4."""
-    return {
-        name: len(current_ids)
-        if name == current_lens
-        else len(scope_entity_ids(session, scope, name))
-        for name in _LENS_NAMES
-    }
-
-
-def scope_subgraph(session: Session, scope: str, lens: str) -> dict[str, Any]:
-    """Induced subgraph ``{nodes, edges, lens_counts}`` for a scope + lens:
-    the core bulk-load endpoint for the EXPLORE canvas (see plan design
-    decision 4, "bulk over N+1" - the client fetches one payload per
-    scope/lens change instead of one relationship call per node).
-
-    Nodes are every entity in ``scope_entity_ids(session, scope, lens)``,
-    projected via ``public.entity_cards`` (spine + secondary detail, batched).
-    Edges are every relationship whose BOTH endpoints are in that node set
-    (a true induced subgraph, not "every edge touching any node").
-
-    ``lens_counts`` is ``{world, story, quests, rules}`` -> entity count in
-    this scope, so the frontend can grey out lens buttons with zero entities
-    without a separate round trip.
-
-    A whole-corpus ``scope="everything"`` can return a large payload; no
-    truncation happens here (nodes are never silently dropped), so the
-    frontend should default to gallery/adventure scope and treat
-    "everything" as an explicit, occasionally-large view.
-    """
-    ids = scope_entity_ids(session, scope, lens)
-    lens_counts = _lens_counts(session, scope, lens, ids)
-    if not ids:
-        return {"nodes": [], "edges": [], "lens_counts": lens_counts}
-    entities = session.exec(select(Entity).where(Entity.id.in_(ids))).all()
-    nodes = public.entity_cards(session, entities)
-    edges = [
-        {"from": r.from_entity_id, "to": r.to_entity_id, "rel_type": r.rel_type}
-        for r in session.exec(
-            select(Relationship).where(
-                Relationship.from_entity_id.in_(ids),
-                Relationship.to_entity_id.in_(ids),
-            )
-        ).all()
-    ]
-    return {"nodes": nodes, "edges": edges, "lens_counts": lens_counts}
-
-
 def ego_subgraph(
     session: Session,
     entity_id: str,
     scope: str = "everything",
     lens: str = "world",
 ) -> dict[str, Any]:
-    """Focus entity + its 1-hop neighbors, as the SAME ``{nodes, edges}``
-    shape ``scope_subgraph`` returns, so the canvas can merge a click-to-
-    expand ("wander") result straight into the current view.
+    """Focus entity and its 1-hop neighbors as nodes, edges and lens counts
+    for the World canvas's click-to-expand view.
 
     Mirrors ``public.list_relationships_public``'s is_global gating: a
     non-public focus entity yields an empty graph, and any neighbor that
@@ -181,7 +125,7 @@ def ego_subgraph(
     exactly like the private-entity-neighbor drop in that function.
 
     ``scope``/``lens`` narrow the NEIGHBOR set to ``scope_entity_ids(session,
-    scope, lens)``, the same predicate ``scope_subgraph`` uses, so a World
+    scope, lens)``, so a World
     page scoped to one adventure or lensed to "rules" only shows neighbors
     that belong to that slice. The FOCUS node is always kept regardless of
     scope/lens (an entity's own page never hides itself), matching the
@@ -193,8 +137,7 @@ def ego_subgraph(
     ``lens_counts`` is returned alongside, one count per lens over the
     UNFILTERED is_global neighbor set (via ``scope_entity_ids`` restricted to
     those neighbor ids), so the frontend's lens tabs can grey out lenses with
-    no entities in this ego neighborhood, the same UX ``scope_subgraph``'s
-    lens_counts gives the EXPLORE canvas.
+    no entities in this ego neighborhood.
 
     The focus node's card carries an extra ``image_chunk_id`` (earliest
     image-bearing chunk mentioning it, via
@@ -263,12 +206,10 @@ def ego_subgraph(
 
 
 def _ego_lens_counts(session: Session, neighbor_ids: set[str]) -> dict[str, int]:
-    """Per-lens entity count over a fixed ego neighbor id set, the ego
-    analogue of ``_lens_counts``: that helper re-runs ``scope_entity_ids``
-    per lens over a whole scope, but an ego neighborhood is already a small,
-    bounded set of ids in hand, so this queries ``lens_predicate`` restricted
-    to ``neighbor_ids`` directly (one query per lens, never a full-corpus
-    scan) instead of re-deriving a roster from scratch."""
+    """Count entities per lens within the bounded ego neighbor set.
+
+    Queries lens_predicate once per lens, restricted to neighbor_ids.
+    """
     if not neighbor_ids:
         return {name: 0 for name in _LENS_NAMES}
     return {
@@ -281,91 +222,3 @@ def _ego_lens_counts(session: Session, neighbor_ids: set[str]) -> dict[str, int]
         )
         for name in _LENS_NAMES
     }
-
-
-# Hop bound for shortest_path's BFS: a D&D corpus graph has a modest
-# out-degree per entity, but an unbounded BFS is still a latent runaway query
-# on a large/dense future corpus. 6 comfortably covers "six degrees of
-# separation" framing (the pathfinding feature's own pitch) while capping
-# worst-case work at a fixed number of relationship-table rows.
-_MAX_PATH_DEPTH = 6
-
-
-def shortest_path(
-    session: Session, from_id: str, to_id: str, *, max_depth: int = _MAX_PATH_DEPTH
-) -> dict[str, Any]:
-    """BFS shortest path between two entities over the relationship graph.
-
-    Traverses relationship edges in BOTH directions, restricted to
-    ``is_global`` entities only (a private entity can never appear as an
-    intermediate hop or an endpoint), bounded to ``max_depth`` hops. Returns
-    ``{"path": [...]}`` where each entry is ``{"entity": <card>, "via":
-    <rel_type used to reach this entity from the previous one, None for the
-    first entry>}``, in order from ``from_id`` to ``to_id``. Returns
-    ``{"path": []}`` if either id is missing/non-public, or no path exists
-    within the depth bound.
-
-    Kept as a plain in-process BFS (not a recursive SQL CTE): the relationship
-    table is loaded once up front and walked in Python, which is simple and
-    fast at this corpus's scale (a few thousand entities, modest out-degree).
-    ``max_depth`` is the guardrail against that assumption ever becoming
-    false: on a much bigger or denser future graph, this bounds the walk to a
-    fixed number of hops instead of degrading into an unbounded search.
-    """
-    from_entity = session.get(Entity, from_id)
-    to_entity = session.get(Entity, to_id)
-    if (
-        from_entity is None
-        or to_entity is None
-        or not from_entity.is_global
-        or not to_entity.is_global
-    ):
-        return {"path": []}
-    if from_id == to_id:
-        card = public.entity_cards(session, [from_entity])[0]
-        return {"path": [{"entity": card, "via": None}]}
-
-    global_ids = set(session.exec(select(Entity.id).where(Entity.is_global)).all())
-    adjacency: dict[str, list[tuple[str, str]]] = {}
-    for r in session.exec(select(Relationship)).all():
-        if r.from_entity_id not in global_ids or r.to_entity_id not in global_ids:
-            continue
-        adjacency.setdefault(r.from_entity_id, []).append((r.to_entity_id, r.rel_type))
-        adjacency.setdefault(r.to_entity_id, []).append((r.from_entity_id, r.rel_type))
-
-    visited = {from_id}
-    # Each queued path is a list of (entity_id, rel_type_used_to_arrive)
-    # tuples; the first entry's rel_type is always None.
-    queue: deque[list[tuple[str, str | None]]] = deque([[(from_id, None)]])
-    while queue:
-        path = queue.popleft()
-        if len(path) - 1 >= max_depth:
-            continue
-        current_id, _ = path[-1]
-        for neighbor_id, rel_type in adjacency.get(current_id, []):
-            if neighbor_id in visited:
-                continue
-            new_path = path + [(neighbor_id, rel_type)]
-            if neighbor_id == to_id:
-                ids = [eid for eid, _ in new_path]
-                entities_by_id = {
-                    e.id: e
-                    for e in session.exec(
-                        select(Entity).where(Entity.id.in_(ids))
-                    ).all()
-                }
-                cards_by_id = {
-                    c["id"]: c
-                    for c in public.entity_cards(
-                        session, [entities_by_id[eid] for eid in ids]
-                    )
-                }
-                return {
-                    "path": [
-                        {"entity": cards_by_id[eid], "via": via}
-                        for eid, via in new_path
-                    ]
-                }
-            visited.add(neighbor_id)
-            queue.append(new_path)
-    return {"path": []}

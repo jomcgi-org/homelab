@@ -252,11 +252,3 @@ def store(db: Session, key: CacheKey, response_text: str, touched: list[dict]) -
     except Exception:  # noqa: BLE001 - a cache write must never fail a turn
         logger.warning("grimoire_chat.cache.store_failed", exc_info=True)
         db.rollback()
-
-
-def reset_watermark_memo() -> None:
-    """Clear the short-TTL watermark memo (tests / ops)."""
-    global _watermark_value, _watermark_deadline
-    with _watermark_lock:
-        _watermark_value = None
-        _watermark_deadline = 0.0

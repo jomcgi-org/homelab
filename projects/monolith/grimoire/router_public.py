@@ -268,21 +268,6 @@ def search(
 # --- EXPLORE (corpus-graph canvas: subgraph, ego expansion, pathfinding) --
 
 
-@router.get("/explore/graph")
-def explore_graph(
-    scope: str = Query(default="everything"),
-    lens: str = Query(default="world"),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    """Induced subgraph ``{nodes, edges}`` for a scope + lens: the EXPLORE
-    canvas's bulk load. ``scope`` is ``"everything"``, ``"adventure:{id}"``,
-    or ``"book:{id}"``; ``lens`` is one of ``world``/``story``/``quests``/
-    ``rules`` (anything else is unconstrained). A whole-corpus "everything"
-    scope can be a large payload; the frontend should default to
-    gallery/adventure scope. See explore.scope_subgraph."""
-    return explore.scope_subgraph(session, scope, lens)
-
-
 @router.get("/explore/ego")
 def explore_ego(
     id: str = Query(...),
@@ -290,22 +275,9 @@ def explore_ego(
     lens: str = Query(default="world"),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """Focus entity + its 1-hop is_global neighbors, same ``{nodes, edges,
-    lens_counts}`` shape as /explore/graph, for click-to-expand ("wander").
-    ``scope``/``lens`` narrow the neighbor set the same way they narrow
-    /explore/graph; the focus node is always kept. See
-    explore.ego_subgraph."""
+    """Focus entity and its 1-hop public neighbors as nodes, edges and lens counts.
+
+    Scope and lens filter the neighbors; the focus node is always kept.
+    See explore.ego_subgraph.
+    """
     return explore.ego_subgraph(session, id, scope, lens)
-
-
-@router.get("/explore/path")
-def explore_path(
-    from_: str = Query(alias="from"),
-    to: str = Query(...),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    """Six-degrees pathfinding between two entities: BFS over the
-    relationship graph (both directions), is_global entities only, bounded
-    to a fixed depth. See explore.shortest_path for the exact bound and the
-    ordered-chain response shape."""
-    return explore.shortest_path(session, from_, to)

@@ -5,14 +5,6 @@ import httpx
 from shared.testing.markers import covers_route
 
 
-class TestScheduleAPI:
-    @covers_route("/api/home/schedule/today")
-    def test_returns_list_of_events(self, live_server):
-        r = httpx.get(f"{live_server}/api/home/schedule/today")
-        assert r.status_code == 200
-        assert isinstance(r.json(), list)
-
-
 class TestDashboardAPI:
     @covers_route("/api/home/dashboard")
     def test_returns_dashboard_sections(self, live_server):

@@ -109,7 +109,6 @@ FORBIDDEN_MODULES = [
     "knowledge.tasks_router",
     # Private home scheduling and observability writer paths.
     "home.schedule",
-    "home.schedule_router",
     "home.observability.rollup",
     "home.observability.stats",
     # Other domains outside the agents tier allowlist.

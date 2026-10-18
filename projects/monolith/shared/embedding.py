@@ -19,7 +19,6 @@ EMBED_RETRY_MAX_DELAY = 30.0  # cap per-retry wait
 EMBED_RETRY_TIMEOUT = float(os.environ.get("EMBED_RETRY_TIMEOUT", "300"))
 
 EMBED_CONNECT_TIMEOUT = 5.0
-EMBED_READ_TIMEOUT = 30.0
 # Per-request read timeout for a batch. Env-overridable: throughput is token-
 # bound, so a caller that deliberately sends large batches (bulk ingest) can
 # raise this without affecting the interactive default.

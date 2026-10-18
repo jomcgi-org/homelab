@@ -213,11 +213,6 @@ class _CircuitBreaker:
 _breaker = _CircuitBreaker(GLOBAL_MAX_CONCURRENT)
 
 
-def current_inflight() -> int:
-    """In-flight count on the in-process fallback breaker (dev/test gauge)."""
-    return _breaker.inflight
-
-
 class _LocalSlot:
     """A held in-process slot (SQLite dev/test path): release decrements the
     in-process breaker."""

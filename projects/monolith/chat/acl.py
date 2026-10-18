@@ -104,12 +104,6 @@ def is_granted(
     return False
 
 
-def feature_enabled(guild_id: object, feature: str) -> bool:
-    """True when the feature has any grant in this server (any subject/scope)."""
-    gid = _norm(guild_id)
-    return any(row.guild_id in ("", gid) for row in _grants_for_feature(feature))
-
-
 def allowed_scopes(guild_id: object, subject_id: object, feature: str) -> set[str]:
     """The non-empty scopes granted to this guild/subject for the feature.
 

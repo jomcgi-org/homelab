@@ -127,8 +127,8 @@ def _iter_route_paths(routes):
             yield from _iter_route_paths(sub)
 
 
-def test_schedule_router_registered():
-    """Schedule router is included — routes with /api/home prefix exist."""
+def test_home_router_registered():
+    """Home routes remain registered under /api/home."""
     paths = list(_iter_route_paths(app.routes))
     assert any(p.startswith("/api/home") for p in paths), (
         "No /api/home routes found; home router may not be included"
@@ -173,10 +173,11 @@ def test_retained_factory_and_ember_probe_routes_are_registered():
     assert "/api/ember/postgres/status" not in paths
 
 
-def test_schedule_router_today_endpoint_responds(client):
-    """GET /api/home/schedule/today from the home router returns a 200 response."""
-    response = client.get("/api/home/schedule/today")
-    assert response.status_code == 200
+def test_home_routes_keep_dashboard_and_stats_without_schedule():
+    paths = set(_iter_route_paths(app.routes))
+    assert "/api/home/schedule/today" not in paths
+    assert "/api/home/dashboard" in paths
+    assert "/api/home/observability/stats" in paths
 
 
 # ---------------------------------------------------------------------------

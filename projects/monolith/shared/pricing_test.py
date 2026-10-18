@@ -432,12 +432,19 @@ def test_astra_and_gpt_6_astra_agree_on_the_same_usage():
     assert price_usage("astra", usage) == price_usage("gpt-6-astra", usage)
 
 
-def test_list_price_takes_claude_codes_reported_cost_as_list():
+@pytest.mark.parametrize(
+    "model", ["opus", "sonnet", "fable", "haiku", "claude-sonnet-5-5"]
+)
+def test_list_price_takes_claude_codes_reported_cost_as_list(model):
     # Claude Code prices every call in the turn, subagents included, at list;
     # the usage block covers only the main loop and would undercount.
     usage = {"input_tokens": 10, "output_tokens": 100}
-    assert list_price_usd("opus", usage, 2.5) == pytest.approx(2.5)
-    assert list_price_usd("claude-sonnet-5-5", usage, 0.3) == pytest.approx(0.3)
+    assert list_price_usd(model, usage, 2.5) == pytest.approx(2.5)
+
+
+@pytest.mark.parametrize("model", [None, "", "unknown"])
+def test_reported_cost_does_not_price_an_unknown_model(model):
+    assert list_price_usd(model, {"input_tokens": 1}, 2.5) is None
 
 
 def test_list_price_reprices_usage_when_the_reported_cost_is_not_list():

@@ -16,10 +16,21 @@ from sqlalchemy import (
     select,
 )
 
-from grimoire.audience import AUTHOR_MEMBER_ID_TYPE, can_see_item, inventory_predicate
+from grimoire.audience import AUTHOR_MEMBER_ID_TYPE, Viewer, inventory_predicate
 
 OWNER = str(UUID(int=6633))
 OTHER = str(UUID(int=6634))
+
+
+def can_see_item(viewer: Viewer, row) -> bool:
+    """Python twin of inventory_predicate, including malformed owners."""
+    if row.deleted_at is not None or viewer is None:
+        return False
+    if row.owner_kind == "party" and row.player_character_id is None:
+        return viewer == "dm" or not row.hidden_from_party
+    if row.owner_kind == "character" and row.player_character_id is not None:
+        return viewer == "dm" or viewer == row.player_character_id
+    return False
 
 
 def inventory_table(name):

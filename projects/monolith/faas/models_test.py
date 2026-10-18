@@ -7,7 +7,7 @@ ships/models_test.py.
 from datetime import datetime
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from faas.models import Function
@@ -15,7 +15,6 @@ from faas.repository import (
     delete_function,
     get_function,
     get_visible_function,
-    list_functions,
     mark_smoked,
     upsert_function,
 )
@@ -93,9 +92,7 @@ def test_upsert_last_write_wins_no_duplicate(session):
         created_by="joe2",
     )
 
-    rows = list_functions(session)
-    assert len(rows) == 1
-
+    assert len(session.exec(select(Function)).all()) == 1
     updated = get_function(session, "echo-fn")
     assert updated.visibility == "public"
     assert updated.handler == "app.handle2"
@@ -158,36 +155,6 @@ def test_mark_smoked_flips_visibility(session):
 def test_mark_smoked_missing_function_is_noop(session):
     mark_smoked(session, "does-not-exist")
     assert get_function(session, "does-not-exist") is None
-
-
-def test_list_functions_visible_only_filters(session):
-    upsert_function(
-        session,
-        name="visible-fn",
-        visibility="private",
-        runtime="python312",
-        handler="app.handle",
-        zip_sha256="a" * 64,
-        code_uri="http://example/a.zip",
-        created_by="joe",
-    )
-    upsert_function(
-        session,
-        name="hidden-fn",
-        visibility="private",
-        runtime="python312",
-        handler="app.handle",
-        zip_sha256="b" * 64,
-        code_uri="http://example/b.zip",
-        created_by="joe",
-    )
-    mark_smoked(session, "visible-fn")
-
-    all_rows = list_functions(session)
-    assert {f.name for f in all_rows} == {"visible-fn", "hidden-fn"}
-
-    visible_rows = list_functions(session, visible_only=True)
-    assert {f.name for f in visible_rows} == {"visible-fn"}
 
 
 def test_delete_function(session):

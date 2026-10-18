@@ -68,15 +68,6 @@ class Audience:
             "author_member_id": self.author_member_id,
         }
 
-    @classmethod
-    def from_columns(
-        cls,
-        audience: AudienceKind,
-        audience_pc_ids: list[str],
-        author_member_id: str | None = None,
-    ) -> "Audience":
-        return cls(audience, frozenset(audience_pc_ids), author_member_id)
-
 
 def _validate_viewer(viewer: Viewer, member: Member | None) -> Member:
     if member is None:
@@ -135,17 +126,6 @@ def inventory_predicate(table, viewer: Viewer):
             and_(character, columns.player_character_id == viewer),
         )
     return and_(columns.deleted_at.is_(None), visible)
-
-
-def can_see_item(viewer: Viewer, row) -> bool:
-    """Python twin of inventory_predicate, including malformed owners."""
-    if row.deleted_at is not None or viewer is None:
-        return False
-    if row.owner_kind == "party" and row.player_character_id is None:
-        return viewer == "dm" or not row.hidden_from_party
-    if row.owner_kind == "character" and row.player_character_id is not None:
-        return viewer == "dm" or viewer == row.player_character_id
-    return False
 
 
 class _HasPC(FunctionElement):

@@ -84,14 +84,7 @@ class TestIsGranted:
             assert acl.is_granted(111, 222, "agent", "homelab") is True
 
 
-class TestFeatureEnabledAndScopes:
-    def test_feature_enabled(self, engine):
-        _seed(engine, [("g1", "", "agent", "homelab")])
-        with patch("chat.acl.get_engine", return_value=engine):
-            assert acl.feature_enabled("g1", "agent") is True
-            assert acl.feature_enabled("g2", "agent") is False
-            assert acl.feature_enabled("g1", "artifact") is False
-
+class TestAllowedScopes:
     def test_allowed_scopes(self, engine):
         _seed(
             engine,

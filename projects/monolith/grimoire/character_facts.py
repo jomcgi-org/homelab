@@ -427,11 +427,6 @@ def write_character_facts(
     return result
 
 
-def retract_facts_for_event(session: Session, event: SessionEvent) -> None:
-    """Single-event convenience wrapper for the transaction-wide cascade."""
-    retract_facts_for_events(session, [event])
-
-
 def retract_facts_for_events(session: Session, events: list[SessionEvent]) -> None:
     """Lock all affected facts in id order before cascading a batch of events.
 

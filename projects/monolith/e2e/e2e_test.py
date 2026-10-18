@@ -63,14 +63,6 @@ class TestNotesAPI:
         assert response.status_code == 400
 
 
-class TestScheduleAPI:
-    def test_today_returns_list(self, client):
-        """Returns list (iCal mocked/empty)."""
-        response = client.get("/api/home/schedule/today")
-        assert response.status_code == 200
-        assert isinstance(response.json(), list)
-
-
 # ---------------------------------------------------------------------------
 # Task 5: MessageStore E2E Tests (pgvector)
 # ---------------------------------------------------------------------------

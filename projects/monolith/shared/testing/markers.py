@@ -3,8 +3,8 @@
 Usage:
     from shared.testing.markers import covers_route, covers_page, covers_public
 
-    @covers_route("/api/home/schedule/today")
-    def test_schedule_returns_events(live_server): ...
+    @covers_route("/api/home/dashboard")
+    def test_dashboard_returns_sections(live_server): ...
 
     @covers_page("/private")
     def test_dashboard_loads(browser_page): ...

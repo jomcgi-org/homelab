@@ -1,8 +1,7 @@
 """FaaS domain: register-with-test-run function ingestion on EmberVM (ADR 045).
 
-Private-only in R1 (Task 10): the ingestion API is an authenticated author
-surface, so there is no ``register_public``. The public-tier invocation router
-is a later, checklist-gated PR (Task 13).
+The private tier mounts the authenticated ingestion API and invocation router.
+The public tier mounts only invocation for smoke-passed, public functions.
 """
 
 from fastapi import FastAPI
@@ -11,10 +10,8 @@ from fastapi import FastAPI
 def register(app: FastAPI) -> None:
     """Mount the private faas routers: the ingestion API and the invocation router.
 
-    Both are private-only in R1: there is no ``register_public``. The invocation
-    router serves the ``/functions/<name>`` product URL surface (Task 11); the
-    ingestion API (``/api/functions``) is the authenticated author surface (Task
-    10). The public-tier invocation router is a later, checklist-gated PR.
+    The invocation router serves ``/functions/<name>`` for smoke-passed functions.
+    The ingestion API at ``/api/functions`` is the authenticated author surface.
     """
     from faas.invoke_router import router as invoke_router
     from faas.router import router

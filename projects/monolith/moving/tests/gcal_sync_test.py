@@ -58,6 +58,26 @@ def _json(request: httpx.Request) -> dict:
     return json.loads(request.content)
 
 
+def _sync_through_seams(session: Session) -> int:
+    """Drive network and data seams, keeping Session work synchronous.
+
+    Each caller installs a MockTransport before entering the network seam.
+    """
+    milestones = gcal_sync._snapshot_milestones(session)
+    tombstones = gcal_sync._snapshot_tombstones(session)
+
+    async def run():
+        async with httpx.AsyncClient() as client:
+            return await gcal_sync._run_network_sync(
+                client, gcal_sync._calendar_id(), milestones, tombstones
+            )
+
+    outcome = asyncio.run(run())
+    touched = gcal_sync._apply_sync(session, outcome)
+    session.commit()
+    return touched
+
+
 def _add_milestone(session: Session, **values) -> Milestone:
     milestone = Milestone(
         title=values.pop("title", "Collect keys"),
@@ -95,7 +115,7 @@ def test_queued_insert_uses_exclusive_all_day_end(session: Session, monkeypatch)
         return _response(request, 200, {"id": "event-new"})
 
     requests = _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 1
+    assert _sync_through_seams(session) == 1
 
     event_request = _event_requests(requests)[0]
     assert _json(event_request) == {
@@ -132,7 +152,7 @@ def test_synced_no_drift_does_not_patch(session: Session, monkeypatch):
         )
 
     requests = _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 0
+    assert _sync_through_seams(session) == 0
     assert [request.method for request in _event_requests(requests)] == ["GET"]
     session.expire_all()
     assert (
@@ -161,7 +181,7 @@ def test_synced_drift_patches_and_refreshes_timestamp(session: Session, monkeypa
         return _response(request, 200, {})
 
     requests = _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 1
+    assert _sync_through_seams(session) == 1
     event_requests = _event_requests(requests)
     assert [request.method for request in event_requests] == ["GET", "PATCH"]
     assert _json(event_requests[1]) == {
@@ -189,7 +209,7 @@ def test_synced_gone_event_is_reinserted(
         return _response(request, 200, {"id": "event-replacement"})
 
     requests = _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 1
+    assert _sync_through_seams(session) == 1
     assert [request.method for request in _event_requests(requests)] == ["GET", "POST"]
     session.expire_all()
     assert session.get(Milestone, milestone.id).gcal_event_id == "event-replacement"
@@ -202,7 +222,7 @@ def test_held_milestone_is_untouched(session: Session, monkeypatch):
         raise AssertionError("held milestone must not make a calendar request")
 
     requests = _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 0
+    assert _sync_through_seams(session) == 0
     assert requests == []
     session.expire_all()
     assert session.get(Milestone, milestone.id).gcal_synced_at is None
@@ -220,7 +240,7 @@ def test_tombstone_success_and_gone_responses_drain_row(
         return _response(request, status, {"error": "gone"} if status != 204 else None)
 
     _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 1
+    assert _sync_through_seams(session) == 1
     assert session.get(GcalTombstone, "event-delete") is None
 
 
@@ -232,7 +252,7 @@ def test_tombstone_failure_keeps_row(session: Session, monkeypatch):
         return _response(request, 500, {"error": "retry"})
 
     _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 0
+    assert _sync_through_seams(session) == 0
     assert session.get(GcalTombstone, "event-retry") is not None
 
 
@@ -247,7 +267,7 @@ def test_per_row_error_does_not_stop_next_milestone(session: Session, monkeypatc
         return _response(request, 200, {"id": "event-success"})
 
     _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 1
+    assert _sync_through_seams(session) == 1
     session.expire_all()
     assert session.get(Milestone, failed.id).gcal_state == "queued"
     assert session.get(Milestone, succeeded.id).gcal_event_id == "event-success"
@@ -280,7 +300,7 @@ def test_calendar_id_fallback(
         return _response(request, 200, {"id": "event-id"})
 
     _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 1
+    assert _sync_through_seams(session) == 1
 
 
 def test_requeued_milestone_with_event_id_heals_instead_of_inserting(
@@ -301,7 +321,7 @@ def test_requeued_milestone_with_event_id_heals_instead_of_inserting(
         )
 
     requests = _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 0
+    assert _sync_through_seams(session) == 0
     assert [request.method for request in _event_requests(requests)] == ["GET"]
     session.expire_all()
     assert session.get(Milestone, milestone.id).gcal_event_id == "event-kept"
@@ -330,7 +350,7 @@ def test_end_date_drift_alone_triggers_patch(session: Session, monkeypatch):
         return _response(request, 200, {})
 
     requests = _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 1
+    assert _sync_through_seams(session) == 1
     assert [request.method for request in _event_requests(requests)] == [
         "GET",
         "PATCH",
@@ -390,7 +410,7 @@ def test_expired_tombstone_is_dropped_without_a_delete_call(
         raise AssertionError("expired tombstone must not reach the API")
 
     requests = _install_transport(monkeypatch, responder)
-    assert gcal_sync.sync_milestones(session) == 0
+    assert _sync_through_seams(session) == 0
     assert requests == []
     assert session.get(GcalTombstone, "event-undeletable") is None
 
