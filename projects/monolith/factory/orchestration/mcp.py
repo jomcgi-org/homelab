@@ -983,7 +983,7 @@ async def factory_amend_policy(
     """Preview or apply an exact paused-receipt policy amendment as a human.
 
     Preview first. Apply requires its digest, identical arguments and a fresh
-    request key; replay that key after a lost response. Changes in control,
+    request key. Replay that key after a lost response. Changes in control,
     graph or accounting invalidate the preview. Only task/turn budgets, work
     and planner turn caps, review rounds and the task timeout can change.
     The $200 cumulative objective allocation ceiling remains binding. This
