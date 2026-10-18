@@ -5246,9 +5246,16 @@ def test_bound_zero_turn_settlement_waits_strictly_past_timeout_and_is_atomic(
     runs = conductor.graph.node_runs(s.task["id"])
     assert runs[0]["pin"]["max_attempts"] == 2
     assert conductor.graph.attempts_spent(runs, s.run["node_key"]) == 1
-    # Unknown cost retains this attempt's reserved ceiling. The second attempt
-    # remains part of the node policy, but is not admitted without budget.
-    assert conductor._ready_nodes(nodes, runs) == []
+    # Unknown cost retains this attempt's reserved ceiling for accounting, but
+    # spend no longer withholds the node's second attempt (#7161).
+    assert runs[0]["accounted_cost_usd"] == s.run["pin"]["max_cost_usd"]
+    assert (
+        conductor.graph.budget_snapshot(s.task["id"])["accounted_cost_usd"]
+        == s.run["pin"]["max_cost_usd"]
+    )
+    assert [node["node_key"] for node in conductor._ready_nodes(nodes, runs)] == [
+        s.run["node_key"]
+    ]
     assert not _tick_bound_zero_turn(s)
     repeated = _uncertain_snapshot(s)
     for key in ("session", "turns", "pending", "permits", "runs"):
@@ -7044,8 +7051,9 @@ def test_brick_restart_loss_settles_exact_attempt_and_honors_retry_budget(
     assert proof["session_id"] == "s-exact-factory"
     assert proof["node_id"] == "node-1"
 
-    # Unknown spend retains the full ceiling; cessation cannot refund it.
-    # A measured partial cost leaves budget for the remaining graph attempt.
+    # Unknown spend retains the full ceiling; cessation cannot refund it. The
+    # charge is accounting only, so the remaining graph attempt is admitted
+    # either way (#7161).
     assert supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
@@ -7053,13 +7061,10 @@ def test_brick_restart_loss_settles_exact_attempt_and_honors_retry_budget(
         conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
     )
     conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
-    expected_runs = [(1, "failed")]
-    if cost_usd is not None:
-        expected_runs.append((2, "admitted"))
     assert [
         (run["attempt"], run["status"])
         for run in conductor.graph.node_runs(s.task["id"])
-    ] == expected_runs
+    ] == [(1, "failed"), (2, "admitted")]
     with Session(s.engine) as db:
         assert (
             len(
@@ -7070,9 +7075,7 @@ def test_brick_restart_loss_settles_exact_attempt_and_honors_retry_budget(
             == 1
         )
         starts = controls.task_snapshot(s.task["id"], session=db)["starts"]
-        assert [start["status"] for start in starts] == (
-            ["failed"] if cost_usd is None else ["failed", "reserved"]
-        )
+        assert [start["status"] for start in starts] == ["failed", "reserved"]
     before = _uncertain_snapshot(s)
     assert supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
@@ -7194,23 +7197,19 @@ def test_invoke_failure_settles_exact_attempt_and_honors_retry_budget(
     assert proof["session_id"] == "s-exact-factory"
     assert proof["invoke_started_at"] == s.invoke_started_at
 
-    # Settled once; the ordinary retry budget then decides what runs next.
+    # Settled once; the ordinary retry budget then decides what runs next, and
+    # an unknown cost no longer withholds the retry (#7161).
     monkeypatch.setattr(
         conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
     )
     conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
-    expected_runs = [(1, "failed")]
-    if cost_usd is not None:
-        expected_runs.append((2, "admitted"))
     assert [
         (run["attempt"], run["status"])
         for run in conductor.graph.node_runs(s.task["id"])
-    ] == expected_runs
+    ] == [(1, "failed"), (2, "admitted")]
     with Session(s.engine) as db:
         starts = controls.task_snapshot(s.task["id"], session=db)["starts"]
-        assert [start["status"] for start in starts] == (
-            ["failed"] if cost_usd is None else ["failed", "reserved"]
-        )
+        assert [start["status"] for start in starts] == ["failed", "reserved"]
     before = _uncertain_snapshot(s)
     assert supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
@@ -9444,10 +9443,11 @@ def test_planner_preview_prompt_enabled_names_bound_and_measured_fallback(
         "submission repeats all current-state checks",
         "second preview still does not fit",
         "request_funding where funding is available, or pause",
-        "needed versus allowed turns and USD",
-        "spare_turns and spare_usd",
+        "needed versus allowed turns, plus spare_turns",
     ):
         assert text in prompt
+    # Dollars are accounting only (#7161): no dollar shortfall is cited.
+    assert "spare_usd" not in prompt
     assert prompt.startswith(conductor._PLANNER_CHARTER)
 
 
@@ -9915,10 +9915,9 @@ def test_planner_budget_exposes_server_review_floor_and_round_reserve(feedback_d
     assert "even when you request a lower max_cost_usd" in conductor._PLANNER_CHARTER
 
 
-def test_unaffordable_review_plan_reports_full_cost_and_stops_replanning(
+def test_review_plan_over_task_budget_is_accepted_and_reports_full_cost(
     feedback_db, monkeypatch
 ):
-    import json
     from factory.orchestration import factory_controls as controls, factory_funding
 
     task, policy = feedback_task(turn_budget_usd=4.0, task_budget_usd=32.0)
@@ -9933,50 +9932,31 @@ def test_unaffordable_review_plan_reports_full_cost_and_stops_replanning(
     }
     monkeypatch.setattr(factory_funding, "judge_deficit", lambda *_: False)
     monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": "Same objective"})
-    monkeypatch.setattr(
-        "factory.orchestration.factory_landing.github_write", lambda *_: {}
-    )
     monkeypatch.setattr(conductor, "_post_decision_card", lambda *_: "https://card")
     monkeypatch.setattr(conductor, "_notify_escalation", lambda *_: None)
 
-    for attempt in (1, 2):
-        run = complete_feedback_node(task, policy, f"conductor_{attempt}", decision)
-        preview = conductor.preview_decision(
-            task["id"],
-            decision,
-            expected_revision=conductor.graph.current_version(task["id"]),
-            policy=policy,
-        )
-        assert not preview["ok"]
-        conductor.apply_decision(
-            task, policy, run, conductor.graph.node_runs(task["id"])
-        )
-        audit = feedback_audits(feedback_db, task["id"])[-1]
-        deficit = json.loads(audit["reason"].removeprefix("envelope exceeded: "))
-        assert deficit == json.loads(
-            preview["refusal"]["detail"].removeprefix("envelope exceeded: ")
-        )
-        assert deficit["usd"] == {"needed": 32.0 + 0.25 * attempt, "allowed": 32.0}
-        assert deficit["cost_breakdown_usd"] == {
-            "charged_history": 0.25 * attempt,
-            "remaining_nodes": 18.0,
-            "review_round_reserve": 14.0,
-            "fan_in_reserve": 0.0,
-        }
-        assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 32.0
-        if attempt == 1:
-            assert not conductor._check_consecutive_refusals(
-                task["id"], "envelope_exceeded"
-            )
-
+    run = complete_feedback_node(task, policy, "conductor_1", decision)
+    preview = conductor.preview_decision(
+        task["id"],
+        decision,
+        expected_revision=conductor.graph.current_version(task["id"]),
+        policy=policy,
+    )
+    # The dollar allowance still reports the full cost, charged history and
+    # review reserve included, but it exceeds the task budget without refusal
+    # (#7161).
+    assert preview["ok"]
+    assert preview["projection"]["allowance"]["usd"] == 32.25
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    assert feedback_audits(feedback_db, task["id"]) == []
     snapshot = controls.task_snapshot(task["id"])
-    assert snapshot["state"] == "escalated"
-    conductor.reconcile_task(task["id"], policy, object())
-    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
-        "conductor_1",
-        "conductor_2",
-    ]
-    assert len(conductor.graph.node_runs(task["id"])) == 2
+    assert snapshot["state"] != "escalated"
+    assert snapshot["policy"]["task_budget_usd"] == 32.0
+    assert {n["node_key"] for n in conductor.graph.load_graph(task["id"])} >= {
+        "investigate_scope",
+        "implement_fix",
+        "review_check",
+    }
 
 
 @pytest.mark.parametrize(
@@ -10473,7 +10453,8 @@ def test_a_second_engine_round_is_refused_when_its_own_nodes_do_not_fit(feedback
     # proposing an edit the reserve cannot fit (#6000).
     assert conductor._rounds_remaining(task["id"], policy) == 1
     assert detail["spare_turns"] == 0
-    assert detail["spare_usd"] >= 0
+    # Only turns bind, so the excess carries no dollar figures (#7161).
+    assert "usd" not in detail and "spare_usd" not in detail
     assert controls.task_snapshot(task["id"])["allowance"]["turns"] == 6
 
 
@@ -12798,7 +12779,8 @@ def test_a_refused_add_names_the_turns_that_would_still_fit(feedback_db):
     # graph already holds a review node, so the round reserve is in both
     # readings and the spare figure is the plan-time allowance's own slack.
     assert detail["spare_turns"] == 9 - accounted == 1
-    assert detail["spare_usd"] > 0
+    # Dollars never refuse an edit, so no dollar spare is reported (#7161).
+    assert "spare_usd" not in detail
 
 
 def test_an_engine_review_round_grows_the_allowance_by_one_round(feedback_db):
@@ -12840,13 +12822,13 @@ def test_an_over_envelope_plan_is_refused_whole_with_its_excess(feedback_db):
 
     detail = json.loads(audits[0]["reason"].split("envelope exceeded: ", 1)[1])
     assert detail["turns"] == {"needed": 3 * 2 + 2, "allowed": 6}
-    assert detail["usd"]["allowed"] == policy["task_budget_usd"]
+    # Only turns bind; dollars are not part of the excess (#7161).
+    assert "usd" not in detail and "spare_usd" not in detail
     # Only the planner node is live, and the plan's own review node brings the
     # two-turn round reserve with it, so four of the six turns are spare. A
     # spare figure read off a graph with no review node would send the planner
     # back with a six-turn plan that derives eight and is refused again.
     assert detail["spare_turns"] == 4
-    assert detail["spare_usd"] == round(policy["task_budget_usd"] - 12.25, 6)
     # Nothing was derived, so admission still reads the envelope.
     assert controls.task_snapshot(task["id"])["allowance"]["derived"] is False
     # The next planner is told exactly what to shrink.
@@ -14810,15 +14792,25 @@ def test_review_recovery_transient_read_waits_and_retries(feedback_db, monkeypat
 
 # The budget admits round one (a $10 Opus review floor and a $2 correction)
 # but not the recovery round behind it.
-@pytest.mark.parametrize("envelope", [{"max_turns": 5}, {"task_budget_usd": 12.5}])
-def test_review_recovery_never_exceeds_the_task_envelope(
-    feedback_db, monkeypatch, envelope
-):
-    task, policy = recovery_task(**envelope)
+def test_review_recovery_never_exceeds_the_task_envelope(feedback_db, monkeypatch):
+    task, policy = recovery_task(max_turns=5)
     recovery_github(monkeypatch, task)
     conductor.reconcile_task(task["id"], policy, object())
     assert conductor._review_rounds_used(task["id"]) == 1
     assert any(
+        a["refusal_code"] == "envelope_exceeded"
+        for a in feedback_audits(feedback_db, task["id"])
+    )
+
+
+def test_review_recovery_is_not_refused_by_the_task_budget(feedback_db, monkeypatch):
+    # The same recovery round over a $12.50 task budget is admitted: dollars
+    # are accounting only and never refuse a round (#7161).
+    task, policy = recovery_task(task_budget_usd=12.5)
+    recovery_github(monkeypatch, task)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor._review_rounds_used(task["id"]) == 2
+    assert not any(
         a["refusal_code"] == "envelope_exceeded"
         for a in feedback_audits(feedback_db, task["id"])
     )
@@ -15042,7 +15034,7 @@ def test_continuation_keeps_task_limits_and_grants_only_one_exact_pair(
 
 
 @pytest.mark.parametrize("exhausted_budget", [False, True])
-def test_continuation_excludes_competing_work_but_ignores_spent_node_budget(
+def test_continuation_excludes_competing_work_even_with_spent_node_budget(
     feedback_db, monkeypatch, exhausted_budget
 ):
     from factory.orchestration import factory_controls as controls
@@ -15074,22 +15066,9 @@ def test_continuation_excludes_competing_work_but_ignores_spent_node_budget(
             db.add(node)
             db.commit()
     conductor.reconcile_task(task["id"], policy, object())
-    if exhausted_budget:
-        grant = controls.continuation_grant(task["id"])
-        assert grant["work_turn_ceiling"] == 6
-        assert controls.task_snapshot(task["id"])["state"] == "admitted"
-        extra = conductor._add(
-            task,
-            policy,
-            "investigate_renamed",
-            "Inspect",
-            [],
-            "luna",
-            "followup",
-            "Cannot use the correction grant for other work",
-        )
-        assert extra.refusal_code == "node_allocation_exhausted"
-        return
+    # A failed node whose spend reached its ceiling still has an attempt it can
+    # dispatch, since spend never exhausts a node (#7161), so it remains
+    # competing work exactly like an untouched one.
     assert controls.continuation_grant(task["id"]) is None
     assert controls.task_snapshot(task["id"])["state"] == "failed"
     assert not any(
@@ -15206,7 +15185,7 @@ def test_failed_grant_settles_after_creation_flag_is_disabled(feedback_db, monke
     assert controls.task_snapshot(task["id"])["state"] == "failed"
 
 
-def test_continuation_is_not_granted_for_dollar_exhaustion(feedback_db, monkeypatch):
+def test_continuation_is_granted_despite_dollar_exhaustion(feedback_db, monkeypatch):
     from factory.orchestration import factory_controls as controls
     from sqlmodel import Session, select
     from factory.orchestration.factory_models import FactoryReceipt
@@ -15222,8 +15201,13 @@ def test_continuation_is_not_granted_for_dollar_exhaustion(feedback_db, monkeypa
         db.add(receipt)
         db.commit()
     conductor.reconcile_task(task["id"], policy, object())
-    assert controls.continuation_grant(task["id"]) is None
-    assert controls.task_snapshot(task["id"])["state"] == "failed"
+    # A task budget already below committed cost no longer refuses the final
+    # correction pair (#7161): dollars are accounting only.
+    grant = controls.continuation_grant(task["id"])
+    assert grant["node_keys"] == ["correct_1", "review_1"]
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "admitted"
+    assert snapshot["policy"]["task_budget_usd"] == 3.0
 
 
 def test_duplicate_continuation_tick_replays_grant_without_failing_task(
@@ -16112,7 +16096,7 @@ def exhausted_allocation_task(monkeypatch, node_key, ceiling):
 @pytest.mark.parametrize(
     "node_key,ceiling", [("review_retirement_audit", 10), ("implement_manifest", 4)]
 )
-def test_exhausted_node_is_not_a_task_funding_request(
+def test_spent_node_allocation_does_not_block_a_task_funding_request(
     feedback_db, monkeypatch, node_key, ceiling
 ):
     from factory.orchestration import (
@@ -16122,48 +16106,41 @@ def test_exhausted_node_is_not_a_task_funding_request(
 
     task, _ = exhausted_allocation_task(monkeypatch, node_key, ceiling)
     history = conductor.graph.node_runs(task["id"])
-    assert not funding.request(
+    # Spend no longer exhausts a node (#7161), so a failed attempt charged its
+    # whole ceiling is no allocation blocker: the funding judge is asked.
+    assert funding.request(
         task, "Another task tranche should make the same node runnable"
     )
-    assert not funding.request(task, "Try another judge")
     snapshot = controls.task_snapshot(task["id"])
-    assert snapshot["task_paused"]
+    assert not snapshot["task_paused"]
     assert snapshot["policy"]["task_budget_usd"] == 50
     assert snapshot["committed_cost_usd"] == ceiling
     assert conductor.graph.node_runs(task["id"]) == history
     with controls._read_session() as db:
-        assert funding.latest(db, task["id"], "funding_review_requested") is None
-        reason = funding.latest(db, task["id"], "allocation_recovery_required")
-        assert reason["code"] == "node_allocation_exhausted"
-        assert reason["nodes"][0]["node_key"] == node_key
+        assert funding.pending(db, task["id"]) is not None
+        assert funding.latest(db, task["id"], "allocation_recovery_required") is None
 
 
-def test_legacy_pending_funding_cannot_grant_against_exhausted_node(
-    feedback_db, monkeypatch
-):
+def test_funding_settles_against_a_spent_node_allocation(feedback_db, monkeypatch):
     from factory.orchestration import (
-        factory_allocation_recovery as recovery,
         factory_controls as controls,
         factory_funding as funding,
     )
 
     task, _ = exhausted_allocation_task(monkeypatch, "review_retirement_audit", 10)
-    # A request persisted before deployment must pass the new check at settlement.
-    with monkeypatch.context() as old_request:
-        old_request.setattr(recovery, "funding_blocker", lambda *_: None)
-        assert funding.request(task, "Legacy request against the exhausted review")
+    assert funding.request(task, "Request against the spent review allocation")
     settle_funding(task, funding_decision(task_budget_usd=60))
     snapshot = controls.task_snapshot(task["id"])
-    assert snapshot["task_paused"]
-    assert snapshot["policy"]["task_budget_usd"] == 50
+    assert not snapshot["task_paused"]
+    assert snapshot["policy"]["task_budget_usd"] == 60
     with controls._read_session() as db:
-        assert funding.amendment(db, task["id"]) is None
+        assert funding.amendment(db, task["id"]) is not None
         assert funding.pending(db, task["id"]) is None
         settled = funding.latest(db, task["id"], "funding_review_settled")
-        assert settled["refusal"] == "node_allocation_exhausted"
+        assert settled["refusal"] is None
 
 
-def test_discard_and_rename_cannot_reset_exhausted_allocation(feedback_db, monkeypatch):
+def test_discard_and_rename_keep_spent_history_charged(feedback_db, monkeypatch):
     from factory.orchestration import factory_controls as controls
 
     task, policy = exhausted_allocation_task(monkeypatch, "implement_manifest", 4)
@@ -16186,7 +16163,19 @@ def test_discard_and_rename_cannot_reset_exhausted_allocation(feedback_db, monke
         ],
     }
     before = conductor.graph.current_version(task["id"])
-    direct = conductor._add(
+    # Spend never fences new work (#7161): the replacement plan is admitted.
+    preview = conductor.preview_decision(task["id"], decision, expected_revision=before)
+    assert preview["ok"]
+    conductor._apply_decision(
+        task, policy, decision, "rename", conductor.graph.node_runs(task["id"])
+    )
+    assert not controls.task_snapshot(task["id"])["task_paused"]
+    assert conductor.graph.current_version(task["id"]) > before
+    assert {n["node_key"] for n in conductor.graph.load_graph(task["id"])} == {
+        "implement_renamed",
+        "review_renamed",
+    }
+    assert conductor._add(
         task,
         policy,
         "implement_direct",
@@ -16194,21 +16183,17 @@ def test_discard_and_rename_cannot_reset_exhausted_allocation(feedback_db, monke
         [],
         "luna",
         "implement",
-        "Direct additions cannot bypass the fence",
-    )
-    assert direct.refusal_code == "node_allocation_exhausted"
-    preview = conductor.preview_decision(task["id"], decision, expected_revision=before)
-    assert preview["refusal"]["code"] == "node_allocation_exhausted"
-    conductor._apply_decision(
-        task, policy, decision, "rename", conductor.graph.node_runs(task["id"])
-    )
-    assert controls.task_snapshot(task["id"])["task_paused"]
-    assert conductor.graph.current_version(task["id"]) == before
-    assert conductor.graph.load_graph(task["id"]) == []
+        "Direct additions are accepted too",
+    ).ok
+    # Discarding or renaming still cannot refund the hidden node's charge.
+    budget = conductor.graph.budget_snapshot(task["id"])
+    assert budget["accounted_cost_usd"] == 4
+    assert budget["settled_accounted_cost_usd"] == 4
+    assert controls.task_snapshot(task["id"])["committed_cost_usd"] == 4
 
 
 @pytest.mark.parametrize("single_node", [False, True])
-def test_exact_operator_recovery_admits_one_feasible_plan_without_refunding(
+def test_spent_allocation_needs_no_operator_recovery_and_keeps_its_charges(
     feedback_db, monkeypatch, single_node
 ):
     from sqlmodel import SQLModel
@@ -16217,7 +16202,6 @@ def test_exact_operator_recovery_admits_one_feasible_plan_without_refunding(
         factory_controls as controls,
         factory_policy_amendment as amendments,
     )
-    from factory.orchestration import factory_allocation_recovery as recovery
 
     feedback_db.update_execution_options(
         schema_translate_map={"swarm": None, "agent_sessions": None}
@@ -16229,46 +16213,24 @@ def test_exact_operator_recovery_admits_one_feasible_plan_without_refunding(
     controls.set_control("pause_task", "operator", task_id=task["id"])
     with controls._read_session() as db:
         receipt_id = controls._receipt(db, task["id"]).id
-    overlay = {
-        "nonrenewable_recovery": True,
-        "max_planner_turns": 1,
-        "recover_exhausted_nodes": ["implement_manifest"],
-        "landing_hold": True,
-    }
-    for changes, reason in (
-        ({"recover_exhausted_nodes": ["renamed"]}, "exact_exhausted_nodes"),
-        (
-            {"recover_exhausted_nodes": ["implement_manifest"] * 2},
-            "exact_exhausted_nodes",
-        ),
-        ({"max_planner_turns": 2}, "one_planner_attempt"),
-    ):
-        with pytest.raises(ValueError, match=reason):
-            amendments.preview(receipt_id, {**overlay, **changes}, "Invalid recovery")
-    without_bound = {
-        key: value for key, value in overlay.items() if key != "nonrenewable_recovery"
-    }
-    with pytest.raises(ValueError, match="nonrenewable_envelope"):
-        amendments.preview(receipt_id, without_bound, "Unbounded recovery")
-    proposal = amendments.preview(
-        receipt_id, overlay, "One bounded replacement and independent review"
-    )
-    assert proposal["exhausted_allocations"][0]["accounted_cost_usd"] == 4
-    amendments.apply(
-        receipt_id,
-        overlay,
-        proposal["direction"],
-        actor="operator",
-        request_key="recovery",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    # The exhausted-node recovery overlay is gone with the gate it lifted.
+    with pytest.raises(ValueError, match="unsupported_policy_amendment"):
+        amendments.preview(
+            receipt_id,
+            {
+                "nonrenewable_recovery": True,
+                "max_planner_turns": 1,
+                "recover_exhausted_nodes": ["implement_manifest"],
+            },
+            "Recovery overlay",
+        )
     original = conductor.graph.node_runs(task["id"])
     controls.set_control("resume_task", "operator", task_id=task["id"])
     task = conductor._task(task["id"])
     policy = controls.task_snapshot(task["id"])["policy"]
     decision = {
         "action": "plan",
-        "reason": "Authorized bounded recovery",
+        "reason": "Replacement without any recovery authorization",
         "edits": [
             plan_edit("replacement", "implement", max_attempts=1),
             plan_edit(
@@ -16280,46 +16242,18 @@ def test_exact_operator_recovery_admits_one_feasible_plan_without_refunding(
         decision = decision["edits"][0]
     preview = conductor.preview_decision(task["id"], decision, expected_revision=1)
     assert preview["ok"]
+    # The turn envelope still binds.
     oversized = {
         "action": "plan",
-        "reason": "Cannot exceed the authorized envelope",
+        "reason": "Cannot exceed the envelope",
         "edits": ([decision] if single_node else decision["edits"])
         + [plan_edit(f"extra{i}", "implement") for i in range(8)],
     }
     preview = conductor.preview_decision(task["id"], oversized, expected_revision=1)
     assert preview["refusal"]["code"] == "envelope_exceeded"
-    with controls._read_session() as db:
-        assert (
-            recovery.authorization(db, task["id"], recovery.blockers(db, task["id"]))
-            is not None
-        )
-    # A graph-level refusal rolls back every edit and does not spend the grant.
-    snapshot = conductor._decision_snapshot(task["id"], decision=decision)
-    projected = conductor.project_decision(task, policy, decision, snapshot)
-    malformed = [dict(edit) for edit in projected.edits]
-    malformed[-1]["deps"] = ["missing_dependency"]
-    rejected = conductor.graph.apply_edits(
-        task["id"],
-        author_kind="conductor",
-        author="test",
-        cause_kind="test",
-        cause_ref="refused-recovery",
-        expected_version=1,
-        edits=malformed,
-    )
-    assert rejected.refusal_code == "unknown_dep"
-    assert conductor.graph.current_version(task["id"]) == 1
-    with controls._read_session() as db:
-        assert (
-            recovery.authorization(db, task["id"], recovery.blockers(db, task["id"]))
-            is not None
-        )
-    conductor._apply_decision(task, policy, decision, "authorized-recovery", original)
+    conductor._apply_decision(task, policy, decision, "replacement", original)
     nodes = conductor.graph.load_graph(task["id"])
-    expected_keys = {
-        "implement_manifest",
-        "implement_replacement",
-    }
+    expected_keys = {"implement_manifest", "implement_replacement"}
     if not single_node:
         expected_keys.add("review_replacement")
     assert {n["node_key"] for n in nodes} == expected_keys
@@ -16327,42 +16261,12 @@ def test_exact_operator_recovery_admits_one_feasible_plan_without_refunding(
         next(n for n in nodes if n["node_key"] == "implement_manifest")["max_cost_usd"]
         == 4
     )
+    # The predecessor's charge and pin are never refunded.
     assert conductor.graph.node_runs(task["id"]) == original
     snapshot = controls.task_snapshot(task["id"])
     assert snapshot["policy"]["task_budget_usd"] == 50
     assert snapshot["committed_cost_usd"] == 4
-    assert snapshot["allowance"]["usd"] <= 50
-    with controls._read_session() as db:
-        assert recovery.blockers(db, task["id"]) == []
-        assert (
-            recovery.authorization(db, task["id"], proposal["exhausted_allocations"])
-            is None
-        )
-    # Another lost invocation cannot reuse the predecessor's authorization.
-    run_feedback_node(task, "implement_replacement", {}, status="failed")
-    from factory.orchestration.models import SwarmNodeRun
-    from factory.orchestration.factory_models import FactoryStart
-
-    with controls._locked_session() as (db, _):
-        run = db.exec(
-            select(SwarmNodeRun).where(
-                SwarmNodeRun.task_id == task["id"],
-                SwarmNodeRun.node_key == "implement_replacement",
-            )
-        ).one()
-        run.cost_usd = None
-        run.outcome_json = json.dumps({"reason": "guest_cessation_confirmed"})
-        start = db.exec(
-            select(FactoryStart).where(
-                FactoryStart.task_id == task["id"],
-                FactoryStart.start_key == run.dispatch_key,
-            )
-        ).one()
-        start.cost_usd = None
-    with controls._read_session() as db:
-        blocked = recovery.blockers(db, task["id"])
-        assert [item["node_key"] for item in blocked] == ["implement_replacement"]
-        assert recovery.authorization(db, task["id"], blocked) is None
+    assert conductor.graph.budget_snapshot(task["id"])["accounted_cost_usd"] == 4
 
 
 @pytest.mark.parametrize(
@@ -17386,19 +17290,55 @@ def test_over_ceiling_review_settled_succeeded(feedback_db, cost):
             assert detail["reserved_cost_usd"] == 4.0
 
 
-@pytest.mark.parametrize(
-    "limit, ledger",
-    [
-        ("task_budget", "graph"),
-        ("task_budget", "starts"),
-        ("max_task_turns_hard", "starts"),
-        ("max_planner_turns", "starts"),
-    ],
-)
-@pytest.mark.parametrize("funding_enabled", [False, True])
-def test_dispatch_refusal_audit(
-    feedback_db, monkeypatch, limit, ledger, funding_enabled
+@pytest.mark.parametrize("ledger", ["graph", "starts"])
+def test_late_spend_over_the_task_budget_does_not_refuse_dispatch(
+    feedback_db, monkeypatch, ledger
 ):
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit, FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    task, policy = feedback_task(max_turns=5, max_planner_turns=1, task_budget_usd=8.0)
+    complete_feedback_node(task, policy, "implement_first", {})
+    assert conductor._add(
+        task, policy, "implement_next", "next", [], "opus", "next", "next"
+    ).ok
+    # Late measured spend leaves less than the next node's ceiling under the
+    # task budget. Dollars are accounting only and never refuse (#7161).
+    with Session(feedback_db) as db:
+        for cls in (SwarmNodeRun, FactoryStart) if ledger == "graph" else (FactoryStart,):
+            row = db.exec(select(cls).where(cls.task_id == task["id"])).one()
+            row.cost_usd = 7.0
+            db.add(row)
+        db.commit()
+    monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": "Issue scope"})
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_: "main")
+    nodes, runs = graph_state(task["id"])
+    assert conductor._dispatch_ready(
+        task, nodes, runs, 1, fan_out=False, parallel=1, policy=policy
+    )
+    runs = conductor.graph.node_runs(task["id"])
+    assert [run["node_key"] for run in runs] == ["implement_first", "implement_next"]
+    starts = controls.task_snapshot(task["id"])["starts"]
+    assert len(starts) == 2
+    with Session(feedback_db) as db:
+        assert (
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "dispatch_refused")
+            ).all()
+            == []
+        )
+    # The new attempt still reserves its full ceiling past the task budget.
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["committed_cost_usd"] == 7.0 + runs[1]["pin"]["max_cost_usd"]
+    assert snapshot["committed_cost_usd"] > snapshot["policy"]["task_budget_usd"]
+
+
+@pytest.mark.parametrize("limit", ["max_task_turns_hard", "max_planner_turns"])
+@pytest.mark.parametrize("funding_enabled", [False, True])
+def test_dispatch_refusal_audit(feedback_db, monkeypatch, limit, funding_enabled):
     from sqlmodel import Session, select
     from factory.orchestration import (
         factory_controls as controls,
@@ -17409,29 +17349,12 @@ def test_dispatch_refusal_audit(
     monkeypatch.setenv(
         "FACTORY_CONDUCTOR_FUNDING_ENABLED", str(funding_enabled).lower()
     )
-    task, policy = feedback_task(
-        max_turns=5 if limit == "task_budget" else 1,
-        max_planner_turns=1,
-        task_budget_usd=8.0,
-    )
+    task, policy = feedback_task(max_turns=1, max_planner_turns=1, task_budget_usd=8.0)
     planner = limit == "max_planner_turns"
     first = "conductor_1" if planner else "implement_first"
     complete_feedback_node(task, policy, first, {})
     key = "conductor_2" if planner else "implement_next"
     assert conductor._add(task, policy, key, "next", [], "opus", "next", "next").ok
-    if limit == "task_budget":
-        # Late measured spend consumes headroom after this node was planned.
-        from factory.orchestration.models import SwarmNodeRun
-        from factory.orchestration.factory_models import FactoryStart
-
-        with Session(feedback_db) as db:
-            for cls in (
-                (SwarmNodeRun, FactoryStart) if ledger == "graph" else (FactoryStart,)
-            ):
-                row = db.exec(select(cls).where(cls.task_id == task["id"])).one()
-                row.cost_usd = 7.0
-                db.add(row)
-            db.commit()
     from factory.orchestration import factory_landing
 
     escalations, requests = [], []
@@ -17465,9 +17388,9 @@ def test_dispatch_refusal_audit(
         ).one()
         detail = json.loads(audit.detail_json)
         assert detail["limit"] == limit
-        assert detail["used"] == (7 if limit == "task_budget" else 1)
-        assert detail["requested"] == (2 if limit == "task_budget" else 1)
-        assert detail["allowed"] == (8 if limit == "task_budget" else 1)
+        assert detail["used"] == 1
+        assert detail["requested"] == 1
+        assert detail["allowed"] == 1
         assert detail["allowance"] is not None
     if funding_enabled:
         assert requests and not escalations
@@ -17492,10 +17415,7 @@ def test_dispatch_refusal_audit(
             name: detail[name]
             for name in ("limit", "used", "requested", "allowed", "allowance")
         }
-        if limit == "task_budget":
-            assert decision["options"][0]["label"].startswith("Raise task_budget")
-        else:
-            assert "raised by hand to" in decision["options"][0]["label"]
+        assert "raised by hand to" in decision["options"][0]["label"]
         snapshot = controls.task_snapshot(task["id"])
         assert snapshot["state"] == "escalated"
         assert snapshot["evidence"]["reason"]
@@ -17557,9 +17477,26 @@ def _budget_refusal(feedback_db, monkeypatch, *, budget=8.0, spent=7.0):
     monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
     monkeypatch.setattr(conductor, "branch_hydration", lambda *_: "main")
 
+    from factory.orchestration import factory_controls as controls
+
+    # Dollars no longer refuse a dispatch (#7161), so the late spend above
+    # would dispatch. Post the dollar refusal card the conductor wrote before
+    # that change: one may still be open, and its raise_envelope still applies.
     nodes, runs = graph_state(task["id"])
-    assert not conductor._dispatch_ready(
-        task, nodes, runs, 1, fan_out=False, parallel=1, policy=policy
+    conductor._escalate_dispatch_refusal(
+        task,
+        "implement_next",
+        f"factory-node:{task['id']}:implement_next:1",
+        conductor.ReservationResult(
+            False,
+            "budget_limit",
+            "task_budget",
+            spent,
+            2.0,
+            budget,
+            controls.task_snapshot(task["id"])["allowance"]["usd"],
+        ),
+        runs,
     )
     with Session(feedback_db) as db:
         receipt = db.exec(
@@ -17643,11 +17580,7 @@ def test_raise_envelope_grant_survives_requeue_and_admits_continuation(
             select(FactoryReceipt).where(FactoryReceipt.task_id == continuation_id)
         ).one()
         assert json.loads(receipt.policy_json)["task_budget_usd"] == 8.0
-        refusal = conductor._reservation_refusal(
-            db, continuation_id, "budget_limit", 2.0
-        )
-    assert refusal.allowed == 9.0
-    assert refusal.used == 7.0
+    assert controls.task_snapshot(continuation_id)["committed_cost_usd"] == 7.0
     assert controls.authorize_start(
         continuation_id,
         f"factory-node:{continuation_id}:implement_next:1",
@@ -17755,17 +17688,30 @@ def test_raise_envelope_revalidates_target_at_continuation_admission(
     assert admitted["detail"] == "dispatch refusal funding target changed"
 
 
-def test_raise_envelope_preserves_cumulative_objective_ceiling(
+def test_raise_envelope_is_not_capped_by_the_objective_dollar_ceiling(
     feedback_db, monkeypatch
 ):
     from factory.orchestration import factory_decisions as decisions
+    from factory.orchestration.factory_models import FactoryAudit
 
-    _task, _policy, receipt_id, card = _budget_refusal(
+    task, _policy, receipt_id, card = _budget_refusal(
         feedback_db, monkeypatch, budget=199.0, spent=198.0
     )
     assert card["options"][0]["detail"]["target"]["value"] == 200.0
-    with pytest.raises(decisions.DecisionError, match="exceeds objective budget"):
-        decisions.apply_decision(receipt_id, "raise_envelope", "operator")
+    # The $200 cumulative objective ceiling no longer refuses (#7161).
+    assert decisions.apply_decision(receipt_id, "raise_envelope", "operator")[
+        "applied"
+    ]
+    with Session(feedback_db) as db:
+        grant = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "funding_granted",
+            )
+        ).one()
+        assert json.loads(grant.detail_json)["policy_overlay"] == {
+            "task_budget_usd": 200.0
+        }
 
 
 def test_fan_in_reinsertion_prices_a_legacy_review(feedback_db):
@@ -17790,12 +17736,14 @@ def test_fan_in_reinsertion_prices_a_legacy_review(feedback_db):
     "limit, used, requested, allowed, allowance, label",
     [
         (
+            # No dispatch is refused on dollars any more (#7161); a legacy
+            # dollar refusal reads as a hand-raised limit like any other.
             "task_budget",
             35,
             8,
             36,
             20,
-            "Raise task_budget to 43 and continue",
+            "Continue once task_budget is raised by hand to 43",
         ),
         (
             "max_task_turns_hard",
@@ -18668,12 +18616,23 @@ def test_interrupted_continuation_reconciles_without_remote_action(
         for k, v in native["capacity_reservations"][0].items()
         if k not in {"state", "outcome", "settled_at"}
     }
-    # Terminal graph settlement cannot release the same allowance twice.
+    # Terminal graph settlement cannot release the same allowance twice. The
+    # retired attempt's charge no longer withholds the node's retry (#7161),
+    # so the next tick admits attempt 2, which reserves only its own ceiling.
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+    )
     conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
     assert s.native_snapshot() == after
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert [(r["attempt"], r["status"]) for r in runs] == [
+        (1, "failed"),
+        (2, "admitted"),
+    ]
+    assert runs[0]["accounted_cost_usd"] == run["accounted_cost_usd"]
     assert (
         controls.task_snapshot(s.task["id"])["committed_cost_usd"]
-        == current["committed_cost_usd"]
+        == current["committed_cost_usd"] + runs[1]["pin"]["max_cost_usd"]
     )
     with Session(s.engine) as db:
         audits = db.exec(
@@ -19510,11 +19469,12 @@ def test_a_failed_attempt_escalates_up_the_implement_pool(
         if n["node_key"] == "implement_work"
     )
     assert node["model"] == planned
-    # The start is authorized against the escalated model, from the node's
-    # remaining ceiling rather than a reservation priced for the old model.
+    # The start is authorized against the escalated model and reserves the
+    # node's own ceiling, whatever the failed attempt cost (#7161).
     starts = controls.task_snapshot(task["id"])["starts"]
     assert starts[-1]["model"] == expected
-    assert run["pin"]["max_cost_usd"] == pytest.approx(policy["turn_budget_usd"] - 0.25)
+    assert run["pin"]["max_cost_usd"] == pytest.approx(node["max_cost_usd"])
+    assert run["pin"]["max_cost_usd"] == pytest.approx(policy["turn_budget_usd"])
 
 
 @pytest.mark.parametrize(
