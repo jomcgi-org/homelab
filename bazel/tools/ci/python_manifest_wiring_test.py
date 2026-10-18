@@ -111,7 +111,9 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
             self.assertEqual(log, "")
 
     def test_full_update_keeps_renovate_lock_only(self):
-        result, log = self.run_script("bazel/tools/format/update-python-requirements.sh")
+        result, log = self.run_script(
+            "bazel/tools/format/update-python-requirements.sh"
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertLess(log.index(":runtime"), log.index(":requirements.all"))
         self.assertNotIn("gazelle_python_manifest", log)
@@ -132,7 +134,8 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
 
     def test_aggregate_drift_delegates_full_update(self):
         result, log = self.run_script(
-            "bazel/tools/format/update-python-requirements-if-needed.sh", LOCK_STATUS="3"
+            "bazel/tools/format/update-python-requirements-if-needed.sh",
+            LOCK_STATUS="3",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("bazel run //bazel/requirements:requirements.all", log)
@@ -140,7 +143,8 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
 
     def test_darwin_hook_defers_without_bazel_or_staging(self):
         result, log = self.run_script(
-            "bazel/tools/format/update-python-requirements-if-needed.sh", FAKE_OS="Darwin"
+            "bazel/tools/format/update-python-requirements-if-needed.sh",
+            FAKE_OS="Darwin",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("deferred to PR Linux CI", result.stdout)
@@ -155,7 +159,8 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
 
     def test_lock_analysis_failure_does_not_regenerate_or_stage(self):
         result, log = self.run_script(
-            "bazel/tools/format/update-python-requirements-if-needed.sh", LOCK_STATUS="1"
+            "bazel/tools/format/update-python-requirements-if-needed.sh",
+            LOCK_STATUS="1",
         )
         self.assertEqual(result.returncode, 1)
         self.assertNotIn("bazel run", log)
@@ -163,17 +168,25 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
 
     def test_ci_serial_update_and_unconditional_check(self):
         workflow = (REPO / "buildbuddy.yaml").read_text()
-        locks = workflow.index("./bazel/tools/format/update-python-requirements-if-needed.sh")
+        locks = workflow.index(
+            "./bazel/tools/format/update-python-requirements-if-needed.sh"
+        )
         update = workflow.index("./bazel/tools/ci/python-manifest.sh update")
         formatter = workflow.index("bazel run //bazel/tools/format:format")
         writeback = workflow.index("                git add -u\n", formatter)
         check = workflow.index('./bazel/tools/ci/python-manifest.sh check "$base_ref"')
-        self.assertIn('git diff --quiet "$base_ref" -- pyproject.toml bazel/requirements', workflow)
+        self.assertIn(
+            'git diff --quiet "$base_ref" -- pyproject.toml bazel/requirements',
+            workflow,
+        )
         self.assertLess(locks, update)
         self.assertLess(update, formatter)
         self.assertLess(formatter, writeback)
         self.assertLess(writeback, check)
-        self.assertIn('\n          ./bazel/tools/ci/python-manifest.sh check "$base_ref"\n', workflow)
+        self.assertIn(
+            '\n          ./bazel/tools/ci/python-manifest.sh check "$base_ref"\n',
+            workflow,
+        )
         self.assertIn('if [ "$AUTHOR" = "ci-format-bot" ]; then', workflow[:update])
         self.assertIn('elif [ "$ON_MAIN" = true ]; then', workflow[formatter:writeback])
         self.assertIn("gh-readonly-queue/*)", workflow[formatter:writeback])
@@ -204,13 +217,18 @@ class LinuxWheelsTest(unittest.TestCase):
             wheels[name] = wheel
             if requirement.marker is None or requirement.marker.evaluate(environment):
                 expected.append(wheel)
-        linux_wheels = runpy.run_path(REPO / "bazel/tools/ci/python_manifest_wheels.bzl")["linux_wheels"]
+        linux_wheels = runpy.run_path(
+            REPO / "bazel/tools/ci/python_manifest_wheels.bzl"
+        )["linux_wheels"]
         self.assertTrue(wheels)
         self.assertNotIn("@pip//httpx2_jsfetch:whl", expected)
         self.assertIn("@pip//httpcore2:whl", expected)
         self.assertIn("@pip//jeepney:whl", expected)
         self.assertEqual(linux_wheels(wheels), expected)
-        self.assertEqual(linux_wheels({"future_package": "@pip//future_package:whl"}), ["@pip//future_package:whl"])
+        self.assertEqual(
+            linux_wheels({"future_package": "@pip//future_package:whl"}),
+            ["@pip//future_package:whl"],
+        )
 
 
 if __name__ == "__main__":

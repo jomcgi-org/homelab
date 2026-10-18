@@ -118,8 +118,8 @@ py_test(
         "python_manifest_wheels.bzl",
         "//:buildbuddy.yaml",
         "//bazel/requirements:all.txt",
-        "//bazel/tools/format:update-python-requirements-if-needed.sh",
         "//bazel/tools/format:update-python-requirements.sh",
+        "//bazel/tools/format:update-python-requirements-if-needed.sh",
     ],
     deps = [
         "@pip//packaging",
