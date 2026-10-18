@@ -68,8 +68,8 @@ sh_binary(
     data = [":prettier"],
 )
 
-# All committed-artifact generators live in ONE list (run-generators.sh), shared
-# with fast-format.sh, so the local and CI format paths cannot drift.
+# Pure-script doc/config generators share one list with fast-format.sh.
+# Bazel-backed Go stub copies run separately after this parallel format batch.
 sh_binary(
     name = "run_generators",
     srcs = ["run-generators.sh"],

@@ -174,6 +174,13 @@ helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml
 - **BUILD generation is CI-only.** CI's format stage runs `//:gazelle` and
   auto-commits a `style: auto-format` commit, so fetch and rebase before your
   next push.
+- **Generated sources needed by ordinary tooling belong in a clean checkout.**
+  Keep pinned Bazel generation authoritative, seed only the required outputs
+  as tracked files, and verify their bytes against regenerated outputs in
+  Linux CI. Reuse the trusted branch autoformat writeback with `git add -u`,
+  after parallel formatters finish; never nest Bazel in `run-generators.sh`.
+  Keep main and merge-queue no-write guards. Do not check in other build
+  artifacts. The EmberVM Go protobuf targets are the pattern (#7066).
 - Image push happens only in CI on merge to main.
 
 ## Knowledge

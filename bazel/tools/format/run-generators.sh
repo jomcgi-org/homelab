@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Single source of truth for the repo's doc/config generators.
 #
-# Every generator that produces a COMMITTED artifact is listed here ONCE and run
+# Every pure-script doc/config generator is listed here ONCE and run
 # by BOTH format paths, so the two can never drift (a generator in one list but
 # not the other is the classic "green locally, red in CI" trap):
 #   - CI + `bazel run //bazel/tools/format:format` run it via the :run_generators
@@ -20,6 +20,11 @@
 # Deliberately NOT here: the repo-docs and public docs manifests. They are
 # build outputs of genrules (#6446), never committed, so nothing regenerates
 # or checks them in; validate-generate-scripts.sh checks their inputs instead.
+#
+# Go protobuf copies are also outside this script: BuildBuddy runs
+# //projects/embervm/proto/embervm/node/v1:update_go_stubs after the parallel
+# format batch, then :check_go_stubs on every head. That target consumes pinned
+# Bazel outputs; invoking Bazel here would nest a client inside :format.
 #
 # Deliberately NOT here: sync-helm-deps and atlas-checksum generation. They need
 # helm/atlas CLIs that are not in the CI format runner and have their own gates;

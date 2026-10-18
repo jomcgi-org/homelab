@@ -1,17 +1,19 @@
 # node.proto is the EmberVM control-to-node gRPC contract (the design seam).
 #
-# Codegen is build-time only: protoc + language plugins regenerate the Go and
-# Elixir stubs on every build (see :node_go_src and :node_elixir_src). Nothing
-# generated is checked in, so the genrules are the single source of truth and
-# offline-RBE reproducibility is by construction: there is no stale-stub drift
-# to guard, and the cross-language round-trip test (//projects/embervm/control)
-# proves the stubs are wire-correct.
+# Bazel generates the Go and Elixir build inputs from this contract. The two
+# checked-in Go copies support ordinary tooling in a fresh checkout (#7066).
+# :update_go_stubs copies the pinned Bazel outputs after CI's format batch;
+# :check_go_stubs verifies drift, including on the autoformat bot's new head.
+# Elixir remains build-time only. The cross-language round-trip test
+# (//projects/embervm/control) proves the stubs are wire-correct.
 #
 # This package is hand-managed (generated srcs, a prebuilt protoc, and a
 # nested-module go plugin), so gazelle is told to leave it alone entirely.
 # gazelle:ignore
 
 load("@rules_go//go:def.bzl", "go_library")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 filegroup(
     name = "node_proto",
@@ -35,22 +37,23 @@ genrule(
     name = "node_go_src",
     srcs = [":node_proto"],
     outs = [
-        "node.pb.go",
-        "node_grpc.pb.go",
+        "generated/node.pb.go",
+        "generated/node_grpc.pb.go",
     ],
     cmd = """
 set -euo pipefail
 proto=$(execpath :node_proto)
 root=$${proto%/embervm/node/v1/node.proto}
 out=$$(mktemp -d)
+trap 'rm -rf "$$out"' EXIT
 $(execpath @protoc_linux_x86_64//:protoc) \
     --plugin=protoc-gen-go=$(execpath @org_golang_google_protobuf//cmd/protoc-gen-go) \
     --plugin=protoc-gen-go-grpc=$(execpath @org_golang_google_grpc_cmd_protoc_gen_go_grpc//:protoc-gen-go-grpc) \
     --go_out=$$out --go_opt=paths=source_relative \
     --go-grpc_out=$$out --go-grpc_opt=paths=source_relative \
     -I $$root $$proto
-cp $$out/embervm/node/v1/node.pb.go $(execpath node.pb.go)
-cp $$out/embervm/node/v1/node_grpc.pb.go $(execpath node_grpc.pb.go)
+cp $$out/embervm/node/v1/node.pb.go $(execpath generated/node.pb.go)
+cp $$out/embervm/node/v1/node_grpc.pb.go $(execpath generated/node_grpc.pb.go)
 """,
     tools = [
         "@org_golang_google_grpc_cmd_protoc_gen_go_grpc//:protoc-gen-go-grpc",
@@ -61,10 +64,7 @@ cp $$out/embervm/node/v1/node_grpc.pb.go $(execpath node_grpc.pb.go)
 
 go_library(
     name = "nodev1",
-    srcs = [
-        "node.pb.go",
-        "node_grpc.pb.go",
-    ],
+    srcs = [":node_go_src"],
     importpath = "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1",
     visibility = ["//projects/embervm:__subpackages__"],
     deps = [
@@ -74,6 +74,49 @@ go_library(
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//runtime/protoimpl",
     ],
+)
+
+# Keep these outside :format's parallel multirun. Copying while gofmt reads the
+# tracked files would race; invoking Bazel inside run-generators.sh would nest
+# a Bazel client under the running format command.
+sh_binary(
+    name = "update_go_stubs",
+    srcs = ["sync-go-stubs.sh"],
+    args = [
+        "--update",
+        "$(rootpath generated/node.pb.go)",
+        "$(rootpath generated/node_grpc.pb.go)",
+    ],
+    data = [
+        "generated/node.pb.go",
+        "generated/node_grpc.pb.go",
+    ],
+)
+
+# A separate read-only command runs after the autoformat push-back decision.
+# A pre-format drift test would abort before CI could repair stale copies.
+sh_binary(
+    name = "check_go_stubs",
+    srcs = ["sync-go-stubs.sh"],
+    args = [
+        "--check",
+        "$(rootpath generated/node.pb.go)",
+        "$(rootpath generated/node_grpc.pb.go)",
+        "$(rootpath node.pb.go)",
+        "$(rootpath node_grpc.pb.go)",
+    ],
+    data = [
+        "generated/node.pb.go",
+        "generated/node_grpc.pb.go",
+        "node.pb.go",
+        "node_grpc.pb.go",
+    ],
+)
+
+sh_test(
+    name = "sync_go_stubs_test",
+    srcs = ["sync-go-stubs_test.sh"],
+    data = ["sync-go-stubs.sh"],
 )
 
 # Elixir codegen: build the protoc-gen-elixir escript from the protobuf hex
