@@ -30,7 +30,6 @@
     "bazel-module",
     "bazelisk",
     "custom.regex",
-    "dockerfile",
     "github-actions",
     "gomod",
     "helm-values",
@@ -103,11 +102,12 @@
     {
       "description": "First-party charts are owned by chart-version-bot, never Renovate.",
       "matchDepNames": [
+        "embervm",
         "monolith",
-        "mcp-stack",
-        "agent-platform",
-        "cluster-agents",
-        "lakehouse",
+        "monolith-public",
+        "monolith-agents",
+        "context-forge",
+        "inference",
         "oci-model-cache-operator"
       ],
       "enabled": false
@@ -115,8 +115,8 @@
     {
       "description": "Self-referential git sources (deploy values pulled from our own repo) are not upgrade targets.",
       "matchDepNames": [
-        "https://github.com/jomcgi/homelab",
-        "https://github.com/jomcgi/homelab.git"
+        "https://github.com/jomcgi-org/homelab",
+        "https://github.com/jomcgi-org/homelab.git"
       ],
       "enabled": false
     },

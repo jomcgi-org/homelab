@@ -156,6 +156,89 @@ def test_all_renovate_update_types_keep_both_auto_merge_paths_disabled():
     visit(config)
 
 
+def test_first_party_chart_exclusions_cover_current_names_only():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    rules = [
+        rule
+        for rule in config["packageRules"]
+        if rule["description"]
+        == "First-party charts are owned by chart-version-bot, never Renovate."
+    ]
+    assert len(rules) == 1
+    assert rules[0] == {
+        "description": "First-party charts are owned by chart-version-bot, never Renovate.",
+        "matchDepNames": [
+            "embervm",
+            "monolith",
+            "monolith-public",
+            "monolith-agents",
+            "context-forge",
+            "inference",
+            "oci-model-cache-operator",
+        ],
+        "enabled": False,
+    }
+
+
+def test_self_source_exclusions_use_current_organization():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    description = (
+        "Self-referential git sources (deploy values pulled from our own repo) "
+        "are not upgrade targets."
+    )
+    rules = [
+        rule for rule in config["packageRules"] if rule["description"] == description
+    ]
+    assert rules == [
+        {
+            "description": description,
+            "matchDepNames": [
+                "https://github.com/jomcgi-org/homelab",
+                "https://github.com/jomcgi-org/homelab.git",
+            ],
+            "enabled": False,
+        }
+    ]
+
+
+def test_active_managers_and_upstream_chart_updates_remain_available():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    assert "dockerfile" not in config["enabledManagers"]
+    assert config["enabledManagers"] == [
+        "argocd",
+        "bazel-module",
+        "bazelisk",
+        "custom.regex",
+        "github-actions",
+        "gomod",
+        "helm-values",
+        "helmv3",
+        "kubernetes",
+        "npm",
+        "pep621",
+    ]
+    description = "Identify upstream chart updates in the broader dependency stream."
+    assert [
+        rule for rule in config["packageRules"] if rule["description"] == description
+    ] == [
+        {
+            "description": description,
+            "matchManagers": ["argocd", "helmv3"],
+            "addLabels": ["upstream-chart"],
+        }
+    ]
+    # Keep disabling rules confined to the two literal first-party exclusions.
+    assert [
+        rule["description"]
+        for rule in config["packageRules"]
+        if rule.get("enabled") is False
+    ] == [
+        "First-party charts are owned by chart-version-bot, never Renovate.",
+        "Self-referential git sources (deploy values pulled from our own repo) "
+        "are not upgrade targets.",
+    ]
+
+
 def test_apko_lock_maintenance_does_not_request_auto_merge():
     script = (HERE / "templates" / "apko-lock-script.yaml").read_text()
     for forbidden in (
