@@ -54,6 +54,8 @@ CAPABILITIES = {
         "decision_reply": "supported",
         "decision_direction": "supported_when_pending",
         "pause_resume_stop": "supported",
+        "expired_task_recovery": "supported_preview_apply_same_task",
+        "landing_hold_release": "supported_preview_apply_exact_pr_head",
         "priority_change": "unavailable_no_owner",
         "standalone_conductor_request": "unavailable_no_shared_owner",
         "standalone_conversation_selection": "unavailable_no_shared_owner",
@@ -1089,6 +1091,69 @@ def _decide(
     from factory.orchestration.conductor_context import with_request_knowledge
 
     return with_request_knowledge(result, actor, request_key)
+
+
+@mcp.tool
+async def factory_recover_expired_task(
+    operation: Literal["preview", "apply"],
+    receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    deadline_at: str,
+    max_work_turns: Annotated[MCPInteger, Field(gt=0)],
+    direction: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+) -> dict:
+    """Preview or recover one expired task as a standing human operator.
+
+    Keep the same receipt, task, graph, accounting and pinned policy. Supply an
+    absolute timezone-aware deadline within six hours and a cumulative work
+    ceiling no greater than the existing hard cap. Recovery permits up to two
+    further planner attempts within the existing cap, one replacement plan and
+    one final acceptance, with one attempt per planner. All old retries remain
+    fenced until the replacement plan is accepted. A reviewed unmerged delivery
+    hold and nonrenewable recovery are mandatory. Dollars remain accounting.
+    Preview first. Apply requires identical arguments, the preview digest and
+    a fresh request key. Replay the identical request after a lost response.
+    This reacquires normal task capacity and leaves the task paused. Inspect
+    the result before explicitly resuming. Unknown execution, queued messages,
+    human ownership, blockers or concurrent decisions refuse recovery. A task
+    can receive this grant only once. No review or operational check is waived.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+
+    def recover():
+        from factory.orchestration import factory_task_recovery as recovery
+
+        try:
+            if operation == "preview":
+                return recovery.preview(
+                    receipt_id, deadline_at, max_work_turns, direction
+                )
+            if not request_key or not expected_preview_sha256:
+                return {
+                    "ok": False,
+                    "reason": "task_recovery_requires_preview_and_request_key",
+                }
+            return recovery.apply(
+                receipt_id,
+                deadline_at,
+                max_work_turns,
+                direction,
+                actor=principal.subject,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        except httpx.HTTPError:
+            return {"ok": False, "reason": "task_recovery_github_read_failed"}
+
+    return await asyncio.to_thread(recover)
 
 
 @mcp.tool

@@ -30,7 +30,7 @@ from factory.orchestration.factory_models import (
     MAX_CAPACITY_DENIED_ATTEMPTS,
     WorkItem,
 )
-from factory.orchestration.models import SwarmNodeRun, SwarmTask
+from factory.orchestration.models import SwarmNodeRun, SwarmPlanVersion, SwarmTask
 
 _ACTIVE_START_SESSION: ContextVar[Session | None] = ContextVar(
     "factory_active_start_session", default=None
@@ -38,6 +38,7 @@ _ACTIVE_START_SESSION: ContextVar[Session | None] = ContextVar(
 
 MAX_LANDING_RECOVERIES = 2
 LANDING_RECOVERY_TIMEOUT_SECONDS = 3600
+TASK_RECOVERY_ACTION = "operator_task_recovery"
 
 _ACTIVE = ("admitted", "uncertain")
 _TERMINAL = ("succeeded", "failed", "cancelled")
@@ -1921,6 +1922,51 @@ def _landing_recovery_expired(db: Session, task_id: str) -> bool:
     return deadline is not None and _now() >= deadline
 
 
+def task_recovery_grant(task_id: str, *, session=None) -> dict | None:
+    with _read_session(session) as db:
+        event = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == TASK_RECOVERY_ACTION,
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        return json.loads(event.detail_json)["proposal"] if event else None
+
+
+def _recovery_plan_accepted(db, task_id, recovery):
+    return (
+        db.exec(
+            select(SwarmPlanVersion.id).where(
+                SwarmPlanVersion.task_id == task_id,
+                SwarmPlanVersion.cause_ref
+                == f"factory-decision:{recovery['planner_node_key']}:1",
+                SwarmPlanVersion.version > recovery["expected_revision"],
+            )
+        ).first()
+        is not None
+    )
+
+
+def task_recovery_needs_plan(task_id: str, *, session=None) -> bool:
+    with _read_session(session) as db:
+        recovery = task_recovery_grant(task_id, session=db)
+        return recovery is not None and not _recovery_plan_accepted(
+            db, task_id, recovery
+        )
+
+
+def _recovery_deadline(db, task_id):
+    grant = task_recovery_grant(task_id, session=db)
+    landing = _landing_recovery_deadline(db, task_id)
+    if grant is None:
+        return landing
+    deadline = datetime.fromisoformat(grant["deadline_at"])
+    return min(deadline, landing) if landing else deadline
+
+
 def review_recovery_held(task_id: str, *, session=None) -> bool:
     """Durable review-only fence, also available to the pruned executor."""
     with _read_session(session) as db:
@@ -2086,14 +2132,16 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
         deadline = admitted + timedelta(
             seconds=result["policy"]["task_timeout_seconds"]
         )
-        recovery_deadline = _landing_recovery_deadline(db, row.task_id)
+        recovery_deadline = _recovery_deadline(db, row.task_id)
         deadline = recovery_deadline or deadline
         allowance = _stored_allowance(row, result["policy"])
         result["allowance"] = allowance
         result.update(
             admitted_at=admitted.isoformat(),
             deadline_at=deadline.isoformat(),
-            deadline_reason="landing_recovery_deadline"
+            deadline_reason="operator_recovery_deadline"
+            if task_recovery_grant(row.task_id, session=db)
+            else "landing_recovery_deadline"
             if recovery_deadline is not None
             else "task_deadline",
             limits={
@@ -3072,12 +3120,20 @@ def _can_start(
             s.start_key == start_key and s.status == "reserved"
             for s in _starts(db, task_id)
         )
+        recovery = task_recovery_grant(task_id, session=db)
         # Funding oversight can renew a soft task lease, never the fixed
         # landing-recovery cap. Check it before pending/granted lease gates.
-        recovery_deadline = _landing_recovery_deadline(db, task_id)
+        recovery_deadline = _recovery_deadline(db, task_id)
         now = _now()
         if recovery_deadline is not None and now >= recovery_deadline:
-            reason = "landing_recovery_deadline"
+            reason = "task_deadline" if recovery else "landing_recovery_deadline"
+        elif (
+            recovery
+            and matched
+            and not _recovery_plan_accepted(db, task_id, recovery)
+            and start_key != f"factory-node:{task_id}:{recovery['planner_node_key']}:1"
+        ):
+            reason = "operator_recovery_requires_plan"
         elif funding_key and not oversight:
             reason = "funding_review_expired"
         elif request and not oversight:
@@ -3182,6 +3238,7 @@ def authorize_start(
             return {"ok": False, "reason": "funding_review_pin_mismatch"}
         budget = _accounting(starts)
         planner = _planner_key(start_key)
+        recovery = task_recovery_grant(task_id, session=db)
         grant = continuation_grant(task_id, session=db)
         matched = _START_KEY.match(start_key)
         node_key = matched.group("node_key") if matched else None
@@ -3190,6 +3247,14 @@ def authorize_start(
         # this is the original single-flight fence, unchanged.
         if sum(s.status == "reserved" for s in starts) >= parallel_limit(policy):
             reason = "start_pending"
+        elif recovery and (
+            (
+                planner
+                and (budget["planner_turns_used"] >= recovery["planner_turn_ceiling"])
+            )
+            or (not planner and budget["turns_used"] >= recovery["work_turn_ceiling"])
+        ):
+            reason = "operator_recovery_turn_limit"
         elif (
             grant
             and not planner

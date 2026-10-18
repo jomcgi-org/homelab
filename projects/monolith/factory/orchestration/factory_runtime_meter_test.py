@@ -359,6 +359,305 @@ def test_exact_policy_amendment_is_reviewable_idempotent_and_stays_paused(databa
         amendments.apply(838, {"task_budget_usd": 66}, direction, **args)
 
 
+@pytest.fixture
+def expired_recovery(database, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor
+
+    paused(database)
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    monkeypatch.setattr(conductor, "get_engine", lambda: database)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.state = "escalated"
+        row.escalation_json = json.dumps({"question": "Expired", "resolved": None})
+        row.direction_json = json.dumps({"conductor_gates": [{"scope": "draft only"}]})
+        task = db.get(SwarmTask, "task")
+        task.created_at = now - timedelta(hours=3)
+        task.settled_at = now - timedelta(minutes=5)
+        task.start_state = "settled"
+    issue = {
+        "number": 7001,
+        "html_url": "https://github.com/org/repo/issues/7001",
+        "state": "open",
+        "labels": [],
+        "body": "fix",
+    }
+    monkeypatch.setattr(conductor, "github_get", lambda *_: issue)
+    return (
+        {
+            "receipt_id": 838,
+            "deadline_at": (now + timedelta(hours=1)).isoformat(),
+            "max_work_turns": 9,
+            "direction": "Replace the failed preflight with a complete reviewed draft plan.",
+        },
+        issue,
+        now,
+    )
+
+
+def test_expired_recovery_preserves_identity_policy_history_and_stays_paused(
+    database, expired_recovery
+):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    args, _, now = expired_recovery
+    proposal = recovery.preview(**args)
+    assert proposal["planner_turn_ceiling"] == 2
+    assert proposal["accounting"]["committed_cost_usd"] == 4
+    with Session(database) as db:
+        original = db.get(FactoryReceipt, 838)
+        policy, created = original.policy_json, original.created_at
+    apply_args = {
+        "actor": "operator",
+        "request_key": "recover-once",
+        "expected_preview_sha256": proposal["preview_sha256"],
+    }
+    result = recovery.apply(**args, **apply_args)
+    assert recovery.apply(**args, **apply_args) == result
+    assert result["stays_paused"] and result["task_id"] == "task"
+    snapshot = controls.task_snapshot("task")
+    assert snapshot["deadline_at"] == args["deadline_at"]
+    assert snapshot["deadline_reason"] == "operator_recovery_deadline"
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        task = db.get(SwarmTask, "task")
+        assert row.task_id == "task" and row.state == "admitted" and row.task_paused
+        assert row.policy_json == policy and row.created_at == created
+        assert task.created_at == (now - timedelta(hours=3)).replace(tzinfo=None)
+        assert task.settled_at is None and task.budget_usd == 50
+        direction = json.loads(row.direction_json)
+        assert direction["landing_hold"] and direction["nonrenewable_recovery"]
+        assert direction["conductor_gates"] == [{"scope": "draft only"}]
+        saved = recovery.grant(db, "task")
+        assert saved == proposal
+        assert saved["prior_escalation"]["resolved"] is None
+        assert saved["prior_direction"] == {
+            "conductor_gates": [{"scope": "draft only"}]
+        }
+        assert db.exec(select(FactoryStart)).one().cost_usd == 4
+    with pytest.raises(ValueError, match="conflicting_task_recovery_request"):
+        recovery.apply(**{**args, "direction": "different"}, **apply_args)
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ("human", "recovery_issue_unavailable"),
+        ("closed", "recovery_issue_unavailable"),
+        ("unknown", "recovery_unresolved"),
+        ("queued", "recovery_pending_execution"),
+        ("claimed", "recovery_pending_execution"),
+        ("policy", "task_recovery_preview_changed"),
+        ("body", "task_recovery_preview_changed"),
+        ("issue_body", "task_recovery_preview_changed"),
+        ("control", "task_recovery_preview_changed"),
+        ("owner", "recovery_work_owned_elsewhere"),
+        ("capacity", "recovery_capacity_unavailable"),
+    ],
+)
+def test_expired_recovery_rechecks_fresh_authority(
+    database, expired_recovery, change, reason
+):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    args, issue, _ = expired_recovery
+    proposal = recovery.preview(**args)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if change == "human":
+            issue["labels"] = [{"name": "human"}]
+        elif change == "closed":
+            issue["state"] = "closed"
+        elif change == "unknown":
+            db.exec(select(FactoryStart)).one().status = "uncertain"
+        elif change in {"queued", "claimed"}:
+            db.add(
+                PendingMessage(
+                    session_id=1,
+                    seq=2,
+                    message_text="old work",
+                    claimed_by_replica="owner" if change == "claimed" else None,
+                )
+            )
+        elif change == "policy":
+            policy = json.loads(row.policy_json)
+            policy["turn_budget_usd"] = 3
+            row.policy_json = json.dumps(policy)
+        elif change == "body":
+            row.body = "changed"
+        elif change == "issue_body":
+            issue["body"] = "changed"
+        elif change == "control":
+            db.get(FactoryControl, "factory").version += 1
+        else:
+            db.add(
+                FactoryReceipt(
+                    repo="org/repo",
+                    issue_number=7001 if change == "owner" else 7002,
+                    generation=1,
+                    title="other",
+                    body="other",
+                    url="https://example.invalid",
+                    actor="operator",
+                    state="admitted",
+                    task_id="other",
+                )
+            )
+    with pytest.raises(ValueError, match=reason):
+        recovery.apply(
+            **args,
+            actor="operator",
+            request_key="recover",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).state == "escalated"
+
+
+def test_recovery_fences_old_retry_until_new_plan_and_enforces_deadline(
+    database, expired_recovery, monkeypatch
+):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    args, _, now = expired_recovery
+    proposal = recovery.preview(**args)
+    recovery.apply(
+        **args,
+        actor="operator",
+        request_key="recover",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    assert controls.set_control("resume_task", "operator", task_id="task")["ok"]
+    assert (
+        controls.can_start("task", start_key="factory-node:task:implement:2")["reason"]
+        == "operator_recovery_requires_plan"
+    )
+    planner_key = f"factory-node:task:{proposal['planner_node_key']}:1"
+    assert controls.can_start("task", start_key=planner_key)["ok"]
+    assert (
+        controls.can_start("task", start_key=planner_key[:-1] + "2")["reason"]
+        == "operator_recovery_requires_plan"
+    )
+    assert controls.authorize_start(
+        "task", planner_key, "factory", model="astra", max_cost_usd=4
+    )["ok"]
+    with Session(database) as db, db.begin():
+        start = db.exec(
+            select(FactoryStart).where(FactoryStart.start_key == planner_key)
+        ).one()
+        start.status, start.cost_usd = "succeeded", 1
+        db.add(
+            SwarmPlanVersion(
+                task_id="task",
+                version=1,
+                op="apply_edits",
+                author_kind="conductor",
+                author="astra",
+                change_json="{}",
+                cause_kind="factory_conductor",
+                cause_ref=f"factory-decision:{proposal['planner_node_key']}:1",
+            )
+        )
+    assert controls.can_start("task", start_key="factory-node:task:implement:2")["ok"]
+    monkeypatch.setattr(controls, "_now", lambda: now + timedelta(hours=2))
+    assert controls.task_snapshot("task")["limits"]["deadline_expired"]
+    assert (
+        controls.can_start("task", start_key=planner_key)["reason"] == "task_deadline"
+    )
+
+
+@pytest.mark.parametrize("planner", [True, False])
+def test_recovery_cumulative_caps_cannot_be_bypassed(
+    database, expired_recovery, planner
+):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    args, _, _ = expired_recovery
+    proposal = recovery.preview(**args)
+    recovery.apply(
+        **args,
+        actor="operator",
+        request_key="recover",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    assert controls.set_control("resume_task", "operator", task_id="task")["ok"]
+    with Session(database) as db, db.begin():
+        db.add(
+            SwarmPlanVersion(
+                task_id="task",
+                version=1,
+                op="apply_edits",
+                author_kind="conductor",
+                author="astra",
+                change_json="{}",
+                cause_kind="factory_conductor",
+                cause_ref=f"factory-decision:{proposal['planner_node_key']}:1",
+            )
+        )
+        starts = [
+            FactoryStart(
+                task_id="task",
+                start_key=f"factory-node:task:{'conductor' if planner else 'implement'}_{i}:1",
+                actor="factory",
+                model="astra",
+                max_cost_usd=4,
+                cost_usd=1,
+                status="succeeded",
+            )
+            for i in range(2 if planner else 8)
+        ]
+        db.add_all(starts)
+    key = f"factory-node:task:{'conductor' if planner else 'implement'}_next:1"
+    result = controls.authorize_start(
+        "task", key, "factory", model="astra", max_cost_usd=4
+    )
+    assert result == {"ok": False, "reason": "operator_recovery_turn_limit"}
+
+
+def test_expired_recovery_cannot_renew_after_second_settlement(
+    database, expired_recovery, monkeypatch
+):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    args, _, now = expired_recovery
+    proposal = recovery.preview(**args)
+    recovery.apply(
+        **args,
+        actor="operator",
+        request_key="recover",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    later = now + timedelta(hours=2)
+    monkeypatch.setattr(controls, "_now", lambda: later)
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).state = "escalated"
+        db.get(SwarmTask, "task").settled_at = later
+    with pytest.raises(ValueError, match="recovery_already_authorized"):
+        recovery.preview(
+            **{**args, "deadline_at": (later + timedelta(hours=1)).isoformat()}
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("max_work_turns", 10),
+        ("max_work_turns", 1),
+        ("deadline_at", "2099-01-01T00:00:00+00:00"),
+        ("deadline_at", "2026-01-01T00:00:00"),
+    ],
+)
+def test_recovery_refuses_unbounded_request(database, expired_recovery, field, value):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    args, _, _ = expired_recovery
+    with pytest.raises(
+        ValueError, match="recovery_(turn_bounds_unavailable|deadline_outside_window)"
+    ):
+        recovery.preview(**{**args, field: value})
+
+
 @pytest.mark.parametrize("change", ["control", "graph", "cost", "live", "unknown"])
 def test_policy_preview_changes_or_unresolved_work_prevent_application(
     database, change
