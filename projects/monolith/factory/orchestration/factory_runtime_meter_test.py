@@ -206,6 +206,14 @@ def test_incomplete_or_exhausted_usage_pauses_and_uses_existing_stop_owner(
     assert stopped == [receipt["id"]]
     with Session(database) as db:
         assert db.get(FactoryReceipt, 838).task_paused
+        snapshot = controls._snapshot(db, db.get(FactoryReceipt, 838))
+        card = controls.escalation_view(snapshot)
+        assert card["open"] and not card["briefing"] and card["options"]
+        assert "factory:runtime-meter" in card["question"]
+        assert (
+            card["reason"]
+            == meter._records_for_receipt(db, receipt["id"], meter.TRIP)[0]["reason"]
+        )
         start = db.exec(select(FactoryStart)).one()
         assert start.status == "reserved" and start.max_cost_usd == 4
     meter.reconcile("task")
@@ -1122,6 +1130,17 @@ def test_old_session_trip_cannot_pause_replacement_but_objective_limit_can(
     assert update(receipt, 1, output)["stop"]
     with Session(database) as db:
         assert db.get(FactoryReceipt, 838).task_paused is paused
+        if paused:
+            card = controls.escalation_view(
+                controls._snapshot(db, db.get(FactoryReceipt, 838))
+            )
+            assert (
+                card["open"]
+                and not card["briefing"]
+                and card["reason"] == "objective_list_backstop"
+            )
+        else:
+            assert db.get(FactoryReceipt, 838).escalation_json is None
         assert (
             meter.objective_totals(db, db.get(FactoryReceipt, 838))["known_list_usd"]
             == output * 50 / 1000000
@@ -1152,6 +1171,11 @@ def test_missing_or_stale_native_usage_trips_even_after_enrollment_is_disabled(
     assert stopped == [receipt["id"]]
     with Session(database) as db:
         assert db.get(FactoryReceipt, 838).task_paused
+        card = controls.escalation_view(
+            controls._snapshot(db, db.get(FactoryReceipt, 838))
+        )
+        assert card["open"] and not card["briefing"] and card["options"]
+        assert card["reason"] == "meter_usage_stale"
         assert (
             meter._records_for_receipt(db, receipt["id"], meter.TRIP)[0]["reason"]
             == "meter_usage_stale"

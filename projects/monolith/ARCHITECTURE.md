@@ -691,6 +691,24 @@ good. Re-admission mints a whole new task on a fresh budget, so the receipt
 keeps its previous task ids and the board shows what they spent beside the
 current task rather than inside its limits (#6041).
 
+Automatic safety pauses retain their active receipt and reservations. The pause
+and its operator question commit under the control lock. Allocation recovery,
+nonrenewable recovery, conductor/refine refusals and runtime metering share this
+path. A valid pending question keeps its identity. Missing or dismissed cards
+are repaired when that path is reached again; status reports
+`active_paused_without_actionable_question` for existing orphan pauses.
+
+**Why.** A paused task can still own an uncertain invocation or a nonrenewable
+envelope. Its recovery card offers a local stop request, using the existing
+`hold` decision effect, and cancellation waits for normal reconciliation.
+It offers no continuation, funding or GitHub mutation. An issue-body rewrite
+refreshes a still-active paused non-watchdog card under its observed control
+version and decision identity. The audit retains the prior card and both
+identities; no operator answer is inferred. A competing answer, resume or
+handoff fences the refresh. Active watchdog cards keep their own contract
+(#7165). Feature defaults are unchanged. Historical audit attribution and
+post-rollout observation remain acceptance work on that issue.
+
 (see: /projects/monolith/factory/orchestration/factory_decisions.py)
 (see: /projects/monolith/frontend/src/routes/private/agents/escalations/+page.svelte)
 
@@ -2040,6 +2058,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Remove dormant scheduler registration while retaining rows and Argo run-now compatibility | section 4, batch execution | #7021 | repository removal; later table retirement and CronWorkflow-native listing need separate scope |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |

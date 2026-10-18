@@ -58,10 +58,11 @@ def funding_blocker(db, task_id, runs):
 
 
 def pause(db, task_id, blocker):
+    from factory.orchestration import factory_pause
+
     row = controls._receipt(db, task_id)
-    if row is not None and row.state in controls._ACTIVE and not row.task_paused:
-        actor = "factory:allocation-recovery"
-        controls.set_control("pause_task", actor, task_id=task_id, session=db)
+    actor = "factory:allocation-recovery"
+    if factory_pause.pause_locked(db, row, actor, controls._json(blocker)):
         controls._audit(
             db, actor, "allocation_recovery_required", task_id=task_id, **blocker
         )

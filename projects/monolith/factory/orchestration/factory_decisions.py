@@ -238,12 +238,24 @@ def _claim(
         # running right now would keep writing to an issue the decision has
         # just closed or relabelled, and would then settle against a verdict
         # nobody asked it for.
-        from factory.orchestration import factory_progress_watchdog
+        from factory.orchestration import factory_pause, factory_progress_watchdog
+
+        if factory_pause.is_card(escalation):
+            if not factory_pause.eligible(db, row) or not factory_pause.decidable(
+                row, escalation
+            ):
+                raise DecisionError(409, "this automatic pause no longer owns the task")
+            if option != factory_pause.STOP:
+                raise DecisionError(
+                    409,
+                    "this pause only offers stopping; continuation needs separate authorization",
+                )
 
         # A watchdog card is the one answered mid-task: its task is paused
         # waiting for it, and the watchdog enacts the answer on the next tick.
-        if row.state in _RUNNING_STATES and not factory_progress_watchdog.decidable(
-            row, escalation
+        if row.state in _RUNNING_STATES and not (
+            factory_progress_watchdog.decidable(row, escalation)
+            or factory_pause.decidable(row, escalation)
         ):
             raise DecisionError(
                 409, "a brief is running on this issue; decide when it settles"
@@ -755,6 +767,19 @@ def _resolve(
         # the audit has to name the task the decision was made against rather
         # than the null a re-queued receipt carries.
         task_id = row.task_id
+        from factory.orchestration import factory_pause
+
+        if factory_pause.is_card(escalation):
+            if (
+                not factory_pause.eligible(db, row)
+                or not factory_pause.decidable(row, escalation)
+                or option != factory_pause.STOP
+            ):
+                raise DecisionError(409, "this automatic pause no longer owns the task")
+            # Request cancellation, never settle or release uncertain reservations.
+            # The existing cancel_owned reconciler accounts for outstanding work.
+            row.cancellation_requested = True
+            resolution["effects"]["cancellation_requested"] = True
         # A dismiss is overwritten rather than preserved: the operator who
         # cleared the card and then decided the issue properly must end up
         # with the decision on the record, not the dismiss.

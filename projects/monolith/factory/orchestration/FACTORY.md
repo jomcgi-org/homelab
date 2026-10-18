@@ -417,7 +417,8 @@ That refusal is for retired cards. With `FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLE
 generation, because a generation advance never retires active work: the task
 keeps running under its pinned policy, and its card (a no-progress watchdog
 pause, most often) is a live question about that task. The existing rule that
-a running receipt accepts only a watchdog decision still applies. A settled
+a running receipt accepts only its watchdog decision or the local stop on its
+automatic-pause card still applies. A settled
 or queued receipt on an old generation is refused exactly as before.
 
 **Why.** On 2026-10-01 receipts 700 and 703 were still `admitted` on

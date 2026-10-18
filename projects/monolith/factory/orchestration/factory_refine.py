@@ -28,7 +28,6 @@ from factory.orchestration.factory_controls import (
     _read_session,
     finish_task,
     receipt_task_class,
-    set_control,
     task_snapshot,
     verify_option_list,
     _ACTIVE,
@@ -1127,7 +1126,14 @@ def reconcile(
     if task_class != TASK_CLASS:
         # Phase 3 fills this hook. Pausing is deliberate so an unreachable
         # advisory class parks visibly instead of silently planning a DAG.
-        set_control("pause_task", ACTOR, task_id=task["id"])
+        from factory.orchestration import factory_pause
+
+        factory_pause.pause(
+            task["id"],
+            ACTOR,
+            f"advisory_class_unimplemented: {task_class}",
+            expected_version=task.get("factory_control_version"),
+        )
         with _locked_session() as (db, _control):
             _audit(
                 db,
@@ -1171,7 +1177,14 @@ def reconcile(
             # Never turn optimistic concurrency into an operator pause.
             logger.info("Refine graph changed during admission for %s", task["id"])
         else:
-            set_control("pause_task", ACTOR, task_id=task["id"])
+            from factory.orchestration import factory_pause
+
+            factory_pause.pause(
+                task["id"],
+                ACTOR,
+                f"refine_insertion: {result.refusal_code}",
+                expected_version=task.get("factory_control_version"),
+            )
         return
     succeeded = next(
         (
