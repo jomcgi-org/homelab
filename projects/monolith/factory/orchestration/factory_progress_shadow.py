@@ -167,7 +167,7 @@ def price_projection(
             }
         )
     unknown += sum(
-        controls._committed_cost(start)
+        max(start.max_cost_usd, start.cost_usd or 0)
         for start in owners[None]
         if start.accounting_basis
         not in ("no_model_post", "capacity_denied", "no_session_created")

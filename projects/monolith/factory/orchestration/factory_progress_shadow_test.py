@@ -116,7 +116,7 @@ def test_unknown_failed_preflight_and_active_exposure_are_never_refunded():
         session_ids=[1, 2, 3],
     )
     assert report["known_list_usd"] == 1
-    assert report["unknown_or_reserved_exposure_usd"] == 11
+    assert report["unknown_or_reserved_exposure_usd"] == 12
     assert report["sessions"][0]["unpriced_turns"] == 1
     assert report["sessions"][0]["unbounded_unknown_usage"]
     assert report["sessions"][1]["unbounded_unknown_usage"]
