@@ -1500,7 +1500,6 @@ py_library(
             "factory/orchestration/factory_controls.py",
             "factory/orchestration/factory_funding_limits.py",
             "factory/orchestration/factory_models.py",
-            "factory/orchestration/factory_pause.py",
             "factory/orchestration/models.py",
         ],
     ),
