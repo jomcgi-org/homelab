@@ -4,7 +4,7 @@ ADR embervm/035: an EmberVM task-class guest runs headless Chromium and
 renders one URL to a PNG on request. This module validates the requested URL
 (the second, independent layer of ADR embervm/035 section 4, not the primary
 control) and shapes the guest's response into a real FastMCP ImageContent
-block plus a stored SeaweedFS URL (ADR embervm/035 section 5).
+block plus a stored R2 URL (ADR embervm/035 section 5).
 """
 
 from __future__ import annotations
@@ -162,7 +162,7 @@ async def screenshot_url(
     png_b64 = result["png_b64"]
     png_bytes = base64.b64decode(png_b64)
     # put_screenshot is a synchronous, multi-megabyte S3 PUT (boto3). Off the
-    # event loop: if SeaweedFS drops SYNs instead of refusing, botocore's own
+    # event loop: if the S3 endpoint drops SYNs instead of refusing, botocore's own
     # retries would otherwise stall the loop for minutes, taking health
     # probes and every other in-flight request down with it.
     stored_url, stored = await asyncio.to_thread(s3.put_screenshot, png_bytes)
@@ -174,7 +174,7 @@ async def screenshot_url(
         _meta={
             "url": stored_url,
             # Whether the object behind `url` actually exists. The upload is
-            # best-effort so a SeaweedFS blip does not throw away a screenshot
+            # best-effort so an R2 blip does not throw away a screenshot
             # the caller can already see inline, but a URL that 404s must not be
             # indistinguishable from one that works.
             "stored": stored,

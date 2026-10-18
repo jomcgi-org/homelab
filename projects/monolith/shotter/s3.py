@@ -1,11 +1,11 @@
-"""Screenshot PNG storage on the SeaweedFS S3 gateway.
+"""Screenshot PNG storage on Cloudflare R2 through its S3 API.
 
 A sibling of artifact/s3.py, not a reuse: artifact hardcodes an
 ``index.html`` object suffix and ``text/html`` content type for a
 self-contained HTML page, this domain stores a PNG under a content-addressed
 key instead. The client construction mirrors artifact/s3.py and
-faas/storage.py (dummy creds, path-style addressing, scheme guard on the
-endpoint). boto3 is imported lazily inside each function so importing this
+faas/storage.py (chart credentials, path-style addressing, endpoint scheme
+guard). Legacy/test credential defaults remain. boto3 is imported lazily so this
 module never pulls boto3 into the public app's import closure (this domain
 is excluded from the public binary entirely, but the convention is kept for
 consistency with the domains that are).
@@ -13,7 +13,7 @@ consistency with the domains that are).
 Upload is best-effort, mirroring chat.store._blob_s3_put: the returned URL is
 computed from the PNG's content hash before the upload is even attempted, so
 the MCP tool can still hand back a real ImageContent block with the rendered
-PNG bytes already embedded even when the SeaweedFS write itself fails or is
+PNG bytes already embedded even when the R2 write itself fails or is
 unavailable. The stored URL is a durable reference for later lookup, not the
 only way to get at the image; the tool's caller already has the bytes.
 """
@@ -38,14 +38,14 @@ def _object_key(sha256: str) -> str:
 def _normalized_endpoint() -> str:
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if endpoint and not endpoint.startswith(("http://", "https://")):
-        # The chart injects a scheme-less host:port; boto3 requires a scheme
-        # and SeaweedFS S3 is plaintext HTTP.
+        # The chart supplies HTTPS for R2. Retain HTTP prefixing only for
+        # scheme-less legacy/test endpoints; explicit schemes pass through.
         endpoint = "http://" + endpoint
     return endpoint
 
 
 def _client():
-    """Build a SeaweedFS S3 client (mirrors artifact/s3.py / faas/storage.py)."""
+    """Build an R2 S3 client (mirrors artifact/s3.py / faas/storage.py)."""
     import boto3
     from botocore.config import Config
 
@@ -86,7 +86,7 @@ def put_screenshot(png_bytes: bytes) -> tuple[str, bool]:
     Returns ``(url, stored)``. ``url`` is always populated because it is derived
     from the content hash rather than from the write, and ``stored`` says whether
     an object actually exists behind it. Callers must surface ``stored``: the
-    upload is deliberately non-fatal so a SeaweedFS blip does not discard a
+    upload is deliberately non-fatal so an R2 blip does not discard a
     screenshot the caller can already see, but a URL that 404s must never be
     indistinguishable from one that resolves.
 

@@ -1,14 +1,20 @@
-"""Ingest the light-pollution site grid from SeaweedFS into stars.sites (ADR 006).
+"""Ingest the light-pollution site grid from R2 into stars.sites (ADR 006).
 
-An offline step uploads ``grid.json`` (an array of site dicts) to the SeaweedFS
-S3 gateway out-of-band. The stars.load_grid scheduled job reads that object and
+An authorized offline step uploads ``grid.json`` (an array of site dicts) to R2.
+Use the environment-only rclone setup in grimoire/tools/README.md, then:
+
+    rclone --config /dev/null --s3-no-check-bucket copyto grid.json \\
+        "R2:${STARS_GRID_S3_BUCKET:?}/${STARS_GRID_S3_KEY:?}"
+
+The destination is chart stars.gridBucket / stars.gridKey (currently
+stars/grid.json). The stars.load_grid scheduled job reads that object and
 wholesale-replaces the stars.sites table so the refresh job has a current site
 list to score.
 
-The S3 client mirrors the lakehouse build_serving._s3_client structure (dummy
-creds, path-style addressing) but reads ``SEAWEEDFS_S3_ENDPOINT`` with NO
-default: when it is unset/empty the job no-ops with a logged warning rather than
-guessing a cluster URL (semgrep no-hardcoded-k8s-service-url).
+The chart supplies the HTTPS R2 endpoint, AWS_REGION and the monolith-r2-s3
+identity through the shared S3 environment. ``SEAWEEDFS_S3_ENDPOINT`` retains
+its legacy name and has no default: an unset endpoint skips the job with a
+warning. Upload and table replacement require separate authorization.
 
 The network/S3 fetch runs in the async handler's worker thread; all Session I/O
 uses a fresh ``Session(get_engine())`` inside that thread, mirroring stars.jobs.
@@ -30,21 +36,18 @@ logger = logging.getLogger("monolith.stars.grid")
 
 
 def _s3_client():
-    """boto3 S3 client pointed at the SeaweedFS S3 gateway.
+    """Build a path-style S3 client for the configured R2 endpoint.
 
-    Mirrors lakehouse build_serving._s3_client: dummy creds (SeaweedFS auth is
-    disabled cluster-wide, but boto3 needs some value), path-style addressing
-    (SeaweedFS only supports it). The endpoint is read by the caller and
-    guaranteed non-empty here; the scheme guard prefixes http:// when absent.
+    Production uses the chart's monolith-r2-s3 credentials and region auto.
+    Historical credential/region defaults and scheme-less HTTP normalization
+    remain for legacy/test compatibility; they are not R2 configuration.
     """
     import boto3
     from botocore.config import Config
 
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
-    # The chart injects a scheme-less host:port (shared with DuckDB's httpfs,
-    # which derives the scheme from USE_SSL). boto3 requires a scheme on
-    # endpoint_url and raises "Invalid endpoint" otherwise; SeaweedFS S3 is
-    # plaintext HTTP, so prefix http:// when absent.
+    # The chart supplies HTTPS for R2. Retain HTTP prefixing only for
+    # scheme-less legacy/test endpoints; preserve explicit schemes.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
     # Scheme is guaranteed by the guard above; the inline nosemgrep clears the
@@ -61,10 +64,10 @@ def _s3_client():
 
 
 def _fetch_grid() -> list[dict] | None:
-    """Read grid.json from SeaweedFS; None on missing endpoint or any error.
+    """Read grid.json from R2; None on missing endpoint or any error.
 
     A missing/empty ``SEAWEEDFS_S3_ENDPOINT`` is the expected state in
-    environments without SeaweedFS (e.g. local dev): log a warning and no-op
+    environments without object storage (e.g. local dev): log a warning and no-op
     rather than crash. Any S3/parse error is also swallowed to a warning so a
     bad object never wedges the scheduler.
     """
@@ -96,7 +99,7 @@ def _load_grid_sync() -> int:
 
 
 async def load_grid_handler(session: Session) -> datetime | None:
-    """Ingest the grid from SeaweedFS into stars.sites (scheduled job).
+    """Ingest the grid from R2 into stars.sites (scheduled job).
 
     The S3 fetch + DB write run together in a worker thread with their own fresh
     session; this handler never touches the passed session on the event loop.
@@ -109,11 +112,11 @@ async def load_grid_handler(session: Session) -> datetime | None:
 
 
 def _fetch_climatology() -> list[dict] | None:
-    """Read climatology.json from SeaweedFS; None on missing endpoint or any error.
+    """Read climatology.json from R2; None on missing endpoint or any error.
 
     The ERA5 backfill (ADR 009): an offline step uploads per-site, per-month-of-year
     sufficient stats out-of-band. A missing/empty ``SEAWEEDFS_S3_ENDPOINT`` is the
-    expected state in environments without SeaweedFS (e.g. local dev): log a warning
+    expected state without configured object storage (e.g. local dev): log a warning
     and no-op rather than crash. Any S3/parse error is also swallowed to a warning
     so a bad object never wedges the scheduler.
     """

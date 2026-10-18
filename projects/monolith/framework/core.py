@@ -333,8 +333,8 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
 
     from fastapi.responses import JSONResponse
 
-    # Preserve the public tier's historical log identity: SigNoz alerts and
-    # runbooks key on logger "monolith.public" + "public health check failed"
+    # Preserve the public tier's log identity for correlation and runbooks:
+    # logger "monolith.public" + "public health check failed"
     # (the read-replica/public_reader outage signal). Other tiers log under
     # the framework logger.
     if profile.tier is Tier.PUBLIC:
@@ -462,9 +462,8 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
                 ),
             )
         if advisory:
-            # INFO, and deliberately NOT component_message. SigNoz alerts and
-            # runbooks key on that exact warning text, so an advisory component
-            # emitting it would move the pager rather than remove it.
+            # Keep advisories at INFO with their own message. The warning text
+            # above identifies fatal components in logs and runbooks.
             health_logger.info("%s: %s", advisory_message, ", ".join(sorted(advisory)))
         causes = {
             name: "preemption"

@@ -6863,6 +6863,13 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_upload_book_test",
+    srcs = ["grimoire/tools/upload_book_test.py"],
+    data = ["grimoire/tools/upload-book.sh"],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
     name = "grimoire_marker_test",
     srcs = ["grimoire/marker_test.py"],
     imports = ["."],
@@ -9012,6 +9019,7 @@ py_test(
     deps = [
         ":trips_backfill_lib",
         "@pip//pytest",
+        "@pip//typer",
     ],
 )
 

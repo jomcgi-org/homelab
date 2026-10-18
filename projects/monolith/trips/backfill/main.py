@@ -1,24 +1,48 @@
 """Local backfill CLI: re-derive trips Postgres rows from S3 image EXIF.
 
-Run by hand against a port-forwarded SeaweedFS + Postgres, e.g.:
+Operator-only: this replaces all trips.points rows for the slug, may upsert
+trip metadata, and copies images into the serving bucket. Obtain separate
+authorization before any production backfill. Even --dry-run reads S3 and may
+call NRCan; it is not an offline access check.
 
-    bazel run //projects/monolith:trips_backfill -- run \\
+Use the existing monolith-r2-s3 identity injected into S3_ACCESS_KEY_ID and
+S3_SECRET_ACCESS_KEY, the complete HTTPS stars.s3Endpoint exported as
+SEAWEEDFS_S3_ENDPOINT, and stars.s3Region as AWS_REGION (auto). See
+projects/monolith/grimoire/tools/README.md for credential handling. Both buckets
+must exist on that endpoint. Confirm the source bucket with the operator and
+set the serving destination to match trips.s3's TRIPS_S3_BUCKET override, or its
+default monolith-trips. The current monolith chart does not set that override.
+Export TRIPS_SOURCE_BUCKET and TRIPS_S3_BUCKET for the example below.
+
+With the built trips_backfill CLI and an authorized DATABASE_URL, for example:
+
+    trips_backfill \\
         --slug 2025-liard-hot-springs \\
-        --config projects/trips/frontend/public/trips/2025-liard-hot-springs/config.yaml \\
-        --endpoint http://localhost:8333 \\
-        --database-url postgresql://postgres@localhost:5432/monolith \\
+        --endpoint "$SEAWEEDFS_S3_ENDPOINT" \\
+        --bucket "$TRIPS_SOURCE_BUCKET" --dest-bucket "$TRIPS_S3_BUCKET" \\
         --kml van-to-kamloops.kml --kml-start 2025-01-03T10:28:00
 
-It lists the source `trips` bucket, extracts GPS/timestamp/optics EXIF from each
-image, optionally adds route-only gap points from KML directions and elevation
-from the NRCan CDEM API, then replaces trips.points for the trip (and upserts
-the trips.trips metadata row from config.yaml). It also copies the image bytes
-server-side into the serving bucket (`monolith-trips`) the read path reads from.
-Idempotent: re-running rebuilds the rows and skips already-copied images.
+The CLI is //projects/monolith:trips_backfill; it is excluded from the server
+image. --endpoint may be omitted when SEAWEEDFS_S3_ENDPOINT is exported.
+--config is optional: omit it to leave the trip metadata unchanged. To upsert
+metadata, supply your own YAML file with --config /path/to/trip.yaml. There is
+no checked-in per-trip config path. Its optional fields are:
+
+    trip: {title: Example, short_title: Example, subtitle: A trip}
+    timeline: {default_image: img_example.jpg, default_zoom: 8}
+    days: {"2025-01-03": {label: Arrival}}
+    highlights: []
+    stats: {}
+
+The slug and timezone come from CLI options, not YAML. Missing title defaults
+to the slug; other absent scalar fields are null and collections are empty.
+Images supply GPS/timestamp/optics EXIF; KML can add route-only gap points.
+Re-running rebuilds rows and skips images already present in the destination.
 """
 
 import asyncio
 import logging
+import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -67,17 +91,22 @@ def make_engine(database_url: str):
 
 
 def get_s3_client(endpoint: str):
-    """S3 client for SeaweedFS (auth disabled in-cluster)."""
-    # Guard against a scheme-less endpoint (semgrep boto3-endpoint-url-missing-scheme).
+    """Use the chart's R2 identity; never fall back to dummy or ambient keys."""
+    if not endpoint.strip():
+        raise ValueError("--endpoint or SEAWEEDFS_S3_ENDPOINT is required")
+    for name in ("S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"):
+        if not os.environ.get(name, "").strip():
+            raise ValueError(f"{name} is required")
+    # Preserve scheme-less legacy/test compatibility; deployed R2 uses HTTPS.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = f"http://{endpoint}"
     return boto3.client(
         "s3",
         endpoint_url=endpoint,
-        aws_access_key_id="any",
-        aws_secret_access_key="any",
+        aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
         config=Config(signature_version="s3v4"),
-        region_name="us-east-1",
+        region_name=os.environ.get("AWS_REGION") or "auto",
     )
 
 
@@ -103,7 +132,7 @@ def _copy_images(
 ) -> tuple[int, int]:
     """Server-side copy each key from the source bucket into the serving bucket.
 
-    SeaweedFS serves both buckets off the same S3 endpoint, so this is a
+    R2 serves both buckets on the configured S3 endpoint, so this is a
     server-side ``copy_object`` (no bytes through this process). A ``head_object``
     skip-guard on the destination makes reruns idempotent: an object already
     present in ``dest_bucket`` is not re-copied. Returns ``(copied, skipped)``.
@@ -242,7 +271,7 @@ async def _fetch_elevations(
 
 
 def _load_trip_row(slug: str, config_path: Path, tz: str) -> Trip:
-    """Build the trips.trips row from a frontend config.yaml."""
+    """Build the trips.trips row from an operator-supplied YAML file."""
     data = yaml.safe_load(config_path.read_text()) or {}
     trip = data.get("trip", {})
     timeline = data.get("timeline", {})
@@ -266,7 +295,7 @@ def run(
     slug: Annotated[str, typer.Option(help="Trip slug, e.g. 2025-liard-hot-springs")],
     config: Annotated[
         Path | None,
-        typer.Option(help="frontend config.yaml to upsert the trips.trips row"),
+        typer.Option(help="Operator-supplied YAML to upsert the trips.trips row"),
     ] = None,
     bucket: Annotated[str, typer.Option(help="Source S3 bucket")] = DEFAULT_BUCKET,
     dest_bucket: Annotated[
@@ -280,8 +309,11 @@ def run(
         ),
     ] = True,
     endpoint: Annotated[
-        str, typer.Option(help="SeaweedFS S3 endpoint")
-    ] = "http://localhost:8333",
+        str,
+        typer.Option(
+            envvar="SEAWEEDFS_S3_ENDPOINT", help="Complete HTTPS R2 S3 endpoint"
+        ),
+    ] = "",
     database_url: Annotated[
         str,
         typer.Option(

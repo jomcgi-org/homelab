@@ -1,12 +1,13 @@
-"""Trip image storage on the SeaweedFS S3 gateway.
+"""Trip image storage on Cloudflare R2 through its S3 API.
 
 Trip photos are content-addressed (``img_<sha256[:12]>.jpg``) and uploaded to the
 ``monolith-trips`` bucket. The client construction mirrors stars.grid._s3_client
-(dummy creds, path-style addressing, scheme guard on the endpoint) and the
+(shared chart credentials, path-style addressing, endpoint scheme guard) and the
 idempotent put + auto-create-bucket fallback mirrors chat.store._blob_s3_put.
 
-The bucket is also provisioned out of band via GitOps in a later task; the
-auto-create here is a defensive fallback so a fresh environment self-heals.
+Production uses a pre-existing bucket. The historical auto-create fallback
+remains, but R2 operators must provision buckets separately with authorization.
+The dummy credential defaults are retained for legacy/tests, not R2 access.
 """
 
 import logging
@@ -32,9 +33,8 @@ def put_image(image_key: str, data: bytes, content_type: str) -> None:
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot store trip image")
-    # The chart injects a scheme-less host:port (shared with DuckDB's httpfs).
-    # boto3 requires a scheme on endpoint_url; SeaweedFS S3 is plaintext HTTP,
-    # so prefix http:// when absent.
+    # The chart supplies HTTPS for R2. Prefix HTTP only for scheme-less
+    # legacy/test endpoints, preserving the deployed scheme and region.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
     # Scheme guaranteed by the guard above; the inline nosemgrep

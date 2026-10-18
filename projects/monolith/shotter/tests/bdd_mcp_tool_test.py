@@ -464,7 +464,7 @@ class TestMCPReturnShape:
 
         # Metadata must include URL and other response fields
         assert result.meta is not None, "ImageContent meta must be present"
-        assert "url" in result.meta, "meta must include stored SeaweedFS url"
+        assert "url" in result.meta, "meta must include stored R2 url"
         assert result.meta["url"], "stored URL must be non-empty"
         assert "final_url" in result.meta
         assert "status" in result.meta

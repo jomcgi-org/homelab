@@ -68,9 +68,13 @@ the event dict, whose `.body` field is `"hello ember"`. That is the round-trip.
 
 ## LIVE end-to-end procedure (run against the homelab cluster)
 
-Prereqs: `kubectl` pointed at the homelab cluster, `rclone`, `curl`. R2 requires
-off-cluster access and authentication, so upload credentials via env variables:
-`kubectl port-forward` (mirror `projects/monolith/grimoire/tools/upload-book.sh`).
+This procedure requires separate operator authorization for uploads and live
+execution. Prereqs: `kubectl` pointed at the hub, `rclone`, `curl`. R2 uses its
+configured HTTPS endpoint with authentication; no S3 port-forward is needed.
+Use the existing `monolith-r2-s3` identity and the environment-only `R2` remote
+setup in [the uploader guide](../../../../../monolith/grimoire/tools/README.md).
+The endpoint is `stars.s3Endpoint` and region is `stars.s3Region` (`auto`). Keep
+credentials out of command arguments, logs and persistent config files.
 
 ### 1. Upload the zip to R2 at `s3://faas/echo-fn/<sha256>.zip`
 
@@ -79,28 +83,15 @@ SHA=53ff98ccb09d4d12a629322caac8ee0aee9f77ca69fd08fbc1eee83b7a60230b
 ZIP=projects/embervm/runtimes/python/testdata/echo/echo.zip
 
 # Sanity: the local bytes must match the sha the CR pins.
-test "$(sha256sum "$ZIP" | cut -d' ' -f1)" = "$SHA" || echo "SHA MISMATCH"
+test "$(sha256sum "$ZIP" | cut -d' ' -f1)" = "$SHA" || exit 1
 
-# rclone R2 remote, configured purely via env (no config file). The
-# duckdb/duckdb identity matches the SEAWEEDFS_S3 creds in the cluster.
-export RCLONE_CONFIG_SW_TYPE=s3
-export RCLONE_CONFIG_SW_PROVIDER=Other
-export RCLONE_CONFIG_SW_ACCESS_KEY_ID=duckdb
-export RCLONE_CONFIG_SW_SECRET_ACCESS_KEY=duckdb
-export RCLONE_CONFIG_SW_ENDPOINT=http://localhost:8333
-export RCLONE_CONFIG_SW_REGION=us-east-1
-export RCLONE_CONFIG_SW_FORCE_PATH_STYLE=true
-
-# (R2 is off-cluster, no port-forward needed)
-PF=$!
-sleep 2
-rclone mkdir SW:faas 2>/dev/null || true
-rclone copyto "$ZIP" "SW:faas/echo-fn/${SHA}.zip"
-rclone ls "SW:faas/echo-fn/"   # expect: 1078 echo-fn/<sha>.zip
-kill "$PF"
+# The faas bucket must already exist and this identity must be allowed to write.
+# R2 remote comes from the guide above; no bucket creation or config file.
+rclone --config /dev/null --s3-no-check-bucket copyto "$ZIP" "R2:faas/echo-fn/${SHA}.zip"
+rclone --config /dev/null --s3-no-check-bucket ls "R2:faas/echo-fn/"
 ```
 
-The CR's `codeUri` is the in-cluster read URL for exactly this object:
+The CR's `codeUri` is the configured HTTPS R2 read URL for exactly this object:
 `https://R2_ACCOUNT_ID.r2.cloudflarestorage.com/faas/echo-fn/<sha256>.zip`.
 
 ### 2. Apply the Workload CR

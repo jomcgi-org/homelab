@@ -88,62 +88,88 @@ def test_codex_session_probe_failure_sends_notify(app, monkeypatch):
     assert recorded == {"codex": result}
 
 
-def test_probe_failure_log_includes_valid_trace_link(
-    app, monkeypatch, quiet_notify, caplog
+@pytest.mark.parametrize("lane", ["codex", "spark"])
+@pytest.mark.parametrize("trace_id", ["a" * 32, "0123456789abcdef" * 2])
+def test_probe_failure_log_includes_valid_raw_trace(
+    app, monkeypatch, caplog, lane, trace_id
 ):
-    trace_id = "a" * 32
+    result = {
+        "ok": False,
+        "detail": f"boom:{lane}",
+        "latency_ms": None,
+        "trace_id": trace_id,
+    }
+    notifications = []
+    recorded = {}
 
-    async def probe_codex():
-        return {
-            "ok": False,
-            "detail": "boom:codex",
-            "latency_ms": None,
-            "trace_id": trace_id,
-        }
+    async def probe():
+        return result
 
-    async def record(*_):
-        return None
+    async def record(demo, outcome):
+        recorded[demo] = outcome
 
-    monkeypatch.setattr("ember_public.synthetic_probe.probe_codex", probe_codex)
+    async def notify(message, level):
+        notifications.append((message, level))
+
+    monkeypatch.setattr(f"ember_public.synthetic_probe.probe_{lane}", probe)
     monkeypatch.setattr("ember_public.synthetic_probe.record", record)
+    monkeypatch.setattr(synthetic_router, "_notify", notify)
 
-    response = TestClient(app).post("/internal/ember/codex-session-probe")
+    response = TestClient(app).post(f"/internal/ember/{lane}-session-probe")
 
     assert response.status_code == 200
+    assert response.json() == {lane: result}
+    assert recorded == {lane: result}
+    assert notifications == [(result["detail"], "warn")]
     assert (
-        f"ember synthetic codex failed: boom:codex "
-        f"(https://private.jomcgi.dev/app/signoz/trace/{trace_id})"
+        f"ember synthetic {lane} failed: boom:{lane} (trace_id={trace_id})"
     ) in caplog.text
+    assert "signoz" not in caplog.text
+    assert "https://" not in caplog.text
 
 
-def test_probe_failure_log_omits_link_without_trace(
-    app, monkeypatch, quiet_notify, caplog
+@pytest.mark.parametrize("lane", ["codex", "spark"])
+@pytest.mark.parametrize(
+    "trace_id",
+    [None, "", "0" * 32, "A" * 32, "g" * 32, "a" * 31, "a" * 33, 123, "\n" + "a" * 31],
+)
+def test_probe_failure_log_omits_invalid_trace(
+    app, monkeypatch, quiet_notify, caplog, lane, trace_id
 ):
-    async def probe_codex():
-        return {"ok": False, "detail": "boom:codex", "latency_ms": None}
+    result = {"ok": False, "detail": f"boom:{lane}", "latency_ms": None}
+    if trace_id is not None:
+        result["trace_id"] = trace_id
+
+    async def probe():
+        return result
 
     async def record(*_):
         return None
 
-    monkeypatch.setattr("ember_public.synthetic_probe.probe_codex", probe_codex)
+    monkeypatch.setattr(f"ember_public.synthetic_probe.probe_{lane}", probe)
     monkeypatch.setattr("ember_public.synthetic_probe.record", record)
 
-    TestClient(app).post("/internal/ember/codex-session-probe")
+    response = TestClient(app).post(f"/internal/ember/{lane}-session-probe")
 
-    assert "ember synthetic codex failed: boom:codex" in caplog.text
-    assert "/app/signoz/trace/" not in caplog.text
+    assert response.json() == {lane: result}
+    assert f"ember synthetic {lane} failed: boom:{lane}" in caplog.text
+    assert "(trace_id=" not in caplog.text
+    assert "signoz" not in caplog.text
 
 
-def test_probe_failure_warning_carries_the_recording_span(monkeypatch, quiet_notify):
-    async def probe_codex():
-        return {"ok": False, "detail": "boom:codex", "latency_ms": None}
+@pytest.mark.parametrize("lane", ["codex", "spark"])
+def test_probe_failure_warning_carries_the_recording_span(
+    monkeypatch, quiet_notify, lane
+):
+    async def probe():
+        return {"ok": False, "detail": f"boom:{lane}", "latency_ms": None}
 
     async def record(*_):
         return None
 
-    monkeypatch.setattr("ember_public.synthetic_probe.probe_codex", probe_codex)
+    monkeypatch.setattr(f"ember_public.synthetic_probe.probe_{lane}", probe)
     monkeypatch.setattr("ember_public.synthetic_probe.record", record)
-    monkeypatch.setattr(synthetic_router, "_codex_probe_in_flight", False)
+    monkeypatch.setattr(synthetic_router, f"_{lane}_probe_in_flight", False)
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     handler.setFormatter(_TraceContextFormatter(_PLAIN_FORMAT))
@@ -153,12 +179,12 @@ def test_probe_failure_warning_carries_the_recording_span(monkeypatch, quiet_not
     try:
         with tracer.start_as_current_span("synthetic-probe") as span:
             context = span.get_span_context()
-            asyncio.run(synthetic_router.codex_session_probe_endpoint())
+            asyncio.run(getattr(synthetic_router, f"{lane}_session_probe_endpoint")())
     finally:
         synthetic_router.logger.removeHandler(handler)
 
     assert (
-        "WARNING ember_public.synthetic_router: ember synthetic codex failed: boom:codex"
+        f"WARNING ember_public.synthetic_router: ember synthetic {lane} failed: boom:{lane}"
         f" trace_id={context.trace_id:032x} span_id={context.span_id:016x}"
     ) in stream.getvalue()
 
@@ -290,20 +316,28 @@ def test_spark_probe_has_independent_guard(app, monkeypatch):
     assert calls == 1
 
 
-def test_record_failure_propagates(app, monkeypatch):
-    """A failed write must surface, so the job fails rather than going blind."""
+@pytest.mark.parametrize("lane", ["codex", "spark"])
+@pytest.mark.parametrize("stage", ["probe", "notify", "record"])
+def test_failure_propagates_and_releases_guard(app, monkeypatch, lane, stage):
+    """Probe, notification and latch exceptions must not wedge either lane."""
 
-    async def probe_codex():
-        return {"ok": True, "detail": "ok", "latency_ms": 1.0}
+    async def probe():
+        if stage == "probe":
+            raise RuntimeError("probe down")
+        return {"ok": False, "detail": "failed", "latency_ms": None}
+
+    async def notify(*args, **kwargs):
+        if stage == "notify":
+            raise RuntimeError("notify down")
 
     async def record(demo, result):
-        raise RuntimeError("db down")
+        raise RuntimeError("record down")
 
-    monkeypatch.setattr("ember_public.synthetic_probe.probe_codex", probe_codex)
+    monkeypatch.setattr(f"ember_public.synthetic_probe.probe_{lane}", probe)
     monkeypatch.setattr("ember_public.synthetic_probe.record", record)
+    monkeypatch.setattr(synthetic_router, "_notify", notify)
 
-    with pytest.raises(RuntimeError, match="db down"):
-        TestClient(app).post("/internal/ember/codex-session-probe")
+    with pytest.raises(RuntimeError, match=f"{stage} down"):
+        TestClient(app).post(f"/internal/ember/{lane}-session-probe")
 
-    # The guard must still be released when recording blew up mid-run.
-    assert synthetic_router._codex_probe_in_flight is False
+    assert getattr(synthetic_router, f"_{lane}_probe_in_flight") is False

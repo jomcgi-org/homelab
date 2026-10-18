@@ -27,7 +27,7 @@ climatology are unchanged; this only widens the live layer's fallback.
 Reached only from SvelteKit SSR (``http://localhost:8000`` in the same pod);
 the /app/stars page is the public surface and the CDN fans out to viewers, per
 ADR 002. The live sites payload is materialized by the Argo stars-refresh job
-and read from SeaweedFS here. Conditional GETs short-circuit with a 304 via
+and read from R2 here. Conditional GETs short-circuit with a 304 via
 ETag.
 
 The Argo materializer applies the read-time hour filter
@@ -150,12 +150,12 @@ def get_history_map(request: Request):
 
 
 def _read_materialized_sites() -> tuple[bytes, str]:
-    """Read the precomputed sites payload from SeaweedFS."""
+    """Read the precomputed sites payload from R2."""
     return _read_materialized_object("STARS_SITES_S3_KEY", "sites.json")
 
 
 def _read_materialized_object(key_env: str, default_key: str) -> tuple[bytes, str]:
-    """Read one bounded materialized object from SeaweedFS."""
+    """Read one bounded materialized object from R2."""
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "").strip()
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT is not configured")

@@ -1,4 +1,4 @@
-"""Artifact storage on the SeaweedFS S3 gateway.
+"""Artifact storage on Cloudflare R2 through its S3 API.
 
 Artifacts are agent-built, self-contained HTML pages published to
 the ``artifacts`` bucket at ``<id>/index.html``. The monolith mediates every
@@ -7,8 +7,8 @@ module is the single S3 seam: ``put_artifact`` on the write path (full monolith)
 and ``get_artifact`` / ``head_artifact`` on the public read path (the public
 backend, proxied by the SSR frontend).
 
-The client construction mirrors ``trips.s3`` / ``stars.grid._s3_client`` (dummy
-creds, path-style addressing, scheme guard on the endpoint) and the put +
+The client construction mirrors ``trips.s3`` / ``stars.grid._s3_client`` (chart
+credentials, path-style addressing, endpoint scheme guard) and the put +
 auto-create-bucket fallback mirrors ``chat.store._blob_s3_put``. boto3 is
 imported lazily inside each function so importing this module never pulls boto3
 into the public app's import closure (app/main_public_imports_test.py).
@@ -33,15 +33,15 @@ def _object_key(artifact_id: str) -> str:
 
 
 def _client():
-    """Build a SeaweedFS S3 client (mirrors trips.s3 / stars.grid)."""
+    """Build an R2 S3 client, retaining legacy/test credential defaults."""
     import boto3
     from botocore.config import Config
 
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot store artifact")
-    # The chart injects a scheme-less host:port (shared with DuckDB's httpfs);
-    # boto3 requires a scheme and SeaweedFS S3 is plaintext HTTP.
+    # The chart supplies HTTPS for R2. HTTP prefixing is retained only for
+    # scheme-less legacy/test endpoints; explicit schemes pass through.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
     # Scheme guaranteed above; the inline nosemgrep clears the pre-commit
