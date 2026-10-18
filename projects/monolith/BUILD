@@ -7724,16 +7724,6 @@ py_test(
 )
 
 py_test(
-    name = "stars_generate_grid_test",
-    srcs = [
-        "stars/grid_gen/generate_grid.py",
-        "stars/grid_gen/generate_grid_test.py",
-    ],
-    imports = ["stars/grid_gen"],
-    deps = ["@pip//pytest"],
-)
-
-py_test(
     name = "stars_generate_grid_v2_test",
     srcs = [
         "stars/grid_gen/generate_grid_v2.py",
@@ -9239,17 +9229,6 @@ py_test(
         "@pip//numpy",
         "@pip//pytest",
     ],
-)
-
-# Hand-registered: ERA5 climatology backfill pure helpers (stdlib-only module).
-py_test(
-    name = "stars_backfill_climatology_test",
-    srcs = [
-        "stars/grid_gen/backfill_climatology.py",
-        "stars/grid_gen/backfill_climatology_test.py",
-    ],
-    imports = ["stars/grid_gen"],
-    deps = ["@pip//pytest"],
 )
 
 # Static boundary contract for the inactive GKE recovery manifests.

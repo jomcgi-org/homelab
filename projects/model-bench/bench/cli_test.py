@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -118,6 +119,121 @@ def test_snapshot_seeded_files_without_git_and_idempotent(tmp_path):
     assert (
         task_dir / "fixture" / "pkg" / "mod.py"
     ).read_text() == "def answer(): return 42"
+
+
+def test_stars_grid_snapshot_and_verifier_without_source_repo(tmp_path):
+    task_id = "stars-grid-speedup-01"
+    task_dir = tmp_path / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    # cli_test receives the real task_specs runfiles through the pytest macro.
+    shutil.copyfile(ROLLOUT_TASKS / task_id / "task.yaml", task_dir / "task.yaml")
+    task = load_tasks(task_dir.parent)[0]
+    assert task.id == task_id and task.version == "v1"
+    assert task.agent.exec and task.agent.max_turns == 40
+    assert task.target_files == ["stars/grid_gen/generate_grid.py"]
+    assert task.verifier.kind == "speedup"
+    grading = task.verifier.args
+    assert grading["baseline"]["path"] == "_baseline_generate_grid.py"
+    assert grading["harness_args"] == [3.0, 3]
+    assert grading["buckets"] == [[3, 0.25], [8, 0.5], [20, 0.75], [60, 1.0]]
+    assert grading["pass_threshold"] == 0.75 and grading["timeout_s"] == 900
+
+    args = argparse.Namespace(
+        tasks=task_dir.parent, task=task_id, repo=tmp_path / "no-source-repo"
+    )
+    assert not args.repo.exists()
+    fixture = task_dir / "fixture"
+    target = fixture / task.target_files[0]
+    source = grading["baseline"]["source"]
+    for _ in range(2):
+        _snapshot(args)
+        assert target.read_text() == source
+        assert (
+            sorted(
+                p.relative_to(fixture).as_posix()
+                for p in fixture.rglob("*")
+                if p.is_file()
+            )
+            == task.target_files
+        )
+        target.write_text("# overwritten candidate\n")
+    _snapshot(args)
+
+    baseline = tmp_path / grading["baseline"]["path"]
+    baseline.write_text(source)
+    candidate = runpy.run_path(str(target))
+    original = runpy.run_path(str(baseline))
+
+    def box(x0, y0, x1, y1):
+        return [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+
+    exterior = box(0, -1, 2, 1)
+    hole = box(1, -1, 2, 0)
+    polygon = {"type": "Polygon", "coordinates": [exterior]}
+    holed = {"type": "Polygon", "coordinates": [exterior, hole]}
+    multi = {
+        "type": "MultiPolygon",
+        "coordinates": [[exterior, hole], [box(3, -1, 4, 1)]],
+    }
+    land = {"type": "Polygon", "coordinates": [box(-1, -2, 5, 2)]}
+    clipped = {"type": "Polygon", "coordinates": [box(0, -1, 1.5, 1)]}
+    fractional = {
+        "type": "Polygon",
+        "coordinates": [box(-4.123456, 55.123456, -4.073456, 55.173456)],
+    }
+    # Exact oracles include lower/left edges, exclude upper/right edges, exercise
+    # hole edges, and retain row-major ids and four-decimal coordinates.
+    cases = [
+        (polygon, land, 111.32, [(-1, 0), (-1, 1), (0, 0), (0, 1)]),
+        (holed, land, 111.32, [(-1, 0), (0, 0), (0, 1)]),
+        (multi, land, 111.32, [(-1, 0), (-1, 3), (0, 0), (0, 1), (0, 3)]),
+        (multi, clipped, 111.32, [(-1, 0), (0, 0), (0, 1)]),
+        (polygon, fractional, 111.32, []),
+        (
+            fractional,
+            fractional,
+            2.0,
+            [
+                (lat, lon)
+                for lat in (55.1235, 55.1414, 55.1594)
+                for lon in (-4.1235, -4.092)
+            ],
+        ),
+    ]
+    for dark, scotland, spacing, coordinates in cases:
+        expected = [
+            {
+                "id": f"scotland-{i:04d}",
+                "name": None,
+                "lat": lat,
+                "lon": lon,
+                "altitude_m": 0,
+                "lp_zone": "dark",
+            }
+            for i, (lat, lon) in enumerate(coordinates)
+        ]
+        for module in (candidate, original):
+            assert (
+                module["generate"](
+                    {"features": [{"geometry": dark}]},
+                    module["_polygons"](scotland),
+                    spacing,
+                )
+                == expected
+            )
+
+    # Run the unchanged hidden harness via the actual verifier's isolated
+    # candidate-copy/baseline-injection path. Only coarsen the timing mesh and
+    # use one pair; the harness still runs all of its dense correctness cases.
+    smoke_args = dict(grading, harness_args=[111.32, 1], python=sys.executable)
+    verify = get_verifier(task.verifier.kind)
+    result = verify(fixture, smoke_args)
+    assert "pair speedups" in result.feedback, result.feedback
+    assert not (fixture / grading["baseline"]["path"]).exists()
+    target.write_text(source + "\ndef generate(*args): return []\n")
+    result = verify(fixture, smoke_args)
+    assert not result.passed and result.score == 0
+    assert "output differs" in result.feedback, result.feedback
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
