@@ -1,3 +1,2 @@
-# The repo-wide formatter runs rustfmt on files directly (no Cargo), so the
-# edition must be set here or it parses them as Rust 2015.
+# cargo fmt uses the pinned rust-toolchain.toml and the workspace's Rust edition.
 edition = "2024"
