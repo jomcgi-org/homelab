@@ -39,6 +39,7 @@ _ACTIVE_START_SESSION: ContextVar[Session | None] = ContextVar(
 MAX_LANDING_RECOVERIES = 2
 LANDING_RECOVERY_TIMEOUT_SECONDS = 3600
 TASK_RECOVERY_ACTION = "operator_task_recovery"
+MAX_TASK_EVIDENCE_LENGTH = 4096
 
 _ACTIVE = ("admitted", "uncertain")
 _TERMINAL = ("succeeded", "failed", "cancelled")
@@ -588,6 +589,14 @@ def _text(value: object, name: str, limit: int = 256) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise ValueError(f"invalid {name}")
     return value
+
+
+def _validate_cancellation_reason(value: object) -> str:
+    reason = _text(value, "cancellation_reason", 1024)
+    evidence = {"state": "operator_cancelled", "reason": reason}
+    if len(_json(evidence)) > MAX_TASK_EVIDENCE_LENGTH:
+        raise ValueError("cancellation_reason produces task evidence too large")
+    return reason
 
 
 def _integer(value: object, name: str, low: int, high: int) -> int:
@@ -2791,7 +2800,7 @@ def set_control(
     ):
         raise ValueError("task_id is required only for task pause/resume/cancel")
     if action == "cancel_task":
-        cancellation_reason = _text(cancellation_reason, "cancellation_reason", 1024)
+        cancellation_reason = _validate_cancellation_reason(cancellation_reason)
     elif cancellation_reason is not None:
         raise ValueError("cancellation_reason is required only for cancel_task")
     if (action in REPO_ACTIONS) != (repo is not None):
@@ -3055,8 +3064,8 @@ def request_control(
     ):
         raise ValueError("task_id is required only for task pause/resume/cancel")
     if action == "cancel_task":
-        request["cancellation_reason"] = _text(
-            cancellation_reason, "cancellation_reason", 1024
+        request["cancellation_reason"] = _validate_cancellation_reason(
+            cancellation_reason
         )
     elif cancellation_reason is not None:
         raise ValueError("cancellation_reason is required only for cancel_task")
@@ -3651,7 +3660,7 @@ def finish_task(
                 _integer(value, key, 1, 2**31 - 1)
             else:
                 _text(value, key, 1024)
-        if len(_json(evidence)) > 4096:
+        if len(_json(evidence)) > MAX_TASK_EVIDENCE_LENGTH:
             raise ValueError("task evidence too large")
     with _locked_session(session) as (db, _control):
         row = _receipt(db, task_id)

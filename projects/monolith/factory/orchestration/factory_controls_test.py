@@ -2839,6 +2839,64 @@ def test_cancel_task_validates_identity_and_reason_before_writes(db, overrides):
     assert not cancel_audits(db, "control_request")
 
 
+@pytest.mark.parametrize("control", ["set_control", "request_control"])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        pytest.param("\u2019" * 700, id="curly-apostrophes"),
+        pytest.param("\U0001f600" * 400, id="emoji"),
+        pytest.param("\u4e2d" * 700, id="cjk"),
+        pytest.param("\u2019" * 675 + "x" * 5, id="one-over-evidence-cap"),
+    ],
+)
+def test_cancel_task_refuses_oversized_encoded_reason_before_writes(
+    db, policy, control, reason
+):
+    task = admitted(policy)
+    before = controls.task_snapshot(task)
+    version = controls.status()["version"]
+    kwargs = {"task_id": task, "cancellation_reason": reason}
+    if control == "request_control":
+        kwargs.update(request_key="cancel-unicode", expected_version=version)
+    with pytest.raises(ValueError, match="cancellation_reason.*too large"):
+        getattr(controls, control)("cancel_task", "operator-subject", **kwargs)
+    assert controls.task_snapshot(task) == before
+    assert controls.status()["version"] == version
+    assert not cancel_audits(db, "cancel_task")
+    assert not cancel_audits(db, "control_request")
+    # A rejected reason must not reserve the request key or fence later controls.
+    kwargs["cancellation_reason"] = "Shortened reason"
+    assert getattr(controls, control)("cancel_task", "operator-subject", **kwargs)["ok"]
+
+
+@pytest.mark.parametrize("control", ["set_control", "request_control"])
+@pytest.mark.parametrize(
+    "reason,encoded_length",
+    [
+        pytest.param("x" * 1024, 1066, id="ascii-character-cap"),
+        pytest.param("\u2019" * 675 + "x" * 4, 4096, id="bmp-evidence-cap"),
+        pytest.param("\U0001f600" * 337 + "x" * 10, 4096, id="emoji-evidence-cap"),
+    ],
+)
+def test_cancel_task_accepted_reason_fits_settlement_evidence(
+    db, policy, control, reason, encoded_length
+):
+    task = admitted(policy)
+    kwargs = {"task_id": task, "cancellation_reason": reason}
+    if control == "request_control":
+        kwargs.update(
+            request_key="cancel-unicode", expected_version=controls.status()["version"]
+        )
+    assert getattr(controls, control)("cancel_task", "operator-subject", **kwargs)["ok"]
+    evidence = controls.cancellation_evidence(task)
+    assert evidence == {"state": "operator_cancelled", "reason": reason}
+    assert len(controls._json(evidence)) == encoded_length
+    assert controls.finish_task(task, "cancelled", "reconciler", evidence=evidence)[
+        "ok"
+    ]
+    assert controls.task_snapshot(task)["state"] == "cancelled"
+
+
 @pytest.mark.parametrize(
     "action", ["pause_task", "resume_task", "cancel_receipt", "stop"]
 )
