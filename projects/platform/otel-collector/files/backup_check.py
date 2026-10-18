@@ -10,7 +10,13 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
-from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
+from urllib.request import (
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 SERVICE_ACCOUNT = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 METRIC = "cnpg.backup.last_success_age_seconds"
@@ -49,7 +55,11 @@ def targets_from_env():
         if not isinstance(target, dict) or set(target) != {"namespace", "cluster"}:
             raise ValueError("invalid target")
         for value in target.values():
-            if not isinstance(value, str) or len(value) > 63 or not NAME.fullmatch(value):
+            if (
+                not isinstance(value, str)
+                or len(value) > 63
+                or not NAME.fullmatch(value)
+            ):
                 raise ValueError("invalid target name")
         identity = (target["namespace"], target["cluster"])
         if identity in seen:
@@ -70,7 +80,9 @@ def _timeout(_signum, _frame):
 
 def request_json(request, context=None):
     """Wall-clock and socket bounds, including response reads, with no retries."""
-    opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), _NoRedirect())
+    opener = build_opener(
+        ProxyHandler({}), HTTPSHandler(context=context), _NoRedirect()
+    )
     previous = signal.signal(signal.SIGALRM, _timeout)
     signal.setitimer(signal.ITIMER_REAL, REQUEST_TIMEOUT_S)
     try:
@@ -173,14 +185,22 @@ def run():
                 ),
             )
             stage = "metric_export"
-            result = request_json(Request(
-                os.environ["OTLP_METRICS_ENDPOINT"],
-                data=json.dumps(payload(cluster, namespace, age, has_backup, time.time_ns())).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            ))
+            result = request_json(
+                Request(
+                    os.environ["OTLP_METRICS_ENDPOINT"],
+                    data=json.dumps(
+                        payload(cluster, namespace, age, has_backup, time.time_ns())
+                    ).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+            )
             partial = result.get("partialSuccess", {})
-            if not isinstance(partial, dict) or int(partial.get("rejectedDataPoints", 0)) or partial.get("errorMessage"):
+            if (
+                not isinstance(partial, dict)
+                or int(partial.get("rejectedDataPoints", 0))
+                or partial.get("errorMessage")
+            ):
                 raise RuntimeError("collector rejected backup metric")
             observation["export_ok"] = True
         except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
@@ -188,7 +208,9 @@ def run():
             # Only bounded identities and fixed stage names cross this boundary.
             failed = True
             observation["error"] = stage
-            print(f"backup check failed: {namespace}/{cluster}: {stage}", file=sys.stderr)
+            print(
+                f"backup check failed: {namespace}/{cluster}: {stage}", file=sys.stderr
+            )
         observations.append(observation)
 
     status_name = os.environ.get("CNPG_STATUS_CONFIGMAP", "")
@@ -197,12 +219,20 @@ def run():
         url = f"{api}/api/v1/namespaces/{quote(namespace, safe='')}/configmaps/{quote(status_name, safe='')}"
         snapshot = {"version": 1, "targets": observations}
         # PATCH only the precreated object. No create, list, or application route.
-        request_json(Request(
-            url,
-            data=json.dumps({"data": {"observation.json": json.dumps(snapshot)}}).encode(),
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/merge-patch+json"},
-            method="PATCH",
-        ), context)
+        request_json(
+            Request(
+                url,
+                data=json.dumps(
+                    {"data": {"observation.json": json.dumps(snapshot)}}
+                ).encode(),
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/merge-patch+json",
+                },
+                method="PATCH",
+            ),
+            context,
+        )
     return 1 if failed else 0
 
 
@@ -210,7 +240,10 @@ def main():
     try:
         return run()
     except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
-        print("backup check failed: configuration or status handoff unavailable", file=sys.stderr)
+        print(
+            "backup check failed: configuration or status handoff unavailable",
+            file=sys.stderr,
+        )
         return 1
 
 
