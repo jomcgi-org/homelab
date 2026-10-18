@@ -1,5 +1,6 @@
 """Guard the default-off loom raw manifest set without cluster access."""
 
+import copy
 import re
 from pathlib import Path
 
@@ -35,7 +36,10 @@ def cluster(documents):
 
 def test_kustomization_has_exact_complete_resource_set(documents):
     for name, parsed in documents.items():
-        assert len(parsed) == (2 if name == "httproute.yaml" else 1)
+        if name == "httproute.yaml":
+            assert_trusted_ingress(parsed)
+        else:
+            assert len(parsed) == 1
         assert all(isinstance(document, dict) for document in parsed)
     kustomization = documents["kustomization.yaml"][0]
     assert kustomization["apiVersion"] == "kustomize.config.k8s.io/v1beta1"
@@ -47,6 +51,120 @@ def test_kustomization_has_exact_complete_resource_set(documents):
         "kustomization.yaml",
         "values.yaml",
     }
+
+
+def assert_trusted_ingress(documents):
+    resources = {
+        (doc["kind"], doc["metadata"]["name"]): doc for doc in documents
+    }
+    assert len(documents) == len(resources) == 3
+    assert set(resources) == {
+        ("HTTPRoute", "loom-private"),
+        ("HTTPRoute", "loom-private-slash-redirect"),
+        ("SecurityPolicy", "loom-private-cf-access"),
+    }
+    for (kind, _), resource in resources.items():
+        assert resource["metadata"]["namespace"] == "loom"
+        if kind == "HTTPRoute":
+            assert resource["apiVersion"] == "gateway.networking.k8s.io/v1"
+            assert resource["metadata"].get("labels", {}).get("ingress-tier") == (
+                "trusted"
+            )
+        else:
+            assert resource["apiVersion"] == "gateway.envoyproxy.io/v1alpha1"
+    policy = resources[("SecurityPolicy", "loom-private-cf-access")]
+    # Exact equality also rejects optional JWT validation or extra targets.
+    assert policy["spec"] == {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "loom-private",
+            }
+        ],
+        "jwt": {
+            "providers": [
+                {
+                    "name": "cloudflare-access",
+                    "issuer": "https://jomcgi.cloudflareaccess.com",
+                    "remoteJWKS": {
+                        "cacheDuration": "300s",
+                        "uri": "https://jomcgi.cloudflareaccess.com/cdn-cgi/access/certs",
+                    },
+                    "extractFrom": {
+                        "headers": [{"name": "Cf-Access-Jwt-Assertion"}]
+                    },
+                    "claimToHeaders": [{"claim": "email", "header": "X-Auth-Email"}],
+                }
+            ]
+        },
+    }
+    # The untargeted route must never become a second backend path.
+    redirect = resources[("HTTPRoute", "loom-private-slash-redirect")]
+    assert len(redirect["spec"]["rules"]) == 1
+    rule = redirect["spec"]["rules"][0]
+    assert set(rule) == {"matches", "filters"}
+    assert [entry["type"] for entry in rule["filters"]] == ["RequestRedirect"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_policy",
+        "duplicate_route",
+        "missing_route_label",
+        "missing_redirect_label",
+        "wrong_namespace",
+        "wrong_target",
+        "wrong_target_kind",
+        "optional_jwt",
+        "wrong_issuer",
+        "wrong_jwks",
+        "missing_cache_default",
+        "wrong_header",
+        "missing_email_projection",
+        "redirect_backend",
+    ],
+)
+def test_ingress_mutations_fail_acceptance(documents, mutation):
+    ingress = copy.deepcopy(documents["httproute.yaml"])
+    resources = {(doc["kind"], doc["metadata"]["name"]): doc for doc in ingress}
+    route = resources[("HTTPRoute", "loom-private")]
+    redirect = resources[("HTTPRoute", "loom-private-slash-redirect")]
+    policy = resources[("SecurityPolicy", "loom-private-cf-access")]
+    provider = policy["spec"]["jwt"]["providers"][0]
+    if mutation == "missing_policy":
+        ingress.remove(policy)
+    elif mutation == "duplicate_route":
+        ingress.append(copy.deepcopy(route))
+    elif mutation == "missing_route_label":
+        del route["metadata"]["labels"]
+    elif mutation == "missing_redirect_label":
+        del redirect["metadata"]["labels"]
+    elif mutation == "wrong_namespace":
+        policy["metadata"]["namespace"] = "other"
+    elif mutation == "wrong_target":
+        policy["spec"]["targetRefs"][0]["name"] = "loom-private-slash-redirect"
+    elif mutation == "wrong_target_kind":
+        policy["spec"]["targetRefs"][0]["kind"] = "Gateway"
+    elif mutation == "optional_jwt":
+        policy["spec"]["jwt"]["optional"] = True
+    elif mutation == "wrong_issuer":
+        provider["issuer"] = "https://other.cloudflareaccess.com"
+    elif mutation == "wrong_jwks":
+        provider["remoteJWKS"]["uri"] = "https://other.cloudflareaccess.com/certs"
+    elif mutation == "missing_cache_default":
+        del provider["remoteJWKS"]["cacheDuration"]
+    elif mutation == "wrong_header":
+        provider["extractFrom"]["headers"][0]["name"] = "Authorization"
+    elif mutation == "missing_email_projection":
+        del provider["claimToHeaders"]
+    elif mutation == "redirect_backend":
+        redirect["spec"]["rules"][0]["backendRefs"] = route["spec"]["rules"][0][
+            "backendRefs"
+        ]
+    with pytest.raises(AssertionError):
+        assert_trusted_ingress(ingress)
 
 
 def test_resources_belong_to_loom_namespace(documents):

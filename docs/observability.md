@@ -60,8 +60,8 @@ using creation age plus `cnpg.backup.has_successful_backup=false` for a
 never-backed-up cluster. Creation age is not evidence of a successful backup.
 The flag requires HTTP probes and the shared OTLP receiver to be enabled, and
 is independent of the Argo CD CA mount. The rendered upstream Loom chart has no
-NetworkPolicies; reachability still needs live validation. Switch the probe and
-trigger filter to `/healthz` when weave-hand/loom#694 ships. See
+NetworkPolicies; reachability still needs live validation. Switch the probe
+to `/healthz` when weave-hand/loom#694 ships. See
 [Loom staged monitoring](../projects/loom/deploy/README.md#staged-monitoring-6604)
 for the enable order and live acceptance checks.
 
@@ -183,18 +183,17 @@ request denied, EmberVM control-plane errors, Kargo promotion failed).
 Container restarts in `monolith-public` are posted by the monolith's pod
 restart watcher, and chart lag is the advisory `cd` component.
 
-## Staged Loom alerts
+## Staged Loom monitoring
 
-Loom's probe, backup-age and checker-absence specs are disabled until #6605,
-metric arrival and operator test-firing. They count successful 2xx probes over
-600 seconds, compare backup age with 129600 seconds (36 hours), and detect
-missing age datapoints over 7200 seconds. Connection errors record zero in
-every `httpcheck.status` class, so counting successes covers a down endpoint.
-The backup-age MAX needs its absence companion when the checker stops.
-The shared checker and private advisory also cover the three existing CNPG
-clusters as default-off repository configuration (#7002). They do not depend
-on enabling Loom. The specs live in `projects/platform/honeycomb/triggers/` and
-are applied by hand with `sync.py` after the operator checks, never by CI.
+Loom's probe and backup-age telemetry remain default-off pending #6605 and
+the [staged monitoring checks in #6604](../projects/loom/deploy/README.md#staged-monitoring-6604).
+There are no Loom probe, backup-age or checker-absence Honeycomb trigger specs;
+the [one-trigger policy](../projects/platform/honeycomb/README.md) reserves the
+only trigger for the public health composite. The signals are available for
+investigation after enablement and do not create Loom alert notifications.
+The shared checker and private backup advisory below are staged separately
+under #7002 and can include Loom after its own gate is enabled. They provide
+no Loom probe or checker-absence alert.
 
 ## Staged shared backup advisory
 
