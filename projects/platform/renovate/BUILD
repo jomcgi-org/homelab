@@ -41,8 +41,9 @@ argocd_app(
 py_test(
     name = "dependency_policy_test",
     srcs = ["dependency_policy_test.py"],
+    args = ["$(rootpath dependency_policy_test.py)"],
     data = [
-        ":chart",
+        "templates/apko-lock-script.yaml",
         "//:renovate.json",
     ],
 )
@@ -51,6 +52,8 @@ py_test(
 py_test(
     name = "hub_deployment_test",
     srcs = ["hub_deployment_test.py"],
+    # The chart filegroup includes sibling tests; collect only this suite.
+    args = ["$(rootpath hub_deployment_test.py)"],
     data = [
         "BUILD",
         ":chart",
