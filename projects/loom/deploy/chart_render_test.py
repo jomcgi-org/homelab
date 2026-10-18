@@ -258,7 +258,11 @@ def test_private_route_matches_rendered_service_and_redirect(rendered):
     policy = resources[("SecurityPolicy", "loom-private-cf-access")]
     assert policy["metadata"]["namespace"] == "loom"
     assert policy["spec"]["targetRefs"] == [
-        {"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "loom-private"}
+        {
+            "group": "gateway.networking.k8s.io",
+            "kind": "HTTPRoute",
+            "name": "loom-private",
+        }
     ]
     for route in routes:
         assert route["metadata"]["namespace"] == policy["metadata"]["namespace"]

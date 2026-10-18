@@ -54,9 +54,7 @@ def test_kustomization_has_exact_complete_resource_set(documents):
 
 
 def assert_trusted_ingress(documents):
-    resources = {
-        (doc["kind"], doc["metadata"]["name"]): doc for doc in documents
-    }
+    resources = {(doc["kind"], doc["metadata"]["name"]): doc for doc in documents}
     assert len(documents) == len(resources) == 3
     assert set(resources) == {
         ("HTTPRoute", "loom-private"),
@@ -91,9 +89,7 @@ def assert_trusted_ingress(documents):
                         "cacheDuration": "300s",
                         "uri": "https://jomcgi.cloudflareaccess.com/cdn-cgi/access/certs",
                     },
-                    "extractFrom": {
-                        "headers": [{"name": "Cf-Access-Jwt-Assertion"}]
-                    },
+                    "extractFrom": {"headers": [{"name": "Cf-Access-Jwt-Assertion"}]},
                     "claimToHeaders": [{"claim": "email", "header": "X-Auth-Email"}],
                 }
             ]
