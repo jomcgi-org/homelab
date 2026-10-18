@@ -77,8 +77,8 @@ def effective_policy(db, row):
     return {**policy, **grant["policy_overlay"]} if grant else policy
 
 
-def objective_for_receipt(db, receipt):
-    """Return cumulative accounting for the objective owning ``receipt``.
+def objective_task_ids(db, receipt):
+    """Return durable task identities for the objective owning ``receipt``.
 
     The audit's task -> receipt association never changes; repo/issue is the
     objective identity across generations and advisory/delivery classes.
@@ -104,6 +104,12 @@ def objective_for_receipt(db, receipt):
             if not audit.task_id:
                 raise ValueError("funding history missing task identity")
             ids.add(audit.task_id)
+    return sorted(ids)
+
+
+def objective_for_receipt(db, receipt):
+    """Existing mixed-basis admission accounting, not a list-price report."""
+    ids = objective_task_ids(db, receipt)
     starts = db.exec(select(FactoryStart).where(FactoryStart.task_id.in_(ids))).all()
     budget = controls._accounting(starts)
     return {

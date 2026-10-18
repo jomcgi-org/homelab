@@ -20357,3 +20357,16 @@ def test_normal_plan_restricted_gate_cannot_authorize_work(feedback_db, monkeypa
     assert exc.value.code == "gate_requires_pause"
     assert conductor._task(task["id"])["conductor_gates"] == []
     assert conductor.graph.load_graph(task["id"]) == []
+
+
+def test_planner_defaults_to_one_implementation_and_atomic_repair():
+    charter = conductor._PLANNER_CHARTER
+    assert "one capable implementation session" in charter
+    assert "coding, debugging and testing in that implementation session" in charter
+    assert "specific uncertainty and the decision its evidence will enable" in charter
+    assert "Set effort to xhigh before dispatch for non-trivial work" in charter
+    assert (
+        "Do not spend a separate planner session on each known cleanup edit" in charter
+    )
+    assert "retained history and server correction/re-review reserves" in charter
+    assert "Review must run in a separate session from every implementer" in charter
