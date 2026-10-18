@@ -512,7 +512,7 @@ def test_paused_definitive_pr_read_failure_allows_only_deadline_settlement(
     for _ in range(3):
         conductor.tick()
     after = controls.task_snapshot(s.task["id"])
-    settled = expired and not blocker
+    settled = expired and blocker in (None, "observed_merge")
     assert after["state"] == ("escalated" if settled else "admitted")
     assert len(s.cards) == (1 if settled else 0)
     if settled:
@@ -959,15 +959,48 @@ def test_paused_merge_never_upgrades_ineligible_review(paused_settlement, bad_re
     assert snapshot["evidence"]["state"] == "merged_review_not_approved"
 
 
-@pytest.mark.parametrize("check_state", ["pending", "failure"])
-def test_paused_merged_delivery_still_requires_checks(paused_settlement, check_state):
+@pytest.mark.parametrize("failure", ["pending", "failure", "closure"])
+@pytest.mark.parametrize("expired", [False, True])
+@pytest.mark.parametrize(
+    "blocker", [None, "reserved", "uncertain", "admitted", "dispatched"]
+)
+def test_paused_unverified_merge_escalates_only_at_quiescent_deadline(
+    paused_settlement, failure, expired, blocker
+):
     from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
 
     s = paused_settlement
-    pause_trigger(s, "combined")
-    s.checks["statuses"][0]["state"] = check_state
-    conductor.tick()
-    assert controls.task_snapshot(s.task["id"])["state"] == "admitted"
+    pause_trigger(s, "combined" if expired else "merged")
+    s.issue["state"] = "closed"
+    if failure == "closure":
+        s.pr["body"] = "Refs #7"
+    else:
+        s.checks["statuses"][0]["state"] = failure
+    if blocker:
+        pause_blocker(s, blocker)
+    before = controls.task_snapshot(s.task["id"])
+    runs = conductor.graph.node_runs(s.task["id"])
+    for _ in range(3):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    settled = expired and blocker is None
+    assert after["state"] == ("escalated" if settled else "admitted")
+    assert len(s.cards) == (1 if settled else 0)
+    assert after["starts"] == before["starts"]
+    assert after["committed_cost_usd"] == before["committed_cost_usd"]
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    if settled:
+        assert after["evidence"]["state"] == "conductor_escalated"
+        assert after["escalation"]["resolved"] is None
+    with Session(s.engine) as db:
+        settlements = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "finish_task",
+            )
+        ).all()
+        assert len(settlements) == (1 if settled else 0)
 
 
 def test_fresh_planner_only_allowance_is_not_a_work_limit(feedback_db):
