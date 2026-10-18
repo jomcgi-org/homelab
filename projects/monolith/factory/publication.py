@@ -285,6 +285,18 @@ def _quota_pacing_view(
     if not 0 <= (now - observed).total_seconds() <= QUOTA_STALE_AFTER_SECONDS:
         return None
     result = {"state": state, "evaluated_at": evaluated, "observed_at": observed}
+    windows = view.get("windows")
+    windows = windows if isinstance(windows, list) else []
+    if state == "wait_for_reset":
+        blocked = _quota_time(pacing.get("blocked_until"))
+        exhausted = [
+            _quota_time(window.get("resets_at"))
+            for window in windows
+            if isinstance(window, dict) and window.get("used_percent") == 100
+        ]
+        active = [reset for reset in exhausted if reset is not None and reset > now]
+        if blocked is not None and active and all(exhausted) and blocked == max(active):
+            result["blocked_until"] = blocked
     if state in ("unknown", "stale", "awaiting_report"):
         return result
     minutes = _quota_number(pacing.get("budget_window_minutes"))
@@ -295,8 +307,6 @@ def _quota_pacing_view(
     target = _quota_number(pacing.get("target_used_percent"))
     delta = _quota_number(pacing.get("pace_delta_percent"))
     reported_seconds = _quota_number(pacing.get("budget_remaining_seconds"))
-    windows = view.get("windows")
-    windows = windows if isinstance(windows, list) else []
     budget = [
         window
         for window in windows
@@ -345,31 +355,23 @@ def _quota_pacing_view(
         budget_resets_at=reset,
     )
     short = _quota_number(pacing.get("short_window_minutes"))
-    count = pacing.get("short_resets_before_budget")
+    short_reset = _quota_time(pacing.get("short_resets_at"))
     short_windows = [
         window
         for window in windows
         if isinstance(window, dict) and window.get("window_minutes") == short
     ]
-    short_reset = (
-        _quota_time(short_windows[0].get("resets_at"))
-        if len(short_windows) == 1
-        else None
-    )
     if (
         short is not None
         and 1 <= short < minutes
-        and isinstance(count, int)
-        and not isinstance(count, bool)
-        and 0 <= count <= 525600
-        and count <= math.ceil(minutes / short)
-        and pacing.get("estimate_basis") == "continuous_use"
         and short_reset is not None
         and short_reset > now
-        and count
-        == max(0, math.ceil((reset - short_reset).total_seconds() / (short * 60)))
+        and len(short_windows) == 1
+        and short_windows[0].get("expired") in (None, False)
+        and _quota_time(short_windows[0].get("resets_at")) == short_reset
+        and (short_reset - observed).total_seconds() <= short * 60 + 1
     ):
-        result.update(short_window_seconds=short * 60, short_resets=count)
+        result.update(short_window_seconds=short * 60, short_resets_at=short_reset)
     return result
 
 
@@ -404,6 +406,16 @@ def _quota_pacing(
         and (reset := _quota_time(window.get("resets_at"))) is not None
     ]
     result["valid_until"] = _iso(min(resets)) if resets else None
+    waiting = [sample for sample in valid if sample["state"] == "wait_for_reset"]
+    if waiting and all("blocked_until" in sample for sample in waiting):
+        result.update(
+            blocked_next_reset_at=_iso(
+                min(sample["blocked_until"] for sample in waiting)
+            ),
+            blocked_last_reset_at=_iso(
+                max(sample["blocked_until"] for sample in waiting)
+            ),
+        )
     budgets = [sample for sample in valid if "budget_window_seconds" in sample]
     if (
         not inventory
@@ -423,17 +435,19 @@ def _quota_pacing(
         )
         / len(budgets),
     )
-    # Count each account's actual short reset schedule before taking the range.
-    # Averaging reset timestamps first would invent a reset schedule no account has.
+    # Preserve the reported reset range across accounts without predicting later cycles.
     if (
-        all("short_resets" in sample for sample in budgets)
+        all("short_resets_at" in sample for sample in budgets)
         and len({sample["short_window_seconds"] for sample in budgets}) == 1
     ):
         result.update(
             short_window_seconds=budgets[0]["short_window_seconds"],
-            short_resets_min=min(sample["short_resets"] for sample in budgets),
-            short_resets_max=max(sample["short_resets"] for sample in budgets),
-            estimate_basis="continuous_use",
+            short_next_reset_at=_iso(
+                min(sample["short_resets_at"] for sample in budgets)
+            ),
+            short_last_reset_at=_iso(
+                max(sample["short_resets_at"] for sample in budgets)
+            ),
         )
     return result
 

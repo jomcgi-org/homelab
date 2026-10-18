@@ -70,8 +70,7 @@ type Pacing struct {
 	BudgetPerDayPercent     *float64 `json:"budget_per_day_percent,omitempty"`
 	BlockedUntil            string   `json:"blocked_until,omitempty"`
 	ShortWindowMinutes      *int     `json:"short_window_minutes,omitempty"`
-	ShortResetsBeforeBudget *int     `json:"short_resets_before_budget,omitempty"`
-	EstimateBasis           string   `json:"estimate_basis,omitempty"`
+	ShortResetsAt           string   `json:"short_resets_at,omitempty"`
 }
 
 // View is the latest observation plus state derived when it is read.
@@ -528,7 +527,7 @@ func derivePacing(obs Observation, now time.Time) *Pacing {
 		pacing.PaceDeltaPercent = &delta
 		pacing.BudgetPerDayPercent = &daily
 		if !unknown && !expired {
-			// More than one distinct short duration has no single reset cadence.
+			// More than one distinct short duration has no single short reset.
 			var short candidate
 			shortCount := 0
 			for minutes, current := range windows {
@@ -537,16 +536,8 @@ func derivePacing(obs Observation, now time.Time) *Pacing {
 				}
 			}
 			if shortCount == 1 {
-				count := 0
-				gap := budget.reset.Sub(short.reset)
-				if gap > 0 {
-					// Count reset instants strictly before the budget reset. Integer
-					// nanoseconds keep exact equality and second-level jitter stable.
-					count = 1 + int((gap-1)/(time.Duration(short.window.WindowMinutes)*time.Minute))
-				}
 				pacing.ShortWindowMinutes = &short.window.WindowMinutes
-				pacing.ShortResetsBeforeBudget = &count
-				pacing.EstimateBasis = "continuous_use"
+				pacing.ShortResetsAt = short.reset.UTC().Format(time.RFC3339Nano)
 			}
 		}
 	}

@@ -58,10 +58,9 @@ if any binding reset is unknown. A passed reset needs a fresh report.
 `pace_delta_percent` describe that reported budget at `evaluated_at`.
 `budget_per_day_percent` divides its remaining percentage points by days to
 reset. With one unambiguous shorter window, `short_window_minutes` and
-`short_resets_before_budget` estimate reset instants strictly before the budget
-reset, assuming continuous use and immediate restart of each short window.
-`estimate_basis: "continuous_use"` identifies that assumption. These fields
-neither predict demand nor convert short-window quota into weekly capacity.
+`short_resets_at` carry its reported duration and actual next reset timestamp.
+The broker does not infer future reset cycles or convert short-window quota
+into weekly capacity.
 
 Unknown fields are omitted. Guidance requires observations no older than
 900 seconds, usage from 0 to 100, and reported durations from one minute to

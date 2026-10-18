@@ -47,9 +47,10 @@ Broker pacing adds advisory state counts without account identities. Complete,
 fresh reports with the same longest budget duration expose an equal-account
 mean of remaining percentage points per day. A short-window burst does not
 imply weekly overspend; an exhausted short window still blocks that account.
-Mixed account states remain visible in the headline. Estimated short resets use
-each account's actual next reset and report a count range under continuous use,
-never an average reset schedule. Unknown duration blocks reassuring guidance,
+Mixed account states remain visible in the headline. Short resets retain the
+provider-reported timestamp range across accounts. Limited accounts expose their
+actual binding reset range separately; an unknown binding reset stays unknown.
+No later reset cycles are projected. Daily pacing is labelled as a recommendation. Unknown duration blocks reassuring guidance,
 while a known fast weekly budget can still advise conservation. The browser
 expires this advice at the earliest reset or when observations age past 15
 minutes. Older broker snapshots retain measured usage without invented guidance.

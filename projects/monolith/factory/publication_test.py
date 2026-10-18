@@ -1175,11 +1175,10 @@ def test_quota_history_rejects_nonfinite_values_and_forged_complete_coverage():
 
 
 def _quota_with_pacing():
-    import math
     from datetime import datetime, timedelta
 
     now, raw = _quota_fixture()
-    for view in raw["grants"].values():
+    for offset, view in enumerate(raw["grants"].values(), start=1):
         budget = view["windows"][0]
         reset = datetime.fromisoformat(budget["resets_at"])
         remaining = (reset - now).total_seconds()
@@ -1189,7 +1188,7 @@ def _quota_with_pacing():
             {
                 "window_minutes": 300,
                 "used_percent": 90,
-                "resets_at": (now + timedelta(hours=1)).isoformat(),
+                "resets_at": (now + timedelta(hours=offset)).isoformat(),
             }
         )
         view["pacing"] = {
@@ -1210,8 +1209,7 @@ def _quota_with_pacing():
             * 86400
             / remaining,
             "short_window_minutes": 300,
-            "short_resets_before_budget": math.ceil((remaining - 3600) / 18000),
-            "estimate_basis": "continuous_use",
+            "short_resets_at": view["windows"][1]["resets_at"],
             "private_detail": "never-public",
         }
     return now, raw
@@ -1227,9 +1225,8 @@ def test_quota_pacing_aggregates_allowlisted_means_and_reset_ranges():
     assert pacing["budget_window_seconds"] == 604800
     assert pacing["budget_remaining_percent"] == 70
     assert pacing["budget_per_day_percent"] == (80 / 3.5 + 60 / 5.25) / 2
-    assert pacing["short_resets_min"] == 17
-    assert pacing["short_resets_max"] == 25
-    assert pacing["estimate_basis"] == "continuous_use"
+    assert pacing["short_next_reset_at"] == "2026-10-17T13:00:00+00:00"
+    assert pacing["short_last_reset_at"] == "2026-10-17T14:00:00+00:00"
     assert pacing["valid_until"] == "2026-10-17T13:00:00+00:00"
     assert "never-public" not in str(pacing)
     assert "secret-account" not in str(pacing)
@@ -1245,6 +1242,8 @@ def test_quota_pacing_keeps_mixed_blocked_accounts_visible_without_all_blocked_c
     first["pacing"]["blocked_until"] = first["windows"][1]["resets_at"]
     pacing = shape_quota(raw, now)["providers"][0]["pacing"]
     assert pacing["state_counts"] == {"wait_for_reset": 1, "conserve": 1}
+    assert pacing["blocked_next_reset_at"] == "2026-10-17T13:00:00+00:00"
+    assert pacing["blocked_last_reset_at"] == "2026-10-17T13:00:00+00:00"
     assert pacing["reported_accounts"] == 2
     assert pacing["complete"] is True
 
@@ -1267,7 +1266,7 @@ def test_quota_pacing_does_not_publish_daily_budget_for_partial_or_different_bud
         pacing = shape_quota(raw, now)["providers"][0]["pacing"]
         assert pacing["complete"] is False
         assert "budget_per_day_percent" not in pacing
-        assert "short_resets_min" not in pacing
+        assert "short_next_reset_at" not in pacing
 
 
 def test_quota_pacing_rejects_malformed_stale_or_inconsistent_broker_metadata():
@@ -1322,32 +1321,46 @@ def test_quota_pacing_malformed_view_does_not_break_other_publication():
         assert result["providers"][0]["pacing"]["complete"] is False
 
 
-def test_quota_pacing_never_extends_an_estimate_across_a_short_reset():
-    import math
-    from datetime import datetime, timedelta
+def test_quota_pacing_does_not_roll_a_reported_short_reset_into_a_future_cycle():
+    from datetime import timedelta
 
     from factory.publication import shape_quota
 
     now, raw = _quota_with_pacing()
     for view in raw["grants"].values():
         view["windows"][1]["resets_at"] = (now + timedelta(minutes=1)).isoformat()
-        reset = datetime.fromisoformat(view["windows"][0]["resets_at"])
-        view["pacing"]["short_resets_before_budget"] = math.ceil(
-            (reset - now - timedelta(minutes=1)).total_seconds() / 18000
-        )
+        view["pacing"]["short_resets_at"] = view["windows"][1]["resets_at"]
     pacing = shape_quota(raw, now + timedelta(minutes=2))["providers"][0]["pacing"]
     assert pacing["valid_until"] == "2026-10-17T12:01:00+00:00"
-    assert "short_resets_min" not in pacing
+    assert "short_next_reset_at" not in pacing
 
 
-def test_quota_pacing_discards_invalid_reset_count_without_losing_known_budget():
+def test_quota_pacing_rejects_a_short_reset_not_matching_provider_evidence():
     from factory.publication import shape_quota
 
-    for invalid in (True, -1, 1e300, 10**400, 100, 1.5):
+    for invalid in (
+        True,
+        None,
+        "invalid",
+        "2026-10-17T14:00:00Z",
+        "2027-01-01T00:00:00Z",
+    ):
         now, raw = _quota_with_pacing()
-        next(iter(raw["grants"].values()))["pacing"]["short_resets_before_budget"] = (
-            invalid
-        )
+        next(iter(raw["grants"].values()))["pacing"]["short_resets_at"] = invalid
         pacing = shape_quota(raw, now)["providers"][0]["pacing"]
         assert pacing["complete"] is True
-        assert "short_resets_min" not in pacing
+        assert "short_next_reset_at" not in pacing
+
+
+def test_quota_pacing_does_not_invent_a_binding_reset_for_a_limited_account():
+    from factory.publication import shape_quota
+
+    now, raw = _quota_with_pacing()
+    first = next(iter(raw["grants"].values()))
+    first["pacing"]["state"] = "wait_for_reset"
+    first["windows"][1]["used_percent"] = 100
+    first["pacing"]["blocked_until"] = first["windows"][1]["resets_at"]
+    first["windows"].append({"used_percent": 100})
+    pacing = shape_quota(raw, now)["providers"][0]["pacing"]
+    assert pacing["state_counts"]["wait_for_reset"] == 1
+    assert "blocked_next_reset_at" not in pacing

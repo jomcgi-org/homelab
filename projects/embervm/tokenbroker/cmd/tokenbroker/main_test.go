@@ -283,7 +283,7 @@ func TestQuotaGetIncludesResetAwarePacing(t *testing.T) {
 	response := requestQuota(t, s, http.MethodGet, "/quota/codex", "")
 	decoded := decodeBody(t, response)
 	pacing, ok := decoded["pacing"].(map[string]any)
-	if response.Code != http.StatusOK || !ok || pacing["state"] != "conserve" || pacing["budget_window_minutes"] != float64(10080) || pacing["short_resets_before_budget"] != float64(28) || pacing["estimate_basis"] != "continuous_use" {
+	if response.Code != http.StatusOK || !ok || pacing["state"] != "conserve" || pacing["budget_window_minutes"] != float64(10080) || pacing["short_window_minutes"] != float64(300) || pacing["short_resets_at"] != observation.Windows[1].ResetsAt {
 		t.Fatalf("GET = %d %s", response.Code, response.Body.String())
 	}
 	if decoded["exhausted"] != false || decoded["status"] != "allowed" {
