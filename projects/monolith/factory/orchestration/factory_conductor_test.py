@@ -934,9 +934,7 @@ def test_operator_cancel_paused_task_next_tick_releases_slot_and_keeps_cooldown(
 
 
 @pytest.mark.parametrize("human_owned", [False, True])
-def test_drain_records_terminal_review_before_settling(
-    paused_settlement, human_owned
-):
+def test_drain_records_terminal_review_before_settling(paused_settlement, human_owned):
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import FactoryAudit, FactoryReviewVerdict
 
