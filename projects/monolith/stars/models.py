@@ -54,7 +54,7 @@ class SiteMonthClimatology(
 
     A long-run seasonal baseline computed offline from the ERA5/CERRA reanalysis
     and ingested by the stars.load_climatology job from climatology.json on
-    SeaweedFS. ``dark_hours`` is the per-month-of-year (1-12) count of dark hours
+    R2. ``dark_hours`` is the per-month-of-year (1-12) count of dark hours
     (sun < -12 deg) and ``clear_dark_hours`` the subset that is also clear (cloud
     < 10%); ``clear_dark_hours / dark_hours`` is the clarity rate. /api/stars/history
     reads this table directly: it is the sole source of the historical layer now

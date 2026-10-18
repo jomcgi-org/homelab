@@ -46,16 +46,23 @@ Reproduction runbook:
   #    level_type surface_or_atmosphere, product_type analysis,
   #    time [18,21,00,03,06], all months/days, data_format grib.
 
-  # 4. Process + upload + load:
+  # 4. Process locally:
   /tmp/geoenv/bin/python backfill_cerra.py \
       --grib '/tmp/cerra_tcc_*.grib' --grid /tmp/grid.json \
       --output /tmp/climatology.json
-  kubectl port-forward -n seaweedfs svc/seaweedfs-s3 8333:8333 &
-  curl -X PUT -T /tmp/climatology.json http://localhost:8333/stars/climatology.json
-  # Submit the matching Argo CronWorkflow as a one-off Workflow.
+  # Upload only with operator authorization. Use the environment-only R2 remote
+  # from projects/monolith/grimoire/tools/README.md: the complete HTTPS
+  # stars.s3Endpoint, AWS_REGION=auto and existing monolith-r2-s3 identity.
+  # Export STARS_GRID_S3_BUCKET from stars.gridBucket and
+  # STARS_CLIMATOLOGY_S3_KEY from stars.climatologyKey (stars/climatology.json
+  # in the current chart). The bucket must exist; never create it here.
+  rclone --config /dev/null --s3-no-check-bucket copyto /tmp/climatology.json \
+      "R2:${STARS_GRID_S3_BUCKET:?}/${STARS_CLIMATOLOGY_S3_KEY:?}"
+  # Separate authorization required: this replaces the climatology table.
+  # Submit the matching Argo CronWorkflow as a one-off Workflow only then.
   homelab scheduler jobs run-now stars.load_climatology
 
-  # 5. Invalidate the CDN. /api/stars/history* is cached at the edge for a year
+  # 5. Separately authorize CDN invalidation. /api/stars/history* is cached for a year
   #    (immutable between reloads), so PURGE Cloudflare for the history paths
   #    right after the load or the new climatology will not show until expiry.
   #    Do this every reload (and after any /history response-shape change):
