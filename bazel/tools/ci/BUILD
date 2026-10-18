@@ -109,3 +109,15 @@ sh_test(
     srcs = ["local_affected_test_test.sh"],
     data = ["local-affected-test.sh"],
 )
+
+py_test(
+    name = "python_manifest_wiring_test",
+    srcs = ["python_manifest_wiring_test.py"],
+    data = [
+        "python-manifest.sh",
+        "//:buildbuddy.yaml",
+        "//bazel/tools/format:update-python-requirements-if-needed.sh",
+        "//bazel/tools/format:update-python-requirements.sh",
+    ],
+    deps = ["@pip//pytest"],
+)

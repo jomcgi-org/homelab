@@ -26,7 +26,33 @@ Python dependencies are `@pip//<package>` from the pip hub over `bazel/requireme
 
 `rules_apko` is patched (`bazel/patches/rules_apko_no_range.patch` under a `single_version_override`) so each apk is fetched whole: upstream's three ranged requests collide with Bazel's own resume `Range` header on a flaky link and abort analysis (#4849; dropping the patch is #5399). Under `--config=ci` every `rctx.download` goes through BuildBuddy's Remote Asset API with local fallback, so a cold queue candidate no longer depends on Wolfi or PyPI being healthy.
 
-**BUILD generation is CI-only.** `//:gazelle` is a custom `gazelle_binary` carrying the `argocd` (helm), `bzl`, `go`, `proto` and `python` languages, with `# gazelle:go_naming_convention_external import` so external Go deps resolve to the labels the `go_deps` extension actually creates. It runs inside `bazel run //bazel/tools/format:format` in CI's format stage, which auto-commits the result on PR branches as `ci-format-bot`: a BUILD change lands as a `style: auto-format` commit after yours, and your next push is non-fast-forward until you fetch and rebase. `ci regen` prints a reminder and runs nothing. The Python gazelle manifest lives in `bazel/tools/python`, which every CI command passes as `--deleted_packages` so analysis never fetches every wheel.
+**BUILD generation is CI-only.** `//:gazelle` is a custom `gazelle_binary` carrying the `argocd` (helm), `bzl`, `go`, `proto` and `python` languages, with `# gazelle:go_naming_convention_external import` so external Go deps resolve to the labels the `go_deps` extension actually creates. It runs inside `bazel run //bazel/tools/format:format` in CI's format stage, which auto-commits the result on PR branches as `ci-format-bot`: a BUILD change lands as a `style: auto-format` commit after yours, and your next push is non-fast-forward until you fetch and rebase. `ci regen` prints a reminder for BUILD and Python manifest inputs; their Bazel generators run on Linux CI.
+
+The Python manifest must match `bazel/requirements/all.txt` (#7087).
+`gazelle_python_manifest` receives that lock as `requirements`, enabling the
+pinned macro's integrity test over the lock, mapping and generator hash.
+Ordinary test discovery keeps `--deleted_packages=bazel/tools/python`.
+`python-manifest.sh check` explicitly runs the integrity test and its stale-input
+regression test without that exclusion, including on format-bot heads, empty
+affected sets and explicit `ci test` overrides. Changes to the lock, manifest
+package or module pins additionally run `manifest_generated_test`, comparing
+the committed bytes against the pinned all-wheel generator.
+
+Both requirements update scripts invoke `python-manifest.sh update`; the
+if-needed path checks runtime and aggregate locks before checking the manifest.
+These scripts run directly on Linux, outside `bazel run`. CI also invokes
+`update` before the parallel format batch, so direct lock edits regenerate
+before Gazelle reads the mapping. The existing tracked-only writeback handles
+the result and retains its main and merge-queue no-push guards. The read-only
+check runs outside all format skips. No Bazel invocation is nested in
+`run-generators.sh` or a formatter.
+
+**Why.** Without `requirements`, the macro's test regenerates every wheel's
+mapping. Excluding that package from all test commands hid drift. The pinned
+integrity path detects lock or manifest changes without depending on the wheel
+mapping; the scoped generated-byte comparison verifies regeneration when its
+inputs change. `manifest_drift_test` runs the same upstream guard against valid
+inputs and disposable stale lock and manifest fixtures.
 
 (see: `MODULE.bazel`, `.bazelrc`, `bazel/remote.bazelrc`, root `BUILD`, `bazel/requirements/README.md`, `bazel/tools/http/`, `bazel/patches/`)
 

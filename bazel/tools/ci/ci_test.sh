@@ -523,9 +523,8 @@ if (cd "$FAKE_ROOT" && HOME="$TMP/explicit-home" XDG_CACHE_HOME="$TMP/explicit-c
 	PATH="$STUB_BIN:$PATH" CI_FAKE_ROOT="$FAKE_ROOT" \
 	BB_FIXTURE="$TMP/singular_green_run" BB_STATUS=0 BB_LOG="$TMP/explicit.bb.log" \
 	"$CI" test -- //projects/example:test >"$explicit_output" 2>&1) &&
-	grep -qxF "test" "$TMP/explicit.bb.log" &&
-	grep -qxF "//projects/example:test" "$TMP/explicit.bb.log" &&
-	! grep -qF -- "--script=" "$TMP/explicit.bb.log"; then
+	grep -qF -- "--script=set -- //projects/example:test" "$TMP/explicit.bb.log" &&
+	grep -qF 'python-manifest.sh check' "$TMP/explicit.bb.log"; then
 	pass "explicit_target_override"
 else
 	fail "explicit_target_override" "args=$(tr '\n' ' ' <"$TMP/explicit.bb.log")"

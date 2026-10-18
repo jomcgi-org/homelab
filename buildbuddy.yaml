@@ -353,6 +353,11 @@ actions:
             if [ "$AUTHOR" = "ci-format-bot" ]; then
               echo "HEAD is the ci-format-bot commit; formatting just ran, going straight to tests."
             else
+              # Serial outer invocation before Gazelle reads the manifest and
+              # parallel formatters touch YAML. The normal writeback below owns
+              # tracked changes and still refuses main/queue pushes.
+              ./bazel/tools/ci/python-manifest.sh update
+
               # :run_generators runs every committed doc/config generator, so
               # drift is auto-committed below rather than hard-failing. Single
               # source of truth for the list: run-generators.sh, which local
@@ -446,6 +451,10 @@ actions:
               fi
             fi
           fi
+
+          # This isolated guard has no normal test exclusions. It also runs on
+          # bot-authored heads that skip the mutating format stage above.
+          ./bazel/tools/ci/python-manifest.sh check "$base_ref"
 
           # Read-only generated-source acceptance also runs on ci-format-bot
           # heads and chart writebacks. A drifted PR exits above after pushing;
