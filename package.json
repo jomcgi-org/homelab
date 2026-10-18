@@ -1,6 +1,7 @@
 {
   "name": "homelab",
   "private": true,
+  "packageManager": "pnpm@10.34.5",
   "dependencies": {
     "@anthropic-ai/claude-code": "^2.1.71",
     "bindings": "^1.5.0",
