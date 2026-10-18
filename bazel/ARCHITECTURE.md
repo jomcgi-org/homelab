@@ -32,8 +32,6 @@ Python dependencies are `@pip//<package>` from the pip hub over `bazel/requireme
 
 **Why.** bzlmod with pinned rulesets and sha256-pinned binaries is what lets BuildBuddy cache actions across runners; `aspect_rules_py` was chosen over `rules_python`'s rules because its venv-style binaries are what the image layers package, and the `no-rules-python` Semgrep rule was written to hold the line. Running Gazelle locally was rejected after aspect-gazelle rewrote BUILD files by its own defaults in whichever directory you were editing, silently; CI-only generation costs a second commit per BUILD change and buys a single correct generator. The apko patch and the remote downloader trade a vendored patch and a BuildBuddy dependency for queue candidates that stop failing on an upstream mirror.
 
----
-
 ### Generated sources in clean checkouts
 
 When ordinary tooling needs generated source files, check in only those
@@ -55,6 +53,8 @@ generation and all other build artifacts keep their existing output policy.
 without replacing the build inputs. Serial copy avoids formatter races;
 read-only drift verification on the new head prevents a stale copy from
 passing through the autoformat author guard.
+
+---
 
 ## 3. Images
 
@@ -166,9 +166,8 @@ Their suites are genrules, not test rules, tagged `verification` so `affected-ta
 
 ## Direction
 
-| Direction | Decided in | Tracks | State |
-| --- | --- | --- | --- |
-| Check in narrowly selected Bazel-generated sources needed by ordinary tooling, with pinned regeneration and branch writeback | Generated sources in clean checkouts (Joe, 2026-10-18) | #7066 | EmberVM Go copies implemented; Linux CI and exact-head review required before delivery |
+Nothing is decided and unbuilt here at present; outstanding work is
+tracked in GitHub Issues.
 
 ## Decision history
 
