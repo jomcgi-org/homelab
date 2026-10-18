@@ -414,8 +414,8 @@ func TestPacingUsesLongestReportedBudget(t *testing.T) {
 func TestPacingResetEstimateAndDailyBudget(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	obs := Observation{ObservedAt: now.Format(time.RFC3339Nano), Status: "allowed", Windows: []Window{
-		{Name: "weekly", WindowMinutes: 10080, UsedPercent: 70, ResetsAt: now.Add(6*24*time.Hour).Format(time.RFC3339Nano)},
-		{Name: "session", WindowMinutes: 300, UsedPercent: 50, ResetsAt: now.Add(4*time.Hour).Format(time.RFC3339Nano)},
+		{Name: "weekly", WindowMinutes: 10080, UsedPercent: 70, ResetsAt: now.Add(6 * 24 * time.Hour).Format(time.RFC3339Nano)},
+		{Name: "session", WindowMinutes: 300, UsedPercent: 50, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339Nano)},
 	}}
 	pacing := makeView(storedObservation{Observation: obs}, now).Pacing
 	if pacing.EstimateBasis != "continuous_use" || pacing.ShortResetsBeforeBudget == nil || *pacing.ShortResetsBeforeBudget != 28 {
@@ -431,8 +431,12 @@ func TestPacingResetEstimateAndDailyBudget(t *testing.T) {
 		gap  time.Duration
 		want int
 	}{
-		{-time.Second, 0}, {0, 0}, {time.Nanosecond, 1},
-		{5*time.Hour - time.Second, 1}, {5 * time.Hour, 1}, {5*time.Hour + time.Second, 2},
+		{-time.Second, 0},
+		{0, 0},
+		{time.Nanosecond, 1},
+		{5*time.Hour - time.Second, 1},
+		{5 * time.Hour, 1},
+		{5*time.Hour + time.Second, 2},
 	} {
 		t.Run(tt.gap.String(), func(t *testing.T) {
 			obs.Windows[0].ResetsAt = now.Add(4*time.Hour + tt.gap).Format(time.RFC3339Nano)
