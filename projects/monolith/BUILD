@@ -6236,16 +6236,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_profile_test",
-    srcs = ["knowledge/profile_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "knowledge_gen_repo_docs_manifest_test",
     srcs = ["knowledge/gen_repo_docs_manifest_test.py"],
     imports = ["."],

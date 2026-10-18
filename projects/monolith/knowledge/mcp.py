@@ -801,15 +801,3 @@ def register_mcp_tools(mcp_server: Any) -> None:
     """Register the full knowledge catalogue on a supplied MCP server."""
     for tool in _KNOWLEDGE_TOOLS:
         mcp_server.add_tool(tool)
-
-
-# ---------------------------------------------------------------------------
-# Gap lifecycle tools
-# ---------------------------------------------------------------------------
-# reconciler permanently defers without an Obsidian sidecar.
-# ---------------------------------------------------------------------------
-
-_ATOM_TYPES = frozenset({"atom", "fact", "active"})
-_VISIBILITIES = frozenset({"public", "private"})
-_ACTIVE_STATUSES = frozenset({"active", "someday", "blocked"})
-_ACTIVE_SIZES = frozenset({"small", "medium", "large", "unknown"})

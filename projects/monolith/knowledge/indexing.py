@@ -1,10 +1,6 @@
-"""Shared note-indexing pipeline (ADR 006 Phase 3).
+"""Shared note-indexing pipeline.
 
-Chunk + embed + link-extract + upsert for a note body. Lifted out of the
-reconciler so the create/edit write paths can index synchronously into
-Postgres on every write, rather than waiting for the reconciler's next
-vault scan. The reconciler calls :func:`index_parsed_note` for its
-normal-note branch so both paths share one code path and cannot drift.
+Chunk, embed, extract links, and upsert a note body into Postgres on writes.
 
 The body of record is ``knowledge.notes.content``; chunks + embeddings
 back pgvector search. ``upsert_note`` persists all of it in one committed
@@ -14,7 +10,6 @@ transaction, so a successful call leaves the note fully indexed.
 from __future__ import annotations
 
 import hashlib
-import logging
 from pathlib import Path
 from typing import Protocol
 
@@ -26,8 +21,6 @@ from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.models import Note
 from knowledge.store import KnowledgeStore
 from knowledge.chunker import chunk_markdown
-
-logger = logging.getLogger(__name__)
 
 
 def _edges_from_links(note_links: list[dict]) -> dict[str, list[str]]:
@@ -66,9 +59,8 @@ async def index_parsed_note(
     """Chunk, embed, extract links, and upsert a non-gap note.
 
     ``authored_body`` must already have the generated ``## Links`` section
-    stripped (the reconciler does this before calling). Mirrors the
-    reconciler's normal-note indexing exactly; gap stubs are handled by the
-    reconciler's own branch and never reach here.
+    stripped. :func:`index_note_from_raw` handles parsing and stripping for
+    callers with a raw frontmatter document.
     """
     chunks = _chunks(authored_body, title)
     if vectors is None:
@@ -136,8 +128,8 @@ async def index_note_from_raw(
 
     Used by the write paths, which already hold the full file content and
     a stable ``note_id`` (the existing id for edits, the collision-resolved
-    filename stem for creates). Computes the content hash from ``raw`` so it
-    matches what the reconciler would compute for the same bytes on disk.
+    filename stem for creates). Hashes the complete raw document, including
+    its frontmatter.
     """
     meta, title, content_hash, authored_body = _parse_raw(raw, rel_path)
     await index_parsed_note(
@@ -194,34 +186,6 @@ def index_note_from_raw_sync(
         vectors=vectors,
         commit=commit,
     )
-
-
-async def index_note_best_effort(
-    store: KnowledgeStore,
-    embed_client: _Embedder,
-    *,
-    note_id: str,
-    rel_path: str,
-    raw: str,
-) -> bool:
-    """Index on a write path, swallowing failures.
-
-    Returns ``True`` on success. On any error (e.g. the embedder being
-    unreachable) it logs and returns ``False``: the disk file is already
-    written, so the reconciler will index it on its next scan. A flaky
-    embedder must never fail a user's save.
-    """
-    try:
-        await index_note_from_raw(
-            store, embed_client, note_id=note_id, rel_path=rel_path, raw=raw
-        )
-        return True
-    except Exception:  # noqa: BLE001 — best-effort
-        logger.exception(
-            "knowledge: synchronous index failed for %s",
-            rel_path,
-        )
-        return False
 
 
 async def reindex_note_with_edits(

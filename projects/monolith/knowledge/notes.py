@@ -22,10 +22,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Literal
 
-import yaml
 from sqlmodel import Session, select
 
-from knowledge import frontmatter
 from knowledge.models import Note
 
 logger = logging.getLogger(__name__)
@@ -116,55 +114,6 @@ def _note_to_review_dict(note: Note) -> dict:
             note.deleted_at.isoformat() if note.deleted_at is not None else None
         ),
     }
-
-
-def _serialize_frontmatter(parsed: frontmatter.ParsedFrontmatter, body: str) -> str:
-    """Re-serialize a parsed frontmatter + body back to file content.
-
-    Mirrors the dict-building pattern in :func:`knowledge.router.edit_note`
-    so any change to frontmatter ordering / encoding stays in one shape.
-    Promoted keys land first in their declared order; ``parsed.extra``
-    appends afterward to preserve any non-promoted user fields.
-    """
-    fm_dict: dict = {}
-    if parsed.note_id is not None:
-        fm_dict["id"] = parsed.note_id
-    if parsed.title is not None:
-        fm_dict["title"] = parsed.title
-    if parsed.type is not None:
-        fm_dict["type"] = parsed.type
-    if parsed.status is not None:
-        fm_dict["status"] = parsed.status
-    if parsed.visibility is not None:
-        fm_dict["visibility"] = parsed.visibility
-    if parsed.source is not None:
-        fm_dict["source"] = parsed.source
-    if parsed.scope is not None:
-        fm_dict["scope"] = parsed.scope
-    if parsed.verification_state and parsed.verification_state != "legacy":
-        fm_dict["verification_state"] = parsed.verification_state
-    if parsed.confidence is not None:
-        fm_dict["confidence"] = parsed.confidence
-    if parsed.valid_from is not None:
-        fm_dict["valid_from"] = parsed.valid_from.isoformat()
-    if parsed.valid_until is not None:
-        fm_dict["valid_until"] = parsed.valid_until.isoformat()
-    if parsed.observed_at is not None:
-        fm_dict["observed_at"] = parsed.observed_at.isoformat()
-    if parsed.tags:
-        fm_dict["tags"] = parsed.tags
-    if parsed.aliases:
-        fm_dict["aliases"] = parsed.aliases
-    if parsed.edges:
-        fm_dict["edges"] = parsed.edges
-    if parsed.created is not None:
-        fm_dict["created"] = parsed.created.isoformat()
-    if parsed.updated is not None:
-        fm_dict["updated"] = parsed.updated.isoformat()
-    fm_dict.update(parsed.extra)
-
-    fm_str = yaml.dump(fm_dict, default_flow_style=False, sort_keys=False)
-    return f"---\n{fm_str}---\n\n{body}\n"
 
 
 def set_note_visibility(

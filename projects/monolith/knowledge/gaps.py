@@ -13,7 +13,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from knowledge.gardener import _slugify
-from knowledge.models import Gap, Note, NoteLink
+from knowledge.models import Gap, NoteLink
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,6 @@ class GapAnswerInvalidError(GapError):
     status_code = 400
 
 
-GAPS_PIPELINE_VERSION = "gaps@v1"
 _VALID_GAP_CLASSES = frozenset({"external", "internal", "hybrid", "parked"})
 
 
@@ -545,8 +544,7 @@ async def answer_gap(
     # gap answers are typically Joe writing about his own context (people,
     # projects, personal decisions); the visibility-review queue flips the
     # minority that should be public. Public-default would be riskier because
-    # the body is user-supplied free-form text. See profile.py's
-    # ASYMMETRIC_ERROR_PREFERENCE: 'private' is the right error direction.
+    # the body is user-supplied free-form text.
     from knowledge.mcp import _index_atom
 
     note_id = await _index_atom(

@@ -16,7 +16,6 @@ import hashlib
 import json
 from typing import Any
 
-from sqlalchemy import or_
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 import yaml
@@ -27,7 +26,6 @@ from knowledge.raw_write import persist_raw_with_status
 from knowledge.store import (
     DEPLOYMENT_OBSERVATION_SOURCE,
     KnowledgeStore,
-    provenance_for_notes,
 )
 from shared.embedding import EmbeddingClient
 
@@ -340,45 +338,3 @@ def persist_deployment_observation_sync(
         raw_id=raw.raw_id,
         note_id=note_id,
     )
-
-
-def list_deployment_observations(
-    session: Session,
-    *,
-    active_as_of: datetime | None = None,
-    app: str | None = None,
-) -> list[dict[str, Any]]:
-    """Return observation history, optionally restricted to one active instant.
-
-    With no ``active_as_of`` all historical rows remain inspectable. Active
-    lookup treats validity as a half-open interval: ``[valid_from, valid_until)``.
-    """
-    statement = select(Note).where(
-        Note.scope == DEPLOYMENT_OBSERVATION_SCOPE,
-        Note.source == DEPLOYMENT_OBSERVATION_SOURCE,
-        Note.deleted_at.is_(None),
-    )
-    if active_as_of is not None:
-        instant = _utc(active_as_of)
-        statement = statement.where(
-            or_(Note.valid_from.is_(None), Note.valid_from <= instant),
-            or_(Note.valid_until.is_(None), Note.valid_until > instant),
-        )
-    statement = statement.order_by(Note.observed_at.asc(), Note.note_id.asc())
-    notes = list(session.exec(statement).all())
-    if app is not None:
-        notes = [note for note in notes if note.extra.get("app") == app]
-    provenance = provenance_for_notes(session, [note.note_id for note in notes])
-    return [
-        {
-            "note_id": note.note_id,
-            "scope": note.scope,
-            "observed_at": note.observed_at,
-            "valid_from": note.valid_from,
-            "valid_until": note.valid_until,
-            "status": note.status,
-            **dict(note.extra),
-            "provenance": provenance.get(note.note_id, []),
-        }
-        for note in notes
-    ]

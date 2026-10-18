@@ -16,7 +16,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from knowledge.gaps import GAPS_PIPELINE_VERSION, set_gap_class
+from knowledge.gaps import set_gap_class
 from knowledge.models import Gap
 
 # The only (state, gap_class) pairs this function may produce, mirrored from
@@ -65,7 +65,7 @@ def _make_gap(
         note_id=term,
         state=state,
         gap_class=gap_class,
-        pipeline_version=GAPS_PIPELINE_VERSION,
+        pipeline_version="gaps@v1",
     )
     session.add(gap)
     session.commit()

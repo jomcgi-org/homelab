@@ -15,7 +15,6 @@ import pytest
 
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.indexing import (
-    index_note_best_effort,
     index_note_from_raw,
     index_parsed_note,
     reindex_note_with_edits,
@@ -79,7 +78,10 @@ class TestIndexNoteFromRaw:
     async def test_parses_strips_and_hashes(self):
         store = MagicMock()
         embed = _embed()
-        raw = "---\nid: my-note\ntitle: My Note\n---\n\n# Heading\n\nBody text.\n"
+        raw = (
+            "---\nid: my-note\ntitle: My Note\n---\n\n# Heading\n\nBody text.\n"
+            "\n## Links\n\nUp: [[generated-only]]\n"
+        )
         await index_note_from_raw(
             store, embed, note_id="my-note", rel_path="_processed/my-note.md", raw=raw
         )
@@ -89,32 +91,13 @@ class TestIndexNoteFromRaw:
         # Frontmatter stripped from the stored body.
         assert "title:" not in kwargs["content"]
         assert "Body text." in kwargs["content"]
-
-
-class TestIndexNoteBestEffort:
-    @pytest.mark.asyncio
-    async def test_returns_true_and_indexes_on_success(self):
-        store = MagicMock()
-        embed = _embed()
-        raw = "---\nid: n\ntitle: N\n---\n\nbody\n"
-        ok = await index_note_best_effort(
-            store, embed, note_id="n", rel_path="n.md", raw=raw
+        assert "## Links" not in kwargs["content"]
+        assert "generated-only" not in kwargs["content"]
+        assert kwargs["links"] == []
+        assert all(
+            "generated-only" not in text
+            for text in embed.embed_batch.call_args.args[0]
         )
-        assert ok is True
-        store.upsert_note.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_swallows_embed_failure_and_returns_false(self):
-        store = MagicMock()
-        embed = AsyncMock()
-        embed.embed_batch.side_effect = RuntimeError("embedder down")
-        raw = "---\nid: n\ntitle: N\n---\n\nbody\n"
-        # Must not raise — a flaky embedder cannot fail a user's save.
-        ok = await index_note_best_effort(
-            store, embed, note_id="n", rel_path="n.md", raw=raw
-        )
-        assert ok is False
-        store.upsert_note.assert_not_called()
 
 
 @pytest.mark.asyncio

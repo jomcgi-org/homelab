@@ -14,7 +14,7 @@ Raw markdown is ingested, decomposed into structured facts by a remote claude.ai
 | **store**           | pgvector-backed storage with semantic search                                                                             |
 | **router**          | HTTP API routes                                                                                                          |
 | **mcp**             | MCP tool exposure for AI agent access to the knowledge graph                                                             |
-| **links/wikilinks** | Obsidian wikilink parsing and backlink resolution                                                                        |
+| **links/wikilinks** | Extracts authored wikilinks and frontmatter edges; strips generated Links sections before indexing                       |
 | **tasks_router**    | Task management API                                                                                                      |
 
 ## Search authorization

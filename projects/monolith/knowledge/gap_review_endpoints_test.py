@@ -17,7 +17,6 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from knowledge.gaps import (
-    GAPS_PIPELINE_VERSION,
     GapAnswerInvalidError,
     GapError,
     GapNotDeletedError,
@@ -100,7 +99,7 @@ def _make_gap(
         context="",
         gap_class=gap_class,
         state=state,
-        pipeline_version=GAPS_PIPELINE_VERSION,
+        pipeline_version="gaps@v1",
         human_verified=human_verified,
         created_at=created_at or datetime.now(timezone.utc),
         resolved_at=resolved_at,

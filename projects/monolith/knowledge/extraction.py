@@ -747,15 +747,6 @@ def _routine_jobs_table(session: Session) -> tuple[str, str]:
     return "claude_agent.routine_jobs", "CAST(:payload AS JSONB)"
 
 
-def _update_job_payload_in_session(session: Session, name: str, payload: dict) -> bool:
-    table, payload_expr = _routine_jobs_table(session)
-    result = session.execute(
-        text(f"UPDATE {table} SET payload = {payload_expr} WHERE name = :name"),
-        {"name": name, "payload": json.dumps(payload)},
-    )
-    return result.rowcount > 0
-
-
 def _stored_scout_payload(session: Session, job_name: str) -> dict:
     table, _ = _routine_jobs_table(session)
     row = session.execute(
