@@ -125,6 +125,58 @@ def test_noop_publication_proves_reused_chart_and_running_digest():
     assert result["applications"][0]["workloads"][0]["image_ids"] == [IMAGE]
 
 
+@pytest.fixture
+def paged_comparison(monkeypatch):
+    """GitHub includes the whole comparison's file patches on page one."""
+    client = httpx.Client
+
+    def install(status="ahead", oversized=False):
+        def respond(request):
+            path = request.url.path.removeprefix("/repos/owner/repo/")
+            if not path.startswith("compare/"):
+                return httpx.Response(200, json=github("owner/repo", path))
+            result = {"status": status, "commits": []}
+            if request.url.params.get("page", "1") == "1" or oversized:
+                result["files"] = [{"patch": "x" * 1_000_000}]
+            return httpx.Response(200, json=result)
+
+        monkeypatch.setattr(
+            httpx,
+            "Client",
+            lambda **kwargs: client(transport=httpx.MockTransport(respond), **kwargs),
+        )
+
+    return install
+
+
+def test_large_comparison_patches_do_not_block_publication(paged_comparison):
+    from factory.orchestration.factory_conductor import github_get
+
+    paged_comparison()
+    assert verify(get=github_get)["verified"] is True
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [("ahead", True), ("identical", True), ("behind", False), ("diverged", False)],
+)
+def test_paged_ancestry_uses_status_even_without_commits(
+    paged_comparison, status, expected
+):
+    from factory.orchestration.factory_conductor import github_get
+
+    paged_comparison(status)
+    assert rollout.ancestor("owner/repo", MERGE, SOURCE, github_get) is expected
+
+
+def test_comparison_response_cap_still_fails_closed(paged_comparison):
+    from factory.orchestration.factory_conductor import github_get
+
+    paged_comparison(oversized=True)
+    with pytest.raises(ValueError, match="GitHub response exceeds factory limit"):
+        rollout.ancestor("owner/repo", MERGE, SOURCE, github_get)
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -462,7 +514,7 @@ def fleet_github(moved=(), documents=None, directories=()):
     documents = documents or {}
 
     def get(repo, path):
-        if path == f"compare/{'f' * 40}...{SOURCE}?per_page=1":
+        if path == f"compare/{'f' * 40}...{SOURCE}?per_page=1&page=2":
             return {"status": "behind"}
         if not path.startswith("contents/"):
             return github(repo, path)
@@ -1124,7 +1176,7 @@ def test_delayed_pre_merge_source_receipt_does_not_end_scope_search():
     fallback = fleet_github(moved=("monolith",))
 
     def get(repo, path):
-        if path == f"compare/{MERGE}...{'0' * 40}?per_page=1":
+        if path == f"compare/{MERGE}...{'0' * 40}?per_page=1&page=2":
             return {"status": "behind"}
         return fallback(repo, path)
 
@@ -1154,7 +1206,7 @@ def test_receipts_are_ordered_by_source_ancestry_not_publisher_finish_time():
     fallback = fleet_github(moved=("monolith",))
 
     def get(repo, path):
-        if path == f"compare/{'f' * 40}...{SOURCE}?per_page=1":
+        if path == f"compare/{'f' * 40}...{SOURCE}?per_page=1&page=2":
             return {"status": "behind"}
         return fallback(repo, path)
 
@@ -1181,8 +1233,8 @@ def test_unordered_publication_sources_fail_closed():
 
     def get(repo, path):
         if path in (
-            f"compare/{'f' * 40}...{SOURCE}?per_page=1",
-            f"compare/{SOURCE}...{'f' * 40}?per_page=1",
+            f"compare/{'f' * 40}...{SOURCE}?per_page=1&page=2",
+            f"compare/{SOURCE}...{'f' * 40}?per_page=1&page=2",
         ):
             return {"status": "diverged"}
         return fallback(repo, path)
