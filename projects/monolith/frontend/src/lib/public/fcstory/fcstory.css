@@ -1,5 +1,6 @@
 /* Design tokens for the public /ember/firecracker scroll story. Ported 1:1
- * from the approved reference mockup's `:root` block (./reference-mockup.html).
+ * from the approved reference mockup's `:root` block:
+ * ../../../../docs/reference-mockups/fcstory/reference-mockup.html.
  * All literal hex values live here, scoped under .fcstory, so
  * FcScrollStory.svelte and ReplayWidget.svelte's <style> blocks can reference
  * var(--fc-*) exclusively (semgrep rule svelte-hardcoded-color-in-style flags
@@ -42,22 +43,7 @@
   --fc-phase-guest-wait-ready: #f2b04e;
   --fc-phase-guest-exec: #3d7ec2;
 
-  /* Memory-cell hue ranges (mockup buildCells: hsl(16..25) hot / hsl(208..220)
-   * cold, plus saturation/lightness jitter ranges). Exposed as tokens so the
-   * jitter math in FcScrollStory.svelte never writes a literal hex or hsl
-   * base into a computed style string. */
-  --fc-cell-hot-hue-base: 16;
-  --fc-cell-hot-hue-span: 9;
-  --fc-cell-hot-sat-base: 72;
-  --fc-cell-hot-sat-span: 12;
-  --fc-cell-hot-light-base: 46;
-  --fc-cell-hot-light-span: 14;
-  --fc-cell-cold-hue-base: 208;
-  --fc-cell-cold-hue-span: 12;
-  --fc-cell-cold-sat-base: 46;
-  --fc-cell-cold-sat-span: 14;
-  --fc-cell-cold-light-base: 64;
-  --fc-cell-cold-light-span: 12;
+  /* Memory-cell and timing-bar backgrounds. */
   --fc-cell-idle-bg: #e6e2d7;
   --fc-ram-bg: #eeebe3;
   --fc-bar-track-bg: #eceade;

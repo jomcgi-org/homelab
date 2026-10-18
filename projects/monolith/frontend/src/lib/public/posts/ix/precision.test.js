@@ -2,13 +2,14 @@
 import { expect, test } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import Precision from "./Precision.svelte";
-import { percentSaved, settings } from "./data-precision.js";
+import { settings } from "./data-precision.js";
 
 test("speed bars are the share of each phase's time saved", () => {
   const by = Object.fromEntries(settings.map((s) => [s.key, s.gainPercent]));
-  expect(by.dense).toBe(percentSaved(46.5, 36));
-  expect(by.expert).toBe(percentSaved(16.2, 14.0));
-  expect(by.attention).toBe(percentSaved(1.51, 1.27));
+  // Rounded savings from 46.5 to 36 ms, 16.2 to 14 ms and 1.51 to 1.27 s.
+  expect(by.dense).toBe(23);
+  expect(by.expert).toBe(14);
+  expect(by.attention).toBe(16);
   expect(by.k8v6).toBe(19);
 });
 

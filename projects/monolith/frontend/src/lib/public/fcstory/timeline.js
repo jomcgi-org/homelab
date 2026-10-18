@@ -2,7 +2,8 @@
 // No DOM, no Svelte: FcScrollStory.svelte feeds it a scroll fraction t and a
 // set of element refs, and applies the results imperatively (the same
 // ExploreCanvas / grimoire ScrollStory discipline). Ported from the approved
-// reference mockup at ./reference-mockup.html so the choreography survives
+// reference mockup at
+// ../../../../docs/reference-mockups/fcstory/reference-mockup.html so the choreography survives
 // the move to Svelte.
 //
 // Everything here is a pure function of its arguments: the scrub timing and

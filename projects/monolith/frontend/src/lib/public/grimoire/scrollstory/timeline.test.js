@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   PHASES,
   phaseAt,
-  progressIn,
   lerp,
   ease,
   outCubic,
@@ -32,15 +31,6 @@ describe("timeline phases", () => {
     expect(phaseAt(0.999).id).toBe("chat");
     expect(phaseAt(1).id).toBe("chat");
     expect(phaseAt(2).id).toBe("chat");
-  });
-
-  it("progressIn maps a phase sub-range to 0..1, clamped", () => {
-    const p = { start: 0.2, end: 0.4 };
-    expect(progressIn(p, 0.1)).toBe(0);
-    expect(progressIn(p, 0.2)).toBe(0);
-    expect(progressIn(p, 0.3)).toBeCloseTo(0.5);
-    expect(progressIn(p, 0.4)).toBe(1);
-    expect(progressIn(p, 0.5)).toBe(1);
   });
 });
 

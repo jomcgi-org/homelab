@@ -6,7 +6,6 @@
   --muted: #666;
 
   --st-ok: #00b300;
-  --st-warn: #ff9900;
   --st-err: #cc0000;
 
   /* Bright accents — used by graph node fills, tag highlights. */
@@ -16,34 +15,10 @@
   --cream: #f1ebdc;
   --grey: #8a857a;
 
-  /* Cluster colour aliases — only the notes graph references these. */
-  --cluster-atom: var(--yellow);
-  --cluster-raw: var(--grey);
-  --cluster-gap: var(--coral);
-  --cluster-active: var(--accent);
-  --cluster-paper: var(--green);
-  --cluster-other: var(--cream);
-
   --font-mono:
     ui-monospace, "SF Mono", "Cascadia Mono", "Courier New", monospace;
-  --line-height: 1.6;
-
-  --text-xs: 10px;
-  --text-sm: 12px;
-  --text-base: 16px;
-  --text-lg: 20px;
-  --text-xl: 28px;
-  --text-2xl: 36px;
-
-  --space-xs: 8px;
-  --space-sm: 12px;
-  --space-md: 16px;
-  --space-lg: 24px;
-  --space-xl: 40px;
-  --space-2xl: 60px;
 
   --border-heavy: 2px solid var(--fg);
-  --border-thin: 1px solid var(--fg);
 }
 
 body.dark {

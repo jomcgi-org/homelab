@@ -151,15 +151,6 @@ export function relativeMax(values, floor = 1) {
   return max;
 }
 
-// MapLibre `heatmap-weight` expression that maps each feature's `heat` property
-// linearly from 0..max onto 0..1, so the densest point reaches full weight
-// regardless of the field's absolute scale (live score 0..100 vs historical
-// clear-dark-hour counts, which vary widely per month). Recomputed and
-// re-applied whenever the data changes.
-export function heatWeightExpression(max) {
-  return ["interpolate", ["linear"], ["get", "heat"], 0, 0, max, 1];
-}
-
 const HOUR_MS = 3_600_000;
 
 // A forecast hour is still "upcoming" until the end of its clock hour (its start

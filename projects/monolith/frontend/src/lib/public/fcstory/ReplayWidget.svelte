@@ -4,7 +4,8 @@
   // millisecond duration (a 43ms run animates for 43ms). Client-side only,
   // driven entirely by the `restores` prop (baked static data, no fetch).
   // Ported from the reference mockup's replay console
-  // (./reference-mockup.html, the <section class="replay"> markup + its
+  // (../../../../docs/reference-mockups/fcstory/reference-mockup.html,
+  // the <section class="replay"> markup + its
   // trailing <script> block).
   let { restores, PHASE_HUMAN } = $props();
 

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   CALLS,
-  CHAT_AT,
   CHAT_SCHEDULE,
   PHASES,
   clamp,
@@ -49,10 +48,10 @@ describe("agentstory timeline", () => {
         expect(b).toBeLessThanOrEqual(1);
       }
     }
-    for (let i = 1; i < CHAT_AT.length; i++)
-      expect(CHAT_AT[i]).toBeGreaterThan(CHAT_AT[i - 1]);
-    for (const at of CHAT_AT) expect(at).toBeGreaterThan(0).toBeLessThan(1);
+    for (let i = 1; i < CHAT_SCHEDULE.length; i++)
+      expect(CHAT_SCHEDULE[i][0]).toBeGreaterThan(CHAT_SCHEDULE[i - 1][0]);
     for (const [at, beat] of CHAT_SCHEDULE) {
+      expect(at).toBeGreaterThan(0).toBeLessThan(1);
       expect(at).toBeGreaterThanOrEqual(PHASES[beat][0]);
       expect(at).toBeLessThanOrEqual(PHASES[beat][1]);
     }

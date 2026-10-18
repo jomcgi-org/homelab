@@ -9,7 +9,8 @@
   // flags are runes; everything animated lives on plain refs mutated in frame().
   //
   // Faithful port of the approved reference mockup
-  // (./reference-mockup.html, 9 iterations with the reviewer). Two deliberate
+  // (../../../../../docs/reference-mockups/grimoire/scrollstory/reference-mockup.html,
+  // 9 iterations with the reviewer). Two deliberate
   // forks for the repo: colors come from --grim-type-* tokens (not the mockup's
   // hard-coded hexes) so the theme owns them, and the graph layout is computed at
   // module eval (pure, no DOM) so the no-JS / reduced-motion static scene can
@@ -185,7 +186,8 @@
   // same data, but a single centred column instead of the desktop two-column
   // stage (page centre, cards full width, a tall clamped constellation, a
   // bottom dot rail). Decided at mount, re-checked on resize. See the ported
-  // reference-mockup-mobile.html for the design source.
+  // ../../../../../docs/reference-mockups/grimoire/scrollstory/reference-mockup-mobile.html
+  // for the design source.
   let mobile = $state(false);
   let phaseId = $state("hero");
   let popIdx = $state(-1);
@@ -2037,7 +2039,9 @@
   /* ── dedicated mobile (portrait) composition of the scrubbed stage ──
      Applied only when `mobile` is set (below 700px). The frame() geometry
      switches to a single centred column; these rules restyle the same DOM to
-     match. Ported from reference-mockup-mobile.html: keep the two in sync. */
+     match. Ported from
+     ../../../../../docs/reference-mockups/grimoire/scrollstory/reference-mockup-mobile.html:
+     keep the two in sync. */
   .scrollstory.mobile .hero-copy {
     left: 50%;
     top: 12vh;

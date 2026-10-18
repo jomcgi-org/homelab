@@ -2,7 +2,8 @@
 // no Svelte: ScrollStory.svelte feeds it a scroll fraction and a set of
 // element refs, and applies the results imperatively (the ExploreCanvas
 // discipline). Ported verbatim from the approved reference mockup at
-// ./reference-mockup.html so the choreography survives the move to Svelte.
+// ../../../../../docs/reference-mockups/grimoire/scrollstory/reference-mockup.html
+// so the choreography survives the move to Svelte.
 //
 // Everything here is a pure function of its arguments, which is the whole
 // point of the split: the scrub timing is the only genuinely unit-testable
@@ -77,11 +78,6 @@ export function phaseAt(t) {
   return (
     PHASES.find((p) => c >= p.start && c < p.end) ?? PHASES[PHASES.length - 1]
   );
-}
-
-// A phase's own 0..1 progress at master fraction t, clamped at both ends.
-export function progressIn(phase, t) {
-  return clamp((t - phase.start) / (phase.end - phase.start), 0, 1);
 }
 
 // Split text into segments, marking every non-overlapping occurrence of every

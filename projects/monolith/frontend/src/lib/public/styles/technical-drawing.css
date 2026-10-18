@@ -47,15 +47,8 @@
   --tone-cache: #0e7c86;
   --tone-disk: #d0262a;
   --tone-hot: #d100b5;
-  /* Inference activity: hot, warm, cold. Bright fills; text uses ink. */
-  --replay-hot: #ff2535;
+  /* Warm inference activity. Bright fill; text uses ink. */
   --replay-warm: #ffd400;
-  --replay-cold: #006bff;
-  /* A key cell's letter sits on an 18% tint of its tone, which costs
-   * about a point of contrast against the sheet figure. Day mixes the
-   * letter 80% tone with ink to stay above 4.5:1 on the tint; night's
-   * bright tones clear it unmixed. */
-  --key-letter: 80%;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -76,7 +69,6 @@
     --tone-cache: #4dd0e1;
     --tone-disk: #ff6b6b;
     --tone-hot: #ff7be5;
-    --key-letter: 100%;
   }
 }
 
@@ -97,7 +89,6 @@
   --tone-cache: #4dd0e1;
   --tone-disk: #ff6b6b;
   --tone-hot: #ff7be5;
-  --key-letter: 100%;
 }
 
 /* The document scales with the viewport between 16px and 19px so a wide

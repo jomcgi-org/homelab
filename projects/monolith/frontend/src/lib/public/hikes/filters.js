@@ -130,18 +130,6 @@ export function upcomingUkDays(n, now = new Date()) {
   return days;
 }
 
-// True if the walk has at least one viable window whose UK-local day falls in
-// the next `n` days (today through today + n - 1). n=1 means "viable today".
-// Past windows do not count.
-export function viableInNextDays(walk, n, now = new Date()) {
-  const days = new Set(upcomingUkDays(n, now));
-  const byDay = groupWindowsByDay(walk, now);
-  for (const day of Object.keys(byDay)) {
-    if (days.has(day) && byDay[day].length > 0) return true;
-  }
-  return false;
-}
-
 // Convenience accessors for a window tuple, used by the map card so it does not
 // reach into raw indices.
 export function windowFields(w) {

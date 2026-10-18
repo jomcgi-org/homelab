@@ -221,10 +221,7 @@
     white-space: nowrap;
   }
 
-  /* Aligns with the knowledge graph cluster palette:
-       --cluster-gap   = coral
-       --cluster-paper = green (used for notes here)
-     so a gap card visually rhymes with a gap node in the graph. */
+  /* Matches the knowledge graph's coral gaps and green paper notes. */
   .card-tab--gap {
     background: var(--coral);
   }

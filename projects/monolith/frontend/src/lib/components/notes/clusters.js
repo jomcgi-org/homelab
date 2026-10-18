@@ -1,7 +1,5 @@
-// Maps Note.type values to CSS custom-property references defined in
-// src/lib/styles/shared/tokens.css. Unknown types fall through to
-// --cluster-other so new types appear in the legend without a code
-// change.
+// Maps Note.type values to hex colours shared by the canvas and legend.
+// Unknown types use the white FALLBACK below.
 
 // Hex strings, not CSS-var references — canvas fillStyle can't follow
 // var() chains and getPropertyValue() returns the authored "var(--x)"

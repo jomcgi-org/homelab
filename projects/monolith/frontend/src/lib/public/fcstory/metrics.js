@@ -6,7 +6,7 @@
 // platform numbers only ever needs one edit.
 //
 // Two families of number live here:
-//   - sandbox* / cold*: derived from data/trace.js, the real baked trace
+//   - sandbox*: derived from data/trace.js, the real baked trace
 //     data behind the /ember/firecracker explainer (see FcScrollStory.svelte,
 //     which imports the same derivation from this module).
 //   - agent*: the agent-platform cold-start figures. trace.js only covers
@@ -15,7 +15,7 @@
 //     separate measured agent-platform runs and are not re-derivable from
 //     trace.js. Re-bake by hand when the agent platform is re-measured.
 
-import { cold, restores } from "./data/trace.js";
+import { restores } from "./data/trace.js";
 
 // Mean snapshot_restore duration across every baked warm-restore run
 // (22.46ms over 12 runs at last bake), the number FcScrollStory's hero and
@@ -27,17 +27,6 @@ export const sandboxRestoreMs = Math.round(
     0,
   ) / restores.length,
 );
-
-// Cold, once at daemon startup: the wait for a useful guest (kernel up,
-// agent listening, toolchain warm), the dominant term in the 9.3s cold
-// build.
-export const coldGuestWaitMs = Math.round(
-  cold.phases.find((p) => p.name === "guest_wait_ready").ms,
-);
-
-// Full cold base-snapshot build, seconds, one decimal (matches the hero's
-// "X seconds" phrasing).
-export const baseSnapshotBuildSec = Math.round(cold.total / 100) / 10;
 
 // Number of real recorded runs baked into the explainer and replay widget.
 export const runCount = restores.length;

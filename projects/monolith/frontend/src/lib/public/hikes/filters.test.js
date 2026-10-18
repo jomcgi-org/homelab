@@ -5,7 +5,6 @@ import {
   filterWalksByLocation,
   groupWindowsByDay,
   upcomingUkDays,
-  viableInNextDays,
 } from "./filters.js";
 
 // Unix seconds for a given UTC wall-clock time, the format the windows use.
@@ -160,34 +159,5 @@ describe("upcomingUkDays", () => {
       "2026-03-30",
       "2026-03-31",
     ]);
-  });
-});
-
-describe("viableInNextDays", () => {
-  const now = new Date("2026-06-15T06:00:00Z");
-
-  it("is true when a future window falls inside the horizon", () => {
-    const w = walk({
-      windows: [[utc("2026-06-16T12:00:00Z"), 14, 0, 10, 30]],
-    });
-    expect(viableInNextDays(w, 2, now)).toBe(true);
-  });
-
-  it("is false when the only window is beyond the horizon", () => {
-    const w = walk({
-      windows: [[utc("2026-06-20T12:00:00Z"), 14, 0, 10, 30]],
-    });
-    expect(viableInNextDays(w, 2, now)).toBe(false);
-  });
-
-  it("is false for a walk with no windows", () => {
-    expect(viableInNextDays(walk(), 7, now)).toBe(false);
-  });
-
-  it("counts a window today for n=1", () => {
-    const w = walk({
-      windows: [[utc("2026-06-15T18:00:00Z"), 14, 0, 10, 30]],
-    });
-    expect(viableInNextDays(w, 1, now)).toBe(true);
   });
 });

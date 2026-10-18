@@ -322,5 +322,3 @@ export const restores = [
     ],
   },
 ];
-
-export const bakedAt = "2026-07-08";
