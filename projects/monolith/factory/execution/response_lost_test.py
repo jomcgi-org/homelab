@@ -900,8 +900,9 @@ def test_recovery_disabled_records_unknown_exactly_as_before(database, monkeypat
     assert [row["state"] for row in state["permits"]] == ["uncertain"]
 
 
-def test_lease_backstop_holds_only_a_stale_claim_with_an_unconsumed_result(
-    database, monkeypatch
+@pytest.mark.parametrize("published_before_expiry", [False, True])
+def test_lease_backstop_recovers_exact_result_published_before_or_after_owner_loss(
+    database, monkeypatch, published_before_expiry
 ):
     record = native_record()
     sid = queue(database)
@@ -909,8 +910,7 @@ def test_lease_backstop_holds_only_a_stale_claim_with_an_unconsumed_result(
     assert store.claim_pending_message_for_session_sync(sid, owner) == 1
     assert admission.recheck(sid, 1, owner)
 
-    # A replica killed outright before its guest published anything is unknown,
-    # exactly as it is today.
+    # A claim with no registered receipt still has no exact result to await.
     age_claim(database, sid)
     assert store.reclaim_stale_claims_sync() == 1
     assert_unknown(database, sid)
@@ -921,13 +921,28 @@ def test_lease_backstop_holds_only_a_stale_claim_with_an_unconsumed_result(
     receipt = result_receipts.prepare_receipt(
         other, owner, 1, f"guest-{other}", b'{"message":"request"}'
     )
-    result_receipts.capture_result(
-        receipt["id"], receipt["token"], json.dumps(record).encode()
-    )
+    if published_before_expiry:
+        result_receipts.capture_result(
+            receipt["id"], receipt["token"], json.dumps(record).encode()
+        )
     age_claim(database, other)
     assert store.reclaim_stale_claims_sync() == 0
     held = assert_held(database, other, "lease_expired")
     assert hold_of(other)["source"] == "lease_backstop"
+    if not published_before_expiry:
+        assert (
+            store.adopt_response_lost_result(other, ARTIFACT_PATH)["status"]
+            == "waiting"
+        )
+        assert store.reclaim_stale_claims_sync() == 0
+        assert snapshot(database, other) == held
+        # No claim or permit was renewed and no second invocation was admitted.
+        assert (
+            store.claim_pending_message_for_session_sync(other, "replacement") is None
+        )
+        result_receipts.capture_result(
+            receipt["id"], receipt["token"], json.dumps(record).encode()
+        )
     # This result carries an artifact and the hold records no declaration, so
     # the sweep refuses rather than adopting it without one.
     assert mcp._adopt_response_lost_results() == []
@@ -937,6 +952,71 @@ def test_lease_backstop_holds_only_a_stale_claim_with_an_unconsumed_result(
         turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == other)).one()
         assert turn.artifact_path == ARTIFACT_PATH
         assert turn.terminal_reason == "end_turn"
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "claim_owner",
+        "dispatch_count",
+        "guest_id",
+        "local_session_id",
+        "superseded_at",
+        "response_observed_at",
+        "accept_until",
+        "retain_until",
+        "permit",
+    ],
+)
+def test_unpublished_lease_hold_rejects_ineligible_receipt(database, changed):
+    sid = queue(database)
+    owner = "killed-replica"
+    assert store.claim_pending_message_for_session_sync(sid, owner) == 1
+    assert admission.recheck(sid, 1, owner)
+    receipt = result_receipts.prepare_receipt(sid, owner, 1, f"guest-{sid}", b"request")
+    with Session(database) as db, db.begin():
+        row = db.get(AgentResultReceipt, receipt["id"])
+        if changed == "permit":
+            permit = db.exec(
+                select(AgentCapacityReservation).where(
+                    AgentCapacityReservation.session_id == sid
+                )
+            ).one()
+            permit.state = "reserved"
+        elif changed in {
+            "accept_until",
+            "retain_until",
+            "superseded_at",
+            "response_observed_at",
+        }:
+            setattr(row, changed, datetime.now(timezone.utc) - timedelta(seconds=1))
+        else:
+            setattr(row, changed, 2 if changed == "dispatch_count" else "different")
+    age_claim(database, sid)
+    assert store.reclaim_stale_claims_sync() == 1
+    assert_unknown(database, sid)
+
+
+def test_unpublished_lease_hold_expires_once_within_capture_window(database):
+    sid = queue(database)
+    owner = "killed-replica"
+    assert store.claim_pending_message_for_session_sync(sid, owner) == 1
+    assert admission.recheck(sid, 1, owner)
+    receipt = result_receipts.prepare_receipt(sid, owner, 1, f"guest-{sid}", b"request")
+    until = datetime.now(timezone.utc) + timedelta(minutes=5)
+    with Session(database) as db, db.begin():
+        db.get(AgentResultReceipt, receipt["id"]).accept_until = until
+    age_claim(database, sid)
+    assert store.reclaim_stale_claims_sync() == 0
+    held_until = datetime.fromisoformat(hold_of(sid)["hold_until"])
+    assert held_until <= until
+    expire_hold(database, sid)
+    assert store.reclaim_stale_claims_sync() == 1
+    assert_unknown(database, sid)
+    result_receipts.capture_result(
+        receipt["id"], receipt["token"], json.dumps(native_record()).encode()
+    )
+    assert store.adopt_response_lost_result(sid, ARTIFACT_PATH) is None
 
 
 def test_the_sweep_finishes_executor_written_holds(database, monkeypatch):

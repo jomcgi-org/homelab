@@ -924,9 +924,13 @@ def _write_response_lost_locked(
     request_sha256: str | None = None,
     cli_session_id: str | None = None,
     artifact_path: str | None = None,
+    hold_until: datetime | None = None,
 ) -> None:
     """Write the hold marker in the caller's transaction, under its locks."""
     now = datetime.now(timezone.utc)
+    deadline = now + timedelta(seconds=bound)
+    if hold_until is not None:
+        deadline = min(deadline, hold_until)
     usage = _progress_usage(pending, reason)
     usage["recovery"]["invocation_phase"] = RESPONSE_LOST
     usage["recovery"]["response_lost"] = {
@@ -950,7 +954,7 @@ def _write_response_lost_locked(
         "cli_session_id": cli_session_id,
         "artifact_path": artifact_path,
         "held_at": now.isoformat(),
-        "hold_until": (now + timedelta(seconds=bound)).isoformat(),
+        "hold_until": deadline.isoformat(),
     }
     if existing is not None:
         usage["prior_interruption"] = {
@@ -987,16 +991,17 @@ def _hold_lease_expired_response(
     pending: PendingMessage,
     existing: AgentTurn | None,
 ) -> bool:
-    """Hold a stale claim that already has an unconsumed committed result.
+    """Hold a stale claim with an exact, unconsumed invocation receipt.
 
     A replica killed outright writes no marker of its own, so the lease is the
-    only thing that notices it is gone. A committed, unsuperseded receipt for
-    this exact dispatch whose response was never observed is positive evidence
-    that the guest finished the turn and the response, not the execution, was
-    lost. Settling that unknown would throw away a result the guest already
-    paid for. Without such a receipt this returns False and the ordinary
-    unknown settlement runs, so a replica killed before its guest published
-    anything behaves exactly as it does today.
+    only thing that notices it is gone. An unsuperseded receipt registered for
+    this exact admitted invoke lets us wait for its result even when the owner
+    died before the guest published it. Registration alone does not prove the
+    POST reached the guest: this hold admits no retry, releases no capacity and
+    claims no completion. Only the ordinary validated result writer may finish
+    it; otherwise it expires as unknown. An unpublished receipt cannot be held
+    beyond its remaining capture window. Claims with no exact receipt retain
+    the ordinary unknown settlement.
 
     One hold per dispatch, ever: an attempt whose marker is already a
     response-loss hold is refused here, so an expired hold settles unknown at
@@ -1037,12 +1042,21 @@ def _hold_lease_expired_response(
             AgentResultReceipt.local_session_id == sess.local_session_id,
             AgentResultReceipt.superseded_at.is_(None),
             AgentResultReceipt.response_observed_at.is_(None),
-            AgentResultReceipt.result_sha256.isnot(None),
             AgentResultReceipt.retain_until > datetime.now(timezone.utc),
         )
     ).all()
     if len(receipts) != 1:
         return False
+    receipt = receipts[0]
+    hold_until = None
+    if receipt.result_sha256 is None:
+        hold_until = _hold_timestamp(receipt.accept_until)
+        if (
+            permit.state != "running"
+            or hold_until is None
+            or hold_until <= datetime.now(timezone.utc)
+        ):
+            return False
     _write_response_lost_locked(
         session,
         sess,
@@ -1050,10 +1064,11 @@ def _hold_lease_expired_response(
         existing,
         reason="lease_expired",
         bound=float(RESPONSE_LOST_BACKSTOP_SECONDS),
-        receipt_id=receipts[0].id,
+        receipt_id=receipt.id,
         guest_id=sess.ember_session_id,
         source="lease_backstop",
         cli_session_id=sess.cli_session_id,
+        hold_until=hold_until,
     )
     return True
 
