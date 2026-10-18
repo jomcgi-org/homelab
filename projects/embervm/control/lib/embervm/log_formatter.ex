@@ -113,7 +113,64 @@ defmodule Embervm.LogFormatter do
     :dial_id,
     :volume_node_id,
     :old_volume_node_id,
-    :attach_epoch
+    :attach_epoch,
+    # BrickController scale and declared/reported memory diagnostics.
+    :deployment,
+    :desired,
+    :registered,
+    :declared_usable_mib,
+    :reported_mem_budget_mib,
+    # DrainCoordinator, WorkloadWatcher and EndpointPublisher lifecycle.
+    :deadline_ms,
+    :class,
+    :version,
+    # GroupManager, GroupSweeper and GroupWakeManager member/set outcomes.
+    :set_id,
+    :members,
+    :pause_spread_ms,
+    :failures,
+    :cidr,
+    :degraded_member,
+    :group_instance_id,
+    :member_name,
+    :result,
+    # Group/serving/stateful sweep summaries and wake teardown proof.
+    :destroyed,
+    :evicted,
+    :teardown_confirmed,
+    # StatefulManager and GroupWakeManager parked callers.
+    :event,
+    :park_depth,
+    :oldest_waiter_age_ms,
+    # SessionManager and StatefulSweeper snapshot, pressure and relight paths.
+    :snapshot_bytes,
+    :consecutive,
+    :consecutive_aborts,
+    :relight_ms,
+    :waited_ms,
+    :bound_ms,
+    :mode,
+    # StatefulManager, StatefulStore and StatefulHandover volume generations.
+    :absent_ms,
+    :anchor_node,
+    :generation,
+    :previous_generation,
+    :row_generation,
+    :store_generation,
+    :requested_generation,
+    :blessed_generation,
+    :previous_blessed_generation,
+    :source_evicted,
+    # StatefulManager/GroupManager Secret lookup identity, never Secret data.
+    :namespace,
+    :secret_ref,
+    # TcpActivator endpoint diagnostics.
+    :ip,
+    :port,
+    # SpecTrace sequence recovery and Compactor row counts.
+    :old_seq,
+    :new_seq,
+    :deleted
   ]
 
   @doc """
