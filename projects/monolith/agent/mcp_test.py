@@ -43,6 +43,23 @@ def test_expected_tool_count_is_sixteen():
     assert len(EXPECTED_TOOLS) == 16
 
 
+def test_admission_api_import_does_not_require_private_operator_module(monkeypatch):
+    import builtins
+    import factory.api
+
+    original = builtins.__import__
+
+    def without_private_access(name, *args, **kwargs):
+        if name == "factory.access":
+            raise ModuleNotFoundError(
+                "private operator module absent from admission library"
+            )
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_private_access)
+    importlib.reload(factory.api)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "authority,kind,groups,allowed",
