@@ -883,7 +883,6 @@ def test_operator_cancel_paused_task_next_tick_releases_slot_and_keeps_cooldown(
     for name in (
         "github_get",
         "_watch_progress",
-        "_consume_intervention_notifications",
         "_expire_task_deadline",
     ):
         monkeypatch.setattr(
@@ -891,7 +890,12 @@ def test_operator_cancel_paused_task_next_tick_releases_slot_and_keeps_cooldown(
             name,
             lambda *a, **kw: pytest.fail("Cancellation must only drain"),
         )
+    notifications = []
+    monkeypatch.setattr(
+        conductor, "_consume_intervention_notifications", notifications.append
+    )
     conductor.tick()
+    assert notifications == [s.task["id"]]
     current = controls.status()
     snapshot = controls.task_snapshot(s.task["id"])
     assert snapshot["state"] == "cancelled"
@@ -927,6 +931,140 @@ def test_operator_cancel_paused_task_next_tick_releases_slot_and_keeps_cooldown(
             )
             is None
         )
+
+
+@pytest.mark.parametrize("human_owned", [False, True])
+def test_drain_records_terminal_review_before_settling(
+    paused_settlement, human_owned
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReviewVerdict
+
+    s = paused_settlement
+    if human_owned:
+        assert controls.human_handoff(s.task["id"], conductor.ACTOR, observed=True)
+    else:
+        request_task_cancellation(s)
+    with Session(s.engine) as db:
+        assert db.exec(select(FactoryReviewVerdict)).all() == []
+
+    conductor.reconcile_task(s.task["id"], s.policy, object(), human_owned=human_owned)
+
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "cancelled"
+    assert snapshot["evidence"] == (
+        controls.HUMAN_HANDOFF_EVIDENCE
+        if human_owned
+        else {"state": "operator_cancelled", "reason": "Work is no longer needed"}
+    )
+    review = next(
+        run
+        for run in conductor.graph.node_runs(s.task["id"])
+        if run["node_key"] == "review_fix"
+    )
+    with Session(s.engine) as db:
+        verdict = db.exec(
+            select(FactoryReviewVerdict).where(
+                FactoryReviewVerdict.task_id == s.task["id"]
+            )
+        ).one()
+        assert verdict.review_run_id == review["id"]
+        assert verdict.verdict == "approve"
+        assert verdict.head_sha == s.pr["head"]["sha"]
+        actions = db.exec(
+            select(FactoryAudit.action)
+            .where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action.in_(("first_pass_verdict_recorded", "finish_task")),
+            )
+            .order_by(FactoryAudit.id)
+        ).all()
+        assert actions == ["first_pass_verdict_recorded", "finish_task"]
+
+
+@pytest.mark.parametrize("human_owned", [False, True])
+def test_drain_consumes_intervention_notification_once(
+    paused_settlement, monkeypatch, human_owned
+):
+    from agent import api as notify_module
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    pause_blocker(s, "uncertain")
+    if human_owned:
+        assert controls.human_handoff(s.task["id"], conductor.ACTOR, observed=True)
+    else:
+        request_task_cancellation(s)
+    with controls._locked_session() as (db, _control):
+        controls._audit(
+            db,
+            "factory:supervision",
+            "stop_observation",
+            task_id=s.task["id"],
+            workflow_id="unresolved",
+            intervention_required=True,
+            reason="cessation_unproven",
+            missing_proof="exact guest cessation",
+        )
+    notices = []
+
+    async def notify(text, *, level):
+        notices.append((text, level))
+
+    monkeypatch.setattr(notify_module, "notify", notify)
+    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "false")
+    for _ in range(3):
+        conductor.reconcile_task(
+            s.task["id"], s.policy, object(), human_owned=human_owned
+        )
+
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "admitted" and snapshot["unresolved_starts"] == 1
+    with Session(s.engine) as db:
+        notified = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "intervention_required_notified",
+            )
+        ).one()
+        assert json.loads(notified.detail_json)["workflow_id"] == "unresolved"
+    assert len(notices) == 1
+    assert "workflow=unresolved" in notices[0][0]
+    assert notices[0][1] == "warn"
+
+
+def test_refused_terminal_outcome_still_consumes_notifications(
+    paused_settlement, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryReviewVerdict
+
+    s = paused_settlement
+    events = []
+
+    def notify(task_id):
+        events.append(("notifications", task_id))
+
+    def refuse(task_id, *args, **kwargs):
+        events.append(("outcome", task_id))
+        return {"ok": False, "reason": "conflicting_outcome"}
+
+    monkeypatch.setattr(conductor, "_consume_intervention_notifications", notify)
+    monkeypatch.setattr(controls, "record_start_outcome", refuse)
+    for _ in range(2):
+        with pytest.raises(
+            ValueError, match="factory outcome refused: conflicting_outcome"
+        ):
+            conductor.reconcile_task(s.task["id"], s.policy, object())
+    assert events == [("notifications", s.task["id"]), ("outcome", s.task["id"])] * 2
+    with Session(s.engine) as db:
+        verdict = db.exec(
+            select(FactoryReviewVerdict).where(
+                FactoryReviewVerdict.task_id == s.task["id"]
+            )
+        ).one()
+        assert verdict.verdict == "approve"
 
 
 @pytest.mark.parametrize("start_status", ["reserved", "uncertain"])
