@@ -1,9 +1,6 @@
 import adapter from "@sveltejs/adapter-node";
-import { mdsvex } from "mdsvex";
 
 const config = {
-  extensions: [".svelte", ".svx"],
-  preprocess: [mdsvex()],
   kit: {
     // Output dir is env-parametrized so the public build (:build_public) can
     // emit to a distinct directory and avoid colliding with :build's output in
