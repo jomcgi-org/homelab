@@ -1,42 +1,23 @@
 <script>
-  import { onMount } from "svelte";
-  import { Sticker, Marquee, Footer, Seo } from "$lib/public/components";
+  import { onMount, untrack } from "svelte";
+  import { Seo } from "$lib/public/components";
+  import ProfileSheet from "$lib/public/components/ProfileSheet.svelte";
   import { LOCATION } from "$lib/public/seo.js";
   import HomepageRack from "./HomepageRack.svelte";
   import { buildMarquee, startHomepageStatsPolling } from "./homepage-stats.js";
 
   let { data } = $props();
+  let stats = $state(untrack(() => data.stats));
+  let statsItems = $state(untrack(() => buildMarquee(data.stats)));
 
-  let MARQUEE_ITEMS = $state(buildMarquee(data.stats));
-
-  /* ── Scroll-triggered reveals + age tick ─────────────── */
-  onMount(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) {
-            e.target.classList.add("in");
-            observer.unobserve(e.target);
-          }
-        }
-      },
-      { threshold: 0.15 },
-    );
-    for (const el of document.querySelectorAll(".reveal")) {
-      observer.observe(el);
-    }
-
-    // Refresh the cached snapshot every five minutes. Its independent 30-second
-    // age tick rebuilds the marquee from the most recent successful snapshot.
-    const stopStatsPolling = startHomepageStatsPolling(data.stats, (stats) => {
-      MARQUEE_ITEMS = buildMarquee(stats);
-    });
-
-    return () => {
-      observer.disconnect();
-      stopStatsPolling();
-    };
-  });
+  // Keep the existing five-minute fetch and independent 30-second age tick.
+  // The poller retains the last usable snapshot and aborts on navigation away.
+  onMount(() =>
+    startHomepageStatsPolling(data.stats, (snapshot) => {
+      stats = snapshot;
+      statsItems = buildMarquee(snapshot);
+    }),
+  );
 </script>
 
 <Seo
@@ -45,351 +26,71 @@
   path="/"
 />
 
-<!-- Nav is rendered by the root +layout.svelte (shared 1:1 across tiers). -->
-
-<!-- ═══ Top marquee ═══ -->
-<Marquee items={MARQUEE_ITEMS} />
-
-<div class="above-fold">
-  <!-- ═══ Hero ═══ -->
-  <section class="hero">
-    <!-- decorative shapes -->
-    <svg class="deco deco-diamond-1" width="28" height="28" viewBox="0 0 24 24"
-      ><path
-        d="M12,2 L22,12 L12,22 L2,12 Z"
-        fill="none"
-        stroke="var(--ink)"
-        stroke-width="2"
-      /></svg
-    >
-    <svg class="deco deco-circle-1" width="18" height="18" viewBox="0 0 24 24"
-      ><circle
-        cx="12"
-        cy="12"
-        r="10"
-        fill="var(--coral)"
-        stroke="var(--ink)"
-        stroke-width="2"
-      /></svg
-    >
-    <svg class="deco deco-star" width="56" height="56" viewBox="0 0 40 40"
-      ><path
-        d="M20,2 L22.5,14 L34,10 L26,20 L34,30 L22.5,26 L20,38 L17.5,26 L6,30 L14,20 L6,10 L17.5,14 Z"
-        fill="var(--blue)"
-        stroke="var(--ink)"
-        stroke-width="2"
-        stroke-linejoin="round"
-      /></svg
-    >
-    <svg class="deco deco-cloud" width="120" height="60" viewBox="0 0 120 60"
-      ><path
-        d="M10,45 Q 8,30 22,28 Q 26,14 42,18 Q 54,10 66,20 Q 82,16 88,30 Q 104,28 108,44 Q 108,52 98,52 L 20,52 Q 10,52 10,45 Z"
-        fill="none"
-        stroke="var(--ink)"
-        stroke-width="2.5"
-        stroke-linejoin="round"
-      /></svg
-    >
-    <svg class="deco deco-squiggle" width="80" height="24" viewBox="0 0 80 24"
-      ><path
-        d="M2,12 Q 10,2 18,12 T 34,12 T 50,12 T 66,12 T 78,12"
-        fill="none"
-        stroke="var(--ink)"
-        stroke-width="2.5"
-        stroke-linecap="round"
-      /></svg
-    >
-    <svg class="deco deco-diamond-2" width="18" height="18" viewBox="0 0 24 24"
-      ><path
-        d="M12,2 L22,12 L12,22 L2,12 Z"
-        fill="none"
-        stroke="var(--ink)"
-        stroke-width="2"
-      /></svg
-    >
-
-    <div class="wrap hero-content">
-      <h1 class="hero-headline">
+<ProfileSheet
+  sections={[
+    { id: "about", label: "About" },
+    { id: "homelab", label: "Homelab" },
+  ]}
+>
+  <section class="edition" id="about" aria-labelledby="about-heading">
+    <div class="ed-head">
+      Joe McGinley <span class="end">BUILT THIS SITE TOO</span>
+    </div>
+    <div class="ed-lead">
+      <h1 id="about-heading">
         ten years ago i was underwriting policies and winning insurance
-        hackathons. now i'm building <span class="hl hl-yellow"
-          >production grade infra</span
-        >
-        for weekend side quests and keeping
-        <a href="https://semgrep.dev" class="hero-mono">semgrep</a> online.
+        hackathons. now i'm building production grade infra for weekend side
+        quests and keeping <a href="https://semgrep.dev">semgrep</a> online.
       </h1>
-      <div class="hero-cta-row">
-        <a
-          href="/slop/factory"
-          class="btn btn-primary factory-cta"
-          aria-label="Slop Factory"
-          ><span><s aria-hidden="true">Software</s> Slop Factory</span>
-          <span class="btn-arr" aria-hidden="true">→</span></a
-        >
-        <a href="#homelab" class="btn btn-secondary">SEE MY HOMELAB</a>
-      </div>
-      <Sticker color="var(--coral)" rotate={-5} class="sticker-hero"
-        >← BUILT THIS SITE TOO</Sticker
+      <p>
+        I'm Joe, in {LOCATION.short}.<br />Monorepo enthusiast. Care<em>mad</em> about
+        developer experience.
+      </p>
+    </div>
+    <div class="ed-foot hero-cta-row">
+      <a href="/slop/factory" class="factory-cta" aria-label="Slop Factory"
+        ><s aria-hidden="true">Software</s> Slop Factory
+        <span aria-hidden="true">→</span></a
       >
+      <a href="#homelab">SEE MY HOMELAB</a>
     </div>
   </section>
 
-  <!-- ═══ Bio panel (yellow) ═══ -->
-  <section class="bio-panel reveal">
-    <!-- decorative shapes -->
-    <svg
-      class="deco deco-bio-squiggle"
-      width="80"
-      height="24"
-      viewBox="0 0 80 24"
-      ><path
-        d="M2,12 Q 10,2 18,12 T 34,12 T 50,12 T 66,12 T 78,12"
-        fill="none"
-        stroke="var(--ink)"
-        stroke-width="2.5"
-        stroke-linecap="round"
-      /></svg
-    >
-    <svg
-      class="deco deco-bio-diamond"
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      ><path
-        d="M12,2 L22,12 L12,22 L2,12 Z"
-        fill="none"
-        stroke="var(--ink)"
-        stroke-width="2"
-      /></svg
-    >
-    <svg class="deco deco-bio-circle" width="24" height="24" viewBox="0 0 24 24"
-      ><circle
-        cx="12"
-        cy="12"
-        r="10"
-        fill="none"
-        stroke="var(--ink)"
-        stroke-width="2"
-      /></svg
-    >
-    <div class="wrap bio-content">
-      <div class="bio-left">
-        <Sticker color="var(--paper)" rotate={-3} class="sticker-bio"
-          >A LITTLE ABOUT ME</Sticker
-        >
-        <p class="bio-sub">
-          I'm Joe, in {LOCATION.short}.<br />
-          Monorepo enthusiast. Care<em>mad</em> about developer experience.
-        </p>
-      </div>
+  <section class="edition" aria-labelledby="stats-heading">
+    <div class="ed-head">
+      <h2 id="stats-heading">~/homelab</h2>
+      <span class="end">Cached snapshot</span>
     </div>
+    {#if statsItems.length > 1}
+      <ul class="divided" aria-label="Homelab stats">
+        {#each statsItems.slice(1) as item}<li>{item}</li>{/each}
+      </ul>
+    {:else}
+      <p class="stats-empty" role="status">Stats unavailable.</p>
+    {/if}
   </section>
-</div>
 
-<!-- ═══ Project stack ═══ -->
-<HomepageRack stats={data.stats} />
-
-<!-- ═══ Footer ═══ -->
-<Footer />
+  <HomepageRack {stats} />
+</ProfileSheet>
 
 <style>
-  /* ── Above-fold wrapper ─────────────────── */
-  .above-fold {
-    display: flex;
-    flex-direction: column;
-  }
-
-  /* ── Hero ─────────────────────────────────── */
-  .hero {
-    background: var(--cream);
-    padding: 88px 0 96px;
-    position: relative;
-    overflow: hidden;
-    border-bottom: 2px solid var(--ink);
-  }
-
-  .hero-content {
-    max-width: 1360px;
-    text-align: left;
-    position: relative;
-  }
-
-  .hero-headline {
-    font-family: var(--mono);
-    font-weight: 700;
-    font-size: clamp(20px, 2.6vw, 38px);
-    line-height: 1.4;
-    letter-spacing: -0.01em;
-    margin: 0 0 44px;
-    max-width: 46ch;
-    text-wrap: balance;
+  .ed-head h2 {
+    margin: 0;
+    font: inherit;
     color: var(--ink);
-    /* .hl's ::before sits at z-index -1 — isolate so it stays above the
-       section background instead of vanishing behind it. */
-    isolation: isolate;
   }
-
-  .hero-mono {
-    text-decoration-line: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 4px;
-    transition: text-decoration-color 160ms ease;
+  .stats-empty {
+    padding: 0.8rem 1rem;
+    margin: 0;
+    font-size: 0.88rem;
   }
-
-  .hero-mono:hover {
-    text-decoration-color: var(--coral);
+  /* The primary action is a control, so its accent carries intent. */
+  .hero-cta-row .factory-cta {
+    color: var(--accent-ink);
+    font-weight: 700;
+    border-bottom: 2px solid var(--accent-ink);
   }
-
-  .hero-cta-row {
-    display: flex;
-    gap: 14px;
-    flex-wrap: wrap;
-  }
-
-  .btn-arr {
-    margin-left: 6px;
-  }
-
-  .factory-cta {
-    max-width: 100%;
-  }
-
-  :global(.sticker-hero) {
-    position: absolute;
-    right: 8%;
-    bottom: -4px;
-    font-size: 11px;
-  }
-
-  /* ── Decorative shapes ───────────────────── */
-  .deco {
-    position: absolute;
-    pointer-events: none;
-  }
-
-  /* Decos live in the gutter outside .hero-content's 1360px max-width.
-     `max(Xpx, calc(50% - 720px - offset))` keeps them ≥X from the
-     viewport edge but never inside the content box. */
-  .deco-diamond-1 {
-    width: 28px;
-    height: 28px;
-    top: 56px;
-    left: max(16px, calc(50% - 720px));
-  }
-
-  .deco-circle-1 {
-    width: 18px;
-    height: 18px;
-    top: 140px;
-    left: max(8px, calc(50% - 740px));
-  }
-
-  .deco-star {
-    width: 56px;
-    height: 56px;
-    top: 60px;
-    right: max(16px, calc(50% - 720px));
-    transform: rotate(-12deg);
-  }
-
-  .deco-cloud {
-    width: 120px;
-    height: 60px;
-    bottom: 40px;
-    left: max(8px, calc(50% - 760px));
-    opacity: 0.9;
-  }
-
-  .deco-squiggle {
-    width: 80px;
-    height: 24px;
-    bottom: 80px;
-    right: max(24px, calc(50% - 730px));
-  }
-
-  .deco-diamond-2 {
-    width: 18px;
-    height: 18px;
-    bottom: 120px;
-    right: max(8px, calc(50% - 740px));
-  }
-
-  .deco-bio-squiggle {
-    width: 80px;
-    height: 24px;
-    top: 32px;
-    right: max(16px, calc(50% - 720px));
-  }
-
-  .deco-bio-diamond {
-    width: 20px;
-    height: 20px;
-    top: 60px;
-    left: max(16px, calc(50% - 720px));
-  }
-
-  .deco-bio-circle {
-    width: 24px;
-    height: 24px;
-    bottom: 50px;
-    left: max(8px, calc(50% - 740px));
-  }
-
-  /* ── Bio panel ───────────────────────────── */
-  .bio-panel {
-    background: var(--accent);
-    border-bottom: 2px solid var(--ink);
-    padding: 40px 0;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .bio-content {
-    max-width: 1360px;
-  }
-
-  .bio-sub {
-    font-family: var(--sans);
-    font-size: clamp(20px, 1.8vw, 26px);
-    line-height: 1.5;
-    color: var(--ink-2);
-  }
-
-  .bio-left {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 22px;
-  }
-
-  /* ── Responsive ──────────────────────────── */
-  @media (max-width: 768px) {
-    .hero {
-      padding: 56px 0 64px;
-    }
-    .bio-panel {
-      padding: 32px 0;
-    }
-    :global(.sticker-hero) {
-      display: none !important;
-    }
-    /* Keep one signature shape per band on mobile so the shape language
-       survives small screens; the rest would collide with text. */
-    .deco {
-      display: none;
-    }
-    .deco-star {
-      display: block;
-      width: 34px;
-      height: 34px;
-      top: 10px;
-      right: 12px;
-    }
-    .deco-bio-squiggle {
-      display: block;
-      width: 56px;
-      top: 14px;
-      right: 14px;
-    }
+  .hero-cta-row a {
+    padding: 0.9em 1rem;
   }
 </style>
