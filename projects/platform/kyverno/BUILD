@@ -18,7 +18,6 @@ argocd_app(
     ],
     values_files = [
         "values.yaml",
-        "values-prod.yaml",
     ],
 )
 
