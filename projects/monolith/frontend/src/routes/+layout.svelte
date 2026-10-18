@@ -19,7 +19,7 @@
   // hooks.js reroute keeps the browser path un-prefixed, but match the
   // /public|/private prefixes too in case a route is hit directly.
   //
-  // Blog, docs, engineering and slop pages carry the technical drawing
+  // Home, CV, blog, docs, engineering and slop pages carry the technical drawing
   // chrome (Trail + scheme switch, site sections in the spine), so the
   // site nav would stack a second bar on top of it. Every page migrated to
   // that language joins this list until the nav itself retires. The docs
@@ -42,6 +42,7 @@
   let hideNav = $derived(
     isPrivate ||
       isFriends ||
+      /^\/(?:public\/?|(?:public\/)?cv\/?)?$/.test($page.url.pathname) ||
       /^\/private(?:\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
