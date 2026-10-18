@@ -108,7 +108,9 @@ def _image_layout() -> dict[str, str]:
 @pytest.mark.parametrize("overlay", sorted(_DEV_OVERLAYS))
 def test_s6_off_renders_no_tlc_wiring(overlay: str) -> None:
     extra = [Path(os.environ[key]) for key in _DEV_OVERLAYS[overlay]]
-    pod = _runner_pod(_render("embervm-dev", _dev_values() + extra))
+    pod = _runner_pod(_render(
+        "embervm-dev", _dev_values() + extra, ["conformance.s6.enabled=false"]
+    ))
     assert pod is not None, "dev renders the conformance runner"
     (container,) = pod["containers"]
     env = _env(container)
@@ -120,10 +122,13 @@ def test_s6_off_renders_no_tlc_wiring(overlay: str) -> None:
     assert container["resources"] == _chart_values()["conformance"]["resources"]
 
 
-def test_s6_on_wires_toolchain_tmp_and_jvm_memory() -> None:
-    off = _runner_pod(_render("embervm-dev", _dev_values()))
+@pytest.mark.parametrize("overlay", sorted(_DEV_OVERLAYS))
+def test_s6_on_wires_toolchain_tmp_and_jvm_memory(overlay: str) -> None:
+    values = _dev_values() + [Path(os.environ[key]) for key in _DEV_OVERLAYS[overlay]]
+    off = _runner_pod(_render("embervm-dev", values, ["conformance.s6.enabled=false"]))
     on = _runner_pod(
-        _render("embervm-dev", _dev_values(), ["conformance.s6.enabled=true"])
+        # Exercise the actual hub stack without a CLI override.
+        _render("embervm-dev", values, [] if overlay == "dev-gke" else ["conformance.s6.enabled=true"])
     )
     s6 = _chart_values()["conformance"]["s6"]
     (container,) = on["containers"]
@@ -216,12 +221,32 @@ def test_production_namespace_refuses_runner_with_s6_on() -> None:
     assert "conformance runner is dev-only" in result.stderr
 
 
-def test_s6_stays_off_in_every_committed_values_file() -> None:
+def test_s6_stays_off_outside_staged_hub_values() -> None:
     assert _chart_values()["conformance"]["s6"]["enabled"] is False
     for key in ("DEV_VALUES", "RECOVERY_VALUES"):
         values = yaml.safe_load(Path(os.environ[key]).read_text())
         assert values["conformance"]["s6"]["enabled"] is False
-    for key in ("PROD_VALUES", "DEV_GKE_VALUES"):
-        values = yaml.safe_load(Path(os.environ[key]).read_text()) or {}
-        s6 = (values.get("conformance") or {}).get("s6") or {}
-        assert s6.get("enabled", False) is False
+    values = yaml.safe_load(Path(os.environ["PROD_VALUES"]).read_text()) or {}
+    assert ((values.get("conformance") or {}).get("s6") or {}).get("enabled", False) is False
+    hub = yaml.safe_load(Path(os.environ["DEV_GKE_VALUES"]).read_text())
+    assert hub["conformance"]["s6"]["enabled"] is True
+
+
+def test_staged_s1_s8_fit_two_suites_without_reducing_assertions() -> None:
+    pod = _runner_pod(_render(
+        "embervm-dev", _dev_values() + [Path(os.environ["DEV_GKE_VALUES"])]
+    ))
+    env = _env(pod["containers"][0])
+    assert env["S6_ENABLED"] == env["S7_REQUIRE_JAILER"] == env["S8_EGRESS_PROBE"] == "true"
+    assert env["S1_CLONE_HOLD"] == "15s"
+    assert env["S1_CLONE_STARTUP_HEADROOM"] == "10s"
+    assert env["S6_MIN_TRACE_EVENTS"] == "4"
+    assert env["MIN_PASSING_INVARIANTS"] == "4"
+    budgets = [env[f"S{i}_BUDGET"] for i in range(1, 9)]
+    assert budgets == ["90s", "180s", "60s", "10s", "60s", "60s", "15s", "20s"]
+    suite_seconds = sum(int(budget.removesuffix("s")) for budget in budgets)
+    assert suite_seconds == 495
+    assert env["READY_WAIT"] == "30m0s"
+    assert env["RUN_INTERVAL"] == "25m"
+    # projects/platform/kargo/values.yaml keeps verdictTimeout at 1h15m0s.
+    assert 30 * 60 + 2 * suite_seconds + 25 * 60 == 4290 < 75 * 60

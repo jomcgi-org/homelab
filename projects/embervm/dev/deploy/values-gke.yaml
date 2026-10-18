@@ -23,6 +23,45 @@
 # release; activating either one means replacing this Application's value
 # files, not stacking a second release.
 
+# Staged step 1 of #6965. Keep this PR unmerged until an authorized operator
+# verifies the #6961 feature chart and running images in dev. These settings
+# live here because the base dev file also feeds the separate store-validation
+# preset. Production and the alternative presets remain unarmed.
+dispatcher:
+  placementRetry: true
+
+conformance:
+  requireJailer: true
+  egressProbe: true
+  # S1-S8 requires TLC too; without this flag S6 is absent from the verdict.
+  s6:
+    enabled: true
+  # 30m readiness + two 8m15s suites + 25m between runs = 71m30s, below
+  # Kargo's unchanged 75m verdict timeout. No scenario budget is reduced.
+  runInterval: 25m
+
+# S8 fetches the public CA over vsock; no network destination is allowed.
+# The sidecar loads its CA only with a nonempty catalog. Its supported deferred
+# secret state retains an unresolved entry and denies that entry's hosts.
+# Never provision this optional Secret: it carries no provider credential or
+# broker grant. cert-manager's CA is scoped to this dev release, not production.
+egress:
+  enabled: true
+  workloads: [sandbox-python]
+  external: deny
+  internal:
+    default: deny
+    allowlist: []
+  ca:
+    enabled: true
+  secrets:
+    - header: Authorization
+      env: EMBERVM_S8_UNRESOLVED_TOKEN
+      egressTo: [unused.s8.invalid]
+      secretRef:
+        name: embervm-dev-s8-unresolved
+        key: never-provision
+
 # Recover interrupted turns before adoption parks them. Rollback: set false.
 restartFlushInflightInvokes: true
 
@@ -41,6 +80,30 @@ opLog:
   storageClass: standard-rwo
 
 bricks:
+  # Reserved admission commits each brick's full limit at scheduling time.
+  # Include zero-replica classes: the controller can create a canary later.
+  # Lists replace rather than merge, so retain every class and its CPU weight.
+  classes:
+    - name: 1gi
+      resources:
+        requests: { cpu: 500m, memory: 1Gi }
+        limits: { memory: 1Gi }
+    - name: 2gi
+      resources:
+        requests: { cpu: 500m, memory: 2Gi }
+        limits: { memory: 2Gi }
+    - name: 4gi
+      resources:
+        requests: { cpu: "1", memory: 4Gi }
+        limits: { memory: 4Gi }
+    - name: 8gi
+      resources:
+        requests: { cpu: "1", memory: 8Gi }
+        limits: { memory: 8Gi }
+    - name: 16gi
+      resources:
+        requests: { cpu: "2", memory: 16Gi }
+        limits: { memory: 16Gi }
   # ONE unpinned 2gi brick. The home values pin via nodeFloors to node-4 and
   # keep desiredReplicas at zero because an unpinned brick there could land on
   # an etcd master (#4290). The hub has no masters to protect: bricks select
@@ -85,6 +148,15 @@ bricks:
       16gi: 0
 
 noded:
+  admissionModel: reserved
+  jailer:
+    enabled: true
+    # UID 40000 onward; production starts at 20000 and must stay below 20
+    # bricks per shared node. Leases are local to each release's scratch root.
+    uidBlockBase: 20
+  # Armed bricks refuse legacy banked bundles without jail-resource metadata.
+  # Account for those bundles before rollout; do not repair them or fall back
+  # to direct execution to make S7 pass.
   # Node-local state only. The empty endpoint is the chart's store-disabled
   # mode: banks stay node-resident and relight on the same brick, which is what
   # S2 and S3 exercise with one brick. The home SeaweedFS bucket does not exist
@@ -171,3 +243,6 @@ warmthS3Gc:
 # Instance-scoped session drain, armed ahead of production so the conformance
 # gate runs it first (see deploy/values-gke.yaml).
 drainInstanceScopedSessions: true
+
+# Separate serving/stateful/group drain gate; preserve the session gate above.
+drainInstanceScopedWorkloads: true

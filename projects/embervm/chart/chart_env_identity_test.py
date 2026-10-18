@@ -2672,12 +2672,11 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
                 assert "EMBERVM_NODED_STORE_ENDPOINT" not in env
 
 
-def test_s6_trace_runner_is_default_off_everywhere() -> None:
-    """S6 TLC trace validation (#6415) ships default-off in every environment.
+def test_s6_trace_runner_is_default_off_outside_staged_hub() -> None:
+    """S6 stays off in the shared base and recovery preset.
 
-    Narrower than and independent of the dev-only conformance.enabled gate: an
-    operator flips conformance.s6.enabled only after the embervm-dev lane is
-    confirmed stable. Reads the values files directly (no helm render), so a
+    The hub-only overlay stages S1-S8 together under #6965's landing hold.
+    Reads the values files directly (no helm render), so a
     missing key fails here rather than at template time.
     """
     chart_defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
@@ -3224,3 +3223,163 @@ def test_jailer_uid_block_base_renders_on_every_noded() -> None:
     bases = _rendered_noded_env_values(rendered, "EMBERVM_NODED_JAILER_UID_BLOCK_BASE")
     assert bases
     assert set(bases) == {"20"}
+
+
+@pytest.fixture(scope="module")
+def staged_hub_dev() -> list[dict]:
+    return _overlay_documents(*_HUB_OVERLAYS["dev"])
+
+
+def test_staged_dev_reserved_jailer_and_drain_consumers(staged_hub_dev) -> None:
+    containers = list(_containers(staged_hub_dev))
+    (control,) = [c for _, c in containers if c["name"] == "control-plane"]
+    env = _plain_env(control)
+    assert env["EMBERVM_PLACEMENT_RETRY"] == "true"
+    assert env["EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS"] == "true"
+    assert env["EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS"] == "true"
+    assert env["EMBERVM_SPEC_TRACE"] == "on"
+    classes = {c["name"]: c for c in json.loads(env["EMBERVM_BRICK_CLASSES"])}
+    defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    original_classes = {c["name"]: c for c in defaults["bricks"]["classes"]}
+    bricks = [c for _, c in containers if c["name"] == "noded"]
+    assert len(bricks) == len(classes) == len(original_classes) == 5
+    for brick in bricks:
+        noded = _plain_env(brick)
+        assert noded["EMBERVM_NODED_ADMISSION_MODEL"] == "reserved"
+        assert noded["EMBERVM_NODED_JAILER_ENABLED"] == "true"
+        assert noded["EMBERVM_NODED_JAILER_UID_BLOCK_BASE"] == "20"
+        name = noded["EMBERVM_NODED_SIZE_CLASS"]
+        # Includes the zero-replica Deployments the controller later scales.
+        resources = brick["resources"]
+        original = original_classes[name]["resources"]
+        assert resources["requests"]["memory"] == resources["limits"]["memory"]
+        assert resources["limits"] == original["limits"]
+        assert resources["requests"]["cpu"] == original["requests"]["cpu"]
+        assert classes[name]["vm_overhead_mib"] == 64
+        assert noded["EMBERVM_NODED_VM_OVERHEAD_MIB"] == "64"
+        assert noded["EMBERVM_NODED_MEM_REJECT_FLOOR_MIB"] == "512"
+
+    workloads = {
+        d["metadata"]["name"]: d["spec"]
+        for d in staged_hub_dev
+        if d["kind"] == "Workload"
+    }
+    assert workloads["sandbox-python"]["resources"]["memMib"] == 512
+    assert workloads["sandbox-elixir"]["resources"]["memMib"] == 512
+    assert workloads["pi-runtime"]["resources"]["memMib"] == 256
+    # S1's two guests must overlap on the unchanged 2Gi floor. The task
+    # Assign path destroys each guest after its single invocation, before S2.
+    floor = classes["2gi"]
+    assert floor["usable_mib"] == 1792
+    assert 2 * (512 + floor["vm_overhead_mib"]) <= floor["usable_mib"]
+    assert 2 * 512 + floor["mem_reject_floor_mib"] <= floor["usable_mib"]
+    assert floor["slots"] >= 2
+    assert floor["desired"] == floor["min"] == floor["max"] == 1
+    assert classes["4gi"]["max"] == 0
+    assert classes["4gi"]["ceiling_bound"] == 1
+
+
+def test_staged_dev_s8_has_a_reachable_isolated_ca(staged_hub_dev) -> None:
+    (runner,) = [
+        c for _, c in _containers(staged_hub_dev) if c["name"] == "conformance"
+    ]
+    runner_env = _plain_env(runner)
+    assert runner_env["S7_REQUIRE_JAILER"] == "true"
+    assert runner_env["S8_EGRESS_PROBE"] == "true"
+    assert runner_env["TASK_WORKLOAD"] == "sandbox-python"
+    bricks = [
+        d for d in staged_hub_dev
+        if d["kind"] == "Deployment"
+        and "-noded-brick-" in d["metadata"]["name"]
+    ]
+    assert len(bricks) == 5
+    ca_secret = "embervm-dev-embervm-egress-ca"
+    unresolved_secret = "embervm-dev-s8-unresolved"
+    for brick in bricks:
+        pod = brick["spec"]["template"]["spec"]
+        noded, = [c for c in pod["containers"] if c["name"] == "noded"]
+        env = _plain_env(noded)
+        assert env["EMBERVM_NODED_EGRESS_ENABLED"] == "true"
+        assert env["EMBERVM_NODED_EGRESS_WORKLOADS"] == "sandbox-python"
+        sidecar, = [c for c in pod["containers"] if c["name"] == "egress-proxy"]
+        env = _plain_env(sidecar)
+        assert env["EGRESS_LISTEN"] == "127.0.0.1:8888"
+        assert env["EGRESS_EXTERNAL"] == env["EGRESS_INTERNAL_DEFAULT"] == "deny"
+        assert not env.get("EGRESS_INTERNAL_ALLOWLIST")
+        assert "EGRESS_TOKEN_BROKER_URL" not in env
+        # main.go loads the CA only for a nonempty, valid catalog. swap.go
+        # retains a dead optional entry when its env is absent; it does not
+        # contact a broker. ca.egress.internal is answered before DNS/policy.
+        entry, = json.loads(env["EGRESS_SECRETS"])
+        assert entry["header"] == "Authorization"
+        assert entry["env"] == "EMBERVM_S8_UNRESOLVED_TOKEN"
+        assert entry["egressTo"] == ["unused.s8.invalid"]
+        assert not entry.get("brokerGrant") and not entry.get("brokerGrants")
+        assert entry["plaintextUpstream"] is False
+        assert entry["quotaProvider"] == ""
+        refs = [e for e in sidecar["env"] if "valueFrom" in e]
+        assert refs == [{
+            "name": entry["env"],
+            "valueFrom": {"secretKeyRef": {
+                "name": unresolved_secret, "key": "never-provision", "optional": True,
+            }},
+        }]
+        assert env["EGRESS_CA_CERT_FILE"] == "/etc/egress-ca/tls.crt"
+        assert env["EGRESS_CA_KEY_FILE"] == "/etc/egress-ca/tls.key"
+        assert {"name": "egress-ca", "mountPath": "/etc/egress-ca", "readOnly": True} in sidecar["volumeMounts"]
+        volume, = [v for v in pod["volumes"] if v["name"] == "egress-ca"]
+        assert volume["secret"]["secretName"] == ca_secret
+        assert not any(m["name"] == "egress-ca" for m in noded["volumeMounts"])
+
+    certificate, = [d for d in staged_hub_dev if d["kind"] == "Certificate"]
+    issuer, = [d for d in staged_hub_dev if d["kind"] == "Issuer"]
+    assert certificate["spec"]["secretName"] == ca_secret
+    assert certificate["spec"]["issuerRef"]["name"] == issuer["metadata"]["name"]
+    assert issuer["spec"] == {"selfSigned": {}}
+    assert not any(
+        d["kind"] in {"Secret", "OnePasswordItem"}
+        and d["metadata"]["name"] == unresolved_secret
+        for d in staged_hub_dev
+    ), "the deferred catalog entry must never provision a credential"
+
+
+@pytest.mark.parametrize("value_keys", [
+    [], ["PROD_VALUES"], ["PROD_VALUES", "GKE_VALUES"], ["DEV_VALUES"],
+    ["RECOVERY_VALUES"], ["DEV_VALUES", "GKE_VALUES", "STORE_VALIDATION_VALUES"],
+])
+def test_staged_dev_activation_does_not_leak_to_other_stacks(value_keys) -> None:
+    docs = _overlay_documents("embervm-dev", value_keys)
+    noded = [c for _, c in _containers(docs) if c["name"] == "noded"]
+    assert noded
+    for container in noded:
+        env = _plain_env(container)
+        assert env["EMBERVM_NODED_JAILER_ENABLED"] == "false"
+        assert env["EMBERVM_NODED_JAILER_UID_BLOCK_BASE"] == "0"
+        assert env["EMBERVM_NODED_ADMISSION_MODEL"] == "observed"
+        assert "sandbox-python" not in (env.get("EMBERVM_NODED_EGRESS_WORKLOADS") or "").split(",")
+    for _, container in _containers(docs):
+        env = _plain_env(container)
+        if container["name"] == "control-plane":
+            assert env["EMBERVM_PLACEMENT_RETRY"] == "false"
+            assert env["EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS"] == "false"
+        if container["name"] == "conformance":
+            assert env["S6_ENABLED"] == env["S7_REQUIRE_JAILER"] == env["S8_EGRESS_PROBE"] == "false"
+    assert "embervm-dev-s8-unresolved" not in json.dumps(docs)
+
+
+def test_staged_dev_and_production_uid_ranges_are_disjoint(staged_hub_dev) -> None:
+    prod = _overlay_documents(*_HUB_OVERLAYS["prod"])
+    prod_bases = {
+        int(_plain_env(c)["EMBERVM_NODED_JAILER_UID_BLOCK_BASE"])
+        for _, c in _containers(prod) if c["name"] == "noded"
+    }
+    dev_bases = {
+        int(_plain_env(c)["EMBERVM_NODED_JAILER_UID_BLOCK_BASE"])
+        for _, c in _containers(staged_hub_dev) if c["name"] == "noded"
+    }
+    assert prod_bases == {0} and dev_bases == {20}
+    # launcher.go leases upward in 1000-UID blocks starting at 20000.
+    # This contract requires production to stay below 20 bricks per node.
+    prod_last_uid = 20000 + (next(iter(prod_bases)) + 20) * 1000 - 1
+    dev_first_uid = 20000 + next(iter(dev_bases)) * 1000
+    assert prod_last_uid == 39999 < dev_first_uid == 40000
