@@ -256,7 +256,7 @@ func TestChartManagerWithoutCertificates(t *testing.T) {
 			api, watched := fakeOperatorAPI(t)
 			kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
 			content := fmt.Sprintf("apiVersion: v1\nkind: Config\nclusters:\n- name: local\n  cluster:\n    server: %s\ncontexts:\n- name: local\n  context:\n    cluster: local\n    user: local\ncurrent-context: local\nusers:\n- name: local\n  user: {}\n", api.URL)
-			if err := os.WriteFile(kubeconfig, []byte(content), 0600); err != nil {
+			if err := os.WriteFile(kubeconfig, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			listener, err := net.Listen("tcp", "127.0.0.1:0")

@@ -38,22 +38,28 @@ go_binary(
 go_test(
     name = "cmd_test",
     srcs = [
+        "chart_startup_test.go",
         "main_test.go",
         "resolver_adapter_test.go",
         "resolver_test.go",
     ],
-    embed = [":cmd_lib"],
     data = [
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart",
         "@multitool//tools/helm",
     ],
+    embed = [":cmd_lib"],
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = [
         "//bazel/tools/hf2oci/pkg/copy",
         "//bazel/tools/hf2oci/pkg/hf",
+        "//projects/operators/oci-model-cache/internal/config",
         "//projects/operators/oci-model-cache/internal/controller",
         "@com_github_google_go_containerregistry//pkg/registry",
+        "@io_k8s_api//apps/v1:apps",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/util/yaml",
     ],
 )
