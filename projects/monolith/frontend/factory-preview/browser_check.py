@@ -212,6 +212,11 @@ def layout_checks(page, view, scenario, width, scale):
                 "usage versus target evidence missing",
             )
             require(
+                "Weekly: 58% left · 16.9 points/day" in quota.inner_text()
+                and "~14–19 short resets before weekly reset" in quota.inner_text(),
+                "reset-aware budget guidance missing",
+            )
+            require(
                 "Reported quota" in quota.inner_text(), "provider-only scope hidden"
             )
             require(
@@ -347,6 +352,10 @@ def check_quota_details(page):
         "recorded quota history missing"
     )
     assert "2/2 accounts" in disclosure.inner_text(), "account coverage details missing"
+    assert "90% used · reset in 2h" in disclosure.inner_text(), (
+        "short-window evidence hidden"
+    )
+    assert "continuous use" in disclosure.inner_text(), "reset-count assumption missing"
     verify_resized_text(page)
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), (
         "expanded quota history introduces overflow"

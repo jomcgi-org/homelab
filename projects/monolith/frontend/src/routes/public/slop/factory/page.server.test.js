@@ -117,6 +117,24 @@ describe("subscription quota display", () => {
       source: provider === "codex" ? "accounts" : "provider",
       configured_accounts: 2,
       inventory_complete: provider === "codex",
+      pacing:
+        provider === "codex"
+          ? {
+              complete: true,
+              reported_accounts: 2,
+              state_counts: { use_more: 2 },
+              evaluated_at: NOW,
+              oldest_observed_at: ago(2),
+              valid_until: ago(-120),
+              budget_window_seconds: 604800,
+              budget_remaining_percent: 58,
+              budget_per_day_percent: 16.9,
+              short_window_seconds: 18000,
+              short_resets_min: 14,
+              short_resets_max: 19,
+              estimate_basis: "continuous_use",
+            }
+          : null,
       windows: [
         {
           window_seconds: 604800,
@@ -179,6 +197,13 @@ describe("subscription quota display", () => {
       [...panel.querySelectorAll("h3")].map((node) => node.textContent),
     ).toEqual(["Codex", "Claude"]);
     expect(panel.textContent).toContain("42% used");
+    expect(panel.textContent).toContain("Weekly: 58% left · 16.9 points/day");
+    expect(panel.textContent).toContain(
+      "~14–19 short resets before weekly reset",
+    );
+    expect(panel.querySelector("details").textContent).toContain(
+      "continuous use",
+    );
     expect(panel.textContent).toContain("Room to use more");
     expect(panel.textContent).toContain("50% target");
     expect(panel.textContent).toContain("Reset in 3d–4d");

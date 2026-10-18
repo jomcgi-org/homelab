@@ -357,6 +357,122 @@ const quotaStatus = {
   on: "On pace",
 };
 
+function quotaGuidance(provider, quota, clock, validSnapshot) {
+  const pacing = provider?.pacing;
+  if (!pacing || typeof pacing !== "object") return null;
+  const empty = {
+    state: "unknown",
+    status: quotaStatus.unknown,
+    budget: null,
+    resets: null,
+  };
+  const age = (clock - Date.parse(pacing.oldest_observed_at)) / 1000;
+  const evaluatedAge = (clock - Date.parse(pacing.evaluated_at)) / 1000;
+  const total =
+    provider.source === "provider" ? 1 : provider.configured_accounts;
+  const counts = pacing.state_counts;
+  const states = [
+    "use_more",
+    "on_pace",
+    "conserve",
+    "wait_for_reset",
+    "unknown",
+    "stale",
+    "awaiting_report",
+  ];
+  if (
+    !validSnapshot ||
+    !quotaNumber(quota.stale_after_seconds) ||
+    quota.stale_after_seconds <= 0 ||
+    !Number.isFinite(age) ||
+    age < 0 ||
+    age > quota.stale_after_seconds ||
+    !Number.isFinite(evaluatedAge) ||
+    evaluatedAge < 0 ||
+    evaluatedAge > quota.stale_after_seconds ||
+    !(Date.parse(pacing.valid_until) > clock) ||
+    !Number.isInteger(total) ||
+    total <= 0 ||
+    !counts ||
+    typeof counts !== "object" ||
+    !Object.entries(counts).every(
+      ([key, count]) =>
+        states.includes(key) && Number.isInteger(count) && count >= 0,
+    ) ||
+    Object.values(counts).reduce((sum, count) => sum + count, 0) !== total
+  )
+    return empty;
+  const complete =
+    pacing.complete === true &&
+    pacing.reported_accounts === total &&
+    (provider.source === "provider" || provider.inventory_complete === true);
+  const remaining = pacing.budget_remaining_percent;
+  const daily = pacing.budget_per_day_percent;
+  const usableBudget =
+    complete &&
+    quotaNumber(pacing.budget_window_seconds) &&
+    pacing.budget_window_seconds > 0 &&
+    quotaNumber(remaining) &&
+    remaining >= 0 &&
+    remaining <= 100 &&
+    quotaNumber(daily) &&
+    daily >= 0;
+  const waiting = counts.wait_for_reset ?? 0;
+  const fast = counts.conserve ?? 0;
+  const incomplete =
+    !usableBudget ||
+    provider.unknown_windows > 0 ||
+    counts.unknown ||
+    counts.stale ||
+    counts.awaiting_report;
+  const state = waiting
+    ? "exhausted"
+    : fast
+      ? "fast"
+      : incomplete
+        ? "unknown"
+        : counts.use_more
+          ? "under"
+          : "on";
+  const weekly = pacing.budget_window_seconds === 604800;
+  const status = waiting
+    ? waiting === total &&
+      (provider.source === "provider" || provider.inventory_complete === true)
+      ? "Wait for reset"
+      : `${waiting} of ${total} at limit`
+    : fast
+      ? fast === total
+        ? weekly
+          ? "Conserve weekly quota"
+          : "Conserve quota"
+        : `${fast} of ${total} burning fast`
+      : quotaStatus[state];
+  const countMin = pacing.short_resets_min;
+  const countMax = pacing.short_resets_max;
+  const usableResets =
+    usableBudget &&
+    pacing.estimate_basis === "continuous_use" &&
+    Number.isInteger(countMin) &&
+    Number.isInteger(countMax) &&
+    countMin >= 0 &&
+    countMax >= countMin &&
+    countMax <= 525600 &&
+    quotaNumber(pacing.short_window_seconds) &&
+    pacing.short_window_seconds > 0 &&
+    pacing.short_window_seconds < pacing.budget_window_seconds;
+  return {
+    state,
+    status,
+    budgetSeconds: usableBudget ? pacing.budget_window_seconds : null,
+    budget: usableBudget
+      ? `${weekly ? "Weekly" : quotaDuration(pacing.budget_window_seconds)}: ${quotaPercent(remaining)} left · ${daily.toFixed(1).replace(/\.0$/, "")} points/day`
+      : null,
+    resets: usableResets
+      ? `~${countMin === countMax ? countMin : `${countMin}–${countMax}`} short resets before ${weekly ? "weekly reset" : `${quotaDuration(pacing.budget_window_seconds)} reset`}`
+      : null,
+  };
+}
+
 // Snapshots contain only aggregates. Once the first account resets we cannot
 // subtract that account from the mean, so await a new snapshot for the group.
 export function quotaGroups(quota, now) {
@@ -453,6 +569,7 @@ export function quotaGroups(quota, now) {
       const window = quotaDuration(row.window_seconds);
       return {
         window,
+        seconds: row.window_seconds,
         label:
           row.window_seconds === 604800
             ? "Weekly"
@@ -501,6 +618,7 @@ export function quotaGroups(quota, now) {
           : windows.some((row) => row.state === "under")
             ? "under"
             : "on";
+    const guidance = quotaGuidance(provider, quota, clock, validSnapshot);
     return {
       provider: name,
       label: name === "codex" ? "Codex" : "Claude",
@@ -512,13 +630,22 @@ export function quotaGroups(quota, now) {
       reported,
       unknownWindows,
       windows,
-      state,
-      status: quotaStatus[state],
-      warning: unknownWindows
-        ? "Some limits have no reset duration"
-        : reported
-          ? "Account coverage unknown"
-          : null,
+      summaryWindows: guidance?.budgetSeconds
+        ? windows.filter(
+            (row) =>
+              row.seconds === guidance.budgetSeconds ||
+              row.state === "exhausted",
+          )
+        : windows,
+      state: guidance?.state ?? state,
+      status: guidance?.status ?? quotaStatus[state],
+      guidance,
+      warning:
+        unknownWindows && !guidance?.budget
+          ? "Some limits have no reset duration"
+          : reported
+            ? "Account coverage unknown"
+            : null,
     };
   });
 }
