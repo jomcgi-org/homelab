@@ -157,9 +157,7 @@ def test_all_renovate_update_types_keep_both_auto_merge_paths_disabled():
 
 
 def _disabled_literal_dep_names(config: dict) -> set[str]:
-    rules = [
-        rule for rule in config["packageRules"] if rule.get("enabled") is False
-    ]
+    rules = [rule for rule in config["packageRules"] if rule.get("enabled") is False]
     names = set()
     for rule in rules:
         # No additional matcher may narrow these exclusions. For literal names,
@@ -210,7 +208,9 @@ def test_upstream_chart_dependencies_remain_enabled():
         "ghcr.io/ariga/charts/atlas-operator",
         "cloudnative-pg",
     ):
-        assert dep_name not in disabled, f"Upstream chart dependency disabled: {dep_name}"
+        assert dep_name not in disabled, (
+            f"Upstream chart dependency disabled: {dep_name}"
+        )
 
 
 def test_self_source_exclusions_use_current_organization():
