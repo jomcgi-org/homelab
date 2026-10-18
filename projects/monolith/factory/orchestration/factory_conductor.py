@@ -466,6 +466,7 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
         from factory.orchestration.factory_controls import (
             granted_delivery_surface,
             landing_held,
+            nonrenewable_recovery,
         )
 
         direction = (
@@ -483,6 +484,7 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
             ),
             "dependency_review": (direction or {}).get("dependency_review"),
             "landing_hold": landing_held(receipt),
+            "nonrenewable_recovery": nonrenewable_recovery(receipt),
             "work_item_id": None if receipt is None else receipt.work_item_id,
             "funding_enrolled": latest(db, task_id, "funding_review_requested")
             is not None,
@@ -577,12 +579,15 @@ def _decision_processed(task_id: str, cause: str) -> bool:
 
 def _reject_decision(
     task_id: str, cause: str, action: str, code: str, reason: str
-) -> None:
+) -> bool:
     """Persist one rejection per decision; GitHub reads never hold this lock."""
     from factory.orchestration.factory_controls import _audit, _locked_session
     from factory.orchestration.factory_models import FactoryAudit
 
     with _locked_session() as (db, _control):
+        from factory.orchestration.factory_controls import pause_nonrenewable_recovery
+
+        held = pause_nonrenewable_recovery(task_id, f"{code}: {reason}", session=db)
         previous = db.exec(
             select(FactoryAudit.detail_json).where(
                 FactoryAudit.task_id == task_id,
@@ -590,7 +595,7 @@ def _reject_decision(
             )
         ).all()
         if any(json.loads(raw).get("cause") == cause for raw in previous):
-            return
+            return held
         detail = {
             "cause": cause,
             "decision_action": action,
@@ -612,6 +617,7 @@ def _reject_decision(
             task_id=task_id,
             **detail,
         )
+        return held
 
 
 def _check_consecutive_refusals(task_id: str, refusal_code: str) -> bool:
@@ -660,7 +666,8 @@ def _reject_plan_decision(
     runs: list[dict],
 ) -> None:
     """Reject a graph decision and escalate a repeated no-progress refusal."""
-    _reject_decision(task["id"], cause, action, code, reason)
+    if _reject_decision(task["id"], cause, action, code, reason):
+        return
     if not _check_consecutive_refusals(task["id"], code):
         return
     lead = (
@@ -1558,6 +1565,7 @@ def _planner_direction(direction: dict) -> dict:
         "previous_branch": direction.get("prior_branch"),
         "previous_pr_url": direction.get("prior_pr_url"),
         "landing_hold": "landing_hold" in direction,
+        "nonrenewable_recovery": "nonrenewable_recovery" in direction,
     }
 
 
@@ -1740,6 +1748,7 @@ def _planner_context(
                 "conductor_model",
                 "budget_usd",
                 "landing_hold",
+                "nonrenewable_recovery",
             ),
         ),
         "graph": projected_nodes[-PLANNER_RECORD_LIMIT:],
@@ -1892,7 +1901,10 @@ def planner_prompt(
     encoded = _planner_json(context)
     if len(encoded) > PLANNER_CONTEXT_CHARS:
         raise PlannerContextOverflow("factory planner evidence exceeds context limit")
-    funding_available = factory_funding.enabled() or task.get("funding_enrolled", False)
+    nonrenewable = task.get("nonrenewable_recovery", False)
+    funding_available = not nonrenewable and (
+        factory_funding.enabled() or task.get("funding_enrolled", False)
+    )
     context_action = ", request_context" if factory_context is not None else ""
     funding_rule = (
         "Use request_funding for internal limits; pause for human authority. "
@@ -1901,7 +1913,10 @@ def planner_prompt(
         else f"Only use plan, add_node, discard_node, finish, settle_external{context_action} or pause. "
     )
     budget_rule = (
-        "When an edit is refused with envelope_exceeded, shrink the edit if the same objective still fits, or use request_funding with a reason and the remaining work. "
+        "This is a nonrenewable operator recovery envelope. Submit one feasible graph within the recorded bounds, including correction and re-review reserves. "
+        "A refused graph pauses this task without another planner, funding review or allowance extension. Funding renewal is unavailable. "
+        if nonrenewable
+        else "When an edit is refused with envelope_exceeded, shrink the edit if the same objective still fits, or use request_funding with a reason and the remaining work. "
         if funding_available
         else "When an edit is refused with envelope_exceeded, shrink the edit to fit or pause with the reason. "
     )
@@ -6621,6 +6636,15 @@ def reconcile_task(
             task, policy, nodes, runs, deviation, insertion_revision
         ):
             return
+        from factory.orchestration import factory_controls as controls
+
+        snapshot = controls.task_snapshot(task_id)
+        if snapshot["planner_turns_used"] >= controls.planner_turn_cap(
+            policy
+        ) and controls.pause_nonrenewable_recovery(
+            task_id, "Authorized planner attempts exhausted without ready work"
+        ):
+            return
         ordinal = sum(n["node_key"].startswith("conductor_") for n in nodes) + 1
         key = f"conductor_{ordinal}"
         # The operator's answer is carried until a planner round has actually
@@ -7252,8 +7276,16 @@ def _dispatch_ready(
             )
         if dispatched == 0:
             from factory.orchestration import factory_funding
+            from factory.orchestration.factory_controls import (
+                pause_nonrenewable_recovery,
+            )
 
-            if factory_funding.enabled() or task.get("funding_enrolled", False):
+            if pause_nonrenewable_recovery(
+                task_id,
+                f"Ready dispatch of {node_key} was refused within the operator envelope",
+            ):
+                pass
+            elif factory_funding.enabled() or task.get("funding_enrolled", False):
                 # Shared objective headroom can change after our preflight.
                 # The durable request either reassesses it or remains pending;
                 # a refused start never manufactures an operator pause.

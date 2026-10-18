@@ -15266,6 +15266,230 @@ def funding_decision(**changes):
     }
 
 
+def bounded_recovery_task(feedback_db, monkeypatch):
+    """Receipt 838's seven spent planner turns and explicit $50 recovery."""
+    from sqlmodel import SQLModel
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    feedback_db.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        feedback_db, tables=[AgentSession.__table__, PendingMessage.__table__]
+    )
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    task, policy = feedback_task(
+        max_turns=9,
+        max_planner_turns=9,
+        task_budget_usd=50,
+        turn_budget_usd=4,
+        max_attempts=1,
+        allowed_models=["astra"],
+        conductor_model="astra",
+        worker_model="astra",
+        model_pools={"reviewer": ["astra"], "judge": ["astra"]},
+    )
+    for ordinal in range(1, 8):
+        complete_feedback_node(
+            task,
+            policy,
+            f"conductor_{ordinal}",
+            {"action": "plan", "edits": []},
+            model="astra",
+        )
+    # Preserve the historical charge in both ledgers and the durable outcome,
+    # so reconciliation cannot rewrite it to the fixture's nominal turn cost.
+    with Session(feedback_db) as db, db.begin():
+        first = db.exec(select(SwarmNodeRun).order_by(SwarmNodeRun.id)).first()
+        outcome = json.loads(first.outcome_json)
+        outcome["cost_usd"] = first.cost_usd = 22.312864
+        first.outcome_json = json.dumps(outcome)
+        db.exec(
+            select(FactoryStart).order_by(FactoryStart.id)
+        ).first().cost_usd = 22.312864
+        row = controls._receipt(db, task["id"])
+        receipt_id = row.id
+    controls.set_control("pause_task", "operator", task_id=task["id"])
+    overlay = {
+        "nonrenewable_recovery": True,
+        "landing_hold": True,
+        "max_planner_turns": 8,
+    }
+    direction = "One Astra plan for implementation and independent review, within $50. Retain an unmerged reviewed draft."
+    preview = amendments.preview(receipt_id, overlay, direction)
+    assert preview["committed_cost_usd"] == pytest.approx(23.812864)
+    assert preview["nonrenewable_recovery"] and preview["landing_hold"]
+    amendments.apply(
+        receipt_id,
+        overlay,
+        direction,
+        actor="operator",
+        request_key="bounded",
+        expected_preview_sha256=preview["preview_sha256"],
+    )
+    controls.set_control("resume_task", "operator", task_id=task["id"])
+    return conductor._task(task["id"]), controls.task_snapshot(task["id"])["policy"]
+
+
+@pytest.mark.parametrize("feasible", [False, True])
+def test_nonrenewable_final_planner_uses_normal_admission_without_funding(
+    feedback_db, monkeypatch, feasible
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy = bounded_recovery_task(feedback_db, monkeypatch)
+    monkeypatch.setattr(
+        funding, "_issue", lambda *_: pytest.fail("must not prepare funding review")
+    )
+    prompt = conductor.planner_prompt(
+        task,
+        conductor.graph.load_graph(task["id"]),
+        conductor.graph.node_runs(task["id"]),
+    )
+    assert "Funding renewal is unavailable" in prompt
+    assert "Use request_funding for internal limits" not in prompt
+    assert (
+        json.loads(prompt.rsplit("\n", 1)[1])["task_identity"]["nonrenewable_recovery"]
+        is True
+    )
+    edits = [
+        plan_edit("fix", "implement", model="astra", max_attempts=1, max_cost_usd=4),
+        plan_edit(
+            "check",
+            "review",
+            ["implement_fix"],
+            model="astra",
+            max_attempts=1,
+            max_cost_usd=4,
+        ),
+    ]
+    if not feasible:
+        edits += [
+            plan_edit(f"extra_{i}", "implement", model="astra", max_attempts=1)
+            for i in range(6)
+        ]
+    complete_feedback_node(
+        task,
+        policy,
+        "conductor_8",
+        {"action": "plan", "reason": "bounded recovery", "edits": edits},
+        model="astra",
+    )
+    before = controls.task_snapshot(task["id"])
+    assert before["planner_turns_used"] == policy["max_planner_turns"] == 8
+    assert not funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    after = controls.task_snapshot(task["id"])
+    assert after["task_paused"] is (not feasible)
+    assert after["policy"] == before["policy"]
+    assert after["policy"]["task_budget_usd"] == 50
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"]) is None
+        assert funding.latest(db, task["id"], "funding_review_requested") is None
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert ("implement_fix" in keys) is feasible
+    if feasible:
+        assert after["allowance"]["review_rounds_reserved"] == 1
+        assert after["allowance"]["usd"] <= 50
+        monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+        conductor.reconcile_task(task["id"], policy, object())
+        admitted = [
+            r["node_key"]
+            for r in conductor.graph.node_runs(task["id"])
+            if r["status"] == "admitted"
+        ]
+        assert admitted == ["implement_fix"]
+    else:
+        for _ in range(3):
+            conductor.reconcile_task(task["id"], policy, object())
+        assert {n["node_key"] for n in conductor.graph.load_graph(task["id"])} == keys
+        assert (
+            feedback_audits(feedback_db, task["id"])[-1]["refusal_code"]
+            == "envelope_exceeded"
+        )
+        assert controls.task_snapshot(task["id"])["allowance"] == after["allowance"]
+
+
+@pytest.mark.parametrize("funding_enabled,max_attempts", [(True, 1), (False, 2)])
+def test_nonrenewable_failed_last_attempt_pauses_without_retry_or_new_planner(
+    feedback_db, monkeypatch, funding_enabled, max_attempts
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy = bounded_recovery_task(feedback_db, monkeypatch)
+    # Prior decisions already processed; the last authorized attempt has no artifact.
+    for ordinal in range(1, 8):
+        conductor._reject_decision(
+            task["id"],
+            f"factory-decision:conductor_{ordinal}:1",
+            "plan",
+            "old_refusal",
+            "prior evidence",
+        )
+    controls.set_control("resume_task", "operator", task_id=task["id"])
+    assert conductor._add(
+        task,
+        policy,
+        "conductor_8",
+        "bounded planning",
+        [],
+        "astra",
+        "last",
+        "last authorized attempt",
+        max_attempts=max_attempts,
+    ).ok
+    run_feedback_node(task, "conductor_8", {}, status="failed")
+    monkeypatch.setenv(
+        "FACTORY_CONDUCTOR_FUNDING_ENABLED", str(funding_enabled).lower()
+    )
+    monkeypatch.setattr(funding, "_issue", lambda *_: pytest.fail("must not renew"))
+    monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+    conductor.reconcile_task(task["id"], policy, object())
+    assert controls.task_snapshot(task["id"])["task_paused"]
+    assert not any(
+        n["node_key"] == "conductor_9" for n in conductor.graph.load_graph(task["id"])
+    )
+
+
+def test_nonrenewable_envelope_refuses_direct_funding_and_continuation(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+        factory_continuations as continuations,
+    )
+
+    task, policy = bounded_recovery_task(feedback_db, monkeypatch)
+    monkeypatch.setattr(
+        funding, "_issue", lambda *_: pytest.fail("must not prepare renewal")
+    )
+    assert funding.request(task, "renew", recover=True) is False
+    assert controls.task_snapshot(task["id"])["task_paused"]
+    controls.set_control("resume_task", "operator", task_id=task["id"])
+    assert continuations.try_grant(task, policy, {}, [], "renew", 0) == (
+        False,
+        "nonrenewable_recovery",
+    )
+    assert controls.task_snapshot(task["id"])["task_paused"]
+    assert controls.task_snapshot(task["id"])["policy"] == policy
+
+
 def settle_funding(task, value):
     from factory.orchestration import (
         factory_funding as funding,

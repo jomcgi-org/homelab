@@ -2438,6 +2438,19 @@ direction. Held deliveries accept reviewed drafts only with passing exact-head
 checks, auto-merge off and confirmed absence from the merge queue. They settle
 without entering landing, and the landing reconciler disarms/dequeues any held
 delivery even when global merge and review-publication flags are off. Handoff
-instructions retain the draft. A separate explicit resume follows a feasible
-replacement-plan review. Raising
-that objective ceiling still requires the missing request-boundary guarantee.
+instructions retain the draft.
+
+An operator may also select sticky `nonrenewable_recovery=true` and bound the
+remaining planning attempts with `max_planner_turns`. This uses the same
+amendment preview/apply and separate explicit resume. The final authorized
+planner result goes through normal graph admission, including correction and
+re-review reserves. A rejection durably pauses the same task without planning
+again, requesting a funding review or increasing its envelope. Feasible work
+and reserved review rounds can continue at the planner cap. Automatic funding,
+lease and correction-allowance extensions cannot renew this operator envelope;
+only another explicit human amendment can change its bounds. Other receipts
+retain ordinary renewal behavior. **Why:** the existing funding reconciler
+ran before graph admission and treated an exhausted planner cap as a reason
+to buy oversight and extend limits, defeating a one-attempt operator recovery.
+No separate graph-preview service is needed. Raising the objective allocation
+ceiling still requires the missing request-boundary guarantee.

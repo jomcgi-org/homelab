@@ -1071,7 +1071,12 @@ def _direction(
         # Discovery itself is repeated before the new task starts.
         **{
             key: stored[key]
-            for key in ("conductor_gates", "delivery_adoption", "landing_hold")
+            for key in (
+                "conductor_gates",
+                "delivery_adoption",
+                "landing_hold",
+                "nonrenewable_recovery",
+            )
             if key in stored
         },
         **prior,

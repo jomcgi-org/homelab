@@ -327,6 +327,8 @@ def request(task, reason, *, recover=False):
     """Reserve one exact judge decision, even when task soft limits ran out."""
     from factory.orchestration import factory_conductor as c
 
+    if controls.pause_nonrenewable_recovery(task["id"], reason):
+        return False
     # No funding decision can extend an expired landing-recovery cap.
     # Avoid even preparing a paid review; recheck under the write lock below.
     with controls._read_session() as db:
@@ -357,6 +359,8 @@ def request(task, reason, *, recover=False):
             }
     with controls._locked_session() as (db, control):
         row = controls._receipt(db, task["id"])
+        if controls.pause_nonrenewable_recovery(task["id"], reason, session=db):
+            return False
         if controls.review_recovery_held(
             task["id"], session=db
         ) or controls._landing_recovery_expired(db, task["id"]):
@@ -544,6 +548,12 @@ def settle(task, run, request):
         current = pending(db, task["id"])
         row = controls._receipt(db, task["id"])
         if current is None or current["audit_id"] != request["audit_id"]:
+            return
+        if controls.pause_nonrenewable_recovery(
+            task["id"],
+            "Automatic funding settlement is outside the operator envelope",
+            session=db,
+        ):
             return
         if (
             control.state not in ("enabled", "paused")
@@ -771,6 +781,7 @@ def reconcile(task, policy, runs, permission):
         not enabled()
         and not permission.get("funding")
         and not task.get("funding_enrolled", False)
+        and not task.get("nonrenewable_recovery", False)
     ):
         return False
     with controls._read_session() as db:
@@ -778,6 +789,14 @@ def reconcile(task, policy, runs, permission):
         last = latest(db, task["id"], "funding_review_settled")
         grant = amendment(db, task["id"])
         recovery_expired = controls._landing_recovery_expired(db, task["id"])
+        nonrenewable = controls.nonrenewable_recovery(controls._receipt(db, task["id"]))
+    if nonrenewable and (
+        review or permission.get("reason") in {"task_deadline", "funding_lease_due"}
+    ):
+        return controls.pause_nonrenewable_recovery(
+            task["id"],
+            "Automatic funding or lease renewal is outside the operator envelope",
+        )
     if review:
         own = next((r for r in runs if r["node_key"] == review["node_key"]), None)
         if own and own["status"] in graph.TERMINAL_RUN_STATUSES:
@@ -906,6 +925,11 @@ def reconcile(task, policy, runs, permission):
                         task["id"], "succeeded", ACTOR, evidence=evidence, session=db
                     )
             return True
+    # An operator's final planning attempt must reach normal graph admission
+    # even at its cap. Existing work and reserved correction/review rounds may
+    # still run within that envelope; no oversight may renew any of its bounds.
+    if nonrenewable:
+        return False
     if last and last.get("escalated") and not last.get("refusal"):
         # The judge handed this to the operator and the card has not settled
         # the task yet (unresolved starts, most often). Raise it again rather
