@@ -12,8 +12,7 @@
 # leak is PHYSICALLY unable to starve etcd/root. ext4 remains the default. XFS
 # provisioning and ext4-to-XFS migration are separate, explicit gates.
 #
-#   node-4 already has its dedicated NVMe bind-mounted onto the path (fstab), so
-#   `mountpoint -q` is true there and this DaemonSet leaves it untouched. Even
+#   An existing dedicated-device bind mount is left untouched. Even
 #   with migration enabled, only the exact managed loop image is eligible.
 #   The masters (node-1/2/3) have nothing mounted there, so they get the loop
 #   cap from day one (near-empty scratch, hard-capped so a leak cannot spill onto
@@ -84,7 +83,7 @@ spec:
             - /bin/sh /opt/embervm/scratch-prep.sh && exec sleep infinity
           # Readiness IS the contract's liveness signal: only Ready once scratch is
           # a mountpoint in the host namespace (whether this DaemonSet's loop cap or
-          # node-4's pre-existing bind), so `kubectl get daemonset` on this chart
+          # a pre-existing device bind), so `kubectl get daemonset` on this chart
           # tells an operator whether every FC node's scratch contract is satisfied
           # without reading logs.
           readinessProbe:

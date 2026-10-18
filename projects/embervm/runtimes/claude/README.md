@@ -2,7 +2,7 @@
 
 Session-class guest image that runs the Claude Code CLI headlessly under a shim
 speaking the frozen HTTP-over-vsock guest contract on port 1027. Part of issue
-[#4055](https://github.com/jomcgi/homelab/issues/4055).
+[#4055](https://github.com/jomcgi-org/homelab/issues/4055).
 
 ## Why the CLI and not the API
 
@@ -266,19 +266,15 @@ divergence is recorded in `EXPECTED_DIVERGENCE` in
   `ember.env.*` boot arguments, decoded by guest-init before the shim starts, and
   the shim configures Git when it spawns or resumes the CLI, so a session can
   carry its principal without an identity baked into the image. Note that the
-  identity is plumbed but nothing commits with it yet: per-session branches,
-  per-turn commits, and a diff endpoint are tracked in
-  [#4070](https://github.com/jomcgi/homelab/issues/4070). Until that lands there
-  is no record of what a session changed, which is the main gap in this runtime.
+  shim captures a per-turn workspace diff. Automatic per-session branches,
+  per-turn commits, and a dedicated diff endpoint were proposed in
+  [#4070](https://github.com/jomcgi-org/homelab/issues/4070), which closed as
+  not planned on 2026-09-14. The Git identity alone does not implement them.
 - **`HOME` must be writable** by uid 65532: the CLI writes `~/.claude.json` and
   session transcripts under `~/.claude/projects/`.
 
 ## Open items
 
-- **No record of what a session changed.** Per-session branches, per-turn
-  commits, and a diff endpoint are tracked in
-  [#4070](https://github.com/jomcgi/homelab/issues/4070). The git identity is
-  already plumbed; nothing uses it yet.
 - **Regenerating `apko.lock.json` needs Linux.** apko will not run on darwin
   (`cannot execute binary file`), so relocking is a podman job. There is also a
   bootstrap order to respect: the `apko.translate_lock` entry in `MODULE.bazel`

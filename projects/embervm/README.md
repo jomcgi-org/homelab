@@ -26,7 +26,7 @@ substrate:
 | [QUICKSTART.md](QUICKSTART.md) | Bootstrap one Linux host, run a hello-world task, and exercise session bank/relight continuity |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The design, standalone: current state and decided future, the capability matrix, invariants, threat model, and platform contract |
 | [STPA.md](STPA.md) | The safety model: unsafe control actions and feedback that drive the system into a loss, with severity |
-| [deploy/README.md](deploy/README.md) | The reference deployment: fleet shape, node enrollment, warmth GC operations |
+| [deploy/README.md](deploy/README.md) | The GKE hub reference deployment: value layers, placement, store and read-only preflight |
 | [ARCHITECTURE.md, section 13](ARCHITECTURE.md#13-decision-history) | Why: each decision's status and where its rationale now lives (the `**Why.**` paragraph per section) |
 | [specs/](specs/) | TLA+ models (`adoption`, `bank_relight`, `quota`, `session_create`), run under TLC in the build |
 
@@ -38,7 +38,7 @@ substrate:
 | `noded/`    | Go node daemon: Firecracker driver, vsock, tap/DNAT, node-local activators |
 | `crd/`      | Workload CRD samples                                                   |
 | `proto/`    | gRPC contract between the control plane and noded                      |
-| `runtimes/` | Guest runtimes (zip lane plus bazel, claude, k3s, postgres); vsock guest contract in its README |
+| `runtimes/` | Guest runtimes: bazel, claude, k3s, pi, ping, postgres, python (zip lane), and shotter; each has its own README |
 | `tokenbroker/`, `image/`, `scratch-prep/` | Token broker, base image build, scratch provisioning |
 | `xds/`      | Envoy endpoint publisher sidecar                                       |
 | `chart/`, `deploy/` | Helm chart and ArgoCD wiring                                   |

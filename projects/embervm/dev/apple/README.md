@@ -4,13 +4,15 @@ Run a local HTTP scan server backed by the real EmberVM Firecracker driver.
 The persistent Linux host has 4 vCPUs and 10 GiB RAM. The server keeps four ARM
 microVM slots, each with 1 vCPU and 1536 MiB RAM, restored from one shared snapshot.
 
-This is the first development milestone of [#6132](https://github.com/jomcgi-org/homelab/issues/6132).
-It proves cold boot, snapshot/restore, HTTP over vsock, separate guest memory
+This is a local driver and synthetic-workload harness. It checks cold boot,
+snapshot/restore, HTTP over vsock, separate guest memory
 and tmpfs state, and teardown. The synthetic server adds bounded admission,
 fresh guests per scan, pool replenishment, overload, cancellation and drain.
 The workload generates files, matches a fixed `TODO` marker and hashes the files
-repeatedly inside the guest. It is not Semgrep. The real warm scan-server still
-needs an ARM artifact, and the production task library has not been extracted.
+repeatedly inside the guest. It does not run Semgrep. The former scan-pod
+programme [#6132](https://github.com/jomcgi-org/homelab/issues/6132) closed on
+2026-09-18 when Joe took that work outside the factory; its closure is not
+evidence of a production scanner or task-library delivery.
 
 ## Run
 
@@ -113,12 +115,12 @@ new instances; use a new name to validate an updated host configuration.
 
 ## Resources and limits
 
-Four guests reserve `4 * (1536 + 192) + 512 = 7424 MiB` under the proposed
-production budget. The 10 GiB outer host leaves space for Linux and preparation.
+Four guests account for `4 * (1536 + 192) + 512 = 7424 MiB` in this harness's
+sizing model. The 10 GiB outer host leaves space for Linux and preparation.
 All four guest vCPUs share the outer host's four vCPUs with Firecracker and the
 probe. This is development sizing, not a throughput or exclusive-core claim.
 The tiny guest does not dirty its entire configured RAM, so these measurements
-do not establish Semgrep's memory or latency requirements.
+do not establish another workload's memory or latency requirements.
 
 The probe and synthetic server run with the jailer disabled and accept only
 bounded built-in workloads. They do not establish adversarial isolation, per-VM OOM
@@ -131,8 +133,8 @@ Do not use this development server to execute untrusted workloads.
 The Firecracker URL and checksum come from `MODULE.bazel`, matching the
 repository pin. The development kernel is an upstream Firecracker CI ARM
 kernel pinned in `kernel.json`; it differs from the deployed Kata kernel.
-ARM snapshots stay on this development host. The later amd64 Kubernetes
-deployment must build and validate its own snapshots.
+ARM snapshots stay on this development host. The amd64 Kubernetes deployment
+builds its own snapshots; this harness does not validate them.
 
 ## Diagnostics and cleanup
 
@@ -166,19 +168,12 @@ the Mac supports nested virtualization and that the instance was created from
 this template. The runner checks both the KVM API version and actual VM creation
 before starting Firecracker.
 
-## Next milestones
+## Scope
 
-1. Supply an ARM experimental Semgrep scan-server artifact and prove its warm
-   readiness and scanning inside this environment. Resolve token delivery to
-   the pre-existing snapshotted scanner process and reseeding before TLS.
-2. Extract the native Go task library, then add the HTTP scan service and bounded
-   primed pool. Extend the same local command to scan fixtures, saturate the pool,
-   cancel work, and drain cleanly.
-3. Deploy one Kubernetes size class with OCI rootfs delivery into `emptyDir`,
-   per-pod snapshots, probes, Guaranteed QoS, fail-closed admission and a completed
-   jailer. Validate memory/CPU/PID containment before untrusted workloads.
-4. Add capacity metrics, HPA, and additional size classes after measuring actual
-   scanner parallelism and pod warm-up. Validate these on the target EKS nodes.
+The supported local commands exercise the built-in probe and synthetic HTTP
+server. A scanner artifact, production task-library extraction, and a new
+Kubernetes deployment are outside this guide. Outstanding work belongs in
+an open issue with its own acceptance criteria.
 
 Platform references: [Apple nested virtualization](https://developer.apple.com/documentation/virtualization/vzgenericplatformconfiguration/isnestedvirtualizationsupported),
 [Lima configuration](https://github.com/lima-vm/lima/blob/master/templates/default.yaml),
