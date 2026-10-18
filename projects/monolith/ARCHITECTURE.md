@@ -2258,3 +2258,48 @@ Routine-job MCP listing is paginated (twenty rows by default, fifty maximum),
 omits payloads and free-form summaries, and runs its database read off the event
 loop. Follow `next_offset` to inspect retained history without an unbounded tool
 response. A null next-run timestamp can mean an unresolved hold, not completion.
+
+**Why progress observations precede larger backstops.** The candidate policy uses
+$500 list-price-equivalent per session and $1,000 cumulatively per issue/objective
+as emergency maximums, never targets or renewed allocations. It remains shadow
+only. `FACTORY_PROGRESS_SHADOW_ENABLED=true` enables deterministic observations
+before the legacy watchdog's spend gate, under a separate audit action exposed in
+task detail. The default is off. Observation cannot pause, resume, admit, fund,
+clear a watchdog decision, or change graph eligibility. Existing $50 task,
+$200 objective, work-turn and per-node limits retain their own owners.
+
+The collector reuses the funding owner's immutable objective identities and
+counts each native session turn once, including prior admissions. It separates
+known list prices, provider-reported amounts, unknown/reserved exposure, and
+recorded watchdog assessment costs. Provider-reported amounts may themselves be
+list estimates; cash billing and subscription quota remain unknown here. The
+report is a lower-bound observation of attributed work, not proof of complete
+coverage or of remaining safe headroom. It does not replace #6716's outcome
+report or #7000's quota display.
+
+The five candidate classes are progressing, waiting, stalled, authority-blocked
+and insufficient evidence. Fixtures distinguish verified reproducibility,
+hypothesis elimination, tests, resolved review findings, constraints and changed
+next decisions from repeated evidence. Negative results can change a decision.
+Commits, PR numbers, renamed nodes, command names and worker activity claims do
+not suffice. Today's collector can verify server refusals and execution/authority
+waits; semantic result validators are explicitly not connected. No candidate
+classification grants execution authority.
+
+Live replacement of the watchdog requires evidence validation and an accepted
+shadow observation under the existing #6781 human owner. Enforcement of larger
+list-price backstops additionally requires authoritative incremental metering,
+versioned pricing, complete objective attribution, atomic admission and a bounded
+stop path that preserves uncertainty until exact cessation. Terminal token usage
+alone cannot implement a hard in-flight cap. Raising funding's $200 ceiling or a
+receipt's $50 allocation alone would not supply these guarantees, remove the
+work-turn/per-node limits, or grant paid API authority. No provider quota, global
+cash limit, credential or security setting follows from this candidate policy.
+
+Ordinary planning defaults to one capable implementation session and independent
+exact-head review. Non-trivial work uses xhigh effort within pinned model policy;
+initial investigation must name the uncertainty and decision it enables. Under
+#6743, related cleanup uses the existing dependency-ordered atomic plan operation,
+including replacement and retained review/correction reserves. Bounded blocker
+feedback explains refusal without cascading, weakening eligibility, or refunding
+history. Server-owned correction/re-review remains unchanged.

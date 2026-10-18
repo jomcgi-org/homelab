@@ -800,7 +800,10 @@ def check(task_id: str, policy: dict) -> str:
     """One tick of the watchdog for one active task. Returns what it did."""
     controls = _controls()
     watch_policy = controls.progress_watchdog_policy(policy)
-    if not watch_policy["enabled"]:
+    shadow_enabled = (
+        os.getenv("FACTORY_PROGRESS_SHADOW_ENABLED", "false").lower() == "true"
+    )
+    if not watch_policy["enabled"] and not shadow_enabled:
         return "disabled"
     threshold = watch_policy["threshold_usd"]
     from factory.orchestration.factory_models import FactoryReceipt
@@ -818,6 +821,18 @@ def check(task_id: str, policy: dict) -> str:
             or controls.is_advisory(controls.receipt_task_class(receipt))
         ):
             return "not_watched"
+        if shadow_enabled:
+            from factory.orchestration import factory_progress_shadow
+
+            # Separate audit action, before the monetary gate. Shadow failures
+            # cannot disable the existing watchdog or clear an operator fence.
+            try:
+                factory_progress_shadow.observe(db, receipt, policy)
+            except Exception:
+                db.rollback()
+                logger.exception("factory progress shadow failed for %s", task_id)
+        if not watch_policy["enabled"]:
+            return "disabled"
         trail = _trail(db, task_id)
         watch = state(trail, threshold)
         spent = spend(db, task_id, watch["assessment_cost_usd"])
@@ -914,6 +929,16 @@ def detail(db, task_id: str | None, policy: dict | None) -> dict | None:
     watch_policy = controls.progress_watchdog_policy(policy or {})
     trail = _trail(db, task_id)
     watch = state(trail, watch_policy["threshold_usd"])
+    from factory.orchestration.factory_models import FactoryAudit
+
+    shadow = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action == "progress_shadow_assessed",
+        )
+        .order_by(FactoryAudit.id.desc())
+    ).first()
     return {
         "enabled": watch_policy["enabled"],
         "threshold_usd": watch_policy["threshold_usd"],
@@ -922,6 +947,7 @@ def detail(db, task_id: str | None, policy: dict | None) -> dict | None:
         "assessment_cost_usd": round(watch["assessment_cost_usd"], 6),
         "paused_by_watchdog": watch["open"] is not None,
         "last": watch["last"],
+        "shadow": _detail(shadow) if shadow else None,
     }
 
 

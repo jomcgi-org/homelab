@@ -1701,3 +1701,101 @@ def test_conductor_funding_name_alone_cannot_bypass_graph_budget(db):
     task = make_task(db, budget=0.5)
     result = add_work(task, "conductor_funding_fake", 0, model="astra", max_cost_usd=1)
     assert result.refusal_code == "budget_exceeded"
+
+
+def test_discard_feedback_names_sorted_bounded_blockers(db):
+    task_id = make_task(db, budget=100)
+    assert add_work(task_id, "root", 0).ok
+    for index in reversed(range(12)):
+        assert add_work(task_id, f"child_{index:02d}", 12 - index, deps=["root"]).ok
+    with Session(db) as session:
+        child = session.exec(
+            select(SwarmPlanNode).where(SwarmPlanNode.node_key == "child_00")
+        ).one()
+        child.armed_at = datetime.now(timezone.utc)
+        session.commit()
+    result = discard(task_id, "root", 13)
+    assert not result.ok and result.refusal_code == "dependents"
+    assert "child_00 (protected: child_00 is armed" in result.detail
+    assert ", child_01 (inactive)" in result.detail
+    assert "child_09 (inactive); 2 more omitted" in result.detail
+    assert "child_10" not in result.detail
+    assert current_version(task_id) == 13
+
+
+def test_inactive_chain_replaced_in_one_dependent_first_batch(db):
+    task_id = make_task(db)
+    assert apply_plan(
+        task_id,
+        [
+            plan_add("preflight"),
+            plan_add("fix", ["preflight"]),
+            plan_add("review", ["fix"]),
+        ],
+    ).ok
+    result = apply_plan(
+        task_id,
+        [
+            {
+                "op": "discard_node",
+                "node_key": key,
+                "stated_reason": "obsolete inactive chain",
+            }
+            for key in ("review", "fix", "preflight")
+        ]
+        + [plan_add("replacement"), plan_add("independent_review", ["replacement"])],
+        expected_version=3,
+    )
+    assert result.ok and result.version == 8
+    assert [n["node_key"] for n in load_graph(task_id)] == [
+        "replacement",
+        "independent_review",
+    ]
+    assert len(load_graph(task_id, 3)) == 3
+
+
+@pytest.mark.parametrize("failure", ["wrong_order", "active", "over_budget", "stale"])
+def test_chain_replacement_preserves_atomic_fences(db, failure):
+    task_id = make_task(db)
+    assert apply_plan(
+        task_id,
+        [
+            plan_add("preflight"),
+            plan_add("fix", ["preflight"]),
+            plan_add("review", ["fix"]),
+        ],
+    ).ok
+    if failure == "active":
+        assert admit_dispatch(task_id, "preflight", dispatch_key="active").ok
+    order = (
+        ("preflight", "fix", "review")
+        if failure == "wrong_order"
+        else ("review", "fix", "preflight")
+    )
+    result = apply_plan(
+        task_id,
+        [
+            {"op": "discard_node", "node_key": key, "stated_reason": "obsolete chain"}
+            for key in order
+        ]
+        + [
+            plan_add("replacement", max_cost_usd=100 if failure == "over_budget" else 1)
+        ],
+        expected_version=2 if failure == "stale" else 3,
+    )
+    assert not result.ok
+    assert (
+        result.refusal_code
+        == {
+            "wrong_order": "dependents",
+            "active": "armed",
+            "over_budget": "budget_exceeded",
+            "stale": "stale_version",
+        }[failure]
+    )
+    assert current_version(task_id) == 3
+    assert {n["node_key"] for n in load_graph(task_id)} == {
+        "preflight",
+        "fix",
+        "review",
+    }

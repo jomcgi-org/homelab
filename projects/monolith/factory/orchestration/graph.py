@@ -752,8 +752,28 @@ def _discard_node_locked(
     # decision 5.
     if activities_claim_write:
         return _refuse(db, task, "discard_node", args, version, "write_claimed")
-    if any(node_key in _node_deps(other) for other in live.values()):
-        return _refuse(db, task, "discard_node", args, version, "dependents")
+    dependents = sorted(
+        (other for other in live.values() if node_key in _node_deps(other)),
+        key=lambda other: other.node_key,
+    )
+    if dependents:
+        # Use the same locked snapshot and eligibility owner as the discard.
+        # This is feedback, never cascade authority or a promise a later edit
+        # will remain eligible. Bound both the number and size of identities.
+        blockers = []
+        for other in dependents[:10]:
+            protection = _unsettled_reason(db, task_id, other)
+            state = f"protected: {protection[:160]}" if protection else "inactive"
+            blockers.append(f"{other.node_key[:128]} ({state})")
+        omitted = len(dependents) - len(blockers)
+        detail = "dependent nodes: " + ", ".join(blockers)
+        if omitted:
+            detail += f"; {omitted} more omitted"
+        detail += (
+            "; retire only eligible obsolete dependents first in one atomic plan, "
+            "then this node; preserve required dependencies and uncertain work"
+        )
+        return _refuse(db, task, "discard_node", args, version, "dependents", detail)
 
     new_version = version + 1
     db.add(
