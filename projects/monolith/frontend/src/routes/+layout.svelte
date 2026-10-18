@@ -19,18 +19,16 @@
   // hooks.js reroute keeps the browser path un-prefixed, but match the
   // /public|/private prefixes too in case a route is hit directly.
   //
-  // Docs under /docs are likewise suppressed: DocsShell renders its own
-  // purpose-built topbar (back-to-apex link, docs search, repository link), so the
-  // global site nav would just stack a second sticky bar on top of it. Matches
-  // /docs and /docs/* but not unrelated prefixes like /docstore.
-  // Blog pages use their own technical drawing chrome, matching the docs
-  // suppression for /blog and /blog/*.
-  // Slop pages carry technical drawing chrome (Trail + scheme switch), so the
-  // site nav would stack a second bar on top of it.
+  // Blog, docs, engineering and slop pages carry the technical drawing
+  // chrome (Trail + scheme switch, site sections in the spine), so the
+  // site nav would stack a second bar on top of it. Every page migrated to
+  // that language joins this list until the nav itself retires. The docs
+  // pattern matches /docs and /docs/* but not unrelated prefixes like
+  // /docstore.
   //
-  // Error pages (notably the brutalist 404 in src/routes/+error.svelte) also
-  // suppress the nav: a not-found page renders its own "back home" affordance
-  // and the cross-tier nav would only clutter the dead-end.
+  // Error pages (the 404 in src/routes/+error.svelte) also suppress the
+  // nav: a not-found page renders its own "back home" affordance and the
+  // cross-tier nav would only clutter the dead-end.
   //
   // Artifacts under /artifact/* (ADR 024 goosecracker) are full-bleed sandboxed
   // pages: the page is a 100vh iframe with body overflow hidden, meant to fill
@@ -48,6 +46,7 @@
       /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?blog(\/|$)/.test($page.url.pathname) ||
+      /^\/(public\/|private\/)?engineering(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?slop(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?artifact(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?ember(\/|$)/.test($page.url.pathname) ||

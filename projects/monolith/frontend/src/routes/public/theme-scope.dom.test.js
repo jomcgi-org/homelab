@@ -10,6 +10,7 @@ import PublicLayout from "./+layout.svelte";
 const styles = [
   "../../lib/styles/shared/tokens.css",
   "../../lib/public/styles/design-system.css",
+  "../../lib/public/styles/technical-drawing.css",
   "../../lib/public/ember/ember.css",
   "../../lib/grimoire/theme.css",
 ]
@@ -83,14 +84,20 @@ describe("rendered theme scopes", () => {
     expect(token(document.documentElement, "--cream")).toBe("#f1ebdc");
   });
 
-  it("renders the root error boundary with the brutalist palette", async () => {
+  it("renders the root error boundary as a technical-drawing sheet without the public marker", async () => {
     const target = mountInBody(ErrorBoundary);
     await tick();
 
-    expect(target.querySelector(".nf")).not.toBeNull();
-    expect(target.querySelector(".public-theme")).not.toBeNull();
-    expect(token(document.body, "--accent")).toBe("#ffde01");
-    expect(token(document.body, "--coral")).toBe("#ff7169");
+    const sheet = target.querySelector("main.td.sheet");
+    expect(sheet).not.toBeNull();
+    expect(target.querySelector(".public-theme")).toBeNull();
+    expect(document.body.matches(":has(.public-theme)")).toBe(false);
+    expect(token(sheet, "--sheet")).toBe("#ffffff");
+    expect(token(sheet, "--ink")).toBe("#26231c");
+    // The design-system bridge resolves to the page's own tokens.
+    expect(token(sheet, "--ds-surface")).toBe("#ffffff");
+    expect(token(sheet, "--ds-ink")).toBe("#26231c");
+    expect(token(document.documentElement, "--accent")).toBe("#0066ff");
   });
 
   it("keeps rendered Grimoire and Ember surfaces distinct inside the public scope", async () => {

@@ -87,46 +87,30 @@
 
 <svelte:window onkeydown={onWindowKeydown} onclick={onWindowClick} />
 
-<div class="docs-search" bind:this={rootEl}>
-  <span class="docs-search-icon" aria-hidden="true">
-    <svg width="14" height="14" viewBox="0 0 24 24">
-      <circle
-        cx="11"
-        cy="11"
-        r="7"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-      />
-      <path
-        d="M21 21 L16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-      />
-    </svg>
-  </span>
-  <input
-    bind:this={inputEl}
-    bind:value={query}
-    type="search"
-    class="docs-search-input"
-    placeholder="Search docs"
-    aria-label="Search documentation"
-    autocomplete="off"
-    onfocus={() => (open = true)}
-    onkeydown={onKeydown}
-  />
-  <kbd class="docs-search-kbd" aria-hidden="true">⌘K</kbd>
+<div class="search" bind:this={rootEl}>
+  <p class="sec-label">/ Search</p>
+  <div class="field">
+    <input
+      bind:this={inputEl}
+      bind:value={query}
+      type="search"
+      class="input"
+      placeholder="Search docs"
+      aria-label="Search documentation"
+      autocomplete="off"
+      onfocus={() => (open = true)}
+      onkeydown={onKeydown}
+    />
+    <kbd aria-hidden="true">⌘K</kbd>
+  </div>
 
   {#if open && results.length}
-    <ul class="docs-search-results" role="listbox">
-      {#each results as d, i}
+    <ul class="results" role="listbox">
+      {#each results as d, i (d.slug)}
         <li role="option" aria-selected={i === activeIndex}>
           <a
             href={`/docs/${d.slug}`}
-            class="docs-search-item"
+            class="result"
             class:active={i === activeIndex}
             onmouseenter={() => (activeIndex = i)}
             onclick={(e) => {
@@ -134,144 +118,135 @@
               pick(d);
             }}
           >
-            <span class="docs-search-title">{d.title}</span>
-            <span class="docs-search-context">{d.project} · {d.label}</span>
+            <span class="title">{d.title}</span>
+            <span class="context">{d.project} / {d.label}</span>
           </a>
         </li>
       {/each}
     </ul>
   {:else if open && query.trim()}
-    <div class="docs-search-empty">No matches</div>
+    <p class="empty">No matches</p>
   {/if}
 </div>
 
 <style>
-  .docs-search {
+  .search {
     position: relative;
+    margin-bottom: 1.8rem;
+  }
+
+  /* One outlined box partitioned by a rule: the input, then the shortcut
+     hint as its own cell. */
+  .field {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard-sm);
+    align-items: stretch;
+    border: 1px solid var(--stroke);
+    background: var(--sheet);
   }
 
-  .docs-search-icon {
-    display: grid;
-    place-items: center;
-    color: var(--ink-3);
-    flex: 0 0 auto;
-  }
-
-  .docs-search-input {
-    border: none;
-    outline: none;
+  .input {
+    flex: 1;
+    min-width: 0;
+    padding: 0.45em 0.6em;
+    border: 0;
     background: transparent;
-    font-family: var(--mono);
-    font-size: 12px;
-    letter-spacing: 0.04em;
     color: var(--ink);
-    width: 150px;
-    padding: 0;
+    font-family: var(--font-code);
+    font-size: 0.75rem;
   }
 
-  .docs-search-input::placeholder {
-    color: var(--ink-3);
+  .input::placeholder {
+    color: var(--ink-2);
   }
 
-  /* Strip the native search clear affordance for a consistent brutalist look. */
-  .docs-search-input::-webkit-search-decoration,
-  .docs-search-input::-webkit-search-cancel-button {
+  .input::-webkit-search-decoration,
+  .input::-webkit-search-cancel-button {
     appearance: none;
   }
 
-  .docs-search-kbd {
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--ink-3);
-    border: 1px solid var(--rule-2);
-    border-radius: 3px;
-    padding: 1px 5px;
-    flex: 0 0 auto;
+  .input:focus-visible {
+    outline: 2px solid var(--accent-ink);
+    outline-offset: -2px;
   }
 
-  /* ── Dropdown ── */
-  .docs-search-results {
+  kbd {
+    display: flex;
+    align-items: center;
+    padding: 0 0.6em;
+    border-left: 1px solid var(--stroke);
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.62rem;
+  }
+
+  /* The results drop over the page as one more outlined panel on the sheet;
+     the active row is marked the way the spine marks a selection. */
+  .results,
+  .empty {
     position: absolute;
-    top: calc(100% + 6px);
+    top: 100%;
     right: 0;
     left: 0;
     z-index: 60;
+    margin: -1px 0 0;
+    padding: 0;
+    border: 1px solid var(--ink);
+    background: var(--sheet);
     list-style: none;
-    margin: 0;
-    padding: 6px;
+  }
+
+  .results {
     max-height: min(60vh, 420px);
     overflow-y: auto;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard);
   }
 
-  .docs-search-item {
+  .results li + li {
+    border-top: 1px solid var(--line);
+  }
+
+  .result {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 10px;
+    flex-direction: column;
+    gap: 0.15em;
+    padding: 0.5em 0.6em 0.5em 0.5rem;
+    border-left: 2px solid transparent;
     text-decoration: none;
-    border: 2px solid transparent;
-    transition:
-      background 120ms ease,
-      border-color 120ms ease;
   }
 
-  .docs-search-item.active {
-    border-color: var(--ink);
-    background: var(--accent);
+  .result.active {
+    border-left-color: var(--accent-ink);
+    background: var(--band);
   }
 
-  .docs-search-title {
-    font-family: var(--sans);
-    font-size: 13px;
-    font-weight: 600;
+  .title {
     color: var(--ink);
+    font-size: 0.8rem;
+    font-weight: 600;
     line-height: 1.25;
   }
 
-  .docs-search-context {
-    flex: 0 0 auto;
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
+  .result.active .title {
+    color: var(--accent-ink);
+  }
+
+  .context {
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.62rem;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: var(--ink-3);
   }
 
-  .docs-search-empty {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    left: 0;
-    z-index: 60;
-    padding: 12px;
-    text-align: center;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink-3);
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard);
+  .empty {
+    padding: 0.6em;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.72rem;
   }
 
-  @media (max-width: 720px) {
-    .docs-search-kbd {
+  @media (max-width: 760px) {
+    kbd {
       display: none;
-    }
-    .docs-search-input {
-      width: 96px;
     }
   }
 </style>

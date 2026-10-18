@@ -1,21 +1,18 @@
 <script>
   /**
-   * Diagram node: hard-shadowed ink-bordered chip. Boxes are neutral
-   * (paper) by default so colour never has to be decoded; the one
-   * exception is `role="external"`, which gets a single tint to mark
-   * genuine third-party systems (HuggingFace, Cloudflare, AISStream).
-   * That "yours vs the outside world" split is the only distinction
-   * that holds across every diagram, so it is the only one we colour.
-   * The other role names are kept for authoring intent and a11y, but
-   * render identically.
+   * Diagram part: one outlined cell with a mono label and an optional
+   * sub-label. Parts are neutral so colour never has to be decoded; the one
+   * exception is `role="external"`, drawn with a dashed outline to mark a
+   * genuine third-party system (HuggingFace, Cloudflare, AISStream). That
+   * "yours vs the outside world" split is the only distinction that holds
+   * across every diagram, so it is the only one drawn. The other role names
+   * are kept for authoring intent and render identically.
    * @type {{ role?: 'source'|'process'|'store'|'output'|'external', sub?: string, children: import('svelte').Snippet }}
    */
   let { role = "process", sub = "", children } = $props();
-
-  const bg = role === "external" ? "var(--diagram-external)" : "var(--paper)";
 </script>
 
-<span class="dbox mono" style:background={bg}>
+<span class="dbox" class:external={role === "external"}>
   {@render children()}
   {#if sub}<span class="dbox-sub">{sub}</span>{/if}
 </span>
@@ -23,26 +20,29 @@
 <style>
   .dbox {
     display: inline-flex;
+    flex: none;
     flex-direction: column;
+    gap: 2px;
     align-items: center;
     justify-content: center;
-    text-align: center;
-    gap: 2px;
-    border: 2px solid var(--ink);
-    border-radius: 6px;
-    box-shadow: var(--shadow-hard-sm);
-    padding: 8px 12px;
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
+    padding: 0.5em 0.8em;
+    border: 1px solid var(--ink);
+    background: var(--sheet);
     color: var(--ink);
-    flex-shrink: 0;
+    font-family: var(--font-code);
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.3;
+    text-align: center;
+  }
+
+  .dbox.external {
+    border-style: dashed;
   }
 
   .dbox-sub {
-    font-size: 10px;
-    font-weight: 400;
     color: var(--ink-2);
-    letter-spacing: 0.02em;
+    font-size: 0.64rem;
+    font-weight: 400;
   }
 </style>

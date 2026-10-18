@@ -1,9 +1,14 @@
 # Design system
 
-This directory contains the experimental shared `--ds-*` token contract from
-ADR platform/013. The contract remains wired for compatibility, but #4449
-superseded the broader migration and primitive programme. Current frontend work
-is not required to adopt it.
+This directory contains the shared `--ds-*` token contract from ADR
+platform/013 and the opt-in primitives built on it (#6873 to #6876). Since
+2026-10-17 the frontend converges on the technical-drawing language (#7016):
+on a sheet the page tokens in
+`projects/monolith/frontend/src/lib/public/styles/technical-drawing.css` are
+the source of truth, and every `--ds-*` role is derived from them inside
+`.td`, so a primitive from this package renders in the page's scheme with no
+`data-ds-theme` boundary. The themes in `tokens/technical-drawing.css` remain
+the explicit boundaries for a surface outside a sheet.
 
 This directory is the package. It is not the design documentation. For how
 the three themes look, why they are kept apart, the resolved token-collision
@@ -55,26 +60,28 @@ link, so the generated target is dead weight that shows up as permanent
 The contract is wired; production pages do not consume the shared primitives.
 As of this README:
 
-- The package is linked and the stylesheet loads on every route, but no
-  production Svelte or CSS file in the frontend reads a `var(--ds-*)` token, and none of
-  the three themes overrides a `--ds-*` token inside its scope class. The new
-  technical-drawing export is opt-in and not yet consumed by any page.
+- The package is linked and the stylesheet loads on every route. The
+  technical-drawing sheet (`.td` in the frontend's
+  `technical-drawing.css`) derives every `--ds-*` role from its page
+  tokens, which is the one production scope that defines them; no
+  production page consumes a primitive yet. The package's own
+  technical-drawing export stays opt-in for surfaces outside a sheet.
 - The five conflicting public tokens are scoped to
   `body:has(.public-theme)`, while the shared defaults remain at `:root`.
-  The public layout and root error boundary mount that marker, so the
-  brutalist palette follows the rendered surface rather than stylesheet
-  import order.
+  The public layout mounts that marker, so the legacy brutalist palette
+  follows the rendered surface rather than stylesheet import order; the
+  root error boundary moved to the sheet and no longer needs it.
 - Opt-in controls and navigation primitives exist under `components/`, with
   synthetic SSR/hydration fixtures. No production page consumes them. There is
   no `jomcgi.dev/design` gallery or Storybook. #4449 requires no migration.
 - #6875 adds an opt-in data-display primitive set under `data-display/`,
   exercised by synthetic fixtures only. No production page consumes it.
 
-The live styling rules remain the three per-theme stylesheets named in
-`.impeccable.md`, and that file is the document to follow when touching any
-of them. The broader contract migration and primitive programme are no longer
-outstanding work. This preserves the package history without turning it into
-an adoption requirement.
+The live styling rules are the shared sheet and, until each surface
+migrates, the three legacy stylesheets named in `.impeccable.md`; that file
+is the document to follow when touching any of them. The `--ds-*` contract
+migration of #4449 is not outstanding work: a page adopts the sheet, and
+the roles come with it.
 
 ## Controls and navigation
 

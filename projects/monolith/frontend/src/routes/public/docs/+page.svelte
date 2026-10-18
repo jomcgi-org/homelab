@@ -13,108 +13,40 @@
 />
 
 <DocsShell sidebar={data.sidebar} activeSlug="">
-  <header class="docs-hero">
-    <p class="eyebrow">Homelab</p>
-    <h1>Documentation</h1>
-    <p class="lede">
-      Current-state documentation for the public projects, rendered from the
-      repository.
-    </p>
-  </header>
+  <section class="edition intro" aria-labelledby="docs-h">
+    <div class="ed-head">
+      <span
+        ><span class="num">{data.projects.length}</span> public projects</span
+      >
+    </div>
+    <div class="ed-lead">
+      <h1 id="docs-h">{data.meta.title}</h1>
+      <p>{data.meta.description}</p>
+    </div>
+  </section>
 
-  <section class="docs-overview" aria-label="Public projects">
-    {#each data.projects as project}
-      <article class="project-card">
-        <h2><a href={`/docs/${project.slug}`}>{project.title}</a></h2>
-        <p class="project-name mono">{project.project}</p>
-        <p class="project-excerpt">{project.excerpt}</p>
-        <DocsTabs tabs={project.tabs} compact />
+  <section class="editions ruled" aria-label="Public projects">
+    {#each data.projects as project (project.project)}
+      <article class="edition">
+        <div class="ed-head">
+          <span>{project.project}</span>
+          <span class="end">
+            <DocsTabs tabs={project.tabs} />
+          </span>
+        </div>
+        <div class="ed-lead">
+          <h2><a href={`/docs/${project.slug}`}>{project.title}</a></h2>
+          {#if project.excerpt}
+            <p>{project.excerpt}</p>
+          {/if}
+        </div>
       </article>
     {/each}
   </section>
 </DocsShell>
 
 <style>
-  .docs-hero {
-    margin-bottom: 32px;
-  }
-
-  .docs-hero h1 {
-    font-family: var(--serif);
-    font-weight: 400;
-    font-size: 3em;
-    letter-spacing: -0.02em;
-    line-height: 1;
-    margin: 6px 0 14px;
-  }
-
-  .lede {
-    font-family: var(--sans);
-    font-size: 1.05em;
-    line-height: 1.6;
-    color: var(--ink-2);
-    max-width: 64ch;
-  }
-
-  .docs-overview {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 18px;
-  }
-
-  .project-card {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    padding: 20px;
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    box-shadow: var(--shadow-hard-sm);
-  }
-
-  .project-card h2 {
-    padding: 0;
-    margin: 0 0 2px;
-    border: 0;
-    font-family: var(--serif);
-    font-size: 1.5em;
-    font-weight: 400;
-    letter-spacing: -0.01em;
-  }
-
-  .project-card h2 a {
-    color: var(--ink);
-    text-decoration: none;
-  }
-
-  .project-card h2 a:hover {
-    text-decoration: underline;
-    text-decoration-color: var(--coral);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 3px;
-  }
-
-  .project-name {
-    margin: 0 0 14px;
-    color: var(--ink-3);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .project-excerpt {
-    flex: 1 1 auto;
-    margin: 0 0 18px;
-    font-family: var(--sans);
-    font-size: 0.92em;
-    line-height: 1.55;
-    color: var(--ink-2);
-  }
-
-  @media (max-width: 720px) {
-    .docs-overview {
-      grid-template-columns: minmax(0, 1fr);
-    }
+  .intro {
+    margin-bottom: 1.5rem;
   }
 </style>

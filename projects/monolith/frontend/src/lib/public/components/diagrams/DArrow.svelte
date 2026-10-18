@@ -1,73 +1,103 @@
 <script>
   /**
-   * Flow arrow with an optional edge label. Horizontal in a desktop
-   * flow; rotates to vertical when the parent flow stacks (under 720px).
+   * Flow arrow with an optional edge label: a 1px ink shaft with an open
+   * head, the way movement is drawn in the keyed figures. The shaft spans
+   * whatever width the label needs, so a label never overruns its arrow.
+   * Horizontal in a wide flow; turns vertical when the parent flow stacks
+   * (under 720px).
    * @type {{ label?: string }}
    */
   let { label = "" } = $props();
 </script>
 
-<span class="darrow mono" aria-hidden="true">
-  {#if label}<span class="darrow-label">{label}</span>{/if}
-  <svg viewBox="0 0 34 12" width="34" height="12">
-    <line x1="0" y1="6" x2="26" y2="6" stroke="var(--ink)" stroke-width="2.5" />
-    <path
-      d="M24,1 L33,6 L24,11"
-      fill="none"
-      stroke="var(--ink)"
-      stroke-width="2.5"
-      stroke-linejoin="round"
-    />
-  </svg>
+<span class="darrow" aria-hidden="true">
+  <span class="darrow-label">{label}</span>
+  <span class="shaft">
+    <span class="line"></span>
+    <svg class="head" viewBox="0 0 8 12" width="8" height="12">
+      <path
+        d="M0.5,0.5 L7,6 L0.5,11.5"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1"
+        stroke-linejoin="miter"
+      />
+    </svg>
+  </span>
+  <span class="darrow-under"></span>
 </span>
 
 <style>
-  /* The arrowhead (svg) is the alignment anchor: it is vertically
-     centred against the box row, and the label is absolutely positioned
-     ABOVE it. Stacking the label in normal flow (the old approach) shifted
-     a labelled arrow's head lower than an unlabelled one, so heads landed
-     at different heights within the same diagram. Anchoring on the svg
-     keeps every arrowhead on the box centre line, labelled or not. */
+  /* Three rows of equal weight above and below the shaft keep every
+     arrowhead on the row's centre line whether or not it carries a label;
+     a label sitting in normal flow above the shaft used to push labelled
+     arrows lower than unlabelled ones in the same drawing. */
   .darrow {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    flex-shrink: 0;
+    display: inline-grid;
+    flex: none;
+    grid-template-rows: minmax(0.95rem, auto) 12px minmax(0.95rem, auto);
+    align-items: end;
+    justify-items: stretch;
+    min-width: 2.2rem;
+    color: var(--ink);
   }
 
   .darrow-label {
-    position: absolute;
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    margin-bottom: 2px;
-    font-size: 9px;
-    letter-spacing: 0.08em;
+    padding: 0 0.35em 0.1em;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.6rem;
+    letter-spacing: 0.06em;
+    text-align: center;
     text-transform: uppercase;
-    color: var(--ink-3);
     white-space: nowrap;
-    /* Opaque chip matching the diagram panel surface, so a label that is
-       wider than its arrow masks the dashed group border it overlaps
-       instead of visually clipping into it. */
-    background: var(--paper);
-    padding: 0 4px;
-    border-radius: 3px;
+  }
+
+  .shaft {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 12px;
+  }
+
+  .line {
+    flex: 1;
+    height: 1px;
+    background: currentColor;
+  }
+
+  .head {
+    flex: none;
+    display: block;
   }
 
   @media (max-width: 720px) {
-    .darrow svg {
-      transform: rotate(90deg);
-    }
-    /* Stacked layout: the label sits to the side of the rotated arrow
-       rather than floating above it. */
     .darrow {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      align-items: center;
       align-self: center;
-      gap: 6px;
+      min-width: 0;
     }
-    .darrow-label {
-      position: static;
-      transform: none;
-      margin-bottom: 0;
+
+    .darrow-under {
+      display: none;
+    }
+
+    .shaft {
+      flex-direction: column;
+      width: 12px;
+      height: 2.2rem;
+    }
+
+    .line {
+      width: 1px;
+      height: auto;
+    }
+
+    .head {
+      transform: rotate(90deg);
     }
   }
 </style>

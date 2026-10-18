@@ -1757,6 +1757,22 @@ Authenticated or writable features stay on private routes or use narrowly scoped
 public writers, accepting the public route composition as a load-bearing review
 and test boundary (ADR security/004).
 
+**Why (visual language).** On 2026-10-17 Joe decided that every surface
+converges on the technical-drawing language the blog and the slop factory
+already use, after the cohesive-theme exploration in #6822: one bright sheet,
+a spine beside a text measure, records in outlined panels, one mono label
+style, meaningful colour only, light and dark from one toggle. The shared
+vocabulary lives in `src/lib/public/styles/technical-drawing.css` (the tokens,
+the `.sheet` page classes, and the `--ds-*` roles that let the
+`@homelab/design-system` primitives render on a sheet), with the trail, the
+site index and the scheme chrome under `src/lib/public/components/`. Four
+separate systems were kept apart on purpose until then; `.impeccable.md`
+records each one's vetoes. The cost was four sets of chrome, three duplicated
+page vocabularies and a public baseline no other page could share. The
+engineering index, the docs and the root error page moved first; #7016 tracks
+the rest, surface by surface, and the three legacy stylesheets leave the tree
+with their last consumer.
+
 ## 9. Observability and health
 
 `/healthz` is process liveness. `/api/health` executes a database query and all
@@ -1907,6 +1923,7 @@ this table when the work ships or the issue closes without it.
 | --- | --- | --- | --- |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
+| Every public, private and friends surface renders in the technical-drawing language; the brutalist, ember and grimoire stylesheets retire with their last consumer | section 8, visual language | #7016 | foundation, `/engineering`, `/docs` and the root error page shipped; home, cv, the apps, the private and friends tiers remain |
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
 | Retire the household gateway and its exclusively owned schema, retaining shared data | section 5, Household gateway retired | #6915 | repository retirement staged; merge, rollout, migration and shared-job acceptance remain |
 | Platform invitations create Authentik-linked platform users; application grants and campaign membership remain separate, with reusable HTTP/MCP management commands | [Platform enrollment and access](auth/architecture.md) | #6858 | design recorded; API, enrollment binding, permissions and MCP implementation remain unbuilt; signup remains disabled |
