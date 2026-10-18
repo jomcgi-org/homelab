@@ -125,6 +125,7 @@ def test_factory_tools_are_registered():
         "factory_status",
         "factory_escalations",
         "factory_decide",
+        "factory_amend_policy",
         "factory_request_brief",
         "factory_context",
     } <= registered, f"factory tools not registered; got: {sorted(registered)}"
@@ -530,6 +531,17 @@ def test_escalations_payload_passes_through_an_uninitialised_factory(monkeypatch
             {"action": "stop", "request_key": "stop", "expected_version": 1},
         ),
         ("factory_task_detail", {"receipt_id": 1}),
+        (
+            "factory_amend_policy",
+            {
+                "operation": "apply",
+                "receipt_id": 1,
+                "overlay": {"task_budget_usd": 65},
+                "direction": "continue",
+                "request_key": "amend",
+                "expected_preview_sha256": "a" * 64,
+            },
+        ),
         (
             "factory_decide",
             {

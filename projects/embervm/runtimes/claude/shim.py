@@ -2277,7 +2277,8 @@ def _valid_result_receipt(receipt):
     """Validate per-invocation metadata before any model work starts."""
     return (
         isinstance(receipt, dict)
-        and set(receipt) == {"id", "token"}
+        and set(receipt) in ({"id", "token"}, {"id", "token", "runtime_meter"})
+        and ("runtime_meter" not in receipt or receipt["runtime_meter"] is True)
         and isinstance(receipt["id"], str)
         and re.fullmatch(r"[0-9a-f]{32}", receipt["id"]) is not None
         and isinstance(receipt["token"], str)
@@ -2417,6 +2418,82 @@ def _publish_result_receipt(receipt, record):
             time.sleep(RESULT_RECEIPT_BACKOFF_SECONDS)
     _emit_result_receipt_failure(reason)
     return False
+
+
+class _RuntimeMeter:
+    """Acknowledged per-invocation counters; failure stops the current adapter.
+
+    Separate from lossy progress. The server prices native counters and retains
+    the exact invocation reservation. This is an observed-usage stop, not a
+    pre-request bound on provider spend.
+    """
+
+    def __init__(self, receipt):
+        self.receipt = receipt
+        self.sequence = 0
+        parsed = urllib.parse.urlsplit(os.environ.get("EMBER_PROGRESS_URL", ""))
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise RuntimeError("runtime meter endpoint unavailable")
+        self.url = urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, "/ingest/meter/" + receipt["id"], "", "")
+        )
+        proxy_url = "http://%s:%s" % (
+            EGRESS_LOCALHOST,
+            int(os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))),
+        )
+        self.opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}),
+            _ResultReceiptNoRedirect(),
+        )
+
+    def send(self, usage, coverage="parent"):
+        payload = {
+            "sequence": self.sequence,
+            "coverage": coverage,
+            "usage": {
+                key: usage.get(
+                    "cache_read_tokens" if key == "cached_input_tokens" else key, 0
+                )
+                for key in ("input_tokens", "output_tokens", "cached_input_tokens")
+            },
+        }
+        results = []
+
+        def post():
+            try:
+                request = urllib.request.Request(
+                    self.url,
+                    data=json.dumps(payload).encode(),
+                    method="POST",
+                    headers={
+                        "Authorization": "Bearer " + self.receipt["token"],
+                        "Content-Type": "application/json",
+                    },
+                )
+                with self.opener.open(request, timeout=2) as response:
+                    raw = response.read(4097)
+                    if response.status == 200 and len(raw) <= 4096:
+                        results.append(json.loads(raw))
+            except Exception:  # noqa: BLE001 - no acknowledged evidence means stop.
+                return
+
+        worker = threading.Thread(target=post, daemon=True)
+        worker.start()
+        worker.join(timeout=3)
+        ack = results[0] if results and not worker.is_alive() else {}
+        if (
+            not isinstance(ack, dict)
+            or ack.get("receipt_id") != self.receipt["id"]
+            or ack.get("sequence") != self.sequence
+            or ack.get("stop") is not False
+        ):
+            raise RuntimeError("runtime meter refused or acknowledgement unavailable")
+        self.sequence += 1
 
 
 class _ProgressPusher:
@@ -3739,6 +3816,7 @@ url = %s
         progress_token=None,
         system_prompt=None,
         effort=None,
+        runtime_meter=None,
     ):
         if effort is not None and effort not in CLAUDE_EFFORT_LEVELS:
             raise ValueError("invalid Codex effort")
@@ -3747,6 +3825,9 @@ url = %s
         )
         effort = default_effort if effort is None else effort
         with self.turn_lock:
+            meter = _RuntimeMeter(runtime_meter) if runtime_meter else None
+            if meter:
+                meter.send({})
             cli_ready_start = _turn_timing_now()
             if self.session_id and session_id and session_id != self.session_id:
                 raise SessionConflictError(
@@ -3934,6 +4015,29 @@ url = %s
                     self._handle_server_request(event)
                     event_type = event.get("method")
                     params = event.get("params", {})
+                    # Account before parent-result filtering. An unverified
+                    # descendant cannot silently consume another allocation.
+                    # Stop rather than claiming complete child coverage.
+                    if meter and event_type == "thread/tokenUsage/updated":
+                        raw_usage = params.get("tokenUsage", {})
+                        samples = [raw_usage.get("total"), raw_usage.get("last")]
+                        valid_usage = any(
+                            isinstance(sample, dict) for sample in samples
+                        )
+                        valid_usage &= all(
+                            sample is None
+                            or (
+                                isinstance(sample, dict)
+                                and all(
+                                    type(sample.get(field, 0)) is int
+                                    and sample.get(field, 0) >= 0
+                                    for _, field in _CODEX_USAGE_FIELDS
+                                )
+                            )
+                            for sample in samples
+                        )
+                        if params.get("threadId") != self.session_id or not valid_usage:
+                            meter.send(usage, "unknown")
                     if event_type == "turn/started":
                         started_id = params.get("turn", {}).get("id")
                         if (
@@ -4036,6 +4140,8 @@ url = %s
                         elif token_usage != last_token_usage:
                             usage = {key: usage.get(key, 0) + last[key] for key in last}
                         last_token_usage = token_usage
+                        if meter:
+                            meter.send(usage)
                     if activities_are_stale:
                         cached_activities = activity_from_events(events)[-300:]
                         activities_are_stale = False
@@ -4091,6 +4197,15 @@ url = %s
                             "voice": voice_summary(result_text),
                             "activities": activity_from_events(events),
                         }
+            except Exception:
+                if meter:
+                    # Never call interrupt() from its own event reader: it
+                    # waits for _turn_done, which this reader must publish.
+                    # Kill this adapter while its turn lock excludes newer
+                    # work. The server still requires exact guest cessation.
+                    self._partial_turn = _partial_turn(self, locals())
+                    self._close_process(kill=True)
+                raise
             finally:
                 if getattr(self, "_interrupt_requested", False):
                     self._partial_turn = _partial_turn(self, locals())
@@ -6674,6 +6789,7 @@ class ProcessManager:
         dispatch_id=None,
         turn_seq=None,
         effort=None,
+        runtime_meter=None,
     ):
         total_start = _turn_timing_now()
         self._turn_started_at = total_start
@@ -6714,6 +6830,8 @@ class ProcessManager:
                 )
             self._hydrate_workspace(repo, branch)
         adapter = self._adapter(model)
+        if runtime_meter is not None and adapter is not self.codex:
+            raise RuntimeError("runtime metering requires the supported Codex adapter")
         checkout_dir = os.path.join(
             getattr(self, "workspace", DEFAULT_WORKSPACE), "src"
         )
@@ -6756,6 +6874,8 @@ class ProcessManager:
                     )
                 elif adapter is self.codex:
                     effort_arg = {"effort": effort} if effort is not None else {}
+                    if runtime_meter is not None:
+                        effort_arg["runtime_meter"] = runtime_meter
                     record = adapter.turn(
                         message,
                         session_id,
@@ -7096,6 +7216,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if "result_receipt" in payload and not _valid_result_receipt(result_receipt):
             self._send(400, {"error": "invalid result_receipt metadata"})
             return
+        if (
+            result_receipt
+            and result_receipt.get("runtime_meter")
+            and not payload.get("dispatch_id")
+        ):
+            self._send(400, {"error": "runtime meter requires exact dispatch"})
+            return
         system_prompt = payload.get("system_prompt")
         if system_prompt is not None and (
             not isinstance(system_prompt, str) or not system_prompt.strip()
@@ -7153,6 +7280,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             thinking_override = {"thinking": thinking} if thinking is not None else {}
             effort_override = {"effort": effort} if effort is not None else {}
             dispatch = {"dispatch_id": dispatch_id.strip()} if dispatch_id else {}
+            if result_receipt and result_receipt.get("runtime_meter"):
+                dispatch["runtime_meter"] = result_receipt
             if payload.get("turn_seq") is not None:
                 dispatch["turn_seq"] = payload["turn_seq"]
             record = self.manager.turn(

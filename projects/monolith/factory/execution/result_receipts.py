@@ -7,6 +7,7 @@ restart adoption, capacity release, guest stop, or retry in this module.
 """
 
 import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -49,6 +50,14 @@ def enabled() -> bool:
     return os.getenv("AGENT_RESULT_RECEIPTS_ENABLED", "false").lower() == "true"
 
 
+def required(local_session_id: str) -> bool:
+    """Metered factory work cannot bypass receipts through the optional flag."""
+    return enabled() or (
+        local_session_id.startswith("factory:")
+        and os.getenv("FACTORY_RUNTIME_METER_ENABLED", "false").lower() == "true"
+    )
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -59,6 +68,29 @@ def _aware(value):
 
 def _sha(value: bytes):
     return hashlib.sha256(value).hexdigest()
+
+
+@contextmanager
+def _prepare_transaction(session_id):
+    # Match admission's lock order. Interactive sessions keep their existing
+    # owner and are never silently enrolled in factory policy.
+    if os.getenv("FACTORY_RUNTIME_METER_ENABLED", "false").lower() != "true":
+        with Session(get_engine()) as db, db.begin():
+            yield db, False
+        return
+    with Session(get_engine()) as probe:
+        local_id = probe.exec(
+            select(AgentSession.local_session_id).where(AgentSession.id == session_id)
+        ).first()
+    metered = bool(local_id and local_id.startswith("factory:"))
+    if metered:
+        from factory.orchestration import factory_controls
+
+        with factory_controls._locked_session() as (db, _control):
+            yield db, True
+    else:
+        with Session(get_engine()) as db, db.begin():
+            yield db, False
 
 
 def prepare_receipt(
@@ -90,7 +122,7 @@ def prepare_receipt(
     # Import lazily: the existing store imports the transport which calls here.
     from factory.execution import store
 
-    with Session(get_engine()) as db, db.begin():
+    with _prepare_transaction(session_id) as (db, metered):
         admission.lock_pool(db)
         db.execute(
             update(AgentSession)
@@ -167,7 +199,12 @@ def prepare_receipt(
             retain_until=now + timedelta(days=RETAIN_DAYS),
         )
         db.add(receipt)
-        return {"id": receipt.id, "token": token}
+        result = {"id": receipt.id, "token": token}
+        if metered:
+            from factory.orchestration import factory_runtime_meter as meter
+
+            result["runtime_meter"] = meter.bind(db, receipt, agent, request_body)
+        return result
 
 
 def _receipt_metadata(db: Session, receipt_id: str) -> dict | None:

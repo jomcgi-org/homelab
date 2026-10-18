@@ -200,7 +200,8 @@ def snapshot(engine, sid):
 
 
 @pytest.fixture
-def attempt(database, operator_client, monkeypatch):
+def attempt(database, operator_client, monkeypatch, request):
+    worker_model = getattr(request, "param", "luna")
     policy = {
         "repo": REPO,
         "issue_numbers": [7, 8],
@@ -209,9 +210,9 @@ def attempt(database, operator_client, monkeypatch):
         "max_turns_per_task": 8,
         "task_budget_usd": 30.0,
         "turn_budget_usd": 2.0,
-        "allowed_models": ["opus", "luna"],
+        "allowed_models": ["opus", worker_model],
         "conductor_model": "opus",
-        "worker_model": "luna",
+        "worker_model": worker_model,
         "base_branch": "main",
         "turn_timeout_seconds": 3600,
         "task_timeout_seconds": 14400,
@@ -254,7 +255,7 @@ def attempt(database, operator_client, monkeypatch):
         node_key="implement_fix",
         kind="work",
         prompt="Implement the bounded fix",
-        model="luna",
+        model=worker_model,
         deps=[],
         max_cost_usd=2.0,
         side_effects=True,
@@ -268,7 +269,7 @@ def attempt(database, operator_client, monkeypatch):
     sid = execution_api.start_session_for_swarm(
         f"factory:{task_id}:implement_fix:1",
         pin["prompt"],
-        "luna",
+        worker_model,
         REPO,
         pin["hydration_branch"],
         workflow_id=pin["workflow_id"],
@@ -1056,3 +1057,55 @@ def test_review_cannot_stop_a_replacement_physical_invocation(running):
         )
     assert audits(s, "attempt_stop_requested") == []
     assert snapshot(s.engine, s.sid) == s.original
+
+
+@pytest.mark.parametrize("attempt", ["astra"], indirect=True)
+def test_native_meter_trip_uses_existing_exact_stop_and_holds_exposure(
+    running, monkeypatch
+):
+    from factory.orchestration import factory_runtime_meter as meter
+
+    s = running
+    monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "true")
+    pending = s.original["pending"][0]
+    receipt = result_receipts.prepare_receipt(
+        s.sid,
+        pending["claimed_by_replica"],
+        pending["dispatch_count"],
+        "s-original",
+        b'{"model":"astra","dispatch_id":"original-dispatch"}',
+    )
+    value = {
+        "sequence": 0,
+        "coverage": "parent",
+        "usage": {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0},
+    }
+    assert not meter.ingest(receipt["id"], receipt["token"], value)["stop"]
+    value["sequence"] = 1
+    value["usage"]["output_tokens"] = 10000000
+    assert meter.ingest(receipt["id"], receipt["token"], value)["stop"]
+    fenced = snapshot(s.engine, s.sid)
+    assert fenced["pending"] == []
+    assert fenced["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
+    assert fenced["permits"][0]["state"] == "uncertain"
+    assert len(audits(s, "attempt_stop_requested")) == 1
+    assert s.ember.deletes == []
+    meter.reconcile(s.task_id)
+    assert len(audits(s, "attempt_stop_requested")) == 1
+    s.heartbeat.release()
+    assert s.ember.exited.wait(3)
+    tick_until(s, lambda: s.ember.view["stop_intent"] is not None)
+    assert snapshot(s.engine, s.sid)["permits"][0]["state"] == "uncertain"
+    s.ember.complete_stop()
+    tick_until(s, lambda: graph.node_runs(s.task_id)[0]["status"] == "failed")
+    settled = snapshot(s.engine, s.sid)
+    assert settled["permits"][0]["outcome"] == "guest_cessation_confirmed"
+    assert s.dbos.started == []
+    with Session(s.engine) as db:
+        assert controls._receipt(db, s.task_id).task_paused
+        assert (
+            db.exec(select(FactoryStart).where(FactoryStart.task_id == s.task_id))
+            .one()
+            .max_cost_usd
+            == 2
+        )

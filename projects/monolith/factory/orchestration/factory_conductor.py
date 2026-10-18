@@ -8184,6 +8184,12 @@ def tick() -> None:
 def _watch_progress(task: dict) -> None:
     """The no-progress watchdog, ahead of dispatch so a pause fences it."""
     from factory.orchestration.factory_progress_watchdog import check
+    from factory.orchestration.factory_runtime_meter import reconcile
+
+    try:
+        reconcile(task["task_id"])
+    except Exception:  # noqa: BLE001 - other supervision still runs
+        logger.exception("factory runtime meter failed for task %s", task["task_id"])
 
     try:
         check(task["task_id"], task["policy"])
