@@ -414,7 +414,7 @@ func makeView(stored storedObservation, now time.Time) View {
 		Status: obs.Status, ReachedType: obs.ReachedType, OverageStatus: obs.OverageStatus,
 		ReceivedAt: stored.ReceivedAt, Exhausted: obs.Status == "rejected",
 		Windows: make([]ViewWindow, 0, len(obs.Windows)),
-		Pacing: derivePacing(obs, now),
+		Pacing:  derivePacing(obs, now),
 	}
 	if observedAt, err := time.Parse(time.RFC3339, obs.ObservedAt); err == nil {
 		view.AgeSeconds = now.Sub(observedAt).Seconds()
