@@ -17,6 +17,7 @@ public tier on plain SQL over granted tables.
 from __future__ import annotations
 
 import re
+from core.clock import as_utc, iso
 from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Integer, JSON
@@ -67,19 +68,9 @@ class FactoryGoalIssue(SQLModel, table=True):
     snapshotted_at: datetime = Field(sa_type=DateTime(timezone=True))
 
 
-def _as_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 def _iso(value: datetime | None) -> str | None:
-    coerced = _as_utc(value)
-    if coerced is None:
-        return None
-    return coerced.isoformat().replace("+00:00", "Z")
+    stamp = iso(value)
+    return None if stamp is None else stamp.replace("+00:00", "Z")
 
 
 def validate_goals(goals: list[dict], declared_by: str) -> list[dict]:
@@ -133,7 +124,7 @@ def score_goals(
     issues: list[dict] | None = None,
 ) -> list[dict]:
     """Score declared goals against merged PRs, newest declaration first."""
-    now_utc = _as_utc(now) or _utc_now()
+    now_utc = as_utc(now) or _utc_now()
     issues_by_number = {row["number"]: row for row in issues or []}
     scored = []
     for goal in goals:
@@ -149,7 +140,7 @@ def score_goals(
         for issue in snapshots:
             refs.update(issue["closing_prs"])
             for field in ("closed_at", "last_closing_merge_at"):
-                stamp = _as_utc(issue.get(field))
+                stamp = as_utc(issue.get(field))
                 if stamp is not None:
                     hit_times.append(stamp)
         for row in hits:
@@ -159,10 +150,10 @@ def score_goals(
                     merged_at = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
                 except ValueError:
                     continue
-            merged_at = _as_utc(merged_at)
+            merged_at = as_utc(merged_at)
             if merged_at is not None:
                 hit_times.append(merged_at)
-        declared_at = _as_utc(goal.get("declared_at"))
+        declared_at = as_utc(goal.get("declared_at"))
         age_days = (
             max(0, (now_utc - declared_at).days) if declared_at is not None else None
         )
@@ -219,7 +210,7 @@ def list_active_goals(session: Session) -> list[dict]:
             "statement": row.statement,
             "issue_numbers": list(row.issue_numbers or []),
             "declared_by": row.declared_by,
-            "declared_at": _as_utc(row.declared_at),
+            "declared_at": as_utc(row.declared_at),
         }
         for row in rows
     ]

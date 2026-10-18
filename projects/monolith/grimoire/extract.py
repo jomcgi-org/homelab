@@ -965,26 +965,6 @@ def _strip_fences(text: str) -> str:
     return _FENCE_RE.sub("", text.strip())
 
 
-def _is_retryable(exc: Exception) -> bool:
-    """Return True for transient errors worth retrying."""
-    if isinstance(
-        exc,
-        (
-            httpx.ConnectError,
-            httpx.ConnectTimeout,
-            httpx.ReadTimeout,
-            httpx.WriteError,
-            httpx.RemoteProtocolError,
-            httpx.PoolTimeout,
-            httpx.NetworkError,
-        ),
-    ):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500:
-        return True
-    return False
-
-
 class OpenRouterClient:
     """Thin async client for OpenRouter's OpenAI-compatible chat completions."""
 
@@ -1226,7 +1206,10 @@ class OpenRouterClient:
                     body = resp.json()
             except Exception as exc:
                 last_exc = exc
-                if not _is_retryable(exc) or attempt == EXTRACT_MAX_RETRIES - 1:
+                if (
+                    not shared.inference.is_retryable(exc)
+                    or attempt == EXTRACT_MAX_RETRIES - 1
+                ):
                     raise OpenRouterError(f"OpenRouter call failed: {exc}") from exc
                 delay = min(
                     EXTRACT_RETRY_BASE_DELAY * (2**attempt), EXTRACT_RETRY_MAX_DELAY

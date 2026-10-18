@@ -46,6 +46,8 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
+from shared.env import float_env
+from shared.inference import extract_json
 from chat.models import Message, ModerationEvent, TrustModel, UserTrust
 from chat.safeguards_forest import predict_forest
 
@@ -86,19 +88,12 @@ def _mode() -> str:
     return mode if mode in ("off", "observe", "live") else _DEFAULT_MODE
 
 
-def _float_env(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, ""))
-    except (TypeError, ValueError):
-        return default
-
-
 def _threshold() -> float:
-    return _float_env("SAFEGUARDS_LOCKOUT_THRESHOLD", _DEFAULT_LOCKOUT_THRESHOLD)
+    return float_env("SAFEGUARDS_LOCKOUT_THRESHOLD", _DEFAULT_LOCKOUT_THRESHOLD)
 
 
 def _recovery_per_day() -> float:
-    return _float_env("SAFEGUARDS_RECOVERY_PER_DAY", _DEFAULT_RECOVERY_PER_DAY)
+    return float_env("SAFEGUARDS_RECOVERY_PER_DAY", _DEFAULT_RECOVERY_PER_DAY)
 
 
 def _owner_id() -> str:
@@ -586,12 +581,6 @@ _INTENT_CATEGORIES = (
 )
 
 
-def _extract_json(raw: str) -> str:
-    s = raw.find("{")
-    e = raw.rfind("}")
-    return raw[s : e + 1] if s != -1 and e != -1 and e > s else raw
-
-
 async def score_intent(payload: dict, *, _caller=None) -> None:
     """Classify one message's adversarial intent and land the verdict on the
     ledger. Fire-and-forget from the bot (asyncio.create_task): it must never
@@ -627,7 +616,7 @@ async def score_intent(payload: dict, *, _caller=None) -> None:
             "No prose, no markdown."
         )
         raw = await caller(prompt)
-        data = json.loads(_extract_json(raw))
+        data = json.loads(extract_json(raw))
         malicious = bool(data.get("malicious", False))
         confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
         category = str(data.get("category", "none"))

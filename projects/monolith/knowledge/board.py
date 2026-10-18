@@ -23,6 +23,7 @@ from typing import Iterator
 from sqlalchemy import update
 from sqlmodel import Session, select
 
+from core.clock import aware
 from auth.api import Authority, Principal, current_principal
 from core.db import get_engine
 from knowledge.models import AgentBoardMessage
@@ -116,10 +117,6 @@ def board_enabled() -> bool:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
 def _binding_error(
@@ -262,7 +259,7 @@ def _post_sync(
         return {
             "id": row.id,
             "status": "posted",
-            "expires_at": _aware(row.expires_at).isoformat(),
+            "expires_at": aware(row.expires_at).isoformat(),
         }
 
 
@@ -313,8 +310,8 @@ def _message_dict(row: AgentBoardMessage, binding: TrustedAgentBinding) -> dict:
         "principal": row.principal,
         "topic": row.topic,
         "body": row.body,
-        "created_at": _aware(row.created_at).isoformat(),
-        "expires_at": _aware(row.expires_at).isoformat(),
+        "created_at": aware(row.created_at).isoformat(),
+        "expires_at": aware(row.expires_at).isoformat(),
         "acknowledged": binding.principal_id in (row.acknowledged_by or []),
         "untrusted": True,
         "provenance": {
@@ -418,7 +415,7 @@ def _ack_sync(
     for _attempt in range(ACK_RETRY_LIMIT):
         with Session(get_engine()) as session:
             row = session.get(AgentBoardMessage, message_id)
-            if row is None or _aware(row.expires_at) <= now:
+            if row is None or aware(row.expires_at) <= now:
                 return {"error": "message_unavailable"}
             if not _can_read_topic(principal, binding, row.topic):
                 return {"error": "message_unavailable"}

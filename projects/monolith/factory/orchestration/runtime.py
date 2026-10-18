@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -7,6 +8,8 @@ from typing import TYPE_CHECKING, NoReturn
 
 from factory.durable_identity import durable_source
 from factory.orchestration import config
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from dbos import DBOSConfig
@@ -258,3 +261,14 @@ def shutdown() -> None:
         _dbos.destroy()
         _dbos = None
         _launched = False
+
+
+def running_app_version() -> str:
+    """DBOS's own app version, or "" when it cannot be read: "cannot tell", never stranded."""
+    try:
+        from dbos._utils import GlobalParams
+
+        return GlobalParams.app_version or ""
+    except Exception:
+        logger.warning("could not read the DBOS app version", exc_info=True)
+        return ""

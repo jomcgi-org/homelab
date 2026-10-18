@@ -35,7 +35,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, or_, select
 
-from grimoire import aliases, library
+from grimoire import aliases, images, library
 from grimoire.access import (
     get_authenticated_email,
     get_authenticated_identity,
@@ -53,7 +53,6 @@ from grimoire.audience import (
 from grimoire.character_facts import project_fact, visible_facts_predicate
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
 from grimoire.handouts import (
-    IMAGE_CONTENT_TYPES,
     MAX_UPLOAD_BYTES,
     handout_bucket,
     handout_entity_ids,
@@ -2774,17 +2773,6 @@ def get_chunk(
     return chunk
 
 
-def _parse_s3_uri(uri: str) -> tuple[str, str] | None:
-    """Split ``s3://bucket/key`` into ``(bucket, key)``; None if malformed."""
-    if not uri.startswith("s3://"):
-        return None
-    rest = uri[len("s3://") :]
-    bucket, _, key = rest.partition("/")
-    if not bucket or not key:
-        return None
-    return bucket, key
-
-
 def _stream_s3_image(
     bucket: str,
     key: str,
@@ -2801,9 +2789,6 @@ def _stream_s3_image(
     """
     from grimoire.ingest import build_s3_client
 
-    suffix = key.rsplit(".", 1)[-1].lower() if "." in key else ""
-    content_type = IMAGE_CONTENT_TYPES.get(suffix, "application/octet-stream")
-
     client = build_s3_client()
     try:
         obj = client.get_object(Bucket=bucket, Key=key)
@@ -2812,16 +2797,11 @@ def _stream_s3_image(
         logger.info("image fetch failed for %s: %s", key, exc)
         raise HTTPException(status_code=404, detail=detail) from exc
 
-    body = obj["Body"]
-
-    def _stream():
-        try:
-            for part in body.iter_chunks(chunk_size=64 * 1024):
-                yield part
-        finally:
-            body.close()
-
-    return StreamingResponse(_stream(), media_type=content_type, headers=headers)
+    return StreamingResponse(
+        images.iter_body(obj["Body"]),
+        media_type=images.content_type(key),
+        headers=headers,
+    )
 
 
 @router.get("/chunks/{chunk_id}/image")
@@ -2840,7 +2820,7 @@ def get_chunk_image(
     chunk = session.get(KnowledgeChunk, chunk_id)
     if chunk is None or not chunk.image_ref:
         raise HTTPException(status_code=404, detail="chunk image not found")
-    parsed = _parse_s3_uri(chunk.image_ref)
+    parsed = images.parse_s3_uri(chunk.image_ref)
     if parsed is None:
         raise HTTPException(status_code=404, detail="chunk image not found")
     bucket, key = parsed
@@ -3795,7 +3775,7 @@ def get_handout_image(
         raise not_found
     if image.get("source") == "chunk":
         chunk = open_licensed_image_chunk(session, str(image.get("chunk_id")))
-        parsed = _parse_s3_uri(chunk.image_ref) if chunk else None
+        parsed = images.parse_s3_uri(chunk.image_ref) if chunk else None
         if parsed is None:
             raise not_found
         bucket, key = parsed

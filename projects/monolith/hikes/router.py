@@ -34,6 +34,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
+from core.clock import as_utc, iso
 from core.db import get_session
 from hikes.models import Walk, WalkHour
 from shared.forecast_freshness import top_of_hour
@@ -52,27 +53,6 @@ _UK_TZ = ZoneInfo("Europe/London")
 # (see the note in cache-headers.js). Mirrors HIKES_WALKS_CACHE_CONTROL in
 # frontend/src/lib/cache-headers.js, keep in sync.
 _WALKS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """Coerce a datetime to tz-aware UTC.
-
-    Postgres returns tz-aware values; SQLite (used in tests) can return
-    naive ones even though we always write tz-aware UTC. Treat naive
-    datetimes as UTC so downstream formatters and ETag stamps are stable
-    across both backends.
-    """
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _iso(value: datetime | None) -> str | None:
-    """ISO-8601 string in UTC, or None. Keeps the JSON consistent across backends."""
-    coerced = _as_utc(value)
-    return coerced.isoformat() if coerced is not None else None
 
 
 # A day is "doable" for a walk when its good hours contain a long-enough slot to
@@ -143,7 +123,7 @@ def _doable_days(hours: list[datetime], duration_h: float) -> list[str]:
 
     indices_by_day: dict[str, list[int]] = {}
     for hour_time in hours:
-        coerced = _as_utc(hour_time)
+        coerced = as_utc(hour_time)
         if coerced is None:
             continue
         day = coerced.astimezone(_UK_TZ).date().isoformat()
@@ -168,7 +148,7 @@ def _window_tuple(row: WalkHour) -> list:
     wind_kmh and cloud_pct were integers in the legacy tuple, so cast them back
     from the DOUBLE PRECISION columns; temp_c/precip_mm stay as stored.
     """
-    coerced = _as_utc(row.hour_time)
+    coerced = as_utc(row.hour_time)
     return [
         int(coerced.timestamp()),
         row.temp_c,
@@ -228,7 +208,7 @@ def get_walks(
     max_fetched: datetime | None = None
     for walk_uuid, hour_time, fetched_at in hour_rows:
         hours_by_walk.setdefault(walk_uuid, []).append(hour_time)
-        coerced = _as_utc(fetched_at)
+        coerced = as_utc(fetched_at)
         if coerced is not None and (max_fetched is None or coerced > max_fetched):
             max_fetched = coerced
 
@@ -263,7 +243,7 @@ def get_walks(
         response.headers[key] = value
     return {
         "count": len(walks),
-        "generated_at": _iso(max_fetched),
+        "generated_at": iso(max_fetched),
         "walks": walks,
     }
 

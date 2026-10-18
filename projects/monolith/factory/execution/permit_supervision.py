@@ -20,6 +20,7 @@ import os
 from sqlalchemy import exists, or_, text
 from sqlmodel import Session, select
 
+from core.clock import aware
 from factory.execution import admission
 from factory.execution.constants import (
     KG_NODE_KEY,
@@ -54,10 +55,6 @@ _TERMINAL_SESSION_STATUSES = frozenset({"failed", "warn", "completed", "cancelle
 
 def _now():
     return datetime.now(timezone.utc)
-
-
-def _aware(value):
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
 def _sha(value):
@@ -117,7 +114,7 @@ def _never_invoked_live_guest(db, permit, agent, turn, observed, guest_id):
         or not never_invoked_view(observed, guest_id)
         or agent.ember_session_id != guest_id
         or agent.result_receipt_fence_id is not None
-        or _now() - _aware(turn.created_at)
+        or _now() - aware(turn.created_at)
         >= timedelta(days=result_receipts.RETAIN_DAYS)
     ):
         return False
@@ -630,7 +627,7 @@ def _record_stale_unbound(candidate):
                 or _has_binding_evidence(agent)
             ):
                 raise ValueError("stale_unbound_proof_missing")
-            if _aware(permit.created_at) >= _now() - timedelta(
+            if aware(permit.created_at) >= _now() - timedelta(
                 seconds=STALE_UNBOUND_SECONDS
             ):
                 raise ValueError("stale_unbound_grace")
@@ -778,7 +775,7 @@ def _record(candidate, observed, observed_at, node_names=None):
             # timestamp. The gap asserted is an invocation's own length, which
             # is far larger than plausible skew between the two clocks.
             if not never_invoked and started > int(
-                _aware(turn.created_at).timestamp() * 1000
+                aware(turn.created_at).timestamp() * 1000
             ):
                 raise ValueError("invoke_after_failed_turn")
             # Idle banking increments generation on the same session. It does
@@ -815,7 +812,7 @@ def _record(candidate, observed, observed_at, node_names=None):
                     observed,
                     recovery,
                     permit.owner,
-                    _aware(turn.created_at),
+                    aware(turn.created_at),
                     allow_failed=True,
                 )
             )
@@ -871,7 +868,7 @@ def _record(candidate, observed, observed_at, node_names=None):
                 observed,
                 recovery,
                 permit.owner,
-                _aware(turn.created_at),
+                aware(turn.created_at),
                 allow_failed=invoke_failed,
             )
             if exact_dispatch:
@@ -900,7 +897,7 @@ def _record(candidate, observed, observed_at, node_names=None):
             if (
                 not exact_dispatch
                 and not never_invoked_live
-                and updated <= int(_aware(turn.created_at).timestamp() * 1000)
+                and updated <= int(aware(turn.created_at).timestamp() * 1000)
             ):
                 raise ValueError("cessation_precedes_turn")
         except ValueError as exc:

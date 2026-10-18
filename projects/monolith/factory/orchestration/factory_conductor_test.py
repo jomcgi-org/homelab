@@ -15767,7 +15767,7 @@ def test_expired_task_with_reserved_work_is_left_alone_until_it_settles(
     monkeypatch.setattr(funding, "request", untouched)
     # A healthy node checkpoints continuously. The running version matches and
     # the newest step is fresh, so neither the strand nor the stall path fires.
-    monkeypatch.setattr(conductor, "_running_app_version", lambda: "running-version")
+    monkeypatch.setattr(conductor, "running_app_version", lambda: "running-version")
     monkeypatch.setattr(
         conductor, "_last_step_epoch_ms", lambda _key: int(time.time() * 1000)
     )

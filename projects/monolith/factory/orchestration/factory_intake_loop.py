@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
+from core.clock import aware
 from factory.orchestration.factory_controls import (
     DEFAULT_TASK_CLASS,
     LANES,
@@ -91,10 +92,6 @@ _EXCLUSION_REASONS = (
 )
 
 
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
-
 def github_list(repo: str, suffix: str) -> list:
     """Bounded list read, imported lazily so the board stays off the reconciler.
 
@@ -173,7 +170,7 @@ def _receipt_exclusion(
     if (
         latest is not None
         and latest.state in ("failed", "cancelled")
-        and _aware(latest.updated_at) >= cooldown_cutoff
+        and aware(latest.updated_at) >= cooldown_cutoff
     ):
         return "cooldown"
     if any(
@@ -218,7 +215,7 @@ def _throttled(action: str, detail: dict, *, session=None) -> None:
     cutoff = _now() - timedelta(seconds=IDLE_AUDIT_SECONDS)
     with _locked_session(session) as (db, _control):
         last = _latest(db, action)
-        if last is not None and _aware(last.created_at) >= cutoff:
+        if last is not None and aware(last.created_at) >= cutoff:
             return
         _audit(db, ACTOR, action, **detail)
 
@@ -276,11 +273,11 @@ def _listing_due(now: datetime) -> bool:
         last = _latest(db, "intake_swept")
         if last is None:
             return True
-        marked = _aware(last.created_at)
+        marked = aware(last.created_at)
         if marked < now - timedelta(seconds=IDLE_AUDIT_SECONDS):
             return True
         admitted = _latest(db, "intake_admitted")
-        if admitted is not None and _aware(admitted.created_at) >= marked:
+        if admitted is not None and aware(admitted.created_at) >= marked:
             return True
         settled = db.exec(
             select(FactoryReceipt.id).where(
@@ -433,7 +430,7 @@ def _local_candidates(
             "html_url": work_item.source_ref
             or f"https://github.com/{repo}/issues/{number}",
             "labels": work_item.labels,
-            "created_at": _aware(created_at).isoformat(),
+            "created_at": aware(created_at).isoformat(),
             "user": None,
         }
         candidates.append(

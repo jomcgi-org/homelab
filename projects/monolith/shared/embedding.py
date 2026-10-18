@@ -6,6 +6,8 @@ import os
 
 import httpx
 
+from shared.inference import is_retryable
+
 logger = logging.getLogger(__name__)
 
 EMBEDDING_URL = os.environ.get("EMBEDDING_URL", "")
@@ -23,26 +25,6 @@ EMBED_CONNECT_TIMEOUT = 5.0
 # bound, so a caller that deliberately sends large batches (bulk ingest) can
 # raise this without affecting the interactive default.
 EMBED_BATCH_READ_TIMEOUT = float(os.environ.get("EMBED_BATCH_READ_TIMEOUT", "60"))
-
-
-def _is_retryable(exc: Exception) -> bool:
-    """Return True for transient errors worth retrying."""
-    if isinstance(
-        exc,
-        (
-            httpx.ConnectError,
-            httpx.ConnectTimeout,
-            httpx.ReadTimeout,
-            httpx.WriteError,
-            httpx.RemoteProtocolError,
-            httpx.PoolTimeout,
-            httpx.NetworkError,
-        ),
-    ):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500:
-        return True
-    return False
 
 
 class EmbeddingClient:
@@ -88,7 +70,7 @@ class EmbeddingClient:
                         ) from e
             except Exception as exc:
                 last_exc = exc
-                if not _is_retryable(exc):
+                if not is_retryable(exc):
                     raise
 
                 delay = min(

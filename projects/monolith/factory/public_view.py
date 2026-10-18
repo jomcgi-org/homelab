@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Any
 
-from core.db import get_session
+from core.db import get_session, row_value
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, text
@@ -105,18 +105,9 @@ _FACTORY_WORK_ITEM_QUERY = text(
 )
 
 
-def _value(row: Any, name: str) -> Any:
-    mapping = getattr(row, "_mapping", None)
-    if mapping is not None:
-        return mapping[name]
-    if isinstance(row, dict):
-        return row[name]
-    return getattr(row, name)
-
-
 def _payload(row: Any) -> dict:
     """JSONB comes back decoded on psycopg; tolerate a driver that returns text."""
-    payload = _value(row, "payload")
+    payload = row_value(row, "payload")
     if isinstance(payload, (str, bytes)):
         payload = json.loads(payload)
     return payload

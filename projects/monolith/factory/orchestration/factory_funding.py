@@ -9,6 +9,7 @@ import httpx
 
 from sqlmodel import select
 
+from core.clock import aware
 from factory.orchestration import (
     factory_controls as controls,
     factory_judge,
@@ -131,9 +132,7 @@ def _dispatch_authority(escalation, option):
 
 
 def _grant_deadline(task, policy):
-    from factory.orchestration import factory_conductor as c
-
-    return c._aware(task.created_at) + timedelta(seconds=policy["task_timeout_seconds"])
+    return aware(task.created_at) + timedelta(seconds=policy["task_timeout_seconds"])
 
 
 def validate_dispatch_refusal(db, row, escalation, option):
@@ -691,7 +690,7 @@ def settle(task, run, request):
                             (
                                 controls._now()
                                 + timedelta(seconds=policy["turn_timeout_seconds"])
-                                - c._aware(task["created_at"])
+                                - aware(task["created_at"])
                             ).total_seconds()
                         ),
                     ),
@@ -707,7 +706,7 @@ def settle(task, run, request):
                     reason=decision["reason"],
                     next_plan=decision["next_plan"],
                     deadline_at=(
-                        c._aware(task["created_at"])
+                        aware(task["created_at"])
                         + timedelta(seconds=overlay["task_timeout_seconds"])
                     ).isoformat(),
                     review_due_at=deadline.isoformat(),

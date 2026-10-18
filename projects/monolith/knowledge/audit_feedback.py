@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 
 import httpx
+from core.clock import aware
 from core.github import GITHUB_API, GITHUB_REPO
 from sqlalchemy import func, or_, text, update
 from sqlmodel import Session, select
@@ -222,7 +223,7 @@ def _claim(engine, now: datetime, settings) -> tuple[str, str, dict] | None:
             )
         existing = session.exec(select(AuditProcessIssue)).all()
         occupied = sum(
-            row.state != "filed" or _aware(row.updated_at) >= now - timedelta(days=7)
+            row.state != "filed" or aware(row.updated_at) >= now - timedelta(days=7)
             for row in existing
         )
         if occupied >= settings.issues_max_per_week:
@@ -259,10 +260,6 @@ def _claim(engine, now: datetime, settings) -> tuple[str, str, dict] | None:
     return None
 
 
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
-
 def _settle(engine, cause: str, number: int | None, now: datetime) -> None:
     with Session(engine) as session:
         # The conditional update also fences late failed searches on SQLite,
@@ -296,7 +293,7 @@ def file_process_issues(*, engine=None, now: datetime | None = None) -> int:
             from core.db import get_engine
 
             engine = get_engine()
-        now = _aware(now or datetime.now(timezone.utc))
+        now = aware(now or datetime.now(timezone.utc))
         filed = 0
         with Session(engine) as session:
             pending = [

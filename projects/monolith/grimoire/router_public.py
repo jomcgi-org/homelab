@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
 from core.db import get_session
-from grimoire import explore, library, public
+from grimoire import explore, images, library, public
 from grimoire.models import EntityType, KnowledgeChunk
 
 router = APIRouter(prefix="/api/grimoire", tags=["grimoire-public"])
@@ -120,39 +120,18 @@ def get_chunk(chunk_id: str, session: Session = Depends(get_session)) -> dict[st
     return chunk
 
 
-def _parse_s3_uri(uri: str) -> tuple[str, str] | None:
-    """Split ``s3://bucket/key`` into ``(bucket, key)``; None if malformed."""
-    if not uri.startswith("s3://"):
-        return None
-    rest = uri[len("s3://") :]
-    bucket, _, key = rest.partition("/")
-    if not bucket or not key:
-        return None
-    return bucket, key
-
-
-_IMAGE_CONTENT_TYPES = {
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "webp": "image/webp",
-    "gif": "image/gif",
-}
-
-
 @router.get("/chunks/{chunk_id}/image")
 def get_chunk_image(
     chunk_id: str, session: Session = Depends(get_session)
 ) -> StreamingResponse:
     """Stream the source illustration behind an image chunk's ``image_ref``.
 
-    Same S3-stream implementation as the private router's endpoint of the
-    same name (router.get_chunk_image): 404s on a missing chunk or a text
-    chunk, reads the object from the shared SeaweedFS S3 endpoint. Kept as a
-    literal copy rather than a shared import so the public tier never has to
-    import grimoire.router (which pulls in the whole grant-filtered surface,
-    campaign models, and the private embedding client dependency); the S3
-    streaming logic itself has no grant concept to duplicate incorrectly.
+    Same S3-stream shape as the private router's endpoint of the same name
+    (router.get_chunk_image): 404s on a missing chunk or a text chunk, reads
+    the object from the shared SeaweedFS S3 endpoint. The URI parsing,
+    content-type lookup and body streaming come from grimoire.images so the
+    public tier never has to import grimoire.router; only the error handling
+    stays local, since the public route narrows it to S3 errors.
     """
     from botocore.exceptions import BotoCoreError, ClientError
 
@@ -165,13 +144,10 @@ def get_chunk_image(
     # gated exactly like the text endpoints (read_book / get_chunk).
     if library.is_book_copyrighted(session, chunk.book_id):
         raise HTTPException(status_code=403, detail="book text is not public")
-    parsed = _parse_s3_uri(chunk.image_ref)
+    parsed = images.parse_s3_uri(chunk.image_ref)
     if parsed is None:
         raise HTTPException(status_code=404, detail="chunk image not found")
     bucket, key = parsed
-
-    suffix = key.rsplit(".", 1)[-1].lower() if "." in key else ""
-    content_type = _IMAGE_CONTENT_TYPES.get(suffix, "application/octet-stream")
 
     client = build_s3_client()
     try:
@@ -181,16 +157,9 @@ def get_chunk_image(
         # so a broken image_ref never 500s the reader.
         raise HTTPException(status_code=404, detail="chunk image not found") from exc
 
-    body = obj["Body"]
-
-    def _stream():
-        try:
-            for part in body.iter_chunks(chunk_size=64 * 1024):
-                yield part
-        finally:
-            body.close()
-
-    return StreamingResponse(_stream(), media_type=content_type)
+    return StreamingResponse(
+        images.iter_body(obj["Body"]), media_type=images.content_type(key)
+    )
 
 
 # --- Entities (no grants: the whole corpus is one global view) -----------

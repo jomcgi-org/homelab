@@ -14,7 +14,7 @@ and defers the rest to a later tick.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import json
 import logging
 import os
@@ -24,6 +24,7 @@ import httpx
 from sqlalchemy import or_
 from sqlmodel import select
 
+from core.clock import aware
 from core.github import GITHUB_API
 from factory.orchestration.factory_controls import (
     ADVISORY_CLASSES,
@@ -116,10 +117,6 @@ class GraphQLRefused(ValueError):
         super().__init__(reason)
         self.code = code
         self.reason = reason
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
 def github_get(repo: str, suffix: str) -> dict:
@@ -258,7 +255,7 @@ def _error(task_id: str, stage: str, exc: Exception) -> None:
             )
             .order_by(FactoryAudit.id.desc())
         ).first()
-        if last is None or _aware(last.created_at) < cutoff:
+        if last is None or aware(last.created_at) < cutoff:
             _audit(
                 db,
                 ACTOR,
@@ -465,7 +462,7 @@ def _deliveries(
                 )
                 .order_by(FactoryAudit.id)
             ).all()
-            merged_at = {row.task_id: _aware(row.created_at) for row in merges}
+            merged_at = {row.task_id: aware(row.created_at) for row in merges}
     result = []
     for row in rows:
         delivery = prs.get(row.task_id)
@@ -488,7 +485,7 @@ def _deliveries(
             row.state != "landing"
             and not touched
             and not landing_held(row)
-            and _aware(row.updated_at) < cutoff
+            and aware(row.updated_at) < cutoff
         ):
             continue
         number, head = delivery
@@ -541,7 +538,7 @@ def _rollout_wait(item: dict, now: datetime) -> dict | None:
         return None
     if merged_at is None:
         return None
-    waited = int((now - _aware(merged_at)).total_seconds() // 60)
+    waited = int((now - aware(merged_at)).total_seconds() // 60)
     if waited < ROLLOUT_WAIT_REPORT_MINUTES:
         return None
     observation = item.get("rollout_observation") or {}
@@ -549,7 +546,7 @@ def _rollout_wait(item: dict, now: datetime) -> dict | None:
         "task_id": item["task_id"],
         "issue_number": item["issue_number"],
         "pr_number": item["pr_number"],
-        "merged_at": _aware(merged_at).isoformat(),
+        "merged_at": aware(merged_at).isoformat(),
         "waited_minutes": waited,
         **{key: observation.get(key) for key in ("reason", "application", "resource")},
     }
@@ -918,7 +915,7 @@ def _verify_rollout(repo: str, item: dict) -> bool:
     previous = item.get("rollout_observation") or {}
     if previous.get("observed_at"):
         observed = datetime.fromisoformat(previous["observed_at"])
-        if (_now() - _aware(observed)).total_seconds() < 60:
+        if (_now() - aware(observed)).total_seconds() < 60:
             return False
     merge_sha = item.get("merge_commit_sha")
     if not merge_sha:

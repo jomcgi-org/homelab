@@ -44,6 +44,7 @@ import time
 import httpx
 from sqlmodel import select
 
+from factory.orchestration.turn_artifact import run_artifact
 from factory.orchestration import graph
 from factory.orchestration.tracing import set_attributes, tracer
 
@@ -197,17 +198,6 @@ def spend(db, task_id: str, assessment_cost_usd: float = 0.0) -> float:
     )
 
 
-def _artifact(run: dict) -> dict:
-    try:
-        outcome = json.loads(run.get("outcome_json") or "{}")
-    except (TypeError, ValueError):
-        return {}
-    if not isinstance(outcome, dict):
-        return {}
-    value = outcome.get("value") or outcome.get("artifact") or {}
-    return value if isinstance(value, dict) else {}
-
-
 def _reason(run: dict) -> str:
     try:
         outcome = json.loads(run.get("outcome_json") or "{}")
@@ -215,7 +205,7 @@ def _reason(run: dict) -> str:
         outcome = {}
     if not isinstance(outcome, dict):
         outcome = {}
-    artifact = _artifact(run)
+    artifact = run_artifact(run)
     said = (
         outcome.get("reason")
         or outcome.get("error")
@@ -229,7 +219,7 @@ def _reason(run: dict) -> str:
 
 def _delivery_marks(run: dict) -> set[str]:
     """The commits and pull requests one attempt reports having produced."""
-    artifact = _artifact(run)
+    artifact = run_artifact(run)
     marks = set()
     for sha in (artifact.get("head_sha"), run.get("head_sha")):
         if isinstance(sha, str) and _SHA.fullmatch(sha) and sha != run.get("base_sha"):
@@ -298,7 +288,9 @@ def evidence(runs: list[dict], trail: list, adds: Counter, watch: dict) -> dict:
             "attempt": r["attempt"],
             "status": r["status"],
             "cost_usd": round(float(r.get("accounted_cost_usd") or 0.0), 4),
-            "head_sha": (_artifact(r).get("head_sha") or r.get("head_sha") or "")[:12]
+            "head_sha": (run_artifact(r).get("head_sha") or r.get("head_sha") or "")[
+                :12
+            ]
             or None,
             "said": _reason(r) or None,
         }
