@@ -3,23 +3,20 @@
 // Scope: internal cluster-ops tools and repos Joe logs into and uses, not the
 // public /app/* apps (those live on the apex and are reachable at jomcgi.dev).
 //
-// Internal hrefs are browser paths on private.jomcgi.dev. The gateway-proxied
-// UIs (argocd/longhorn) live under /app/<name> (Envoy strips the prefix
-// and forwards to the real pod). External tools open in a new tab.
+// Internal hrefs are browser paths on private.jomcgi.dev. ArgoCD has no hub
+// UI route and Longhorn is retired. External tools open in a new tab.
 //
 // Telemetry now lives in Honeycomb, which is external and so opens in a new
 // tab rather than sitting under /app/. The SigNoz tile was removed with SigNoz
 // itself (#5362); its /app/signoz HTTPRoute went with the chart, so the tile
 // was left pointing at a route that no longer resolves.
 export const launcher = [
-  { label: "ArgoCD", desc: "GitOps deploys", href: "/app/argocd" },
   {
     label: "Honeycomb",
     desc: "traces and probes",
     href: "https://ui.honeycomb.io/jomcgi-75/environments/homelab",
     external: true,
   },
-  { label: "Longhorn", desc: "cluster storage", href: "/app/longhorn" },
   { label: "Factory", desc: "autonomous work", href: "/factory" },
   { label: "Qwen", desc: "4090 chat and inference stats", href: "/qwen" },
   { label: "Grimoire", desc: "character sheets", href: "/grimoire" },
@@ -32,8 +29,8 @@ export const launcher = [
   },
   {
     label: "GitHub",
-    desc: "jomcgi/homelab",
-    href: "https://github.com/jomcgi/homelab",
+    desc: "jomcgi-org/homelab",
+    href: "https://github.com/jomcgi-org/homelab",
     external: true,
   },
 ];

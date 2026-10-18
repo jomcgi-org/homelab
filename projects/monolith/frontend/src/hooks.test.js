@@ -6,10 +6,8 @@ function url(hostname, pathname) {
 }
 
 describe("reroute", () => {
-  it("rewrites public.* paths under /public", () => {
-    expect(reroute({ url: url("public.jomcgi.dev", "/slos") })).toBe(
-      "/public/slos",
-    );
+  it("does not map the retired public hostname", () => {
+    expect(reroute({ url: url("public.jomcgi.dev", "/slos") })).toBeUndefined();
   });
 
   it("rewrites private.* paths under /private", () => {
@@ -46,9 +44,7 @@ describe("reroute", () => {
   });
 
   it("leaves already-prefixed paths alone", () => {
-    expect(
-      reroute({ url: url("public.jomcgi.dev", "/public/slos") }),
-    ).toBeUndefined();
+    expect(reroute({ url: url("jomcgi.dev", "/public/slos") })).toBeUndefined();
   });
 
   it("rewrites bare apex paths under /public", () => {
@@ -77,7 +73,7 @@ describe("reroute", () => {
     expect(reroute({ url: url("jomcgi.dev", "/chat/session") })).toBe(
       "/public/chat/session",
     );
-    expect(reroute({ url: url("public.jomcgi.dev", "/chat/share") })).toBe(
+    expect(reroute({ url: url("jomcgi.dev", "/chat/share") })).toBe(
       "/public/chat/share",
     );
   });
@@ -109,9 +105,9 @@ describe("factory private routes", () => {
   it.each(["jomcgi.dev", "public.jomcgi.dev", "friends.jomcgi.dev"])(
     "does not expose private compatibility routes on %s",
     (host) => {
-      expect(reroute({ url: url(host, "/agents/factory") })).not.toContain(
-        "/private/",
-      );
+      expect(
+        reroute({ url: url(host, "/agents/factory") }) ?? "",
+      ).not.toContain("/private/");
       expect(
         reroute({ url: url(host, "/private/agents/session/42") }),
       ).not.toBe("/private/factory/execution/session/42");
@@ -122,5 +118,15 @@ describe("factory private routes", () => {
     expect(reroute({ url: url("private.jomcgi.dev", "/agents-other") })).toBe(
       "/private/agents-other",
     );
+  });
+});
+
+describe("local public previews", () => {
+  it.each(["localhost", "127.0.0.1"])("keeps %s in the public tree", (host) => {
+    expect(reroute({ url: url(host, "/") })).toBe("/public/");
+    expect(reroute({ url: url(host, "/private/notes") })).toBe(
+      "/public/private/notes",
+    );
+    expect(reroute({ url: url(host, "/otel/v1/traces") })).toBeUndefined();
   });
 });
