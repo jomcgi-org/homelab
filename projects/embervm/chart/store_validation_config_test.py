@@ -155,7 +155,10 @@ def test_validation_render_routes_every_store_consumer_to_dev() -> None:
             if container["name"] == "noded":
                 assert "embervm-dev" in env["EMBERVM_NODED_CONTROL_PLANE_URL"]["value"]
             for mount in container.get("volumeMounts", []):
-                if mount["name"] == "nvme" and container["name"] != "wait-for-shared-scratch":
+                if (
+                    mount["name"] == "nvme"
+                    and container["name"] != "wait-for-shared-scratch"
+                ):
                     assert mount.get("subPath") == "dev"
     assert not any("embervm-authentik-agent" in value for value in strings)
     assert not [

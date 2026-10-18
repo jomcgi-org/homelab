@@ -334,9 +334,15 @@ def test_production_application_selects_gcs_and_hub_safe_sqlite_fallback() -> No
         "$values/projects/embervm/deploy/values.yaml",
         "$values/projects/embervm/deploy/values-gke.yaml",
     ]
-    assert helm["releaseName"] == application["spec"]["destination"]["namespace"] == "embervm"
+    assert (
+        helm["releaseName"]
+        == application["spec"]["destination"]["namespace"]
+        == "embervm"
+    )
     values = [Path(os.environ["PROD_VALUES"]), Path(os.environ["GKE_VALUES"])]
-    documents = [d for d in yaml.safe_load_all(_render("embervm", values)) if isinstance(d, dict)]
+    documents = [
+        d for d in yaml.safe_load_all(_render("embervm", values)) if isinstance(d, dict)
+    ]
     assert not [d for d in documents if d["kind"] == "PersistentVolumeClaim"]
     consumers = set()
     for document in documents:
@@ -347,23 +353,39 @@ def test_production_application_selects_gcs_and_hub_safe_sqlite_fallback() -> No
                 if prefix + "ENDPOINT" not in env:
                     continue
                 consumers.add(container["name"])
-                assert env[prefix + "ENDPOINT"]["value"] == "https://storage.googleapis.com"
+                assert (
+                    env[prefix + "ENDPOINT"]["value"]
+                    == "https://storage.googleapis.com"
+                )
                 assert env[prefix + "BUCKET"]["value"] == "h0melab-ember-bases"
                 for suffix in ("ACCESS_KEY_ID", "SECRET_ACCESS_KEY"):
-                    assert env[prefix + suffix]["valueFrom"]["secretKeyRef"]["name"] == "embervm-embervm-store"
+                    assert (
+                        env[prefix + suffix]["valueFrom"]["secretKeyRef"]["name"]
+                        == "embervm-embervm-store"
+                    )
     assert {"control-plane", "noded"} <= consumers
-    assert any(name.startswith("build-") or name == "rootfs-baker" for name in consumers)
+    assert any(
+        name.startswith("build-") or name == "rootfs-baker" for name in consumers
+    )
 
     # The shared deploy layer must not reintroduce Longhorn if SQLite is selected.
     fallback = _render("embervm", values, ["opLog.postgres.enabled=false"])
-    (pvc,) = [d for d in yaml.safe_load_all(fallback) if isinstance(d, dict) and d["kind"] == "PersistentVolumeClaim"]
+    (pvc,) = [
+        d
+        for d in yaml.safe_load_all(fallback)
+        if isinstance(d, dict) and d["kind"] == "PersistentVolumeClaim"
+    ]
     assert pvc["spec"]["storageClassName"] == "standard-rwo"
 
 
-@pytest.mark.parametrize("values_names", [
-    ("DEV_VALUES", "DEV_GKE_VALUES"),
-    ("RECOVERY_VALUES",),
-], ids=["normal-hub-dev", "inactive-recovery"])
+@pytest.mark.parametrize(
+    "values_names",
+    [
+        ("DEV_VALUES", "DEV_GKE_VALUES"),
+        ("RECOVERY_VALUES",),
+    ],
+    ids=["normal-hub-dev", "inactive-recovery"],
+)
 def test_local_only_dev_profiles_have_no_store_identity(values_names) -> None:
     rendered = _render("embervm-dev", [Path(os.environ[n]) for n in values_names])
     endpoints = []
