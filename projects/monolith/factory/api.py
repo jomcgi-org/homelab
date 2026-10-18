@@ -5,6 +5,10 @@ These functions preserve the routine-job and knowledge intervention contracts.
 """
 
 from factory.execution import SUPPORTED_MODELS as SUPPORTED_MODELS
+from factory.access import (
+    OPERATOR_REQUIRED as OPERATOR_REQUIRED,
+    is_operator as is_operator,
+)
 from factory.execution.api import (
     DRAINER_NODE_KEY as DRAINER_NODE_KEY,
     KG_NODE_KEY as KG_NODE_KEY,
