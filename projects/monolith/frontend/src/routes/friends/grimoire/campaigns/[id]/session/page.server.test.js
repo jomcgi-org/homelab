@@ -30,6 +30,8 @@ function backend(role) {
       return response([{ id: "pc-a", character_name: "Aria" }]);
     if (url.endsWith("/sheets")) return response({ versions: [] });
     if (url.endsWith("/sessions")) return response([session]);
+    if (url.endsWith("/initiative"))
+      return response({ round: 1, active_index: null, entries: [] });
     if (url.includes("/events")) return response([]);
     if (url.includes("/journal")) return response({});
     if (url.endsWith("/members")) return response(members);
