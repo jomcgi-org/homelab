@@ -55,6 +55,7 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
         # Nor may unknown merge state on a paused task fall through to generic
         # issue-closed cancellation, which would lose delivery verification.
         if prior is not None:
+            conductor._settle_paused_task(task, policy, runs, merge_unknown=True)
             return True
         if receipt and receipt.task_paused:
             if isinstance(exc, ValueError) or (
@@ -68,6 +69,8 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
             return True
         return False
     if not pr.get("merged") or not conductor.delivery_identity_matches(task, pr):
+        if prior is not None:
+            conductor._settle_paused_task(task, policy, runs, merge_unknown=True)
         return prior is not None
     landing._record(
         task["id"],
@@ -106,6 +109,11 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
                 },
             )
             return True
+        # An observed merge must not suppress the paused deadline forever when
+        # required checks or delivery evidence cannot verify. Keep both ledgers
+        # fenced and allow only deadline escalation, never issue-closed or
+        # legacy pause cancellation. The locked helper is inert when unpaused.
+        conductor._settle_paused_task(task, policy, runs, merge_unknown=True)
         return True
     controls.finish_task(task["id"], "succeeded", conductor.ACTOR, evidence=evidence)
     return True
