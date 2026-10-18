@@ -143,6 +143,181 @@ def pause_trigger(s, trigger):
 
 
 @pytest.mark.parametrize(
+    "blocker", [None, "reserved", "uncertain", "admitted", "dispatched"]
+)
+def test_paused_dependency_review_deadline_releases_slot_without_issue_card(
+    paused_settlement, monkeypatch, caplog, blocker
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    with Session(s.engine) as db, db.begin():
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
+        ).one()
+        receipt.issue_number = 3
+        receipt.direction_json = json.dumps(
+            {
+                "dependency_review": {"pr_number": 3},
+                "delivery_pr_number": 3,
+                "delivery_branch": s.pr["head"]["ref"],
+            }
+        )
+    assert conductor._task(s.task["id"])["issue_number"] is None
+    reader = conductor.github_get
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda repo, path: s.issue if path == "issues/3" else reader(repo, path),
+    )
+    pause_trigger(s, "deadline")
+    if blocker:
+        pause_blocker(s, blocker)
+    before = controls.task_snapshot(s.task["id"])
+    for _ in range(3):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == ("admitted" if blocker else "failed")
+    assert after["starts"] == before["starts"]
+    assert after["committed_cost_usd"] == before["committed_cost_usd"]
+    assert not s.cards
+    assert "factory reconcile failed" not in caplog.text
+    with Session(s.engine) as db:
+        settlements = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "finish_task",
+            )
+        ).all()
+        assert len(settlements) == (0 if blocker else 1)
+    if not blocker:
+        assert after["evidence"]["state"] == "task_deadline"
+
+
+@pytest.mark.parametrize(
+    "blocker", [None, "reserved", "uncertain", "admitted", "dispatched", "settled"]
+)
+def test_tick_aged_reconciler_pause_records_hold_without_settling_live_work(
+    paused_settlement, monkeypatch, blocker
+):
+    from datetime import datetime, timedelta, timezone
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+    with Session(s.engine) as db, db.begin():
+        pause = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "pause_task",
+            )
+        ).one()
+        pause.actor = conductor.ACTOR
+        pause.created_at = datetime.now(timezone.utc) - timedelta(
+            seconds=conductor.FACTORY_RECONCILER_PAUSE_TTL_SECONDS + 1
+        )
+    if blocker:
+        pause_blocker(s, "uncertain" if blocker == "settled" else blocker)
+    if blocker == "settled":
+        expire = conductor._expire_reconciler_pause
+
+        def settle_then_audit(task_id, *, held_only=False):
+            from factory.orchestration.factory_models import FactoryStart
+
+            assert held_only
+            with Session(s.engine) as db, db.begin():
+                start = db.exec(
+                    select(FactoryStart).where(FactoryStart.start_key == "unresolved")
+                ).one()
+                start.status = "failed"
+            return expire(task_id, held_only=held_only)
+
+        monkeypatch.setattr(conductor, "_expire_reconciler_pause", settle_then_audit)
+    before = controls.task_snapshot(s.task["id"])
+    # The held-only path must not cancel if the blocker clears during its read.
+    for _ in range(1 if blocker == "settled" else 3):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == ("admitted" if blocker else "cancelled")
+    assert after["task_paused"] is bool(blocker)
+    if blocker != "settled":
+        assert after["starts"] == before["starts"]
+        assert after["committed_cost_usd"] == before["committed_cost_usd"]
+    with Session(s.engine) as db:
+        held = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "reconciler_pause_expiry_held",
+            )
+        ).all()
+        assert len(held) == (1 if blocker in ("reserved", "uncertain") else 0)
+        if held:
+            assert json.loads(held[0].detail_json)["refusal"] == "unresolved_starts"
+
+
+@pytest.mark.parametrize("failure", [404, 410, "oversized"])
+@pytest.mark.parametrize(
+    "expired,closed,blocker",
+    [
+        (False, False, None),
+        (False, True, None),
+        (True, False, None),
+        (True, True, None),
+        (True, True, "reserved"),
+        (True, True, "uncertain"),
+        (True, True, "admitted"),
+        (True, True, "dispatched"),
+        (True, True, "observed_merge"),
+    ],
+)
+def test_paused_definitive_pr_read_failure_allows_only_deadline_settlement(
+    paused_settlement, monkeypatch, failure, closed, expired, blocker
+):
+    import httpx
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    if expired:
+        pause_trigger(s, "deadline")
+    if closed:
+        pause_trigger(s, "closed")
+    if blocker == "observed_merge":
+        from factory.orchestration import factory_landing
+
+        factory_landing._record(
+            s.task["id"], "owned_pr_merged", pr_number=3, head_sha=s.pr["head"]["sha"]
+        )
+    elif blocker:
+        pause_blocker(s, blocker)
+    reader = conductor.github_get
+
+    def read(repo, path):
+        if path == "pulls/3":
+            if failure == "oversized":
+                raise ValueError("GitHub response exceeds 1 MB")
+            response = httpx.Response(
+                failure, request=httpx.Request("GET", "https://api.github.com/pulls/3")
+            )
+            response.raise_for_status()
+        return reader(repo, path)
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    for _ in range(3):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    settled = expired and not blocker
+    assert after["state"] == ("escalated" if settled else "admitted")
+    assert len(s.cards) == (1 if settled else 0)
+    if settled:
+        assert after["evidence"]["state"] == "conductor_escalated"
+        assert after["escalation"]["resolved"] is None
+    else:
+        assert after["evidence"] is None
+
+
+@pytest.mark.parametrize(
     "trigger,state,evidence",
     [
         ("deadline", "escalated", "conductor_escalated"),

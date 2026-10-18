@@ -6275,24 +6275,32 @@ def _audit_once(task_id: str, key: str, action: str, detail: dict) -> bool:
     return True
 
 
-def _settle_paused_task(task: dict, policy: dict, runs: list[dict]) -> bool:
+def _settle_paused_task(
+    task: dict, policy: dict, runs: list[dict], *, merge_unknown: bool = False
+) -> bool:
     """Observe terminal facts without resuming work or abandoning unknown starts.
 
     Called only after merged-delivery reconciliation: an owned merge wins over
     issue closure, and closure wins over expiry. An unavailable issue is unknown.
+    A definitively unreadable PR allows deadline settlement, never cancellation
+    on issue closure or legacy pause expiry, since it may have merged.
     """
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_intake_loop import _label_names
 
     snapshot = controls.paused_settlement_snapshot(task["id"])
     if not snapshot["ok"]:
+        if snapshot["reason"] == "unresolved_starts":
+            _expire_reconciler_pause(task["id"], held_only=True)
         return snapshot["reason"] != "not_paused"
     issue = github_get(snapshot["repo"], f"issues/{snapshot['issue_number']}")
     if controls.human_handoff(
         task["id"], ACTOR, observed="human" in _label_names(issue)
     ):
         return True
-    if issue.get("state") == "closed" or snapshot["limits"]["deadline_expired"]:
+    if not merge_unknown and (
+        issue.get("state") == "closed" or snapshot["limits"]["deadline_expired"]
+    ):
         from factory.orchestration.factory_merged_delivery import (
             reconcile_merged_delivery,
         )
@@ -6302,7 +6310,7 @@ def _settle_paused_task(task: dict, policy: dict, runs: list[dict]) -> bool:
         # mask that delivery. An unavailable merge read keeps the pause held.
         if reconcile_merged_delivery(task, policy, runs):
             return True
-    if issue.get("state") == "closed":
+    if not merge_unknown and issue.get("state") == "closed":
         controls.finish_task(
             task["id"],
             "cancelled",
@@ -6315,6 +6323,20 @@ def _settle_paused_task(task: dict, policy: dict, runs: list[dict]) -> bool:
         )
         return True
     if snapshot["limits"]["deadline_expired"]:
+        if task.get("issue_number") is None:
+            # Dependency reviews own a PR, not an escalation issue. Release
+            # their slot with deadline evidence without inventing an issue card.
+            controls.finish_task(
+                task["id"],
+                "failed",
+                ACTOR,
+                evidence={
+                    "state": "task_deadline",
+                    "reason": "Absolute task deadline elapsed while paused; all starts and runs are terminal and no escalation issue exists.",
+                },
+                paused_trigger="deadline",
+            )
+            return True
         # Retain an existing open question and its choices on repeated ticks.
         previous = snapshot.get("escalation") or {}
         decision = (
@@ -7455,14 +7477,19 @@ def observe_reviewer_routing(policy: dict) -> None:
         logger.exception("factory reviewer routing observation failed")
 
 
-def _expire_reconciler_pause(task_id: str) -> bool:
-    """Cancel a stale reconciler pause only after all starts are settled."""
+def _expire_reconciler_pause(task_id: str, *, held_only: bool = False) -> bool:
+    """Expire a stale pause, or only audit its unresolved-start hold.
+
+    The held-only path cannot settle a task, even if its starts became terminal
+    after the caller's snapshot. Live graph runs must never reach legacy expiry.
+    """
     if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
         return False
 
     from factory.orchestration.factory_controls import (
         _audit,
         _locked_session,
+        _quiescence_refusal,
         finish_task,
     )
     from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
@@ -7514,8 +7541,12 @@ def _expire_reconciler_pause(task_id: str) -> bool:
                 return False
             reason = detail.get("reason") or "reconciler pause older than 2h"
             evidence = {"state": "reconciler_pause_expired", "reason": reason}
-            result = finish_task(
-                task_id, "cancelled", ACTOR, evidence=evidence, session=db
+            result = (
+                {"ok": False, "reason": _quiescence_refusal(db, task_id)}
+                if held_only
+                else finish_task(
+                    task_id, "cancelled", ACTOR, evidence=evidence, session=db
+                )
             )
             if not result["ok"] and result.get("reason") == "unresolved_starts":
                 # Elapsed pause time is not an execution outcome. Keep the
