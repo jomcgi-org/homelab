@@ -6395,6 +6395,7 @@ def reconcile_task(
         set_control,
     )
 
+    _consume_intervention_notifications(task_id)
     task = _task(task_id)
     runs = graph.node_runs(task_id)
     from factory.orchestration.factory_refine import task_class_for
@@ -6403,6 +6404,7 @@ def reconcile_task(
     # verdicts.
     from factory.orchestration.factory_feedback import record_first_pass
 
+    record_first_pass(task_id, runs)
     # A crash may fall between graph settlement and the factory reservation
     # settlement. Reconcile terminal facts before attempting any further work.
     for run in runs:
@@ -6445,8 +6447,6 @@ def reconcile_task(
                 evidence=HUMAN_HANDOFF_EVIDENCE if human_owned else cancellation,
             )
         return
-    _consume_intervention_notifications(task_id)
-    record_first_pass(task_id, runs)
     parallel = parallel_limit(policy)
     active = [r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")]
     if active:
