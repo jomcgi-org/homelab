@@ -163,9 +163,8 @@ export function payloads(scenario = "live") {
                 budget_remaining_percent: 58,
                 budget_per_day_percent: (58 / 3 + 58 / 4) / 2,
                 short_window_seconds: 18000,
-                short_resets_min: 14,
-                short_resets_max: 19,
-                estimate_basis: "continuous_use",
+                short_next_reset_at: ago(-120),
+                short_last_reset_at: ago(-120),
               },
               windows: [
                 {

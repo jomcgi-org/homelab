@@ -1723,13 +1723,13 @@ window-less rejections wait 15 minutes: refreshing those observations
 early would keep the KG gate's fresh-exhaustion veto active. See #6637.
 
 **Why.** Quota responses include advisory pacing against the longest reported
-window, with remaining daily budget and an optional estimate of shorter resets
-before it ends (#7122). A busy short window can coexist with spare weekly
+window, with remaining daily budget and the reported next reset of a shorter
+window (#7122). A busy short window can coexist with spare weekly
 capacity. The broker derives this advice at read time from fresh observations;
 unknown durations stay unknown and passed resets require another report.
-The reset count assumes continuous use and immediate restart. Observation
-storage, exhaustion, admission, grant selection and refresh keep their existing
-rules.
+The broker preserves reported reset timestamps without inferring future cycles.
+Observation storage, exhaustion, admission, grant selection and refresh keep
+their existing rules.
 
 **Agent MCP lane** (**Built** on the hub): the guest half of the agents tier
 described in [projects/mcp/ARCHITECTURE.md](../mcp/ARCHITECTURE.md#topology).

@@ -447,29 +447,46 @@ function quotaGuidance(provider, quota, clock, validSnapshot) {
           : "Conserve quota"
         : `${fast} of ${total} burning fast`
       : quotaStatus[state];
-  const countMin = pacing.short_resets_min;
-  const countMax = pacing.short_resets_max;
-  const usableResets =
+  const resetRange = (first, last) => {
+    const next = Date.parse(first);
+    const latest = Date.parse(last);
+    if (!(next > clock) || !(latest >= next)) return null;
+    const earliest = quotaDuration((next - clock) / 1000);
+    const furthest = quotaDuration((latest - clock) / 1000);
+    return earliest === furthest ? earliest : `${earliest}–${furthest}`;
+  };
+  const shortRange =
     usableBudget &&
-    pacing.estimate_basis === "continuous_use" &&
-    Number.isInteger(countMin) &&
-    Number.isInteger(countMax) &&
-    countMin >= 0 &&
-    countMax >= countMin &&
-    countMax <= 525600 &&
     quotaNumber(pacing.short_window_seconds) &&
     pacing.short_window_seconds > 0 &&
-    pacing.short_window_seconds < pacing.budget_window_seconds;
+    pacing.short_window_seconds < pacing.budget_window_seconds
+      ? resetRange(pacing.short_next_reset_at, pacing.short_last_reset_at)
+      : null;
+  const blockedRange = waiting
+    ? resetRange(pacing.blocked_next_reset_at, pacing.blocked_last_reset_at)
+    : null;
+  const shortLabel =
+    pacing.short_window_seconds === 18000
+      ? "5-hour"
+      : quotaDuration(pacing.short_window_seconds);
+  const shortPlural =
+    pacing.short_next_reset_at === pacing.short_last_reset_at
+      ? "reset"
+      : "resets";
   return {
     state,
     status,
     budgetSeconds: usableBudget ? pacing.budget_window_seconds : null,
     budget: usableBudget
-      ? `${weekly ? "Weekly" : quotaDuration(pacing.budget_window_seconds)}: ${quotaPercent(remaining)} left · ${daily.toFixed(1).replace(/\.0$/, "")} points/day`
+      ? `${weekly ? "Weekly" : quotaDuration(pacing.budget_window_seconds)}: ${quotaPercent(remaining)} left · recommended ${daily.toFixed(1).replace(/\.0$/, "")} points/day`
       : null,
-    resets: usableResets
-      ? `~${countMin === countMax ? countMin : `${countMin}–${countMax}`} short resets before ${weekly ? "weekly reset" : `${quotaDuration(pacing.budget_window_seconds)} reset`}`
-      : null,
+    resets: waiting
+      ? blockedRange
+        ? `Limited account${waiting === 1 ? "" : "s"} reset in ${blockedRange}`
+        : "Limited reset time unknown"
+      : shortRange
+        ? `${shortLabel} ${shortPlural} in ${shortRange}`
+        : null,
   };
 }
 

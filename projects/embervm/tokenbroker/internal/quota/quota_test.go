@@ -411,15 +411,15 @@ func TestPacingUsesLongestReportedBudget(t *testing.T) {
 	}
 }
 
-func TestPacingResetEstimateAndDailyBudget(t *testing.T) {
+func TestPacingReportedShortResetAndDailyBudget(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	obs := Observation{ObservedAt: now.Format(time.RFC3339Nano), Status: "allowed", Windows: []Window{
 		{Name: "weekly", WindowMinutes: 10080, UsedPercent: 70, ResetsAt: now.Add(6 * 24 * time.Hour).Format(time.RFC3339Nano)},
 		{Name: "session", WindowMinutes: 300, UsedPercent: 50, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339Nano)},
 	}}
 	pacing := makeView(storedObservation{Observation: obs}, now).Pacing
-	if pacing.EstimateBasis != "continuous_use" || pacing.ShortResetsBeforeBudget == nil || *pacing.ShortResetsBeforeBudget != 28 {
-		t.Fatalf("reset estimate = %#v", pacing)
+	if pacing.ShortWindowMinutes == nil || *pacing.ShortWindowMinutes != 300 || pacing.ShortResetsAt != obs.Windows[1].ResetsAt {
+		t.Fatalf("reported short reset = %#v", pacing)
 	}
 	if pacing.BudgetPerDayPercent == nil || *pacing.BudgetPerDayPercent != 5 || pacing.BudgetRemainingPercent == nil || *pacing.BudgetRemainingPercent != 30 {
 		t.Fatalf("remaining daily budget = %#v", pacing)
@@ -427,24 +427,32 @@ func TestPacingResetEstimateAndDailyBudget(t *testing.T) {
 	if pacing.TargetUsedPercent == nil || math.Abs(*pacing.TargetUsedPercent-100.0/7) > 1e-8 || pacing.PaceDeltaPercent == nil || math.Abs(*pacing.PaceDeltaPercent-(70-100.0/7)) > 1e-8 {
 		t.Fatalf("budget target = %#v", pacing)
 	}
-	for _, tt := range []struct {
-		gap  time.Duration
-		want int
-	}{
-		{-time.Second, 0},
-		{0, 0},
-		{time.Nanosecond, 1},
-		{5*time.Hour - time.Second, 1},
-		{5 * time.Hour, 1},
-		{5*time.Hour + time.Second, 2},
+	for _, gap := range []time.Duration{-time.Second, 0, time.Second} {
+		// The actual short reset is preserved even when it falls at or after
+		// the longer budget's next reset. No future cycle is inferred.
+		obs.Windows[0].ResetsAt = now.Add(4*time.Hour + gap).Format(time.RFC3339Nano)
+		pacing := makeView(storedObservation{Observation: obs}, now).Pacing
+		if pacing.ShortResetsAt != obs.Windows[1].ResetsAt {
+			t.Fatalf("reported reset changed for budget gap %v: %#v", gap, pacing)
+		}
+	}
+}
+
+func TestPacingOmitsUnknownOrAmbiguousShortReset(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	short := Window{Name: "session", WindowMinutes: 300, UsedPercent: 50, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339Nano)}
+	for _, windows := range [][]Window{
+		nil,
+		{{Name: "session", WindowMinutes: 300, UsedPercent: 50}},
+		{{Name: "session", WindowMinutes: 300, UsedPercent: 50, ResetsAt: now.Format(time.RFC3339Nano)}},
+		{short, {Name: "conflicting-session", WindowMinutes: 300, UsedPercent: 50, ResetsAt: now.Add(3 * time.Hour).Format(time.RFC3339Nano)}},
+		{short, {Name: "another-short-limit", WindowMinutes: 60, UsedPercent: 50, ResetsAt: now.Add(time.Hour).Format(time.RFC3339Nano)}},
 	} {
-		t.Run(tt.gap.String(), func(t *testing.T) {
-			obs.Windows[0].ResetsAt = now.Add(4*time.Hour + tt.gap).Format(time.RFC3339Nano)
-			pacing := makeView(storedObservation{Observation: obs}, now).Pacing
-			if pacing.ShortResetsBeforeBudget == nil || *pacing.ShortResetsBeforeBudget != tt.want {
-				t.Fatalf("estimate = %#v, want %d", pacing, tt.want)
-			}
-		})
+		obs := Observation{ObservedAt: now.Format(time.RFC3339Nano), Status: "allowed", Windows: append([]Window{{Name: "weekly", WindowMinutes: 10080, UsedPercent: 70, ResetsAt: now.Add(6 * 24 * time.Hour).Format(time.RFC3339Nano)}}, windows...)}
+		pacing := makeView(storedObservation{Observation: obs}, now).Pacing
+		if pacing.ShortWindowMinutes != nil || pacing.ShortResetsAt != "" {
+			t.Fatalf("unknown or ambiguous short reset produced a clock: %#v", pacing)
+		}
 	}
 }
 
@@ -505,7 +513,7 @@ func TestPacingRejectsUnreliableInputsWithoutChangingRawView(t *testing.T) {
 			obs := Observation{ObservedAt: now.Format(time.RFC3339), Status: "allowed", Windows: []Window{{Name: "weekly", WindowMinutes: 10080, UsedPercent: 10, ResetsAt: now.Add(6 * 24 * time.Hour).Format(time.RFC3339)}}}
 			tt.mutate(&obs)
 			view := makeView(storedObservation{Observation: obs}, now)
-			if view.Pacing.State != tt.state || view.Pacing.BudgetWindowMinutes != nil || view.Pacing.BudgetPerDayPercent != nil || view.Pacing.ShortResetsBeforeBudget != nil {
+			if view.Pacing.State != tt.state || view.Pacing.BudgetWindowMinutes != nil || view.Pacing.BudgetPerDayPercent != nil || view.Pacing.ShortResetsAt != "" {
 				t.Fatalf("unreliable input produced guidance: %#v", view.Pacing)
 			}
 			if view.Windows[0].ResetsAt != obs.Windows[0].ResetsAt || view.Windows[0].WindowMinutes != obs.Windows[0].WindowMinutes {
@@ -560,8 +568,8 @@ func TestPacingBoundsAndResetTimestampRounding(t *testing.T) {
 		{Name: "short", WindowMinutes: 1, UsedPercent: 0, ResetsAt: now.Add(time.Minute).Format(time.RFC3339Nano)},
 	}}
 	pacing := makeView(storedObservation{Observation: obs}, now).Pacing
-	if pacing.ShortResetsBeforeBudget == nil || *pacing.ShortResetsBeforeBudget != 525599 {
-		t.Fatalf("bounded duration estimate overflowed: %#v", pacing)
+	if pacing.ShortResetsAt != obs.Windows[1].ResetsAt || pacing.BudgetWindowMinutes == nil || *pacing.BudgetWindowMinutes != 525600 {
+		t.Fatalf("bounded duration changed reported reset: %#v", pacing)
 	}
 	obs.Windows[0].ResetsAt = now.Add(time.Nanosecond).Format(time.RFC3339Nano)
 	pacing = makeView(storedObservation{Observation: obs}, now).Pacing

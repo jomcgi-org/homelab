@@ -409,11 +409,10 @@
           <p class="quota-method">
             The marker shows steady usage toward 100% at reset. Within 5
             percentage points counts as on pace. This is a comparison with
-            elapsed time, not a usage forecast. Daily budget is percentage
-            points of the longest reported quota window, averaged per account.
-            Short-reset counts estimate continuous use until that budget resets;
-            idle time can reduce the count. Short resets do not replenish weekly
-            quota.
+            elapsed time, not a usage forecast. The recommended daily budget is
+            percentage points of the longest reported quota window, averaged per
+            account. Reset countdowns use provider-reported times. Short resets
+            do not replenish weekly quota.
           </p>
           {#each quotas as provider}
             {#each provider.windows as window}

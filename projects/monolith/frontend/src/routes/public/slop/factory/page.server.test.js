@@ -130,9 +130,8 @@ describe("subscription quota display", () => {
               budget_remaining_percent: 58,
               budget_per_day_percent: 16.9,
               short_window_seconds: 18000,
-              short_resets_min: 14,
-              short_resets_max: 19,
-              estimate_basis: "continuous_use",
+              short_next_reset_at: ago(-120),
+              short_last_reset_at: ago(-120),
             }
           : null,
       windows: [
@@ -197,12 +196,12 @@ describe("subscription quota display", () => {
       [...panel.querySelectorAll("h3")].map((node) => node.textContent),
     ).toEqual(["Codex", "Claude"]);
     expect(panel.textContent).toContain("42% used");
-    expect(panel.textContent).toContain("Weekly: 58% left · 16.9 points/day");
     expect(panel.textContent).toContain(
-      "~14–19 short resets before weekly reset",
+      "Weekly: 58% left · recommended 16.9 points/day",
     );
+    expect(panel.textContent).toContain("5-hour reset in 2h");
     expect(panel.querySelector("details").textContent).toContain(
-      "continuous use",
+      "provider-reported times",
     );
     expect(panel.textContent).toContain("Room to use more");
     expect(panel.textContent).toContain("50% target");

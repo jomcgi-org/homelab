@@ -558,9 +558,8 @@ describe("broker reset guidance", () => {
           budget_remaining_percent: 80,
           budget_per_day_percent: 22.9,
           short_window_seconds: 18000,
-          short_resets_min: 16,
-          short_resets_max: 18,
-          estimate_basis: "continuous_use",
+          short_next_reset_at: "2026-10-17T13:00:00Z",
+          short_last_reset_at: "2026-10-17T14:00:00Z",
         },
       },
     ],
@@ -568,12 +567,25 @@ describe("broker reset guidance", () => {
   it("uses the weekly budget for guidance despite a high non-exhausted short-window burn", () => {
     const group = quotaGroups(quota(), now)[0];
     expect(group.status).toBe("Room to use more");
-    expect(group.guidance.budget).toBe("Weekly: 80% left · 22.9 points/day");
-    expect(group.guidance.resets).toBe(
-      "~16–18 short resets before weekly reset",
+    expect(group.guidance.budget).toBe(
+      "Weekly: 80% left · recommended 22.9 points/day",
     );
+    expect(group.guidance.resets).toBe("5-hour resets in 1h–2h");
     expect(group.summaryWindows.map((row) => row.label)).toEqual(["Weekly"]);
     expect(group.windows.map((row) => row.label)).toEqual(["5-hour", "Weekly"]);
+  });
+  it("counts down reported short resets without projecting another cycle", () => {
+    const value = quota();
+    expect(quotaGroups(value, "2026-10-17T12:05:00Z")[0].guidance.resets).toBe(
+      "5-hour resets in 55m–1.9h",
+    );
+    value.providers[0].pacing.short_last_reset_at =
+      value.providers[0].pacing.short_next_reset_at;
+    expect(quotaGroups(value, now)[0].guidance.resets).toBe(
+      "5-hour reset in 1h",
+    );
+    value.providers[0].pacing.short_next_reset_at = "invalid";
+    expect(quotaGroups(value, now)[0].guidance.resets).toBeNull();
   });
   it("keeps a hot account visible when the mean has room", () => {
     const value = quota();
@@ -583,7 +595,16 @@ describe("broker reset guidance", () => {
   it("does not call every account unavailable when only one is waiting for reset", () => {
     const value = quota();
     value.providers[0].pacing.state_counts = { wait_for_reset: 1, use_more: 1 };
-    expect(quotaGroups(value, now)[0].status).toBe("1 of 2 at limit");
+    value.providers[0].pacing.blocked_next_reset_at = "2026-10-17T14:00:00Z";
+    value.providers[0].pacing.blocked_last_reset_at = "2026-10-17T14:00:00Z";
+    const group = quotaGroups(value, now)[0];
+    expect(group.status).toBe("1 of 2 at limit");
+    expect(group.summaryWindows.map((row) => row.label)).toEqual(["Weekly"]);
+    expect(group.guidance.resets).toBe("Limited account reset in 2h");
+    delete value.providers[0].pacing.blocked_next_reset_at;
+    expect(quotaGroups(value, now)[0].guidance.resets).toBe(
+      "Limited reset time unknown",
+    );
     value.providers[0].pacing.state_counts = { wait_for_reset: 2 };
     expect(quotaGroups(value, now)[0].status).toBe("Wait for reset");
   });
@@ -620,7 +641,7 @@ describe("broker reset guidance", () => {
       expect(quotaGroups(value, now)[0].status).toBe("Pace unavailable");
     }
   });
-  it("does not invent reset counts or daily guidance for older broker snapshots", () => {
+  it("does not invent reset clocks or daily guidance for older broker snapshots", () => {
     const value = quota();
     delete value.providers[0].pacing;
     expect(quotaGroups(value, now)[0].guidance).toBeNull();
