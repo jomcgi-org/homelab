@@ -2786,8 +2786,10 @@ def test_budget_projection_shares_admission_accounting_and_retry_ceiling(feedbac
             assert conductor.graph.record_outcome(
                 task["id"], key, 1, "failed", 0.5, None, "{}"
             ).ok
+            # Every attempt reserves the node ceiling, whatever earlier
+            # attempts cost (#7161).
             retry = conductor.graph.admit_dispatch(task["id"], key)
-            assert retry.ok and retry.pin["max_cost_usd"] == 1.5
+            assert retry.ok and retry.pin["max_cost_usd"] == 2
             assert conductor.graph.record_outcome(
                 task["id"], key, 2, "uncertain", None, None, "{}"
             ).ok
@@ -2797,14 +2799,14 @@ def test_budget_projection_shares_admission_accounting_and_retry_ceiling(feedbac
             ).ok
     before = conductor.graph.node_runs(task["id"])
     projection = conductor._budget_evidence(task["id"])
-    # Known success: .25. Failed .5 + uncertain retry1.5 share one2 ceiling.
-    # Unknown-cost success charges2. Active attempt reserves2. Never2*attempts.
-    assert projection["accounted_cost_usd"] == 6.25
-    assert projection["planned_cost_usd"] == 6.25
-    assert projection["active_accounted_cost_usd"] == 3.5
+    # Known success: .25. Failed .5 + uncertain retry reserving its full 2.
+    # Unknown-cost success charges 2. Active attempt reserves 2.
+    assert projection["accounted_cost_usd"] == 6.75
+    assert projection["planned_cost_usd"] == 6.75
+    assert projection["active_accounted_cost_usd"] == 4.0
     assert projection["settled_accounted_cost_usd"] == 2.75
     assert projection["active_attempts"] == 2 and projection["uncertain_attempts"] == 1
-    assert projection["unallocated_cost_usd"] == 33.75
+    assert projection["unallocated_cost_usd"] == 33.25
     assert projection["new_node_max_cost_usd"] == 2 and projection["max_attempts"] == 2
     # An opus planner reserves 1.5x the turn budget for its xhigh effort.
     assert projection["pending_planner_max_cost_usd"] == 3
