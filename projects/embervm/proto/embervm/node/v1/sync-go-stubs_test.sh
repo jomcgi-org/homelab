@@ -15,6 +15,12 @@ cp message.go tracked-message.go
 cp service.go tracked-service.go
 
 bash "$script" --check message.go service.go tracked-message.go tracked-service.go
+ln -s missing-target.go dangling.go
+if out=$(bash "$script" --check dangling.go service.go tracked-message.go tracked-service.go 2>&1); then
+	echo "a dangling generated stub was accepted" >&2
+	exit 1
+fi
+case "$out" in *"is missing"*) ;; *) echo "a dangling generated stub failed silently: $out" >&2; exit 1 ;; esac
 printf 'stale\n' >tracked-message.go
 if bash "$script" --check message.go service.go tracked-message.go tracked-service.go; then
 	echo "message drift was accepted" >&2
