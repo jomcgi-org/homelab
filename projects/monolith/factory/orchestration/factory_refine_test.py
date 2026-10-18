@@ -299,8 +299,31 @@ def test_advisory_diagnosis_pauses_and_audits_without_a_node(db):
     assert json.loads(audit.detail_json)["task_class"] == "advisory-diagnosis"
 
 
-def test_refine_insertion_refusal_creates_question(db, monkeypatch):
+@pytest.mark.parametrize("path", ["insertion", "advisory"])
+@pytest.mark.parametrize(
+    "pending", [None, "accepted", "outcome_unknown", "legacy_claim"]
+)
+def test_refine_insertion_refusal_creates_question(db, monkeypatch, path, pending):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
     task, policy = make_task()
+    if pending:
+        factory_pause.pause(task["id"], "test:original", "original reason")
+    before = controls.task_snapshot(task["id"])
+    if pending:
+        with controls._locked_session() as (session, _control):
+            if pending == "legacy_claim":
+                decisions._claim(before["id"], "stop", "operator", session=session)
+            else:
+                decisions._request_event(
+                    session,
+                    "operator",
+                    {"receipt_id": before["id"], "request_key": "pending"},
+                    {"state": pending},
+                )
+        assert controls.set_control("resume_task", "operator", task_id=task["id"])["ok"]
+        task = conductor._task(task["id"])
+    assert not controls.task_snapshot(task["id"])["task_paused"]
     monkeypatch.setattr(
         conductor,
         "_add",
@@ -308,12 +331,29 @@ def test_refine_insertion_refusal_creates_question(db, monkeypatch):
             ok=False, version=0, refusal_code="envelope_exceeded", detail="refused"
         ),
     )
-    refine.reconcile(task, policy, [], [], 0)
+    refine.reconcile(
+        task,
+        policy,
+        [],
+        [],
+        0,
+        task_class="refine" if path == "insertion" else "unknown",
+    )
     snapshot = controls.task_snapshot(task["id"])
     card = controls.escalation_view(snapshot)
+    if pending:
+        assert snapshot["task_paused"]
+        assert snapshot["pause_warning"] == "active_paused_without_actionable_question"
+        assert snapshot["escalation"] == before["escalation"]
+        assert not snapshot["paused_card_actionable"]
+        return
     assert snapshot["task_paused"] and snapshot["pause_warning"] is None
     assert card["open"] and not card["briefing"] and card["options"]
-    assert card["reason"] == "refine_insertion: envelope_exceeded"
+    assert card["reason"] == (
+        "refine_insertion: envelope_exceeded"
+        if path == "insertion"
+        else "advisory_class_unimplemented: unknown"
+    )
 
 
 def test_verified_agent_ready_settles_succeeded(db, monkeypatch):

@@ -17730,10 +17730,36 @@ def test_completed_delivery_needs_no_new_funding_at_exhausted_limit(
 @pytest.mark.parametrize(
     "path", ["planner_insertion", "dispatch", "context_authorization"]
 )
-def test_conductor_refusal_keeps_an_actionable_pause(feedback_db, monkeypatch, path):
-    from factory.orchestration import factory_controls as controls
+@pytest.mark.parametrize(
+    "pending", [None, "accepted", "outcome_unknown", "legacy_claim"]
+)
+def test_conductor_refusal_keeps_an_actionable_pause(
+    feedback_db, monkeypatch, path, pending
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_decisions as decisions,
+        factory_pause,
+    )
 
     task, policy = feedback_task()
+    if pending:
+        factory_pause.pause(task["id"], "test:original", "original reason")
+    before = controls.task_snapshot(task["id"])
+    if pending:
+        with controls._locked_session() as (db, _control):
+            if pending == "legacy_claim":
+                decisions._claim(before["id"], "stop", "operator", session=db)
+            else:
+                decisions._request_event(
+                    db,
+                    "operator",
+                    {"receipt_id": before["id"], "request_key": "pending"},
+                    {"state": pending},
+                )
+        assert controls.set_control("resume_task", "operator", task_id=task["id"])["ok"]
+        task = conductor._task(task["id"])
+    assert not controls.task_snapshot(task["id"])["task_paused"]
     if path == "planner_insertion":
         monkeypatch.setattr(
             conductor,
@@ -17772,6 +17798,12 @@ def test_conductor_refusal_keeps_an_actionable_pause(feedback_db, monkeypatch, p
         expected = "dispatch_refused: implement_refused: reservation_refused"
     after = controls.task_snapshot(task["id"])
     card = controls.escalation_view(after)
+    if pending:
+        assert after["task_paused"]
+        assert after["pause_warning"] == "active_paused_without_actionable_question"
+        assert after["escalation"] == before["escalation"]
+        assert not after["paused_card_actionable"]
+        return
     assert after["task_paused"] and after["pause_warning"] is None
     assert card["open"] and not card["briefing"] and card["options"]
     assert expected in card["reason"]

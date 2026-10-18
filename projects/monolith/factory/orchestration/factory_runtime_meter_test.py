@@ -238,6 +238,72 @@ def test_late_usage_charges_original_dispatch_but_cannot_stop_replacement(
         assert not db.get(FactoryReceipt, 838).task_paused
 
 
+def test_old_attempt_session_trip_still_pauses_same_task(database):
+    first = prepare()
+    update(first, 0)
+    second = prepare()
+    assert first["id"] != second["id"]
+
+    assert update(first, 1, 10000000)["stop"]
+
+    with Session(database) as db:
+        owner = db.get(FactoryReceipt, 838)
+        assert owner.task_paused
+        snapshot = controls._snapshot(db, owner)
+        assert snapshot["pause_warning"] is None
+        assert snapshot["escalation"]["actor"] == "factory:runtime-meter"
+        assert snapshot["escalation"]["reason"] == "session_list_backstop"
+        assert meter._records_for_receipt(db, first["id"], meter.TRIP)
+        assert not meter._records_for_receipt(db, second["id"], meter.TRIP)
+    with pytest.raises(ValueError, match="executor_ownership_changed"):
+        meter.stop_bound_attempt(first["id"])
+
+
+@pytest.mark.parametrize("path", ["ingest", "reconcile"])
+@pytest.mark.parametrize("state", ["accepted", "outcome_unknown", "legacy_claim"])
+def test_meter_pauses_unpaused_task_while_decision_is_in_flight(
+    database, monkeypatch, path, state
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    receipt = prepare()
+    update(receipt, 0)
+    factory_pause.pause("task", "test:original", "original reason")
+    before = controls.task_snapshot("task")
+    with controls._locked_session() as (db, _control):
+        if state == "legacy_claim":
+            decisions._claim(838, "stop", "operator", session=db)
+        else:
+            decisions._request_event(
+                db,
+                "operator",
+                {"receipt_id": 838, "request_key": "pending"},
+                {"state": state},
+            )
+    assert controls.set_control("resume_task", "operator", task_id="task")["ok"]
+    assert not controls.task_snapshot("task")["task_paused"]
+    stopped = []
+    monkeypatch.setattr(meter, "stop_bound_attempt", stopped.append)
+
+    if path == "ingest":
+        assert update(receipt, 1, 10000000)["stop"]
+    else:
+        now += timedelta(seconds=meter.MAX_USAGE_AGE_SECONDS)
+        meter.reconcile("task")
+
+    assert stopped == [receipt["id"]]
+    after = controls.task_snapshot("task")
+    assert after["task_paused"]
+    assert after["escalation"] == before["escalation"]
+    assert after["pause_warning"] == "active_paused_without_actionable_question"
+    assert not after["paused_card_actionable"]
+    with Session(database) as db:
+        assert meter._records_for_receipt(db, receipt["id"], meter.TRIP)
+        assert db.exec(select(FactoryStart)).one().status == "reserved"
+
+
 def test_final_turn_reconciles_provisional_usage_without_double_charge(database):
     receipt = prepare()
     update(receipt, 0)

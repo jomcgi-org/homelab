@@ -327,7 +327,6 @@ def ingest(receipt_id, token, value):
                 if (reason or trips)
                 and owner is not None
                 and owner.task_id == binding["task_id"]
-                and active is not None
                 else []
             )
         for current_owner in current_owners:

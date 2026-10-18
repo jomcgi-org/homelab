@@ -167,6 +167,136 @@ def test_automatic_pause_repairs_only_missing_questions(db, policy, path, prior)
     assert controls.task_snapshot(task_id)["escalation"] == after["escalation"]
 
 
+def _invoke_pause_path(task_id, path):
+    from factory.orchestration import factory_allocation_recovery, factory_pause
+
+    if path == "nonrenewable":
+        controls.pause_nonrenewable_recovery(task_id, "work_turns exhausted")
+    elif path == "allocation":
+        with controls._locked_session() as (session, _control):
+            factory_allocation_recovery.pause(
+                session, task_id, {"code": "funding_without_progress", "grant_id": 12}
+            )
+    else:
+        factory_pause.pause(task_id, "factory:reconciler", "planner insertion refused")
+
+
+@pytest.mark.parametrize("path", ["allocation", "nonrenewable"])
+@pytest.mark.parametrize("state", ["accepted", "outcome_unknown", "legacy_claim"])
+def test_automatic_pause_fences_resumed_task_with_in_flight_decision(
+    db, policy, path, state
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test:original", "original reason")
+    before = controls.task_snapshot(task_id)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task_id).direction_json = json.dumps(
+            {"nonrenewable_recovery": True, "landing_hold": True}
+        )
+        if state == "legacy_claim":
+            decisions._claim(before["id"], "stop", "operator", session=session)
+        else:
+            decisions._request_event(
+                session,
+                "operator",
+                {"receipt_id": before["id"], "request_key": "pending"},
+                {"state": state},
+            )
+    assert controls.set_control("resume_task", "operator", task_id=task_id)["ok"]
+    assert not controls.task_snapshot(task_id)["task_paused"]
+
+    _invoke_pause_path(task_id, path)
+
+    after = controls.task_snapshot(task_id)
+    assert after["task_paused"]
+    assert after["escalation"] == before["escalation"]
+    assert after["pause_warning"] == "active_paused_without_actionable_question"
+    assert not after["paused_card_actionable"]
+    assert grant(task_id)["reason"] == "task_paused"
+    with Session(db) as session:
+        pause = session.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "pause_task", FactoryAudit.task_id == task_id)
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+        assert pause.actor == f"factory:{path}-recovery"
+
+
+@pytest.mark.parametrize("path", ["allocation", "nonrenewable", "refusal"])
+@pytest.mark.parametrize(
+    "watchdog_state", ["owns_pause", "resumed", "repaused", "resolved"]
+)
+def test_automatic_pause_only_reuses_current_watchdog_hold(
+    db, policy, path, watchdog_state
+):
+    from factory.orchestration import factory_progress_watchdog as watchdog
+
+    task_id = admitted(policy)
+    controls.set_control("pause_task", watchdog.ACTOR, task_id=task_id)
+    prior = {
+        "kind": "watchdog",
+        "task_id": task_id,
+        "question": "No progress. Resume, stop or rescope?",
+        "options": watchdog._options(3),
+        "resolved": None,
+    }
+    with controls._locked_session() as (session, _control):
+        row = controls._receipt(session, task_id)
+        row.direction_json = json.dumps({"nonrenewable_recovery": True})
+        row.escalation_json = json.dumps(prior)
+    if watchdog_state != "owns_pause":
+        controls.set_control("resume_task", "operator", task_id=task_id)
+    if watchdog_state in ("repaused", "resolved"):
+        controls.set_control("pause_task", "operator", task_id=task_id)
+        assert controls.task_snapshot(task_id)["pause_warning"]
+    if watchdog_state == "resolved":
+        watchdog._resolve_card(task_id, "operator", "Resumed with resume_task.")
+
+    _invoke_pause_path(task_id, path)
+
+    after = controls.task_snapshot(task_id)
+    assert after["task_paused"] and after["pause_warning"] is None
+    if watchdog_state == "owns_pause":
+        assert after["escalation"] == prior
+    else:
+        card = after["escalation"]
+        assert card["kind"] == "automatic_pause"
+        actor = (
+            f"factory:{path}-recovery" if path != "refusal" else "factory:reconciler"
+        )
+        assert card["actor"] == actor and card["reason"]
+        watchdog._resolve_card(task_id, "operator", "Resumed with resume_task.")
+        _invoke_pause_path(task_id, path)
+        assert controls.task_snapshot(task_id)["escalation"] == card
+        assert controls.task_snapshot(task_id)["pause_warning"] is None
+
+
+def test_automatic_pause_version_fence_skip_is_audited(db, policy):
+    from factory.orchestration import factory_pause
+
+    task_id = admitted(policy)
+    with Session(db) as session:
+        version = session.get(FactoryControl, "factory").version
+    controls.set_control("enable", "operator")
+    assert not factory_pause.pause(
+        task_id, "factory:reconciler", "planner refused", expected_version=version
+    )
+    assert not controls.task_snapshot(task_id)["task_paused"]
+    with Session(db) as session:
+        audit = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "automatic_pause_skipped")
+        ).one()
+        assert audit.task_id == task_id and audit.actor == "factory:reconciler"
+        assert json.loads(audit.detail_json) == {
+            "reason": "control_version_changed",
+            "pause_reason": "planner refused",
+            "expected_version": version,
+            "actual_version": version + 1,
+        }
+
+
 def test_automatic_pause_and_question_roll_back_together(db, policy):
     from factory.orchestration import factory_pause
 

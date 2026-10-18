@@ -8,8 +8,10 @@ this primitive takes no further locks and never performs network I/O.
 import json
 import os
 
+from sqlmodel import select
+
 from factory.orchestration import factory_controls as controls
-from factory.orchestration.factory_models import FactoryControl, WorkItem
+from factory.orchestration.factory_models import FactoryAudit, FactoryControl, WorkItem
 
 KIND = "automatic_pause"
 STOP = {
@@ -59,6 +61,29 @@ def _identity(row, document):
     )
 
 
+def _watchdog_owns_pause(db, row, document):
+    """A surviving watchdog question cannot claim a later caller's pause."""
+    if (
+        not document
+        or document.get("kind") != "watchdog"
+        or document.get("task_id") != row.task_id
+        or not row.task_paused
+    ):
+        return False
+    pauses = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == row.task_id,
+            FactoryAudit.action == "pause_task",
+        )
+        .order_by(FactoryAudit.id.desc())
+    )
+    latest = next(
+        (pause for pause in pauses if json.loads(pause.detail_json).get("ok")), None
+    )
+    return latest is not None and latest.actor == "factory:watchdog"
+
+
 def actionable(db, row, document):
     if not eligible(db, row) or not document or document.get("resolved") is not None:
         return False
@@ -74,10 +99,7 @@ def actionable(db, row, document):
     ):
         return False
     return (decidable(row, document) and document.get("options") == [STOP]) or (
-        document.get("kind") == "watchdog"
-        and document.get("task_id") == row.task_id
-        and row.task_paused
-        and bool(document.get("options"))
+        _watchdog_owns_pause(db, row, document) and bool(document.get("options"))
     )
 
 
@@ -120,14 +142,16 @@ def pause_locked(db, row, actor, reason):
     """Caller holds control before any task/pool/session locks; no commit here."""
     from factory.orchestration import factory_decisions as decisions
 
-    if not eligible(db, row) or decisions.decision_in_flight(db, row.id):
+    if not eligible(db, row):
         return False
     prior = decisions.escalation_of(row)
+    watchdog_pause = _watchdog_owns_pause(db, row, prior)
     if (
         prior
         and row.task_paused
         and prior.get("task_id") == row.task_id
         and controls.terminal_resolution(prior.get("resolved"))
+        and (prior.get("kind") != "watchdog" or watchdog_pause)
     ):
         return False
     was_paused = row.task_paused
@@ -137,13 +161,17 @@ def pause_locked(db, row, actor, reason):
         )
         if not result["ok"]:
             return False
+    # An unresolved decision owns its card, but never suppresses a safety pause.
+    # The status invariant exposes the held decision while its outcome is unknown.
+    if decisions.decision_in_flight(db, row.id):
+        return not was_paused
     if actionable(db, row, prior) or (
         prior
         and prior.get("task_id") == row.task_id
         and prior.get("resolved") is None
         and (
             (is_card(prior) and prior.get("options") == [STOP])
-            or (prior.get("kind") == "watchdog" and bool(prior.get("options")))
+            or (watchdog_pause and bool(prior.get("options")))
         )
     ):
         return not was_paused
@@ -154,6 +182,16 @@ def pause_locked(db, row, actor, reason):
 def pause(task_id, actor, reason, *, expected_version=None):
     with controls._locked_session() as (db, control):
         if expected_version is not None and control.version != expected_version:
+            controls._audit(
+                db,
+                actor,
+                "automatic_pause_skipped",
+                task_id=task_id,
+                reason="control_version_changed",
+                pause_reason=reason[:4000],
+                expected_version=expected_version,
+                actual_version=control.version,
+            )
             return False
         return pause_locked(db, controls._receipt(db, task_id), actor, reason)
 
