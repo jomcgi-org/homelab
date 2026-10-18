@@ -6,7 +6,7 @@ and invokes this engine against operator-configured inputs. Pipeline:
 
   1. Mesh Scotland land at 2 km spacing. The Natural Earth admin-1 council-area
      polygons ARE land boundaries, so a point-in-Scotland test already excludes
-     sea (pure-Python ray casting, copied from generate_grid.py).
+     sea (pure-Python ray casting, retained from the retired v1 generator).
   2. ROAD filter: keep mesh points within 2 km of an OSM road. Roads + points are
      reprojected to EPSG:27700 (metres) and tested with shapely 2
      STRtree.query(points, predicate="dwithin", distance=2000). Non-drivable
@@ -76,8 +76,8 @@ DARK_ZONES: frozenset[str] = frozenset({"pristine", "excellent", "rural"})
 
 
 # ---------------------------------------------------------------------------
-# Pure geometry helpers (copied from generate_grid.py so this script is
-# self-contained: the v2 test target only lists the v2 sources).
+# Pure geometry helpers retained from v1, now frozen in the model-bench task
+# stars-grid-speedup-01. This engine remains self-contained.
 # ---------------------------------------------------------------------------
 def _bbox(ring: list) -> tuple[float, float, float, float]:
     xs = [p[0] for p in ring]

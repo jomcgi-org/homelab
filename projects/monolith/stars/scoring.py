@@ -7,8 +7,8 @@ see stars. Pure functions, no I/O, no external deps.
 
 A clear-dark hour is the unit of value. A dark hour (sun below the nautical
 threshold) is the denominator for the clarity rate (clear_dark_hours over
-dark_hours). The same thresholds are replicated by the offline ERA5 backfill
-(grid_gen/backfill_climatology.py); keep them in sync.
+dark_hours). The same thresholds are replicated by the offline CERRA backfill
+(grid_gen/backfill_cerra.py); keep them in sync.
 """
 
 NAUTICAL_DARK_DEG = -12.0  # sun below this = "dark" for the clear-dark metric

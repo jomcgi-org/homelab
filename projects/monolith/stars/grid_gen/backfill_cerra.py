@@ -1,6 +1,6 @@
 """Offline CERRA clear-dark-hours backfill for the stars historical layer.
 
-This supersedes the per-site Open-Meteo loop in backfill_climatology.py (which
+This supersedes the retired per-site Open-Meteo backfill loop (which
 was rate-limited to ~4 days for the 14k-site grid). Instead we download ONE bulk
 CERRA cloud-cover cube and sample it locally at every grid site, no rate limit,
 runs in minutes. CERRA is the Copernicus regional reanalysis: ~5.5 km total
