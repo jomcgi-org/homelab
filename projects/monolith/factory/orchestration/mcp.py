@@ -669,7 +669,9 @@ def _lifecycle_evidence(db, row, snapshot: dict) -> dict:
     )
     actions = {audit.action: audit for audit in landing_actions}
     evidence = _evidence_summary(snapshot.get("evidence"))
-    accepted = bool(evidence and evidence.get("state") == "ready_for_review")
+    accepted = bool(
+        evidence and evidence.get("state") in {"ready_for_review", "reviewed_draft"}
+    )
     repository_complete = actions.get("repository_delivery_complete") or actions.get(
         "issue_closed"
     )
@@ -986,6 +988,8 @@ async def factory_amend_policy(
     request key. Replay that key after a lost response. Changes in control,
     graph or accounting invalidate the preview. Only task/turn budgets, work
     and planner turn caps, review rounds and the task timeout can change.
+    Add landing_hold true to retain a reviewed unmerged delivery. This hold
+    is sticky and cannot be released by this operation.
     The $200 cumulative objective allocation ceiling remains binding. This
     changes neither provider/global limits nor the $500/$1000 emergency limits.
     A successful amendment supersedes stale funding review and records planner

@@ -3330,3 +3330,45 @@ def test_create_session_records_capacity_relevant_outcomes(
     except EmberVMTransportError:
         pass
     assert recorded == ([expected] if expected else [])
+
+
+def test_metered_synchronous_result_cannot_bypass_terminal_validation(monkeypatch):
+    from factory.execution import result_receipts
+    from factory.orchestration import factory_runtime_meter as meter
+
+    async def handler(request):
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
+    monkeypatch.setattr(
+        result_receipts,
+        "prepare_receipt",
+        lambda *_: {
+            "id": "a" * 32,
+            "token": "test-token",
+            "runtime_meter": True,
+        },
+    )
+    seen = []
+
+    def reject(receipt_id, value):
+        seen.append((receipt_id, value))
+        raise result_receipts.ReceiptRejected(409, "meter_terminal_usage_unverified")
+
+    monkeypatch.setattr(meter, "validate_response", reject)
+    with pytest.raises(
+        result_receipts.ReceiptRejected, match="meter_terminal_usage_unverified"
+    ):
+        asyncio.run(
+            transport.EmberVmShimTransport().deliver(
+                transport.EmberSession("guest-one", "guest-token", None),
+                None,
+                "work",
+                agent_session_id=1,
+                dispatch_count=1,
+                receipt_claim_owner="owner",
+            )
+        )
+    assert seen[0][0] == "a" * 32
+    assert len(seen) == 1

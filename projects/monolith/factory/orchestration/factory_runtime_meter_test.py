@@ -1,7 +1,7 @@
 """Native callback replays, objective history, and exact-invocation fencing."""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 
 import pytest
@@ -55,6 +55,7 @@ def database(tmp_path, monkeypatch):
     for module in (admission, result_receipts, store, controls):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", "task")
     monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     policy = {
         "repo": "org/repo",
@@ -292,10 +293,7 @@ def test_wrong_credential_and_unsupported_adapter_never_bind(database):
         update({**receipt, "token": "wrong"}, 0)
     with Session(database) as db, db.begin():
         db.get(AgentSession, 1).model = "opus"
-    with pytest.raises(
-        ValueError, match="adapter_or_authority_unavailable|factory_identity_missing"
-    ):
-        prepare()
+    assert "runtime_meter" not in prepare()
 
 
 def paused(database):
@@ -541,3 +539,174 @@ def test_old_session_trip_cannot_pause_replacement_but_objective_limit_can(
             meter.objective_totals(db, db.get(FactoryReceipt, 838))["known_list_usd"]
             == output * 50 / 1000000
         )
+
+
+@pytest.mark.parametrize("sample", ["none", "zero", "early", "duplicates"])
+def test_missing_or_stale_native_usage_trips_even_after_enrollment_is_disabled(
+    database, monkeypatch, sample
+):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    receipt = prepare()
+    stopped = []
+    monkeypatch.setattr(meter, "stop_bound_attempt", stopped.append)
+    if sample != "none":
+        update(receipt, 0)
+    if sample in {"early", "duplicates"}:
+        update(receipt, 1, 100)
+    now += timedelta(seconds=meter.MAX_USAGE_AGE_SECONDS - 1)
+    if sample == "duplicates":
+        update(receipt, 2, 100)
+    meter.reconcile("task")
+    assert stopped == []
+    monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "false")
+    now += timedelta(seconds=1)
+    meter.reconcile("task")
+    assert stopped == [receipt["id"]]
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).task_paused
+        assert (
+            meter._records_for_receipt(db, receipt["id"], meter.TRIP)[0]["reason"]
+            == "meter_usage_stale"
+        )
+        assert db.exec(select(FactoryStart)).one().status == "reserved"
+
+
+@pytest.mark.parametrize(
+    "proof", ["none", "zero", "early", "sealed", "mismatch", "trip"]
+)
+def test_success_requires_exact_durable_terminal_usage(database, monkeypatch, proof):
+    receipt = prepare()
+    monkeypatch.setattr(meter, "stop_bound_attempt", lambda *_: None)
+    if proof != "none":
+        update(receipt, 0)
+    if proof not in {"none", "zero"}:
+        update(receipt, 1, 100)
+    if proof in {"sealed", "mismatch", "trip"}:
+        assert not update(receipt, 2, 100, "complete")["stop"]
+    if proof == "trip":
+        assert update(receipt, 3, 100, "parent")["stop"]
+    value = {
+        "result": "complete",
+        "terminal_reason": "completed",
+        "usage": {
+            "input_tokens": 0,
+            "cache_read_tokens": 0,
+            "output_tokens": 101 if proof == "mismatch" else 100,
+        },
+    }
+    # The body remains evidence even if no valid terminal seal arrived.
+    result_receipts.capture_result(
+        receipt["id"], receipt["token"], json.dumps(value).encode()
+    )
+    monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "false")
+    with Session(database) as db:
+        row = result_receipts._receipt_metadata(db, receipt["id"])
+        if proof == "sealed":
+            assert result_receipts._result(db, row)
+            meter.validate_completion(db, receipt["id"], value)
+        else:
+            with pytest.raises(
+                result_receipts.ReceiptRejected, match="meter_terminal_usage_unverified"
+            ):
+                result_receipts._result(db, row)
+            with pytest.raises(
+                result_receipts.ReceiptRejected, match="meter_terminal_usage_unverified"
+            ):
+                meter.validate_completion(db, receipt["id"], value)
+        meter.validate_completion(
+            db, receipt["id"], {"terminal_reason": "error", "usage": {}}
+        )
+
+
+def test_late_new_usage_cannot_erase_freshness_failure(database, monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    monkeypatch.setattr(meter, "stop_bound_attempt", lambda *_: None)
+    receipt = prepare()
+    update(receipt, 0)
+    now += timedelta(seconds=meter.MAX_USAGE_AGE_SECONDS)
+    assert update(receipt, 1, 100)["stop"]
+
+
+@pytest.mark.parametrize(
+    "model,scope",
+    [("opus", "task"), ("sol", "task"), ("astra", "another"), ("astra", "")],
+)
+def test_unenrolled_factory_adapters_keep_existing_receipt_behavior(
+    database, monkeypatch, model, scope
+):
+    monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", scope)
+    with Session(database) as db, db.begin():
+        db.get(AgentSession, 1).model = model
+    receipt = prepare()
+    assert "runtime_meter" not in receipt
+    with Session(database) as db:
+        assert meter._records_for_receipt(db, receipt["id"], meter.BOUND) == []
+
+
+def test_receipt_landing_hold_is_sticky_without_changing_budget_or_other_direction(
+    database,
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_decisions as decisions
+
+    paused(database)
+    direction = {
+        "conductor_gates": [{"id": "live-validation"}],
+        "delivery_target_checked": True,
+    }
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).direction_json = json.dumps(direction)
+    for key, overlay in (
+        ("hold", {"landing_hold": True}),
+        ("later", {"max_planner_turns": 10}),
+    ):
+        proposal = amendments.preview(
+            838, overlay, "Leave the reviewed PR unmerged with auto-merge off."
+        )
+        assert proposal["landing_hold"] is True
+        amendments.apply(
+            838,
+            overlay,
+            proposal["direction"],
+            actor="operator",
+            request_key=key,
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        stored = json.loads(row.direction_json)
+        assert all(stored[key] == value for key, value in direction.items())
+        assert stored["landing_hold"]["request_key"] == "hold"
+        assert row.task_paused and controls.landing_held(row)
+        assert db.get(SwarmTask, "task").budget_usd == 50
+        renewed = decisions._direction(
+            row,
+            {},
+            {"key": "chat", "label": "continue", "effect": "chat"},
+            "operator",
+            "continue",
+        )
+        assert renewed["landing_hold"] == stored["landing_hold"]
+    with pytest.raises(ValueError, match="landing_hold_can_only_be_added"):
+        amendments.preview(838, {"landing_hold": False}, "remove hold")
+
+
+def test_delayed_terminal_replay_keeps_completed_proof_and_conflicts_still_trip(
+    database, monkeypatch
+):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    monkeypatch.setattr(meter, "stop_bound_attempt", lambda *_: None)
+    receipt = prepare()
+    update(receipt, 0)
+    update(receipt, 1, 100)
+    assert not update(receipt, 2, 100, "complete")["stop"]
+    now += timedelta(seconds=meter.MAX_USAGE_AGE_SECONDS * 2)
+    assert not update(receipt, 2, 100, "complete")["stop"]
+    meter.reconcile("task")
+    with Session(database) as db:
+        assert not db.get(FactoryReceipt, 838).task_paused
+        assert len(meter._records_for_receipt(db, receipt["id"], meter.UPDATE)) == 3
+    assert update(receipt, 2, 101, "complete")["stop"]

@@ -1692,6 +1692,12 @@ def _effective_policy(db, row):
     return effective_policy(db, row)
 
 
+def landing_held(row) -> bool:
+    """A receipt's explicit operator hold survives policy and task settlement."""
+    direction = json.loads(row.direction_json or "{}") if row is not None else {}
+    return "landing_hold" in direction
+
+
 def continuation_grant(task_id: str, *, session: Session | None = None) -> dict | None:
     """Read the one permanent grant, independently of current rollout flags."""
     with _read_session(session) as db:
@@ -3575,6 +3581,7 @@ def finish_task(
         action = "finish_task"
         if (
             outcome == "succeeded"
+            and not landing_held(row)
             and row.state != "landing"
             and (evidence or {}).get("state") == "ready_for_review"
             and (evidence or {}).get("pr_url")

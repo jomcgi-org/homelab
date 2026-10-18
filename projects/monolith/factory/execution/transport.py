@@ -1684,8 +1684,17 @@ class EmberVmShimTransport:
                             )
                             raise brick_gone
                         response.raise_for_status()
+                        native = response.json()
+                        if receipt is not None and receipt.get("runtime_meter"):
+                            from factory.orchestration.factory_runtime_meter import (
+                                validate_response,
+                            )
+
+                            await asyncio.to_thread(
+                                validate_response, receipt["id"], native
+                            )
                         return parse_native_turn(
-                            response.json(),
+                            native,
                             current.session_id,
                             current_cli_session_id,
                             artifact_path,

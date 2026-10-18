@@ -33,8 +33,14 @@ ACTION = "operator_policy_amendment"
 
 
 def _preview(db, control, receipt_id, overlay, direction):
-    if not isinstance(overlay, dict) or not overlay or not set(overlay) <= FIELDS:
+    if (
+        not isinstance(overlay, dict)
+        or not overlay
+        or not set(overlay) <= FIELDS | {"landing_hold"}
+    ):
         raise ValueError("unsupported_policy_amendment")
+    if "landing_hold" in overlay and overlay["landing_hold"] is not True:
+        raise ValueError("landing_hold_can_only_be_added")
     direction = controls._text(direction, "direction", 4000)
     row = db.get(FactoryReceipt, receipt_id)
     if (
@@ -73,7 +79,9 @@ def _preview(db, control, receipt_id, overlay, direction):
     if decision_in_flight(db, row.id):
         raise ValueError("amendment_decision_in_flight")
     policy = funding.effective_policy(db, row)
-    amended = controls.validate_policy({**policy, **overlay})
+    amended = controls.validate_policy(
+        {**policy, **{k: v for k, v in overlay.items() if k in FIELDS}}
+    )
     created = (
         task.created_at.replace(tzinfo=timezone.utc)
         if task.created_at.tzinfo is None
@@ -112,6 +120,8 @@ def _preview(db, control, receipt_id, overlay, direction):
         ),
         "stays_paused": True,
         "auto_merge": policy.get("auto_merge", False),
+        "landing_hold": controls.landing_held(row)
+        or overlay.get("landing_hold", False),
         "runtime_hard_ceiling_enforced": False,
     }
     result["preview_sha256"] = hashlib.sha256(
@@ -152,6 +162,17 @@ def apply(
             raise ValueError("policy_amendment_preview_changed")
         row = db.get(FactoryReceipt, receipt_id)
         task = graph._lock_task(db, row.task_id)
+        if overlay.get("landing_hold"):
+            previous_direction = json.loads(row.direction_json or "{}")
+            previous_direction.setdefault(
+                "landing_hold",
+                {
+                    "actor": actor,
+                    "request_key": request_key,
+                    "reason": direction,
+                },
+            )
+            row.direction_json = controls._json(previous_direction)
         policy = {**proposal["previous_policy"], **proposal["policy_overlay"]}
         # Preserve any earlier funding overlay when writing its next revision.
         existing = funding.amendment(db, row.task_id)

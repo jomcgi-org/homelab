@@ -2277,8 +2277,20 @@ def _valid_result_receipt(receipt):
     """Validate per-invocation metadata before any model work starts."""
     return (
         isinstance(receipt, dict)
-        and set(receipt) in ({"id", "token"}, {"id", "token", "runtime_meter"})
+        and set(receipt)
+        in (
+            {"id", "token"},
+            {"id", "token", "runtime_meter"},
+            {"id", "token", "runtime_meter", "runtime_meter_max_age_seconds"},
+        )
         and ("runtime_meter" not in receipt or receipt["runtime_meter"] is True)
+        and (
+            "runtime_meter_max_age_seconds" not in receipt
+            or (
+                type(receipt["runtime_meter_max_age_seconds"]) is int
+                and 30 <= receipt["runtime_meter_max_age_seconds"] <= 3600
+            )
+        )
         and isinstance(receipt["id"], str)
         and re.fullmatch(r"[0-9a-f]{32}", receipt["id"]) is not None
         and isinstance(receipt["token"], str)
@@ -3963,6 +3975,13 @@ url = %s
             )
             result_text = ""
             usage = {}
+            usage_seen = False
+            observed_usage = {}
+            usage_covers_activity = False
+            usage_observed_at = time.monotonic()
+            usage_max_age = (runtime_meter or {}).get(
+                "runtime_meter_max_age_seconds", 900
+            )
             # thread/tokenUsage/updated carries `last`, the most recent model
             # request only, and `total`, cumulative for the whole THREAD and
             # restored on resume. A turn is many requests, and the app-server
@@ -3991,8 +4010,29 @@ url = %s
             try:
                 while True:
                     try:
-                        event = self._read_event(TURN_READ_TIMEOUT)
+                        remaining_usage_age = usage_max_age - (
+                            time.monotonic() - usage_observed_at
+                        )
+                        if meter and remaining_usage_age <= 0:
+                            meter.send(usage, "unknown")
+                            raise RuntimeError("native usage evidence is stale")
+                        event = self._read_event(
+                            min(TURN_READ_TIMEOUT, remaining_usage_age)
+                            if meter
+                            else TURN_READ_TIMEOUT
+                        )
+                        if (
+                            meter
+                            and time.monotonic() - usage_observed_at >= usage_max_age
+                        ):
+                            meter.send(usage, "unknown")
+                            raise RuntimeError("native usage evidence is stale")
                     except TimeoutError as exc:
+                        if meter:
+                            meter.send(usage, "unknown")
+                            raise RuntimeError(
+                                "native usage evidence is stale"
+                            ) from exc
                         self._close_process(kill=True)
                         raise RuntimeError(
                             "timed out waiting for Codex output after %s seconds"
@@ -4085,6 +4125,12 @@ url = %s
                             continue
                     legacy_event = self._translate_activity_event(event)
                     events.append(legacy_event)
+                    if event_type in (
+                        "item/started",
+                        "item/completed",
+                        "item/agentMessage/delta",
+                    ):
+                        usage_covers_activity = False
                     if event_type == "item/agentMessage/delta":
                         delta = params.get("delta", {})
                         text = delta.get("text") if isinstance(delta, dict) else None
@@ -4137,6 +4183,15 @@ url = %s
                             usage = {key: usage.get(key, 0) + last[key] for key in last}
                         last_token_usage = token_usage
                         if meter:
+                            advanced = any(
+                                usage.get(key, 0) > observed_usage.get(key, 0)
+                                for key in usage
+                            )
+                            if advanced:
+                                usage_observed_at = time.monotonic()
+                                usage_covers_activity = True
+                            usage_seen = True
+                            observed_usage = dict(usage)
                             meter.send(usage)
                     if activities_are_stale:
                         cached_activities = activity_from_events(events)[-300:]
@@ -4150,6 +4205,13 @@ url = %s
                             except Exception:
                                 pass
                     if event_type == "turn/completed":
+                        if meter and (
+                            not usage_seen
+                            or not any(usage.values())
+                            or not usage_covers_activity
+                        ):
+                            meter.send(usage, "unknown")
+                            raise RuntimeError("native usage evidence is incomplete")
                         if pusher:
                             try:
                                 pusher.push(
@@ -4176,6 +4238,8 @@ url = %s
                             if _is_transient_turn_failure(error):
                                 raise TransientTurnError(detail)
                             raise RuntimeError(detail)
+                        if meter and status == "completed":
+                            meter.send(usage, "complete")
                         terminal_reason = (
                             "user_interrupt" if status == "interrupted" else "completed"
                         )

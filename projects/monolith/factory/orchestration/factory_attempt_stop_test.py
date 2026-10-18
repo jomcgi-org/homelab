@@ -1067,6 +1067,7 @@ def test_native_meter_trip_uses_existing_exact_stop_and_holds_exposure(
 
     s = running
     monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", s.task_id)
     pending = s.original["pending"][0]
     receipt = result_receipts.prepare_receipt(
         s.sid,

@@ -27,6 +27,7 @@ from factory.execution.models import (
     PendingMessage,
 )
 from factory.execution.progress_ingest import app
+from factory.orchestration.factory_models import FactoryAudit
 
 
 @pytest.fixture
@@ -34,7 +35,9 @@ def database(tmp_path, monkeypatch):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'receipts.db'}",
         connect_args={"check_same_thread": False, "timeout": 10},
-        execution_options={"schema_translate_map": {"agent_sessions": None}},
+        execution_options={
+            "schema_translate_map": {"agent_sessions": None, "swarm": None}
+        },
     )
     SQLModel.metadata.create_all(
         engine,
@@ -47,6 +50,7 @@ def database(tmp_path, monkeypatch):
                 AgentCapacityPool,
                 AgentCapacityReservation,
                 AgentResultReceipt,
+                FactoryAudit,
             )
         ],
     )
@@ -107,10 +111,18 @@ def test_factory_meter_requires_receipts_without_enrolling_interactive_sessions(
 ):
     monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "true")
-    assert receipts.required("factory:task:node:1")
-    assert not receipts.required("interactive:one")
+    monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", "task")
+    assert receipts.required("factory:task:node:1", "astra")
+    assert not receipts.required("interactive:one", "astra")
+    assert not receipts.required("factory:another:node:1", "astra")
+    for model in ("opus", "sol", "luna", "spark", ""):
+        assert not receipts.required("factory:task:node:1", model)
+    for scope in ("", "*", "task:node", "task,invalid*"):
+        monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", scope)
+        assert not receipts.required("factory:task:node:1", "astra")
+    monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", "task")
     monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "false")
-    assert not receipts.required("factory:task:node:1")
+    assert not receipts.required("factory:task:node:1", "astra")
 
 
 def capture(receipt, body=b'{"result":"native","terminal_reason":"end_turn"}'):

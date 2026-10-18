@@ -6,6 +6,7 @@ It never changes cash budgets, provider quotas, funding, or uncertainty fences.
 """
 
 from collections import defaultdict
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
@@ -33,6 +34,7 @@ SESSION_USD = 500.0
 OBJECTIVE_USD = 1000.0
 COUNTERS = ("input_tokens", "output_tokens", "cached_input_tokens")
 PRICE_MODEL = "gpt-6-astra"
+MAX_USAGE_AGE_SECONDS = 900
 
 
 def enabled():
@@ -59,7 +61,9 @@ def _binding(db, receipt_id):
 
 
 def _records_for_receipt(db, receipt_id, action):
-    query = select(FactoryAudit).where(FactoryAudit.action == action)
+    query = select(FactoryAudit).where(
+        FactoryAudit.action == action, FactoryAudit.detail_json.contains(receipt_id)
+    )
     if action != BOUND:
         query = query.where(FactoryAudit.task_id == _binding(db, receipt_id)["task_id"])
     return [
@@ -91,6 +95,7 @@ def bind(db, receipt, agent, request_body):
     request = json.loads(request_body)
     if (
         owner is None
+        or not result_receipts.meter_enrolled(agent.local_session_id, agent.model)
         or not controls._can_start(
             db, db.get(FactoryControl, "factory"), start.task_id, start.start_key
         )["ok"]
@@ -130,6 +135,8 @@ def bind(db, receipt, agent, request_body):
             controls._json(FIXED_PRICES[PRICE_MODEL]).encode()
         ).hexdigest(),
         "objective_receipt_id": owner.id,
+        "bound_at": controls._now().isoformat(),
+        "usage_max_age_seconds": MAX_USAGE_AGE_SECONDS,
         "prior_turn_list_usd": previous_turn or 0,
         "prior_receipt_ids": [
             row["receipt_id"]
@@ -201,10 +208,30 @@ def _validate_update(value):
         or set(usage) != set(COUNTERS)
         or any(type(n) is not int or not 0 <= n <= 10**12 for n in usage.values())
         or usage["cached_input_tokens"] > usage["input_tokens"]
-        or value["coverage"] not in ("parent", "unknown")
+        or value["coverage"] not in ("parent", "unknown", "complete")
     ):
         raise result_receipts.ReceiptRejected(422, "invalid_meter_usage")
     return value
+
+
+def _usage_stale(binding, last):
+    observed = (last or {}).get("usage_observed_at") or binding["bound_at"]
+    at = datetime.fromisoformat(observed)
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return (controls._now() - at).total_seconds() >= binding["usage_max_age_seconds"]
+
+
+def _trip(db, binding, reason):
+    if not _records_for_receipt(db, binding["receipt_id"], TRIP):
+        controls._audit(
+            db,
+            "factory:runtime-meter",
+            TRIP,
+            task_id=binding["task_id"],
+            receipt_id=binding["receipt_id"],
+            reason=reason,
+        )
 
 
 def ingest(receipt_id, token, value):
@@ -220,6 +247,7 @@ def ingest(receipt_id, token, value):
         binding = _binding(db, receipt_id)
         previous = _records_for_receipt(db, receipt_id, UPDATE)
         last = previous[-1] if previous else None
+        stale = _usage_stale(binding, last)
         reason = None
         if last and value["sequence"] <= last["sequence"]:
             replay = next(
@@ -254,11 +282,36 @@ def ingest(receipt_id, token, value):
                     task_id=binding["task_id"],
                     receipt_id=receipt_id,
                     list_cost_usd=listed,
+                    usage_observed_at=(
+                        controls._now().isoformat()
+                        if any(
+                            value["usage"][key]
+                            > (last or {}).get("usage", {}).get(key, 0)
+                            for key in COUNTERS
+                        )
+                        else (last or {}).get("usage_observed_at", binding["bound_at"])
+                    ),
                     **value,
                 )
                 db.flush()
         if value["coverage"] == "unknown":
             reason = reason or "meter_descendant_or_reset_unknown"
+        if value["coverage"] == "complete" and (
+            not last or not any(value["usage"].values())
+        ):
+            reason = reason or "meter_completion_missing_usage"
+        if (
+            last
+            and last["coverage"] == "complete"
+            and value["sequence"] > last["sequence"]
+        ):
+            reason = reason or "meter_update_after_completion"
+        if stale and not (
+            last
+            and last["coverage"] == "complete"
+            and value["sequence"] <= last["sequence"]
+        ):
+            reason = reason or "meter_usage_stale"
         owner = db.get(FactoryReceipt, binding["objective_receipt_id"])
         totals = objective_totals(db, owner)
         if totals["sessions"].get(binding["session_id"], 0) >= SESSION_USD:
@@ -275,14 +328,7 @@ def ingest(receipt_id, token, value):
             active = None
         trips = _records_for_receipt(db, receipt_id, TRIP)
         if reason and not trips:
-            controls._audit(
-                db,
-                "factory:runtime-meter",
-                TRIP,
-                task_id=binding["task_id"],
-                receipt_id=receipt_id,
-                reason=reason,
-            )
+            _trip(db, binding, reason)
         if objective_exceeded:
             # A cumulative issue limit covers current admissions. A session
             # local trip from an old admission cannot pause its replacement.
@@ -356,6 +402,24 @@ def stop_bound_attempt(receipt_id):
 
 def reconcile(task_id):
     """Retry durable trips on the existing tick, even after the feature is off."""
+    with controls._locked_session() as (db, _control):
+        admission.lock_pool(db)
+        for binding in _records(db, [task_id], (BOUND,)):
+            updates = _records_for_receipt(db, binding["receipt_id"], UPDATE)
+            if updates and updates[-1]["coverage"] == "complete":
+                continue
+            if not _usage_stale(binding, updates[-1] if updates else None):
+                continue
+            try:
+                native = result_receipts._receipt_metadata(db, binding["receipt_id"])
+                active = result_receipts._active_owner(db, native) if native else None
+            except result_receipts.ReceiptRejected:
+                active = None
+            owner = db.get(FactoryReceipt, binding["objective_receipt_id"])
+            if active is not None and owner is not None and owner.task_id == task_id:
+                _trip(db, binding, "meter_usage_stale")
+                owner.task_paused = True
+                owner.updated_at = controls._now()
     with controls._read_session() as db:
         trips = _records(db, [task_id], (TRIP,))
     for trip in trips:
@@ -363,3 +427,47 @@ def reconcile(task_id):
             stop_bound_attempt(trip["receipt_id"])
         except (ValueError, RuntimeError):
             continue
+
+
+def validate_completion(db, receipt_id, value):
+    """Read durable proof only, without acquiring control or execution locks.
+
+    Partial/error bodies remain available as evidence. Successful results need
+    the exact invocation's final acknowledged counters, even after enrollment
+    is disabled or when an older guest ignores the meter metadata.
+    """
+    bindings = _records_for_receipt(db, receipt_id, BOUND)
+    if not bindings:
+        return
+    if isinstance(value, dict) and value.get("terminal_reason") in {
+        "error",
+        "user_interrupt",
+        "max_tokens",
+        "tool_error",
+    }:
+        return
+    updates = _records_for_receipt(db, receipt_id, UPDATE)
+    last = updates[-1] if updates else None
+    usage = value.get("usage") if isinstance(value, dict) else None
+    if (
+        len(bindings) != 1
+        or last is None
+        or last["coverage"] != "complete"
+        or _records_for_receipt(db, receipt_id, TRIP)
+        or not isinstance(usage, dict)
+        or any(
+            type(
+                usage.get("cache_read_tokens" if key == "cached_input_tokens" else key)
+            )
+            is not int
+            or usage.get("cache_read_tokens" if key == "cached_input_tokens" else key)
+            != last["usage"][key]
+            for key in COUNTERS
+        )
+    ):
+        raise result_receipts.ReceiptRejected(409, "meter_terminal_usage_unverified")
+
+
+def validate_response(receipt_id, value):
+    with controls._read_session() as db:
+        validate_completion(db, receipt_id, value)

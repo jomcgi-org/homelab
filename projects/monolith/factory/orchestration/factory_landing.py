@@ -472,13 +472,24 @@ def _deliveries(
         if delivery is None:
             continue
         audits = state[row.task_id]
-        if audits["merge_arm_refused"] and not include_refused:
+        from factory.orchestration.factory_controls import landing_held
+
+        if (
+            audits["merge_arm_refused"]
+            and not include_refused
+            and not landing_held(row)
+        ):
             continue
         armed, ejected = audits["merge_armed"], audits["merge_ejected"]
         touched = bool(
             armed or ejected or audits["merged"] or audits["merge_arm_refused"]
         )
-        if row.state != "landing" and not touched and _aware(row.updated_at) < cutoff:
+        if (
+            row.state != "landing"
+            and not touched
+            and not landing_held(row)
+            and _aware(row.updated_at) < cutoff
+        ):
             continue
         number, head = delivery
         result.append(
@@ -658,6 +669,8 @@ def _refuse(item: dict, reason: str, **detail: object) -> None:
 def _arm(repo: str, item: dict) -> None:
     from factory.orchestration.factory_controls import review_recovery_held as held
 
+    if _enforce_landing_hold(repo, item):
+        return
     if held(item["task_id"]):
         _refuse(item, "review_only_recovery")
         return
@@ -753,6 +766,8 @@ def _disarm(repo: str, pr: dict) -> bool:
 def _recover_delivery(
     item: dict, head: object, source: str, *, reason: str = "merge_conflict"
 ) -> dict:
+    if _enforce_landing_hold(item.get("repo", ""), item):
+        return {"ok": False, "reason": "receipt_landing_held"}
     item["refused"] = True
     if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
         _refuse(item, "pull_request_head_missing")
@@ -774,6 +789,8 @@ def _recover_delivery(
 def _recover_refused(policy: dict) -> None:
     """Reassess one historical refusal per tick without touching other closures."""
     for item in _deliveries(policy, include_refused=True):
+        if _enforce_landing_hold(policy["repo"], item):
+            continue
         if item.get("recovery_skipped"):
             continue
         refusal = item.get("refusal") or {}
@@ -1160,6 +1177,36 @@ def _handoff_human_delivery(repo: str, item: dict) -> bool:
         return True
 
 
+def _enforce_landing_hold(repo: str, item: dict) -> bool:
+    """Re-read the receipt before any landing mutation and disarm existing work."""
+    from factory.orchestration import factory_controls as controls
+
+    try:
+        with controls._read_session() as db:
+            row = controls._receipt(db, item["task_id"])
+            if not controls.landing_held(row):
+                return False
+            repo = row.repo
+        pull = github_get(repo, f"pulls/{item['pr_number']}")
+        if pull.get("merged"):
+            _refuse(item, "held_delivery_already_merged")
+            return True
+        node_id = pull.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("held delivery pull request has no node id")
+        if pull.get("auto_merge") is not None and not _disarm(repo, pull):
+            return True
+        if node_id in _queued_ids([node_id]):
+            github_graphql(_DEQUEUE_PULL_REQUEST, {"pullRequestId": node_id})
+            if node_id in _queued_ids([node_id]):
+                raise ValueError("held delivery remains queued")
+        _refuse(item, "receipt_landing_held")
+        return True
+    except (httpx.HTTPError, ValueError) as exc:
+        _error(item["task_id"], "landing_hold", exc)
+        return True
+
+
 def landing_tick(policy: dict) -> None:
     """Advance every settled delivery one landing step, arming at most one.
 
@@ -1173,12 +1220,17 @@ def landing_tick(policy: dict) -> None:
 
         merge_enabled = auto_merge_enabled(policy)
         publish_enabled = review_publisher.enabled()
+        deliveries = [
+            item
+            for item in _deliveries(policy)
+            if not _enforce_landing_hold(policy["repo"], item)
+        ]
         if not merge_enabled and not publish_enabled:
             return
         repo = policy["repo"]
         if merge_enabled:
             _recover_refused(policy)
-        deliveries = _deliveries(policy)
+        # Hold cleanup also runs while global merging and publishing are off.
         deliveries = [
             item for item in deliveries if not _handoff_human_delivery(repo, item)
         ]

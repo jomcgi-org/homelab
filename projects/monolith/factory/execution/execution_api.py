@@ -328,7 +328,7 @@ async def run_synthetic_session(
 
         receipt_kwargs = (
             {"receipt_claim_owner": claim_owner}
-            if result_receipts.required(row.local_session_id)
+            if result_receipts.required(row.local_session_id, row.model)
             else {}
         )
         deliver_started = time.monotonic()
