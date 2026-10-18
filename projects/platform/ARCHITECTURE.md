@@ -314,9 +314,13 @@ and an agent on every brick node (ADR embervm/041).
 
 ## 9. Maintenance automation
 
-**Argo Workflows** runs in `monolith-workflows` on the hub as the CronWorkflow executor for the monolith's job schedule (32 CronWorkflows). Renovate and apko lock maintenance ran on it at home; their hub enrolment is staged and suspended (#6247), and the home Renovate Application is the one home overlay #6914 kept, pending that cutover.
+**Argo Workflows** runs in `monolith-workflows` on the hub as the CronWorkflow executor for the monolith's jobs. The hub is also the sole intended deployment for Renovate and apko lock maintenance. The retired home enrollment and cutover scaffolding are removed under #7068. Both hub schedules remain suspended in `values-gke.yaml` pending separately authorized credential/identity verification and enablement.
 
-**Renovate** configures a daily 04:00 Argo `CronWorkflow` (`projects/platform/renovate/values.yaml` l.7). Hub enrolment is staged and suspended under #6247; the only non-hub enrolment is the kept home overlay that no root deploys. Its enabled managers cover Bazel modules, Go, pep621, npm/pnpm, Helm, Kubernetes manifests and ArgoCD `application.yaml` files. `renovate.json` holds ordinary PR creation to a Monday window, so the daily schedule exists to absorb a transient failure rather than to open PRs seven days a week. Credentials come from 1Password. **apko lock maintenance** configures a second CronWorkflow, weekly on Monday at 01:00, regenerating every committed `apko.lock.json` through the pinned `rules_apko` toolchain into one `renovate/apko-lock-maintenance` PR under rebase auto-merge (l.31, `README.md`). Both hub schedules are suspended in `values-gke.yaml` pending the #6247 operator cutover.
+**Renovate** configures a daily 04:00 America/Vancouver CronWorkflow. Its enabled managers cover Bazel modules, Go, pep621, npm/pnpm, Helm, Kubernetes manifests and ArgoCD Applications. `renovate.json` limits ordinary PR creation to before 06:00 on Monday in the same timezone, with an any-time exception for vulnerability alerts. Auto-merge and platform auto-merge remain unconditionally disabled.
+
+**apko lock maintenance** configures a second CronWorkflow for Monday at 01:00 America/Vancouver. Its script regenerates committed `apko.lock.json` files through the pinned `rules_apko` toolchain, runs the committed-artifact generators, and opens or updates `renovate/apko-lock-maintenance` with the `dependencies` label. It never requests auto-merge.
+
+Both workflows reference the `RENOVATE_TOKEN` key of the `renovate-github` Secret, declared through the existing OnePasswordItem. The templates and script still target `jomcgi/homelab`; identity and intended repository access remain unverified by this cleanup. #7068 retains operational acceptance, including ownership reconciliation with #7001's overlapping enablement, absence of competing writers, hub Application and Secret synchronization, and successful scheduled runs with PR evidence. The cleanup PR remains unmerged under its operator landing hold.
 
 **Repo layout** (ADR repo/001): every deployable lives under `projects/<name>/` with its chart and `deploy/` colocated; Bazel rules and tooling live under `bazel/` (`bazel/helm`, `bazel/images`, `bazel/tools`). `projects/gke-cluster/`, `projects/platform-gke/` and `projects/gke-apps/` are the hub's hand-maintained roots over the charts under `projects/platform/` and each service's `deploy/` values (section 1); the generated home root was retired in #6914. `projects/operators/` holds the one custom operator (`oci-model-cache`, a `ModelCache` CRD that syncs HuggingFace models into an OCI registry) and the conventions in `best-practices.md` that a new operator follows. None of these is a domain of its own.
 
@@ -331,6 +335,13 @@ separate from the Monday review window, while the weekly apko job amortizes a
 more expensive whole-repository lock refresh. This accepts Argo as an operational
 dependency and keeps its write credentials scoped through 1Password.
 
+**Why.** The home cluster was retired in #6914. Its remaining enrollment and
+cutover assertions described a deployment no active root reaches. #7068 removes
+those inputs while retaining policy safeguards, the base render, and hub
+enrollment/render tests. Keeping both hub schedules suspended separates the
+repository cleanup from credential verification and operational enablement.
+The latter overlaps #7001 and requires its own authorization and live evidence.
+
 ---
 
 ## Direction
@@ -340,6 +351,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Hub-only Renovate and apko maintenance with dependency auto-merge disabled | section 9 | #7068, #7001 | repository cleanup default-off; unmerged delivery hold; identity verification, enablement ownership, rollout and scheduled-run acceptance outstanding |
 | Shared CNPG backup-age observations feed the private advisory and Discord notifier | section 5 | #7002 | repository implementation staged off; rollout, effective RBAC and failure/recovery acceptance outstanding |
 | Native `NetworkPolicy` successor enforcement on the hub | section 3 | #5276, #3897, #5277 | inert templates removed in #5816; native egress remains staged off pending its own live validation; hub-only since #4964 closed 2026-09-18 |
 | Kargo promotion on the hub gains a functional verification gate, not just stage ordering | section 4 | #4745 | staged: revision-aware `/healthz` gate wired on the monolith prod Stage behind `promotion.revisionGate.enabled` (off); the monolith must expose `chart_version` before the flip; functional assertions remain out of scope |
