@@ -1160,6 +1160,88 @@ def test_healthy_newer_publication_can_verify_the_original_merge():
     assert result["publication_commit_sha"] == "e" * 40
 
 
+@pytest.mark.parametrize("old_ci", ["failure", "pending", "error", None])
+@pytest.mark.parametrize(
+    "blocker,reason",
+    [
+        (None, None),
+        ("stale_git", "git_revision_not_deployed"),
+        ("diverged_git", "git_revision_not_deployed"),
+        ("failed_ci", "publication_ci_not_successful"),
+        ("missing_ci", "publication_ci_not_successful"),
+        ("diverged_source", "publication_source_not_ordered"),
+        ("missing_chart", "published_chart_not_deployed"),
+        ("wrong_digest", "running_digest_mismatch"),
+        ("unhealthy", "application_not_healthy_and_synced"),
+    ],
+)
+def test_successful_descendant_supersedes_failed_publication_only_when_deployed(
+    old_ci, blocker, reason
+):
+    later = fleet_commit()
+    later["sha"] = "e" * 40
+    later["commit"]["message"] = (
+        later["commit"]["message"]
+        .replace(SOURCE, "f" * 40)
+        .replace("projects/monolith/chart 1.2.3", "projects/monolith/chart 1.2.4")
+        .replace("projects/embervm/chart 1.2.3", "projects/embervm/chart 1.2.4")
+    )
+    if blocker == "missing_chart":
+        later["commit"]["message"] = later["commit"]["message"].replace(
+            "Chart-Published: projects/monolith/chart 1.2.4\n", ""
+        )
+    state = fleet()
+    app = state["applications"][0]
+    app["spec"]["sources"][0]["targetRevision"] = "1.2.4"
+    app["status"]["sync"]["comparedTo"]["sources"][0]["targetRevision"] = "1.2.4"
+    live_git = SOURCE if blocker in {"stale_git", "diverged_git"} else "f" * 40
+    app["status"]["sync"]["revisions"] = ["1.2.4", live_git]
+    if blocker == "unhealthy":
+        app["status"]["health"]["status"] = "Progressing"
+    if blocker == "wrong_digest":
+        state["pods"]["monolith"][0]["status"]["containerStatuses"][0]["imageID"] = (
+            IMAGE[:-1] + "0"
+        )
+    # The later publication also changes embervm. The original scope must
+    # still exclude it, even though it is unhealthy and has older Git values.
+    state["applications"][1]["status"]["health"]["status"] = "Progressing"
+    fallback = fleet_github(moved=("monolith",))
+
+    def get(repo, path):
+        if path.endswith("/status"):
+            ci = old_ci if path == f"commits/{SOURCE}/status" else "success"
+            if path == f"commits/{'f' * 40}/status":
+                ci = {"failed_ci": "failure", "missing_ci": None}.get(blocker, ci)
+            return {"statuses": [{"context": "pr-checks", "state": ci}] if ci else []}
+        if blocker == "diverged_source" and path in (
+            f"compare/{SOURCE}...{'f' * 40}?per_page=1&page=2",
+            f"compare/{'f' * 40}...{SOURCE}?per_page=1&page=2",
+        ):
+            return {"status": "diverged"}
+        if (
+            blocker == "diverged_git"
+            and path == f"compare/{'f' * 40}...{SOURCE}?per_page=1&page=2"
+        ):
+            return {"status": "diverged"}
+        return fallback(repo, path)
+
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"],
+        state,
+        get=get,
+        commits=[later, fleet_commit()],
+    )
+    if reason:
+        assert result["verified"] is False
+        assert result["reason"] == reason
+    else:
+        assert result["verified"] is True
+        assert result["scoped_applications"] == ["monolith"]
+        assert result["scope_publication_commit_sha"] == RECEIPT
+        assert result["publication_commit_sha"] == "e" * 40
+        assert result["git_source_commit_sha"] == "f" * 40
+
+
 def test_delayed_pre_merge_source_receipt_does_not_end_scope_search():
     later = fleet_commit()
     later["sha"] = "e" * 40

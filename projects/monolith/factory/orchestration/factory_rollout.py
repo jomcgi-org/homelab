@@ -168,14 +168,25 @@ def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
         raise Pending("publication_receipt_missing")
     if not complete:
         raise Pending("publication_scope_incomplete")
+    successful = set()
     for source_sha in dict.fromkeys((candidate["source_sha"], latest["source_sha"])):
         ci = get(repo, f"commits/{source_sha}/status")
         required = [
             s for s in ci.get("statuses", []) if s.get("context") == "pr-checks"
         ]
-        if len(required) != 1 or required[0].get("state") != "success":
-            raise Pending("publication_ci_not_successful")
-    return {**latest, "scope_receipt": candidate}
+        if len(required) == 1 and required[0].get("state") == "success":
+            successful.add(source_sha)
+    if latest["source_sha"] not in successful:
+        raise Pending("publication_ci_not_successful")
+    # Keep the first publication's catalog for complete, delivery-specific
+    # scope. A failed first source can be superseded only by deploying the
+    # successful descendant in every scoped Git source as well as its charts.
+    git_source = (
+        candidate["source_sha"]
+        if candidate["source_sha"] in successful
+        else latest["source_sha"]
+    )
+    return {**latest, "scope_receipt": candidate, "git_source_sha": git_source}
 
 
 def sources(app: dict) -> list[dict]:
@@ -687,9 +698,9 @@ def application_evidence(repo, receipt, snapshot, versions, get, app):
             ):
                 raise Pending("published_chart_not_deployed")
         elif owned_git(repo, source):
-            # Unchanged git values need only contain this delivery's source,
-            # even if a newer publication proves the current chart version.
-            floor = receipt.get("scope_receipt", receipt)["source_sha"]
+            # Older values remain valid only when their covering source
+            # passed CI. Supersession requires the successful descendant.
+            floor = receipt["git_source_sha"]
             if not ancestor(repo, floor, revision, get):
                 raise Pending("git_revision_not_deployed")
     if "resources" not in status:
@@ -846,6 +857,7 @@ def verify(
             "publication_commit_sha": receipt["commit_sha"],
             "scope_publication_commit_sha": scope_receipt["commit_sha"],
             "source_commit_sha": receipt["source_sha"],
+            "git_source_commit_sha": receipt["git_source_sha"],
             "observed_at": snapshot.get("observed_at")
             or datetime.now(timezone.utc).isoformat(),
             "applications": apps,
