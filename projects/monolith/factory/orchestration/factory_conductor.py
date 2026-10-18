@@ -3714,6 +3714,29 @@ def project_decision(
         graph_revision=snapshot.revision,
     )
     excess = envelope_excess(allowance, policy, accounted=accounted)
+    if excess is not None:
+        # Keep preview, persisted refusal feedback, and admission on the same
+        # accounting owner. Totals alone hide why a low requested review cost
+        # still cannot fit, encouraging another identical paid planner turn.
+        history = allowance_from_graph(
+            [],
+            snapshot.runs,
+            policy,
+            review_rounds_remaining=0,
+            graph_revision=snapshot.revision,
+        )["usd"]
+        excess["cost_breakdown_usd"] = {
+            "charged_history": history,
+            "remaining_nodes": round(
+                allowance["usd"]
+                - history
+                - review_reserve["usd"]
+                - fan_in_reserve["usd"],
+                6,
+            ),
+            "review_round_reserve": review_reserve["usd"],
+            "fan_in_reserve": fan_in_reserve["usd"],
+        }
     return DecisionProjection(
         revision=snapshot.revision,
         edits=edits,
