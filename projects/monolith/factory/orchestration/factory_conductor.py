@@ -3169,7 +3169,14 @@ def _consume_intervention_notifications(task_id: str) -> None:
         )
 
 
-def _escalate_task(task: dict, decision: dict, cause: str, runs: list[dict]) -> None:
+def _escalate_task(
+    task: dict,
+    decision: dict,
+    cause: str,
+    runs: list[dict],
+    *,
+    paused_deadline: bool = False,
+) -> None:
     """Settle a paused task as an escalation that has left the lane.
 
     A pause used to leave the receipt admitted with ``task_paused`` set, which
@@ -3270,6 +3277,7 @@ def _escalate_task(task: dict, decision: dict, cause: str, runs: list[dict]) -> 
             "state": "conductor_escalated",
             "reason": document["question"][:1024],
         },
+        **({"paused_trigger": "deadline"} if paused_deadline else {}),
     )
     if not settled["ok"]:
         # Unresolved starts, most often. The next tick reaches this branch
@@ -6267,6 +6275,69 @@ def _audit_once(task_id: str, key: str, action: str, detail: dict) -> bool:
     return True
 
 
+def _settle_paused_task(task: dict, runs: list[dict]) -> bool:
+    """Observe terminal facts without resuming work or abandoning unknown starts.
+
+    Called only after merged-delivery reconciliation: an owned merge wins over
+    issue closure, and closure wins over expiry. An unavailable issue is unknown.
+    """
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_intake_loop import _label_names
+
+    snapshot = controls.paused_settlement_snapshot(task["id"])
+    if not snapshot["ok"]:
+        return snapshot["reason"] != "not_paused"
+    issue = github_get(snapshot["repo"], f"issues/{snapshot['issue_number']}")
+    if controls.human_handoff(
+        task["id"], ACTOR, observed="human" in _label_names(issue)
+    ):
+        return True
+    if issue.get("state") == "closed":
+        controls.finish_task(
+            task["id"],
+            "cancelled",
+            ACTOR,
+            evidence={
+                "state": "objective_closed",
+                "reason": "The source issue is no longer open.",
+            },
+            paused_trigger="objective_closed",
+        )
+        return True
+    if snapshot["limits"]["deadline_expired"]:
+        # Retain an existing open question and its choices on repeated ticks.
+        previous = snapshot.get("escalation") or {}
+        decision = (
+            previous
+            if previous.get("resolved") is None and previous.get("question")
+            else {
+                "reason": "Absolute task deadline elapsed while paused; all starts and runs are terminal.",
+                "question": "The paused task reached its deadline without a verified delivery. Continue with a new task or keep it on hold?",
+                "options": [
+                    {
+                        "key": "continue",
+                        "label": "Continue in a new task",
+                        "effect": CONTINUE_EFFECT,
+                        "detail": {
+                            "scope": "Reassess the remaining work and its existing delivery evidence."
+                        },
+                    },
+                    {
+                        "key": "hold",
+                        "label": "Keep the work on hold",
+                        "effect": "hold",
+                        "detail": {},
+                    },
+                ],
+            }
+        )
+        _escalate_task(
+            task, decision, "paused-task-deadline", runs, paused_deadline=True
+        )
+        return True
+    return False
+
+
 def reconcile_task(
     task_id: str, policy: dict, dbos, *, human_owned: bool = False
 ) -> None:
@@ -6377,6 +6448,11 @@ def reconcile_task(
     if reconcile_merged_delivery(task, policy, runs):
         return
     permission = can_start(task_id)
+    if not permission["ok"] and permission["reason"] == "task_paused":
+        if not _settle_paused_task(task, runs):
+            # Legacy reconciler-pause expiry must not mask terminal facts.
+            _expire_reconciler_pause(task_id)
+        return
     from factory.orchestration import factory_funding
 
     if factory_funding.reconcile(task, policy, runs, permission):
@@ -8100,10 +8176,6 @@ def tick() -> None:
             if owned:
                 reconcile_task(task["task_id"], task["policy"], dbos, human_owned=True)
             else:
-                if task.get("task_paused") and _expire_reconciler_pause(
-                    task["task_id"]
-                ):
-                    continue
                 _watch_progress(task)
                 reconcile_task(task["task_id"], task["policy"], dbos)
         except Exception:  # noqa: BLE001 - per-task isolation keeps the lane live

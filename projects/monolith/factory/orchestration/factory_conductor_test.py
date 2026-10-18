@@ -9,8 +9,451 @@ from factory.orchestration.factory_models import FactoryReceipt, WorkItem
 from factory.orchestration.turn_artifact import schema_errors
 
 
+@pytest.fixture
+def paused_settlement(feedback_db, monkeypatch):
+    """Real tick/receipt/graph settlement, with external I/O kept hermetic."""
+    from datetime import datetime, timedelta
+    from factory import dependency_gate
+    from factory.orchestration import (
+        conductor_context,
+        factory_controls as controls,
+        factory_landing,
+        factory_notify_policy,
+        factory_pr_lifecycle,
+        factory_problem_issues,
+        factory_reverts,
+        uncertain_tasks,
+        work_item_pointer,
+    )
+
+    task, policy = feedback_task()
+    head = "a" * 40
+    complete_feedback_node(
+        task, policy, "implement_fix", {"pr_number": 3, "head_sha": head}, head=head
+    )
+    complete_feedback_node(
+        task,
+        policy,
+        "review_fix",
+        {
+            "pr_number": 3,
+            "head_sha": head,
+            "verdict": "approve",
+            "summary": "Exact-head review",
+        },
+        head=head,
+        deps=["implement_fix"],
+    )
+    assert controls.set_control("pause_task", "operator", task_id=task["id"])["ok"]
+    assert controls.set_control("pause_admissions", "operator")["ok"]
+    deadline = datetime.fromisoformat(controls.task_snapshot(task["id"])["deadline_at"])
+    clock = [deadline - timedelta(seconds=1)]
+    monkeypatch.setattr(controls, "_now", lambda: clock[0])
+    issue = {"state": "open", "labels": [], "body": "Acceptance", "title": "Fix issue"}
+    pr = {
+        "number": 3,
+        "state": "open",
+        "merged": False,
+        "draft": False,
+        "auto_merge": None,
+        "body": "Closes #7",
+        "html_url": "https://github.com/owner/repo/pull/3",
+        "head": {
+            "sha": head,
+            "ref": f"factory/{task['id']}",
+            "repo": {"full_name": task["repo"]},
+        },
+        "base": {"ref": "main", "repo": {"full_name": task["repo"]}},
+        "merge_commit_sha": "b" * 40,
+    }
+    checks = {"statuses": [{"context": "pr-checks", "state": "success"}]}
+
+    def read(_repo, path):
+        if path == "issues/7":
+            return issue
+        if path == "pulls/3":
+            return pr
+        if path == f"commits/{head}/status":
+            return checks
+        pytest.fail(f"Unexpected GitHub read {path}")
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    monkeypatch.setattr(conductor, "pool_for", lambda *_: ["opus"])
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    for name in (
+        "revalidate_escalations",
+        "observe_reviewer_routing",
+        "_watch_progress",
+        "_supervise_cessation",
+        "_warn_deadline_tripped",
+    ):
+        monkeypatch.setattr(conductor, name, lambda *a, **kw: None)
+    # Keep the real deadline backstop, which must never release paused unknown work.
+    for module, name in (
+        (dependency_gate, "tick"),
+        (factory_pr_lifecycle, "reconcile_tick"),
+        (factory_landing, "landing_tick"),
+        (factory_reverts, "revert_tick"),
+        (factory_problem_issues, "problem_issues_tick"),
+        (work_item_pointer, "sync_pointers"),
+        (factory_notify_policy, "digest_tick"),
+        (uncertain_tasks, "emit_uncertain_task_snapshot"),
+        (conductor_context, "report_receipt_with_deadline"),
+    ):
+        monkeypatch.setattr(module, name, lambda *a, **kw: None)
+    monkeypatch.setattr(conductor, "_submit_or_reconcile", lambda *a: None)
+    monkeypatch.setattr(
+        conductor,
+        "_dispatch_ready",
+        lambda *a, **kw: pytest.fail("Paused task dispatched"),
+    )
+    monkeypatch.setattr(factory_landing, "github_write", lambda *a: {})
+    cards = []
+
+    def post(*args):
+        cards.append(args)
+        return "https://github.com/owner/repo/issues/7#issuecomment-1"
+
+    monkeypatch.setattr(conductor, "_post_decision_card", post)
+    monkeypatch.setattr(conductor, "_notify_escalation", lambda *a: None)
+    return SimpleNamespace(
+        task=task,
+        policy=policy,
+        clock=clock,
+        deadline=deadline,
+        issue=issue,
+        pr=pr,
+        checks=checks,
+        cards=cards,
+        engine=feedback_db,
+    )
+
+
+def pause_trigger(s, trigger):
+    from datetime import timedelta
+
+    if trigger in ("deadline", "combined"):
+        s.clock[0] = s.deadline + timedelta(seconds=1)
+    if trigger in ("closed", "combined"):
+        s.issue["state"] = "closed"
+    if trigger in ("merged", "combined"):
+        s.pr.update(state="closed", merged=True)
+
+
+@pytest.mark.parametrize(
+    "trigger,state,evidence",
+    [
+        ("deadline", "escalated", "conductor_escalated"),
+        ("closed", "cancelled", "objective_closed"),
+        ("merged", "landing", "merged_reviewed"),
+        ("combined", "landing", "merged_reviewed"),
+    ],
+)
+def test_paused_terminal_facts_are_reachable_from_tick(
+    paused_settlement, trigger, state, evidence
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    pause_trigger(s, trigger)
+    conductor.tick()
+    first = controls.task_snapshot(s.task["id"])
+    assert first["state"] == state
+    assert first["evidence"]["state"] == evidence
+    assert first["task_paused"] is True
+    if trigger == "deadline":
+        assert first["escalation"]["resolved"] is None
+        assert first["escalation"]["question"] and len(s.cards) == 1
+    conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["evidence"] == first["evidence"]
+    assert after["escalation"] == first["escalation"]
+    with Session(s.engine) as db:
+        audits = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action.in_(("finish_task", "delivery_ready")),
+            )
+        ).all()
+        assert len(audits) == 1
+
+
+def pause_blocker(s, blocker):
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    with Session(s.engine) as db, db.begin():
+        if blocker in ("reserved", "uncertain"):
+            db.add(
+                FactoryStart(
+                    task_id=s.task["id"],
+                    start_key="unresolved",
+                    actor="test",
+                    model="luna",
+                    max_cost_usd=1,
+                    status=blocker,
+                )
+            )
+        else:
+            # Graph-only evidence must fence settlement even when the start ledger
+            # is terminal. Deliberately do not rely on the tick's stale run list.
+            run = db.exec(
+                select(SwarmNodeRun).where(
+                    SwarmNodeRun.task_id == s.task["id"],
+                    SwarmNodeRun.node_key == "review_fix",
+                )
+            ).one()
+            run.status = blocker
+
+
+@pytest.mark.parametrize("trigger", ["deadline", "closed", "merged"])
+@pytest.mark.parametrize("blocker", ["reserved", "uncertain", "dispatched", "admitted"])
+def test_paused_terminal_facts_never_override_unresolved_work(
+    paused_settlement, trigger, blocker
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    pause_trigger(s, trigger)
+    pause_blocker(s, blocker)
+    before = controls.task_snapshot(s.task["id"])
+    conductor.tick()
+    conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "admitted"
+    assert after["starts"] == before["starts"]
+    assert after["committed_cost_usd"] == before["committed_cost_usd"]
+    assert after["evidence"] is None and after["escalation"] is None
+    assert not s.cards
+
+
+@pytest.mark.parametrize("trigger", ["deadline", "closed", "merged", "combined"])
+@pytest.mark.parametrize("hold", ["landing", "cancellation", "review_recovery"])
+def test_paused_terminal_facts_preserve_explicit_holds(
+    paused_settlement, monkeypatch, trigger, hold
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    pause_trigger(s, trigger)
+    with Session(s.engine) as db, db.begin():
+        row = controls._receipt(db, s.task["id"])
+        if hold == "landing":
+            row.direction_json = '{"landing_hold":{"actor":"operator"}}'
+        elif hold == "cancellation":
+            row.cancellation_requested = True
+    if hold == "review_recovery":
+        monkeypatch.setattr(controls, "review_recovery_held", lambda *a, **kw: True)
+    conductor.tick()
+    assert controls.task_snapshot(s.task["id"])["state"] == "admitted"
+    assert not s.cards
+
+
+def test_paused_open_unexpired_unmerged_task_stays_paused(paused_settlement):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    conductor.tick()
+    conductor.tick()
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "admitted" and snapshot["task_paused"]
+    assert not snapshot["evidence"] and not s.cards
+
+
+@pytest.mark.parametrize("unavailable", ["issues/7", "pulls/3"])
+def test_paused_unknown_reads_do_not_cancel_closed_objective(
+    paused_settlement, monkeypatch, unavailable
+):
+    import httpx
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    s.issue["state"] = "closed"
+    reader = conductor.github_get
+
+    def read(repo, path):
+        if path == unavailable:
+            raise httpx.ReadTimeout("temporarily unavailable")
+        return reader(repo, path)
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    conductor.tick()
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "admitted" and snapshot["evidence"] is None
+
+
+def test_paused_closed_issue_precedes_deadline(paused_settlement):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    pause_trigger(s, "deadline")
+    pause_trigger(s, "closed")
+    conductor.tick()
+    assert (
+        controls.task_snapshot(s.task["id"])["evidence"]["state"] == "objective_closed"
+    )
+    assert not s.cards
+
+
+def test_paused_human_handoff_precedes_all_terminal_facts(paused_settlement):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    pause_trigger(s, "combined")
+    s.issue["labels"] = [{"name": "human"}]
+    conductor.tick()
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "cancelled"
+    assert snapshot["evidence"] == controls.HUMAN_HANDOFF_EVIDENCE
+    assert not s.cards
+
+
+def test_paused_deadline_preserves_existing_open_question(paused_settlement):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    pause_trigger(s, "deadline")
+    document = {
+        "task_id": s.task["id"],
+        "resolved": None,
+        "question": "Which evidence is still needed?",
+        "reason": "Previous conductor question",
+        "options": [
+            {
+                "key": "continue",
+                "label": "Continue",
+                "effect": "agent-ready",
+                "detail": {},
+            },
+            {"key": "hold", "label": "Hold", "effect": "hold", "detail": {}},
+        ],
+        "chat": [{"actor": "operator", "text": "Keep this question"}],
+    }
+    with Session(s.engine) as db, db.begin():
+        controls._receipt(db, s.task["id"]).escalation_json = json.dumps(document)
+    conductor.tick()
+    after = controls.task_snapshot(s.task["id"])["escalation"]
+    assert after["question"] == document["question"]
+    assert after["options"] == document["options"]
+    assert after["chat"] == document["chat"]
+    assert after["resolved"] is None
+
+
+@pytest.mark.parametrize("blocker", ["reserved", "dispatched"])
+@pytest.mark.parametrize("trigger", ["deadline", "closed", "merged"])
+def test_paused_tick_rechecks_work_arriving_during_external_io(
+    paused_settlement, monkeypatch, blocker, trigger
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    pause_trigger(s, trigger)
+    if trigger == "deadline":
+        post = conductor._post_decision_card
+
+        def injected(*args):
+            pause_blocker(s, blocker)
+            return post(*args)
+
+        monkeypatch.setattr(conductor, "_post_decision_card", injected)
+    elif trigger == "merged":
+        verify = conductor.verify_delivery
+
+        def injected(*args, **kwargs):
+            evidence = verify(*args, **kwargs)
+            pause_blocker(s, blocker)
+            return evidence
+
+        monkeypatch.setattr(conductor, "verify_delivery", injected)
+    else:
+        reader = conductor.github_get
+        seen = []
+
+        def injected(repo, path):
+            if path == "issues/7":
+                seen.append(path)
+                if len(seen) == 2:  # After ownership and quiescence preflight.
+                    pause_blocker(s, blocker)
+            return reader(repo, path)
+
+        monkeypatch.setattr(conductor, "github_get", injected)
+    conductor.tick()
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "admitted" and snapshot["evidence"] is None
+
+
+@pytest.mark.parametrize("bad_review", ["head", "session", "verdict"])
+def test_paused_merge_never_upgrades_ineligible_review(paused_settlement, bad_review):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    s = paused_settlement
+    pause_trigger(s, "combined")
+    with Session(s.engine) as db, db.begin():
+        review = db.exec(
+            select(SwarmNodeRun).where(
+                SwarmNodeRun.task_id == s.task["id"],
+                SwarmNodeRun.node_key == "review_fix",
+            )
+        ).one()
+        outcome = json.loads(review.outcome_json)
+        if bad_review == "head":
+            review.head_sha = "c" * 40
+        elif bad_review == "session":
+            review.session_id = 101  # The implementation session, not independent.
+            outcome["session_id"] = 101
+            start = db.exec(
+                select(FactoryStart).where(
+                    FactoryStart.task_id == s.task["id"],
+                    FactoryStart.start_key
+                    == f"factory-node:{s.task['id']}:review_fix:1",
+                )
+            ).one()
+            start.session_id = 101
+        else:
+            outcome["value"]["verdict"] = "changes_requested"
+            outcome["artifact"]["value"]["verdict"] = "changes_requested"
+        review.outcome_json = json.dumps(outcome)
+    conductor.tick()
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "escalated"
+    assert snapshot["evidence"]["state"] == "merged_review_not_approved"
+
+
+@pytest.mark.parametrize("check_state", ["pending", "failure"])
+def test_paused_merged_delivery_still_requires_checks(paused_settlement, check_state):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    pause_trigger(s, "combined")
+    s.checks["statuses"][0]["state"] = check_state
+    conductor.tick()
+    assert controls.task_snapshot(s.task["id"])["state"] == "admitted"
+
+
+def test_fresh_planner_only_allowance_is_not_a_work_limit(feedback_db):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = feedback_task(max_planner_turns=1)
+    conductor.reconcile_task(task["id"], policy, object())
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["allowance"]["turns"] == 0
+    assert snapshot["turns_used"] == 0
+    assert snapshot["limits"]["turn_limit_reached"] is False
+    assert snapshot["limits"]["planner_turn_limit_reached"] is False
+    run_feedback_node(
+        task, "conductor_1", {"action": "plan", "reason": "Plan recorded"}
+    )
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["limits"]["turn_limit_reached"] is False
+    assert snapshot["limits"]["planner_turn_limit_reached"] is True
+
+
 @pytest.fixture(autouse=True)
-def factory_ceiling(monkeypatch):
+def factory_ceiling(monkeypatch, request):
     """Two lanes need a ceiling that holds both; it bounds their sum.
 
     A test that cares about the ceiling itself still sets or clears the
@@ -22,7 +465,8 @@ def factory_ceiling(monkeypatch):
     monkeypatch.setenv("FACTORY_BACKGROUND_RESERVE", "0")
     # Tick unit tests isolate the ownership reader. Its real database and live
     # label behavior is covered by the refine integration fixture.
-    monkeypatch.setattr(conductor, "_observe_human_ownership", lambda _task: False)
+    if "paused_settlement" not in request.fixturenames:
+        monkeypatch.setattr(conductor, "_observe_human_ownership", lambda _task: False)
 
 
 def test_conductor_contract_rejects_missing_action_fields_and_authority_changes():
@@ -747,6 +1191,8 @@ def feedback_db(tmp_path, monkeypatch):
     def github_read(_repo, path):
         if path.startswith("pulls/"):
             return {}
+        if path == "issues/7":
+            return {"state": "open", "labels": []}
         pytest.fail(f"unexpected GitHub read: {path}")
 
     monkeypatch.setattr(conductor, "github_get", github_read)

@@ -2098,7 +2098,8 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
             else "task_deadline",
             limits={
                 "deadline_expired": _now() >= deadline,
-                "turn_limit_reached": result["turns_used"] >= allowance["turns"],
+                "turn_limit_reached": result["turns_used"] > 0
+                and result["turns_used"] >= allowance["turns"],
                 "planner_turn_limit_reached": result["planner_turns_used"]
                 >= planner_turn_cap(result["policy"]),
             },
@@ -3432,6 +3433,46 @@ HUMAN_HANDOFF_EVIDENCE = {
 }
 
 
+def _quiescence_refusal(db: Session, task_id: str) -> str | None:
+    """Recheck both ledgers under control-then-task locks, as reservation does."""
+    from factory.orchestration import graph
+
+    graph._lock_task(db, task_id)
+    if _accounting(_starts(db, task_id))["unresolved_starts"]:
+        return "unresolved_starts"
+    if (
+        db.exec(
+            select(SwarmNodeRun.id).where(
+                SwarmNodeRun.task_id == task_id,
+                SwarmNodeRun.status.not_in(graph.TERMINAL_RUN_STATUSES),
+            )
+        ).first()
+        is not None
+    ):
+        return "live_runs"
+    return None
+
+
+def paused_settlement_snapshot(task_id: str, *, session: Session | None = None) -> dict:
+    """A paused receipt may settle facts, but may not override another fence."""
+    with _locked_session(session) as (db, control):
+        row = _receipt(db, task_id)
+        if row is None or not row.task_paused:
+            return {"ok": False, "reason": "not_paused"}
+        if (
+            row.state not in _ACTIVE
+            or control.state not in ("enabled", "paused")
+            or row.cancellation_requested
+            or landing_held(row)
+            or review_recovery_held(task_id, session=db)
+        ):
+            return {"ok": False, "reason": "settlement_held"}
+        refusal = _quiescence_refusal(db, task_id)
+        if refusal:
+            return {"ok": False, "reason": refusal}
+        return {"ok": True, **_snapshot(db, row, body=True)}
+
+
 def finish_task(
     task_id: str,
     outcome: str,
@@ -3439,10 +3480,13 @@ def finish_task(
     *,
     evidence: dict | None = None,
     session: Session | None = None,
+    paused_trigger: str | None = None,
 ) -> dict:
     actor = _text(actor, "actor")
     if outcome not in (*_SETTLED, "uncertain"):
         raise ValueError("invalid task outcome")
+    if paused_trigger not in (None, "objective_closed", "deadline"):
+        raise ValueError("invalid paused settlement trigger")
     if evidence is not None:
         if not isinstance(evidence, dict) or set(evidence) - {
             "pr_url",
@@ -3467,19 +3511,55 @@ def finish_task(
         row = _receipt(db, task_id)
         if row is None:
             return {"ok": False, "reason": "unknown_task"}
+        if paused_trigger is not None:
+            paused = paused_settlement_snapshot(task_id, session=db)
+            if not paused["ok"]:
+                return paused
+            if (
+                paused_trigger == "deadline"
+                and not paused["limits"]["deadline_expired"]
+            ):
+                return {"ok": False, "reason": "deadline_not_expired"}
         if outcome == "succeeded" and review_recovery_held(task_id, session=db):
             return {"ok": False, "reason": "review_only_recovery"}
-        if outcome == "succeeded" and row.task_paused:
-            return {"ok": False, "reason": "task_paused"}
-        if (evidence or {}).get("state") in (
+        merged = (evidence or {}).get("state") in (
             "merged_reviewed",
             "merged_review_missing",
             "merged_review_not_approved",
+        )
+        if (
+            outcome == "succeeded"
+            and row.task_paused
+            and (evidence or {}).get("state") != "merged_reviewed"
         ):
-            if row.task_paused:
-                return {"ok": False, "reason": "task_paused"}
-            if landing_held(row) or row.cancellation_requested:
+            return {"ok": False, "reason": "task_paused"}
+        if merged:
+            if (
+                landing_held(row)
+                or row.cancellation_requested
+                or _control.state not in ("enabled", "paused")
+                or review_recovery_held(task_id, session=db)
+            ):
                 return {"ok": False, "reason": "held_delivery_already_merged"}
+            refusal = _quiescence_refusal(db, task_id)
+            if refusal:
+                return {"ok": False, "reason": refusal}
+        if row.task_paused and outcome == "succeeded":
+            observed = db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "owned_pr_merged",
+                )
+            ).first()
+            proof = json.loads(observed.detail_json) if observed else {}
+            if not (
+                proof.get("head_sha") == (evidence or {}).get("head_sha")
+                and proof.get("head_sha")
+                and (evidence or {}).get("pr_url")
+                == f"https://github.com/{row.repo}/pull/{proof.get('pr_number')}"
+                and (evidence or {}).get("review_session_id")
+            ):
+                return {"ok": False, "reason": "merged_delivery_unverified"}
         if row.state in _SETTLED:
             last = db.exec(
                 select(FactoryAudit)
