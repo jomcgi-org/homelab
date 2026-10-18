@@ -670,6 +670,13 @@ def _reject_plan_decision(
     """Reject a graph decision and escalate a repeated no-progress refusal."""
     if _reject_decision(task["id"], cause, action, code, reason):
         return
+    if code == "node_allocation_exhausted":
+        from factory.orchestration import factory_allocation_recovery as recovery
+        from factory.orchestration import factory_controls as controls
+
+        with controls._locked_session() as (db, _control):
+            recovery.pause(db, task["id"], {"code": code, "reason": reason})
+        return
     if not _check_consecutive_refusals(task["id"], code):
         return
     lead = (
@@ -874,12 +881,15 @@ def _budget_evidence(task_id: str) -> dict:
         task_turn_ceiling,
     )
 
+    from factory.orchestration import factory_allocation_recovery as recovery
+
     with Session(get_engine()) as db:
         budget = graph.budget_snapshot(task_id, session=db)
         receipt = task_snapshot(task_id, session=db)
         policy = receipt["policy"]
         return {
             **budget,
+            "exhausted_allocations": recovery.blockers(db, task_id),
             "graph_revision": graph.current_version(task_id, session=db),
             "turns_used": receipt["turns_used"],
             "planner_turns_used": receipt["planner_turns_used"],
@@ -3614,6 +3624,13 @@ def _decision_snapshot(
             model: review_reservation_usd(model, 0, policy["turn_budget_usd"])
             for model in policy["allowed_models"]
         }
+        from factory.orchestration import factory_allocation_recovery as recovery
+
+        task["exhausted_allocations"] = recovery.blockers(db, task_id)
+        task["allocation_recovery_authorized"] = (
+            recovery.authorization(db, task_id, task["exhausted_allocations"])
+            is not None
+        )
         return DecisionSnapshot(
             task,
             dict(policy),
@@ -3723,6 +3740,20 @@ def project_decision(
         prepared = graph._resolve_batch_deps(
             prepared, {node["node_key"] for node in snapshot.nodes}
         )
+        if (
+            snapshot.task.get("exhausted_allocations")
+            and not snapshot.task.get("allocation_recovery_authorized")
+            and any(edit["op"] == "add_node" for edit in prepared)
+        ):
+            return DecisionProjection(
+                snapshot.revision,
+                [],
+                prepared,
+                refusal={
+                    "code": "node_allocation_exhausted",
+                    "detail": "Exhausted node allocation requires an explicit bounded replacement plan authorization.",
+                },
+            )
         projected_nodes = _projected_nodes(prepared, snapshot.nodes)
     if projected_nodes is None:
         raise ValueError("a decision or projected graph is required")

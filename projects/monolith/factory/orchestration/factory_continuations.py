@@ -177,6 +177,10 @@ def try_grant(
             expected_version=expected_version,
             edits=edits,
             session=db,
+            # This server-validated, one-time correction/review pair cannot
+            # rename the failed node or renew its allocation. Other exhausted
+            # work remains blocked after this exact pair is admitted.
+            _bounded_continuation=True,
         )
         if not result.ok:
             return (

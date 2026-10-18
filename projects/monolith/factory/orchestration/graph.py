@@ -463,6 +463,7 @@ def _add_node_locked(
     cause_kind: str,
     cause_ref: str | None,
     stated_reason: str | None,
+    allocation_recovery: bool = False,
 ) -> GraphOp:
     """Validate and apply one add against an already locked task row."""
     node_key = node_fields["node_key"]
@@ -486,6 +487,23 @@ def _add_node_locked(
     live = {node.node_key: node for node in _visible_nodes(db, task_id, version)}
     if node_key in live:
         return _refuse(db, task, "add_node", args, version, "duplicate_key")
+    if not node_key.startswith("conductor_"):
+        from factory.orchestration import factory_allocation_recovery as recovery
+
+        blocked = recovery.blockers(db, task_id)
+        if blocked and (
+            not allocation_recovery
+            or node_key in {item["node_key"] for item in blocked}
+        ):
+            return _refuse(
+                db,
+                task,
+                "add_node",
+                args,
+                version,
+                "node_allocation_exhausted",
+                detail="Existing node allocation is exhausted. Authorize one bounded replacement plan explicitly.",
+            )
     unknown = [dependency for dependency in deps if dependency not in live]
     if unknown:
         return _refuse(
@@ -956,6 +974,7 @@ def apply_edits(
     expected_version: int,
     edits: list[dict],
     session: Session | None = None,
+    _bounded_continuation: bool = False,
 ) -> GraphOp:
     """Apply an ordered batch of graph edits, or none of them.
 
@@ -989,6 +1008,14 @@ def apply_edits(
         try:
             with _session(session) as db, db.begin_nested():
                 task = _lock_task(db, task_id)
+                from factory.orchestration import (
+                    factory_allocation_recovery as recovery,
+                )
+
+                blocked = recovery.blockers(db, task_id)
+                grant = (
+                    recovery.authorization(db, task_id, blocked) if blocked else None
+                )
                 live = {
                     node.node_key
                     for node in _visible_nodes(
@@ -1007,10 +1034,17 @@ def apply_edits(
                         author,
                         cause_kind,
                         cause_ref,
+                        allocation_recovery=grant is not None or _bounded_continuation,
                     )
                     if not result.ok:
                         raise _PlanRejected(index, result)
                     version = result.version
+                if grant and any(
+                    edit["op"] == "add_node"
+                    and not edit["node_key"].startswith("conductor_")
+                    for edit in edits
+                ):
+                    recovery.consume(db, task_id, grant, edits)
                 applied = _finish(
                     db,
                     task,
@@ -1052,6 +1086,7 @@ def _apply_one_edit(
     author: str,
     cause_kind: str,
     cause_ref: str | None,
+    allocation_recovery: bool = False,
 ) -> GraphOp:
     stated_reason = edit.get("stated_reason")
     if edit["op"] == "discard_node":
@@ -1113,6 +1148,7 @@ def _apply_one_edit(
         cause_kind,
         cause_ref,
         stated_reason,
+        allocation_recovery=allocation_recovery,
     )
 
 

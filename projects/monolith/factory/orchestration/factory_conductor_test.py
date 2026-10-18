@@ -15053,6 +15053,17 @@ def test_continuation_excludes_competing_work_but_ignores_spent_node_budget(
         grant = controls.continuation_grant(task["id"])
         assert grant["work_turn_ceiling"] == 6
         assert controls.task_snapshot(task["id"])["state"] == "admitted"
+        extra = conductor._add(
+            task,
+            policy,
+            "investigate_renamed",
+            "Inspect",
+            [],
+            "luna",
+            "followup",
+            "Cannot use the correction grant for other work",
+        )
+        assert extra.refusal_code == "node_allocation_exhausted"
         return
     assert controls.continuation_grant(task["id"]) is None
     assert controls.task_snapshot(task["id"])["state"] == "failed"
@@ -15069,10 +15080,10 @@ def test_continuation_grant_rolls_back_with_refused_second_edit(
     task, policy = continuation_task(monkeypatch)
     original = conductor.graph._apply_one_edit
 
-    def refuse(db, task_row, task_id, edit, *args):
+    def refuse(db, task_row, task_id, edit, *args, **kwargs):
         if edit["node_key"] == "review_1":
             return conductor.graph.GraphOp(ok=False, refusal_code="test_refusal")
-        return original(db, task_row, task_id, edit, *args)
+        return original(db, task_row, task_id, edit, *args, **kwargs)
 
     monkeypatch.setattr(conductor.graph, "_apply_one_edit", refuse)
     conductor.reconcile_task(task["id"], policy, object())
@@ -15870,9 +15881,7 @@ def test_expired_task_with_reserved_work_is_left_alone_until_it_settles(
         assert admitted.task_id is not None
 
 
-def test_astra_decides_extensions_repeatedly_without_mutating_original_policy(
-    feedback_db, monkeypatch
-):
+def test_productive_extensions_preserve_original_policy(feedback_db, monkeypatch):
     from factory.orchestration import (
         factory_funding as funding,
         factory_controls as controls,
@@ -15896,6 +15905,15 @@ def test_astra_decides_extensions_repeatedly_without_mutating_original_policy(
     assert after["policy"]["max_task_turns_hard"] == before["turns_used"] + 4
     with Session(conductor.get_engine()) as db:
         assert json.loads(controls._receipt(db, task["id"]).policy_json) == policy
+    # Useful research counts, even before it produces a commit or PR.
+    complete_feedback_node(
+        conductor._task(task["id"]),
+        after["policy"],
+        "investigate_recovery",
+        {
+            "summary": "Confirmed the replacement input and isolated the failed dependency."
+        },
+    )
     assert funding.request(task, "New evidence justifies another small tranche")
     settle_funding(
         task,
@@ -15904,6 +15922,322 @@ def test_astra_decides_extensions_repeatedly_without_mutating_original_policy(
     assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 25
     with controls._read_session() as db:
         assert funding.amendment(db, task["id"])["next_plan"].startswith("Correct")
+
+
+def test_oversight_alone_cannot_renew_the_same_funding_blocker(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, _ = funding_task(monkeypatch)
+    assert funding.request(task, "Need one bounded correction")
+    settle_funding(task, funding_decision())
+    before = controls.task_snapshot(task["id"])
+    assert not funding.request(
+        task, "Rename the same blocked work and raise the task budget"
+    )
+    after = controls.task_snapshot(task["id"])
+    assert after["task_paused"]
+    assert after["policy"] == before["policy"]
+    assert after["committed_cost_usd"] == before["committed_cost_usd"]
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"]) is None
+        reason = funding.latest(db, task["id"], "allocation_recovery_required")
+        assert reason["code"] == "funding_without_progress"
+
+
+def exhausted_allocation_task(monkeypatch, node_key, ceiling):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+    from factory.orchestration.factory_models import FactoryStart
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    task, policy = feedback_task(
+        max_turns=9,
+        max_planner_turns=9,
+        task_budget_usd=50,
+        turn_budget_usd=4,
+        max_attempts=2,
+    )
+    monkeypatch.setattr(
+        funding,
+        "_issue",
+        lambda _: {
+            "number": task["issue_number"],
+            "state": "open",
+            "title": "Recover exact work",
+            "body": "Keep the reviewed PR unmerged",
+            "updated_at": "now",
+        },
+    )
+    assert conductor.graph.add_node(
+        task["id"],
+        author_kind="engine",
+        author="test",
+        cause_kind="test",
+        cause_ref="original",
+        stated_reason="Original allocation",
+        expected_version=0,
+        node_key=node_key,
+        kind="gate" if node_key.startswith("review_") else "work",
+        prompt="Original bounded work",
+        model="opus",
+        deps=[],
+        max_cost_usd=ceiling,
+        side_effects=False,
+        max_attempts=2,
+        turn_timeout_seconds=3600,
+    ).ok
+    assert conductor.graph.admit_dispatch(task["id"], node_key).ok
+    assert conductor.graph.record_outcome(
+        task["id"],
+        node_key,
+        1,
+        "failed",
+        None,
+        None,
+        json.dumps({"reason": "guest_cessation_confirmed"}),
+    ).ok
+    with controls._locked_session() as (db, _):
+        db.add(
+            FactoryStart(
+                task_id=task["id"],
+                start_key="failed-review",
+                actor="test",
+                model="opus",
+                max_cost_usd=ceiling,
+                status="failed",
+            )
+        )
+    return conductor._task(task["id"]), policy
+
+
+@pytest.mark.parametrize(
+    "node_key,ceiling", [("review_retirement_audit", 10), ("implement_manifest", 4)]
+)
+def test_exhausted_node_is_not_a_task_funding_request(
+    feedback_db, monkeypatch, node_key, ceiling
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, _ = exhausted_allocation_task(monkeypatch, node_key, ceiling)
+    history = conductor.graph.node_runs(task["id"])
+    assert not funding.request(
+        task, "Another task tranche should make the same node runnable"
+    )
+    assert not funding.request(task, "Try another judge")
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["task_paused"]
+    assert snapshot["policy"]["task_budget_usd"] == 50
+    assert snapshot["committed_cost_usd"] == ceiling
+    assert conductor.graph.node_runs(task["id"]) == history
+    with controls._read_session() as db:
+        assert funding.latest(db, task["id"], "funding_review_requested") is None
+        reason = funding.latest(db, task["id"], "allocation_recovery_required")
+        assert reason["code"] == "node_allocation_exhausted"
+        assert reason["nodes"][0]["node_key"] == node_key
+
+
+def test_discard_and_rename_cannot_reset_exhausted_allocation(feedback_db, monkeypatch):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = exhausted_allocation_task(monkeypatch, "implement_manifest", 4)
+    assert conductor.graph.discard_node(
+        task["id"],
+        "implement_manifest",
+        author_kind="conductor",
+        author="test",
+        cause_kind="test",
+        cause_ref="hide",
+        stated_reason="Retire failed node",
+        expected_version=1,
+    ).ok
+    decision = {
+        "action": "plan",
+        "reason": "Same work, another spelling",
+        "edits": [
+            plan_edit("renamed", "implement"),
+            plan_edit("renamed", "review", ["implement_renamed"]),
+        ],
+    }
+    before = conductor.graph.current_version(task["id"])
+    direct = conductor._add(
+        task,
+        policy,
+        "implement_direct",
+        "Same work",
+        [],
+        "luna",
+        "implement",
+        "Direct additions cannot bypass the fence",
+    )
+    assert direct.refusal_code == "node_allocation_exhausted"
+    preview = conductor.preview_decision(task["id"], decision, expected_revision=before)
+    assert preview["refusal"]["code"] == "node_allocation_exhausted"
+    conductor._apply_decision(
+        task, policy, decision, "rename", conductor.graph.node_runs(task["id"])
+    )
+    assert controls.task_snapshot(task["id"])["task_paused"]
+    assert conductor.graph.current_version(task["id"]) == before
+    assert conductor.graph.load_graph(task["id"]) == []
+
+
+def test_exact_operator_recovery_admits_one_feasible_plan_without_refunding(
+    feedback_db, monkeypatch
+):
+    from sqlmodel import SQLModel
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_policy_amendment as amendments,
+    )
+    from factory.orchestration import factory_allocation_recovery as recovery
+
+    feedback_db.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        feedback_db, tables=[AgentSession.__table__, PendingMessage.__table__]
+    )
+    task, _ = exhausted_allocation_task(monkeypatch, "implement_manifest", 4)
+    controls.set_control("pause_task", "operator", task_id=task["id"])
+    with controls._read_session() as db:
+        receipt_id = controls._receipt(db, task["id"]).id
+    overlay = {
+        "nonrenewable_recovery": True,
+        "max_planner_turns": 1,
+        "recover_exhausted_nodes": ["implement_manifest"],
+        "landing_hold": True,
+    }
+    for changes, reason in (
+        ({"recover_exhausted_nodes": ["renamed"]}, "exact_exhausted_nodes"),
+        (
+            {"recover_exhausted_nodes": ["implement_manifest"] * 2},
+            "exact_exhausted_nodes",
+        ),
+        ({"max_planner_turns": 2}, "one_planner_attempt"),
+    ):
+        with pytest.raises(ValueError, match=reason):
+            amendments.preview(receipt_id, {**overlay, **changes}, "Invalid recovery")
+    without_bound = {
+        key: value for key, value in overlay.items() if key != "nonrenewable_recovery"
+    }
+    with pytest.raises(ValueError, match="nonrenewable_envelope"):
+        amendments.preview(receipt_id, without_bound, "Unbounded recovery")
+    proposal = amendments.preview(
+        receipt_id, overlay, "One bounded replacement and independent review"
+    )
+    assert proposal["exhausted_allocations"][0]["accounted_cost_usd"] == 4
+    amendments.apply(
+        receipt_id,
+        overlay,
+        proposal["direction"],
+        actor="operator",
+        request_key="recovery",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    original = conductor.graph.node_runs(task["id"])
+    controls.set_control("resume_task", "operator", task_id=task["id"])
+    task = conductor._task(task["id"])
+    policy = controls.task_snapshot(task["id"])["policy"]
+    decision = {
+        "action": "plan",
+        "reason": "Authorized bounded recovery",
+        "edits": [
+            plan_edit("replacement", "implement", max_attempts=1),
+            plan_edit(
+                "replacement", "review", ["implement_replacement"], max_attempts=1
+            ),
+        ],
+    }
+    oversized = {
+        **decision,
+        "edits": decision["edits"]
+        + [plan_edit(f"extra{i}", "implement") for i in range(8)],
+    }
+    preview = conductor.preview_decision(task["id"], oversized, expected_revision=1)
+    assert preview["refusal"]["code"] == "envelope_exceeded"
+    with controls._read_session() as db:
+        assert (
+            recovery.authorization(db, task["id"], recovery.blockers(db, task["id"]))
+            is not None
+        )
+    # A graph-level refusal rolls back every edit and does not spend the grant.
+    snapshot = conductor._decision_snapshot(task["id"], decision=decision)
+    projected = conductor.project_decision(task, policy, decision, snapshot)
+    malformed = [dict(edit) for edit in projected.edits]
+    malformed[-1]["deps"] = ["missing_dependency"]
+    rejected = conductor.graph.apply_edits(
+        task["id"],
+        author_kind="conductor",
+        author="test",
+        cause_kind="test",
+        cause_ref="refused-recovery",
+        expected_version=1,
+        edits=malformed,
+    )
+    assert rejected.refusal_code == "unknown_dep"
+    assert conductor.graph.current_version(task["id"]) == 1
+    with controls._read_session() as db:
+        assert (
+            recovery.authorization(db, task["id"], recovery.blockers(db, task["id"]))
+            is not None
+        )
+    conductor._apply_decision(task, policy, decision, "authorized-recovery", original)
+    nodes = conductor.graph.load_graph(task["id"])
+    assert {n["node_key"] for n in nodes} == {
+        "implement_manifest",
+        "implement_replacement",
+        "review_replacement",
+    }
+    assert (
+        next(n for n in nodes if n["node_key"] == "implement_manifest")["max_cost_usd"]
+        == 4
+    )
+    assert conductor.graph.node_runs(task["id"]) == original
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["policy"]["task_budget_usd"] == 50
+    assert snapshot["committed_cost_usd"] == 4
+    assert snapshot["allowance"]["usd"] <= 50
+    with controls._read_session() as db:
+        assert recovery.blockers(db, task["id"]) == []
+        assert (
+            recovery.authorization(db, task["id"], proposal["exhausted_allocations"])
+            is None
+        )
+    # Another lost invocation cannot reuse the predecessor's authorization.
+    run_feedback_node(task, "implement_replacement", {}, status="failed")
+    from factory.orchestration.models import SwarmNodeRun
+    from factory.orchestration.factory_models import FactoryStart
+
+    with controls._locked_session() as (db, _):
+        run = db.exec(
+            select(SwarmNodeRun).where(
+                SwarmNodeRun.task_id == task["id"],
+                SwarmNodeRun.node_key == "implement_replacement",
+            )
+        ).one()
+        run.cost_usd = None
+        run.outcome_json = json.dumps({"reason": "guest_cessation_confirmed"})
+        start = db.exec(
+            select(FactoryStart).where(
+                FactoryStart.task_id == task["id"],
+                FactoryStart.start_key == run.dispatch_key,
+            )
+        ).one()
+        start.cost_usd = None
+    with controls._read_session() as db:
+        blocked = recovery.blockers(db, task["id"])
+        assert [item["node_key"] for item in blocked] == ["implement_replacement"]
+        assert recovery.authorization(db, task["id"], blocked) is None
 
 
 @pytest.mark.parametrize(
@@ -16229,6 +16563,17 @@ def test_existing_funding_lifecycle_continues_after_creation_flag_disabled(
     task, policy = funding_task(monkeypatch)
     assert funding.request(task, "Initial assessment")
     settle_funding(task, funding_decision())
+    assert conductor._add(
+        task,
+        policy,
+        "investigate_progress",
+        "Inspect new evidence",
+        [],
+        "luna",
+        "investigate",
+        "Useful work before the next funding review",
+    ).ok
+    run_feedback_node(task, "investigate_progress", {})
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
     now = controls._now()
     monkeypatch.setattr(controls, "_now", lambda: now + timedelta(minutes=31))

@@ -11,6 +11,7 @@ from sqlmodel import select
 
 from core.clock import aware
 from factory.orchestration import (
+    factory_allocation_recovery as allocation,
     factory_controls as controls,
     factory_judge,
     graph,
@@ -385,6 +386,10 @@ def request(task, reason, *, recover=False):
             r["status"] not in graph.TERMINAL_RUN_STATUSES for r in runs
         ):
             return False
+        blocker = allocation.funding_blocker(db, task["id"], runs)
+        if blocker:
+            allocation.pause(db, task["id"], blocker)
+            return False
         total = objective(db, task["id"])
         if total["committed_cost_usd"] + REVIEW_COST_USD > OBJECTIVE_CEILING_USD:
             controls.finish_task(
@@ -460,6 +465,7 @@ def request(task, reason, *, recover=False):
             "Judge progress, remaining scope, infrastructure failures, likely completion cost, and opportunity cost. "
             "Internal turn, dollar, review-round or time limits are reasons to reassess, never reasons to ask a human to restart a task. "
             "There is no fixed number of extensions. Approve a reasonable finite tranche, steer to a better plan, or stop if the objective is no longer worthwhile. "
+            "Task funding cannot change existing node caps. An exhausted node requires explicit bounded recovery, never renaming to reset its allocation. "
             "A failed guest invocation is not proof the feature is worthless. Explain how the next plan addresses the failure. "
             "Factory node execution and funding decisions on this repo/issue, including prior tasks, must stay within $200 cumulative committed cost. Shared reservation supervision is operational overhead, separate from this task allocation. "
             "task_budget_usd is the TOTAL ceiling for the CURRENT task, including its already committed cost; other tasks' cost remains charged separately. "
@@ -663,6 +669,12 @@ def settle(task, run, request):
                             "the work: " + decision["reason"]
                         )
             if decision["action"] not in ("stop", ESCALATE) and escalation is None:
+                blocker = allocation.funding_blocker(
+                    db, task["id"], graph.node_runs(task["id"], session=db)
+                )
+                if blocker:
+                    allocation.pause(db, task["id"], blocker)
+                    raise ValueError(blocker["code"])
                 if (
                     not math.isfinite(ceiling)
                     or ceiling <= spent["committed_cost_usd"]
@@ -702,6 +714,9 @@ def settle(task, run, request):
                     task_id=task["id"],
                     request_id=request["audit_id"],
                     source_run_id=run["id"],
+                    progress_sha256=allocation.progress(
+                        graph.node_runs(task["id"], session=db)
+                    ),
                     policy_overlay=overlay,
                     reason=decision["reason"],
                     next_plan=decision["next_plan"],

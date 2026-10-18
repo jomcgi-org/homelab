@@ -992,6 +992,9 @@ async def factory_amend_policy(
     attempts. The final planner result goes through normal server admission.
     rejection pauses the same task without another planner or funding review.
     This restriction is sticky. Further bounds require another human amendment.
+    recover_exhausted_nodes lists every exact exhausted node key to authorize
+    one replacement plan within a nonrenewable envelope with one planner attempt.
+    Old node pins and charges remain unchanged. Normal plan admission must pass.
     The $200 cumulative objective allocation ceiling remains binding. This
     changes neither provider/global limits nor the $500/$1000 emergency limits.
     A successful amendment supersedes stale funding review and records planner
