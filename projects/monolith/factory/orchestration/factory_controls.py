@@ -242,13 +242,14 @@ DEFAULT_QUOTA_GUARD = {
     # Quota about to be replaced is not quota worth preserving.
     "claude_7d_imminent_reset_minutes": 120,
 }
-# The no-progress watchdog (factory_progress_watchdog). A fixed dollar step
-# rather than a fraction of task_budget_usd: what a pointless loop costs does
-# not scale with the ceiling, and a funding grant raises that ceiling mid-task,
-# which would otherwise move the watchdog away exactly when spend is growing.
-# $20 is a fifth to two fifths of the usual $50-100 task budget, so a looping
-# task reaches a person well before the budget does.
-DEFAULT_PROGRESS_WATCHDOG = {"enabled": True, "threshold_usd": 20.0}
+# The no-progress watchdog (factory_progress_watchdog). A step of settled
+# turns, planner rounds included, rather than dollars (#7161): dollars are
+# accounting only, and a planner that keeps deliberating without a commit is
+# the loop the watchdog exists to catch. Eight turns is about the $20 step it
+# replaces at typical turn prices. threshold_usd is accepted from a policy
+# stored before the change and ignored.
+DEFAULT_PROGRESS_WATCHDOG = {"enabled": True, "threshold_turns": 8}
+MAX_PROGRESS_WATCHDOG_TURNS = 100
 # An observation older than this says nothing about now, and an unknown
 # reading never starts a fallback: downgrading every review because a broker
 # read failed would turn one outage into two.
@@ -864,18 +865,19 @@ def _validate_quota_guard(value: object) -> dict:
 
 def _validate_progress_watchdog(value: object) -> dict:
     """The no-progress watchdog block, every field defaulted."""
-    if not isinstance(value, dict) or not set(value) <= set(DEFAULT_PROGRESS_WATCHDOG):
+    if not isinstance(value, dict) or not set(value) <= set(
+        DEFAULT_PROGRESS_WATCHDOG
+    ) | {"threshold_usd"}:
         raise ValueError("invalid progress_watchdog")
     enabled = value.get("enabled", DEFAULT_PROGRESS_WATCHDOG["enabled"])
     if type(enabled) is not bool:
         raise ValueError("invalid progress_watchdog enabled")
-    threshold = _money(
-        value.get("threshold_usd", DEFAULT_PROGRESS_WATCHDOG["threshold_usd"]),
-        "progress_watchdog threshold_usd",
+    threshold = value.get(
+        "threshold_turns", DEFAULT_PROGRESS_WATCHDOG["threshold_turns"]
     )
-    if threshold > 200:
-        raise ValueError("invalid progress_watchdog threshold_usd")
-    return {"enabled": enabled, "threshold_usd": threshold}
+    if type(threshold) is not int or not 1 <= threshold <= MAX_PROGRESS_WATCHDOG_TURNS:
+        raise ValueError("invalid progress_watchdog threshold_turns")
+    return {"enabled": enabled, "threshold_turns": threshold}
 
 
 def progress_watchdog_policy(policy: dict) -> dict:
@@ -1675,21 +1677,16 @@ def envelope_excess(
 
     ``accounted`` is what the task is already sized at, before the refused
     edit, under the reserve that edit implies. Given it, the refusal also
-    carries ``spare_turns`` and ``spare_usd``, what the envelope would still
-    fund, so the planner can size a smaller edit against whichever of the two
-    is binding instead of re-proposing the one that was just refused.
+    carries ``spare_turns``, what the envelope would still fund, so the planner
+    can size a smaller edit instead of re-proposing the one that was just
+    refused. Only turns bind: dollars are reported, never refused (#7161).
     """
     turns_allowed = task_turn_ceiling(policy)
-    usd_allowed = policy["task_budget_usd"]
-    if allowance["turns"] <= turns_allowed and allowance["usd"] <= usd_allowed:
+    if allowance["turns"] <= turns_allowed:
         return None
-    excess = {
-        "turns": {"needed": allowance["turns"], "allowed": turns_allowed},
-        "usd": {"needed": allowance["usd"], "allowed": usd_allowed},
-    }
+    excess = {"turns": {"needed": allowance["turns"], "allowed": turns_allowed}}
     if accounted is not None:
         excess["spare_turns"] = max(0, turns_allowed - accounted["turns"])
-        excess["spare_usd"] = round(max(0.0, usd_allowed - accounted["usd"]), 6)
     return excess
 
 
@@ -3184,17 +3181,6 @@ def authorize_start(
             or cost != factory_funding.REVIEW_COST_USD
         ):
             return {"ok": False, "reason": "funding_review_pin_mismatch"}
-        if (
-            factory_funding.enabled()
-            or factory_funding.amendment(db, task_id)
-            or oversight
-        ):
-            total = factory_funding.objective(db, task_id)
-            if (
-                total["committed_cost_usd"] + cost
-                > factory_funding.OBJECTIVE_CEILING_USD
-            ):
-                return {"ok": False, "reason": "objective_budget_limit"}
         budget = _accounting(starts)
         planner = _planner_key(start_key)
         grant = continuation_grant(task_id, session=db)
@@ -3236,23 +3222,8 @@ def authorize_start(
             and budget["turns_used"] >= _stored_allowance(row, policy)["turns"]
         ):
             reason = "turn_limit"
-        # Both kinds of start still answer to the one task budget.
-        elif not oversight and (
-            budget["committed_cost_usd"] + cost > policy["task_budget_usd"]
-            or (
-                cost > policy["turn_budget_usd"]
-                and not any(
-                    run.dispatch_key == start_key
-                    and run.status == "admitted"
-                    and run.reserved_cost_usd == cost
-                    and json.loads(run.pin_json or "{}").get("model") == model
-                    for run in db.exec(
-                        select(SwarmNodeRun).where(SwarmNodeRun.task_id == task_id)
-                    ).all()
-                )
-            )
-        ):
-            reason = "budget_limit"
+        # Dollars never refuse a start (#7161): the cost pin is recorded for
+        # accounting and the quota guard and turn limits bound the work.
         if reason:
             _audit(
                 db,

@@ -672,13 +672,6 @@ def _reject_plan_decision(
     """Reject a graph decision and escalate a repeated no-progress refusal."""
     if _reject_decision(task["id"], cause, action, code, reason):
         return
-    if code == "node_allocation_exhausted":
-        from factory.orchestration import factory_allocation_recovery as recovery
-        from factory.orchestration import factory_controls as controls
-
-        with controls._locked_session() as (db, _control):
-            recovery.pause(db, task["id"], {"code": code, "reason": reason})
-        return
     if not _check_consecutive_refusals(task["id"], code):
         return
     lead = (
@@ -894,15 +887,12 @@ def _budget_evidence(task_id: str) -> dict:
         task_turn_ceiling,
     )
 
-    from factory.orchestration import factory_allocation_recovery as recovery
-
     with Session(get_engine()) as db:
         budget = graph.budget_snapshot(task_id, session=db)
         receipt = task_snapshot(task_id, session=db)
         policy = receipt["policy"]
         return {
             **budget,
-            "exhausted_allocations": recovery.blockers(db, task_id),
             "graph_revision": graph.current_version(task_id, session=db),
             "turns_used": receipt["turns_used"],
             "planner_turns_used": receipt["planner_turns_used"],
@@ -1985,7 +1975,7 @@ def planner_prompt(
             "no authority. If the second preview still does not fit, emit a "
             "feasible smaller decision, or request_funding where funding is "
             "available, or pause. Cite the measured shortfall: needed versus "
-            "allowed turns and USD, plus spare_turns and spare_usd. "
+            "allowed turns, plus spare_turns. "
             if planner_preview_enabled()
             else ""
         )
@@ -2047,14 +2037,14 @@ _PLANNER_CHARTER = (
     "not reserved up front, and the allowance grows by one round as each "
     "one is inserted. That headroom bounds what you may add, not what the "
     "engine may open: an engine round is admitted whenever its own two "
-    "nodes fit the envelope. Its dollar allowance is the same sum over node "
-    "max_cost_usd ceilings plus charged history. Policy keeps only an "
-    "envelope: max_task_turns_hard and task_budget_usd in budget_evidence. "
-    "A plan or an add_node whose derived allowance would exceed either is "
+    "nodes fit the envelope. Dollar figures in budget_evidence are "
+    "accounting only and never refuse an edit or an attempt. Policy keeps "
+    "only a turn envelope: max_task_turns_hard in budget_evidence. "
+    "A plan or an add_node whose derived turn allowance would exceed it is "
     "refused whole with refusal code envelope_exceeded, and "
-    "decision_feedback names the excess as needed against allowed for both "
-    "turns and dollars, beside spare_turns and spare_usd, what the envelope "
-    "would still fund once the reserve your edit brings with it is counted. "
+    "decision_feedback names the excess as needed against allowed turns, "
+    "beside spare_turns, what the envelope would still fund once the "
+    "reserve your edit brings with it is counted. "
     "The task section states what to do when an edit is refused that way. "
     "Never re-propose a refused edit unchanged: it will be refused "
     "again and the round is spent for nothing. Add an implementation node "
@@ -3659,13 +3649,6 @@ def _decision_snapshot(
             model: review_reservation_usd(model, 0, policy["turn_budget_usd"])
             for model in policy["allowed_models"]
         }
-        from factory.orchestration import factory_allocation_recovery as recovery
-
-        task["exhausted_allocations"] = recovery.blockers(db, task_id)
-        task["allocation_recovery_authorized"] = (
-            recovery.authorization(db, task_id, task["exhausted_allocations"])
-            is not None
-        )
         return DecisionSnapshot(
             task,
             dict(policy),
@@ -3775,20 +3758,6 @@ def project_decision(
         prepared = graph._resolve_batch_deps(
             prepared, {node["node_key"] for node in snapshot.nodes}
         )
-        if (
-            snapshot.task.get("exhausted_allocations")
-            and not snapshot.task.get("allocation_recovery_authorized")
-            and any(edit["op"] == "add_node" for edit in prepared)
-        ):
-            return DecisionProjection(
-                snapshot.revision,
-                [],
-                prepared,
-                refusal={
-                    "code": "node_allocation_exhausted",
-                    "detail": "Exhausted node allocation requires an explicit bounded replacement plan authorization.",
-                },
-            )
         projected_nodes = _projected_nodes(prepared, snapshot.nodes)
     if projected_nodes is None:
         raise ValueError("a decision or projected graph is required")
@@ -3843,29 +3812,6 @@ def project_decision(
         graph_revision=snapshot.revision,
     )
     excess = envelope_excess(allowance, policy, accounted=accounted)
-    if excess is not None:
-        # Keep preview, persisted refusal feedback, and admission on the same
-        # accounting owner. Totals alone hide why a low requested review cost
-        # still cannot fit, encouraging another identical paid planner turn.
-        history = allowance_from_graph(
-            [],
-            snapshot.runs,
-            policy,
-            review_rounds_remaining=0,
-            graph_revision=snapshot.revision,
-        )["usd"]
-        excess["cost_breakdown_usd"] = {
-            "charged_history": history,
-            "remaining_nodes": round(
-                allowance["usd"]
-                - history
-                - review_reserve["usd"]
-                - fan_in_reserve["usd"],
-                6,
-            ),
-            "review_round_reserve": review_reserve["usd"],
-            "fan_in_reserve": fan_in_reserve["usd"],
-        }
     return DecisionProjection(
         revision=snapshot.revision,
         edits=edits,
@@ -6753,7 +6699,12 @@ def reconcile_task(
 def _ready_nodes(
     nodes: list[dict], runs: list[dict], *, funding_review: bool = False
 ) -> list[dict]:
-    """Nodes whose dependencies succeeded and which still have an attempt and budget."""
+    """Nodes whose dependencies succeeded and which still have an attempt.
+
+    Spend never takes a node out of the ready set (#7161): a failed attempt
+    that reported no cost is charged its reservation, and that charge used to
+    leave an attempt the node could never dispatch.
+    """
     succeeded = {r["node_key"] for r in runs if r["status"] == "succeeded"}
     escalated = {r["node_key"] for r in runs if r["status"] == "escalated"}
     return [
@@ -6764,8 +6715,6 @@ def _ready_nodes(
         and n["node_key"] not in escalated
         and all(dep in succeeded for dep in n["deps"])
         and graph.attempts_spent(runs, n["node_key"]) < n["max_attempts"]
-        and sum(r["accounted_cost_usd"] for r in runs if r["node_key"] == n["node_key"])
-        < n["max_cost_usd"]
     ]
 
 
@@ -7004,27 +6953,6 @@ def _reservation_refusal(
     if row is None:
         return ReservationResult(False, code)
     policy = _effective_policy(db, row)
-    if code == "task_budget_exhausted":
-        budget = graph.budget_snapshot(task_id, session=db)
-        return ReservationResult(
-            False,
-            code,
-            "task_budget",
-            budget["accounted_cost_usd"],
-            cost,
-            policy["task_budget_usd"],
-            snapshot["allowance"]["usd"],
-        )
-    if code == "budget_limit":
-        return ReservationResult(
-            False,
-            code,
-            "task_budget",
-            snapshot["committed_cost_usd"],
-            cost,
-            policy["task_budget_usd"],
-            snapshot["allowance"]["usd"],
-        )
     if code == "turn_limit":
         return ReservationResult(
             False,
@@ -7062,12 +6990,9 @@ def _escalate_dispatch_refusal(
     }
     # Funding-disabled path only: with factoryConductorFundingEnabled the
     # refusal goes to factory_funding.request above and this card never posts.
-    # The exact server-derived target is retained separately from the label so
-    # applying the option can authorize a dollar overlay without parsing prose.
-    # Non-dollar refusals remain manual allowance changes.
-    if refusal.limit == "task_budget":
-        label = f"Raise task_budget to {target:g} and continue"
-    elif target > refusal.allowed:
+    # Dollars no longer refuse a dispatch (#7161), so every refusal here is a
+    # turn allowance an operator raises by hand.
+    if target > refusal.allowed:
         label = f"Continue once {refusal.limit} is raised by hand to {target:g}"
     else:
         label = f"Continue once the {refusal.limit} allowance is raised by hand to {target:g}"

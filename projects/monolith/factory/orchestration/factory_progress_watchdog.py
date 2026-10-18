@@ -1,10 +1,10 @@
-"""The no-progress watchdog: spend that produced nothing reaches a person.
+"""The no-progress watchdog: turns that produced nothing reach a person.
 
-A task's budget is an escalation lever, not a stop. This watchdog is the
-earlier lever: once an admitted delivery task has spent another
-``progress_watchdog.threshold_usd`` (default $20) without pushing a new commit
-or reporting a new pull request since it was admitted or last cleared, the
-orchestrator assesses it once for that crossing.
+Once an admitted delivery task has settled another
+``progress_watchdog.threshold_turns`` (default 8) turns, planner rounds
+included, without pushing a new commit or reporting a new pull request since
+it was admitted or last cleared, the orchestrator assesses it once for that
+crossing. The step is counted in turns, never dollars (#7161).
 
 The assessment is deterministic first. A refusal code recurring three times,
 a node key that was added again and failed again, three failures with the same
@@ -13,7 +13,7 @@ loops on their face and short-circuit without a model call. Anything else goes
 to one bounded chat-inference call (the classifier's endpoint and model,
 minimal reasoning effort, a bounded token cap, list priced), which answers
 ``progressing`` or ``looping``. An unreadable answer is asked once more. Only
-two unreadable answers fail closed to ``looping``: the task has spent the
+two unreadable answers fail closed to ``looping``: the task has used the
 threshold with nothing to show and nothing vouching for it, which is exactly
 when a person should look.
 
@@ -23,8 +23,10 @@ the reconciler's own pause expiry never cancels it, and raises a decision card
 (Resume, Stop, Rescope) on the receipt, the issue and Discord. The card is
 decided on the escalations page like any other; the answer is enacted here on
 the next tick. A plain ``resume_task`` works too. Either way the watchdog
-re-arms from the spend at the moment of clearance, so a legitimate task gets
-another full step before it is asked again. A delivery (a new commit or pull
+re-arms from the turn count at the moment of clearance, so a legitimate task
+gets another full step before it is asked again. Audit rows written before the
+step was counted in turns carry only dollar thresholds; the first tick re-arms
+them from the current turn count rather than reading dollars as turns. A delivery (a new commit or pull
 request) clears the watchdog the same way.
 
 All state is derived from the audit trail, so there is no migration and a
@@ -58,7 +60,7 @@ ENACT_REFUSED = "watchdog_enact_refused"
 PROGRESSING = "progressing"
 LOOPING = "looping"
 
-# Deterministic loop evidence. Each is a shape no amount of further spend
+# Deterministic loop evidence. Each is a shape no amount of further turns
 # fixes by itself, so none of them needs a model to recognise.
 REPEATED_REFUSALS = 3
 READDED_FAILURES = 2
@@ -88,9 +90,9 @@ RESCOPE_OPTION = "rescope"
 
 _SYSTEM = (
     "You are the factory orchestrator's no-progress watchdog. A delivery task "
-    "has spent past its watchdog threshold without pushing a new commit or "
+    "has used its watchdog threshold of turns without pushing a new commit or "
     "opening a pull request. From its recent node history decide whether it "
-    "is still converging on a delivery (progressing) or spending without "
+    "is still converging on a delivery (progressing) or turning without "
     "converging (looping): the same node re-added, repeated refusals, "
     "identical failures, attempts that change nothing. Reply with one JSON "
     'object and nothing else: {"verdict": "progressing" | "looping", '
@@ -148,16 +150,18 @@ def _trail(db, task_id: str) -> list:
     )
 
 
-def state(trail: list, threshold: float) -> dict:
+def state(trail: list, threshold: int) -> dict:
     """Where the watchdog stands, read from its own audit rows.
 
-    ``next_threshold_usd`` is the spend that triggers the next assessment,
+    ``next_threshold_turns`` is the turn count that triggers the next
+    assessment, or None when the latest row predates turn counting and the
+    watchdog must re-arm,
     ``run_watermark`` the last node run already accounted for, and
     ``audit_watermark`` the last audit row, so refusals are counted since the
     same point. ``open`` is the looping assessment still waiting on a person.
     """
     result = {
-        "next_threshold_usd": threshold,
+        "next_threshold_turns": threshold,
         "run_watermark": 0,
         "audit_watermark": 0,
         "open": None,
@@ -172,7 +176,7 @@ def state(trail: list, threshold: float) -> dict:
         result["last"] = {"id": row.id, "action": row.action, **detail}
         if row.action == CLEARED:
             result.update(
-                next_threshold_usd=detail["next_threshold_usd"],
+                next_threshold_turns=detail.get("next_threshold_turns"),
                 run_watermark=detail["run_watermark"],
                 audit_watermark=row.id,
                 open=None,
@@ -180,22 +184,20 @@ def state(trail: list, threshold: float) -> dict:
         elif detail.get("verdict") == LOOPING:
             result["open"] = {"id": row.id, **detail}
         else:
-            result["next_threshold_usd"] = detail["next_threshold_usd"]
+            result["next_threshold_turns"] = detail.get("next_threshold_turns")
     return result
 
 
-def spend(db, task_id: str, assessment_cost_usd: float = 0.0) -> float:
-    """Committed spend of every settled start, plus the watchdog's own calls.
+def turns(db, task_id: str) -> int:
+    """Settled turns, work and planner alike.
 
-    A start still reserved is an attempt in flight; its reservation is a
-    ceiling, not spend, and counting it would trip the watchdog on the first
-    large dispatch.
+    A start still reserved is an attempt in flight and has not finished its
+    turn, so counting it would trip the watchdog on the dispatch itself.
     """
     controls = _controls()
     settled = [s for s in controls._starts(db, task_id) if s.status != "reserved"]
-    return round(
-        sum(controls._committed_cost(s) for s in settled) + assessment_cost_usd, 6
-    )
+    used = controls._accounting(settled)
+    return used["turns_used"] + used["planner_turns_used"]
 
 
 def _reason(run: dict) -> str:
@@ -438,7 +440,7 @@ def _ask(
     return None, cost, why
 
 
-def model_assessment(task: dict, found: dict, spent: float, threshold: float) -> dict:
+def model_assessment(task: dict, found: dict, used: int, threshold: int) -> dict:
     """At most two bounded chat-inference calls. Never raises.
 
     An unreadable answer is asked once more; only a second one fails closed
@@ -455,8 +457,8 @@ def model_assessment(task: dict, found: dict, spent: float, threshold: float) ->
             "title": str(task.get("title") or "")[:300],
             "issue_number": task.get("issue_number"),
         },
-        "spend_usd": spent,
-        "threshold_usd": threshold,
+        "turns_used": used,
+        "threshold_turns": threshold,
         "attempts_in_flight": len(found["active"]),
         "refusal_codes": found["refusals"][-HISTORY_LIMIT:],
         "node_history": found["history"],
@@ -512,7 +514,7 @@ def model_assessment(task: dict, found: dict, spent: float, threshold: float) ->
     return {**result, **parsed}
 
 
-def assess(task: dict, found: dict, spent: float, threshold: float) -> dict:
+def assess(task: dict, found: dict, used: int, threshold: int) -> dict:
     """Classify the task, deterministically when a loop is plain."""
     with tracer.start_as_current_span("factory.watchdog.assess") as span:
         loop = deterministic_loop(found)
@@ -527,15 +529,15 @@ def assess(task: dict, found: dict, spent: float, threshold: float) -> dict:
             }
         else:
             verdict = {
-                **model_assessment(task, found, spent, threshold),
+                **model_assessment(task, found, used, threshold),
                 "short_circuit": False,
             }
         set_attributes(
             span,
             {
                 "factory.task_id": task.get("id"),
-                "factory.watchdog.spend_usd": spent,
-                "factory.watchdog.threshold_usd": threshold,
+                "factory.watchdog.turns_used": used,
+                "factory.watchdog.threshold_turns": threshold,
                 "factory.watchdog.verdict": verdict["verdict"],
                 "factory.watchdog.reason": verdict["reason"],
                 "factory.watchdog.short_circuit": verdict["short_circuit"],
@@ -555,7 +557,7 @@ def _record(action: str, task_id: str, **detail) -> None:
         controls._audit(db, ACTOR, action, task_id=task_id, **detail)
 
 
-def _options(spent: float) -> list[dict]:
+def _options(used: int) -> list[dict]:
     return [
         {
             "key": RESUME_OPTION,
@@ -564,7 +566,7 @@ def _options(spent: float) -> list[dict]:
             "detail": {
                 "scope": (
                     "Unpause this task on its existing branch. The no-progress "
-                    f"watchdog re-arms from the spend at resume (now ${spent:.2f})."
+                    f"watchdog re-arms from the turn count at resume (now {used})."
                 )
             },
         },
@@ -620,15 +622,14 @@ def _card(document: dict) -> str:
 
 
 def _escalate(
-    task: dict, verdict: dict, spent: float, threshold: float, ordinal: int, runs
+    task: dict, verdict: dict, used: int, threshold: int, ordinal: int, runs
 ):
     from factory.orchestration import factory_conductor as conductor
 
     task_id = task["id"]
     question = (
-        f"Task {task_id} has spent ${spent:.2f} (watchdog threshold "
-        f"${threshold:.2f}) without a new commit or pull request. Resume, stop "
-        "or rescope?"
+        f"Task {task_id} has run {used} turns (watchdog step {threshold}) "
+        "without a new commit or pull request. Resume, stop or rescope?"
     )
     document = {
         "kind": KIND,
@@ -639,15 +640,15 @@ def _escalate(
         "reason": verdict["reason"][:4000],
         "evidence": verdict.get("evidence") or [],
         "summary": "\n".join(verdict.get("evidence") or [])[:1000],
-        "options": _options(spent),
+        "options": _options(used),
         "branch": conductor.delivery_branch(task),
         "pr_number": None,
         "pr_url": None,
         "comment_url": None,
         "downgraded": False,
         "resolved": None,
-        "spend_usd": spent,
-        "threshold_usd": threshold,
+        "turns_used": used,
+        "threshold_turns": threshold,
         "short_circuit": verdict["short_circuit"],
     }
     pr_number = conductor._latest_pr(runs) or conductor.delivery_pr_number(task)
@@ -669,21 +670,21 @@ def _escalate(
     conductor._notify_person_once(
         task_id,
         f"Factory watchdog paused task {task_id} ({task.get('repo')}#{number}): "
-        f"${spent:.2f} spent with no new commit or pull request. "
+        f"{used} turns with no new commit or pull request. "
         f"{verdict['reason'][:500]}",
         kind=f"watchdog:{ordinal}",
     )
 
 
-def _clear(task_id: str, reason: str, spent: float, threshold: float, runs, **extra):
+def _clear(task_id: str, reason: str, used: int, threshold: int, runs, **extra):
     _record(
         CLEARED,
         task_id,
         reason=reason,
-        spend_usd=spent,
-        next_threshold_usd=round(spent + threshold, 6),
+        turns_used=used,
+        next_threshold_turns=used + threshold,
         run_watermark=max((r["id"] for r in runs), default=0),
-        threshold_usd=threshold,
+        threshold_turns=threshold,
         **extra,
     )
 
@@ -732,7 +733,7 @@ def _resolve_card(task_id: str, actor: str, note: str) -> None:
         db.add(row)
 
 
-def _enact(task: dict, open_: dict, receipt, trail, spent, threshold, runs) -> str:
+def _enact(task: dict, open_: dict, receipt, trail, used, threshold, runs) -> str:
     """Carry out what a person decided about an open watchdog pause."""
     controls = _controls()
     task_id = task["id"]
@@ -769,7 +770,7 @@ def _enact(task: dict, open_: dict, receipt, trail, spent, threshold, runs) -> s
             actor = resolved.get("actor", ACTOR)
         if not controls.terminal_resolution(resolved):
             _resolve_card(task_id, actor, "Resumed with resume_task.")
-        _clear(task_id, "resume", spent, threshold, runs, resumed_by=actor)
+        _clear(task_id, "resume", used, threshold, runs, resumed_by=actor)
         return "cleared"
     if choice in (STOP_OPTION, RESCOPE_OPTION):
         result = controls.finish_task(
@@ -797,7 +798,7 @@ def check(task_id: str, policy: dict) -> str:
     )
     if not watch_policy["enabled"] and not shadow_enabled:
         return "disabled"
-    threshold = watch_policy["threshold_usd"]
+    threshold = watch_policy["threshold_turns"]
     from factory.orchestration.factory_models import FactoryReceipt
 
     with _session() as db:
@@ -816,7 +817,7 @@ def check(task_id: str, policy: dict) -> str:
         if shadow_enabled:
             from factory.orchestration import factory_progress_shadow
 
-            # Separate audit action, before the monetary gate. Shadow failures
+            # Separate audit action, before the turn gate. Shadow failures
             # cannot disable the existing watchdog or clear an operator fence.
             try:
                 factory_progress_shadow.observe(db, receipt, policy)
@@ -827,7 +828,7 @@ def check(task_id: str, policy: dict) -> str:
             return "disabled"
         trail = _trail(db, task_id)
         watch = state(trail, threshold)
-        spent = spend(db, task_id, watch["assessment_cost_usd"])
+        used = turns(db, task_id)
         runs = graph.node_runs(task_id, session=db)
         task = {
             "id": task_id,
@@ -836,7 +837,12 @@ def check(task_id: str, policy: dict) -> str:
             "title": receipt.title,
         }
         task_paused = receipt.task_paused
-        adds = _plan_adds(db, task_id) if spent >= watch["next_threshold_usd"] else None
+        crossing = watch["next_threshold_turns"]
+        adds = (
+            _plan_adds(db, task_id)
+            if crossing is not None and used >= crossing
+            else None
+        )
         db.expunge(receipt)
     if watch["open"] is not None:
         return _enact(
@@ -844,31 +850,43 @@ def check(task_id: str, policy: dict) -> str:
             watch["open"],
             receipt,
             trail,
-            spent,
+            used,
             threshold,
             runs,
         )
-    if spent < watch["next_threshold_usd"]:
+    if crossing is None:
+        # The latest row counted dollars. Re-arm from now, keeping its run
+        # watermark so a delivery since then still clears the next crossing.
+        _record(
+            CLEARED,
+            task_id,
+            reason="rearm_turns",
+            turns_used=used,
+            next_threshold_turns=used + threshold,
+            run_watermark=watch["run_watermark"],
+            threshold_turns=threshold,
+        )
+        return "rearmed"
+    if used < crossing:
         return "under_threshold"
     fresh = delivered_since(runs, watch["run_watermark"])
     if fresh:
-        _clear(task_id, "delivery", spent, threshold, runs, delivered=fresh[:10])
+        _clear(task_id, "delivery", used, threshold, runs, delivered=fresh[:10])
         return "cleared"
     if task_paused:
         # Somebody else's fence. Assessing a task that cannot start anything
         # would only pile a second question on the first.
         return "paused_elsewhere"
     found = evidence(runs, trail, adds, watch)
-    crossing = watch["next_threshold_usd"]
-    if found["active"] and spent < crossing + threshold:
+    if found["active"] and used < crossing + threshold:
         # An attempt in flight may be the one that pushes. The pause would only
-        # fence the next start anyway, so wait for it to settle, unless spend
-        # has run a whole further step past the crossing meanwhile.
+        # fence the next start anyway, so wait for it to settle, unless turns
+        # have run a whole further step past the crossing meanwhile.
         return "waiting_for_attempt"
-    verdict = assess(task, found, spent, threshold)
+    verdict = assess(task, found, used, threshold)
     next_threshold = crossing
-    while next_threshold <= spent:
-        next_threshold = round(next_threshold + threshold, 6)
+    while next_threshold <= used:
+        next_threshold += threshold
     ordinal = sum(1 for r in trail if r.action == ASSESSED) + 1
     _record(
         ASSESSED,
@@ -881,10 +899,10 @@ def check(task_id: str, policy: dict) -> str:
         cost_usd=verdict["cost_usd"],
         error=verdict.get("error"),
         attempts=verdict.get("attempts"),
-        spend_usd=spent,
-        threshold_usd=threshold,
-        crossing_usd=crossing,
-        next_threshold_usd=next_threshold,
+        turns_used=used,
+        threshold_turns=threshold,
+        crossing_turns=crossing,
+        next_threshold_turns=next_threshold,
         ordinal=ordinal,
     )
     if verdict["verdict"] == PROGRESSING:
@@ -897,7 +915,7 @@ def check(task_id: str, policy: dict) -> str:
     from factory.orchestration import factory_conductor as conductor
 
     _escalate(
-        {**conductor._task(task_id), **task}, verdict, spent, threshold, ordinal, runs
+        {**conductor._task(task_id), **task}, verdict, used, threshold, ordinal, runs
     )
     return "paused"
 
@@ -920,7 +938,7 @@ def detail(db, task_id: str | None, policy: dict | None) -> dict | None:
     controls = _controls()
     watch_policy = controls.progress_watchdog_policy(policy or {})
     trail = _trail(db, task_id)
-    watch = state(trail, watch_policy["threshold_usd"])
+    watch = state(trail, watch_policy["threshold_turns"])
     from factory.orchestration.factory_models import FactoryAudit
 
     shadow = db.exec(
@@ -933,9 +951,9 @@ def detail(db, task_id: str | None, policy: dict | None) -> dict | None:
     ).first()
     return {
         "enabled": watch_policy["enabled"],
-        "threshold_usd": watch_policy["threshold_usd"],
-        "spend_usd": spend(db, task_id, watch["assessment_cost_usd"]),
-        "next_threshold_usd": watch["next_threshold_usd"],
+        "threshold_turns": watch_policy["threshold_turns"],
+        "turns_used": turns(db, task_id),
+        "next_threshold_turns": watch["next_threshold_turns"],
         "assessment_cost_usd": round(watch["assessment_cost_usd"], 6),
         "paused_by_watchdog": watch["open"] is not None,
         "last": watch["last"],
@@ -943,8 +961,8 @@ def detail(db, task_id: str | None, policy: dict | None) -> dict | None:
     }
 
 
-def paused_receipts(db) -> list[tuple[int, int, float]]:
-    """(receipt id, issue, spend) for each active task the watchdog is holding.
+def paused_receipts(db) -> list[tuple[int, int, int]]:
+    """(receipt id, issue, turns) for each active task the watchdog is holding.
 
     Held means the task's standing pause is the watchdog's own: its latest
     successful pause_task was written by this actor. A person who paused the
@@ -971,5 +989,5 @@ def paused_receipts(db) -> list[tuple[int, int, float]]:
         ).all()
         latest = next((p for p in pauses if _detail(p).get("ok")), None)
         if latest is not None and latest.actor == ACTOR:
-            held.append((row.id, row.issue_number, spend(db, row.task_id)))
+            held.append((row.id, row.issue_number, turns(db, row.task_id)))
     return held

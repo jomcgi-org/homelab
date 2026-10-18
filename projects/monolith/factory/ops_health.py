@@ -570,8 +570,8 @@ def evaluate_factory(
         )
     if watchdog_paused:
         listed = ", ".join(
-            f"receipt {rid} (#{issue}) at ${spent:.2f}"
-            for rid, issue, spent in watchdog_paused[:5]
+            f"receipt {rid} (#{issue}) after {turns} turns"
+            for rid, issue, turns in watchdog_paused[:5]
         )
         more = (
             f" and {len(watchdog_paused) - 5} more" if len(watchdog_paused) > 5 else ""

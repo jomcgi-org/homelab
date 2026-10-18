@@ -227,9 +227,14 @@ def test_kind_and_budget_admission_rules(db):
     assert add_work(task_id, "first", 0, max_cost_usd=0.4).ok
     boundary = add_work(task_id, "second", 1, max_cost_usd=0.6)
     assert boundary.ok
-    exceeded = add_work(task_id, "third", 2, max_cost_usd=0.01)
-    assert not exceeded.ok and exceeded.refusal_code == "budget_exceeded"
-    assert_recorded(db, exceeded, "add_node", "refused", "budget_exceeded", 2, 2)
+    # Dollars never refuse a node (#7161): an add past the task budget is
+    # applied and only shows up in the accounting.
+    over_budget = add_work(task_id, "third", 2, max_cost_usd=0.01)
+    assert over_budget.ok
+    assert_recorded(db, over_budget, "add_node", "applied", None, 2, 3)
+    snapshot = graph.budget_snapshot(task_id)
+    assert snapshot["planned_cost_usd"] == pytest.approx(1.01)
+    assert snapshot["unallocated_cost_usd"] == 0.0
 
     unbudgeted_id = make_task(db, "unbudgeted", budget=None)
     unbudgeted = add_work(unbudgeted_id, "ordinary", 0, max_cost_usd=100.0)
@@ -288,31 +293,36 @@ def test_unfinished_or_retryable_nodes_keep_remaining_plan_budget(db, status):
         elif status != "admitted":
             assert record_outcome(task_id, "one", 1, status, 1.0, None, "{}").ok
     history = node_runs(task_id)
-    assert (
-        add_work(task_id, "too-large", 1, max_cost_usd=1.01).refusal_code
-        == "budget_exceeded"
-    )
-    assert add_work(task_id, "fits", 1).ok
+    snapshot = graph.budget_snapshot(task_id)
+    assert snapshot["planned_cost_usd"] == pytest.approx(4.0)
+    assert snapshot["unallocated_cost_usd"] == pytest.approx(1.0)
+    # Dollars never refuse a node (#7161): the add past the unallocated budget
+    # is applied and the accounting still carries the node's full ceiling.
+    assert add_work(task_id, "too-large", 1, max_cost_usd=1.01).ok
+    snapshot = graph.budget_snapshot(task_id)
+    assert snapshot["planned_cost_usd"] == pytest.approx(5.01)
+    assert snapshot["unallocated_cost_usd"] == 0.0
     assert node_runs(task_id) == history
     if status in ("failed", "cancelled", "escalated"):
-        assert admit_dispatch(task_id, "one").pin["max_cost_usd"] == 3.0
+        # A retry reserves the node's whole ceiling, whatever earlier attempts cost.
+        assert admit_dispatch(task_id, "one").pin["max_cost_usd"] == 4.0
 
 
-@pytest.mark.parametrize("final_cost,remaining", [(0.25, 0.25), (None, 0.0)])
-def test_successful_retry_keeps_spend_from_every_attempt(db, final_cost, remaining):
+@pytest.mark.parametrize("final_cost,second", [(0.25, 0.25), (None, 1.0)])
+def test_successful_retry_keeps_spend_from_every_attempt(db, final_cost, second):
     task_id = make_task(db, budget=1.0)
     assert add_work(task_id, "one", 0).ok
     assert admit_dispatch(task_id, "one").ok
     assert record_outcome(task_id, "one", 1, "failed", 0.5, None, "{}").ok
-    assert admit_dispatch(task_id, "one").pin["max_cost_usd"] == 0.5
+    # Every attempt reserves the node's whole ceiling (#7161).
+    assert admit_dispatch(task_id, "one").pin["max_cost_usd"] == 1.0
     assert record_outcome(task_id, "one", 2, "succeeded", final_cost, "head", "{}").ok
     history = node_runs(task_id)
-    assert (
-        add_work(task_id, "too-large", 1, max_cost_usd=remaining + 0.01).refusal_code
-        == "budget_exceeded"
-    )
-    if remaining:
-        assert add_work(task_id, "fits", 1, max_cost_usd=remaining).ok
+    assert [run["accounted_cost_usd"] for run in history] == [0.5, second]
+    snapshot = graph.budget_snapshot(task_id)
+    assert snapshot["accounted_cost_usd"] == pytest.approx(0.5 + second)
+    assert snapshot["planned_cost_usd"] == pytest.approx(0.5 + second)
+    assert add_work(task_id, "next", 1, max_cost_usd=1.0).ok
     assert node_runs(task_id) == history
 
 
@@ -337,11 +347,11 @@ def test_hidden_node_history_remains_in_plan_budget(
         session.commit()
     assert load_graph(task_id) == []
     history = node_runs(task_id)
-    assert (
-        add_work(task_id, "too-large", 1, max_cost_usd=2.01 - accounted).refusal_code
-        == "budget_exceeded"
-    )
-    assert add_work(task_id, "fits", 1, max_cost_usd=2.0 - accounted).ok
+    snapshot = graph.budget_snapshot(task_id)
+    assert snapshot["accounted_cost_usd"] == pytest.approx(accounted)
+    assert snapshot["planned_cost_usd"] == pytest.approx(accounted)
+    assert add_work(task_id, "next", 1, max_cost_usd=2.01 - accounted).ok
+    assert graph.budget_snapshot(task_id)["planned_cost_usd"] == pytest.approx(2.01)
     assert node_runs(task_id) == history
 
 
@@ -351,11 +361,11 @@ def test_plan_budget_retains_observed_overrun(db, status):
     assert add_work(task_id, "one", 0).ok
     assert admit_dispatch(task_id, "one").ok
     assert record_outcome(task_id, "one", 1, status, 1.5, "head", "{}").ok
-    assert (
-        add_work(task_id, "too-large", 1, max_cost_usd=0.51).refusal_code
-        == "budget_exceeded"
-    )
-    assert add_work(task_id, "fits", 1, max_cost_usd=0.5).ok
+    snapshot = graph.budget_snapshot(task_id)
+    assert snapshot["accounted_cost_usd"] == pytest.approx(1.5)
+    assert snapshot["planned_cost_usd"] == pytest.approx(1.5)
+    assert add_work(task_id, "next", 1, max_cost_usd=0.51).ok
+    assert graph.budget_snapshot(task_id)["planned_cost_usd"] == pytest.approx(2.01)
     assert node_runs(task_id)[0]["accounted_cost_usd"] == 1.5
 
 
@@ -409,7 +419,13 @@ def test_hidden_known_cost_can_readd_without_changing_history(db, legacy):
     assert add_work(task_id, "old", 1, max_cost_usd=0.25).ok
     assert node_runs(task_id) == history
     assert add_work(task_id, "fits", 2, max_cost_usd=1.5).ok
-    assert admit_dispatch(task_id, "old").refusal_code == "node_budget_exhausted"
+    # The hidden 0.5 stays charged although it exceeds the new 0.25 ceiling.
+    assert graph.budget_snapshot(task_id)["planned_cost_usd"] == pytest.approx(2.0)
+    # Spend past the ceiling no longer refuses a retry (#7161); the attempt
+    # reserves the node's ceiling.
+    retry = admit_dispatch(task_id, "old")
+    assert retry.ok and retry.attempt == 2
+    assert retry.pin["max_cost_usd"] == 0.25
 
 
 def test_hidden_pinned_unknown_cost_survives_readd_with_lower_ceiling(db):
@@ -426,10 +442,11 @@ def test_hidden_pinned_unknown_cost_survives_readd_with_lower_ceiling(db):
     assert add_work(task_id, "old", 1, max_cost_usd=0.25).ok
     assert node_runs(task_id) == history
     assert add_work(task_id, "fits", 2).ok
-    assert (
-        add_work(task_id, "too-large", 3, max_cost_usd=0.01).refusal_code
-        == "budget_exceeded"
-    )
+    # The pinned unknown cost keeps its full 1.0 reservation, not the 0.25
+    # ceiling of the re-added node.
+    assert node_runs(task_id)[0]["accounted_cost_usd"] == 1.0
+    assert graph.budget_snapshot(task_id)["planned_cost_usd"] == pytest.approx(2.0)
+    assert add_work(task_id, "next", 3, max_cost_usd=0.01).ok
 
 
 def test_fable_cap_counts_discarded_escalation(db):
@@ -544,11 +561,9 @@ def test_discard_retires_a_node_whose_attempts_all_failed_and_settled(db):
     # Retiring keeps the run history, and its measured spend stays charged,
     # while the unused ceiling of the retired node is released.
     assert node_runs(task_id) == history
-    assert graph.budget_snapshot(task_id)["planned_cost_usd"] == pytest.approx(0.4)
-    assert (
-        add_work(task_id, "implement_fix_v2", 2, max_cost_usd=2.61).refusal_code
-        == "budget_exceeded"
-    )
+    snapshot = graph.budget_snapshot(task_id)
+    assert snapshot["planned_cost_usd"] == pytest.approx(0.4)
+    assert snapshot["unallocated_cost_usd"] == pytest.approx(2.6)
     assert add_work(task_id, "implement_fix_v2", 2, max_cost_usd=2.6).ok
 
 
@@ -710,8 +725,8 @@ def test_admission_stores_the_dispatched_model_and_its_escalation(db):
     assert escalated.pin["model"] == "sol"
     assert escalated.pin["escalated_from"] == "spark"
     assert escalated.pin["escalation_reason"] == "failed"
-    # The escalated attempt reserves what is left of the node's ceiling.
-    assert escalated.pin["max_cost_usd"] == 1.5
+    # The escalated attempt reserves the node's whole ceiling (#7161).
+    assert escalated.pin["max_cost_usd"] == 2.0
     with Session(db) as session:
         rows = session.exec(
             select(SwarmNodeRun)
@@ -724,7 +739,7 @@ def test_admission_stores_the_dispatched_model_and_its_escalation(db):
     assert load_graph(task_id)[0]["model"] == "spark"
 
 
-def test_admit_unknown_and_node_budget_exhaustion(db):
+def test_admit_unknown_node_and_retry_after_spending_the_ceiling(db):
     task_id = make_task(db)
     missing = admit_dispatch(task_id, "missing")
     assert not missing.ok and missing.refusal_code == "unknown_node"
@@ -733,17 +748,11 @@ def test_admit_unknown_and_node_budget_exhaustion(db):
     assert add_work(task_id, "node", 0, max_cost_usd=1.0).ok
     assert admit_dispatch(task_id, "node").ok
     assert record_outcome(task_id, "node", 1, "failed", 1.0, None, None).ok
-    exhausted = admit_dispatch(task_id, "node")
-    assert not exhausted.ok and exhausted.refusal_code == "node_budget_exhausted"
-    assert_recorded(
-        db,
-        exhausted,
-        "admit_dispatch",
-        "refused",
-        "node_budget_exhausted",
-        1,
-        1,
-    )
+    # A spent ceiling no longer refuses a retry while attempts remain (#7161).
+    retry = admit_dispatch(task_id, "node")
+    assert retry.ok and retry.attempt == 2
+    assert retry.pin["max_cost_usd"] == 1.0
+    assert_recorded(db, retry, "admit_dispatch", "applied", None, 1, 1)
 
 
 def test_dispatch_and_outcome_round_trip_records_calls(db):
@@ -915,7 +924,7 @@ def test_unknown_execution_blocks_retries_until_reconciled(db):
     assert discard(task_id, "one", 1).refusal_code == "armed"
     assert record_outcome(task_id, "one", 1, "failed", 0.25, None, "{}").ok
     next_attempt = admit_dispatch(task_id, "one")
-    assert next_attempt.ok and next_attempt.pin["max_cost_usd"] == 0.75
+    assert next_attempt.ok and next_attempt.pin["max_cost_usd"] == 1.0
 
 
 def test_dependencies_require_success(db):
@@ -1017,9 +1026,16 @@ def test_task_budget_accounts_observed_overrun_and_other_reservations(db):
     assert add_work(task_id, "two", 1).ok
     assert admit_dispatch(task_id, "one").ok
     assert record_outcome(task_id, "one", 1, "failed", 1.25, None, "{}").ok
-    assert admit_dispatch(task_id, "one").refusal_code == "node_budget_exhausted"
-    assert admit_dispatch(task_id, "two").refusal_code == "task_budget_exhausted"
+    # Neither the node's overrun nor the task budget refuses an attempt
+    # (#7161); both still land in the accounting.
+    assert admit_dispatch(task_id, "one").ok
+    assert admit_dispatch(task_id, "two").ok
     assert node_runs(task_id)[0]["accounted_cost_usd"] == 1.25
+    snapshot = graph.budget_snapshot(task_id)
+    assert snapshot["accounted_cost_usd"] == pytest.approx(3.25)
+    assert snapshot["active_accounted_cost_usd"] == pytest.approx(2.0)
+    assert snapshot["settled_accounted_cost_usd"] == pytest.approx(1.25)
+    assert snapshot["unallocated_cost_usd"] == 0.0
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, 0, True, 10**1000])
@@ -1134,12 +1150,17 @@ def test_bootstrap_fields_survive_discard_and_key_reuse(db):
     assert load_graph(task_id, 1)[0]["prompt"] == "bootstrap prompt"
 
 
-def test_completed_unknown_cost_consumes_node_budget(db):
+def test_completed_unknown_cost_stays_charged_without_refusing_a_retry(db):
     task_id = make_task(db)
     assert add_work(task_id, "one", 0).ok
     assert admit_dispatch(task_id, "one").ok
     assert record_outcome(task_id, "one", 1, "failed", None, "sha", "{}").ok
-    assert admit_dispatch(task_id, "one").refusal_code == "node_budget_exhausted"
+    assert node_runs(task_id, "one")[0]["accounted_cost_usd"] == 1.0
+    # A failed attempt that reported no cost can still retry while attempts
+    # remain (#7161); the unknown cost keeps its whole reservation.
+    retry = admit_dispatch(task_id, "one")
+    assert retry.ok and retry.attempt == 2
+    assert graph.budget_snapshot(task_id)["accounted_cost_usd"] == pytest.approx(2.0)
 
 
 @pytest.mark.parametrize(
@@ -1273,7 +1294,9 @@ def test_terminal_null_cost_without_no_post_proof_keeps_reservation(db, outcome)
     row = node_runs(task_id, "one")[0]
     assert row["accounted_cost_usd"] == 1.0
     assert row["accounting_basis"] == "reserved_unknown_cost"
-    assert admit_dispatch(task_id, "one").refusal_code == "node_budget_exhausted"
+    retry = admit_dispatch(task_id, "one")
+    assert retry.ok and retry.attempt == 2
+    assert node_runs(task_id, "one")[0]["accounted_cost_usd"] == 1.0
 
 
 def test_no_post_marker_does_not_release_an_active_or_measured_attempt(db):
@@ -1425,7 +1448,6 @@ def test_one_refused_edit_leaves_no_part_of_the_plan_applied(db):
         ([plan_add("a"), plan_add("a")], "duplicate_key"),
         ([plan_add("a", kind="nonsense")], "invalid_kind"),
         ([plan_add("a", max_attempts=99)], "invalid_max_attempts"),
-        ([plan_add("a", max_cost_usd=100.0)], "budget_exceeded"),
         ([{"op": "reshape", "node_key": "a"}], "invalid_edits"),
         ([], "invalid_edits"),
         ([plan_add("a")] * (graph.MAX_PLAN_EDITS + 1), "invalid_edits"),
@@ -1697,10 +1719,14 @@ def test_caller_transaction_can_rollback_an_entire_applied_plan(db):
     assert graph.current_version(task) == 0
 
 
-def test_conductor_funding_name_alone_cannot_bypass_graph_budget(db):
-    task = make_task(db, budget=0.5)
-    result = add_work(task, "conductor_funding_fake", 0, model="astra", max_cost_usd=1)
-    assert result.refusal_code == "budget_exceeded"
+def test_plan_over_the_task_budget_is_applied(db):
+    # Dollars never refuse a plan (#7161): the overrun is accounting only.
+    task_id = make_task(db, budget=0.5)
+    result = apply_plan(task_id, [plan_add("a", max_cost_usd=100.0), plan_add("b")])
+    assert result.ok and result.version == 2
+    snapshot = graph.budget_snapshot(task_id)
+    assert snapshot["planned_cost_usd"] == pytest.approx(101.0)
+    assert snapshot["unallocated_cost_usd"] == 0.0
 
 
 def test_discard_feedback_names_sorted_bounded_blockers(db):
@@ -1754,7 +1780,7 @@ def test_inactive_chain_replaced_in_one_dependent_first_batch(db):
     assert len(load_graph(task_id, 3)) == 3
 
 
-@pytest.mark.parametrize("failure", ["wrong_order", "active", "over_budget", "stale"])
+@pytest.mark.parametrize("failure", ["wrong_order", "active", "stale"])
 def test_chain_replacement_preserves_atomic_fences(db, failure):
     task_id = make_task(db)
     assert apply_plan(
@@ -1778,9 +1804,7 @@ def test_chain_replacement_preserves_atomic_fences(db, failure):
             {"op": "discard_node", "node_key": key, "stated_reason": "obsolete chain"}
             for key in order
         ]
-        + [
-            plan_add("replacement", max_cost_usd=100 if failure == "over_budget" else 1)
-        ],
+        + [plan_add("replacement")],
         expected_version=2 if failure == "stale" else 3,
     )
     assert not result.ok
@@ -1789,7 +1813,6 @@ def test_chain_replacement_preserves_atomic_fences(db, failure):
         == {
             "wrong_order": "dependents",
             "active": "armed",
-            "over_budget": "budget_exceeded",
             "stale": "stale_version",
         }[failure]
     )

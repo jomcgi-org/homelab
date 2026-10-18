@@ -1311,13 +1311,13 @@ and an engine insertion, a review round or a fan-in, is checked on the nodes it
 really adds with no forward reserve counted on top: otherwise a round the
 envelope can afford is refused because of a round that may never open. The
 forward reserve is recomputed after the insertion, for the planner's view. An
-edit whose derived allowance would exceed the envelope is refused whole with
-`envelope_exceeded` and a detail naming needed against allowed for both turns
-and dollars, beside `spare_turns` and `spare_usd`, what the envelope would still
-fund once the reserve that edit brings with it is counted. The planner reads
-that in `decision_feedback` and answers by shrinking the edit to fit whichever
-is binding, splitting the work, or pausing; it must not re-propose a refused
-edit unchanged. Discarding a node drops its unspent slots and never refunds a
+edit whose derived turn allowance would exceed the envelope is refused whole
+with `envelope_exceeded` and a detail naming needed against allowed turns,
+beside `spare_turns`, what the envelope would still fund once the reserve that
+edit brings with it is counted. Dollars are reported in the preview but never
+refuse an edit (#7161). The planner reads that in `decision_feedback` and
+answers by shrinking the edit, splitting the work, or pausing; it must not
+re-propose a refused edit unchanged. Discarding a node drops its unspent slots and never refunds a
 consumed turn.
 
 The example is documentation, not live authorization. Use the selected issue,
@@ -2667,27 +2667,26 @@ it and names it in `model_pools.judge`) judges
 whether the objective is still useful, what progress has been made, and whether
 the likely remaining cost is reasonable. Its typed decision can continue,
 steer, or stop. There is no fixed extension count. Each approval records a
-reason, concrete next plan, current-task dollar ceiling, additional work turns,
-and a funding review horizon of at most 30 minutes. The horizon fences new work;
+reason, concrete next plan, current-task dollar figure (accounting only),
+additional work turns, and a funding review horizon of at most 30 minutes. The horizon fences new work;
 already-reserved workers retain their invocation deadlines and continue under
 the existing 30-minute reservation supervisor. Original receipt policy and prior
 charges remain intact; durable amendments supply the effective limits.
 
-All committed factory node execution and funding decisions for the same repository issue count toward a
-$200 automatic ceiling across tasks, generations, and advisory/delivery passes.
-Shared reservation supervision remains separately accounted operational overhead.
-Immutable admission audits retain task-to-receipt ownership after readmission;
-the truncated predecessor list used for display is not the accounting ledger.
-Reservations and unknown outcomes remain charged. Every new start rechecks the
-aggregate under the factory control lock. A new task cannot reset that budget.
+Committed factory node execution and funding decisions for the same repository
+issue are summed across tasks, generations, and advisory/delivery passes as the
+objective's accounting, but no dollar total refuses a start, finishes a task or
+caps a grant (#7161). Immutable admission audits retain task-to-receipt
+ownership after readmission; the truncated predecessor list used for display is
+not the accounting ledger. Reservations and unknown outcomes remain charged.
 
 A funding review records the selected judge model and reserves one exact
 dispatch on it with a $1 ceiling and a
 five-minute deadline through the existing durable node executor. That dispatch
 can assess an exhausted task allocation, and start authorization and settlement
 accept only that recorded model while policy still allows it; other work remains fenced until the
-decision commits. Global stop, cancellation, unresolved execution, shared
-capacity, and the cumulative objective ceiling still apply. Failed or stale
+decision commits. Global stop, cancellation, unresolved execution and shared
+capacity still apply. Failed or stale
 reviews wait five minutes before another bounded assessment. A stop decision
 retains the issue, PR, and findings without a human restart question. The
 normal independent exact-head delivery review remains required.
@@ -2719,21 +2718,19 @@ tune them:
 With merit judging on, a planner edit refused twice in a row with
 `envelope_exceeded` goes to the judge instead of raising the "Should the exact
 deficit be funded" card, whatever the size of the deficit, as long as it fits
-the hard ceiling. The ceiling is policy, not prose: the receipt's pinned
-`task_budget_usd` plus the smaller of `factoryMeritJudgeMaxExtensionMultiple`
-times it (default 1) and `factoryMeritJudgeMaxExtensionUsd` (default $50),
-and the pinned turn envelope plus the same multiple of it (at least two). It
-is measured from the pinned policy, never from the last grant, so a run of
-grants cannot ratchet a task past one total extension, and the $200
-per-issue objective ceiling still applies. A deficit past it audits
+the hard ceiling. The ceiling is policy, not prose: the pinned turn envelope
+plus `factoryMeritJudgeMaxExtensionMultiple` times it (default 1, at least two
+turns). It is measured from the pinned policy, never from the last grant, so a
+run of grants cannot ratchet a task past one total extension. Dollars are
+recorded but never cap a grant (#7161). A deficit past it audits
 `merit_funding_declined` and keeps the card.
 
 Every judge review then carries the criteria, the brief and the ceiling, and
 its verdict must include an `assessment` (one line each for progress,
 proximity and value, plus any doubts). The verdict is `continue`, `steer`,
-`stop` or `escalate`. A continue or steer grant is reduced to the ceiling and
-raised to a recorded dollar deficit, the way the turn grant is already raised
-to the turn deficit. `funding_granted` records `requested_task_budget_usd`,
+`stop` or `escalate`. A continue or steer turn grant is raised to the recorded
+turn deficit and reduced to the turn ceiling; its dollar figure is raised to
+any recorded dollar deficit for the ledger. `funding_granted` records `requested_task_budget_usd`,
 `granted_task_budget_usd`, `merit_ceiling` and the `assessment`, and it is the
 auto-approval the daily digest lists. `escalate`, or a grant the ceiling
 cannot hold, settles the review with `escalated` and raises a fund-or-hold
@@ -2752,8 +2749,8 @@ the evidence he would look at and an explicit way to hand back a doubt.
 #### No-progress watchdog assessment
 
 `factory_progress_watchdog` assesses an admitted delivery task each time it
-spends another `progress_watchdog.threshold_usd` (default $20) without a new
-commit or pull request. A plain loop short-circuits; anything else asks the
+settles another `progress_watchdog.threshold_turns` turns (default 8, planner
+rounds included) without a new commit or pull request. A plain loop short-circuits; anything else asks the
 classifier's chat model for a `progressing` or `looping` verdict. That call
 asks for minimal reasoning effort with a 2048-token ceiling, accepts string or
 content-part replies and a fenced JSON object, and asks once more when the
@@ -2771,11 +2768,13 @@ attempts without a commit) are that doubt on their face and still page.
 At the earlier 512-token cap both assessments on 2026-10-01 (#6529, #6530)
 spent 509 of their 512 tokens reasoning and returned no verdict, so every
 model assessment failed closed and paged. The Claude 5.5 profile change was
-not involved: the watchdog never calls a factory pool model. The threshold
-stays a flat dollar step. Both of those tasks had $50 envelopes, failed
-implementations and no commit at $20, which is the case the watchdog exists
-for. A step relative to the envelope would have asked later on the same
-evidence, so it is not clearly better.
+not involved: the watchdog never calls a factory pool model.
+
+**Why turns.** The step was a flat $20 until #7161 took dollars out of every
+factory gate. Turns measure the same thing without a price: #7006 and #7014
+were paused after six planner rounds and no commit, and counting planner rounds
+keeps that case caught. A legacy audit row that carries only a dollar
+threshold re-arms from the current turn count instead of being read as turns.
 
 
 ### Conductor-owned reversible gates
