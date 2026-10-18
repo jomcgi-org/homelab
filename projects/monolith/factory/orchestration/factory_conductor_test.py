@@ -16285,7 +16285,9 @@ def test_completed_delivery_needs_no_new_funding_at_exhausted_limit(
     assert controls.task_snapshot(task["id"])["state"] == "succeeded"
 
 
-def test_refused_dispatch_requests_reassessment_instead_of_pausing(monkeypatch):
+def test_refused_dispatch_requests_reassessment_instead_of_pausing(
+    feedback_db, monkeypatch
+):
     from factory.orchestration import (
         factory_funding as funding,
         factory_controls as controls,
