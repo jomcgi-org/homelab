@@ -14,7 +14,10 @@ fi
 status=0
 bazel test //bazel/requirements:runtime_test //bazel/requirements:requirements.all_test || status=$?
 case "$status" in
-0) echo 'Python requirement locks are current' ;;
+0)
+	echo 'Python requirement locks are current'
+	exit 0
+	;;
 3)
 	./bazel/tools/format/update-python-requirements.sh
 	;;

@@ -7,6 +7,7 @@ import runpy
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 from packaging.markers import default_environment
@@ -38,6 +39,9 @@ class ManifestWiringTest(unittest.TestCase):
 printf 'bazel %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
   'test //bazel/requirements:'*) exit "${LOCK_STATUS:-0}" ;;
+  'run //bazel/requirements:requirements.all')
+    if [[ "${LOCK_UPDATE_STATUS:-0}" != 0 ]]; then exit "$LOCK_UPDATE_STATUS"; fi
+    touch "$LOCK_REPAIRED" ;;
   'test //bazel/tools/python:gazelle_python_manifest.test --config=ci')
     if [[ ! -e "$REPAIRED" ]]; then exit "${INTEGRITY_STATUS:-0}"; fi ;;
   'run //bazel/tools/python:gazelle_python_manifest.update'*)
@@ -46,12 +50,18 @@ case "$*" in
   'test //bazel/tools/python:gazelle_python_manifest.test //bazel/tools/python:manifest_generated_test'*) exit "${RECHECK_STATUS:-0}" ;;
   'test //bazel/tools/python:gazelle_python_manifest.test //bazel/tools/python:manifest_drift_test'*) exit "${CHECK_STATUS:-0}" ;;
   'test //bazel/tools/python:manifest_generated_test'*) exit "${GENERATED_STATUS:-0}" ;;
+  'test '*)
+    if [[ "${REQUIRE_CURRENT_LOCKS:-0}" == 1 && ! -e "$LOCK_REPAIRED" ]]; then
+      echo 'runtime.txt is out-of-date' >&2
+      exit 3
+    fi ;;
 esac
 """,
             "git": """
 printf 'git %s\\n' "$*" >>"$COMMAND_LOG"
 if [[ "$1" == diff ]]; then exit "${INPUTS_CHANGED:-0}"; fi
 if [[ "$1" == merge-base ]]; then echo branch-base; fi
+if [[ "$1" == log ]]; then echo "${FAKE_AUTHOR:-developer}"; fi
 """,
             "uname": 'echo "${FAKE_OS:-Linux}"',
         }.items():
@@ -63,6 +73,7 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
             "PATH": f"{bindir}:{os.environ['PATH']}",
             "COMMAND_LOG": str(self.log),
             "REPAIRED": str(self.root / "repaired"),
+            "LOCK_REPAIRED": str(self.root / "locks-repaired"),
         }
         self.env.pop("BUILD_WORKSPACE_DIRECTORY", None)
 
@@ -153,7 +164,8 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("//bazel/requirements:requirements.all_test", log)
         self.assertNotIn("gazelle_python_manifest", log)
-        self.assertIn("git add -u --", log)
+        self.assertNotIn("git add", log)
+        self.assertNotIn("updated and staged", result.stdout)
         self.assertNotIn("gazelle_python.yaml", log)
         self.assertNotIn("bazel run //bazel/requirements", log)
 
@@ -165,6 +177,8 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("bazel run //bazel/requirements:requirements.all", log)
         self.assertNotIn("gazelle_python_manifest", log)
+        self.assertIn("git add -u --", log)
+        self.assertIn("updated and staged", result.stdout)
 
     def test_darwin_hook_defers_without_bazel_or_staging(self):
         result, log = self.run_script(
@@ -205,6 +219,7 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
             workflow,
         )
         self.assertLess(locks, update)
+        self.assertLess(locks, workflow.index("# ---- 2. tests"))
         self.assertLess(update, formatter)
         self.assertLess(formatter, writeback)
         self.assertLess(writeback, check)
@@ -215,6 +230,108 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
         self.assertIn('if [ "$AUTHOR" = "ci-format-bot" ]; then', workflow[:update])
         self.assertIn('elif [ "$ON_MAIN" = true ]; then', workflow[formatter:writeback])
         self.assertIn("gh-readonly-queue/*)", workflow[formatter:writeback])
+
+    def run_ci_lock_tests(self, **env):
+        workflow = (REPO / "buildbuddy.yaml").read_text()
+        start = workflow.index(
+            "\n", workflow.index("python3 ./bazel/tools/ci/test_source_reachability.py")
+        )
+        end = workflow.index("          # ---- 3. deploy", start)
+        selection = self.root / "bazel/tools/ci/affected-targets.sh"
+        selection.write_text("#!/bin/sh\necho //bazel/requirements:runtime_test\n")
+        selection.chmod(0o755)
+        script = self.root / "lock-tests.sh"
+        script.write_text("set -euo pipefail\n" + textwrap.dedent(workflow[start:end]))
+        return self.run_script(
+            "lock-tests.sh",
+            **{
+                "ON_MAIN": "false",
+                "GIT_BRANCH": "factory/test",
+                "GIT_PR_NUMBER": "7169",
+                "base_ref": "branch-base",
+                "INPUTS_CHANGED": "1",
+                "LOCK_STATUS": "3",
+                "REQUIRE_CURRENT_LOCKS": "1",
+                **env,
+            },
+        )
+
+    def test_ci_repairs_stale_locks_before_ordinary_tests(self):
+        result, log = self.run_ci_lock_tests()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(
+            log.index("bazel run //bazel/requirements:requirements.all"),
+            log.index("bazel test --config=ci"),
+        )
+
+    def test_ci_lock_repair_failure_stops_before_ordinary_tests(self):
+        result, log = self.run_ci_lock_tests(LOCK_UPDATE_STATUS="1")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("bazel test --config=ci", log)
+        self.assertNotIn("git add", log)
+
+    def test_ci_read_only_heads_reject_stale_locks_without_repair(self):
+        for env in (
+            {"ON_MAIN": "true", "GIT_BRANCH": "main", "GIT_PR_NUMBER": "0"},
+            {"GIT_BRANCH": "gh-readonly-queue/main/pr-7169"},
+            {"FAKE_AUTHOR": "ci-format-bot"},
+        ):
+            with self.subTest(env=env):
+                result, log = self.run_ci_lock_tests(**env)
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertIn("runtime.txt is out-of-date", result.stderr)
+                self.assertNotIn("bazel run", log)
+                self.assertNotIn("git add", log)
+
+    def test_ci_skips_lock_repair_when_inputs_are_unchanged(self):
+        result, log = self.run_ci_lock_tests(
+            INPUTS_CHANGED="0", REQUIRE_CURRENT_LOCKS="0"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("bazel test //bazel/requirements:", log)
+        self.assertNotIn("bazel run", log)
+
+    def test_ci_drift_check_detects_staged_only_runtime_repair(self):
+        workflow = (REPO / "buildbuddy.yaml").read_text()
+        command = re.search(r"if (git diff --exit-code[^;]*); then", workflow).group(1)
+        repo = self.root / "writeback"
+        repo.mkdir()
+
+        def git(*args):
+            return subprocess.run(
+                ["git", *args],
+                cwd=repo,
+                env={
+                    **os.environ,
+                    "GIT_AUTHOR_NAME": "Test",
+                    "GIT_AUTHOR_EMAIL": "test@example.com",
+                    "GIT_COMMITTER_NAME": "Test",
+                    "GIT_COMMITTER_EMAIL": "test@example.com",
+                },
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        git("init")
+        lock = repo / "runtime.txt"
+        lock.write_text("old lock\n")
+        git("add", "runtime.txt")
+        git("commit", "-m", "fixture")
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                lock.write_text("repaired lock\n")
+                if staged:
+                    git("add", "runtime.txt")
+                result = subprocess.run(
+                    ["bash", "-c", command], cwd=repo, capture_output=True, text=True
+                )
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        git("commit", "-m", "repair")
+        result = subprocess.run(
+            ["bash", "-c", command], cwd=repo, capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class LinuxWheelsTest(unittest.TestCase):

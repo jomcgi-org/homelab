@@ -46,11 +46,13 @@ outside `bazel run`. Renovate's pep621 post-upgrade task uses the full script
 with its existing local Bazel configuration; it does not fetch the manifest's
 wheels or require BuildBuddy remote execution. The pre-commit if-needed script
 prints a non-fatal deferral on Darwin. On Linux it checks runtime and aggregate
-locks. PR CI runs that script when lock inputs change, then invokes
+locks. Writable PR CI runs that script when lock inputs change, before ordinary
+tests can reject a stale lock. Main, merge-queue and format-bot heads validate
+the committed locks without repairing them. The format stage then invokes
 `python-manifest.sh update` before the parallel format batch so Gazelle reads
-the refreshed mapping. The existing tracked-only writeback handles
-the result and retains its main and merge-queue no-push guards. The read-only
-check runs outside all format skips. No Bazel invocation is nested in
+the refreshed mapping. The tracked-only writeback compares against `HEAD` to
+include staged lock repairs and retains its main and merge-queue no-push guards.
+The read-only check runs outside all format skips. No Bazel invocation is nested in
 `run-generators.sh` or a formatter.
 
 **Why.** Without `requirements`, the macro's test regenerates every wheel's

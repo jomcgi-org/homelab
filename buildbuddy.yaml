@@ -255,6 +255,19 @@ actions:
           # globs count while comments, data, and unrelated deps do not.
           python3 ./bazel/tools/ci/test_source_reachability.py
 
+          # ---- 1c. repair Python locks on writable PR heads ---------------
+          # Ordinary tests include the lock drift tests, so repair must happen
+          # before stage 2. Main, queue candidates and format-bot heads only
+          # validate the committed locks. Stage 4 writes back tracked repairs.
+          AUTHOR="$(git log -1 --format='%an')"
+          if [ "$ON_MAIN" = false ] && [ "${GIT_PR_NUMBER:-0}" != "0" ] &&
+             [[ ! "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] &&
+             [ "$AUTHOR" != "ci-format-bot" ]; then
+            if ! git diff --quiet "$base_ref" -- pyproject.toml bazel/requirements; then
+              ./bazel/tools/format/update-python-requirements-if-needed.sh
+            fi
+          fi
+
           # ---- 2. tests ---------------------------------------------------
           # -future excludes future-feature BDD specs (executable specs for
           # not-yet-built features): those are intentionally red.
@@ -349,16 +362,12 @@ actions:
             # old standalone action could `exit 0` here because that ended only
             # the format check; doing the same now would skip the tests, and the
             # bot's commit is frequently the head that ends up merged.
-            AUTHOR="$(git log -1 --format='%an')"
             if [ "$AUTHOR" = "ci-format-bot" ]; then
               echo "HEAD is the ci-format-bot commit; formatting just ran, going straight to tests."
             else
               # Serial outer invocation before Gazelle reads the manifest and
               # parallel formatters touch YAML. The normal writeback below owns
               # tracked changes and still refuses main/queue pushes.
-              if ! git diff --quiet "$base_ref" -- pyproject.toml bazel/requirements; then
-                ./bazel/tools/format/update-python-requirements-if-needed.sh
-              fi
               ./bazel/tools/ci/python-manifest.sh update
 
               # :run_generators runs every committed doc/config generator, so
@@ -412,7 +421,9 @@ actions:
               # fixes locally. Pure logic pinned by a bazel test.
               python3 ./bazel/tools/format/helm_deps/check_helm_deps.py
 
-              if git diff --exit-code; then
+              # Include locks staged by the pre-test repair as well as the
+              # formatters' unstaged changes.
+              if git diff --exit-code HEAD; then
                 echo "All files formatted correctly"
               elif [ "$ON_MAIN" = true ]; then
                 # Main is read-only after publish. Never send an unreviewed
