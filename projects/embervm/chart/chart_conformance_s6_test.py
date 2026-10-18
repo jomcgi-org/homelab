@@ -108,9 +108,9 @@ def _image_layout() -> dict[str, str]:
 @pytest.mark.parametrize("overlay", sorted(_DEV_OVERLAYS))
 def test_s6_off_renders_no_tlc_wiring(overlay: str) -> None:
     extra = [Path(os.environ[key]) for key in _DEV_OVERLAYS[overlay]]
-    pod = _runner_pod(_render(
-        "embervm-dev", _dev_values() + extra, ["conformance.s6.enabled=false"]
-    ))
+    pod = _runner_pod(
+        _render("embervm-dev", _dev_values() + extra, ["conformance.s6.enabled=false"])
+    )
     assert pod is not None, "dev renders the conformance runner"
     (container,) = pod["containers"]
     env = _env(container)
@@ -128,7 +128,11 @@ def test_s6_on_wires_toolchain_tmp_and_jvm_memory(overlay: str) -> None:
     off = _runner_pod(_render("embervm-dev", values, ["conformance.s6.enabled=false"]))
     on = _runner_pod(
         # Exercise the actual hub stack without a CLI override.
-        _render("embervm-dev", values, [] if overlay == "dev-gke" else ["conformance.s6.enabled=true"])
+        _render(
+            "embervm-dev",
+            values,
+            [] if overlay == "dev-gke" else ["conformance.s6.enabled=true"],
+        )
     )
     s6 = _chart_values()["conformance"]["s6"]
     (container,) = on["containers"]
@@ -227,17 +231,24 @@ def test_s6_stays_off_outside_staged_hub_values() -> None:
         values = yaml.safe_load(Path(os.environ[key]).read_text())
         assert values["conformance"]["s6"]["enabled"] is False
     values = yaml.safe_load(Path(os.environ["PROD_VALUES"]).read_text()) or {}
-    assert ((values.get("conformance") or {}).get("s6") or {}).get("enabled", False) is False
+    assert ((values.get("conformance") or {}).get("s6") or {}).get(
+        "enabled", False
+    ) is False
     hub = yaml.safe_load(Path(os.environ["DEV_GKE_VALUES"]).read_text())
     assert hub["conformance"]["s6"]["enabled"] is True
 
 
 def test_staged_s1_s8_fit_two_suites_without_reducing_assertions() -> None:
-    pod = _runner_pod(_render(
-        "embervm-dev", _dev_values() + [Path(os.environ["DEV_GKE_VALUES"])]
-    ))
+    pod = _runner_pod(
+        _render("embervm-dev", _dev_values() + [Path(os.environ["DEV_GKE_VALUES"])])
+    )
     env = _env(pod["containers"][0])
-    assert env["S6_ENABLED"] == env["S7_REQUIRE_JAILER"] == env["S8_EGRESS_PROBE"] == "true"
+    assert (
+        env["S6_ENABLED"]
+        == env["S7_REQUIRE_JAILER"]
+        == env["S8_EGRESS_PROBE"]
+        == "true"
+    )
     assert env["S1_CLONE_HOLD"] == "15s"
     assert env["S1_CLONE_STARTUP_HEADROOM"] == "10s"
     assert env["S6_MIN_TRACE_EVENTS"] == "4"

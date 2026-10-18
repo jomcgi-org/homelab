@@ -3288,20 +3288,20 @@ def test_staged_dev_s8_has_a_reachable_isolated_ca(staged_hub_dev) -> None:
     assert runner_env["S8_EGRESS_PROBE"] == "true"
     assert runner_env["TASK_WORKLOAD"] == "sandbox-python"
     bricks = [
-        d for d in staged_hub_dev
-        if d["kind"] == "Deployment"
-        and "-noded-brick-" in d["metadata"]["name"]
+        d
+        for d in staged_hub_dev
+        if d["kind"] == "Deployment" and "-noded-brick-" in d["metadata"]["name"]
     ]
     assert len(bricks) == 5
     ca_secret = "embervm-dev-embervm-egress-ca"
     unresolved_secret = "embervm-dev-s8-unresolved"
     for brick in bricks:
         pod = brick["spec"]["template"]["spec"]
-        noded, = [c for c in pod["containers"] if c["name"] == "noded"]
+        (noded,) = [c for c in pod["containers"] if c["name"] == "noded"]
         env = _plain_env(noded)
         assert env["EMBERVM_NODED_EGRESS_ENABLED"] == "true"
         assert env["EMBERVM_NODED_EGRESS_WORKLOADS"] == "sandbox-python"
-        sidecar, = [c for c in pod["containers"] if c["name"] == "egress-proxy"]
+        (sidecar,) = [c for c in pod["containers"] if c["name"] == "egress-proxy"]
         env = _plain_env(sidecar)
         assert env["EGRESS_LISTEN"] == "127.0.0.1:8888"
         assert env["EGRESS_EXTERNAL"] == env["EGRESS_INTERNAL_DEFAULT"] == "deny"
@@ -3310,7 +3310,7 @@ def test_staged_dev_s8_has_a_reachable_isolated_ca(staged_hub_dev) -> None:
         # main.go loads the CA only for a nonempty, valid catalog. swap.go
         # retains a dead optional entry when its env is absent; it does not
         # contact a broker. ca.egress.internal is answered before DNS/policy.
-        entry, = json.loads(env["EGRESS_SECRETS"])
+        (entry,) = json.loads(env["EGRESS_SECRETS"])
         assert entry["header"] == "Authorization"
         assert entry["env"] == "EMBERVM_S8_UNRESOLVED_TOKEN"
         assert entry["egressTo"] == ["unused.s8.invalid"]
@@ -3318,21 +3318,31 @@ def test_staged_dev_s8_has_a_reachable_isolated_ca(staged_hub_dev) -> None:
         assert entry["plaintextUpstream"] is False
         assert entry["quotaProvider"] == ""
         refs = [e for e in sidecar["env"] if "valueFrom" in e]
-        assert refs == [{
-            "name": entry["env"],
-            "valueFrom": {"secretKeyRef": {
-                "name": unresolved_secret, "key": "never-provision", "optional": True,
-            }},
-        }]
+        assert refs == [
+            {
+                "name": entry["env"],
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": unresolved_secret,
+                        "key": "never-provision",
+                        "optional": True,
+                    }
+                },
+            }
+        ]
         assert env["EGRESS_CA_CERT_FILE"] == "/etc/egress-ca/tls.crt"
         assert env["EGRESS_CA_KEY_FILE"] == "/etc/egress-ca/tls.key"
-        assert {"name": "egress-ca", "mountPath": "/etc/egress-ca", "readOnly": True} in sidecar["volumeMounts"]
-        volume, = [v for v in pod["volumes"] if v["name"] == "egress-ca"]
+        assert {
+            "name": "egress-ca",
+            "mountPath": "/etc/egress-ca",
+            "readOnly": True,
+        } in sidecar["volumeMounts"]
+        (volume,) = [v for v in pod["volumes"] if v["name"] == "egress-ca"]
         assert volume["secret"]["secretName"] == ca_secret
         assert not any(m["name"] == "egress-ca" for m in noded["volumeMounts"])
 
-    certificate, = [d for d in staged_hub_dev if d["kind"] == "Certificate"]
-    issuer, = [d for d in staged_hub_dev if d["kind"] == "Issuer"]
+    (certificate,) = [d for d in staged_hub_dev if d["kind"] == "Certificate"]
+    (issuer,) = [d for d in staged_hub_dev if d["kind"] == "Issuer"]
     assert certificate["spec"]["secretName"] == ca_secret
     assert certificate["spec"]["issuerRef"]["name"] == issuer["metadata"]["name"]
     assert issuer["spec"] == {"selfSigned": {}}
@@ -3343,10 +3353,17 @@ def test_staged_dev_s8_has_a_reachable_isolated_ca(staged_hub_dev) -> None:
     ), "the deferred catalog entry must never provision a credential"
 
 
-@pytest.mark.parametrize("value_keys", [
-    [], ["PROD_VALUES"], ["PROD_VALUES", "GKE_VALUES"], ["DEV_VALUES"],
-    ["RECOVERY_VALUES"], ["DEV_VALUES", "GKE_VALUES", "STORE_VALIDATION_VALUES"],
-])
+@pytest.mark.parametrize(
+    "value_keys",
+    [
+        [],
+        ["PROD_VALUES"],
+        ["PROD_VALUES", "GKE_VALUES"],
+        ["DEV_VALUES"],
+        ["RECOVERY_VALUES"],
+        ["DEV_VALUES", "GKE_VALUES", "STORE_VALIDATION_VALUES"],
+    ],
+)
 def test_staged_dev_activation_does_not_leak_to_other_stacks(value_keys) -> None:
     docs = _overlay_documents("embervm-dev", value_keys)
     noded = [c for _, c in _containers(docs) if c["name"] == "noded"]
@@ -3356,14 +3373,21 @@ def test_staged_dev_activation_does_not_leak_to_other_stacks(value_keys) -> None
         assert env["EMBERVM_NODED_JAILER_ENABLED"] == "false"
         assert env["EMBERVM_NODED_JAILER_UID_BLOCK_BASE"] == "0"
         assert env["EMBERVM_NODED_ADMISSION_MODEL"] == "observed"
-        assert "sandbox-python" not in (env.get("EMBERVM_NODED_EGRESS_WORKLOADS") or "").split(",")
+        assert "sandbox-python" not in (
+            env.get("EMBERVM_NODED_EGRESS_WORKLOADS") or ""
+        ).split(",")
     for _, container in _containers(docs):
         env = _plain_env(container)
         if container["name"] == "control-plane":
             assert env["EMBERVM_PLACEMENT_RETRY"] == "false"
             assert env["EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS"] == "false"
         if container["name"] == "conformance":
-            assert env["S6_ENABLED"] == env["S7_REQUIRE_JAILER"] == env["S8_EGRESS_PROBE"] == "false"
+            assert (
+                env["S6_ENABLED"]
+                == env["S7_REQUIRE_JAILER"]
+                == env["S8_EGRESS_PROBE"]
+                == "false"
+            )
     assert "embervm-dev-s8-unresolved" not in json.dumps(docs)
 
 
@@ -3371,11 +3395,13 @@ def test_staged_dev_and_production_uid_ranges_are_disjoint(staged_hub_dev) -> No
     prod = _overlay_documents(*_HUB_OVERLAYS["prod"])
     prod_bases = {
         int(_plain_env(c)["EMBERVM_NODED_JAILER_UID_BLOCK_BASE"])
-        for _, c in _containers(prod) if c["name"] == "noded"
+        for _, c in _containers(prod)
+        if c["name"] == "noded"
     }
     dev_bases = {
         int(_plain_env(c)["EMBERVM_NODED_JAILER_UID_BLOCK_BASE"])
-        for _, c in _containers(staged_hub_dev) if c["name"] == "noded"
+        for _, c in _containers(staged_hub_dev)
+        if c["name"] == "noded"
     }
     assert prod_bases == {0} and dev_bases == {20}
     # launcher.go leases upward in 1000-UID blocks starting at 20000.
