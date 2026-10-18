@@ -2331,8 +2331,16 @@ status. The owner records refused stale requests too, so the same request cannot
 become effective after state changes. `cancel_receipt` settles one queued
 receipt as cancelled through the same ledger and version check, without
 changing control state; only queued receipts move, and it takes a `receipt_id`
-rather than a `task_id`. The HTTP route carries no receipt id, so cancellation
-is MCP-only. `configure` remains a separate bearer-only
+rather than a `task_id`. `cancel_task` requires a `task_id` and an explicit
+`cancellation_reason`. It accepts admitted and uncertain receipts, including
+paused tasks, and refuses landing or settled receipts. Its acknowledgement
+records the authenticated operator and fences new starts. Ordinary ticks drain
+existing attempts through their normal accounting. Cancellation settles with
+`operator_cancelled` evidence only after both the start and graph-run ledgers
+are quiescent. Unknown invocations keep their reservations. The issue, its
+labels and its PR remain unchanged, and intake retains its normal cooldown.
+The HTTP route carries neither receipt id nor cancellation reason, so these
+cancellation controls are MCP-only. `configure` remains a separate bearer-only
 policy operation and is not exposed through MCP. Priority edits, free-form
 direction, budget mutation and exact-attempt MCP stop have no supported owner in
 this surface and remain unavailable.

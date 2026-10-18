@@ -930,6 +930,7 @@ def _request_control(
     task_id: str | None,
     actor: str,
     receipt_id: int | None = None,
+    cancellation_reason: str | None = None,
 ) -> dict:
     from factory.orchestration.factory_controls import request_control
 
@@ -941,6 +942,7 @@ def _request_control(
             expected_version=expected_version,
             task_id=task_id,
             receipt_id=receipt_id,
+            cancellation_reason=cancellation_reason,
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
@@ -955,11 +957,15 @@ async def factory_control(
         "resume_task",
         "stop",
         "cancel_receipt",
+        "cancel_task",
     ],
     request_key: Annotated[str, Field(min_length=1, max_length=256)],
     expected_version: Annotated[MCPInteger, Field(ge=0, le=2**63 - 1)],
     task_id: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
     receipt_id: Annotated[int | None, Field(gt=0, le=2**63 - 1)] = None,
+    cancellation_reason: Annotated[
+        str | None, Field(min_length=1, max_length=1024)
+    ] = None,
 ) -> dict:
     """Apply a supported factory control as an authenticated human operator.
 
@@ -977,8 +983,14 @@ async def factory_control(
     Inspect status for unresolved starts. Cancellation does not undo effects.
     cancel_receipt settles one queued receipt as cancelled by its receipt_id,
     for clearing queue entries that can never admit. Only queued receipts
-    move, any other state is refused. Only pause_task and resume_task take
-    task_id, and only cancel_receipt takes receipt_id. These controls do not
+    move, any other state is refused. cancel_task requires task_id and an explicit
+    cancellation_reason. It fences one admitted or uncertain task, including a
+    paused task, then drains existing work through normal accounting on ordinary
+    ticks. Landing and settled tasks are refused. Acknowledgement is not proof
+    of cessation: unresolved starts retain their reservations until reconciled.
+    The issue, labels and PR stay unchanged; normal intake cooldown still applies.
+    Only pause_task, resume_task and cancel_task take task_id, and only
+    cancel_receipt takes receipt_id. These controls do not
     alter priorities, task direction, policy or budgets and need no
     conductor turn.
     """
@@ -994,6 +1006,7 @@ async def factory_control(
         task_id,
         principal.subject,
         receipt_id,
+        cancellation_reason,
     )
 
 

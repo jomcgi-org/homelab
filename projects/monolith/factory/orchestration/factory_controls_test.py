@@ -2671,6 +2671,259 @@ def cancel_audits(db, action):
         ).all()
 
 
+def cancel_task(
+    target, *, key="cancel-task", reason="Operator ended this task", **overrides
+):
+    return controls.request_control(
+        "cancel_task",
+        "operator-subject",
+        **{
+            "request_key": key,
+            "expected_version": controls.status()["version"],
+            "task_id": target,
+            "cancellation_reason": reason,
+            **overrides,
+        },
+    )
+
+
+@pytest.mark.parametrize("state", ["admitted", "uncertain"])
+def test_cancel_task_audits_actor_reason_and_fences_only_target(
+    db, policy, state, monkeypatch
+):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    task = admitted(policy)
+    receive_issue(
+        "owner/repo",
+        2,
+        "another",
+        "body",
+        "https://github.com/owner/repo/issues/2",
+        "poller",
+    )
+    admission = admit_next("scheduler")
+    assert admission["ok"]
+    other = admission["task_id"]
+    assert other != task
+    with controls._locked_session() as (session, _control):
+        row = controls._receipt(session, task)
+        row.state = state
+        row.task_paused = True
+    before = controls.status()
+    other_before = controls.task_snapshot(other)
+    result = cancel_task(task)
+    assert result["ok"]
+    assert result["version"] == before["version"] + 1
+    assert controls.task_snapshot(task)["state"] == state
+    assert controls.task_snapshot(task)["task_paused"]
+    assert controls.task_snapshot(task)["cancellation_requested"]
+    assert controls.task_snapshot(other) == other_before
+    after = controls.status()
+    for field in ("state", "policy", "admitted_count", "lanes"):
+        assert after[field] == before[field]
+    assert controls.can_start(task)["reason"] == "cancellation_pending"
+    assert not grant(task)["ok"]
+    event = cancel_audits(db, "cancel_task")[0]
+    assert event.actor == "operator-subject"
+    assert event.task_id == task
+    assert (
+        json.loads(event.detail_json)["cancellation_reason"]
+        == "Operator ended this task"
+    )
+    assert controls.cancellation_evidence(task) == {
+        "state": "operator_cancelled",
+        "reason": "Operator ended this task",
+    }
+
+
+def test_cancel_task_request_replay_conflict_and_stale_version(db, policy):
+    task = admitted(policy)
+    version = controls.status()["version"]
+    result = cancel_task(task, expected_version=version)
+    controls.set_control("pause_admissions", "operator")
+    assert cancel_task(task, expected_version=version) == result
+    assert (
+        cancel_task(task, expected_version=version, reason="changed")["reason"]
+        == "conflicting_control_request"
+    )
+    assert (
+        cancel_task(task, expected_version=version, key="stale")["reason"]
+        == "control_version_changed"
+    )
+    assert len(cancel_audits(db, "cancel_task")) == 1
+    assert len(cancel_audits(db, "control_request")) == 2
+    assert cancel_task(task, key="again")["reason"] == "cancellation_pending"
+
+
+def test_concurrent_cancel_task_replays_one_committed_mutation(db, policy):
+    task = admitted(policy)
+    version = controls.status()["version"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda _: cancel_task(task, expected_version=version), range(2))
+        )
+    assert results[0] == results[1]
+    assert results[0]["ok"]
+    assert controls.status()["version"] == version + 1
+    assert len(cancel_audits(db, "cancel_task")) == 1
+    assert len(cancel_audits(db, "control_request")) == 1
+
+
+def test_cancel_task_settlement_refreshes_a_stale_session(db, policy):
+    task = admitted(policy)
+    with Session(db) as session:
+        old = controls._receipt(session, task)
+        assert not old.cancellation_requested
+        assert cancel_task(task)["ok"]
+        result = controls.finish_task(
+            task, "succeeded", "stale-reconciler", session=session
+        )
+        assert result == {"ok": False, "reason": "cancellation_pending"}
+        session.commit()
+    assert controls.task_snapshot(task)["state"] == "admitted"
+
+
+@pytest.mark.parametrize(
+    "state", ["queued", "landing", "succeeded", "failed", "cancelled", "escalated"]
+)
+def test_cancel_task_refuses_non_active_states(db, policy, state):
+    task = admitted(policy)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task).state = state
+    version = controls.status()["version"]
+    result = cancel_task(task)
+    assert result["reason"] == (
+        "task_queued_use_cancel_receipt" if state == "queued" else "task_not_active"
+    )
+    assert controls.status()["version"] == version
+    assert controls.task_snapshot(task)["state"] == state
+    assert controls.cancellation_evidence(task) is None
+
+
+def test_cancel_task_unknown_target_is_refused(db):
+    assert cancel_task("missing")["reason"] == "unknown_task"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"task_id": None},
+        {"task_id": " "},
+        {"receipt_id": 1},
+        {"cancellation_reason": None},
+        {"cancellation_reason": " "},
+        {"cancellation_reason": "x" * 1025},
+        {"expected_version": True},
+    ],
+)
+def test_cancel_task_validates_identity_and_reason_before_writes(db, overrides):
+    with pytest.raises(ValueError):
+        cancel_task("t", **overrides)
+    assert not cancel_audits(db, "cancel_task")
+    assert not cancel_audits(db, "control_request")
+
+
+@pytest.mark.parametrize(
+    "action", ["pause_task", "resume_task", "cancel_receipt", "stop"]
+)
+def test_other_controls_refuse_cancellation_reason(db, action):
+    with pytest.raises(ValueError):
+        controls.request_control(
+            action,
+            "operator",
+            request_key="r",
+            expected_version=0,
+            task_id="t" if action.endswith("task") else None,
+            receipt_id=1 if action == "cancel_receipt" else None,
+            cancellation_reason="cancel",
+        )
+
+
+@pytest.mark.parametrize("outcome", ["succeeded", "failed", "escalated", "cancelled"])
+def test_cancel_task_prevents_stale_terminal_settlement(db, policy, outcome):
+    task = admitted(policy)
+    assert cancel_task(task)["ok"]
+    assert (
+        controls.finish_task(task, outcome, "stale-reconciler")["reason"]
+        == "cancellation_pending"
+    )
+    assert controls.task_snapshot(task)["state"] == "admitted"
+    assert controls.finish_task(
+        task, "cancelled", "reconciler", evidence=controls.cancellation_evidence(task)
+    )["ok"]
+
+
+def test_cancel_task_checks_graph_runs_as_well_as_start_ledger(db, policy):
+    task = admitted(policy)
+    with Session(db) as session:
+        session.add(
+            SwarmNodeRun(task_id=task, node_key="live", attempt=1, status="dispatched")
+        )
+        session.commit()
+    assert cancel_task(task)["ok"]
+    assert (
+        controls.finish_task(
+            task,
+            "cancelled",
+            "reconciler",
+            evidence=controls.cancellation_evidence(task),
+        )["reason"]
+        == "live_runs"
+    )
+
+
+@pytest.mark.parametrize("source", ["stop", "human"])
+def test_shared_cancellation_flag_does_not_grant_operator_provenance(
+    db, policy, source
+):
+    task = admitted(policy)
+    if source == "stop":
+        controls.set_control("stop", "operator")
+    else:
+        controls.human_handoff(task, "observer", observed=True)
+    result = cancel_task(task)
+    assert not result["ok"]
+    forged = {"state": "operator_cancelled", "reason": "not an operator cancellation"}
+    assert (
+        controls.finish_task(task, "cancelled", "reconciler", evidence=forged)["reason"]
+        == "unverified_operator_cancellation"
+    )
+    evidence = controls.HUMAN_HANDOFF_EVIDENCE if source == "human" else None
+    assert controls.finish_task(task, "cancelled", "reconciler", evidence=evidence)[
+        "ok"
+    ]
+
+
+@pytest.mark.parametrize("source", ["stop", "human"])
+def test_stop_or_handoff_during_operator_drain_retains_provenance(db, policy, source):
+    task = admitted(policy)
+    assert cancel_task(task)["ok"]
+    stale = controls.cancellation_evidence(task)
+    if source == "stop":
+        controls.set_control("stop", "operator")
+        assert (
+            controls.finish_task(task, "succeeded", "stale-reconciler")["reason"]
+            == "cancellation_pending"
+        )
+    else:
+        controls.human_handoff(task, "observer", observed=True)
+    assert not controls.finish_task(task, "cancelled", "reconciler", evidence=stale)[
+        "ok"
+    ]
+    evidence = controls.HUMAN_HANDOFF_EVIDENCE if source == "human" else None
+    assert controls.finish_task(task, "cancelled", "reconciler", evidence=evidence)[
+        "ok"
+    ]
+
+
+def test_global_stop_can_still_settle_a_human_handoff(db, policy):
+    task = admitted(policy)
+    assert controls.human_handoff(task, "observer", observed=True)
+    assert controls.set_control("stop", "operator")["ok"]
+    assert controls.finish_task(task, "cancelled", "reconciler")["ok"]
+    assert controls.task_snapshot(task)["evidence"] is None
+
+
 def test_cancel_receipt_settles_a_queued_receipt(db):
     receipt_id = queue_receipt(db, 9)
     version = controls.status()["version"]

@@ -2212,6 +2212,18 @@ missing-label escalation, release unknown reservations, close issues or PRs,
 or resume a receipt when the label is removed. Refinement also checks the live
 label at settlement to cover a handoff during briefing.
 
+**Why.** Operators need to cancel one admitted task without stopping the factory
+or declaring a human ownership handoff (#7164). `cancel_task` takes an exact
+`task_id` and an explicit `cancellation_reason` through the authenticated,
+version-bound control request ledger. It accepts admitted and uncertain receipts,
+including paused ones; queued work uses `cancel_receipt`, and landing or settled
+work is refused. Ordinary ticks reconcile existing attempts and reservations
+without new starts, retries or delivery work. Settlement records
+`operator_cancelled` only with the successful operator audit and quiescence in
+both the start and graph-run ledgers. Global stop and human handoff retain their
+own provenance. The issue, labels and PR remain untouched, including by later
+PR lifecycle sweeps, and intake keeps its normal cooldown.
+
 | Aspect | Decision | Owner |
 | --- | --- | --- |
 | Entry point | One factory conversation across web, Discord, and voice, integrating the existing launcher (#4781) on the private agents page; no choice of model, session, run, or conductor is required | #5788 |

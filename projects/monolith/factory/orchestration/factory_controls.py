@@ -2767,6 +2767,7 @@ def set_control(
     *,
     policy: dict | None = None,
     task_id: str | None = None,
+    cancellation_reason: str | None = None,
     repo: str | None = None,
     session: Session | None = None,
 ) -> dict:
@@ -2777,6 +2778,7 @@ def set_control(
         "pause_admissions",
         "pause_task",
         "resume_task",
+        "cancel_task",
         "stop",
         *REPO_ACTIONS,
     ):
@@ -2784,8 +2786,14 @@ def set_control(
     configured = validate_policy(policy) if action == "configure" else None
     if action != "configure" and policy is not None:
         raise ValueError("policy requires configure action")
-    if (action in ("pause_task", "resume_task")) != (task_id is not None):
-        raise ValueError("task_id is required only for task pause/resume")
+    if (action in ("pause_task", "resume_task", "cancel_task")) != (
+        task_id is not None
+    ):
+        raise ValueError("task_id is required only for task pause/resume/cancel")
+    if action == "cancel_task":
+        cancellation_reason = _text(cancellation_reason, "cancellation_reason", 1024)
+    elif cancellation_reason is not None:
+        raise ValueError("cancellation_reason is required only for cancel_task")
     if (action in REPO_ACTIONS) != (repo is not None):
         raise ValueError("repo is required only for per-repo pause/enable")
     if action == "resume_task" and session is None:
@@ -2893,6 +2901,24 @@ def set_control(
                         validate_policy({**validated, "repos": repos})
                     )
                     configure_detail["repo"] = slug
+        elif action == "cancel_task":
+            row = _receipt(db, task_id)
+            if row is None:
+                reason = "unknown_task"
+            elif row.state == "queued":
+                reason = "task_queued_use_cancel_receipt"
+            elif row.state not in _ACTIVE:
+                reason = "task_not_active"
+            elif row.cancellation_requested:
+                reason = "cancellation_pending"
+            else:
+                from factory.orchestration import graph
+
+                graph._lock_task(db, task_id)
+                row.cancellation_requested = True
+                row.updated_at = _now()
+                db.add(row)
+            configure_detail["cancellation_reason"] = cancellation_reason
         elif action in ("pause_task", "resume_task"):
             row = _receipt(db, task_id)
             if row is None or row.state not in _ACTIVE:
@@ -2991,6 +3017,7 @@ def request_control(
     expected_version: int,
     task_id: str | None = None,
     receipt_id: int | None = None,
+    cancellation_reason: str | None = None,
 ) -> dict:
     """Apply a version-bound operator request once through the control owner.
 
@@ -3009,6 +3036,7 @@ def request_control(
         "resume_task",
         "stop",
         "cancel_receipt",
+        "cancel_task",
     ):
         raise ValueError("unsupported requested control")
     request = {
@@ -3022,8 +3050,16 @@ def request_control(
     }
     if receipt_id is not None:
         request["receipt_id"] = _integer(receipt_id, "receipt_id", 1, 2**63 - 1)
-    if (action in ("pause_task", "resume_task")) != (task_id is not None):
-        raise ValueError("task_id is required only for task pause/resume")
+    if (action in ("pause_task", "resume_task", "cancel_task")) != (
+        task_id is not None
+    ):
+        raise ValueError("task_id is required only for task pause/resume/cancel")
+    if action == "cancel_task":
+        request["cancellation_reason"] = _text(
+            cancellation_reason, "cancellation_reason", 1024
+        )
+    elif cancellation_reason is not None:
+        raise ValueError("cancellation_reason is required only for cancel_task")
     if action == "cancel_receipt":
         if task_id is not None:
             raise ValueError("task_id is not used by cancel_receipt")
@@ -3056,7 +3092,13 @@ def request_control(
         else:
             # Supplying the locked session deliberately uses the active-task
             # branch of set_control, never its automatic escalation decision.
-            result = set_control(action, actor, task_id=task_id, session=db)
+            result = set_control(
+                action,
+                actor,
+                task_id=task_id,
+                cancellation_reason=cancellation_reason,
+                session=db,
+            )
         result = {
             **result,
             "request_key": request_key,
@@ -3498,6 +3540,37 @@ HUMAN_HANDOFF_EVIDENCE = {
 }
 
 
+def _cancellation_evidence(db: Session, row: FactoryReceipt | None) -> dict | None:
+    """Read cancellation authority, never infer its owner from the shared flag."""
+    if row is None or not row.cancellation_requested:
+        return None
+    events = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == row.task_id,
+            FactoryAudit.action.in_(("human_handoff", "cancel_task")),
+        )
+        .order_by(FactoryAudit.id)
+    ).all()
+    if any(event.action == "human_handoff" for event in events):
+        return HUMAN_HANDOFF_EVIDENCE
+    for event in events:
+        detail = json.loads(event.detail_json)
+        if event.action == "cancel_task" and detail.get("ok") is True:
+            return {
+                "state": "operator_cancelled",
+                "reason": detail["cancellation_reason"],
+            }
+    return None
+
+
+def cancellation_evidence(
+    task_id: str, *, session: Session | None = None
+) -> dict | None:
+    with _read_session(session) as db:
+        return _cancellation_evidence(db, _receipt(db, task_id))
+
+
 def _quiescence_refusal(db: Session, task_id: str) -> str | None:
     """Recheck both ledgers under control-then-task locks, as reservation does."""
     from factory.orchestration import graph
@@ -3652,6 +3725,29 @@ def finish_task(
                 and json.loads(last.detail_json).get("evidence") == evidence
             )
             return {"ok": same, "reason": None if same else "conflicting_outcome"}
+        cancellation = _cancellation_evidence(db, row)
+        if (evidence or {}).get("state") == "operator_cancelled" and (
+            outcome != "cancelled"
+            or evidence != cancellation
+            or _control.state == "stopped"
+        ):
+            return {"ok": False, "reason": "unverified_operator_cancellation"}
+        global_cancellation = (
+            _control.state == "stopped" and outcome == "cancelled" and evidence is None
+        )
+        if (
+            cancellation is not None
+            and outcome != "uncertain"
+            and (outcome != "cancelled" or evidence != cancellation)
+            and not global_cancellation
+        ):
+            # A terminal graph or a stale delivery snapshot cannot overtake a
+            # committed operator request or human handoff.
+            return {"ok": False, "reason": "cancellation_pending"}
+        if outcome == "cancelled":
+            refusal = _quiescence_refusal(db, task_id)
+            if refusal:
+                return {"ok": False, "reason": refusal}
         handed_off = (
             outcome == "cancelled"
             and evidence == HUMAN_HANDOFF_EVIDENCE
