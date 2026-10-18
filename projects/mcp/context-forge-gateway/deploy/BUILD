@@ -3,6 +3,7 @@
 # targets below own both manifest outputs and their values-file contracts.
 
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_admissibility_render")
+load("//bazel/helm:generation_contract_test.bzl", "helm_generation_contract_test")
 
 exports_files(
     [
@@ -10,6 +11,13 @@ exports_files(
         "application.yaml",
     ],
     visibility = ["//bazel/helm/gazelle:__pkg__"],
+)
+
+helm_generation_contract_test(
+    name = "generation_contract_test",
+    base = ":render_manifests",
+    gke = ":render_manifests_gke",
+    template = ":template_test",
 )
 
 filegroup(

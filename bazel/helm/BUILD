@@ -4,6 +4,7 @@ load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 # gazelle:exclude **/*.bzl
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load(":generation_contract_test.bzl", "helm_admissibility_consumers_test")
 
 exports_files([
     "argocd-live-diff.sh",
@@ -161,6 +162,11 @@ sh_test(
         "@kubernetes_json_schema_1_36_3//:secret-v1.json",
         "@multitool//tools/helm",
     ] + EXTERNAL_CRD_SOURCES + MANIFEST_SETS,
+)
+
+helm_admissibility_consumers_test(
+    name = "context_forge_admissibility_consumers_test",
+    admissibility = ":chart_admissibility_test",
 )
 
 sh_test(
