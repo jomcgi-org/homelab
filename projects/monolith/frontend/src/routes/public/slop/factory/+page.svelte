@@ -340,74 +340,105 @@
         {/each}
       </dl>
 
-      <section class="quota-panel" aria-label="Subscription quota">
+      <section class="quota-panel" aria-label="Subscription pace">
         <header class="quota-heading">
-          <h2>/ Subscription quota</h2>
-          <p>Equal-account mean · remaining quota vs time</p>
+          <h2>Subscription pace</h2>
+          <p>Target: 100% used by reset</p>
         </header>
         <div class="quota-providers">
           {#each quotas as provider}
-            <div class="quota-provider">
-              <h3>{provider.label}</h3>
+            <div class="quota-provider" data-state={provider.state}>
+              <div class="quota-provider-label">
+                <h3>{provider.label}</h3>
+                <span>{provider.scope}</span>
+              </div>
+              <p class="quota-status">{provider.status}</p>
               {#each provider.windows as window}
-                {@const historySvg = quotaChartSvg(
-                  window.history,
-                  `${provider.label} ${window.window}`,
-                )}
-                <div class="quota-window">
-                  {#if historySvg}
-                    {@html historySvg}
-                  {:else}
-                    <p class="quota-meta">
-                      History starts with the first fresh measurement.
-                    </p>
-                  {/if}
+                <div class="quota-window" data-state={window.state}>
                   <div class="quota-values">
-                    <strong>{window.window}</strong>
-                    <span class="num"
-                      >{window.used === null
-                        ? "Awaiting quota report"
-                        : `${window.used.toFixed(1)}% used · ${(100 - window.used).toFixed(1)}% left`}</span
-                    >
+                    <strong>{window.label}</strong>
+                    {#if window.resetRange}<span
+                        >Reset in {window.resetRange}</span
+                      >{/if}
                   </div>
-                  {#if window.used !== null}
-                    <p class="quota-time num">
-                      {window.remaining} mean time left · {window.pace}
-                    </p>
-                    <p class="quota-meta">
-                      {window.staggered ? "Resets in" : "Reset in"}
-                      {window.resetRange}{window.staggered
-                        ? " (staggered)"
-                        : ""}
-                    </p>
-                  {/if}
-                  <p class="quota-meta">
-                    {window.coverage} · {window.measured}{window.stale
-                      ? " · stale"
-                      : ""}
+                  <p class="quota-evidence num">
+                    <strong
+                      >{window.usedText}{window.used === null
+                        ? ""
+                        : " used"}</strong
+                    >
+                    {#if window.targetText}<span>
+                        / {window.targetText} target</span
+                      >{/if}
                   </p>
+                  <div
+                    class="quota-meter"
+                    role="img"
+                    aria-label={`${provider.label} ${window.label}: ${window.usedText} used${window.targetText ? `, ${window.targetText} target` : ""}`}
+                  >
+                    {#if window.used !== null}<span
+                        class="quota-fill"
+                        style:width={`${window.used}%`}
+                      ></span>{/if}
+                    {#if window.elapsed !== null}<i
+                        class="quota-target"
+                        style:left={`${window.elapsed}%`}
+                      ></i>{/if}
+                  </div>
+                  {#if window.warning}<p class="quota-warning">
+                      {window.warning}
+                    </p>{/if}
                 </div>
               {:else}
-                <p class="quota-meta">
-                  Quota unavailable · no active window reported
-                </p>
+                <p class="quota-warning">Quota unavailable</p>
               {/each}
-              {#if provider.unknownWindows}
-                <p class="quota-meta">
-                  {provider.unknownWindows}
-                  {provider.unknownWindows === 1
-                    ? "window has"
-                    : "windows have"} unknown duration
-                </p>
-              {/if}
+              {#if provider.warning}<p class="quota-warning quota-scope-note">
+                  {provider.warning}
+                </p>{/if}
             </div>
           {/each}
         </div>
-        <p class="quota-legend">
-          <span><i class="actual"></i>Actual remaining</span><span
-            ><i class="expected"></i>Expected at steady pace</span
-          ><span><i class="reset"></i>Reset observed</span>
-        </p>
+        <details class="quota-details">
+          <summary>Usage history &amp; details</summary>
+          <p class="quota-method">
+            The marker shows steady usage toward 100% at reset. Within 5
+            percentage points counts as on pace. This is a comparison with
+            elapsed time, not a usage forecast.
+          </p>
+          {#each quotas as provider}
+            {#each provider.windows as window}
+              {@const historySvg = quotaChartSvg(
+                window.history,
+                `${provider.label} ${window.window}`,
+              )}
+              <div class="quota-history-window">
+                <h4>{provider.label} · {window.label}</h4>
+                {#if historySvg}{@html historySvg}{:else}<p class="quota-meta">
+                    History starts with the first fresh measurement.
+                  </p>{/if}
+                <p class="quota-meta">
+                  {window.coverage} · {window.measured}{window.stale
+                    ? " · stale"
+                    : ""}
+                </p>
+                {#if window.staggered}<p class="quota-meta">
+                    Account resets are staggered. Usage and time targets are
+                    equal-account means.
+                  </p>{/if}
+              </div>
+            {/each}
+            {#if provider.unknownWindows}<p class="quota-meta quota-unknown">
+                {provider.label}: {provider.unknownWindows}
+                {provider.unknownWindows === 1 ? "window has" : "windows have"} unknown
+                duration
+              </p>{/if}
+          {/each}
+          <p class="quota-legend">
+            <span><i class="actual"></i>Actual remaining</span>
+            <span><i class="expected"></i>Expected remaining</span>
+            <span><i class="reset"></i>Reset observed</span>
+          </p>
+        </details>
         {#if quotaRefreshFailed}<p class="quota-refresh">
             Refresh unavailable · showing the last report
           </p>{/if}

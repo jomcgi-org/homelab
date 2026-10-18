@@ -172,20 +172,25 @@ describe("subscription quota display", () => {
     flushSync();
     return target;
   }
-  it("renders separate burndowns, measured quota, reset range and stale coverage", async () => {
+  it("leads with pace and meters, keeping charts and evidence in a closed disclosure", async () => {
     const target = await mountOverview();
-    const panel = target.querySelector('[aria-label="Subscription quota"]');
+    const panel = target.querySelector('[aria-label="Subscription pace"]');
     expect(
       [...panel.querySelectorAll("h3")].map((node) => node.textContent),
     ).toEqual(["Codex", "Claude"]);
-    expect(panel.textContent).toContain("42.0% used");
-    expect(panel.textContent).toContain("8pp behind time");
-    expect(panel.textContent).toContain("3d–4d (staggered)");
+    expect(panel.textContent).toContain("42% used");
+    expect(panel.textContent).toContain("Room to use more");
+    expect(panel.textContent).toContain("50% target");
+    expect(panel.textContent).toContain("Reset in 3d–4d");
     expect(panel.textContent).toContain(
       "Provider report · account coverage unknown",
     );
     expect(panel.textContent).toContain("stale");
-    expect(panel.querySelectorAll("svg.quota-history")).toHaveLength(2);
+    expect(panel.querySelector("details").open).toBe(false);
+    expect(panel.querySelectorAll("details svg.quota-history")).toHaveLength(2);
+    expect(panel.querySelectorAll(".quota-providers svg")).toHaveLength(0);
+    expect(panel.querySelectorAll(".quota-meter")).toHaveLength(2);
+    expect(panel.querySelector(".quota-target").style.left).toBe("50%");
   });
   it("uses the response-time clock for a snapshot published during refresh", async () => {
     const target = await mountOverview();
@@ -231,10 +236,12 @@ describe("subscription quota display", () => {
     );
     await vi.advanceTimersByTimeAsync(60000);
     flushSync();
-    const panel = target.querySelector('[aria-label="Subscription quota"]');
-    expect(panel.textContent).toContain("43.0% used");
+    const panel = target.querySelector('[aria-label="Subscription pace"]');
+    expect(panel.textContent).toContain("43% used");
     expect(panel.textContent).not.toContain("Awaiting quota report");
-    expect(panel.textContent).not.toContain("pace unavailable");
+    expect(panel.querySelector(".quota-provider").textContent).not.toContain(
+      "Pace unavailable",
+    );
   });
   it("refreshes each minute and preserves the last report when fetching fails", async () => {
     const target = await mountOverview();
@@ -247,6 +254,6 @@ describe("subscription quota display", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(target.textContent).toContain("Refresh unavailable");
-    expect(target.textContent).toContain("42.0% used");
+    expect(target.textContent).toContain("42% used");
   });
 });

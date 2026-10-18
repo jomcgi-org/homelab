@@ -344,6 +344,19 @@ export function quotaDuration(seconds) {
   return `${Math.ceil(seconds / 60)}m`;
 }
 
+// A five-point band avoids calling rounding and small bursts a change in pace.
+// This compares consumption with elapsed quota time, not a forecast of demand.
+const QUOTA_PACE_TOLERANCE = 5;
+const quotaPercent = (value) =>
+  `${(value < 100 ? Math.min(value, 99.9) : value).toFixed(1).replace(/\.0$/, "")}%`;
+const quotaStatus = {
+  exhausted: "Limit reached",
+  fast: "Burning too fast",
+  unknown: "Pace unavailable",
+  under: "Room to use more",
+  on: "On pace",
+};
+
 // Snapshots contain only aggregates. Once the first account resets we cannot
 // subtract that account from the mean, so await a new snapshot for the group.
 export function quotaGroups(quota, now) {
@@ -354,84 +367,158 @@ export function quotaGroups(quota, now) {
     quota?.available === true && Number.isFinite(sampleAge) && sampleAge >= 0;
   return ["codex", "claude"].map((name) => {
     const provider = quota?.providers?.find((item) => item.provider === name);
+    const reported = provider?.source === "provider";
+    const unknownWindows = provider?.unknown_windows ?? 0;
+    const windows = [
+      ...(provider?.windows ?? []),
+      ...(quota?.history ?? [])
+        .filter(
+          (group) =>
+            group.provider === name &&
+            !(provider?.windows ?? []).some(
+              (row) => row.window_seconds === group.window_seconds,
+            ),
+        )
+        .map((group) => ({
+          window_seconds: group.window_seconds,
+          reported_accounts: 0,
+        })),
+    ].map((row) => {
+      const reset = Date.parse(row.next_reset_at);
+      const lastReset = Date.parse(row.last_reset_at);
+      const age = (clock - Date.parse(row.oldest_observed_at)) / 1000;
+      const active = validSnapshot && reset > clock;
+      const used =
+        active &&
+        quotaNumber(row.used_percent) &&
+        row.used_percent >= 0 &&
+        row.used_percent <= 100
+          ? row.used_percent
+          : null;
+      const remaining =
+        active &&
+        quotaNumber(row.remaining_seconds) &&
+        row.remaining_seconds >= 0
+          ? Math.max(0, row.remaining_seconds - sampleAge)
+          : null;
+      const elapsed =
+        remaining !== null &&
+        quotaNumber(row.window_seconds) &&
+        row.window_seconds > 0
+          ? Math.min(
+              100,
+              Math.max(0, 100 * (1 - remaining / row.window_seconds)),
+            )
+          : null;
+      const fresh =
+        active &&
+        Number.isFinite(age) &&
+        age >= 0 &&
+        quotaNumber(quota.stale_after_seconds) &&
+        age <= quota.stale_after_seconds;
+      const complete =
+        provider?.source === "accounts" &&
+        row.complete === true &&
+        provider.inventory_complete === true &&
+        provider.configured_accounts > 0 &&
+        row.reported_accounts === provider.configured_accounts;
+      // A provider report can describe its reported window. It never establishes
+      // a complete subscription inventory, and the UI keeps that scope visible.
+      const comparable =
+        fresh && (complete || reported) && used !== null && elapsed !== null;
+      const delta = comparable ? used - elapsed : null;
+      const state =
+        delta === null
+          ? "unknown"
+          : used >= 100
+            ? "exhausted"
+            : delta > QUOTA_PACE_TOLERANCE + 1e-9
+              ? "fast"
+              : delta < -QUOTA_PACE_TOLERANCE - 1e-9
+                ? "under"
+                : "on";
+      const resetFirst = active ? quotaDuration((reset - clock) / 1000) : null;
+      const resetLast =
+        active && lastReset > reset
+          ? quotaDuration((lastReset - clock) / 1000)
+          : resetFirst;
+      const warning =
+        !active || used === null
+          ? "Awaiting fresh report"
+          : !fresh
+            ? "Stale report"
+            : !complete && !reported
+              ? "Partial account data"
+              : null;
+      const window = quotaDuration(row.window_seconds);
+      return {
+        window,
+        label:
+          row.window_seconds === 604800
+            ? "Weekly"
+            : row.window_seconds === 18000
+              ? "5-hour"
+              : window,
+        history:
+          (quota?.history ?? []).find(
+            (group) =>
+              group.provider === name &&
+              group.window_seconds === row.window_seconds,
+          )?.points ?? [],
+        used,
+        usedText: used === null ? "Unavailable" : quotaPercent(used),
+        elapsed,
+        targetText: elapsed === null ? null : quotaPercent(elapsed),
+        remaining: remaining === null ? "unknown" : quotaDuration(remaining),
+        resetRange:
+          resetFirst === resetLast ? resetFirst : `${resetFirst}–${resetLast}`,
+        staggered: lastReset > reset,
+        coverage:
+          provider?.source === "accounts"
+            ? `${row.reported_accounts}/${provider.configured_accounts} accounts${provider.inventory_complete ? "" : " · inventory unknown"}`
+            : "Provider report · account coverage unknown",
+        measured:
+          Number.isFinite(age) && age >= 0
+            ? `measured ${quotaDuration(age)} ago`
+            : "measurement age unknown",
+        stale: used !== null && !fresh,
+        comparable,
+        state,
+        status: quotaStatus[state],
+        warning,
+      };
+    });
+    // Constraints win over spare capacity. Missing evidence also prevents a
+    // reassuring provider headline, even when a measured window is under pace.
+    const state = windows.some((row) => row.state === "exhausted")
+      ? "exhausted"
+      : windows.some((row) => row.state === "fast")
+        ? "fast"
+        : !windows.length ||
+            unknownWindows ||
+            windows.some((row) => row.state === "unknown")
+          ? "unknown"
+          : windows.some((row) => row.state === "under")
+            ? "under"
+            : "on";
     return {
       provider: name,
       label: name === "codex" ? "Codex" : "Claude",
-      unknownWindows: provider?.unknown_windows ?? 0,
-      windows: [
-        ...(provider?.windows ?? []),
-        ...(quota?.history ?? [])
-          .filter(
-            (group) =>
-              group.provider === name &&
-              !(provider?.windows ?? []).some(
-                (row) => row.window_seconds === group.window_seconds,
-              ),
-          )
-          .map((group) => ({
-            window_seconds: group.window_seconds,
-            reported_accounts: 0,
-          })),
-      ].map((row) => {
-        const reset = Date.parse(row.next_reset_at);
-        const lastReset = Date.parse(row.last_reset_at);
-        const age = (clock - Date.parse(row.oldest_observed_at)) / 1000;
-        const active = validSnapshot && reset > clock;
-        const used =
-          active && quotaNumber(row.used_percent) ? row.used_percent : null;
-        const remaining =
-          active && quotaNumber(row.remaining_seconds)
-            ? Math.max(0, row.remaining_seconds - sampleAge)
-            : null;
-        const elapsed =
-          remaining !== null && row.window_seconds > 0
-            ? Math.min(
-                100,
-                Math.max(0, 100 * (1 - remaining / row.window_seconds)),
-              )
-            : null;
-        const fresh =
-          active &&
-          Number.isFinite(age) &&
-          age >= 0 &&
-          age <= quota.stale_after_seconds;
-        const comparable =
-          fresh && row.complete && used !== null && elapsed !== null;
-        const delta = comparable ? used - elapsed : null;
-        const coverage =
-          provider?.source === "accounts"
-            ? `${row.reported_accounts}/${provider.configured_accounts} accounts${provider.inventory_complete ? "" : " · inventory unknown"}`
-            : "Provider report · account coverage unknown";
-        return {
-          window: quotaDuration(row.window_seconds),
-          history:
-            (quota?.history ?? []).find(
-              (group) =>
-                group.provider === name &&
-                group.window_seconds === row.window_seconds,
-            )?.points ?? [],
-          used,
-          elapsed,
-          remaining: remaining === null ? "unknown" : quotaDuration(remaining),
-          resetRange: active
-            ? `${quotaDuration((reset - clock) / 1000)}${lastReset > reset ? `–${quotaDuration((lastReset - clock) / 1000)}` : ""}`
-            : null,
-          staggered: lastReset > reset,
-          coverage,
-          measured:
-            Number.isFinite(age) && age >= 0
-              ? `measured ${quotaDuration(age)} ago`
-              : "measurement age unknown",
-          stale: used !== null && !fresh,
-          comparable,
-          pace:
-            delta === null
-              ? "pace unavailable"
-              : Math.abs(delta) < 1
-                ? "on pace"
-                : `${Math.abs(delta).toFixed(0)}pp ${delta > 0 ? "ahead of" : "behind"} time`,
-        };
-      }),
+      scope: reported
+        ? "Reported quota"
+        : provider?.configured_accounts > 0
+          ? `${provider.configured_accounts} subscription${provider.configured_accounts === 1 ? "" : "s"}`
+          : "No report",
+      reported,
+      unknownWindows,
+      windows,
+      state,
+      status: quotaStatus[state],
+      warning: unknownWindows
+        ? "Some limits have no reset duration"
+        : reported
+          ? "Account coverage unknown"
+          : null,
     };
   });
 }

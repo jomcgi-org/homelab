@@ -180,23 +180,53 @@ def layout_checks(page, view, scenario, width, scale):
             require(title["fontSize"] >= 13 * scale, f"mobile title too small: {title}")
 
     if view == "overview":
-        quota = page.get_by_role("region", name="Subscription quota")
-        require(quota.is_visible(), "subscription quota panel missing")
+        quota = page.get_by_role("region", name="Subscription pace")
+        require(quota.is_visible(), "subscription pace panel missing")
         require(
             quota.locator("h3").all_text_contents() == ["Codex", "Claude"],
             "provider quota groups missing",
         )
+        disclosure = quota.locator("details.quota-details")
+        require(
+            disclosure.get_attribute("open") is None,
+            "quota history expanded by default",
+        )
+        require(
+            not any(
+                chart.is_visible() for chart in quota.locator("svg.quota-history").all()
+            ),
+            "quota charts obscure the pace summary",
+        )
+        require(
+            disclosure.locator("summary").bounding_box()["height"] >= 43.9,
+            "quota details target below 44px",
+        )
         if scenario == "live":
             require(
-                quota.locator("svg.quota-history").count() == 2,
-                "recorded quota history missing",
+                quota.locator(".quota-status").all_text_contents()
+                == ["Room to use more", "Limit reached"],
+                "provider headline misses spare capacity or short-window exhaustion",
             )
-            require("42.0% used" in quota.inner_text(), "account quota usage missing")
             require(
-                "8pp behind time" in quota.inner_text(),
-                "quota versus time pace missing",
+                "42% used" in quota.inner_text() and "50% target" in quota.inner_text(),
+                "usage versus target evidence missing",
             )
-            require("stale" in quota.inner_text(), "stale provider measurement hidden")
+            require(
+                "Reported quota" in quota.inner_text(), "provider-only scope hidden"
+            )
+            require(
+                "Stale report" in quota.inner_text(),
+                "stale provider measurement hidden",
+            )
+            require(
+                quota.locator(".quota-meter").count() == 3,
+                "quota windows missing compact meters",
+            )
+            if width <= 430 and scale == 1:
+                require(
+                    quota.bounding_box()["height"] <= 600,
+                    "collapsed quota summary exceeds one phone viewport",
+                )
         else:
             require(
                 "Quota unavailable" in quota.inner_text(),
@@ -302,6 +332,31 @@ def layout_checks(page, view, scenario, width, scale):
     }).map(node => node.className)""")
     require(not animated, f"motion still running under reduced motion: {animated}")
     return issues, {"overflow": overflow, "targets": targets}
+
+
+def check_quota_details(page):
+    disclosure = page.locator("details.quota-details")
+    summary = disclosure.locator("summary")
+    summary.focus()
+    page.keyboard.press("Enter")
+    disclosure.locator(".quota-history").first.wait_for(state="visible")
+    assert disclosure.get_attribute("open") is not None, (
+        "keyboard cannot expand quota history"
+    )
+    assert disclosure.locator(".quota-history").count() == 2, (
+        "recorded quota history missing"
+    )
+    assert "2/2 accounts" in disclosure.inner_text(), "account coverage details missing"
+    verify_resized_text(page)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), (
+        "expanded quota history introduces overflow"
+    )
+    summary.focus()
+    page.keyboard.press("Space")
+    disclosure.locator(".quota-history").first.wait_for(state="hidden")
+    assert disclosure.get_attribute("open") is None, (
+        "keyboard cannot collapse quota history"
+    )
 
 
 def check_mobile_totals(page, scenario, expanded_screenshot=None):
@@ -541,6 +596,8 @@ def check(root, output, expected_sha):
                             if width == 320 and scale == 2 and scenario == "live"
                             else None,
                         )
+                    if view == "overview" and scenario == "live":
+                        check_quota_details(page)
                     if view == "chapter" and scale == 2:
                         summary = page.locator(".doc details > summary").first
                         summary.focus()

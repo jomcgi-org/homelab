@@ -322,6 +322,7 @@ def shape_quota(payload: dict | None, now: datetime) -> dict:
 
 QUOTA_HISTORY_DAYS = 8
 QUOTA_HISTORY_BUCKET_SECONDS = 900
+QUOTA_RESET_JITTER_SECONDS = 60
 _QUOTA_HISTORY_STATUSES = ("complete", "observed", "partial", "stale", "unavailable")
 
 
@@ -398,7 +399,9 @@ def _quota_history_point(raw: object, now: datetime, seconds: float) -> dict | N
     }
 
 
-def _quota_history_append(points: list[dict], point: dict) -> list[dict]:
+def _quota_history_append(
+    points: list[dict], point: dict, window_seconds: float
+) -> list[dict]:
     if points:
         prior = points[-1]
         scope_changed = any(
@@ -411,8 +414,22 @@ def _quota_history_append(points: list[dict], point: dict) -> list[dict]:
                 "status",
             )
         )
+        # Provider reset clocks can wobble between observations. Keep that
+        # jitter from inventing a reset or a gap, but cap the allowance at 1%
+        # of the window so a genuine short-window rollover remains visible.
+        reset_tolerance = min(QUOTA_RESET_JITTER_SECONDS, window_seconds / 100)
+        reset_pairs = tuple(
+            (_quota_time(prior[key]), _quota_time(point[key]))
+            for key in ("next_reset_at", "last_reset_at")
+        )
         reset_changed = any(
-            prior[key] != point[key] for key in ("next_reset_at", "last_reset_at")
+            old != new
+            and (
+                old is None
+                or new is None
+                or abs((new - old).total_seconds()) > reset_tolerance
+            )
+            for old, new in reset_pairs
         )
         old_observed, observed = (_quota_time(p["observed_at"]) for p in (prior, point))
         # Broker ages are rounded and can jitter slightly between reads. An
@@ -436,11 +453,10 @@ def _quota_history_append(points: list[dict], point: dict) -> list[dict]:
             and prior["used_percent"] is not None
             and point["used_percent"] is not None
             and any(
-                old is not None and new is not None and new > old
-                for old, new in (
-                    (_quota_time(prior[key]), _quota_time(point[key]))
-                    for key in ("next_reset_at", "last_reset_at")
-                )
+                old is not None
+                and new is not None
+                and (new - old).total_seconds() > reset_tolerance
+                for old, new in reset_pairs
             )
         )
         usage_drop = (
@@ -559,7 +575,9 @@ def shape_quota_history(quota: dict, previous: object) -> list[dict]:
                 "break_before": True,
                 "reset_before": False,
             }
-        groups[key] = _quota_history_compact(_quota_history_append(points, point))
+        groups[key] = _quota_history_compact(
+            _quota_history_append(points, point, key[1])
+        )
     return [
         {"provider": provider, "window_seconds": seconds, "points": points}
         for (provider, seconds), points in sorted(groups.items())

@@ -990,6 +990,76 @@ def test_quota_history_losing_earliest_reset_account_breaks_without_claiming_res
         assert point["reset_before"] is False
 
 
+def test_quota_history_reset_clock_jitter_preserves_continuous_usage():
+    from datetime import datetime, timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    for account in ("secret-account-a", "secret-account-b"):
+        now, raw = _quota_fixture()
+        history = shape_quota_history(shape_quota(raw, now), None)
+        window = raw["grants"][account]["windows"][0]
+        reset = datetime.fromisoformat(window["resets_at"])
+        for minute, jitter in ((2, 1), (4, 0)):
+            window["resets_at"] = (reset + timedelta(seconds=jitter)).isoformat()
+            window["used_percent"] += 1
+            raw["fetched_at"] = (now + timedelta(minutes=minute)).isoformat()
+            history = shape_quota_history(
+                shape_quota(raw, now + timedelta(minutes=minute)), history
+            )
+            point = history[0]["points"][-1]
+            assert point["used_percent"] == 30 + minute / 4
+            assert point["break_before"] is False
+            assert point["reset_before"] is False
+
+
+def test_quota_history_reset_clock_jitter_tolerance_is_bounded():
+    from datetime import datetime, timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    for seconds in (-61, -60, 60, 61):
+        now, raw = _quota_fixture()
+        history = shape_quota_history(shape_quota(raw, now), None)
+        window = raw["grants"]["secret-account-a"]["windows"][0]
+        window["resets_at"] = (
+            datetime.fromisoformat(window["resets_at"]) + timedelta(seconds=seconds)
+        ).isoformat()
+        window["used_percent"] += 1
+        raw["fetched_at"] = (now + timedelta(minutes=2)).isoformat()
+        history = shape_quota_history(
+            shape_quota(raw, now + timedelta(minutes=2)), history
+        )
+        point = history[0]["points"][-1]
+        assert point["break_before"] is (abs(seconds) > 60)
+        assert point["reset_before"] is (seconds > 60)
+
+
+def test_quota_history_short_window_rollover_is_not_reset_clock_jitter():
+    from datetime import timedelta
+
+    from factory.publication import shape_quota, shape_quota_history
+
+    now, raw = _quota_fixture()
+    for account in raw["grants"].values():
+        window = account["windows"][0]
+        window["window_minutes"] = 1
+        window["used_percent"] = 80
+        window["resets_at"] = (now + timedelta(seconds=30)).isoformat()
+    history = shape_quota_history(shape_quota(raw, now), None)
+    raw["fetched_at"] = (now + timedelta(seconds=40)).isoformat()
+    for account in raw["grants"].values():
+        window = account["windows"][0]
+        window["used_percent"] = 20
+        window["resets_at"] = (now + timedelta(seconds=90)).isoformat()
+    history = shape_quota_history(
+        shape_quota(raw, now + timedelta(seconds=40)), history
+    )
+    point = history[0]["points"][-1]
+    assert point["break_before"] is True
+    assert point["reset_before"] is True
+
+
 def test_quota_history_reset_and_usage_correction_break_the_line_without_false_reset_labels():
     from datetime import timedelta
 

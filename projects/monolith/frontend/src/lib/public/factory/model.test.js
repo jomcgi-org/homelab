@@ -334,7 +334,7 @@ describe("snapshotFreshness", () => {
   });
 });
 
-describe("subscription quota versus reset time", () => {
+describe("subscription pace toward full usage by reset", () => {
   const now = "2026-10-17T12:00:00Z";
   const quota = () => ({
     available: true,
@@ -361,52 +361,154 @@ describe("subscription quota versus reset time", () => {
       },
     ],
   });
-  it("compares matching account means and exposes staggered resets", () => {
+  it("shows actionable pace with matching account means and staggered resets", () => {
     const [codex, claude] = quotaGroups(quota(), now);
-    expect(codex.label).toBe("Codex");
+    expect(codex).toMatchObject({
+      label: "Codex",
+      scope: "2 subscriptions",
+      status: "Room to use more",
+    });
     expect(codex.windows[0]).toMatchObject({
       window: "5h",
       used: 30,
+      usedText: "30%",
       elapsed: 50,
+      targetText: "50%",
       remaining: "2.5h",
       resetRange: "2h–3h",
       coverage: "2/2 accounts",
       comparable: true,
-      pace: "20pp behind time",
+      state: "under",
       measured: "measured 1m ago",
     });
-    expect(claude.label).toBe("Claude");
-    expect(claude.windows).toEqual([]);
+    expect(claude).toMatchObject({
+      label: "Claude",
+      windows: [],
+      status: "Pace unavailable",
+    });
   });
-  it("ages the report and hides pace without discarding measured usage", () => {
-    const row = quotaGroups(quota(), "2026-10-17T12:16:00Z")[0].windows[0];
-    expect(row.used).toBe(30);
-    expect(row.stale).toBe(true);
-    expect(row.comparable).toBe(false);
-    expect(row.pace).toBe("pace unavailable");
+  it.each([
+    [44.9, "Room to use more"],
+    [45, "On pace"],
+    [50, "On pace"],
+    [55, "On pace"],
+    [55.1, "Burning too fast"],
+    [100, "Limit reached"],
+  ])(
+    "classifies %s%% used against 50%% elapsed with a five-point tolerance",
+    (used, status) => {
+      const value = quota();
+      value.providers[0].windows[0].used_percent = used;
+      expect(quotaGroups(value, now)[0].status).toBe(status);
+    },
+  );
+  it("does not round an almost exhausted limit to 100 percent", () => {
+    const value = quota();
+    value.providers[0].windows[0].used_percent = 99.99;
+    expect(quotaGroups(value, now)[0].windows[0].usedText).toBe("99.9%");
+  });
+  it("ages the report without discarding measured usage or assuring capacity", () => {
+    const group = quotaGroups(quota(), "2026-10-17T12:16:00Z")[0];
+    expect(group.status).toBe("Pace unavailable");
+    expect(group.windows[0]).toMatchObject({
+      used: 30,
+      stale: true,
+      comparable: false,
+      warning: "Stale report",
+    });
   });
   it("waits for a new report when any account reset has passed", () => {
     const row = quotaGroups(quota(), "2026-10-17T14:00:00Z")[0].windows[0];
-    expect(row.used).toBeNull();
-    expect(row.resetRange).toBeNull();
-    expect(row.pace).toBe("pace unavailable");
+    expect(row).toMatchObject({
+      used: null,
+      resetRange: null,
+      state: "unknown",
+      warning: "Awaiting fresh report",
+    });
   });
-  it("does not turn incomplete or provider-only coverage into a total pace", () => {
+  it("does not assure on pace or spare capacity with partial account coverage", () => {
     const partial = quota();
     partial.providers[0].windows[0].complete = false;
     partial.providers[0].windows[0].reported_accounts = 1;
+    expect(quotaGroups(partial, now)[0]).toMatchObject({
+      status: "Pace unavailable",
+    });
     expect(quotaGroups(partial, now)[0].windows[0]).toMatchObject({
       coverage: "1/2 accounts",
       comparable: false,
+      warning: "Partial account data",
     });
-    partial.providers[0].source = "provider";
-    expect(quotaGroups(partial, now)[0].windows[0].coverage).toBe(
+    partial.providers[0].windows[0].complete = true;
+    expect(quotaGroups(partial, now)[0].status).toBe("Pace unavailable");
+    partial.providers[0].windows[0].reported_accounts = 2;
+    partial.providers[0].inventory_complete = false;
+    expect(quotaGroups(partial, now)[0].status).toBe("Pace unavailable");
+  });
+  it("labels a fresh provider-only pace as reported scope", () => {
+    const value = quota();
+    value.providers[0].source = "provider";
+    value.providers[0].windows[0].complete = false;
+    expect(quotaGroups(value, now)[0]).toMatchObject({
+      scope: "Reported quota",
+      status: "Room to use more",
+      warning: "Account coverage unknown",
+      reported: true,
+    });
+    expect(quotaGroups(value, now)[0].windows[0].coverage).toBe(
       "Provider report · account coverage unknown",
     );
+  });
+  it.each([100, 80])(
+    "prioritizes a constrained short window (%s%% used) over weekly spare capacity",
+    (used) => {
+      const value = quota();
+      value.providers[0].source = "provider";
+      const short = value.providers[0].windows[0];
+      short.used_percent = used;
+      value.providers[0].windows.push({
+        ...short,
+        window_seconds: 604800,
+        used_percent: 0,
+        remaining_seconds: 302400,
+      });
+      expect(quotaGroups(value, now)[0].status).toBe(
+        used === 100 ? "Limit reached" : "Burning too fast",
+      );
+    },
+  );
+  it("keeps missing duration visible without overriding a known fast window", () => {
+    const value = quota();
+    value.providers[0].unknown_windows = 1;
+    expect(quotaGroups(value, now)[0]).toMatchObject({
+      status: "Pace unavailable",
+      warning: "Some limits have no reset duration",
+    });
+    value.providers[0].windows[0].used_percent = 80;
+    expect(quotaGroups(value, now)[0].status).toBe("Burning too fast");
+  });
+  it("does not turn missing data or invalid numbers into a pace or a meter value", () => {
     expect(
       quotaGroups(null, now).every((provider) => provider.windows.length === 0),
     ).toBe(true);
-    partial.available = false;
-    expect(quotaGroups(partial, now)[0].windows[0].used).toBeNull();
+    const value = quota();
+    value.available = false;
+    expect(quotaGroups(value, now)[0].windows[0].used).toBeNull();
+    value.available = true;
+    value.providers[0].windows[0].used_percent = NaN;
+    expect(quotaGroups(value, now)[0].windows[0]).toMatchObject({
+      used: null,
+      state: "unknown",
+    });
+    value.providers[0].windows[0].used_percent = 30;
+    value.providers[0].windows[0].remaining_seconds = -10;
+    expect(quotaGroups(value, now)[0].windows[0]).toMatchObject({
+      elapsed: null,
+      state: "unknown",
+    });
+  });
+  it("does not print two identical rounded reset times", () => {
+    const value = quota();
+    value.providers[0].windows[0].last_reset_at = "2026-10-17T14:00:01Z";
+    expect(quotaGroups(value, now)[0].windows[0].resetRange).toBe("2h");
   });
 });
