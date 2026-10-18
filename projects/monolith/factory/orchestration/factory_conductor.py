@@ -486,6 +486,7 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
             ),
             "dependency_review": (direction or {}).get("dependency_review"),
             "landing_hold": landing_held(receipt),
+            "task_paused": bool(receipt and receipt.task_paused),
             "nonrenewable_recovery": nonrenewable_recovery(receipt),
             "work_item_id": None if receipt is None else receipt.work_item_id,
             "funding_enrolled": latest(db, task_id, "funding_review_requested")
@@ -6284,6 +6285,8 @@ def _settle_paused_task(
     issue closure, and closure wins over expiry. An unavailable issue is unknown.
     A definitively unreadable PR allows deadline settlement, never cancellation
     on issue closure or legacy pause expiry, since it may have merged.
+    A closed issue with a landing hold also waits for deadline escalation:
+    merge reconciliation is held, so closure alone cannot classify its delivery.
     """
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_intake_loop import _label_names
@@ -6298,6 +6301,9 @@ def _settle_paused_task(
         task["id"], ACTOR, observed="human" in _label_names(issue)
     ):
         return True
+    closed_landing_hold = issue.get("state") == "closed" and "landing_hold" in (
+        snapshot.get("direction") or {}
+    )
     if not merge_unknown and (
         issue.get("state") == "closed" or snapshot["limits"]["deadline_expired"]
     ):
@@ -6310,7 +6316,7 @@ def _settle_paused_task(
         # mask that delivery. An unavailable merge read keeps the pause held.
         if reconcile_merged_delivery(task, policy, runs):
             return True
-    if not merge_unknown and issue.get("state") == "closed":
+    if not merge_unknown and not closed_landing_hold and issue.get("state") == "closed":
         controls.finish_task(
             task["id"],
             "cancelled",
@@ -6367,7 +6373,7 @@ def _settle_paused_task(
             task, decision, "paused-task-deadline", runs, paused_deadline=True
         )
         return True
-    return False
+    return closed_landing_hold
 
 
 def reconcile_task(
@@ -6441,7 +6447,8 @@ def reconcile_task(
         runs = graph.node_runs(task_id)
         # Live graph runs can coexist with unresolved factory starts. Audit
         # their aged pause before the active-run path returns, never settle it.
-        _expire_reconciler_pause(task_id, held_only=True)
+        if task["task_paused"]:
+            _expire_reconciler_pause(task_id, held_only=True)
         from factory.orchestration.factory_merged_delivery import (
             reconcile_merged_delivery,
         )
@@ -6483,7 +6490,8 @@ def reconcile_task(
     if reconcile_merged_delivery(task, policy, runs):
         # A merged PR can hold unresolved starts after every graph run ends.
         # Audit the aged pause without settling it before returning early.
-        _expire_reconciler_pause(task_id, held_only=True)
+        if task["task_paused"]:
+            _expire_reconciler_pause(task_id, held_only=True)
         return
     permission = can_start(task_id)
     if not permission["ok"] and permission["reason"] == "task_paused":

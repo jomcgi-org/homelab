@@ -3454,7 +3454,11 @@ def _quiescence_refusal(db: Session, task_id: str) -> str | None:
 
 
 def paused_settlement_snapshot(task_id: str, *, session: Session | None = None) -> dict:
-    """A paused receipt may settle facts, but may not override another fence."""
+    """Recheck paused settlement authority and both execution ledgers.
+
+    Landing holds survive settlement and fence delivery, not deadline or pause
+    expiry. Closed-objective cancellation checks that hold separately.
+    """
     with _locked_session(session) as (db, control):
         row = _receipt(db, task_id)
         if row is None or not row.task_paused:
@@ -3463,7 +3467,6 @@ def paused_settlement_snapshot(task_id: str, *, session: Session | None = None) 
             row.state not in _ACTIVE
             or control.state not in ("enabled", "paused")
             or row.cancellation_requested
-            or landing_held(row)
             or review_recovery_held(task_id, session=db)
         ):
             return {"ok": False, "reason": "settlement_held"}
@@ -3520,6 +3523,10 @@ def finish_task(
             paused = paused_settlement_snapshot(task_id, session=db)
             if not paused["ok"]:
                 return paused
+            if paused_trigger == "objective_closed" and landing_held(row):
+                # Merge verification is held, so closure cannot safely
+                # reclassify a potentially merged delivery as cancellation.
+                return {"ok": False, "reason": "held_objective_closed"}
             if (
                 paused_trigger == "deadline"
                 and not paused["limits"]["deadline_expired"]
