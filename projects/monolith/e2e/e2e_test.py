@@ -262,6 +262,7 @@ class TestMessageStore:
         assert att.filename == "photo.jpg"
         assert blob.content_type == "image/jpeg"
 
+
 # ---------------------------------------------------------------------------
 # Task 6: Agent Tool Execution E2E Tests
 # ---------------------------------------------------------------------------

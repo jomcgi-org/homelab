@@ -108,11 +108,14 @@ class TestGenerateSummaries:
         assert summary.user_id == "u1"
         assert summary.username == "Alice"
         assert summary.updated_at.replace(tzinfo=timezone.utc) > past
-        assert session.exec(
-            select(UserChannelSummary).where(
-                UserChannelSummary.username == "alice_old"
-            )
-        ).first() is None
+        assert (
+            session.exec(
+                select(UserChannelSummary).where(
+                    UserChannelSummary.username == "alice_old"
+                )
+            ).first()
+            is None
+        )
 
     @pytest.mark.asyncio
     async def test_skips_when_no_new_messages(self, session):
