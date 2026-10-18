@@ -508,3 +508,36 @@ def test_late_prefix_update_does_not_double_charge_continuation(database):
             meter.objective_totals(db, db.get(FactoryReceipt, 838))["known_list_usd"]
             == 9
         )
+
+
+@pytest.mark.parametrize("output,paused", [(10000000, False), (20000000, True)])
+def test_old_session_trip_cannot_pause_replacement_but_objective_limit_can(
+    database, output, paused
+):
+    receipt = prepare()
+    update(receipt, 0)
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).task_id = "replacement"
+        db.add_all(
+            [
+                SwarmTask(
+                    id="replacement",
+                    task_text="same issue",
+                    conductor_model="astra",
+                    budget_usd=50,
+                ),
+                FactoryAudit(
+                    task_id="task",
+                    actor="operator",
+                    action="admit_next",
+                    detail_json='{"receipt_id":838}',
+                ),
+            ]
+        )
+    assert update(receipt, 1, output)["stop"]
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).task_paused is paused
+        assert (
+            meter.objective_totals(db, db.get(FactoryReceipt, 838))["known_list_usd"]
+            == output * 50 / 1000000
+        )

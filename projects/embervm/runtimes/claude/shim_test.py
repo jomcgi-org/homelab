@@ -2663,6 +2663,86 @@ def test_runtime_meter_sees_child_usage_before_parent_result_filter(
     assert manager.process is None
 
 
+@pytest.mark.parametrize(
+    "samples",
+    [
+        {"total": {}, "last": {}},
+        {"last": {"inputTokens": 1, "outputTokens": 1, "cachedInputTokens": 0}},
+        {"total": {"inputTokens": 1, "cachedInputTokens": 0}, "last": {}},
+    ],
+)
+def test_runtime_meter_refuses_missing_native_counters(tmp_path, monkeypatch, samples):
+    class Meter:
+        def __init__(self, receipt):
+            pass
+
+        def send(self, usage, coverage="parent"):
+            if coverage == "unknown":
+                raise RuntimeError("native counters incomplete")
+
+    monkeypatch.setattr(shim, "_RuntimeMeter", Meter)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    read = manager._read_event
+
+    def incomplete(timeout):
+        event = read(timeout)
+        if event and event.get("method") == "thread/tokenUsage/updated":
+            event["params"]["tokenUsage"] = samples
+        return event
+
+    monkeypatch.setattr(manager, "_read_event", incomplete)
+    with pytest.raises(RuntimeError, match="native counters incomplete"):
+        manager.turn("work", model="astra", runtime_meter={"fixture": True})
+    assert manager.process is None
+
+
+@pytest.mark.parametrize(
+    "ack", ["valid", "wrong_receipt", "wrong_sequence", "stop", "missing"]
+)
+def test_runtime_meter_callback_requires_matching_ack_and_prices_cache(
+    tmp_path, monkeypatch, ack
+):
+    import io
+
+    receipt = {"id": "a" * 32, "token": "b" * 43}
+    sent = []
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request, timeout):
+            payload = json.loads(request.data)
+            sent.append(payload)
+            result = {
+                "receipt_id": receipt["id"],
+                "sequence": payload["sequence"],
+                "stop": False,
+            }
+            if ack == "wrong_receipt":
+                result["receipt_id"] = "c" * 32
+            elif ack == "wrong_sequence":
+                result["sequence"] += 1
+            elif ack == "stop":
+                result["stop"] = True
+            elif ack == "missing":
+                result = {}
+            return Response(json.dumps(result).encode())
+
+    monkeypatch.setenv("EMBER_PROGRESS_URL", "https://callback.test/ingest/progress")
+    monkeypatch.setattr(shim.urllib.request, "build_opener", lambda *_: Opener())
+    meter = shim._RuntimeMeter(receipt)
+    usage = {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 80}
+    if ack == "valid":
+        meter.send(usage)
+        assert meter.sequence == 1
+    else:
+        with pytest.raises(RuntimeError, match="acknowledgement unavailable"):
+            meter.send(usage)
+        assert meter.sequence == 0
+    assert sent[0]["usage"]["cached_input_tokens"] == 80
+
+
 def test_codex_thread_total_reset_mid_turn_keeps_every_request(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CODEX_SCENARIO", "reset-mid-turn")
     manager = _codex_manager(tmp_path, monkeypatch)

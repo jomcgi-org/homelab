@@ -263,7 +263,8 @@ def ingest(receipt_id, token, value):
         totals = objective_totals(db, owner)
         if totals["sessions"].get(binding["session_id"], 0) >= SESSION_USD:
             reason = reason or "session_list_backstop"
-        if totals["known_list_usd"] >= OBJECTIVE_USD:
+        objective_exceeded = totals["known_list_usd"] >= OBJECTIVE_USD
+        if objective_exceeded:
             reason = reason or "objective_list_backstop"
         admission.lock_pool(db)
         try:
@@ -282,8 +283,24 @@ def ingest(receipt_id, token, value):
                 receipt_id=receipt_id,
                 reason=reason,
             )
-            owner.task_paused = True
-            owner.updated_at = controls._now()
+        if objective_exceeded:
+            # A cumulative issue limit covers current admissions. A session
+            # local trip from an old admission cannot pause its replacement.
+            current_owners = db.exec(
+                select(FactoryReceipt).where(
+                    FactoryReceipt.task_id.in_(objective_task_ids(db, owner)),
+                    FactoryReceipt.state.in_(controls._ACTIVE),
+                )
+            ).all()
+        else:
+            current_owners = (
+                [owner]
+                if (reason or trips) and owner.task_id == binding["task_id"]
+                else []
+            )
+        for current_owner in current_owners:
+            current_owner.task_paused = True
+            current_owner.updated_at = controls._now()
         stop = bool(reason or trips or active is None)
     # A failed external observation does not erase the committed trip. The
     # regular conductor tick retries through the same attempt-stop owner.
