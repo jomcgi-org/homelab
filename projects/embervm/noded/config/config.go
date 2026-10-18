@@ -439,9 +439,8 @@ type Config struct {
 	// GroupManager construction loudly. Env EMBERVM_NODED_COMPOSITE_SUPERNET.
 	CompositeSupernet string
 	// GroupProbeInterval / GroupUnhealthyThreshold configure the TCP-connect
-	// health-probe loop for live group member VMs (R5), mirroring the stateful
-	// knobs. Carried now so Task 5's member lifecycle needs no config reshape;
-	// unused in Task 4. Default 5s / 3.
+	// health-probe loop for live group member VMs (R5), independently of the
+	// stateful knobs. Default 5s / 3.
 	GroupProbeInterval      time.Duration
 	GroupUnhealthyThreshold int
 

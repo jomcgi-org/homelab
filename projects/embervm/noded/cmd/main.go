@@ -205,10 +205,8 @@ func run(logger *slog.Logger) error {
 		// cold boot with a writable volume + SnapshotStateful/RestoreStateful under
 		// stateful/); the volume manager itself is a plain directory (VolumeRoot),
 		// not a driver capability.
-		StatefulDriver:             restoreDriver,
-		VolumeRoot:                 cfg.VolumeRoot,
-		StatefulProbeInterval:      cfg.StatefulProbeInterval,
-		StatefulUnhealthyThreshold: cfg.StatefulUnhealthyThreshold,
+		StatefulDriver: restoreDriver,
+		VolumeRoot:     cfg.VolumeRoot,
 		// The composite-group network Manager (R5) and the same restore driver for
 		// the durable on-disk group-network records (group_networks/<gid>/config.json,
 		// a sibling of the bases/sessions/serving/stateful bundle dirs).
@@ -219,10 +217,9 @@ func run(logger *slog.Logger) error {
 		// group/<set_id>/<member>/). The member RELIGHT clock resync defaults to the
 		// real vsock-backed groupclock (port-1024 length-prefixed JSON); no explicit
 		// GroupClock is set here.
-		GroupDriver:             restoreDriver,
-		GroupProbeInterval:      cfg.StatefulProbeInterval,
-		GroupUnhealthyThreshold: cfg.StatefulUnhealthyThreshold,
+		GroupDriver: restoreDriver,
 	}
+	setStatefulAndGroupProbeOptions(&opts, cfg)
 	if artStore != nil {
 		opts.Store = artStore
 		opts.SignStoreRequest = artStore.SignRequest
@@ -431,6 +428,13 @@ func run(logger *slog.Logger) error {
 		grpcServers.GracefulStop(10*time.Second, logger)
 		return nil
 	}
+}
+
+func setStatefulAndGroupProbeOptions(opts *server.Options, cfg config.Config) {
+	opts.StatefulProbeInterval = cfg.StatefulProbeInterval
+	opts.StatefulUnhealthyThreshold = cfg.StatefulUnhealthyThreshold
+	opts.GroupProbeInterval = cfg.GroupProbeInterval
+	opts.GroupUnhealthyThreshold = cfg.GroupUnhealthyThreshold
 }
 
 // setupTracing is deliberately fail-open. Telemetry configuration must not

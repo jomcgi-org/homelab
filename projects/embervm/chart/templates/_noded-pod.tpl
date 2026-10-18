@@ -583,6 +583,11 @@ containers:
       # PortForIP. noded defaults this to 30000 when unset (config.go).
       - name: EMBERVM_NODED_SERVING_PORT_BASE
         value: {{ $ctx.Values.noded.servingPortBase | quote }}
+      # Match the control-plane activator binds and workload validation ranges.
+      - name: EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE
+        value: "{{ $ctx.Values.servingEnvoy.statefulTcpPortRange.start }}-{{ $ctx.Values.servingEnvoy.statefulTcpPortRange.end }}"
+      - name: EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE
+        value: "{{ $ctx.Values.servingEnvoy.compositeTcpPortRange.start }}-{{ $ctx.Values.servingEnvoy.compositeTcpPortRange.end }}"
       # Per-invoke FC bundle snapshots derive from nvmeRoot so the scratch disk
       # is one knob.
       - name: EMBERVM_NODED_SNAPSHOT_ROOT
