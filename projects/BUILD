@@ -18,13 +18,15 @@ py_library(
 )
 
 # The cluster enrollment roots intentionally have no package-local BUILD files.
-# Expose only the two hand-maintained kustomizations the Renovate migration test
-# needs, without turning either root into a Gazelle package.
+# Expose the hub enrollment path for Renovate's deployment test without creating
+# package-local BUILD files in those roots.
 filegroup(
-    name = "renovate_enrollment_manifests",
+    name = "hub_renovate_enrollment_manifests",
     srcs = [
+        "gke-cluster/hub-root-application.yaml",
+        "gke-cluster/kustomization.yaml",
+        "gke-cluster/root/root-application.yaml",
         "platform-gke/kustomization.yaml",
-        "platform/kustomization.yaml",
     ],
     visibility = ["//projects/platform/renovate:__pkg__"],
 )
