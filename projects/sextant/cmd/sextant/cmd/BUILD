@@ -1,5 +1,8 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# Keep this package's aggregate test rule independent of the parent's file mode.
+# gazelle:go_test default
+
 go_library(
     name = "cmd",
     srcs = [

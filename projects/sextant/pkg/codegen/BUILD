@@ -31,10 +31,3 @@ go_test(
     embed = [":codegen"],
     deps = ["//projects/sextant/pkg/schema"],
 )
-
-go_test(
-    name = "codegen_internal_test",
-    srcs = ["generator_helpers_test.go"],
-    embed = [":codegen"],
-    deps = ["//projects/sextant/pkg/schema"],
-)
