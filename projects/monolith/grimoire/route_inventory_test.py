@@ -77,6 +77,41 @@ CASES = {
     ("DELETE", PREFIX + "/inventory/{item_id}"): Case(
         params={"item_id": "$item_party.id"}, success=204
     ),
+    ("GET", PREFIX + "/transcript/settings"): Case(),
+    ("PATCH", PREFIX + "/transcript/settings"): Case(
+        body={"retention_days": 14},
+    ),
+    ("POST", PREFIX + "/sessions/{session_id}/utterances"): Case(
+        params={"session_id": "$campaign_session.id"},
+        body={
+            "speaker_member_id": "$member_player_a.id",
+            "text": "Attributed utterance",
+            "started_at": "2026-10-10T12:00:00Z",
+            "ended_at": "2026-10-10T12:00:01Z",
+            "confidence": 0.9,
+            "source": "table",
+        },
+        state="transcript",
+    ),
+    ("PUT", PREFIX + "/transcript/consent"): Case(
+        body={"processor": "New processor"},
+        caller="player_a",
+        denied_writers=(),
+    ),
+    ("DELETE", PREFIX + "/transcript/consent"): Case(
+        caller="player_a",
+        success=204,
+        denied_writers=(),
+    ),
+    ("GET", PREFIX + "/transcript/consent"): Case(),
+    ("GET", PREFIX + "/sessions/{session_id}/transcript"): Case(
+        params={"session_id": "$campaign_session.id"},
+    ),
+    ("PUT", PREFIX + "/sessions/{session_id}/transcript"): Case(
+        params={"session_id": "$campaign_session.id"},
+        body={"state": "on"},
+        state="play",
+    ),
     ("POST", PREFIX + "/grants/preview"): Case(
         state="play",
         read_only=True,
@@ -312,6 +347,7 @@ CAPABILITY_CASES = {
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
     monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
+    monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "true")
     monkeypatch.setenv("GRIMOIRE_INVITATION_LINKS_ENABLED", "true")
     monkeypatch.delenv("GRIMOIRE_INVITATION_ENROLLMENT_ENABLED", raising=False)
     with sqlite_harness(tmp_path / "inventory.db") as h:
@@ -366,7 +402,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 66  # Main plus four initiative routes.
+    assert len(enumerated) == 74  # Main plus eight transcript routes.
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
@@ -599,13 +635,29 @@ def test_scanner_clean_body_and_audience_matrix(harness):
                     harness.assert_no_leak(response, viewer)
 
 
+def test_transcript_canaries_reach_only_their_real_feed_audiences(harness):
+    h = harness
+    h.prepare("play")
+    path = PREFIX + "/sessions/{session_id}/events"
+    with TestClient(h.app()) as client:
+        for viewer in ROLES:
+            response = call(client, h, "GET", path, CASES["GET", path], viewer)
+            if viewer in ("outsider", "other_campaign"):
+                assert response.status_code == 404
+                continue
+            assert response.status_code == 200, response.text
+            assert h.rows["utterance_table"].body["text"] in response.text
+            whisper = h.rows["utterance_whisper"].body["text"]
+            assert (whisper in response.text) is (viewer in ("dm", "player_a"))
+
+
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    assert len(tokens) == 260  # Main plus two initiative label canaries.
+    assert len(tokens) == 271  # Main plus eleven transcript canaries.
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]
-    assert len(embeddings) == 33
+    assert len(embeddings) == 35
     assert all(row.dim == 1024 and len(row.vector) == 1024 for row in embeddings)
     storage = str(harness.snapshot()).casefold()
     for token in tokens:
