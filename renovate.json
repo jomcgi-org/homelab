@@ -100,7 +100,7 @@
       }
     },
     {
-      "description": "First-party and mirrored charts are maintained outside Renovate.",
+      "description": "First-party charts and the manual mcp-stack mirror are maintained outside Renovate.",
       "matchPackageNames": [
         "ghcr.io/jomcgi/homelab/charts/embervm",
         "ghcr.io/jomcgi/homelab/charts/monolith",

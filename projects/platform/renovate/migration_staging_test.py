@@ -194,6 +194,11 @@ def test_first_party_chart_exclusions_match_extracted_oci_names():
         assert _dependency_is_disabled(config, dep_name), (
             f"First-party OCI dependency enabled: {dep_name}"
         )
+        # helmv3 uses the bare chart name as depName and the qualified OCI
+        # identity as packageName. Both manager shapes must stay excluded.
+        assert _dependency_is_disabled(config, chart, dep_name), (
+            f"First-party Helm dependency enabled: {dep_name}"
+        )
 
         # An upstream Helm chart with the same short name must stay eligible,
         # as must OCI charts outside this repository's exact registry path.
@@ -204,13 +209,17 @@ def test_first_party_chart_exclusions_match_extracted_oci_names():
             f"registry.example.com/jomcgi/homelab/charts/{chart}",
         ):
             assert not _dependency_is_disabled(config, upstream_name), upstream_name
+            assert not _dependency_is_disabled(config, chart, upstream_name), (
+                upstream_name
+            )
 
 
 def test_mirrored_helmv3_chart_stays_disabled_without_excluding_upstream():
     config = json.loads((ROOT / "renovate.json").read_text())
     # Renovate 44.14.10 helmv3/extract.ts keeps the Chart.yaml dependency's
     # bare depName. helmv3/utils.ts parseRepository qualifies OCI packageName.
-    # This is the mcp-stack dependency in the context-forge-gateway chart.
+    # context-forge-gateway/chart/Chart.yaml declares mcp-stack 1.0.7 from
+    # oci://ghcr.io/jomcgi/homelab/charts, with a manual mirror update procedure.
     assert _dependency_is_disabled(
         config, "mcp-stack", "ghcr.io/jomcgi/homelab/charts/mcp-stack"
     ), "Mirrored mcp-stack must stay disabled by its helmv3 packageName"
@@ -218,6 +227,7 @@ def test_mirrored_helmv3_chart_stays_disabled_without_excluding_upstream():
         "mcp-stack",
         "ghcr.io/ibm/mcp-context-forge/mcp-stack",
         "ghcr.io/jomcgi/other/charts/mcp-stack",
+        "ghcr.io/jomcgi/homelab/charts-other/mcp-stack",
         "registry.example.com/jomcgi/homelab/charts/mcp-stack",
     ):
         assert not _dependency_is_disabled(config, "mcp-stack", package_name), (
@@ -291,7 +301,7 @@ def test_active_managers_and_upstream_chart_updates_remain_available():
         for rule in config["packageRules"]
         if rule.get("enabled") is False
     ] == [
-        "First-party and mirrored charts are maintained outside Renovate.",
+        "First-party charts and the manual mcp-stack mirror are maintained outside Renovate.",
         "Self-referential git sources (deploy values pulled from our own repo) "
         "are not upgrade targets.",
     ]
