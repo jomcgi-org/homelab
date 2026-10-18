@@ -6,8 +6,8 @@ from collections.abc import Awaitable
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
+import shared.inference
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_ai.messages import (
     ModelMessage,
@@ -16,14 +16,12 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
+from shared.embedding import EmbeddingClient
 
 from chat.backfill import BackfillProgress, run_backfill
 from chat.cluster_agent import ClusterDeps, create_cluster_agent
-from chat.explorer import ExplorerDeps, create_explorer_agent
-from chat.sse import SSEEmitter
-from knowledge.api import get_store
-from shared.embedding import EmbeddingClient
-import shared.inference
+from chat.explorer import ExplorerDeps, create_explorer_agent, explorer_store
+from chat.sse import SSEEmitter, SSEStreamingResponse
 
 logger = logging.getLogger(__name__)
 
@@ -193,21 +191,18 @@ def get_explorer_agent():
 
 @router.post("/explore")
 async def explore(body: ExploreRequest, request: Request):
-    from core.db import get_session
-
-    session = next(get_session())
     emitter = SSEEmitter()
     agent = get_explorer_agent()
 
     deps = ExplorerDeps(
-        store=get_store(session),
+        store=explorer_store,
         embed_client=EmbeddingClient(),
         emitter=emitter,
     )
 
     messages = _history_to_messages(body.history)
 
-    async def generate():
+    async def produce():
         try:
             async with agent.run_stream(
                 body.message,
@@ -231,16 +226,13 @@ async def explore(body: ExploreRequest, request: Request):
                     pass
 
             emitter.emit("done", {})
-            emitter.close()
         except Exception as e:
             logger.exception("Explorer stream failed")
             emitter.emit("error", {"message": str(e)})
+        finally:
             emitter.close()
 
-        async for event in emitter.stream():
-            yield event
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return SSEStreamingResponse(emitter, produce)
 
 
 class ClusterChatRequest(BaseModel):
@@ -267,7 +259,7 @@ async def cluster_chat(body: ClusterChatRequest, request: Request):
 
     messages = _history_to_messages(body.history)
 
-    async def generate():
+    async def produce():
         try:
             async with agent.run_stream(
                 body.message,
@@ -291,13 +283,10 @@ async def cluster_chat(body: ClusterChatRequest, request: Request):
                     pass
 
             emitter.emit("done", {})
-            emitter.close()
         except Exception as e:
             logger.exception("Cluster chat stream failed")
             emitter.emit("error", {"message": str(e)})
+        finally:
             emitter.close()
 
-        async for event in emitter.stream():
-            yield event
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return SSEStreamingResponse(emitter, produce)

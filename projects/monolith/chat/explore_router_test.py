@@ -5,18 +5,19 @@ Exercises the full HTTP path: request parsing -> agent tool dispatch ->
 SSE event emission -> streaming response.
 """
 
+import dataclasses
 import json
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
-from pydantic_ai.models.function import DeltaToolCall, DeltaToolCalls, FunctionModel
-
-import dataclasses
-import chat.module
 from framework import PRIVATE_PROFILE, build_app
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+
+import chat.module
 from chat.explorer import create_explorer_agent
 
 # Compose only the chat domain instead of the whole monolith: the
@@ -134,10 +135,6 @@ def _parse_sse(raw: str) -> list[dict]:
     return events
 
 
-def _mock_get_session():
-    yield MagicMock()
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -165,9 +162,8 @@ def client(mock_store, mock_embed_client):
 
     with (
         patch("chat.router._explorer_agent", agent),
-        patch("chat.router.get_store", return_value=mock_store),
+        patch("chat.router.explorer_store", lambda: nullcontext(mock_store)),
         patch("chat.router.EmbeddingClient", return_value=mock_embed_client),
-        patch("core.db.get_session", _mock_get_session),
         agent.override(
             model=FunctionModel(_scripted_model, stream_function=_scripted_stream)
         ),
