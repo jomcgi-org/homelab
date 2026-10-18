@@ -66,8 +66,8 @@ func JobName(resolvedRef string) string {
 
 // base36Hash returns a deterministic, DNS-safe base36 encoding of the SHA-256
 // hash. The result is ~50 chars, always valid as a DNS label.
-// NOTE: duplicated in tools/hf2oci/pkg/ociref/ociref.go — kept separate to
-// avoid a cross-module dependency between operator and tool.
+// Also implemented in bazel/tools/hf2oci/pkg/ociref/ociref.go; both packages
+// belong to the repository's root Go module.
 func base36Hash(s string) string {
 	h := sha256.Sum256([]byte(s))
 	n := new(big.Int).SetBytes(h[:])

@@ -43,6 +43,13 @@ go_test(
         "resolver_test.go",
     ],
     embed = [":cmd_lib"],
+    data = [
+        "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart",
+        "@multitool//tools/helm",
+    ],
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
     deps = [
         "//bazel/tools/hf2oci/pkg/copy",
         "//bazel/tools/hf2oci/pkg/hf",

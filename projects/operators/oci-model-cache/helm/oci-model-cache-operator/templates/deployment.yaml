@@ -36,7 +36,7 @@ spec:
       containers:
       - args:
         - --leader-elect
-        - --health-probe-bind-address={{ .Values.controllerManager.healthProbeBindAddress }}
+        - --health-probe-bind-address=:8081
         {{- if ne .Values.controllerManager.metrics.bindAddress "0" }}
         - --metrics-bind-address={{ .Values.controllerManager.metrics.bindAddress }}
         {{- end }}
@@ -60,6 +60,10 @@ spec:
         resources:
           {{- toYaml .Values.controllerManager.resources | nindent 10 }}
         env:
+        {{- if not .Values.webhook.enabled }}
+        - name: ENABLE_WEBHOOKS
+          value: "false"
+        {{- end }}
         - name: OCI_REGISTRY
           value: {{ .Values.controllerManager.env.ociRegistry | quote }}
         - name: COPY_IMAGE
