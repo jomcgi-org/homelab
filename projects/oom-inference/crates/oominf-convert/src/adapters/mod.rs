@@ -2,6 +2,7 @@
 //! which tensors are routed-expert record parts, which are gather tables, which
 //! are dense, and which are skipped.
 
+pub mod qwen35;
 pub mod qwen38;
 
 use anyhow::{Result, bail};
@@ -66,6 +67,7 @@ pub fn for_config(config: &Value) -> Result<Box<dyn Adapter>> {
     let model_type = config["model_type"].as_str().unwrap_or_default();
     match model_type {
         "qwen4_exp" => Ok(Box::new(qwen38::Qwen38::from_config(config)?)),
+        "qwen3_5_moe" | "qwen3_5_moe_text" => Ok(Box::new(qwen35::Qwen35::from_config(config)?)),
         other => bail!("no converter adapter for model_type {other:?}"),
     }
 }

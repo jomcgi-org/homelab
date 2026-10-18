@@ -15,11 +15,12 @@ impl Chat {
 
     /// Renders one user turn with the model's template and a generation prompt.
     pub fn render_user(&self, user: &str) -> Result<String> {
-        self.0.render(
-            &[json!({ "role": "user", "content": user })],
-            None,
-            &TemplateOptions::default(),
-        )
+        self.render_user_options(user, &TemplateOptions::default())
+    }
+
+    pub fn render_user_options(&self, user: &str, options: &TemplateOptions) -> Result<String> {
+        self.0
+            .render(&[json!({ "role": "user", "content": user })], None, options)
     }
 
     pub fn encode(&self, text: &str) -> Result<Vec<u32>> {

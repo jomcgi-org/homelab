@@ -97,6 +97,23 @@ pub struct Checkpoint {
 impl Checkpoint {
     pub fn open(dir: &Path) -> Result<Self> {
         let index_path = dir.join("model.safetensors.index.json");
+        if !index_path.exists() {
+            let shard = Shard {
+                path: dir.join("model.safetensors"),
+                map: OnceLock::new(),
+            };
+            let names = shard
+                .load()?
+                .2
+                .keys()
+                .map(|name| (name.clone(), 0))
+                .collect();
+            return Ok(Checkpoint {
+                dir: dir.to_owned(),
+                names,
+                shards: vec![shard],
+            });
+        }
         let index: Value = serde_json::from_slice(
             &std::fs::read(&index_path)
                 .with_context(|| format!("read {}", index_path.display()))?,
@@ -129,6 +146,16 @@ impl Checkpoint {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Source tensor metadata used for the converted checkpoint fingerprint.
+    pub fn metadata_bytes(&self) -> Result<Vec<u8>> {
+        let path = self.dir.join("model.safetensors.index.json");
+        if path.exists() {
+            return Ok(std::fs::read(path)?);
+        }
+        let (map, start, _) = self.shards[0].load()?;
+        Ok(map[..*start].to_vec())
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {

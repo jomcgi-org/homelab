@@ -6,10 +6,12 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-io-uring = "0.7"
 libc = "0.2"
 oominf-core = { path = "../oominf-core" }
 oominf-format = { path = "../oominf-format" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7"
 
 [lints]
 workspace = true

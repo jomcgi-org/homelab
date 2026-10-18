@@ -9,14 +9,14 @@ and Anthropic APIs.
 | Platform                  | Status                                                              |
 | ------------------------- | ------------------------------------------------------------------- |
 | Linux x86-64 + NVIDIA GPU | Supported (tested on an RTX 4090)                                   |
-| macOS                     | In progress (Metal backend, #6896)                                  |
+| macOS                     | Qwen3.5 text inference on Apple Silicon (Metal)                                  |
 | Windows                   | Untested                                                            |
 
 **Start here: [Quickstart](docs/guide/quickstart.md)**
 
 | Guide                                               |                                                |
 | --------------------------------------------------- | ---------------------------------------------- |
-| [Install](docs/guide/install.md)                    | Build on Linux; macOS and Windows status       |
+| [Install](docs/guide/install.md)                    | Build on Linux or Apple Silicon; Windows status       |
 | [Configuration](docs/guide/configuration.md)        | The flags worth changing                       |
 | [API](docs/guide/api.md)                            | Endpoints, streaming, tool calls, clients      |
 | [Hardware sizing](docs/guide/hardware.md)           | What your machine will get                     |
