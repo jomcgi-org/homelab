@@ -713,7 +713,8 @@ def _resolve_card(task_id: str, actor: str, note: str) -> None:
         if (
             not isinstance(document, dict)
             or document.get("kind") != KIND
-            or document.get("resolved") is not None
+            or document.get("task_id") != task_id
+            or controls.terminal_resolution(document.get("resolved"))
         ):
             return
         option = document["options"][0]
@@ -767,8 +768,14 @@ def _enact(task: dict, open_: dict, receipt, trail, spent, threshold, runs) -> s
             return "enact_refused"
         resumed = True
     if resumed is not None:
-        actor = resolved.get("actor") if resolved else getattr(resumed, "actor", ACTOR)
-        if resolved is None:
+        # A direct resume is the operator's action even if an automatic
+        # revalidation previously dismissed the card without releasing it.
+        actor = getattr(resumed, "actor", None) or (resolved or {}).get("actor", ACTOR)
+        if actor == ACTOR and choice == RESUME_OPTION:
+            # A restart can replay our resume audit before the clear landed.
+            # That audit enacted the card's answer on the operator's behalf.
+            actor = resolved.get("actor", ACTOR)
+        if not controls.terminal_resolution(resolved):
             _resolve_card(task_id, actor, "Resumed with resume_task.")
         _clear(task_id, "resume", spent, threshold, runs, resumed_by=actor)
         return "cleared"
