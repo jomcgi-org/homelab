@@ -988,7 +988,7 @@ async def factory_control(
     paused task, then drains existing work through normal accounting on ordinary
     ticks. Landing and settled tasks are refused. Acknowledgement is not proof
     of cessation: unresolved starts retain their reservations until reconciled.
-    The issue, labels and PR stay unchanged; normal intake cooldown still applies.
+    The issue, labels and PR stay unchanged. Normal intake cooldown still applies.
     Only pause_task, resume_task and cancel_task take task_id, and only
     cancel_receipt takes receipt_id. These controls do not
     alter priorities, task direction, policy or budgets and need no

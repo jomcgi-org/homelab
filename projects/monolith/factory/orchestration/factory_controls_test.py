@@ -2769,6 +2769,22 @@ def test_concurrent_cancel_task_replays_one_committed_mutation(db, policy):
     assert len(cancel_audits(db, "control_request")) == 1
 
 
+def test_cancel_task_replay_after_settlement_preserves_original_ack(db, policy):
+    task = admitted(policy)
+    version = controls.status()["version"]
+    acknowledged = cancel_task(task, expected_version=version)
+    assert controls.finish_task(
+        task, "cancelled", "reconciler", evidence=controls.cancellation_evidence(task)
+    )["ok"]
+    settled = controls.task_snapshot(task)
+
+    assert cancel_task(task, expected_version=version) == acknowledged
+    assert controls.task_snapshot(task) == settled
+    assert len(cancel_audits(db, "cancel_task")) == 1
+    assert len(cancel_audits(db, "control_request")) == 1
+    assert len(cancel_audits(db, "finish_task")) == 1
+
+
 def test_cancel_task_settlement_refreshes_a_stale_session(db, policy):
     task = admitted(policy)
     with Session(db) as session:
@@ -3085,6 +3101,19 @@ def test_automerge_delivery_pending_until_exact_trusted_rollout(db, policy):
         "ok": True,
         "state": "landing",
     }
+    assert controls.task_snapshot(task)["evidence"] == evidence
+    # Landing has already taken ownership. Cancellation cannot bypass its
+    # existing exact-head rollout proof or change its delivery evidence.
+    assert cancel_task(task)["reason"] == "task_not_active"
+    assert (
+        controls.finish_task(
+            task,
+            "cancelled",
+            "reconciler",
+            evidence={"state": "operator_cancelled", "reason": "forged"},
+        )["reason"]
+        == "unverified_operator_cancellation"
+    )
     assert controls.task_snapshot(task)["evidence"] == evidence
     with Session(db) as session:
         assert session.get(SwarmTask, task).settled_at is None

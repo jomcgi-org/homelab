@@ -30,7 +30,7 @@ from factory.orchestration.factory_models import (
     FactoryReviewVerdict,
     FactoryStart,
 )
-from factory.orchestration.models import SwarmTask
+from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
 
 @pytest.fixture
@@ -51,6 +51,7 @@ def db(tmp_path, monkeypatch):
             m.__table__
             for m in (
                 SwarmTask,
+                SwarmNodeRun,
                 FactoryClassTier,
                 FactoryControl,
                 FactoryReceipt,
