@@ -964,7 +964,16 @@ async def factory_control(
     task_id: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
     receipt_id: Annotated[int | None, Field(gt=0, le=2**63 - 1)] = None,
     cancellation_reason: Annotated[
-        str | None, Field(min_length=1, max_length=1024)
+        str | None,
+        Field(
+            min_length=1,
+            max_length=1024,
+            description=(
+                "At most 1024 characters. The derived operator_cancelled evidence "
+                "must also fit within 4096 ASCII-escaped JSON characters. "
+                "Oversized reasons are refused before any write."
+            ),
+        ),
     ] = None,
 ) -> dict:
     """Apply a supported factory control as an authenticated human operator.
@@ -984,7 +993,10 @@ async def factory_control(
     cancel_receipt settles one queued receipt as cancelled by its receipt_id,
     for clearing queue entries that can never admit. Only queued receipts
     move, any other state is refused. cancel_task requires task_id and an explicit
-    cancellation_reason. It fences one admitted or uncertain task, including a
+    cancellation_reason of at most 1024 characters. Its derived settlement
+    evidence must fit within 4096 ASCII-escaped JSON characters, so Unicode
+    reasons may have a lower limit. Oversized reasons are refused before any
+    write. It fences one admitted or uncertain task, including a
     paused task, then drains existing work through normal accounting on ordinary
     ticks. Landing and settled tasks are refused. Acknowledgement is not proof
     of cessation: unresolved starts retain their reservations until reconciled.

@@ -1134,7 +1134,19 @@ def test_mcp_client_lists_and_calls_controls_with_schema_validation(monkeypatch)
             schema = tools["factory_control"].inputSchema["properties"]
             assert "cancel_task" in schema["action"]["enum"]
             assert "cancellation_reason" in schema
+            reason_schema = schema["cancellation_reason"]
+            string_schema = next(
+                variant
+                for variant in reason_schema["anyOf"]
+                if variant["type"] == "string"
+            )
+            assert string_schema["maxLength"] == 1024
+            assert "4096 ASCII-escaped JSON characters" in reason_schema["description"]
             assert "cancel_task" in tools["factory_control"].description
+            assert (
+                "4096 ASCII-escaped JSON characters"
+                in tools["factory_control"].description
+            )
             result = await client.call_tool(
                 "factory_control",
                 {
