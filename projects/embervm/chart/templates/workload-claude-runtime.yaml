@@ -44,7 +44,6 @@ spec:
     memory: false
     filesystem:
       enabled: true
-      retention: 1
       sizeBytes: {{ .Values.claudeRuntimeWorkload.workspaceSizeBytes }}
       mountPath: /session
   {{- end }}

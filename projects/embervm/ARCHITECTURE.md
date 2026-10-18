@@ -696,8 +696,10 @@ hold in that GC), after which resume takes the session-expiry 410 path; the dura
 workspace lineage is adoptable for 7 days, so a new session generation
 inherits the prior workspace rather than starting blank. **Decided direction**:
 capture decouples from bank (close-triggered for no-memory-snapshot workloads).
-`persistence.filesystem.retention` is inert today, and artifact GC keeps only
-the newest artifact. `latest + N` remains the planned retention direction. A
+Artifact GC keeps only the newest artifact. `latest + N` remains the planned
+retention direction. The CRD exposes no filesystem retention setting: the
+former `persistence.filesystem.retention` field had no runtime reader and was
+removed with its chart declarations in #7053. A
 workspace size budget is not planned until
 [#5074](https://github.com/jomcgi-org/homelab/issues/5074)'s gate identifies a
 supported workload whose storage growth, snapshot cost or banking delay is not

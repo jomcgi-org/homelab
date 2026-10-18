@@ -165,31 +165,31 @@ defmodule Embervm.CapacityReportTest do
             }} in demand.observations
   end
 
-  test "desired_capacity parsing is typed and the knob has no report or scaling effect" do
-    assert CapacityReport.parse_desired_capacity(nil) == {:ok, nil}
-    assert CapacityReport.parse_desired_capacity("") == {:ok, nil}
-    assert CapacityReport.parse_desired_capacity("0") == {:ok, 0}
-    assert CapacityReport.parse_desired_capacity("12") == {:ok, 12}
-    assert CapacityReport.parse_desired_capacity("-1") == {:error, :invalid_desired_capacity}
-    assert CapacityReport.parse_desired_capacity("1.5") == {:error, :invalid_desired_capacity}
-
+  test "capacity horizon parsing keeps its default and bounds" do
     assert CapacityReport.parse_horizon_seconds(nil) == {:ok, 3_600}
+    assert CapacityReport.parse_horizon_seconds("") == {:ok, 3_600}
+    assert CapacityReport.parse_horizon_seconds("1") == {:ok, 1}
     assert CapacityReport.parse_horizon_seconds("86400") == {:ok, 86_400}
-    assert CapacityReport.parse_horizon_seconds("0") == {:error, :invalid_capacity_horizon}
 
+    for raw <- ["0", "-1", "86401", "1.5", "invalid"] do
+      assert CapacityReport.parse_horizon_seconds(raw) == {:error, :invalid_capacity_horizon}
+    end
+  end
+
+  test "capacity report reads the configured horizon when no override is supplied" do
     opts = seed_tables()
-    baseline = CapacityReport.build(opts)
-    previous = Application.get_env(:embervm, :desired_capacity, :not_set)
+    previous = Application.get_env(:embervm, :capacity_horizon_seconds, :not_set)
 
     on_exit(fn ->
       case previous do
-        :not_set -> Application.delete_env(:embervm, :desired_capacity)
-        value -> Application.put_env(:embervm, :desired_capacity, value)
+        :not_set -> Application.delete_env(:embervm, :capacity_horizon_seconds)
+        value -> Application.put_env(:embervm, :capacity_horizon_seconds, value)
       end
     end)
 
-    Application.put_env(:embervm, :desired_capacity, 99)
-    assert CapacityReport.build(opts) == baseline
+    Application.put_env(:embervm, :capacity_horizon_seconds, 869)
+    assert CapacityReport.build(Keyword.delete(opts, :horizon_seconds)) ==
+             CapacityReport.build(Keyword.put(opts, :horizon_seconds, 869))
   end
 
   test "diagnostic gauges omit unsupported and overflowing values with bounded instance labels" do

@@ -293,21 +293,6 @@ defmodule Embervm.LogFormatterTest do
     assert decoded["to"] == "shedding"
   end
 
-  test "preserves the parsed inert desired capacity value" do
-    line =
-      Embervm.LogFormatter.format(
-        %{
-          level: :info,
-          msg: {:string, "embervm desired capacity parsed"},
-          meta: %{desired_capacity: 12}
-        },
-        %{}
-      )
-      |> IO.iodata_to_binary()
-
-    assert :json.decode(line)["desired_capacity"] == 12
-  end
-
   test "preserves brick floor overflow transition fields" do
     line =
       Embervm.LogFormatter.format(

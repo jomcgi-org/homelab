@@ -159,9 +159,6 @@ noded:
 #
 # Everything below is disabled for SIZE, not for safety. Dev exercises lifecycle
 # with one small task-class workload rather than the production fleet.
-sandboxSessionWorkload:
-  enabled: false
-
 bazelQueryWorkload:
   enabled: false
 
