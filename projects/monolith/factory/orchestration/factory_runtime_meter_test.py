@@ -447,6 +447,244 @@ def test_single_field_amendment_retains_graph_funding_contract(database):
         assert graph_budget(db, db.get(SwarmTask, "task")) == 50
 
 
+@pytest.fixture
+def held_delivery(database, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor
+
+    paused(database)
+    direction = {
+        "landing_hold": {"actor": "factory:conductor", "reason": "stage only"},
+        "conductor_gates": [{"live_checks": ["Observe the first scheduled run"]}],
+        "nonrenewable_recovery": {"actor": "operator"},
+    }
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).direction_json = json.dumps(direction)
+    pull = {
+        "number": 7170,
+        "state": "open",
+        "draft": True,
+        "merged": False,
+        "head": {
+            "sha": "a" * 40,
+            "ref": "factory/task",
+            "repo": {"full_name": "org/repo"},
+        },
+        "base": {"ref": "main", "repo": {"full_name": "org/repo"}},
+    }
+    monkeypatch.setattr(conductor, "github_get", lambda *_: pull)
+    return pull, direction
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_landing_release_only_removes_hold_and_is_idempotent(
+    database, held_delivery, merged
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, direction = held_delivery
+    if merged:
+        pull.update(state="closed", merged=True, merge_commit_sha="b" * 40)
+    proposal = releases.preview(838, 7170, "a" * 40, "Operator approved landing")
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+    args = dict(
+        actor="operator",
+        request_key="release",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    result = releases.apply(838, 7170, "a" * 40, "Operator approved landing", **args)
+    assert result["ok"] and result["stays_paused"]
+    assert result["delivery_accepted"] is False
+    assert (
+        releases.apply(838, 7170, "a" * 40, "Operator approved landing", **args)
+        == result
+    )
+    with pytest.raises(ValueError, match="conflicting_landing_release_request"):
+        releases.apply(838, 7171, "a" * 40, "Operator approved landing", **args)
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        remaining = json.loads(row.direction_json)
+        assert not controls.landing_held(row)
+        assert row.state == "admitted" and row.task_id == "task" and row.task_paused
+        assert remaining["conductor_gates"] == direction["conductor_gates"]
+        assert remaining["nonrenewable_recovery"] == direction["nonrenewable_recovery"]
+        assert remaining["landing_authorization"]["head_sha"] == "a" * 40
+        assert db.get(SwarmTask, "task").budget_usd == 50
+        assert db.exec(select(FactoryStart)).one().cost_usd == 4
+        events = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.ACTION)
+        ).all()
+        assert len(events) == 1
+        assert (
+            json.loads(events[0].detail_json)["prior_hold"] == direction["landing_hold"]
+        )
+        assert (
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+            ).first()
+            is None
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "control",
+        "graph",
+        "direction",
+        "pause",
+        "state",
+        "head",
+        "merge",
+        "branch",
+        "repo",
+        "base",
+        "pr",
+        "cancel",
+        "stop",
+        "unknown",
+        "claim",
+        "review_only",
+        "live_run",
+        "decision",
+        "owner",
+        "no_hold",
+        "closed_unmerged",
+        "body",
+        "pr_body",
+        "pr_draft",
+    ],
+)
+def test_landing_release_rechecks_preview_and_execution(
+    database, held_delivery, change, monkeypatch
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, _ = held_delivery
+    proposal = releases.preview(838, 7170, "a" * 40, "approved")
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if change == "control":
+            db.get(FactoryControl, "factory").version += 1
+        elif change == "graph":
+            db.add(
+                SwarmPlanVersion(
+                    task_id="task",
+                    version=1,
+                    author_kind="conductor",
+                    author="astra",
+                    op="add",
+                    change_json="{}",
+                    cause_kind="condition",
+                    cause_ref="new",
+                    stated_reason="changed",
+                )
+            )
+        elif change == "direction":
+            row.direction_json = json.dumps({"landing_hold": {"reason": "new hold"}})
+        elif change == "pause":
+            row.task_paused = False
+        elif change == "state":
+            row.state = "escalated"
+        elif change == "cancel":
+            row.cancellation_requested = True
+        elif change == "stop":
+            db.get(FactoryControl, "factory").state = "stopped"
+        elif change == "unknown":
+            db.exec(select(FactoryStart)).one().status = "uncertain"
+        elif change == "claim":
+            db.add(
+                PendingMessage(
+                    session_id=1,
+                    seq=2,
+                    message_text="pending",
+                    claimed_by_replica="owner",
+                )
+            )
+        elif change == "review_only":
+            controls._audit(
+                db, "operator", "review_recovery_authorized", task_id="task"
+            )
+        elif change == "live_run":
+            db.add(
+                SwarmNodeRun(
+                    task_id="task", node_key="work", attempt=1, status="dispatched"
+                )
+            )
+        elif change == "owner":
+            db.add(
+                SwarmTask(
+                    id="other",
+                    task_text="other",
+                    conductor_model="astra",
+                    budget_usd=50,
+                )
+            )
+            db.add(
+                FactoryReceipt(
+                    id=839,
+                    task_id="other",
+                    repo="org/repo",
+                    issue_number=7002,
+                    title="other",
+                    body="other",
+                    url="https://example.invalid",
+                    actor="operator",
+                    state="admitted",
+                    direction_json=json.dumps(
+                        {"delivery_branch": "factory/task", "delivery_pr_number": 7170}
+                    ),
+                )
+            )
+        elif change == "no_hold":
+            row.direction_json = "{}"
+        elif change == "body":
+            row.body = "changed acceptance"
+    if change == "head":
+        pull["head"]["sha"] = "c" * 40
+    elif change == "merge":
+        pull.update(state="closed", merged=True, merge_commit_sha="b" * 40)
+    elif change == "branch":
+        pull["head"]["ref"] = "factory/other"
+    elif change == "repo":
+        pull["head"]["repo"]["full_name"] = "other/repo"
+    elif change == "base":
+        pull["base"]["ref"] = "other"
+    elif change == "pr":
+        pull["number"] = 7171
+    elif change == "closed_unmerged":
+        pull["state"] = "closed"
+    elif change == "pr_body":
+        pull["body"] = "changed acceptance"
+    elif change == "pr_draft":
+        pull["draft"] = False
+    elif change == "decision":
+        monkeypatch.setattr(
+            "factory.orchestration.factory_decisions.decision_in_flight",
+            lambda *_: True,
+        )
+    with pytest.raises(ValueError):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "approved",
+            actor="operator",
+            request_key="one",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838)) is (
+            change != "no_hold"
+        )
+        assert (
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == releases.ACTION)
+            ).first()
+            is None
+        )
+
+
 def test_late_update_after_receipt_readmission_keeps_original_objective_cost(database):
     receipt = prepare()
     update(receipt, 0)

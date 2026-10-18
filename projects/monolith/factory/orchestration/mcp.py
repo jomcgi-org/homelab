@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import httpx
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
@@ -1088,6 +1089,65 @@ def _decide(
     from factory.orchestration.conductor_context import with_request_knowledge
 
     return with_request_knowledge(result, actor, request_key)
+
+
+@mcp.tool
+async def factory_release_landing_hold(
+    operation: Literal["preview", "apply"],
+    receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    pr_number: Annotated[MCPInteger, Field(gt=0)],
+    head_sha: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+) -> dict:
+    """Preview or release one staged delivery hold as a standing human operator.
+
+    Supply the exact receipt, owned PR and current head, with the operator's
+    landing authorization as reason. Preview first. Apply requires the same
+    arguments, its digest and a fresh request key. Replay the identical request
+    after a lost response. Changed receipt, graph, policy or PR evidence requires
+    a new preview. Unknown or live execution refuses release.
+    This removes only the recorded landing hold. It does not resume a paused
+    task, reopen a settled task, accept delivery, grant a review, merge a PR or
+    waive CI, rollout or operational checks. Previously merged PRs can be
+    acknowledged without inventing their missing review evidence. Restricted
+    review-only recovery holds cannot be released here. Read factory state
+    again after application, because a replay is an acknowledgement only.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+
+    def release():
+        from factory.orchestration import factory_landing_release as releases
+
+        try:
+            if operation == "preview":
+                return releases.preview(receipt_id, pr_number, head_sha, reason)
+            if not request_key or not expected_preview_sha256:
+                return {
+                    "ok": False,
+                    "reason": "landing_release_requires_preview_and_request_key",
+                }
+            return releases.apply(
+                receipt_id,
+                pr_number,
+                head_sha,
+                reason,
+                actor=principal.subject,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        except httpx.HTTPError:
+            return {"ok": False, "reason": "landing_release_github_read_failed"}
+
+    return await asyncio.to_thread(release)
 
 
 @mcp.tool
