@@ -6,7 +6,16 @@
   // Fullscreen lightbox for a list of photo points. Controlled: the parent owns
   // `index` and reacts to onIndex / onClose. Keyboard: left/right navigate,
   // Escape closes.
-  let { photos = [], index = 0, tz = "UTC", onClose, onIndex } = $props();
+  let {
+    photos = [],
+    index = 0,
+    tz = "UTC",
+    onClose,
+    onIndex,
+    focusFallback,
+  } = $props();
+  let dialog = $state();
+  let closeButton = $state();
 
   const photo = $derived(photos[index] ?? null);
   const hasPrev = $derived(index > 0);
@@ -35,18 +44,48 @@
   }
 
   onMount(() => {
+    const opener = document.activeElement;
+    closeButton?.focus();
+    const containFocus = (e) => {
+      if (dialog && !dialog.contains(e.target)) closeButton?.focus();
+    };
     const onKey = (e) => {
-      if (e.key === "Escape") onClose?.();
-      else if (e.key === "ArrowLeft") prev();
-      else if (e.key === "ArrowRight") next();
+      if (["Escape", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Escape") onClose?.();
+        else if (e.key === "ArrowLeft") prev();
+        else next();
+      } else if (e.key === "Tab") {
+        const buttons = [...dialog.querySelectorAll("button:not(:disabled)")];
+        const first = buttons[0];
+        const last = buttons.at(-1);
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last?.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first?.focus();
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    document.addEventListener("focusin", containFocus);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("focusin", containFocus);
+      // Let the parent remove filtered tiles before choosing the return target.
+      queueMicrotask(() => {
+        if (opener?.isConnected && opener !== document.body) opener.focus();
+        else if (focusFallback?.isConnected) focusFallback.focus();
+      });
+    };
   });
 </script>
 
 {#if photo}
   <div
+    bind:this={dialog}
     class="overlay"
     role="dialog"
     aria-modal="true"
@@ -54,13 +93,19 @@
   >
     <button class="backdrop" onclick={onClose} aria-label="Close photo viewer"
     ></button>
-    <button class="close" onclick={onClose} aria-label="Close">&times;</button>
+    <button
+      bind:this={closeButton}
+      class="close"
+      onclick={onClose}
+      aria-label="Close">&times;</button
+    >
 
-    {#if hasPrev}
-      <button class="nav prev" onclick={prev} aria-label="Previous photo"
-        >&larr;</button
-      >
-    {/if}
+    <button
+      class="nav prev"
+      disabled={!hasPrev}
+      onclick={prev}
+      aria-label="Previous photo">&larr;</button
+    >
 
     <figure class="frame">
       <img
@@ -80,11 +125,12 @@
       </figcaption>
     </figure>
 
-    {#if hasNext}
-      <button class="nav next" onclick={next} aria-label="Next photo"
-        >&rarr;</button
-      >
-    {/if}
+    <button
+      class="nav next"
+      disabled={!hasNext}
+      onclick={next}
+      aria-label="Next photo">&rarr;</button
+    >
   </div>
 {/if}
 
@@ -136,6 +182,7 @@
   }
   .close {
     position: absolute;
+    z-index: 1;
     top: 16px;
     right: 20px;
     background: none;
@@ -148,6 +195,7 @@
   }
   .nav {
     position: absolute;
+    z-index: 1;
     top: 50%;
     transform: translateY(-50%);
     background: var(--paper);
@@ -168,6 +216,14 @@
   .nav:hover {
     background: var(--ink);
     color: var(--paper);
+  }
+  .nav:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  button:focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 3px;
   }
   @media (max-width: 640px) {
     .nav {

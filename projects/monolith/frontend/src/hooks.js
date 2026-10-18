@@ -8,7 +8,6 @@
  * inconsistent slash-joining behaviour across implementations.
  */
 const DOMAIN_PREFIX_MAP = {
-  "public.": "/public",
   "private.": "/private",
   "friends.": "/friends",
 };

@@ -3,9 +3,10 @@
   import { page } from "$app/stores";
   import TripMap from "$lib/public/components/trips/TripMap.svelte";
   import PhotoGrid from "$lib/public/components/trips/PhotoGrid.svelte";
+  import PhotoViewer from "$lib/public/components/trips/PhotoViewer.svelte";
   import TagFilter from "$lib/public/components/trips/TagFilter.svelte";
   import ViewToggle from "$lib/public/components/trips/ViewToggle.svelte";
-  import { groupByDay, dayPhotos } from "$lib/trips/trip.js";
+  import { groupByDay } from "$lib/trips/trip.js";
 
   // Simpler than the old React timeline (which had playback, virtualization and
   // a live socket): a filterable chronological gallery plus the route map.
@@ -37,6 +38,24 @@
   const VIEWS = new Set(["photos", "map"]);
   const rawView = $page.url.searchParams.get("view");
   let view = $state(VIEWS.has(rawView) ? rawView : "photos");
+  let photoIndex = $state(null);
+  let focusFallback = $state();
+
+  // Selection belongs to this exact collection and view. Data refreshes and
+  // filter changes dismiss it rather than silently selecting a different photo.
+  $effect(() => {
+    filtered;
+    selected;
+    data;
+    view;
+    photoIndex = null;
+  });
+
+  function selectPhoto(index) {
+    if (Number.isInteger(index) && index >= 0 && index < filtered.length) {
+      photoIndex = index;
+    }
+  }
 
   // Mirror the view back to the URL. replaceState so flipping photos/map does
   // not stack browser-history entries. "photos" is the default, so it is dropped
@@ -59,7 +78,7 @@
 </svelte:head>
 
 <div class="page">
-  <header class="head">
+  <header class="head" bind:this={focusFallback} tabindex="-1">
     <nav class="crumb" aria-label="Breadcrumb">
       <a class="crumb-link" href="/app/trips">trips</a>
       <span class="crumb-sep">/</span>
@@ -97,7 +116,17 @@
       />
     </div>
   {:else}
-    <PhotoGrid photos={filtered} tz={trip?.tz} />
+    <PhotoGrid photos={filtered} onOpen={selectPhoto} />
+    {#if photoIndex !== null && filtered[photoIndex]}
+      <PhotoViewer
+        photos={filtered}
+        index={photoIndex}
+        tz={trip?.tz}
+        onIndex={selectPhoto}
+        onClose={() => (photoIndex = null)}
+        {focusFallback}
+      />
+    {/if}
   {/if}
 </div>
 

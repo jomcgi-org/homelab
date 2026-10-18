@@ -143,12 +143,10 @@
 
     <header class="masthead">
       <nav class="view-tabs" aria-label="Factory views">
-        <a href="/factory">factory</a>
-        <a class="here" href="/factory/work-items" aria-current="page"
-          >work items</a
-        >
+        <a class="here" href="/factory" aria-current="page">factory</a>
         <a href="/factory/escalations">escalations</a>
         <a href="/factory/execution">work</a>
+        <a href="/factory/execution/drain">knowledge extraction queue</a>
       </nav>
     </header>
 
