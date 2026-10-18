@@ -4,7 +4,10 @@ filegroup(
     name = "backup_status_application",
     # CI tests before Gazelle generates temporary enrollment packages. A glob
     # follows those package boundaries during the later formatting checks.
-    srcs = glob(["platform-gke/otel-collector/application.yaml"], allow_empty = True),
+    srcs = glob(
+        ["platform-gke/otel-collector/application.yaml"],
+        allow_empty = True,
+    ),
     visibility = ["//projects/platform/otel-collector:__pkg__"],
 )
 

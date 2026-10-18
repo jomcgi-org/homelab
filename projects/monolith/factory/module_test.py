@@ -69,20 +69,27 @@ def test_public_surface_has_no_private_hooks_or_mutations():
         assert context.route.methods <= {"GET", "HEAD"}
 
 
-def test_backup_advisory_uses_actual_registry_without_changing_probe_or_public_health(tmp_path, monkeypatch):
+def test_backup_advisory_uses_actual_registry_without_changing_probe_or_public_health(
+    tmp_path, monkeypatch
+):
     from fastapi.testclient import TestClient
     from sqlmodel import create_engine
     from framework import PRIVATE_PROFILE
     from factory import ops_health
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'health.db'}", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'health.db'}", connect_args={"check_same_thread": False}
+    )
     monkeypatch.setattr("core.db.get_engine", lambda: engine)
     calls = []
+
     async def unhealthy():
         calls.append(1)
         return {"ok": False, "detail": "monolith/monolith-pg: never backed up"}
+
     async def healthy():
         return {"ok": True}
+
     # Keep the actual cnpg_backups registry object and framework composition.
     check = ops_health.CHECKS["cnpg_backups"]
     assert module.MODULE.register_health_advisory["cnpg_backups"] is check
@@ -95,8 +102,12 @@ def test_backup_advisory_uses_actual_registry_without_changing_probe_or_public_h
             monkeypatch.setitem(module.MODULE.register_health_advisory, name, healthy)
     for name in module.MODULE.register_health:
         monkeypatch.setitem(module.MODULE.register_health, name, healthy)
-    monkeypatch.setitem(module.MODULE.register_liveness, "factory", lambda: {"ok": True})
-    profile = dataclasses.replace(PRIVATE_PROFILE, otel_enabled=False, mcp_enabled=False, static_frontend=False)
+    monkeypatch.setitem(
+        module.MODULE.register_liveness, "factory", lambda: {"ok": True}
+    )
+    profile = dataclasses.replace(
+        PRIVATE_PROFILE, otel_enabled=False, mcp_enabled=False, static_frontend=False
+    )
     app = build_app(profile, [module.MODULE])
     client = TestClient(app)
     assert client.get("/healthz").status_code == 200
@@ -105,7 +116,12 @@ def test_backup_advisory_uses_actual_registry_without_changing_probe_or_public_h
     assert response.status_code == 200
     assert response.json()["degraded"] == ["cnpg_backups"]
     assert len(calls) == 1
-    public = TestClient(build_app(dataclasses.replace(PUBLIC_PROFILE, otel_enabled=False), [public_module.MODULE]))
+    public = TestClient(
+        build_app(
+            dataclasses.replace(PUBLIC_PROFILE, otel_enabled=False),
+            [public_module.MODULE],
+        )
+    )
     assert public.get("/api/health").status_code == 200
     assert "cnpg_backups" not in public.get("/api/health").json().get("components", {})
     assert public.get("/healthz").status_code == 200

@@ -605,6 +605,7 @@ def evaluate_cnpg_backups(document, required, optional, now: datetime) -> dict:
     of a backup. Collector acceptance is required for healthy recovery.
     """
     try:
+
         def identity(target):
             namespace, cluster = target["namespace"], target["cluster"]
             if not isinstance(namespace, str) or not isinstance(cluster, str):
@@ -615,7 +616,11 @@ def evaluate_cnpg_backups(document, required, optional, now: datetime) -> dict:
         allowed = expected | {identity(target) for target in optional}
         if not expected or len(expected) != len(required) or len(allowed) > 4:
             raise ValueError("invalid target configuration")
-        if type(document["version"]) is not int or document["version"] != 1 or not isinstance(document["targets"], list):
+        if (
+            type(document["version"]) is not int
+            or document["version"] != 1
+            or not isinstance(document["targets"], list)
+        ):
             raise ValueError("unsupported observation")
         rows = {identity(row): row for row in document["targets"]}
         if len(rows) != len(document["targets"]) or not set(rows) <= allowed:
@@ -658,7 +663,9 @@ def evaluate_cnpg_backups(document, required, optional, now: datetime) -> dict:
                 raise ValueError("inconsistent backup age")
             age = (now - successful_at).total_seconds()
             if age > BACKUP_MAX_AGE_S:
-                failures.append(f"{label}: last successful backup {int(age)}s old (>129600s)")
+                failures.append(
+                    f"{label}: last successful backup {int(age)}s old (>129600s)"
+                )
             elif not row["export_ok"]:
                 unknowns.append(f"{label}: metric export failed")
         except (ValueError, KeyError, TypeError, OverflowError):
@@ -667,7 +674,10 @@ def evaluate_cnpg_backups(document, required, optional, now: datetime) -> dict:
         return {"ok": False, "detail": "; ".join(failures + unknowns)}
     if unknowns:
         return _unknown("; ".join(unknowns))
-    return {"ok": True, "detail": f"{len(rows)} CNPG clusters have fresh successful backups and checker observations"}
+    return {
+        "ok": True,
+        "detail": f"{len(rows)} CNPG clusters have fresh successful backups and checker observations",
+    }
 
 
 async def _cnpg_backups() -> dict:
@@ -683,7 +693,9 @@ async def _cnpg_backups() -> dict:
         config.load_incluster_config()
         async with client.ApiClient() as api:
             snapshot = await client.CoreV1Api(api).read_namespaced_config_map(
-                name, namespace, _request_timeout=5,
+                name,
+                namespace,
+                _request_timeout=5,
             )
         raw = (snapshot.data or {}).get("observation.json", "")
         if len(raw) > 16384:

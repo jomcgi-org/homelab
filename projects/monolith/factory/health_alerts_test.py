@@ -163,9 +163,15 @@ def test_backup_failure_unknown_handover_reminder_and_recovery(sent, monkeypatch
     from factory import ops_health
 
     targets = [{"namespace": "monolith", "cluster": "monolith-pg"}]
-    row = dict(targets[0], status="observed", export_ok=True,
-               observed_at=T0.isoformat(), age_seconds=60,
-               has_successful_backup=False, last_successful_backup=None)
+    row = dict(
+        targets[0],
+        status="observed",
+        export_ok=True,
+        observed_at=T0.isoformat(),
+        age_seconds=60,
+        has_successful_backup=False,
+        last_successful_backup=None,
+    )
     document = {"version": 1, "targets": [row]}
     state = [ops_health.evaluate_cnpg_backups(document, targets, [], T0)]
     check = ops_health.CHECKS["cnpg_backups"]
@@ -184,7 +190,11 @@ def test_backup_failure_unknown_handover_reminder_and_recovery(sent, monkeypatch
         assert latch.ok is False
         assert latch.checked_at.replace(tzinfo=timezone.utc) == T0
     # Failed export of a healthy backup also cannot clear the alert.
-    row.update(has_successful_backup=True, last_successful_backup=(T0 - timedelta(seconds=60)).isoformat(), export_ok=False)
+    row.update(
+        has_successful_backup=True,
+        last_successful_backup=(T0 - timedelta(seconds=60)).isoformat(),
+        export_ok=False,
+    )
     state[0] = ops_health.evaluate_cnpg_backups(document, targets, [], T0)
     check.reset()
     assert _cycle(None, T0 + timedelta(hours=7, minutes=1)) == []
@@ -193,10 +203,15 @@ def test_backup_failure_unknown_handover_reminder_and_recovery(sent, monkeypatch
     check.reset()
     assert "still unhealthy" in _cycle(None, T0 + timedelta(hours=7, minutes=2))[0]
     # Recovery must enqueue successfully before the stored state changes.
-    row.update(has_successful_backup=True, last_successful_backup=(T0 - timedelta(seconds=60)).isoformat())
+    row.update(
+        has_successful_backup=True,
+        last_successful_backup=(T0 - timedelta(seconds=60)).isoformat(),
+    )
     state[0] = ops_health.evaluate_cnpg_backups(document, targets, [], T0)
+
     async def fail(*args, **kwargs):
         raise RuntimeError("outbox unavailable")
+
     original_notify = shared.notify.notify
     monkeypatch.setattr(shared.notify, "notify", fail)
     check.reset()
@@ -205,7 +220,10 @@ def test_backup_failure_unknown_handover_reminder_and_recovery(sent, monkeypatch
         assert s.get(PlatformProbe, "health_alert.cnpg_backups").ok is False
     monkeypatch.setattr(shared.notify, "notify", original_notify)
     check.reset()
-    assert "Health recovered: cnpg_backups" in _cycle(None, T0 + timedelta(hours=7, minutes=4))[0]
+    assert (
+        "Health recovered: cnpg_backups"
+        in _cycle(None, T0 + timedelta(hours=7, minutes=4))[0]
+    )
     check.reset()
     assert _cycle(None, T0 + timedelta(hours=7, minutes=5)) == []
     assert [level for _, level, _ in sent] == ["warn", "warn", "info"]
