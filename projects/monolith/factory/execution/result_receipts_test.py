@@ -28,6 +28,7 @@ from factory.execution.models import (
 )
 from factory.execution.progress_ingest import app
 from factory.orchestration.factory_models import FactoryAudit
+from factory.orchestration.models import SwarmTask
 
 
 @pytest.fixture
@@ -51,6 +52,7 @@ def database(tmp_path, monkeypatch):
                 AgentCapacityReservation,
                 AgentResultReceipt,
                 FactoryAudit,
+                SwarmTask,
             )
         ],
     )

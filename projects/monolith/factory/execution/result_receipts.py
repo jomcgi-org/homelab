@@ -413,9 +413,12 @@ def _result(db: Session, receipt: dict) -> dict:
         or receipt["received_at"] is None
     ):
         raise ReceiptRejected(409, "receipt_result_changed")
-    from factory.orchestration.factory_runtime_meter import validate_completion
+    # Enrollment can only bind factory IDs. Non-factory native receipts retain
+    # their existing execution-only read path, including in pruned executors.
+    if receipt["local_session_id"].startswith("factory:"):
+        from factory.execution.runtime_meter_evidence import validate_completion
 
-    validate_completion(db, receipt["id"], json.loads(body))
+        validate_completion(db, receipt["id"], json.loads(body))
     provenance = {
         key: receipt[key]
         for key in (

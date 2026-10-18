@@ -1686,7 +1686,7 @@ class EmberVmShimTransport:
                         response.raise_for_status()
                         native = response.json()
                         if receipt is not None and receipt.get("runtime_meter"):
-                            from factory.orchestration.factory_runtime_meter import (
+                            from factory.execution.runtime_meter_evidence import (
                                 validate_response,
                             )
 

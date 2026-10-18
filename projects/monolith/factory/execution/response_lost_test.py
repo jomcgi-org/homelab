@@ -41,6 +41,7 @@ from factory.execution.models import (
 )
 from core import db as core_db
 from factory.orchestration.models import SwarmNodeRun
+from factory.orchestration.factory_models import FactoryAudit
 
 ARTIFACT_PATH = ".factory/result.json"
 _REAL_SCHEDULE_NEXT_MESSAGE = mcp._schedule_next_message
@@ -73,6 +74,7 @@ def database(tmp_path, monkeypatch):
                 AgentTurn,
                 PendingMessage,
                 SwarmNodeRun,
+                FactoryAudit,
             )
         ],
     )

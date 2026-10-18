@@ -3334,7 +3334,7 @@ def test_create_session_records_capacity_relevant_outcomes(
 
 def test_metered_synchronous_result_cannot_bypass_terminal_validation(monkeypatch):
     from factory.execution import result_receipts
-    from factory.orchestration import factory_runtime_meter as meter
+    from factory.execution import runtime_meter_evidence as meter
 
     async def handler(request):
         return _turn_response(request)
