@@ -20,6 +20,7 @@ from factory.orchestration.factory_controls import (
     _snapshot,
     _text,
     ADMISSION_CANDIDATE_SCAN_LIMIT,
+    admission_eligible as admission_eligible,
     DEFAULT_TASK_CLASS,
     delivery_branch_owner,
     enabled_repos,
@@ -330,20 +331,6 @@ def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
     return room
 
 
-def admission_eligible(policy: dict, issue_number: int, actor: str) -> bool:
-    """Whether admit_next could ever admit a queued receipt for this issue.
-
-    One rule shared by the admission query, the intake lane-slot count and
-    the MCP submit path, so the three can never disagree about what
-    "eligible" means (#6483). An operator submission qualifies only through
-    the policy allowlist; an intake receipt qualifies the same way, or by
-    intake authorship while intake is enabled.
-    """
-    if issue_number in set(policy.get("issue_numbers") or ()):
-        return True
-    return actor == INTAKE_ACTOR and bool(intake_policy(policy).get("enabled"))
-
-
 def _eligible_clause(policy: dict):
     """The SQL twin of admission_eligible for the queued-receipt query."""
     eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
@@ -506,7 +493,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         in_lane = FactoryReceipt.task_class.in_(classes)
         if routes[DEFAULT_TASK_CLASS]["tier"] in available:
             in_lane = or_(in_lane, FactoryReceipt.task_class.is_(None))
-        # The Python twin is admission_eligible above; the two must agree on
+        # The Python twin is the shared admission_eligible; the two must agree on
         # every (allowlisted, actor, intake-enabled) combination, pinned by
         # test_admission_eligibility_sql_matches_python.
         eligible = _eligible_clause(policy)
