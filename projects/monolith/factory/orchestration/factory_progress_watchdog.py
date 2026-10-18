@@ -621,9 +621,7 @@ def _card(document: dict) -> str:
     return "\n".join(lines)
 
 
-def _escalate(
-    task: dict, verdict: dict, used: int, threshold: int, ordinal: int, runs
-):
+def _escalate(task: dict, verdict: dict, used: int, threshold: int, ordinal: int, runs):
     from factory.orchestration import factory_conductor as conductor
 
     task_id = task["id"]

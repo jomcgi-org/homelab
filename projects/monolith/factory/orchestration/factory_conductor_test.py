@@ -1068,10 +1068,9 @@ def test_preview_and_actual_submission_share_projection(
         assert preview["ok"]
         assert conductor.graph.current_version(task["id"]) > revision
         stored = controls.task_allowance(task["id"])
-        # record_allowance still clamps the stored dollar figure to the task
-        # budget, so the over-budget plan is compared on turns and reserves.
-        fields = ("turns", "review_rounds_reserved", "fan_ins_reserved")
-        for field in fields + (("usd",) if scenario != "usd" else ()):
+        # The stored dollar figure is reported as derived, never clamped to
+        # the task budget, so it matches the preview even over budget.
+        for field in ("turns", "usd", "review_rounds_reserved", "fan_ins_reserved"):
             assert stored[field] == preview["projection"]["allowance"][field]
     if scenario == "first_planner":
         assert preview["projection"]["allowance"]["usd"] == 5.0
@@ -16316,7 +16315,7 @@ def test_funding_oversight_accepts_only_the_recorded_allowed_judge(
     assert funding.request(task, "Review plan exceeds allocation")
     with controls._read_session() as db:
         request = funding.pending(db, task["id"])
-        node_key, cost = request["node_key"], funding.REVIEW_COST_USD
+        cost = funding.REVIEW_COST_USD
         assert limits.judge_pin_ok(db, task["id"], request, "opus")
         # Astra is not allowed by this policy, and was not the recorded judge.
         assert not limits.judge_pin_ok(db, task["id"], request, "astra")
@@ -17307,7 +17306,9 @@ def test_late_spend_over_the_task_budget_does_not_refuse_dispatch(
     # Late measured spend leaves less than the next node's ceiling under the
     # task budget. Dollars are accounting only and never refuse (#7161).
     with Session(feedback_db) as db:
-        for cls in (SwarmNodeRun, FactoryStart) if ledger == "graph" else (FactoryStart,):
+        for cls in (
+            (SwarmNodeRun, FactoryStart) if ledger == "graph" else (FactoryStart,)
+        ):
             row = db.exec(select(cls).where(cls.task_id == task["id"])).one()
             row.cost_usd = 7.0
             db.add(row)
@@ -17482,7 +17483,7 @@ def _budget_refusal(feedback_db, monkeypatch, *, budget=8.0, spent=7.0):
     # Dollars no longer refuse a dispatch (#7161), so the late spend above
     # would dispatch. Post the dollar refusal card the conductor wrote before
     # that change: one may still be open, and its raise_envelope still applies.
-    nodes, runs = graph_state(task["id"])
+    _nodes, runs = graph_state(task["id"])
     conductor._escalate_dispatch_refusal(
         task,
         "implement_next",
@@ -17699,9 +17700,7 @@ def test_raise_envelope_is_not_capped_by_the_objective_dollar_ceiling(
     )
     assert card["options"][0]["detail"]["target"]["value"] == 200.0
     # The $200 cumulative objective ceiling no longer refuses (#7161).
-    assert decisions.apply_decision(receipt_id, "raise_envelope", "operator")[
-        "applied"
-    ]
+    assert decisions.apply_decision(receipt_id, "raise_envelope", "operator")["applied"]
     with Session(feedback_db) as db:
         grant = db.exec(
             select(FactoryAudit).where(

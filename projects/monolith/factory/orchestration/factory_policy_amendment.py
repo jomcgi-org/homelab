@@ -35,8 +35,7 @@ def _preview(db, control, receipt_id, overlay, direction):
     if (
         not isinstance(overlay, dict)
         or not overlay
-        or not set(overlay)
-        <= FIELDS | {"landing_hold", "nonrenewable_recovery"}
+        or not set(overlay) <= FIELDS | {"landing_hold", "nonrenewable_recovery"}
     ):
         raise ValueError("unsupported_policy_amendment")
     if "landing_hold" in overlay and overlay["landing_hold"] is not True:
