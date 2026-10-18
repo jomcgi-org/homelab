@@ -37,9 +37,13 @@ from factory.orchestration.factory_controls import (
     ESCALATED,
     ESCAPE_OPTIONS,
     _audit,
+    _live_claim,
     _locked_session,
     _now,
+    _pending_request,
     _read_session,
+    _request_records,
+    decision_in_flight as decision_in_flight,
     decision_identity,
     delivery_branch_owner,
     granted_delivery_surface,
@@ -300,47 +304,6 @@ def _decision_audits(db, receipt_id: int, action: str) -> list[dict]:
     ).all()
     details = [json.loads(raw) for raw in rows]
     return [detail for detail in details if detail.get("receipt_id") == receipt_id]
-
-
-def _live_claim(
-    db, receipt_id: int, option_key: str, identity: str | None = None
-) -> str | None:
-    """The other option holding this escalation, when one still holds it.
-
-    A claim is superseded by a later `decision_failed` for the same option.
-    Without that, one failed GitHub call would lock the escalation to the
-    option that failed: the operator could neither retry it into a different
-    answer nor pick another, and the only way out would be the database.
-    """
-    held = set()
-    rows = db.exec(
-        select(FactoryAudit)
-        .where(
-            FactoryAudit.action.in_(
-                ("decision_claimed", "decision_failed", "decision_applied")
-            )
-        )
-        .order_by(FactoryAudit.id)
-    ).all()
-    for row in rows:
-        detail = json.loads(row.detail_json)
-        if detail.get("receipt_id") != receipt_id:
-            continue
-        if identity is not None and detail.get("decision_id") not in (None, identity):
-            continue
-        key = detail.get("option_key")
-        if row.action == "decision_claimed":
-            held.add(key)
-        else:
-            held.discard(key)
-    return next((key for key in sorted(held) if key != option_key), None)
-
-
-def decision_in_flight(db, receipt_id: int) -> bool:
-    """Whether policy retirement must wait for a claimed external mutation."""
-    if _pending_request(db, receipt_id):
-        return True
-    return _live_claim(db, receipt_id, "") is not None
 
 
 def _fields(row: FactoryReceipt) -> dict:
@@ -1362,28 +1325,6 @@ def request_chat(receipt_id: int, note: str, actor: str) -> dict:
         "blocked_by": blocker,
         "sequence": sequence,
     }
-
-
-def _request_records(db) -> dict[tuple[str, str], dict]:
-    rows = db.exec(
-        select(FactoryAudit)
-        .where(FactoryAudit.action == "decision_request")
-        .order_by(FactoryAudit.id)
-    ).all()
-    return {
-        (row.actor, detail["request"]["request_key"]): detail
-        for row in rows
-        if (detail := json.loads(row.detail_json)).get("request")
-    }
-
-
-def _pending_request(db, receipt_id: int, ignore=None) -> bool:
-    return any(
-        key != ignore
-        and detail["request"]["receipt_id"] == receipt_id
-        and detail["result"]["state"] in ("accepted", "outcome_unknown")
-        for key, detail in _request_records(db).items()
-    )
 
 
 def _request_event(db, actor: str, request: dict, result: dict) -> None:

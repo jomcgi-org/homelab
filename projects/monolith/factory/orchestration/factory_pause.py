@@ -60,11 +60,9 @@ def _identity(row, document):
 
 
 def actionable(db, row, document):
-    from factory.orchestration import factory_decisions as decisions
-
     if not eligible(db, row) or not document or document.get("resolved") is not None:
         return False
-    if decisions.decision_in_flight(db, row.id):
+    if controls.decision_in_flight(db, row.id):
         return False
     control = db.get(FactoryControl, "factory")
     generation = json.loads(control.policy_json or "{}").get("generation")
