@@ -156,22 +156,27 @@ def test_all_renovate_update_types_keep_both_auto_merge_paths_disabled():
     visit(config)
 
 
-def _disabled_literal_dep_names(config: dict) -> set[str]:
+def _dependency_is_disabled(
+    config: dict, dep_name: str, package_name: str | None = None
+) -> bool:
     rules = [rule for rule in config["packageRules"] if rule.get("enabled") is False]
-    names = set()
+    disabled = False
     for rule in rules:
         # No additional matcher may narrow these exclusions. For literal names,
         # Renovate's matchRegexOrGlobList is a case-insensitive exact match.
-        assert set(rule) == {"description", "matchDepNames", "enabled"}
-        for name in rule["matchDepNames"]:
+        matchers = set(rule) - {"description", "enabled"}
+        assert matchers in ({"matchDepNames"}, {"matchPackageNames"})
+        matcher = next(iter(matchers))
+        # Renovate defaults packageName to depName when extraction omits it.
+        identity = dep_name if matcher == "matchDepNames" else package_name or dep_name
+        for name in rule[matcher]:
             assert re.fullmatch(r"[a-zA-Z0-9:/._-]+", name), name
-            names.add(name.casefold())
-    return names
+            disabled |= identity.casefold() == name.casefold()
+    return disabled
 
 
 def test_first_party_chart_exclusions_match_extracted_oci_names():
     config = json.loads((ROOT / "renovate.json").read_text())
-    disabled = _disabled_literal_dep_names(config)
     charts = (
         "embervm",
         "monolith",
@@ -186,7 +191,9 @@ def test_first_party_chart_exclusions_match_extracted_oci_names():
         # emits registryURL/chart as depName with datasource=docker for an OCI
         # repoURL, including protocol-less ghcr.io/jomcgi/homelab/charts.
         dep_name = f"ghcr.io/jomcgi/homelab/charts/{chart}"
-        assert dep_name in disabled, f"First-party OCI dependency enabled: {dep_name}"
+        assert _dependency_is_disabled(config, dep_name), (
+            f"First-party OCI dependency enabled: {dep_name}"
+        )
 
         # An upstream Helm chart with the same short name must stay eligible,
         # as must OCI charts outside this repository's exact registry path.
@@ -196,19 +203,37 @@ def test_first_party_chart_exclusions_match_extracted_oci_names():
             f"ghcr.io/jomcgi/other/charts/{chart}",
             f"registry.example.com/jomcgi/homelab/charts/{chart}",
         ):
-            assert upstream_name not in disabled, upstream_name
+            assert not _dependency_is_disabled(config, upstream_name), upstream_name
+
+
+def test_mirrored_helmv3_chart_stays_disabled_without_excluding_upstream():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    # Renovate 44.14.10 helmv3/extract.ts keeps the Chart.yaml dependency's
+    # bare depName. helmv3/utils.ts parseRepository qualifies OCI packageName.
+    # This is the mcp-stack dependency in the context-forge-gateway chart.
+    assert _dependency_is_disabled(
+        config, "mcp-stack", "ghcr.io/jomcgi/homelab/charts/mcp-stack"
+    ), "Mirrored mcp-stack must stay disabled by its helmv3 packageName"
+    for package_name in (
+        "mcp-stack",
+        "ghcr.io/ibm/mcp-context-forge/mcp-stack",
+        "ghcr.io/jomcgi/other/charts/mcp-stack",
+        "registry.example.com/jomcgi/homelab/charts/mcp-stack",
+    ):
+        assert not _dependency_is_disabled(config, "mcp-stack", package_name), (
+            package_name
+        )
 
 
 def test_upstream_chart_dependencies_remain_enabled():
     config = json.loads((ROOT / "renovate.json").read_text())
-    disabled = _disabled_literal_dep_names(config)
     # Extracted depName values for upstream OCI and HTTPS Helm sources.
     for dep_name in (
         "ghcr.io/weave-hand/charts/loom",
         "ghcr.io/ariga/charts/atlas-operator",
         "cloudnative-pg",
     ):
-        assert dep_name not in disabled, (
+        assert not _dependency_is_disabled(config, dep_name), (
             f"Upstream chart dependency disabled: {dep_name}"
         )
 
@@ -260,13 +285,13 @@ def test_active_managers_and_upstream_chart_updates_remain_available():
             "addLabels": ["upstream-chart"],
         }
     ]
-    # Keep disabling rules confined to the two literal first-party exclusions.
+    # Keep disabling rules confined to our charts, mirror and self-source URLs.
     assert [
         rule["description"]
         for rule in config["packageRules"]
         if rule.get("enabled") is False
     ] == [
-        "First-party charts are owned by chart-version-bot, never Renovate.",
+        "First-party and mirrored charts are maintained outside Renovate.",
         "Self-referential git sources (deploy values pulled from our own repo) "
         "are not upgrade targets.",
     ]
