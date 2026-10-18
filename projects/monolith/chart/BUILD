@@ -278,6 +278,28 @@ py_test(
 )
 
 py_test(
+    name = "backup_advisory_test",
+    srcs = ["backup_advisory_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "scheduler_run_now_test",
     srcs = ["scheduler_run_now_test.py"],
     data = [

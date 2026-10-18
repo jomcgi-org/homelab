@@ -1548,6 +1548,22 @@ healthAlerts:
   agentTurnsMinFailed: 2
   brickNamespace: embervm
   recordCreateOutcomes: true
+  # Shared checker ConfigMap, staged off for #7002. No direct CNPG reads.
+  cnpgBackups:
+    enabled: false
+    namespace: otel-collector
+    configMapName: cnpg-backup-status
+    targets:
+      - namespace: monolith
+        cluster: monolith-pg
+      - namespace: authentik
+        cluster: authentik-pg
+      - namespace: mcp
+        cluster: context-forge-pg
+    # The producer includes this only under its existing loom.enabled gate.
+    optionalTargets:
+      - namespace: loom
+        cluster: loom-pg
 
 # ember-durability health component (#4338, ADR embervm/031): a FATAL-tier
 # /api/health component reading the EmberVM control plane's durability surface

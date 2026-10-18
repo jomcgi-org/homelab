@@ -1,0 +1,193 @@
+{{- if or (not (kindIs "bool" .Values.backupCheck.enabled)) (not (kindIs "bool" .Values.backupCheck.status.enabled)) }}
+{{- fail "backupCheck enabled flags must be booleans" }}
+{{- end }}
+{{- if and .Values.loom.enabled (or (not .Values.httpcheck.enabled) (not .Values.allowedServices)) }}
+{{- fail "loom.enabled requires httpcheck.enabled and a non-empty allowedServices for OTLP metrics" }}
+{{- end }}
+{{- if and .Values.backupCheck.enabled (not .Values.allowedServices) }}
+{{- fail "backupCheck.enabled requires a non-empty allowedServices for OTLP metrics" }}
+{{- end }}
+{{- if and .Values.backupCheck.status.enabled (not .Values.backupCheck.enabled) }}
+{{- fail "backupCheck.status.enabled requires backupCheck.enabled" }}
+{{- end }}
+{{- if or .Values.loom.enabled .Values.backupCheck.enabled }}
+{{- $targets := list }}
+{{- if .Values.backupCheck.enabled }}
+{{- $targets = .Values.backupCheck.targets }}
+{{- range $targets }}
+{{- if and (eq .namespace $.Values.loom.namespace) (eq .cluster $.Values.loom.cnpgCluster) }}
+{{- fail "configure Loom through loom.enabled, not backupCheck.targets" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.loom.enabled }}
+{{- $targets = append $targets (dict "namespace" .Values.loom.namespace "cluster" .Values.loom.cnpgCluster) }}
+{{- end }}
+{{- if or (lt (len $targets) 1) (gt (len $targets) 4) }}
+{{- fail "backup checker requires one to four targets for its 120-second deadline" }}
+{{- end }}
+{{- $namespaces := dict }}
+{{- range $targets }}
+{{- if or (ne (len .) 2) (not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" .namespace)) (not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" .cluster)) (gt (len .namespace) 63) (gt (len .cluster) 63) }}
+{{- fail "invalid backup checker target" }}
+{{- end }}
+{{- $names := get $namespaces .namespace | default list }}
+{{- if has .cluster $names }}{{ fail "duplicate backup checker target" }}{{ end }}
+{{- $_ := set $namespaces .namespace (append $names .cluster) }}
+{{- end }}
+{{- $name := printf "%s-cnpg-backup" (include "otel-collector.fullname" . | trunc 51 | trimSuffix "-") }}
+{{- if and .Values.backupCheck.status.enabled (eq .Values.backupCheck.status.configMapName $name) }}
+{{- fail "backup status ConfigMap must differ from the script ConfigMap" }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+{{- range $namespace, $names := $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "otel-collector.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters]
+    resourceNames: {{ toJson $names }}
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "otel-collector.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- if .Values.backupCheck.status.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ required "backupCheck.status.configMapName is required" .Values.backupCheck.status.configMapName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+# Runtime data belongs to the checker. The hub Application ignores this key
+# during diff and sync, including self-heal (RespectIgnoreDifferences).
+data: {}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-status
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ .Values.backupCheck.status.configMapName | quote }}]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-status
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-status
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+data:
+  backup_check.py: |
+{{ .Files.Get "files/backup_check.py" | indent 4 }}
+---
+# Argo's singleNamespace controller only watches monolith-workflows. A native
+# CronJob runs in the collector namespace without expanding that controller.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.loom.backupCheck.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 120
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: cnpg-backup-check
+        spec:
+          serviceAccountName: {{ $name }}
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup-check
+              image: {{ .Values.loom.backupCheck.image | quote }}
+              command: ["/usr/bin/python", "-B", "/check/backup_check.py"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                {{- toYaml .Values.loom.backupCheck.resources | nindent 16 }}
+              env:
+                - name: CNPG_TARGETS
+                  value: {{ toJson $targets | quote }}
+                {{- if .Values.backupCheck.status.enabled }}
+                - name: CNPG_STATUS_NAMESPACE
+                  value: {{ .Release.Namespace | quote }}
+                - name: CNPG_STATUS_CONFIGMAP
+                  value: {{ .Values.backupCheck.status.configMapName | quote }}
+                {{- end }}
+                - name: OTLP_METRICS_ENDPOINT
+                  value: {{ printf "http://%s.%s.svc:4318/v1/metrics" (include "otel-collector.fullname" .) .Release.Namespace | quote }}
+              volumeMounts:
+                - name: script
+                  mountPath: /check
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: {{ $name }}
+{{- end }}

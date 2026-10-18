@@ -4,6 +4,13 @@ onepassword:
 
 environment: homelab-hub
 
+# Staged only. Enable checker and handoff with monolith's advisory reader in
+# a separately authorized PR after the #7002 operational checks are arranged.
+backupCheck:
+  enabled: false
+  status:
+    enabled: false
+
 # Same opt-in as home production: without entries the otlp receiver is not
 # rendered at all, and every configured sender times out its span exports.
 allowedServices:

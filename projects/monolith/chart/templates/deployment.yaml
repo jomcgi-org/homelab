@@ -510,6 +510,24 @@ spec:
               value: {{ .Values.healthAlerts.renotifySeconds | quote }}
             - name: HEALTH_ALERTS_CHANNEL_ID
               value: {{ .Values.healthAlerts.channelId | quote }}
+            {{- if not (kindIs "bool" .Values.healthAlerts.cnpgBackups.enabled) }}
+            {{- fail "healthAlerts.cnpgBackups.enabled must be a boolean" }}
+            {{- end }}
+            {{- if and .Values.healthAlerts.cnpgBackups.enabled (not .Values.rbac.clusterAccess.enabled) }}
+            {{- fail "healthAlerts.cnpgBackups requires rbac.clusterAccess for its ConfigMap read" }}
+            {{- end }}
+            - name: CNPG_BACKUP_HEALTH_ENABLED
+              value: {{ .Values.healthAlerts.cnpgBackups.enabled | quote }}
+            {{- if .Values.healthAlerts.cnpgBackups.enabled }}
+            - name: CNPG_BACKUP_STATUS_NAMESPACE
+              value: {{ .Values.healthAlerts.cnpgBackups.namespace | quote }}
+            - name: CNPG_BACKUP_STATUS_CONFIGMAP
+              value: {{ .Values.healthAlerts.cnpgBackups.configMapName | quote }}
+            - name: CNPG_BACKUP_TARGETS
+              value: {{ toJson .Values.healthAlerts.cnpgBackups.targets | quote }}
+            - name: CNPG_BACKUP_OPTIONAL_TARGETS
+              value: {{ toJson .Values.healthAlerts.cnpgBackups.optionalTargets | quote }}
+            {{- end }}
             - name: AGENT_TURNS_ALERT_MIN_FAILED
               value: {{ .Values.healthAlerts.agentTurnsMinFailed | quote }}
             - name: EMBERVM_BRICK_NAMESPACE

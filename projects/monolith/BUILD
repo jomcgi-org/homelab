@@ -9344,6 +9344,7 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
     ],
 )
 
@@ -9387,6 +9388,17 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "factory_backup_health_test",
+    srcs = ["factory/backup_health_test.py"],
+    data = ["//projects/platform/otel-collector:files/backup_check.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_factory",
+        "@pip//pytest",
     ],
 )
 

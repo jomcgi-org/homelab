@@ -151,6 +151,24 @@ concurrent branches becoming stale after every merge still holds.
 
 **Blob storage** is Cloudflare R2 for the monolith and monolith-public (artifacts, images, chat attachments, the stars grid, knowledge raws), with bucket names unchanged from the previous store and credentials delivered as `OnePasswordItem`s: a read-write item for the backend and its CronWorkflows, a read-only item for the public tier. EmberVM's base store and volume exports on the hub go to same-region GCS through the S3 interop endpoint.
 
+**Backup-age advisory is staged off** (#7002). The collector's shared checker
+can read `monolith/monolith-pg`, `authentik/authentik-pg` and
+`mcp/context-forge-pg` independently of Loom, adding `loom/loom-pg` only under
+its existing enablement gate. The same observation feeds the age metric and a
+named ConfigMap consumed by the private monolith advisory and Discord notifier.
+`lastSuccessfulBackup` describes base backups and does not prove WAL archival.
+
+**Why.** Honeycomb's single trigger already watches the public composite. A
+second backup scanner would give the advisory and metric different evidence.
+The Kubernetes API provides an authenticated handoff using the checker's
+ServiceAccount and the monolith's existing ConfigMap read grant. The writer
+can patch only its precreated object; no application write route, external
+account or database migration is needed. Runtime data is excluded from Argo
+diff and sync. Freshness expires after two hours and unknown observations
+preserve the notifier's durable state. Enablement and operational acceptance
+remain on #7002; configuration and failure semantics are in
+`docs/observability.md`.
+
 **Longhorn**, the home cluster's block storage, was retired with the home configuration in #6914; the hub's PVCs use GKE's `standard-rwo` storage class.
 
 **atlas-operator** applies each service's database migrations from its ConfigMap on the hub. The ConfigMap carries the entire migration history, and ArgoCD applies it as a single object with a 256 KiB last-applied-configuration annotation ceiling (see: `.claude/CLAUDE.md`).
@@ -322,6 +340,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Shared CNPG backup-age observations feed the private advisory and Discord notifier | section 5 | #7002 | repository implementation staged off; rollout, effective RBAC and failure/recovery acceptance outstanding |
 | Native `NetworkPolicy` successor enforcement on the hub | section 3 | #5276, #3897, #5277 | inert templates removed in #5816; native egress remains staged off pending its own live validation; hub-only since #4964 closed 2026-09-18 |
 | Kargo promotion on the hub gains a functional verification gate, not just stage ordering | section 4 | #4745 | staged: revision-aware `/healthz` gate wired on the monolith prod Stage behind `promotion.revisionGate.enabled` (off); the monolith must expose `chart_version` before the flip; functional assertions remain out of scope |
 

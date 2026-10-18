@@ -3,7 +3,7 @@
 import importlib.util
 import io
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -58,6 +58,12 @@ def test_invalid_or_naive_timestamps_fail(timestamp):
 def test_future_timestamp_fails():
     with pytest.raises(ValueError, match="future"):
         check.backup_age(CLUSTER, datetime(2026, 9, 30, tzinfo=timezone.utc))
+
+
+@pytest.mark.parametrize("timestamp", [False, 0, {}, [], 1])
+def test_malformed_backup_field_is_invalid_not_never_backed_up(timestamp):
+    with pytest.raises(ValueError):
+        check.backup_age(dict(CLUSTER, status={"lastSuccessfulBackup": timestamp}), NOW)
 
 
 @pytest.mark.parametrize("has_backup", [True, False])
@@ -116,8 +122,7 @@ def test_exact_otlp_payload(has_backup):
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     for key, value in {
-        "CNPG_NAMESPACE": "loom",
-        "CNPG_CLUSTER": "loom-pg",
+        "CNPG_TARGETS": json.dumps([{"namespace": "loom", "cluster": "loom-pg"}]),
         "KUBERNETES_SERVICE_HOST": "10.0.0.1",
         "KUBERNETES_SERVICE_PORT": "443",
         "OTLP_METRICS_ENDPOINT": "http://otel-collector.otel-collector.svc:4318/v1/metrics",
@@ -135,14 +140,25 @@ def client(monkeypatch, tmp_path):
     calls = []
     replies = [CLUSTER, {}]
 
-    def open_request(request, **kwargs):
+    class FrozenTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    monkeypatch.setattr(check, "datetime", FrozenTime)
+    monkeypatch.delenv("CNPG_STATUS_CONFIGMAP", raising=False)
+
+    def open_request(request, context=None):
+        kwargs = {"timeout": check.REQUEST_TIMEOUT_S}
+        if context is not None:
+            kwargs["context"] = context
         calls.append((request, kwargs))
         result = replies[len(calls) - 1]
         if isinstance(result, Exception):
             raise result
-        return io.BytesIO(json.dumps(result).encode())
+        return result
 
-    monkeypatch.setattr(check, "urlopen", open_request)
+    monkeypatch.setattr(check, "request_json", open_request)
     return calls, replies, tls_context
 
 
@@ -156,11 +172,11 @@ def test_api_auth_ca_and_export_destination(client):
     )
     assert api.get_method() == "GET"
     assert api.headers == {"Authorization": "Bearer test-token"}
-    assert api_options == {"context": context, "timeout": 20}
+    assert api_options == {"context": context, "timeout": 10}
     assert export.full_url == "http://otel-collector.otel-collector.svc:4318/v1/metrics"
     assert export.get_method() == "POST"
     assert export.headers == {"Content-type": "application/json"}
-    assert export_options == {"timeout": 20}
+    assert export_options == {"timeout": 10}
     assert (
         json.loads(export.data)["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0][
             "name"
@@ -207,3 +223,128 @@ def test_invalid_cluster_timestamp_does_not_export(client):
     client[1][0] = {"metadata": {"creationTimestamp": "invalid"}}
     assert check.main() == 1
     assert len(client[0]) == 1
+
+
+TARGETS = [
+    {"namespace": "monolith", "cluster": "monolith-pg"},
+    {"namespace": "authentik", "cluster": "authentik-pg"},
+    {"namespace": "mcp", "cluster": "context-forge-pg"},
+    {"namespace": "loom", "cluster": "loom-pg"},
+]
+
+
+def _handoff(monkeypatch):
+    monkeypatch.setenv("CNPG_STATUS_CONFIGMAP", "cnpg-backup-status")
+    monkeypatch.setenv("CNPG_STATUS_NAMESPACE", "otel-collector")
+
+
+def _snapshot(calls):
+    patch = calls[-1][0]
+    assert patch.get_method() == "PATCH"
+    return json.loads(json.loads(patch.data)["data"]["observation.json"])
+
+
+def test_all_targets_export_and_handoff_the_same_observation(client, monkeypatch):
+    calls, replies, context = client
+    monkeypatch.setenv("CNPG_TARGETS", json.dumps(TARGETS))
+    _handoff(monkeypatch)
+    replies[:] = [CLUSTER, {}] * 4 + [{}]
+    assert check.main() == 0
+    snapshot = _snapshot(calls)
+    assert snapshot["version"] == 1
+    assert len(snapshot["targets"]) == 4
+    for i, target in enumerate(TARGETS):
+        row = snapshot["targets"][i]
+        assert row == dict(target, status="observed", export_ok=True,
+                           observed_at=NOW.isoformat(), age_seconds=43200,
+                           has_successful_backup=True,
+                           last_successful_backup="2026-10-01T00:00:00Z")
+        get, post = calls[i * 2][0], calls[i * 2 + 1][0]
+        assert get.full_url.endswith(f"/namespaces/{target['namespace']}/clusters/{target['cluster']}")
+        point = json.loads(post.data)["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["gauge"]["dataPoints"][0]
+        assert point["asDouble"] == row["age_seconds"]
+        assert point["attributes"][0]["value"]["stringValue"] == row["cluster"]
+        assert point["attributes"][1]["value"]["stringValue"] == row["namespace"]
+        assert "Authorization" not in post.headers
+    patch, options = calls[-1]
+    assert patch.full_url == "https://10.0.0.1:443/api/v1/namespaces/otel-collector/configmaps/cnpg-backup-status"
+    assert patch.headers["Authorization"] == "Bearer test-token"
+    assert options == {"timeout": 10, "context": context}
+    # Four sequential read/export pairs plus one patch: <=90s of request time,
+    # leaving 30s in the existing 120s CronJob deadline for startup and parsing.
+    assert len(calls) * check.REQUEST_TIMEOUT_S == 90
+
+
+@pytest.mark.parametrize("failure", [URLError("test-token"), {"status": {"lastSuccessfulBackup": "bad"}}, {"status": {"lastSuccessfulBackup": "2999-01-01T00:00:00Z"}}, {}])
+def test_failed_middle_target_does_not_block_other_targets(client, monkeypatch, capsys, failure):
+    calls, replies, _ = client
+    monkeypatch.setenv("CNPG_TARGETS", json.dumps(TARGETS[:3]))
+    _handoff(monkeypatch)
+    replies[:] = [CLUSTER, {}, failure, CLUSTER, {}, {}]
+    assert check.main() == 1
+    rows = _snapshot(calls)["targets"]
+    assert [r["status"] for r in rows] == ["observed", "error", "observed"]
+    assert rows[1]["export_ok"] is False
+    assert "test-token" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("failure", [URLError("test-token"), {"partialSuccess": {"rejectedDataPoints": 1}}, {"partialSuccess": {"errorMessage": "test-token"}}, {"partialSuccess": None}])
+def test_export_failure_is_handed_off_then_can_recover(client, monkeypatch, failure):
+    calls, replies, _ = client
+    _handoff(monkeypatch)
+    replies[:] = [CLUSTER, failure, {}]
+    assert check.main() == 1
+    row = _snapshot(calls)["targets"][0]
+    assert row["status"] == "observed" and row["export_ok"] is False
+    assert row["error"] == "metric_export"
+    calls.clear()
+    replies[:] = [CLUSTER, {}, {}]
+    assert check.main() == 0
+    assert _snapshot(calls)["targets"][0]["export_ok"] is True
+
+
+def test_handoff_failure_is_nonzero_and_redacted(client, monkeypatch, capsys):
+    _handoff(monkeypatch)
+    client[1][:] = [CLUSTER, {}, URLError("test-token")]
+    assert check.main() == 1
+    assert "status handoff unavailable" in capsys.readouterr().err
+    client[0].clear()
+    client[1][:] = [CLUSTER, {}, {}]
+    assert check.main() == 0
+
+
+def test_new_never_backed_up_cluster_is_not_successful_evidence(client, monkeypatch):
+    _handoff(monkeypatch)
+    client[1][:] = [{"metadata": {"creationTimestamp": (NOW - timedelta(minutes=1)).isoformat()}}, {}, {}]
+    assert check.main() == 0
+    row = _snapshot(client[0])["targets"][0]
+    assert row["has_successful_backup"] is False
+    assert row["last_successful_backup"] is None
+    assert row["age_seconds"] == 60
+
+
+@pytest.mark.parametrize("targets", [[], TARGETS + TARGETS[:1], TARGETS[:1] * 2, [{"namespace": "../secrets", "cluster": "x"}], {}, [None]])
+def test_invalid_target_configuration_does_not_make_requests(client, monkeypatch, targets):
+    monkeypatch.setenv("CNPG_TARGETS", json.dumps(targets))
+    assert check.main() == 1
+    assert client[0] == []
+
+
+@pytest.mark.parametrize("raw", [b"not-json", b"[]", b"x" * (check.MAX_RESPONSE_BYTES + 1)])
+def test_bounded_json_transport_rejects_bad_responses(monkeypatch, raw):
+    class Opener:
+        def open(self, request, timeout):
+            assert timeout == 10
+            return io.BytesIO(raw)
+
+    monkeypatch.setattr(check, "build_opener", lambda *args: Opener())
+    with pytest.raises(ValueError):
+        check.request_json(check.Request("https://example.invalid"))
+    assert check.signal.getitimer(check.signal.ITIMER_REAL)[0] == 0
+
+
+def test_request_wall_deadline_and_redirect_refusal():
+    with pytest.raises(TimeoutError):
+        check._timeout(None, None)
+    with pytest.raises(RuntimeError, match="redirect refused"):
+        check._NoRedirect().redirect_request(None, None, 302, "", {}, "https://example.invalid")

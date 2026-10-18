@@ -51,10 +51,13 @@ The metrics pipeline accepts `http_check` and, when `allowedServices` is
 non-empty, the shared OTLP receiver. The allowlist filters traces only.
 
 `loom.enabled` defaults off in all overlays. When enabled after #6605, it
-appends the in-cluster query-api `/docs` probe and creates a 30-minute CNPG
-backup-age CronJob. Its ServiceAccount can only get the named `loom-pg`
-Cluster. It emits `cnpg.backup.last_success_age_seconds` through the collector's
-OTLP/HTTP Service, using cluster creation time for a never-backed-up cluster.
+appends the in-cluster query-api `/docs` probe and adds `loom/loom-pg` to the
+shared 30-minute CNPG backup checker. Without the shared targets enabled, the
+same job checks only Loom. Its ServiceAccount gets only the configured named
+Clusters, through namespace-scoped Roles. It emits
+`cnpg.backup.last_success_age_seconds` through the collector's OTLP/HTTP Service,
+using creation age plus `cnpg.backup.has_successful_backup=false` for a
+never-backed-up cluster. Creation age is not evidence of a successful backup.
 The flag requires HTTP probes and the shared OTLP receiver to be enabled, and
 is independent of the Argo CD CA mount. The rendered upstream Loom chart has no
 NetworkPolicies; reachability still needs live validation. Switch the probe and
@@ -142,7 +145,7 @@ It fires when the httpcheck probe of `https://jomcgi.dev/health` is non-2xx
 for two consecutive 5-minute evaluations and notifies the Discord webhook
 recipient "Discord homelab alerts".
 
-Everything else alerts from the monolith. Four health components in
+Everything else alerts from the monolith. Operational health components in
 `projects/monolith/factory/ops_health.py` are registered as **advisory**
 components of the private `/api/health`: a failing one is listed under
 `degraded` and the response stays 200. They are advisory because they describe
@@ -156,8 +159,10 @@ message (through `shared.notify`, to `agent.discord.defaultChannelId` unless
 `healthAlerts.channelId` is set) when a component flips unhealthy or recovers,
 and a reminder every 6 hours while it stays unhealthy
 (`projects/monolith/factory/health_alerts.py`). The last announced state
-is kept in the `platform_probe` table (`health_alert.<component>`), so a leader
-handover neither repeats nor drops an alert. A component whose data cannot be
+is kept in the `platform_probe` table (`health_alert.<component>`), so a normal
+leader handover retains deduplication and reminder timing. State advances after
+successful enqueue. A crash between enqueue and the state write can duplicate
+a message; this is not an exactly-once delivery guarantee. A component whose data cannot be
 read reports `status: unknown`, stays healthy and never causes a transition.
 Settings are the chart's `healthAlerts` values.
 
@@ -167,6 +172,7 @@ Settings are the chart's `healthAlerts` values.
 | `agent_turns` | For Codex (luna, terra, sol, astra) or Claude (opus, sonnet, fable, and sessions with no model): at least 2 turns attempted in the last 60 minutes and none delivered | `agent_sessions.agent_turns` joined to `agent_sessions.agent_sessions`. Delivered means a clean terminal reason (`completed`, `end_turn`, `stop`, `user_interrupt`). Interrupted turns and turns cancelled before dispatch are not attempts. Spark and pi are not covered |
 | `codex_quota_fresh` | The token broker's latest Codex quota observation is older than 60 minutes (or missing, or the broker is unreachable) **and** at least one Codex turn was attempted in the last 60 minutes | Broker `GET /quota` (the monolith's existing 30-second cached poll) and the same turn counts. The demand condition keeps idle nights quiet; the cost is that a fault that stops Codex work from being attempted at all is left to `agent_turns` and `embervm_capacity` |
 | `factory_stuck` | A factory receipt has been `uncertain` for more than 2 hours, or a `queued` receipt at the live policy's repo and generation is not `admission_eligible` (the #6483 trap). Intake receipts while intake is off and older-generation receipts are not flagged | `swarm.factory_receipt` and the `swarm.factory_control` policy. Uncertain age is measured from the receipt's `updated_at` |
+| `cnpg_backups` (staged off) | A fresh checker observation reports no successful backup, even for a newly created cluster, or a successful backup strictly older than 129600 seconds (36 hours). Exactly 36 hours passes | `otel-collector/cnpg-backup-status`, key `observation.json`, written by the same checker that emits the age metric. Required targets: `monolith/monolith-pg`, `authentik/authentik-pg`, `mcp/context-forge-pg`; optional `loom/loom-pg` only when the producer's Loom gate includes it. This checks base-backup status, not WAL archival |
 
 Each check is cached for 60 seconds per process, bounded to 10 seconds with a
 5-second Postgres statement timeout, and never raises.
@@ -185,9 +191,67 @@ metric arrival and operator test-firing. They count successful 2xx probes over
 missing age datapoints over 7200 seconds. Connection errors record zero in
 every `httpcheck.status` class, so counting successes covers a down endpoint.
 The backup-age MAX needs its absence companion when the checker stops.
-No other CNPG cluster has repository backup-age alerting; monolith-pg needs
-the same checks. The specs live in `projects/platform/honeycomb/triggers/` and
+The shared checker and private advisory also cover the three existing CNPG
+clusters as default-off repository configuration (#7002). They do not depend
+on enabling Loom. The specs live in `projects/platform/honeycomb/triggers/` and
 are applied by hand with `sync.py` after the operator checks, never by CI.
+
+## Staged shared backup advisory
+
+The collector's `backupCheck.enabled` and `backupCheck.status.enabled`, and the
+monolith's `healthAlerts.cnpgBackups.enabled`, default off in chart defaults and
+checked-in deployment overlays. No backup alert rollout is claimed by this
+repository change. The existing public Honeycomb trigger is unchanged; no
+additional trigger is needed for the Discord advisory.
+
+The checker reads each configured Cluster once, exports that observation, then
+patches one precreated ConfigMap through the Kubernetes API with its existing
+ServiceAccount token and cluster CA. Its Roles grant only `get` on exact
+namespace/name Cluster objects and `get`/`patch` on the single status ConfigMap.
+There is no application status-write endpoint, new credential, or database
+migration. The private monolith reads that object through its existing
+ConfigMap read permission and never scans Clusters itself. The producer
+disables redirects and does not log exception bodies or bearer values.
+
+`observation.json` carries a version and per-target identity, observation time,
+successful-backup timestamp (or null), creation/backup age, success indication,
+and collector acceptance. A failed target does not stop the others. Read or
+parse failures become error observations without an age metric. Transport
+failure or OTLP partial rejection leaves `export_ok=false`. A known stale or
+never-backed-up target still degrades the advisory; a healthy target cannot
+clear an alert until its export succeeds. A status patch failure exits nonzero
+and leaves the previous snapshot to expire. The next scheduled run retries
+collection and publication; there is no in-job retry loop.
+
+Observations are fresh for at most 7200 seconds, with a 60-second per-process
+health cache. Missing targets, absent snapshots, stale observations, malformed
+fields, future timestamps and unreadable sources report `status: unknown`.
+Unknown does not baseline, recover, or update the durable alert state. It also
+does not send a new Discord checker-absence alert: inspect the private health
+detail and CronJob failures. A known failure on another fresh target still
+alerts. Recovery requires fresh valid successful-backup evidence and successful
+metric export for every required target and any included Loom target. The
+consumer recomputes backup age from the timestamp between checker runs.
+
+One job renders whether shared targets, Loom, or both are enabled. Scheduling,
+image and resource settings retain the existing `loom.backupCheck` keys for
+compatibility: every 30 minutes, `Forbid` concurrency, no job retries, and a
+120-second active deadline. At most four targets make eight read/export
+requests and one status patch. Each has a 10-second wall-clock and socket
+deadline and a 1 MiB response cap, leaving 30 seconds for startup and parsing.
+The hub Application ignores `/data/observation.json` on this exact ConfigMap
+during both diff and sync (`RespectIgnoreDifferences=true`). A renamed handoff
+must update that ignore rule and both charts together.
+
+A later authorized enablement PR must enable the two collector flags and the
+monolith reader, preserving the existing OTLP admission path. Keep
+`loom.enabled=false` until #6605's independent acceptance is complete. The
+operational checklist on #7002 still requires rollout and scheduled-run
+verification, effective named-object RBAC (including additive bindings), metric
+and advisory arrival, non-destructive failure/recovery tests, unknown and
+deduplication checks across leader handover, health endpoint isolation, and
+conditional Loom validation. Do not apply trigger specs or fire live alert
+tests as part of this staged delivery.
 
 ## Configuration
 

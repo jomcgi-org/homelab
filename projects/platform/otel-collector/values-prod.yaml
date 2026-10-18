@@ -44,3 +44,9 @@ httpcheck:
   targets:
     - "https://jomcgi.dev/health"
     - "https://jomcgi.dev/"
+
+# Retired home overlay remains default-off too.
+backupCheck:
+  enabled: false
+  status:
+    enabled: false
