@@ -64,9 +64,20 @@ func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
-	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classMemOnly); err != nil {
+	needMib := coldBootNeedMib(s.groupDriver, uint64(req.GetResources().GetMemMib()))
+	if req.GetMode() == nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT {
+		setID, member, ok := parseGroupMemberRef(req.GetSnapshotRef())
+		if !ok || member != req.GetMemberName() {
+			return nil, status.Error(codes.InvalidArgument, "noded: invalid group member snapshot ref")
+		}
+		needMib = snapshotNeedMib(s.groupDriver, needMib, "group", setID, member)
+	}
+	finishAdmission, err := s.reserveAdmission(needMib, classMemOnly)
+	if err != nil {
 		return nil, err
 	}
+	defer finishAdmission()
+	ctx = substrate.WithMemoryReservation(ctx, needMib)
 	groupInstanceID := req.GetGroupInstanceId()
 	if groupInstanceID == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: group_instance_id required")

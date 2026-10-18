@@ -193,11 +193,11 @@ type Server struct {
 
 	// memHeadroom reads free guest memory in MiB (cgroup v2, best-effort).
 	// Overridable in tests.
-	memHeadroom func() uint64
+	memHeadroom func() (uint64, bool)
 	// memBudget reads the cgroup memory ceiling in MiB (memory.max minus the
-	// daemon RSS reserve). 0 means unknown (unlimited cgroup or read error),
-	// never a guess. Overridable in tests.
-	memBudget func() uint64
+	// daemon RSS reserve). The bool distinguishes finite zero from unknown.
+	// Overridable in tests.
+	memBudget func() (uint64, bool)
 	// cpuBudget reads the cgroup CPU ceiling in millicores from cpu.max. 0
 	// means unknown. Overridable in tests.
 	cpuBudget func() uint64
@@ -213,6 +213,13 @@ type Server struct {
 	// httpClient fetches zip-lane archives from the in-cluster SeaweedFS read path
 	// over the pod network. Overridable in tests (a fake archive server).
 	httpClient *http.Client
+
+	// admissionMu protects check-and-reserve across concurrent boot RPCs.
+	// Pending claims remain charged until the RPC returns; driver live claims
+	// take over before then, including when later readiness cleanup fails.
+	admissionMu sync.Mutex
+	pendingMib  uint64
+	pendingVMs  uint64
 
 	vmLifecycleMu sync.Mutex // attachment publication and task-to-session identity transfer
 	vms           *vmRegistry
@@ -530,8 +537,8 @@ func New(opts Options) *Server {
 		s.groupClock = &realGroupClock{}
 	}
 	s.budget = newBudget(uint64(opts.Config.DaemonReserveMib))
-	s.memHeadroom = s.budget.MemHeadroomMib
-	s.memBudget = s.budget.MemBudgetMib
+	s.memHeadroom = s.budget.memHeadroomReading
+	s.memBudget = s.budget.memBudgetReading
 	s.cpuBudget = s.budget.CpuBudgetMillicores
 	s.cpuHeadroom = s.budget.CpuHeadroomMillicores
 	s.slotCeiling = s.budget.SlotCeiling
@@ -937,10 +944,13 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		MemMib:      int(res.GetMemMib()),
 	})
 
-	sizeBytes, err := s.runBuild(buildCtx, bd, baseKey, workload, readyPath, archive)
+	sizeBytes, err := s.runBuild(buildCtx, bd, baseKey, workload, readyPath, archive, uint64(res.GetMemMib()))
 	if err != nil {
 		s.bases.failBuild(baseKey, workload, img.RootfsPath, readyPath, err.Error())
 		s.signalChange()
+		if status.Code(err) == codes.ResourceExhausted {
+			return nil, err
+		}
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: build base %q: %v", baseKey, err)
 	}
 	// Persist the runtime image ref alongside the snapshot so a daemon restart can
@@ -1230,18 +1240,37 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 // Sequence: Claim (cold boot) -> Prime (drain the vsock path via /shim/healthz)
 // -> Hydrate (POST the archive; zip lane only) -> WaitReady (/shim/ready flips 200
 // only after the shim unpacks + imports the handler) -> SnapshotBase.
-func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload, readyPath string, archive []byte) (int64, error) {
+func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload, readyPath string, archive []byte, needMib uint64) (int64, error) {
+	needMib = coldBootNeedMib(bd, needMib)
+	finishAdmission, err := s.reserveAdmission(needMib, classMemOnly)
+	if err != nil {
+		return 0, err
+	}
+	// Build drivers have a separate live map. Keep their pending reservation
+	// until Release proves the guest is gone; a failed reap must retain it.
+	released := true
+	defer func() {
+		if released {
+			finishAdmission()
+		}
+	}()
+	ctx = substrate.WithMemoryReservation(ctx, needMib)
 	spec := substrate.ClaimSpec{Workload: workload, Arch: s.cfg.Arch, ThreadID: newID("build")}
 	h, err := bd.Claim(ctx, spec)
 	if err != nil {
 		return 0, fmt.Errorf("cold boot: %w", err)
 	}
+	released = false
 	egressCancel := func() {}
 	defer func() {
 		egressCancel()
 		s.forgetGuestMemory(h)
-		if rerr := bd.Release(context.Background(), h); rerr != nil {
-			s.logger.Warn("noded: release build guest", "base", baseKey, "err", rerr)
+		if !released {
+			if rerr := bd.Release(context.Background(), h); rerr != nil {
+				s.logger.Warn("noded: release build guest; memory reservation retained", "base", baseKey, "err", rerr)
+			} else {
+				released = true
+			}
 		}
 		if rerr := bd.RemoveBundle(h.ThreadID); rerr != nil {
 			s.logger.Warn("noded: remove build bundle", "base", baseKey, "err", rerr)
@@ -1281,6 +1310,10 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload
 	s.forgetGuestMemory(h)
 	ref, err := bd.SnapshotBase(ctx, h, baseKey)
 	if err != nil {
+		var proof interface{ TeardownConfirmed() bool }
+		if errors.As(err, &proof) && proof.TeardownConfirmed() {
+			released = true
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			s.logger.Warn("noded: base snapshot create timed out",
 				"base", baseKey, "concurrent_builds", s.activeBuildCount(), "err", err)
@@ -1416,14 +1449,18 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	// Cheap rejection under real memory pressure (ADR embervm/014 decision 3), read
 	// AFTER the base is resolved (so the workload's mem footprint is known) but
 	// BEFORE the expensive Claim/restore. Prime is vsock-only (no tap), so it is
-	// memory-only. The base is resolved above; its workload's registry sizing gives
-	// the need (0 when unknown, gating on the floor alone).
+	// memory-only. Charge the larger of registry sizing and the stored snapshot,
+	// including the driver's cold-boot fallback for volume-bearing claims.
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
-	if err := s.admitOrReject(s.primeNeedMib(base.workload), classMemOnly); err != nil {
+	needMib := snapshotNeedMib(s.driver, s.primeNeedMib(base.workload), "base", ref, "")
+	finishAdmission, err := s.reserveAdmission(needMib, classMemOnly)
+	if err != nil {
 		return nil, err
 	}
+	defer finishAdmission()
+	ctx = substrate.WithMemoryReservation(ctx, needMib)
 	// While the registry is stale, a Prime that would be the FIRST warm VM for a
 	// workload is cold placement (refused); a Prime that refills an already-warm
 	// workload keeps existing warmth topped up (allowed). This preserves "serve
@@ -2164,14 +2201,16 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		// the identity into the in-memory registry.
 		workload = req.GetTrace().GetWorkload()
 	}
-	// Memory admission charges the workload's declared need, resolved from the
-	// registry exactly as Prime does (#4186). A restore faults the whole banked
-	// memory back in, so asking with need=0 admitted a 4 GiB session onto a brick
-	// with floor-only headroom. The lookup runs after the ref check so an unknown
-	// ref still reports FAILED_PRECONDITION rather than a spurious pressure reject.
-	if err := s.admitOrReject(s.primeNeedMib(workload), classMemOnly); err != nil {
+	// A banked session can be larger than the workload's current declaration.
+	// Resolve snapshot sizing before reserving, after the inventory lookup so an
+	// unknown ref still reports FAILED_PRECONDITION.
+	needMib := snapshotNeedMib(s.sessionDriver, s.primeNeedMib(workload), "session", ref, "")
+	finishAdmission, err := s.reserveAdmission(needMib, classMemOnly)
+	if err != nil {
 		return nil, err
 	}
+	defer finishAdmission()
+	ctx = substrate.WithMemoryReservation(ctx, needMib)
 	trackDirtyPages := s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, workload)
 	h, err := s.sessionDriver.RestoreSession(ctx, workload, ref, trackDirtyPages)
 	if err != nil {
@@ -2524,13 +2563,15 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	if s.cfg.VMOverheadMib > 0 {
 		vmOverheadMib = uint64(s.cfg.VMOverheadMib)
 	}
+	memHeadroom, _ := s.memHeadroom()
+	memBudget, _ := s.memBudget()
 	ns := &nodev1.NodeStatus{
 		NodeId:                 s.cfg.Node,
 		PodUid:                 s.cfg.PodUID,
 		SizeClass:              s.cfg.SizeClass,
 		CpuVendor:              s.cfg.CpuVendor,
 		Workloads:              caps,
-		MemHeadroomMib:         s.memHeadroom(),
+		MemHeadroomMib:         memHeadroom,
 		MemRejectFloorMib:      s.memRejectFloorMib(),
 		CpuHeadroomMillicores:  uint32(s.cpuHeadroom()),
 		LiveVms:                uint32(live),
@@ -2554,9 +2595,9 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		GroupMemberVms:         groupMemberVMs,
 		GroupBundleSets:        s.groupBundleSetsStatus(),
 		StoreReachable:         s.storeReachableNow(),
-		MemBudgetMib:           s.memBudget(),
+		MemBudgetMib:           memBudget,
 		MemReservedMib:         s.claimedMib(),
-		AdmitsOnReservation:    s.cfg.AdmissionModel == "reserved",
+		AdmitsOnReservation:    true,
 		VmOverheadMib:          vmOverheadMib,
 		CpuBudgetMillicores:    s.cpuBudget(),
 		CpuSku:                 s.cpuSku(),

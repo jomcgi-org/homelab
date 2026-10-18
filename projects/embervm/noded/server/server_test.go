@@ -486,7 +486,8 @@ func newTestServer(t *testing.T, drv vmDriver, tr *fakeTransport, maxLive int) (
 		Transport: tr,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }                           // deterministic, no cgroup read
+	s.memHeadroom = func() (uint64, bool) { return 0, false } // deterministic, no cgroup read
+	s.memBudget = func() (uint64, bool) { return 0, false }
 	s.slotCeiling = func(configured uint64) uint64 { return configured } // report configured max, no host cgroup read
 
 	lis := bufconn.Listen(1 << 20)
@@ -531,7 +532,8 @@ func newSessionTestServer(t *testing.T, drv *fakeDriver, tr *fakeTransport, maxL
 		Transport:     tr,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
+	s.memBudget = func() (uint64, bool) { return 0, false }
 	s.slotCeiling = func(configured uint64) uint64 { return configured }
 
 	lis := bufconn.Listen(1 << 20)
@@ -1335,6 +1337,8 @@ func TestBuildBaseIdempotent(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 
 	ctx := context.Background()
 	req := &nodev1.BuildBaseRequest{
@@ -1386,6 +1390,8 @@ func TestBuildBaseReadyRegistryEntryMissingOnDiskRebuilds(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 
 	req := &nodev1.BuildBaseRequest{
 		Trace:            &nodev1.Trace{Workload: "echo"},
@@ -1449,6 +1455,8 @@ func TestBuildBaseUnknownImage(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return &fakeDriver{} },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
 		Trace:    &nodev1.Trace{Workload: "echo"},
 		ImageRef: "not-provisioned:1",
@@ -1481,6 +1489,8 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
 	memBytes := strings.Repeat("m", 100)
@@ -1568,6 +1578,8 @@ func TestBuildBaseIncompleteBundleFallsThroughToBuild(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -1612,6 +1624,8 @@ func TestBuildBaseReclaimsStaleBuildingDirectory(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 	stagingDir := filepath.Join(snapshotRoot, "bases", baseKey+".building")
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
@@ -1659,6 +1673,8 @@ func TestBuildBaseReturnsRetryLaterForSiblingOwnedBuildingDirectory(t *testing.T
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 
 	owner, acquired, existed, err := s.acquireBaseBuildOwnership(baseKey)
@@ -1720,6 +1736,8 @@ func TestBuildBasePreservesStagingWithoutExistingLock(t *testing.T) {
 		},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 	stagingDir := filepath.Join(snapshotRoot, "bases", baseKey+".building")
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
@@ -1812,6 +1830,8 @@ func newZipTestServer(t *testing.T, archiveBytes []byte, archiveDelay time.Durat
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 	return s, build, tr, ts.URL + "/archive.zip"
 }
 
@@ -2098,6 +2118,8 @@ func TestBuildBaseServingRegistersImage(t *testing.T) {
 			NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 			Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		})
+		s.memBudget = func() (uint64, bool) { return 0, false }
+		s.memHeadroom = func() (uint64, bool) { return 0, false }
 		return s, build, fsd, ts.URL + "/archive.zip"
 	}
 
@@ -2630,7 +2652,7 @@ func TestNodeStatusCarriesBudgetFields(t *testing.T) {
 	drv := &fakeDriver{}
 	tr := &fakeTransport{}
 	client, srv := newTestServer(t, drv, tr, 8)
-	srv.memBudget = func() uint64 { return 3584 }
+	srv.memBudget = func() (uint64, bool) { return 3584, true }
 	srv.cpuBudget = func() uint64 { return 2000 }
 	srv.cpuHeadroom = func() uint64 { return 1500 }
 
@@ -2647,8 +2669,8 @@ func TestNodeStatusCarriesBudgetFields(t *testing.T) {
 	if got, want := ns.GetCpuHeadroomMillicores(), uint32(1500); got != want {
 		t.Errorf("cpu_headroom_millicores = %d, want %d (must no longer be hard-coded 0)", got, want)
 	}
-	if ns.GetAdmitsOnReservation() {
-		t.Error("default admission model advertises admits_on_reservation=true")
+	if !ns.GetAdmitsOnReservation() {
+		t.Error("default admission model must advertise declared reservation enforcement")
 	}
 	if got := ns.GetMemReservedMib(); got != 0 {
 		t.Errorf("empty brick mem_reserved_mib = %d, want 0", got)
@@ -2656,7 +2678,7 @@ func TestNodeStatusCarriesBudgetFields(t *testing.T) {
 	if got := ns.GetVmOverheadMib(); got != 0 {
 		t.Errorf("default vm_overhead_mib = %d, want 0", got)
 	}
-	if ns.GetMemReservedMib() == 0 && ns.GetAdmitsOnReservation() {
+	if ns.GetMemReservedMib() == 0 && !ns.GetAdmitsOnReservation() {
 		t.Error("zero mem_reserved_mib must not be interpreted as reservation model off")
 	}
 }
@@ -3652,7 +3674,8 @@ func TestSessionInventoryRescanOnRestart(t *testing.T) {
 		Transport:     &fakeTransport{},
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
+	s.memBudget = func() (uint64, bool) { return 0, false }
 	s.ReconcileSessionsFromDisk()
 
 	ns := s.nodeStatus()
@@ -4260,6 +4283,8 @@ func newBaseDiscoveryServer(t *testing.T, root, uid string) (*Server, *fakeDrive
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return drv },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 	s.fcSupportedVersionFn = func(string) (snapVersion, error) { return snapVersion{10, 2, 0}, nil }
 	s.fcDescribeVersionFn = func(string, string) (snapVersion, error) { return snapVersion{10, 2, 0}, nil }
 	if err := s.ReconcileBasesFromDisk(); err != nil {

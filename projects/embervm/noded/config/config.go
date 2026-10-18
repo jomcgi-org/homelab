@@ -136,11 +136,11 @@ type Config struct {
 	// EMBERVM_NODED_MEM_REJECT_FLOOR_MIB. Read only by the pressure predicate; a
 	// cgroup reporting unknown (unlimited) headroom fails the check open regardless.
 	MemRejectFloorMib int
-	// AdmissionModel selects memory admission: observed preserves the current
-	// cgroup-headroom predicate; reserved gates on declared live claims.
+	// AdmissionModel selects the pressure cushion. Both modes enforce declared
+	// claims and measured headroom; observed additionally keeps MemRejectFloorMib.
 	// Env EMBERVM_NODED_ADMISSION_MODEL. Default observed.
 	AdmissionModel string
-	// VMOverheadMib is host memory charged per live VM in the reserved model.
+	// VMOverheadMib is host memory charged per live or pending VM in both models.
 	// Env EMBERVM_NODED_VM_OVERHEAD_MIB. Default 0.
 	VMOverheadMib int
 

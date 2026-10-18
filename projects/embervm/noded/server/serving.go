@@ -48,9 +48,16 @@ func (s *Server) startServing(ctx context.Context, req *nodev1.StartServingReque
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
-	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classTapBearing); err != nil {
+	needMib := coldBootNeedMib(s.servingDriver, uint64(req.GetResources().GetMemMib()))
+	if req.GetRelight() != nil {
+		needMib = snapshotNeedMib(s.servingDriver, needMib, "serving", req.GetRelight().GetSnapshotRef(), "")
+	}
+	finishAdmission, err := s.reserveAdmission(needMib, classTapBearing)
+	if err != nil {
 		return nil, err
 	}
+	defer finishAdmission()
+	ctx = substrate.WithMemoryReservation(ctx, needMib)
 	port := req.GetPort()
 	if port == 0 {
 		return nil, status.Error(codes.InvalidArgument, "noded: port required")
