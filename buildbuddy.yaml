@@ -360,6 +360,11 @@ actions:
               # are genrule outputs (#6446) and never committed.
               bazel run //bazel/tools/format:format --config=ci
 
+              # Pinned source generation runs in its own Bazel invocation,
+              # after every parallel formatter has finished. Only the two
+              # seeded Go stubs are copied; git add -u below remains sufficient.
+              bazel run //projects/embervm/proto/embervm/node/v1:update_go_stubs --config=ci
+
               # Validate grep-based generate scripts against bazel query
               ./bazel/images/validate-generate-scripts.sh
 
@@ -441,6 +446,16 @@ actions:
               fi
             fi
           fi
+
+          # Read-only generated-source acceptance also runs on ci-format-bot
+          # heads and chart writebacks. A drifted PR exits above after pushing;
+          # its fresh head must pass these checks. Main and queue still cannot
+          # push repairs. Explicit labels leave per-target Linux evidence.
+          bazel build --config=ci \
+            //projects/embervm/proto/embervm/node/v1:node_go_src \
+            //projects/embervm/proto/embervm/node/v1:nodev1
+          bazel test --config=ci //bazel/helm/gazelle:gazelle_test
+          bazel run //projects/embervm/proto/embervm/node/v1:check_go_stubs --config=ci
 
           # Advisory STPA freshness. The checker reads the commit-stamp header
           # emitted by docs/agents/stpa.md BLOCK A and compares only covered

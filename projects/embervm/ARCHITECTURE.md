@@ -51,6 +51,21 @@ operator-provided.
 advanced classes); pretending capacity is infinite (queue depth, saturation
 signals, and admission control are the product surface instead).
 
+### Go protobuf sources
+
+`proto/embervm/node/v1/node.proto` defines the control-to-node wire contract.
+Bazel's `node_go_src` generates Go build inputs under its `generated/` output
+directory using the pinned compiler and plugins; `nodev1` consumes those
+outputs. The two checked-in files, `node.pb.go` and `node_grpc.pb.go`, are
+copies for ordinary Go tooling. CI copies them after parallel formatting
+with `update_go_stubs`, uses the existing branch autoformat writeback, and
+compares both with `check_go_stubs` on every head. The Elixir generator stays
+build-time only. Protocol and runtime behaviour are unchanged.
+
+**Why.** A fresh checkout needs the Go package for root build, vet and tidy.
+Keeping the pinned Bazel outputs as build inputs preserves reproducibility;
+the drift check covers the copies used outside Bazel (#7066).
+
 ### Capability matrix
 
 | Capability | Status | Limitation / tracking |
@@ -2084,6 +2099,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Checked-in Go protobuf copies for ordinary tooling, with pinned generation and drift checks | section 1 (Joe, 2026-10-18) | #7066 | repository implementation pending Linux CI and exact-head review |
 | Brick scale-down couples durable archive acknowledgement with one brick per node (Joe, 2026-10-10) | section 7 | #6533 | single repository gate default-off; staged enable and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |

@@ -34,6 +34,28 @@ Python dependencies are `@pip//<package>` from the pip hub over `bazel/requireme
 
 ---
 
+### Generated sources in clean checkouts
+
+When ordinary tooling needs generated source files, check in only those
+outputs and keep their pinned Bazel generator authoritative (#7066).
+EmberVM's `node_go_src` generates under `generated/` in the Bazel output tree;
+`nodev1` consumes those outputs. The two checked-in Go copies serve plain Go.
+`update_go_stubs` copies them after the parallel format batch finishes, outside
+`run-generators.sh`. The existing PR writeback stages tracked changes with
+`git add -u` and refuses writes to main or merge-queue refs.
+
+`check_go_stubs` compares both copies byte for byte after the writeback
+decision, including on bot-authored heads that skip formatting. The Linux
+workflow explicitly builds `node_go_src` and `nodev1`, resolves their `go_deps`
+plugin repositories, and runs `//bazel/helm/gazelle:gazelle_test`. Elixir
+generation and all other build artifacts keep their existing output policy.
+
+**Why.** Bazel-only Go protobuf files left a fresh checkout unable to run root
+`go build`, `go vet`, or `go mod tidy`. Two tracked copies support those tools
+without replacing the build inputs. Serial copy avoids formatter races;
+read-only drift verification on the new head prevents a stale copy from
+passing through the autoformat author guard.
+
 ## 3. Images
 
 Application images are apko (`bazel/tools/oci/apko_image.bzl`) over Wolfi packages, non-root uid 65532, from an `apko.yaml` plus a committed `apko.lock.json`; 25 targets today. Two older shapes remain: `go_image` (four targets, distroless base) and one `py3_image` (ubuntu base). Every macro emits `{name}.push` (collected into the generated `//bazel/images:push_all` multirun), `{name}.info` (an `OciImageInfo` that `helm_images_values` deep-merges into the chart's `values.yaml` at package time, which is why no values file ever hand-pins a `@sha256:` digest), and for apko a `{name}_lock_test` that fails when the lock's config checksum no longer matches the YAML.
@@ -144,8 +166,9 @@ Their suites are genrules, not test rules, tagged `verification` so `affected-ta
 
 ## Direction
 
-Nothing is decided and unbuilt here at present; outstanding work is
-tracked in GitHub Issues.
+| Direction | Decided in | Tracks | State |
+| --- | --- | --- | --- |
+| Check in narrowly selected Bazel-generated sources needed by ordinary tooling, with pinned regeneration and branch writeback | Generated sources in clean checkouts (Joe, 2026-10-18) | #7066 | EmberVM Go copies implemented; Linux CI and exact-head review required before delivery |
 
 ## Decision history
 
