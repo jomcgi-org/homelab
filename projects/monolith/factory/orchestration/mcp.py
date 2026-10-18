@@ -941,6 +941,73 @@ async def factory_control(
     )
 
 
+def _amend_policy(
+    operation,
+    receipt_id,
+    overlay,
+    direction,
+    actor,
+    request_key,
+    expected_preview_sha256,
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    try:
+        if operation == "preview":
+            return amendments.preview(receipt_id, overlay, direction)
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "amendment_requires_preview_and_request_key"}
+        return amendments.apply(
+            receipt_id,
+            overlay,
+            direction,
+            actor=actor,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_amend_policy(
+    operation: Literal["preview", "apply"],
+    receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    overlay: dict,
+    direction: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+) -> dict:
+    """Preview or apply an exact paused-receipt policy amendment as a human.
+
+    Preview first. Apply requires its digest, identical arguments and a fresh
+    request key; replay that key after a lost response. Changes in control,
+    graph or accounting invalidate the preview. Only task/turn budgets, work
+    and planner turn caps, review rounds and the task timeout can change.
+    The $200 cumulative objective allocation ceiling remains binding. This
+    changes neither provider/global limits nor the $500/$1000 emergency limits.
+    A successful amendment supersedes stale funding review and records planner
+    direction, but leaves the same task paused and every existing node pin
+    unchanged. Review a feasible replacement plan before explicitly resuming.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    return await asyncio.to_thread(
+        _amend_policy,
+        operation,
+        receipt_id,
+        overlay,
+        direction,
+        principal.subject,
+        request_key,
+        expected_preview_sha256,
+    )
+
+
 def _decide(
     receipt_id, decision_id, option_key, request_key, note, actor, action="decide"
 ):

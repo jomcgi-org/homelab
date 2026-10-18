@@ -18,6 +18,38 @@ _capture_slots = BoundedSemaphore(1)
 BODY_TIMEOUT_SECONDS = 10
 
 
+@router.post("/ingest/meter/{receipt_id}")
+async def ingest_meter(
+    receipt_id: str, request: Request, authorization: str | None = Header(default=None)
+) -> dict:
+    from factory.orchestration import factory_runtime_meter
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="invalid_receipt_token")
+    token = authorization.removeprefix("Bearer ")
+    try:
+        await run_in_threadpool(result_receipts.authenticate_receipt, receipt_id, token)
+        body = bytearray()
+        async with asyncio.timeout(BODY_TIMEOUT_SECONDS):
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > 4096:
+                    raise HTTPException(status_code=413, detail="meter_too_large")
+        import json
+
+        try:
+            value = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(status_code=422, detail="invalid_meter_json") from None
+        return await run_in_threadpool(
+            factory_runtime_meter.ingest, receipt_id, token, value
+        )
+    except result_receipts.ReceiptRejected as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    except TimeoutError:
+        raise HTTPException(status_code=408, detail="meter_body_timeout") from None
+
+
 @router.post("/ingest/results/{receipt_id}")
 async def ingest_result(
     receipt_id: str,

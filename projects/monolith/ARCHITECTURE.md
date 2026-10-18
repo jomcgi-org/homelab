@@ -2423,3 +2423,36 @@ initial investigation must name the uncertainty and decision it enables. Under
 including replacement and retained review/correction reserves. Bounded blocker
 feedback explains refusal without cascading, weakening eligibility, or refunding
 history. Server-owned correction/re-review remains unchanged.
+
+**Why native runtime stops remain separate from hard ceilings.** The staged
+`FACTORY_RUNTIME_METER_ENABLED` path binds usage to the existing physical result
+receipt, before invocation, under the control/pool/session lock order. It is off
+by default and supports only the configured Astra Codex adapter. Acknowledged
+cumulative counters are priced with a pinned table, retained across retries and
+readmissions, and reconciled with final AgentTurn cost without charging both.
+An interrupted prefix from before enrollment remains charged. Provider amounts,
+cash, subscription quota and unknown reservations remain separate.
+
+Missing acknowledgements terminate the current adapter; counter conflicts,
+unattributed descendants, or observed $500/session or $1,000/objective usage pause
+the task and request the existing exact-attempt stop owner. The normal conductor
+tick retries durable stop requests. Cancellation does not release reservations;
+the existing supervisor still requires exact guest cessation. This is an
+observed-usage stop only: the pinned Codex request has no output-token ceiling,
+and its rollout budget checks usage after requests finish. No tested maximum
+request exposure exists on the subscription endpoint. A strict hard cap needs
+a trusted request-boundary reservation before forwarding, including children,
+retries and compaction. Unknown request exposure must refuse dispatch. This
+draft does not change credential injection, egress policy, provider quotas or
+deployment configuration and must not be activated as a hard-cap guarantee.
+
+The human-only `factory_amend_policy` surface previews an exact paused receipt's
+task/turn allocations, planner/work caps, review rounds and timeout. Applying
+the preview requires its digest and an idempotent request key; control, graph,
+accounting or pending funding changes invalidate it. It refuses live or unknown
+execution, preserves prior grants, supersedes a stale pending funding review
+and records direction through the existing funding owner. It leaves the task
+paused, retains all history and existing node pins, and cannot change models,
+auto-merge, provider controls or the $200 objective allocation ceiling. A
+separate explicit resume follows a feasible replacement-plan review. Raising
+that objective ceiling still requires the missing request-boundary guarantee.

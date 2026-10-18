@@ -102,6 +102,17 @@ def prepare(**changes):
     return receipts.prepare_receipt(**(args | changes))
 
 
+def test_factory_meter_requires_receipts_without_enrolling_interactive_sessions(
+    monkeypatch,
+):
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
+    monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "true")
+    assert receipts.required("factory:task:node:1")
+    assert not receipts.required("interactive:one")
+    monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "false")
+    assert not receipts.required("factory:task:node:1")
+
+
 def capture(receipt, body=b'{"result":"native","terminal_reason":"end_turn"}'):
     return receipts.capture_result(receipt["id"], receipt["token"], body)
 

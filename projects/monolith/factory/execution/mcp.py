@@ -1102,7 +1102,7 @@ async def _execute_pending_message(session_id: int) -> None:
             }
             from factory.execution import result_receipts
 
-            if result_receipts.enabled():
+            if result_receipts.required(session_row.local_session_id):
                 deliver_kwargs["receipt_claim_owner"] = claim_owner
             if session_row.repo is not None:
                 deliver_kwargs["repo"] = session_row.repo

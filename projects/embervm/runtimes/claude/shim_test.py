@@ -2596,6 +2596,73 @@ def test_codex_turn_usage_sums_every_request_in_the_turn(tmp_path, monkeypatch):
     manager._close_process()
 
 
+@pytest.mark.parametrize("scenario", ["multi-request", "reset-mid-turn"])
+def test_runtime_meter_sends_normalized_cumulative_usage(
+    tmp_path, monkeypatch, scenario
+):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", scenario)
+    observed = []
+
+    class Meter:
+        def __init__(self, receipt):
+            assert receipt == {"fixture": True}
+
+        def send(self, usage, coverage="parent"):
+            observed.append((dict(usage), coverage))
+
+    monkeypatch.setattr(shim, "_RuntimeMeter", Meter)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    result = manager.turn("work", model="astra", runtime_meter={"fixture": True})
+    assert observed[0] == ({}, "parent")
+    assert observed[-1] == (result["usage"], "parent")
+    assert all(coverage == "parent" for _, coverage in observed)
+    manager._close_process()
+
+
+def test_runtime_meter_failure_kills_current_adapter_without_interrupt_deadlock(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "multi-request")
+
+    class Meter:
+        def __init__(self, receipt):
+            pass
+
+        def send(self, usage, coverage="parent"):
+            if usage:
+                raise RuntimeError("lost meter acknowledgement")
+
+    monkeypatch.setattr(shim, "_RuntimeMeter", Meter)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="lost meter acknowledgement"):
+        manager.turn("work", model="astra", runtime_meter={"fixture": True})
+    assert manager.process is None
+    assert manager._turn_done.is_set()
+
+
+def test_runtime_meter_sees_child_usage_before_parent_result_filter(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "wrong-identities")
+    observed = []
+
+    class Meter:
+        def __init__(self, receipt):
+            pass
+
+        def send(self, usage, coverage="parent"):
+            observed.append(coverage)
+            if coverage == "unknown":
+                raise RuntimeError("child attribution unavailable")
+
+    monkeypatch.setattr(shim, "_RuntimeMeter", Meter)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="child attribution unavailable"):
+        manager.turn("work", model="astra", runtime_meter={"fixture": True})
+    assert "unknown" in observed
+    assert manager.process is None
+
+
 def test_codex_thread_total_reset_mid_turn_keeps_every_request(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CODEX_SCENARIO", "reset-mid-turn")
     manager = _codex_manager(tmp_path, monkeypatch)

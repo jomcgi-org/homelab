@@ -327,7 +327,9 @@ async def run_synthetic_session(
         from factory.execution import result_receipts
 
         receipt_kwargs = (
-            {"receipt_claim_owner": claim_owner} if result_receipts.enabled() else {}
+            {"receipt_claim_owner": claim_owner}
+            if result_receipts.required(row.local_session_id)
+            else {}
         )
         deliver_started = time.monotonic()
         turn, _returned_ember = await transport.deliver(
