@@ -1796,8 +1796,8 @@ py3_image(
 # app/main_public_imports_test.py, so excluding their FILES cannot break the
 # public binary. Everything else (knowledge read API/store/models/public
 # routers, home read router/config/models, ships/stars/hikes/dr_jobs/shared)
-# stays in full. The pip deps mirror :monolith_backend wholesale: a missing
-# wheel would crash the public binary at startup, so trimming is a follow-up.
+# stays in full. Direct pip deps cover this pruned source closure; retained
+# dependencies still supply their own transitive wheels.
 _PUBLIC_PRUNE_EXCLUDE = [
     # Standard excludes (mirror :monolith_backend / :main).
     "**/*_test.py",
@@ -1896,8 +1896,8 @@ _PUBLIC_PRUNE_EXCLUDE = [
 # the entrypoint in a fresh process and PROVES that none of those private
 # modules enter its runtime closure, so excluding their FILES is safe: any new
 # eager dependency fails in CI before a later image can fail at startup. The
-# pip dependencies mirror :monolith_backend wholesale for now. Trimming wheels
-# is separate from enforcing the Python source boundary.
+# direct pip dependencies cover this pruned source closure, including lazy
+# imports in the outbox producer and raw store.
 _AGENTS_PRUNE_EXCLUDE = [
     # Standard production excludes (mirror :monolith_backend / :main).
     "**/*_test.py",
@@ -1984,16 +1984,12 @@ py_library(
     deps = [
         ":pkg_auth",
         "//projects/monolith/agent_kubernetes",
-        "@pip//astral",
-        "@pip//beautifulsoup4",
         "@pip//boto3",
         "@pip//certifi",
         "@pip//discord_py",
         "@pip//fastapi",
         "@pip//fastmcp",
         "@pip//httpx",
-        "@pip//icalendar",
-        "@pip//networkx",
         "@pip//opentelemetry_api",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
@@ -2003,14 +1999,11 @@ py_library(
         "@pip//psycopg",
         "@pip//psycopg_binary",
         "@pip//pydantic",
-        "@pip//pydantic_ai_slim",
         "@pip//pyjwt",
-        "@pip//python_multipart",
         "@pip//pyyaml",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//starlette",
-        "@pip//timelength",
         "@pip//tzdata",
         "@pip//uvicorn",
         "@pip//websockets",
@@ -2089,13 +2082,10 @@ py_library(
         "@pip//beautifulsoup4",
         "@pip//boto3",
         "@pip//certifi",
-        "@pip//discord_py",
         "@pip//fastapi",
         "@pip//fastmcp",
         "@pip//httpx",
         "@pip//icalendar",
-        "@pip//kubernetes_asyncio",
-        "@pip//networkx",
         "@pip//opentelemetry_api",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
@@ -2105,7 +2095,6 @@ py_library(
         "@pip//psycopg",
         "@pip//psycopg_binary",
         "@pip//pydantic",
-        "@pip//pydantic_ai_slim",
         "@pip//pyyaml",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
