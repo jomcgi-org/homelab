@@ -55,13 +55,11 @@ try {
         assert.equal(await page.locator(".md-nav").count(), 0);
         assert.equal(await page.locator("h1").count(), 1);
         await noOverflow();
-        const painted = await page
-          .locator("main")
-          .evaluate((element) => ({
-            background: getComputedStyle(element).backgroundColor,
-            ink: getComputedStyle(element).color,
-            font: getComputedStyle(element).fontFamily,
-          }));
+        const painted = await page.locator("main").evaluate((element) => ({
+          background: getComputedStyle(element).backgroundColor,
+          ink: getComputedStyle(element).color,
+          font: getComputedStyle(element).fontFamily,
+        }));
         assert.equal(
           painted.background,
           scheme === "light" ? "rgb(255, 255, 255)" : "rgb(24, 26, 32)",
@@ -136,12 +134,10 @@ try {
         0,
       );
       await noOverflow();
-      const legacyPaint = await page
-        .locator(".ember-site")
-        .evaluate((el) => ({
-          background: getComputedStyle(el).backgroundColor,
-          font: getComputedStyle(el).fontFamily,
-        }));
+      const legacyPaint = await page.locator(".ember-site").evaluate((el) => ({
+        background: getComputedStyle(el).backgroundColor,
+        font: getComputedStyle(el).fontFamily,
+      }));
       await page
         .getByRole("link", { name: "Legacy Nav fixture", exact: true })
         .click();
@@ -165,12 +161,10 @@ try {
       );
       await page.goto(`${base}/ember`, { waitUntil: "networkidle" });
       assert.deepEqual(
-        await page
-          .locator(".ember-site")
-          .evaluate((el) => ({
-            background: getComputedStyle(el).backgroundColor,
-            font: getComputedStyle(el).fontFamily,
-          })),
+        await page.locator(".ember-site").evaluate((el) => ({
+          background: getComputedStyle(el).backgroundColor,
+          font: getComputedStyle(el).fontFamily,
+        })),
         legacyPaint,
       );
       await page.goto(`${base}/?empty&banner`, { waitUntil: "networkidle" });
