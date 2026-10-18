@@ -6275,7 +6275,7 @@ def _audit_once(task_id: str, key: str, action: str, detail: dict) -> bool:
     return True
 
 
-def _settle_paused_task(task: dict, runs: list[dict]) -> bool:
+def _settle_paused_task(task: dict, policy: dict, runs: list[dict]) -> bool:
     """Observe terminal facts without resuming work or abandoning unknown starts.
 
     Called only after merged-delivery reconciliation: an owned merge wins over
@@ -6292,6 +6292,16 @@ def _settle_paused_task(task: dict, runs: list[dict]) -> bool:
         task["id"], ACTOR, observed="human" in _label_names(issue)
     ):
         return True
+    if issue.get("state") == "closed" or snapshot["limits"]["deadline_expired"]:
+        from factory.orchestration.factory_merged_delivery import (
+            reconcile_merged_delivery,
+        )
+
+        # The PR may have merged (and closed its issue) since the first read.
+        # Observe again after the terminal trigger so closure/expiry cannot
+        # mask that delivery. An unavailable merge read keeps the pause held.
+        if reconcile_merged_delivery(task, policy, runs):
+            return True
     if issue.get("state") == "closed":
         controls.finish_task(
             task["id"],
@@ -6449,7 +6459,7 @@ def reconcile_task(
         return
     permission = can_start(task_id)
     if not permission["ok"] and permission["reason"] == "task_paused":
-        if not _settle_paused_task(task, runs):
+        if not _settle_paused_task(task, policy, runs):
             # Legacy reconciler-pause expiry must not mask terminal facts.
             _expire_reconciler_pause(task_id)
         return
