@@ -102,13 +102,13 @@
     {
       "description": "First-party charts are owned by chart-version-bot, never Renovate.",
       "matchDepNames": [
-        "embervm",
-        "monolith",
-        "monolith-public",
-        "monolith-agents",
-        "context-forge",
-        "inference",
-        "oci-model-cache-operator"
+        "ghcr.io/jomcgi/homelab/charts/embervm",
+        "ghcr.io/jomcgi/homelab/charts/monolith",
+        "ghcr.io/jomcgi/homelab/charts/monolith-public",
+        "ghcr.io/jomcgi/homelab/charts/monolith-agents",
+        "ghcr.io/jomcgi/homelab/charts/context-forge",
+        "ghcr.io/jomcgi/homelab/charts/inference",
+        "ghcr.io/jomcgi/homelab/charts/oci-model-cache-operator"
       ],
       "enabled": false
     },

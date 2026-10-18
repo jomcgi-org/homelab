@@ -156,28 +156,61 @@ def test_all_renovate_update_types_keep_both_auto_merge_paths_disabled():
     visit(config)
 
 
-def test_first_party_chart_exclusions_cover_current_names_only():
-    config = json.loads((ROOT / "renovate.json").read_text())
+def _disabled_literal_dep_names(config: dict) -> set[str]:
     rules = [
-        rule
-        for rule in config["packageRules"]
-        if rule["description"]
-        == "First-party charts are owned by chart-version-bot, never Renovate."
+        rule for rule in config["packageRules"] if rule.get("enabled") is False
     ]
-    assert len(rules) == 1
-    assert rules[0] == {
-        "description": "First-party charts are owned by chart-version-bot, never Renovate.",
-        "matchDepNames": [
-            "embervm",
-            "monolith",
-            "monolith-public",
-            "monolith-agents",
-            "context-forge",
-            "inference",
-            "oci-model-cache-operator",
-        ],
-        "enabled": False,
-    }
+    names = set()
+    for rule in rules:
+        # No additional matcher may narrow these exclusions. For literal names,
+        # Renovate's matchRegexOrGlobList is a case-insensitive exact match.
+        assert set(rule) == {"description", "matchDepNames", "enabled"}
+        for name in rule["matchDepNames"]:
+            assert re.fullmatch(r"[a-zA-Z0-9:/._-]+", name), name
+            names.add(name.casefold())
+    return names
+
+
+def test_first_party_chart_exclusions_match_extracted_oci_names():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    disabled = _disabled_literal_dep_names(config)
+    charts = (
+        "embervm",
+        "monolith",
+        "monolith-public",
+        "monolith-agents",
+        "context-forge",
+        "inference",
+        "oci-model-cache-operator",
+    )
+    for chart in charts:
+        # Renovate 44.14.10 lib/modules/manager/argocd/extract.ts processSource
+        # emits registryURL/chart as depName with datasource=docker for an OCI
+        # repoURL, including protocol-less ghcr.io/jomcgi/homelab/charts.
+        dep_name = f"ghcr.io/jomcgi/homelab/charts/{chart}"
+        assert dep_name in disabled, f"First-party OCI dependency enabled: {dep_name}"
+
+        # An upstream Helm chart with the same short name must stay eligible,
+        # as must OCI charts outside this repository's exact registry path.
+        for upstream_name in (
+            chart,
+            f"ghcr.io/upstream/charts/{chart}",
+            f"ghcr.io/jomcgi/other/charts/{chart}",
+            f"registry.example.com/jomcgi/homelab/charts/{chart}",
+        ):
+            assert upstream_name not in disabled, upstream_name
+
+
+def test_upstream_chart_dependencies_remain_enabled():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    disabled = _disabled_literal_dep_names(config)
+    # Extracted depName values for upstream OCI and HTTPS Helm sources.
+    for dep_name in (
+        "ghcr.io/weave-hand/charts/loom",
+        "ghcr.io/ariga/charts/atlas-operator",
+        "cloudnative-pg",
+    ):
+        assert dep_name not in disabled, f"Upstream chart dependency disabled: {dep_name}"
 
 
 def test_self_source_exclusions_use_current_organization():
