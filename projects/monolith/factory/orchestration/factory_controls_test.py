@@ -108,6 +108,168 @@ def grant(task_id, key="one", **kwargs):
     )
 
 
+@pytest.mark.parametrize("path", ["allocation", "nonrenewable"])
+@pytest.mark.parametrize("prior", ["missing", "dismissed", "valid"])
+def test_automatic_pause_repairs_only_missing_questions(db, policy, path, prior):
+    from factory.orchestration import factory_allocation_recovery, factory_pause
+
+    task_id = admitted(policy)
+    controls.set_control("pause_task", "operator", task_id=task_id)
+    if prior == "valid":
+        factory_pause.pause(task_id, "test:original", "original reason")
+    with controls._locked_session() as (session, _control):
+        row = controls._receipt(session, task_id)
+        row.direction_json = json.dumps(
+            {"nonrenewable_recovery": True, "landing_hold": True}
+        )
+        if prior == "dismissed":
+            row.escalation_json = json.dumps(
+                {
+                    "task_id": task_id,
+                    "question": "Old question",
+                    "resolved": {"effect": "escape-dismiss"},
+                }
+            )
+    before = controls.task_snapshot(task_id)
+    assert bool(before["pause_warning"]) is (prior != "valid")
+
+    def invoke():
+        if path == "nonrenewable":
+            controls.pause_nonrenewable_recovery(task_id, "work_turns exhausted")
+        else:
+            with controls._locked_session() as (session, _control):
+                factory_allocation_recovery.pause(
+                    session,
+                    task_id,
+                    {"code": "funding_without_progress", "grant_id": 12},
+                )
+
+    invoke()
+    after = controls.task_snapshot(task_id)
+    view = controls.escalation_view(after)
+    assert after["task_paused"] and after["pause_warning"] is None
+    assert (
+        after["policy"] == before["policy"]
+        and after["direction"] == before["direction"]
+    )
+    assert view["open"] and not view["briefing"] and view["options"]
+    assert view["escape"] == []
+    if prior == "valid":
+        assert after["escalation"] == before["escalation"]
+    else:
+        assert f"factory:{path}-recovery" in view["question"]
+        assert (
+            "funding_without_progress"
+            if path == "allocation"
+            else "work_turns exhausted"
+        ) in view["reason"]
+    invoke()
+    assert controls.task_snapshot(task_id)["escalation"] == after["escalation"]
+
+
+def test_automatic_pause_and_question_roll_back_together(db, policy):
+    from factory.orchestration import factory_pause
+
+    task_id = admitted(policy)
+    with Session(db) as session:
+        with controls._locked_session(session):
+            assert factory_pause.pause_locked(
+                session, controls._receipt(session, task_id), "test", "refused"
+            )
+        session.rollback()
+    after = controls.task_snapshot(task_id)
+    assert not after["task_paused"] and after["escalation"] is None
+    with Session(db) as session:
+        assert not session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "paused_card_created")
+        ).all()
+
+
+@pytest.mark.parametrize(
+    "state",
+    ["succeeded", "cancelled", "escalated", "human", "cancelling", "review_hold"],
+)
+def test_automatic_pause_does_not_take_terminal_or_human_ownership(db, policy, state):
+    from factory.orchestration import factory_pause
+
+    task_id = admitted(policy)
+    with controls._locked_session() as (session, _control):
+        row = controls._receipt(session, task_id)
+        if state == "human":
+            item = WorkItem(
+                title="human",
+                state="active",
+                source_kind="github",
+                trust="untrusted",
+                labels=["human"],
+            )
+            session.add(item)
+            session.flush()
+            row.work_item_id = item.id
+        elif state == "cancelling":
+            row.cancellation_requested = True
+        elif state == "review_hold":
+            controls._audit(
+                session, "operator", "review_recovery_authorized", task_id=task_id
+            )
+        else:
+            row.state = state
+    assert not factory_pause.pause(task_id, "test", "must not replace ownership")
+    after = controls.task_snapshot(task_id)
+    assert not after["task_paused"] and after["escalation"] is None
+
+
+def test_automatic_pause_stop_is_local_and_keeps_unknown_reservations(
+    db, policy, monkeypatch
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    assert grant(task_id)["ok"]
+    assert factory_pause.pause(task_id, "test:actor", "exact reason")
+    before = controls.task_snapshot(task_id)
+    card = controls.escalation_view(before)
+    monkeypatch.setattr(decisions, "_github", lambda: pytest.fail("stop must be local"))
+    with pytest.raises(decisions.DecisionError, match="only offers stopping"):
+        decisions.apply_decision(
+            before["id"],
+            "escape:dismiss",
+            "operator",
+            expected_decision_id=card["decision_id"],
+        )
+    result = decisions.apply_decision(
+        before["id"], "stop", "operator", expected_decision_id=card["decision_id"]
+    )
+    assert result["resolution"]["effects"]["cancellation_requested"]
+    after = controls.task_snapshot(task_id)
+    assert after["task_paused"] and after["cancellation_requested"]
+    assert after["state"] == "admitted" and after["starts"] == before["starts"]
+    assert after["policy"] == before["policy"]
+    assert not decisions.apply_decision(
+        before["id"], "stop", "operator", expected_decision_id=card["decision_id"]
+    )["applied"]
+
+
+@pytest.mark.parametrize("transition", ["resume", "terminal", "stale_generation"])
+def test_pause_view_never_offers_a_refused_stop(db, policy, transition):
+    from factory.orchestration import factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test", "blocked")
+    if transition == "resume":
+        controls.set_control("resume_task", "operator", task_id=task_id)
+    else:
+        with controls._locked_session() as (session, control):
+            if transition == "terminal":
+                controls._receipt(session, task_id).state = "cancelled"
+            else:
+                control.policy_json = json.dumps({**policy, "generation": 1})
+    snapshot = controls.task_snapshot(task_id)
+    card = controls.escalation_view(snapshot)
+    assert not card["open"] and card["options"] == [] and card["escape"] == []
+    assert bool(snapshot["pause_warning"]) is (transition == "stale_generation")
+
+
 @pytest.mark.parametrize(
     "evidence",
     [None, {"state": "ready_for_review"}, {"state": "merged_review_missing"}],

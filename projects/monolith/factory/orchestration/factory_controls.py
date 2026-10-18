@@ -1744,10 +1744,11 @@ def pause_nonrenewable_recovery(task_id, reason, *, session=None) -> bool:
         row = _receipt(db, task_id)
         if not nonrenewable_recovery(row):
             return False
-        if row.state in _ACTIVE and not row.task_paused:
+        from factory.orchestration import factory_pause
+
+        if factory_pause.pause_locked(db, row, "factory:nonrenewable-recovery", reason):
             # This is an operator envelope, not an expiring reconciler pause.
             actor = "factory:nonrenewable-recovery"
-            set_control("pause_task", actor, task_id=task_id, session=db)
             _audit(
                 db,
                 actor,
@@ -1968,6 +1969,18 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
     # operator asked for more, so it belongs on the one snapshot they share.
     result["escalation"] = (
         json.loads(row.escalation_json) if row.escalation_json else None
+    )
+    from factory.orchestration import factory_pause
+
+    result["paused_card_actionable"] = factory_pause.actionable(
+        db, row, result["escalation"]
+    )
+    result["pause_warning"] = (
+        "active_paused_without_actionable_question"
+        if row.state in _ACTIVE
+        and row.task_paused
+        and not result["paused_card_actionable"]
+        else None
     )
     # The answer an operator gave to the previous task's escalation. The
     # planner prompt of the task this receipt was re-admitted for reads it on
@@ -2246,6 +2259,8 @@ def escalation_view(receipt: dict) -> dict | None:
     if not escalation:
         return None
     resolved = escalation.get("resolved")
+    automatic_pause = escalation.get("kind") == "automatic_pause"
+    pause_actionable = receipt.get("paused_card_actionable", False)
     return {
         "receipt_id": receipt.get("id"),
         "decision_id": decision_identity(receipt),
@@ -2283,7 +2298,8 @@ def escalation_view(receipt: dict) -> dict | None:
                 "closes": list((option.get("detail") or {}).get("closes") or []),
                 "in_favour_of": (option.get("detail") or {}).get("in_favour_of"),
             }
-            for option in escalation.get("options") or []
+            for option in (escalation.get("options") or [])
+            if not automatic_pause or pause_actionable
         ],
         "chat": [
             {
@@ -2309,14 +2325,16 @@ def escalation_view(receipt: dict) -> dict | None:
                 }
                 for option in ESCAPE_OPTIONS
             ]
-            if resolved is None
+            if resolved is None and not automatic_pause
             else []
         ),
         "resolved": resolved,
-        "open": resolved is None,
+        "open": resolved is None and (not automatic_pause or pause_actionable),
         # A brief running on this issue is a decision the server will refuse,
         # so the page reads this rather than offering buttons that 409.
-        "briefing": receipt.get("state") in _ACTIVE,
+        "briefing": receipt.get("state") in _ACTIVE
+        and not receipt.get("paused_card_actionable", False),
+        "pause_warning": receipt.get("pause_warning"),
         "work_item_id": receipt.get("work_item_id"),
     }
 

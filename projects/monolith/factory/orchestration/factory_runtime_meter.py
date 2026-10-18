@@ -25,7 +25,7 @@ from factory.execution.runtime_meter_evidence import (
     records_for_receipt as _records_for_receipt,
 )
 from factory.execution.models import AgentResultReceipt, AgentTurn
-from factory.orchestration import factory_controls as controls
+from factory.orchestration import factory_controls as controls, factory_pause
 from factory.orchestration.factory_funding_limits import objective_task_ids
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -324,12 +324,21 @@ def ingest(receipt_id, token, value):
         else:
             current_owners = (
                 [owner]
-                if (reason or trips) and owner.task_id == binding["task_id"]
+                if (reason or trips)
+                and owner is not None
+                and owner.task_id == binding["task_id"]
+                and active is not None
                 else []
             )
         for current_owner in current_owners:
-            current_owner.task_paused = True
-            current_owner.updated_at = controls._now()
+            factory_pause.pause_locked(
+                db,
+                current_owner,
+                "factory:runtime-meter",
+                "objective_list_backstop"
+                if objective_exceeded
+                else reason or trips[0]["reason"],
+            )
         stop = bool(reason or trips or active is None)
     # A failed external observation does not erase the committed trip. The
     # regular conductor tick retries through the same attempt-stop owner.
@@ -401,8 +410,9 @@ def reconcile(task_id):
             owner = db.get(FactoryReceipt, binding["objective_receipt_id"])
             if active is not None and owner is not None and owner.task_id == task_id:
                 _trip(db, binding, "meter_usage_stale")
-                owner.task_paused = True
-                owner.updated_at = controls._now()
+                factory_pause.pause_locked(
+                    db, owner, "factory:runtime-meter", "meter_usage_stale"
+                )
     with controls._read_session() as db:
         trips = _records(db, [task_id], (TRIP,))
     for trip in trips:

@@ -610,6 +610,135 @@ def test_changed_issue_body_supersedes_card_without_inferring_an_answer(
     assert resolution["effects"] == {"dismissed": True}
 
 
+def test_active_paused_body_rewrite_replaces_card_without_answer(
+    db, github, notices, monkeypatch
+):
+    task_id, _policy = admitted(ISSUE)
+    controls.set_control("pause_task", "test:pause", task_id=task_id)
+    conductor._record_escalation(
+        task_id,
+        {**pause(), "task_id": task_id, "options": pause_options(), "resolved": None},
+    )
+    before = controls.task_snapshot(task_id)
+    old_id = controls.decision_identity(before)
+    body = "Decision: only deliver the API path."
+    github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": body}})
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+
+    conductor.revalidate_escalations()
+
+    after = controls.task_snapshot(task_id)
+    view = controls.escalation_view(after)
+    assert after["task_paused"] and after["state"] == "admitted"
+    assert after["escalation"]["issue_body_sha256"] == controls.issue_body_hash(body)
+    assert view["open"] and not view["briefing"] and view["options"]
+    assert view["decision_id"] != old_id
+    assert after["escalation"]["resolved"] is None
+    assert audits(db, "paused_card_superseded")[0]["prior_decision_id"] == old_id
+    with pytest.raises(decisions.DecisionError, match="brief changed"):
+        decisions.apply_decision(
+            after["id"], "stop", "operator", expected_decision_id=old_id
+        )
+    conductor._last_escalation_revalidation = None
+    conductor.revalidate_escalations()
+    assert (
+        controls.decision_identity(controls.task_snapshot(task_id))
+        == view["decision_id"]
+    )
+    assert len(audits(db, "paused_card_superseded")) == 1
+    assert github.writes == []
+
+
+@pytest.mark.parametrize(
+    "transition",
+    [
+        "resume",
+        "resume_pause",
+        "answer",
+        "claimed",
+        "handoff",
+        "terminal",
+        "generation",
+        "replacement",
+    ],
+)
+def test_revalidation_cannot_overwrite_concurrent_pause_owner(
+    db, monkeypatch, transition
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from factory.orchestration import factory_pause
+
+    task_id, _policy = admitted(ISSUE)
+    factory_pause.pause(task_id, "test:pause", "blocked")
+    before = controls.task_snapshot(task_id)
+    decision_id = controls.decision_identity(before)
+    reading, release = Event(), Event()
+
+    def read(*_args):
+        reading.set()
+        assert release.wait(5)
+        return {ISSUE: {"state": "OPEN", "body": "Changed scope"}}
+
+    monkeypatch.setattr(conductor, "_github_issue_batch", read)
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(conductor.revalidate_escalations)
+        try:
+            assert reading.wait(5)
+            if transition in ("resume", "resume_pause"):
+                controls.set_control("resume_task", "operator", task_id=task_id)
+                if transition == "resume_pause":
+                    controls.set_control("pause_task", "operator", task_id=task_id)
+            elif transition == "answer":
+                decisions.apply_decision(
+                    before["id"], "stop", "operator", expected_decision_id=decision_id
+                )
+            elif transition == "claimed":
+                decisions._claim(
+                    before["id"], "stop", "operator", expected_decision_id=decision_id
+                )
+            elif transition == "handoff":
+                controls.human_handoff(task_id, "operator", observed=True)
+            else:
+                with controls._locked_session() as (session, control):
+                    row = controls._receipt(session, task_id)
+                    if transition == "terminal":
+                        row.state = "cancelled"
+                    elif transition == "replacement":
+                        row.task_id = None
+                        row.state = "queued"
+                    else:
+                        current = json.loads(control.policy_json)
+                        control.policy_json = json.dumps(
+                            {**current, "generation": current["generation"] + 1}
+                        )
+            expected = receipt_of(db, receipt_id=before["id"]).model_dump()
+        finally:
+            release.set()
+        pending.result(timeout=5)
+    assert receipt_of(db, receipt_id=before["id"]).model_dump() == expected
+    assert audits(db, "paused_card_superseded") == []
+
+
+@pytest.mark.parametrize(
+    "body", ["Untrusted issue body.", "  Untrusted\n\nissue\tbody.  "]
+)
+def test_active_pause_unchanged_body_is_identity_stable(db, monkeypatch, body):
+    from factory.orchestration import factory_pause
+
+    task_id, _policy = admitted(ISSUE)
+    factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": body}})
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+    for _ in range(2):
+        conductor._last_escalation_revalidation = None
+        conductor.revalidate_escalations()
+    assert controls.task_snapshot(task_id)["escalation"] == before["escalation"]
+    assert audits(db, "paused_card_superseded") == []
+
+
 def test_revalidation_repairs_preexisting_stale_terminal_cards_locally(
     db, github, notices, monkeypatch
 ):

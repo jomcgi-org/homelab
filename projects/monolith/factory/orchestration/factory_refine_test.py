@@ -287,6 +287,9 @@ def test_advisory_diagnosis_pauses_and_audits_without_a_node(db):
     conductor.reconcile_task(task["id"], policy, object())
     assert graph.load_graph(task["id"]) == []
     assert controls.task_snapshot(task["id"])["task_paused"] is True
+    card = controls.escalation_view(controls.task_snapshot(task["id"]))
+    assert card["open"] and not card["briefing"] and card["options"]
+    assert "advisory_class_unimplemented: advisory-diagnosis" in card["reason"]
     with Session(db) as session:
         audit = session.exec(
             select(FactoryAudit).where(
@@ -294,6 +297,23 @@ def test_advisory_diagnosis_pauses_and_audits_without_a_node(db):
             )
         ).one()
     assert json.loads(audit.detail_json)["task_class"] == "advisory-diagnosis"
+
+
+def test_refine_insertion_refusal_creates_question(db, monkeypatch):
+    task, policy = make_task()
+    monkeypatch.setattr(
+        conductor,
+        "_add",
+        lambda *_a, **_kw: graph.GraphOp(
+            ok=False, version=0, refusal_code="envelope_exceeded", detail="refused"
+        ),
+    )
+    refine.reconcile(task, policy, [], [], 0)
+    snapshot = controls.task_snapshot(task["id"])
+    card = controls.escalation_view(snapshot)
+    assert snapshot["task_paused"] and snapshot["pause_warning"] is None
+    assert card["open"] and not card["briefing"] and card["options"]
+    assert card["reason"] == "refine_insertion: envelope_exceeded"
 
 
 def test_verified_agent_ready_settles_succeeded(db, monkeypatch):

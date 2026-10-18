@@ -2940,6 +2940,11 @@ def test_planner_context_overflow_pauses_without_inserting_or_starting(
     assert conductor.graph.node_runs(task["id"]) == []
     after = controls.task_snapshot(task["id"])
     assert after["task_paused"] is overflow
+    if overflow:
+        card = controls.escalation_view(after)
+        assert card["open"] and not card["briefing"] and card["options"]
+        assert "factory:reconciler" in card["question"]
+        assert "required planner evidence cannot fit" in card["reason"]
     for field in (
         "policy",
         "deadline_at",
@@ -16515,6 +16520,9 @@ def test_nonrenewable_failed_last_attempt_pauses_without_retry_or_new_planner(
     monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
     conductor.reconcile_task(task["id"], policy, object())
     assert controls.task_snapshot(task["id"])["task_paused"]
+    card = controls.escalation_view(controls.task_snapshot(task["id"]))
+    assert card["open"] and not card["briefing"] and card["options"]
+    assert "factory:nonrenewable-recovery" in card["question"]
     assert not any(
         n["node_key"] == "conductor_9" for n in conductor.graph.load_graph(task["id"])
     )
@@ -16984,6 +16992,10 @@ def test_oversight_alone_cannot_renew_the_same_funding_blocker(
     )
     after = controls.task_snapshot(task["id"])
     assert after["task_paused"]
+    card = controls.escalation_view(after)
+    assert card["open"] and not card["briefing"] and card["options"]
+    assert "factory:allocation-recovery" in card["question"]
+    assert "funding_without_progress" in card["reason"]
     assert after["policy"] == before["policy"]
     assert after["committed_cost_usd"] == before["committed_cost_usd"]
     with controls._read_session() as db:
@@ -17713,6 +17725,57 @@ def test_completed_delivery_needs_no_new_funding_at_exhausted_limit(
         task, policy, runs, {"ok": False, "reason": "task_deadline"}
     )
     assert controls.task_snapshot(task["id"])["state"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    "path", ["planner_insertion", "dispatch", "context_authorization"]
+)
+def test_conductor_refusal_keeps_an_actionable_pause(feedback_db, monkeypatch, path):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = feedback_task()
+    if path == "planner_insertion":
+        monkeypatch.setattr(
+            conductor,
+            "_add_planner_with_manifest",
+            lambda *_a: conductor.graph.GraphOp(
+                ok=False, version=0, refusal_code="envelope_exceeded", detail="refused"
+            ),
+        )
+        conductor.reconcile_task(task["id"], policy, object())
+        expected = "planner_insertion: envelope_exceeded"
+    elif path == "context_authorization":
+
+        def refuse(*_args):
+            raise conductor.PlannerContextAuthorizationError("receipt binding changed")
+
+        monkeypatch.setattr(conductor, "_load_planner_factory_context", refuse)
+        conductor.reconcile_task(task["id"], policy, object())
+        expected = "receipt binding changed"
+    else:
+        monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
+        monkeypatch.setattr(conductor, "_slot_budget", lambda: 1)
+        monkeypatch.setattr(conductor, "hydration_branch", lambda _task: "main")
+        monkeypatch.setattr(conductor, "branch_hydration", lambda *_a: "main")
+        monkeypatch.setattr(conductor, "_dispatch_branch", lambda *_a: "factory/task")
+        monkeypatch.setattr(conductor, "fan_out_wave", lambda *_a: [])
+        monkeypatch.setattr(conductor, "reserve_node", lambda *_a, **_k: False)
+        node = {
+            "node_key": "implement_refused",
+            "deps": [],
+            "max_attempts": 1,
+            "max_cost_usd": 6,
+        }
+        assert not conductor._dispatch_ready(
+            task, [node], [], 1, fan_out=False, parallel=1
+        )
+        expected = "dispatch_refused: implement_refused: reservation_refused"
+    after = controls.task_snapshot(task["id"])
+    card = controls.escalation_view(after)
+    assert after["task_paused"] and after["pause_warning"] is None
+    assert card["open"] and not card["briefing"] and card["options"]
+    assert expected in card["reason"]
+    assert "factory:reconciler" in card["question"]
 
 
 def test_refused_dispatch_requests_reassessment_instead_of_pausing(

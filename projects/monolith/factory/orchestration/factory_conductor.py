@@ -454,7 +454,7 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
     here means every node prompt and every completion gate sees the same
     number, rather than each caller re-deriving it from the task text.
     """
-    from factory.orchestration.factory_models import FactoryReceipt
+    from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
 
     with nullcontext(session) if session is not None else Session(get_engine()) as db:
         task = db.get(SwarmTask, task_id)
@@ -479,6 +479,7 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
         granted_branch, granted_pr = granted_delivery_surface(direction)
         return {
             **task.model_dump(),
+            "factory_control_version": db.get(FactoryControl, "factory").version,
             "issue_number": (
                 None
                 if receipt is None or (direction or {}).get("dependency_review")
@@ -2986,6 +2987,10 @@ def revalidate_escalations() -> dict[str, int]:
                 {
                     "receipt_id": row.id,
                     "issue_number": row.issue_number,
+                    "task_id": row.task_id,
+                    "generation": row.generation,
+                    "control_version": control.version,
+                    "active": row.state in ("admitted", "uncertain"),
                     "body_hash": escalation.get("issue_body_sha256")
                     or issue_body_hash(row.body),
                     "decision_id": decision_identity(snapshot),
@@ -3032,6 +3037,17 @@ def revalidate_escalations() -> dict[str, int]:
                         "this escalation is superseded."
                     )
                 else:
+                    continue
+                if card["active"]:
+                    # A live pause is not an answered issue-text question.
+                    # Refresh under the control lock or leave it alone if a
+                    # concurrent operator/control transition won the race.
+                    from factory.orchestration import factory_pause
+
+                    if state == "open":
+                        factory_pause.refresh(
+                            card, issue.get("body"), ESCALATION_REVALIDATION_ACTOR
+                        )
                     continue
                 try:
                     result = decide(
@@ -6386,7 +6402,6 @@ def reconcile_task(
         operator_direction,
         parallel_limit,
         record_start_outcome,
-        set_control,
     )
 
     _consume_intervention_notifications(task_id)
@@ -6790,7 +6805,7 @@ def reconcile_task(
                 task_id,
                 exc,
             )
-            set_control("pause_task", ACTOR, task_id=task_id)
+            _pause_refusal(task, f"planner_context: {type(exc).__name__}: {exc}")
             return
         choice = select_model("conductor", policy)
         reason = selection_reason(
@@ -6811,10 +6826,18 @@ def reconcile_task(
             # the stored allowance stays in step with the graph revision.
             _record_allowance(task_id, policy, f"factory-plan:{key}")
         else:
-            set_control("pause_task", ACTOR, task_id=task_id)
+            _pause_refusal(task, f"planner_insertion: {result.refusal_code}")
         return
     _dispatch_ready(
         task, nodes, runs, parallel, fan_out=False, parallel=parallel, policy=policy
+    )
+
+
+def _pause_refusal(task: dict, reason: str) -> None:
+    from factory.orchestration import factory_pause
+
+    factory_pause.pause(
+        task["id"], ACTOR, reason, expected_version=task.get("factory_control_version")
     )
 
 
@@ -7177,8 +7200,6 @@ def _dispatch_ready(
     that gate; with a task ceiling of twelve that let delivery take every
     background slot the drainers and probes also draw from.
     """
-    from factory.orchestration.factory_controls import set_control
-
     ready = _ready_nodes(nodes, runs, funding_review=funding_review)
     if not ready or slots <= 0:
         return False
@@ -7346,7 +7367,8 @@ def _dispatch_ready(
 
             if pause_nonrenewable_recovery(
                 task_id,
-                f"Ready dispatch of {node_key} was refused within the operator envelope",
+                f"Ready dispatch of {node_key} was refused within the operator envelope: "
+                f"{getattr(reservation, 'refusal_code', 'reservation_refused')}",
             ):
                 pass
             elif factory_funding.enabled() or task.get("funding_enrolled", False):
@@ -7363,7 +7385,10 @@ def _dispatch_ready(
             ):
                 _escalate_dispatch_refusal(task, node_key, key, reservation, runs)
             elif not fan_out:
-                set_control("pause_task", ACTOR, task_id=task_id)
+                _pause_refusal(
+                    task,
+                    f"dispatch_refused: {node_key}: {getattr(reservation, 'refusal_code', 'reservation_refused')}",
+                )
         break
     return dispatched > 0
 
