@@ -6439,6 +6439,9 @@ def reconcile_task(
         # retry immediately because this tick proved both zero spend and no
         # external invocation.
         runs = graph.node_runs(task_id)
+        # Live graph runs can coexist with unresolved factory starts. Audit
+        # their aged pause before the active-run path returns, never settle it.
+        _expire_reconciler_pause(task_id, held_only=True)
         from factory.orchestration.factory_merged_delivery import (
             reconcile_merged_delivery,
         )
@@ -7481,7 +7484,8 @@ def _expire_reconciler_pause(task_id: str, *, held_only: bool = False) -> bool:
     """Expire a stale pause, or only audit its unresolved-start hold.
 
     The held-only path cannot settle a task, even if its starts became terminal
-    after the caller's snapshot. Live graph runs must never reach legacy expiry.
+    after the caller's snapshot. Settlement rechecks both ledgers and all pause
+    holds under control-then-task locks before legacy expiry can cancel work.
     """
     if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
         return False
@@ -7545,7 +7549,12 @@ def _expire_reconciler_pause(task_id: str, *, held_only: bool = False) -> bool:
                 {"ok": False, "reason": _quiescence_refusal(db, task_id)}
                 if held_only
                 else finish_task(
-                    task_id, "cancelled", ACTOR, evidence=evidence, session=db
+                    task_id,
+                    "cancelled",
+                    ACTOR,
+                    evidence=evidence,
+                    session=db,
+                    paused_trigger="reconciler_pause_expired",
                 )
             )
             if not result["ok"] and result.get("reason") == "unresolved_starts":

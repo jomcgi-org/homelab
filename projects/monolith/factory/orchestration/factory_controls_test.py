@@ -137,7 +137,9 @@ def test_paused_success_requires_observed_merge_evidence(db, policy):
     ) == {"ok": False, "reason": "merged_delivery_unverified"}
 
 
-@pytest.mark.parametrize("trigger", ["deadline", "objective_closed", "merged"])
+@pytest.mark.parametrize(
+    "trigger", ["deadline", "objective_closed", "reconciler_pause_expired", "merged"]
+)
 @pytest.mark.parametrize("blocker", ["reserved", "uncertain", "admitted", "dispatched"])
 def test_paused_settlement_primitive_rechecks_both_ledgers(
     db, policy, monkeypatch, trigger, blocker
@@ -169,11 +171,13 @@ def test_paused_settlement_primitive_rechecks_both_ledgers(
         "merged": "merged_reviewed",
         "deadline": "conductor_escalated",
         "objective_closed": "objective_closed",
+        "reconciler_pause_expired": "reconciler_pause_expired",
     }[trigger]
     outcome = {
         "merged": "succeeded",
         "deadline": "escalated",
         "objective_closed": "cancelled",
+        "reconciler_pause_expired": "cancelled",
     }[trigger]
     result = controls.finish_task(
         task, outcome, "reconciler", evidence={"state": state}, **kwargs

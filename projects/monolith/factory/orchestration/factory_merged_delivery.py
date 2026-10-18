@@ -24,6 +24,8 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
         ]
     )
     granted = conductor.delivery_pr_number(task)
+    if number is None:
+        number = granted
     if number is None or (granted is not None and granted != number):
         return False
 

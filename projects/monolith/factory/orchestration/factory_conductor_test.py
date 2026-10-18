@@ -195,17 +195,10 @@ def test_paused_dependency_review_deadline_releases_slot_without_issue_card(
         assert after["evidence"]["state"] == "task_deadline"
 
 
-@pytest.mark.parametrize(
-    "blocker", [None, "reserved", "uncertain", "admitted", "dispatched", "settled"]
-)
-def test_tick_aged_reconciler_pause_records_hold_without_settling_live_work(
-    paused_settlement, monkeypatch, blocker
-):
+def age_reconciler_pause(s, monkeypatch):
     from datetime import datetime, timedelta, timezone
-    from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import FactoryAudit
 
-    s = paused_settlement
     monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     with Session(s.engine) as db, db.begin():
         pause = db.exec(
@@ -218,8 +211,34 @@ def test_tick_aged_reconciler_pause_records_hold_without_settling_live_work(
         pause.created_at = datetime.now(timezone.utc) - timedelta(
             seconds=conductor.FACTORY_RECONCILER_PAUSE_TTL_SECONDS + 1
         )
+
+
+@pytest.mark.parametrize(
+    "blocker",
+    [
+        None,
+        "reserved",
+        "uncertain",
+        "admitted",
+        "dispatched",
+        "reserved+admitted",
+        "reserved+dispatched",
+        "uncertain+admitted",
+        "uncertain+dispatched",
+        "settled",
+    ],
+)
+def test_tick_aged_reconciler_pause_records_hold_without_settling_live_work(
+    paused_settlement, monkeypatch, blocker
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    age_reconciler_pause(s, monkeypatch)
     if blocker:
-        pause_blocker(s, "uncertain" if blocker == "settled" else blocker)
+        for ledger_blocker in blocker.split("+"):
+            pause_blocker(s, "uncertain" if blocker == "settled" else ledger_blocker)
     if blocker == "settled":
         expire = conductor._expire_reconciler_pause
 
@@ -252,9 +271,151 @@ def test_tick_aged_reconciler_pause_records_hold_without_settling_live_work(
                 FactoryAudit.action == "reconciler_pause_expiry_held",
             )
         ).all()
-        assert len(held) == (1 if blocker in ("reserved", "uncertain") else 0)
+        assert len(held) == (
+            1 if (blocker or "").split("+")[0] in ("reserved", "uncertain") else 0
+        )
         if held:
             assert json.loads(held[0].detail_json)["refusal"] == "unresolved_starts"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "reserved",
+        "uncertain",
+        "admitted",
+        "dispatched",
+        "landing_hold",
+        "cancellation",
+        "review_recovery",
+        "stop",
+        "resume",
+        "settled",
+    ],
+)
+def test_legacy_pause_expiry_rechecks_changes_during_issue_read(
+    paused_settlement, monkeypatch, change
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    age_reconciler_pause(s, monkeypatch)
+    reader = conductor.github_get
+    seen = []
+    snapshots = []
+
+    def injected(repo, path):
+        if path == "issues/7":
+            seen.append(path)
+            if len(seen) == 2:  # After ownership and quiescence preflight.
+                if change in ("reserved", "uncertain", "admitted", "dispatched"):
+                    pause_blocker(s, change)
+                elif change == "review_recovery":
+                    monkeypatch.setattr(
+                        controls, "review_recovery_held", lambda *a, **kw: True
+                    )
+                elif change == "stop":
+                    assert controls.set_control("stop", "operator")["ok"]
+                elif change == "resume":
+                    assert controls.set_control(
+                        "resume_task", "operator", task_id=s.task["id"]
+                    )["ok"]
+                else:
+                    with Session(s.engine) as db, db.begin():
+                        receipt = controls._receipt(db, s.task["id"])
+                        if change == "landing_hold":
+                            receipt.direction_json = (
+                                '{"landing_hold":{"actor":"operator"}}'
+                            )
+                        elif change == "settled":
+                            receipt.state = "escalated"
+                        else:
+                            receipt.cancellation_requested = True
+                snapshots.append(controls.task_snapshot(s.task["id"]))
+        return reader(repo, path)
+
+    monkeypatch.setattr(conductor, "github_get", injected)
+    conductor.tick()
+    assert len(snapshots) == 1
+    for _ in range(2):
+        assert not conductor._expire_reconciler_pause(s.task["id"])
+    after = controls.task_snapshot(s.task["id"])
+    before = snapshots[0]
+    for field in ("state", "task_paused", "starts", "committed_cost_usd", "evidence"):
+        assert after[field] == before[field]
+    assert not s.cards
+    with Session(s.engine) as db:
+        assert not db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action.in_(("finish_task", "reconciler_pause_expired")),
+            )
+        ).all()
+
+
+@pytest.mark.parametrize("paused_settlement", ["empty"], indirect=True)
+@pytest.mark.parametrize("merged", ["before_tick", "during_issue_read", "unmerged"])
+def test_paused_granted_pr_without_implementation_observes_merge(
+    paused_settlement, monkeypatch, merged
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    s.pr["head"]["ref"] = "factory/existing-delivery"
+    with Session(s.engine) as db, db.begin():
+        receipt = controls._receipt(db, s.task["id"])
+        receipt.direction_json = json.dumps(
+            {"delivery_pr_number": 3, "delivery_branch": s.pr["head"]["ref"]}
+        )
+    assert conductor.graph.node_runs(s.task["id"]) == []
+    s.issue["state"] = "closed"
+    if merged == "before_tick":
+        s.pr.update(state="closed", merged=True)
+    reader = conductor.github_get
+    seen = []
+
+    def injected(repo, path):
+        seen.append(path)
+        if (
+            merged == "during_issue_read"
+            and path == "issues/7"
+            and seen.count(path) == 2
+        ):
+            s.pr.update(state="closed", merged=True)
+        return reader(repo, path)
+
+    monkeypatch.setattr(conductor, "github_get", injected)
+    for _ in range(3):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert "pulls/3" in seen
+    assert after["state"] == ("cancelled" if merged == "unmerged" else "escalated")
+    assert after["evidence"]["state"] == (
+        "objective_closed" if merged == "unmerged" else "merged_review_missing"
+    )
+    assert after["task_paused"]
+    with Session(s.engine) as db:
+        observed = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "owned_pr_merged",
+            )
+        ).all()
+        assert bool(observed) is (merged != "unmerged")
+        if observed:
+            assert json.loads(observed[0].detail_json)["pr_number"] == 3
+            assert (
+                json.loads(observed[0].detail_json)["head_sha"] == s.pr["head"]["sha"]
+            )
+        settlements = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "finish_task",
+            )
+        ).all()
+        assert len(settlements) == 1
 
 
 @pytest.mark.parametrize("failure", [404, 410, "oversized"])
