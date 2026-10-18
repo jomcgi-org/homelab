@@ -3450,11 +3450,17 @@ def test_configured_fleets_fit_separate_uid_blocks(staged_hub_dev) -> None:
         if c["name"] == "noded"
     }
     assert prod_bases == {0} and dev_bases == {20}
+
     def configured_bricks(documents):
-        (control,) = [c for _, c in _containers(documents) if c["name"] == "control-plane"]
+        (control,) = [
+            c for _, c in _containers(documents) if c["name"] == "control-plane"
+        ]
         classes = json.loads(_plain_env(control)["EMBERVM_BRICK_CLASSES"])
         for doc in documents:
-            if doc["kind"] == "Deployment" and "-noded-brick-" in doc["metadata"]["name"]:
+            if (
+                doc["kind"] == "Deployment"
+                and "-noded-brick-" in doc["metadata"]["name"]
+            ):
                 assert doc["spec"]["strategy"]["rollingUpdate"]["maxSurge"] == 0
         return sum(
             max(c["desired"], c["min"], c["max"], c["ceiling_bound"]) + c["floors"]
