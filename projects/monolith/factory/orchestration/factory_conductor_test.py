@@ -3944,13 +3944,22 @@ def _aged_pause(queued_factory, monkeypatch, actor, *, unresolved=False):
     return s
 
 
-def test_reconciler_pause_older_than_ttl_cancels_task(queued_factory, monkeypatch):
+def test_reconciler_pause_older_than_ttl_waits_for_graph_settlement(
+    queued_factory, monkeypatch
+):
     import json
     from sqlmodel import Session, select
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.models import SwarmNodeRun
 
     s = _aged_pause(queued_factory, monkeypatch, conductor.ACTOR)
+
+    assert not conductor._expire_reconciler_pause(s.task["id"])
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "admitted" and snapshot["task_paused"]
+    with Session(s.engine) as db, db.begin():
+        db.get(SwarmNodeRun, s.run["id"]).status = "failed"
 
     assert conductor._expire_reconciler_pause(s.task["id"])
     assert controls.task_snapshot(s.task["id"])["state"] == "cancelled"
