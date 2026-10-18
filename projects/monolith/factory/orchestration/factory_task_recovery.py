@@ -106,6 +106,9 @@ def _preview(db, control, receipt_id, deadline_at, max_work_turns, direction, is
         raise ValueError("recovery_requires_expired_settlement")
     if grant(db, row.task_id) or controls.review_recovery_held(row.task_id, session=db):
         raise ValueError("recovery_already_authorized")
+    landing_deadline = controls._landing_recovery_deadline(db, row.task_id)
+    if landing_deadline is not None and deadline > landing_deadline:
+        raise ValueError("recovery_exceeds_landing_deadline")
     refusal = controls._quiescence_refusal(db, row.task_id)
     if refusal:
         raise ValueError("recovery_" + refusal)
@@ -256,6 +259,17 @@ def apply(
         }
         row.escalation_json = controls._json(escalation)
         row.state, row.task_paused, row.updated_at = "admitted", True, controls._now()
+        # This is a new operator-owned pause. Retaining only an older conductor
+        # pause would let its legacy expiry cancel recovery before explicit resume.
+        controls._audit(
+            db,
+            actor,
+            "pause_task",
+            task_id=row.task_id,
+            ok=True,
+            reason="Operator recovery awaits explicit resume.",
+            recovery_request_key=request_key,
+        )
         task.start_state, task.settled_at = "factory", None
         task.start_updated_at = controls._now()
         pending = funding.pending(db, row.task_id)
