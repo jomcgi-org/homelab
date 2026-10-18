@@ -39,6 +39,11 @@ def try_grant(
     """Bind one grant and its two nodes in the same control/graph transaction."""
     from factory.orchestration import factory_conductor as conductor
 
+    if controls.pause_nonrenewable_recovery(
+        task["id"],
+        "Automatic correction allowance extension is outside the operator envelope",
+    ):
+        return False, "nonrenewable_recovery"
     if not enabled():
         return False, "disabled"
     existing = controls.continuation_grant(task["id"])
@@ -61,6 +66,12 @@ def try_grant(
     observed_at = controls._now()
     with controls._locked_session() as (db, control):
         row = controls._receipt(db, task["id"])
+        if controls.pause_nonrenewable_recovery(
+            task["id"],
+            "Automatic correction allowance extension is outside the operator envelope",
+            session=db,
+        ):
+            return False, "nonrenewable_recovery"
         if row is None:
             return False, "continuation_control_refused"
         existing = controls.continuation_grant(task["id"], session=db)

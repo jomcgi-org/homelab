@@ -36,11 +36,16 @@ def _preview(db, control, receipt_id, overlay, direction):
     if (
         not isinstance(overlay, dict)
         or not overlay
-        or not set(overlay) <= FIELDS | {"landing_hold"}
+        or not set(overlay) <= FIELDS | {"landing_hold", "nonrenewable_recovery"}
     ):
         raise ValueError("unsupported_policy_amendment")
     if "landing_hold" in overlay and overlay["landing_hold"] is not True:
         raise ValueError("landing_hold_can_only_be_added")
+    if (
+        "nonrenewable_recovery" in overlay
+        and overlay["nonrenewable_recovery"] is not True
+    ):
+        raise ValueError("nonrenewable_recovery_can_only_be_added")
     direction = controls._text(direction, "direction", 4000)
     row = db.get(FactoryReceipt, receipt_id)
     if (
@@ -122,6 +127,8 @@ def _preview(db, control, receipt_id, overlay, direction):
         "auto_merge": policy.get("auto_merge", False),
         "landing_hold": controls.landing_held(row)
         or overlay.get("landing_hold", False),
+        "nonrenewable_recovery": controls.nonrenewable_recovery(row)
+        or overlay.get("nonrenewable_recovery", False),
         "runtime_hard_ceiling_enforced": False,
     }
     result["preview_sha256"] = hashlib.sha256(
@@ -162,10 +169,12 @@ def apply(
             raise ValueError("policy_amendment_preview_changed")
         row = db.get(FactoryReceipt, receipt_id)
         task = graph._lock_task(db, row.task_id)
-        if overlay.get("landing_hold"):
+        for hold in ("landing_hold", "nonrenewable_recovery"):
+            if not overlay.get(hold):
+                continue
             previous_direction = json.loads(row.direction_json or "{}")
             previous_direction.setdefault(
-                "landing_hold",
+                hold,
                 {
                     "actor": actor,
                     "request_key": request_key,

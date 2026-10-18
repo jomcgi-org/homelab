@@ -1698,6 +1698,32 @@ def landing_held(row) -> bool:
     return "landing_hold" in direction
 
 
+def nonrenewable_recovery(row) -> bool:
+    """Only an explicit operator amendment makes this receipt nonrenewable."""
+    direction = json.loads(row.direction_json or "{}") if row is not None else {}
+    return "nonrenewable_recovery" in direction
+
+
+def pause_nonrenewable_recovery(task_id, reason, *, session=None) -> bool:
+    """Keep a bounded recovery on durable operator hold, without a renewal."""
+    with _locked_session(session) as (db, _control):
+        row = _receipt(db, task_id)
+        if not nonrenewable_recovery(row):
+            return False
+        if row.state in _ACTIVE and not row.task_paused:
+            # This is an operator envelope, not an expiring reconciler pause.
+            actor = "factory:nonrenewable-recovery"
+            set_control("pause_task", actor, task_id=task_id, session=db)
+            _audit(
+                db,
+                actor,
+                "nonrenewable_recovery_paused",
+                task_id=task_id,
+                reason=reason[:1000],
+            )
+        return True
+
+
 def continuation_grant(task_id: str, *, session: Session | None = None) -> dict | None:
     """Read the one permanent grant, independently of current rollout flags."""
     with _read_session(session) as db:

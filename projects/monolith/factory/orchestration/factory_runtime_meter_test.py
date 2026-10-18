@@ -645,8 +645,10 @@ def test_unenrolled_factory_adapters_keep_existing_receipt_behavior(
         assert meter._records_for_receipt(db, receipt["id"], meter.BOUND) == []
 
 
-def test_receipt_landing_hold_is_sticky_without_changing_budget_or_other_direction(
+@pytest.mark.parametrize("hold", ["landing_hold", "nonrenewable_recovery"])
+def test_receipt_hold_is_sticky_without_changing_budget_or_other_direction(
     database,
+    hold,
 ):
     from factory.orchestration import factory_policy_amendment as amendments
     from factory.orchestration import factory_decisions as decisions
@@ -659,13 +661,13 @@ def test_receipt_landing_hold_is_sticky_without_changing_budget_or_other_directi
     with Session(database) as db, db.begin():
         db.get(FactoryReceipt, 838).direction_json = json.dumps(direction)
     for key, overlay in (
-        ("hold", {"landing_hold": True}),
+        ("hold", {hold: True}),
         ("later", {"max_planner_turns": 10}),
     ):
         proposal = amendments.preview(
             838, overlay, "Leave the reviewed PR unmerged with auto-merge off."
         )
-        assert proposal["landing_hold"] is True
+        assert proposal[hold] is True
         amendments.apply(
             838,
             overlay,
@@ -678,8 +680,11 @@ def test_receipt_landing_hold_is_sticky_without_changing_budget_or_other_directi
         row = db.get(FactoryReceipt, 838)
         stored = json.loads(row.direction_json)
         assert all(stored[key] == value for key, value in direction.items())
-        assert stored["landing_hold"]["request_key"] == "hold"
-        assert row.task_paused and controls.landing_held(row)
+        assert stored[hold]["request_key"] == "hold"
+        assert row.task_paused
+        assert getattr(controls, "landing_held" if hold == "landing_hold" else hold)(
+            row
+        )
         assert db.get(SwarmTask, "task").budget_usd == 50
         renewed = decisions._direction(
             row,
@@ -688,9 +693,9 @@ def test_receipt_landing_hold_is_sticky_without_changing_budget_or_other_directi
             "operator",
             "continue",
         )
-        assert renewed["landing_hold"] == stored["landing_hold"]
-    with pytest.raises(ValueError, match="landing_hold_can_only_be_added"):
-        amendments.preview(838, {"landing_hold": False}, "remove hold")
+        assert renewed[hold] == stored[hold]
+    with pytest.raises(ValueError, match=f"{hold}_can_only_be_added"):
+        amendments.preview(838, {hold: False}, "remove hold")
 
 
 def test_delayed_terminal_replay_keeps_completed_proof_and_conflicts_still_trip(

@@ -990,11 +990,16 @@ async def factory_amend_policy(
     and planner turn caps, review rounds and the task timeout can change.
     Add landing_hold true to retain a reviewed unmerged delivery. This hold
     is sticky and cannot be released by this operation.
+    Add nonrenewable_recovery true to prohibit automatic funding or allowance
+    extensions. Set max_planner_turns to the consumed count plus the authorized
+    attempts. The final planner result goes through normal server admission.
+    rejection pauses the same task without another planner or funding review.
+    This restriction is sticky. Further bounds require another human amendment.
     The $200 cumulative objective allocation ceiling remains binding. This
     changes neither provider/global limits nor the $500/$1000 emergency limits.
     A successful amendment supersedes stale funding review and records planner
     direction, but leaves the same task paused and every existing node pin
-    unchanged. Review a feasible replacement plan before explicitly resuming.
+    unchanged. Review the bounded amendment before explicitly resuming.
     """
     principal = current_principal()
     refusal = _refuse(principal)
