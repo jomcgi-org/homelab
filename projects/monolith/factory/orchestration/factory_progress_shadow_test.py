@@ -16,7 +16,7 @@ from factory.orchestration.factory_models import (
     FactoryReceipt,
     FactoryStart,
 )
-from factory.orchestration.models import SwarmNodeRun, SwarmTask
+from factory.orchestration.models import SwarmNodeRun, SwarmPlanNode, SwarmTask
 
 
 @pytest.mark.parametrize("kind", sorted(shadow.SEMANTIC_KINDS))
@@ -118,6 +118,8 @@ def test_unknown_failed_preflight_and_active_exposure_are_never_refunded():
     assert report["known_list_usd"] == 1
     assert report["unknown_or_reserved_exposure_usd"] == 11
     assert report["sessions"][0]["unpriced_turns"] == 1
+    assert report["sessions"][0]["unbounded_unknown_usage"]
+    assert report["sessions"][1]["unbounded_unknown_usage"]
     assert report["sessions"][2]["unbounded_unknown_usage"]
     assert report["sessions"][2]["missing_turns"]
 
@@ -148,6 +150,7 @@ def db(tmp_path, monkeypatch):
                 FactoryStart,
                 FactoryAudit,
                 SwarmNodeRun,
+                SwarmPlanNode,
                 AgentSession,
                 AgentTurn,
             )
@@ -266,7 +269,14 @@ def test_shadow_observes_below_spend_gate_without_model_or_control_mutations(
     monkeypatch.setattr(
         watchdog, "assess", lambda *a, **kw: pytest.fail("shadow called paid judge")
     )
-    assert watchdog.check("current", POLICY) == "disabled"
+    with Session(db) as session:
+        for row in session.exec(select(FactoryStart)).all():
+            row.cost_usd = 0
+        session.commit()
+    assert (
+        watchdog.check("current", {**POLICY, "progress_watchdog": {"enabled": True}})
+        == "under_threshold"
+    )
     assert watchdog.check("current", POLICY) == "disabled"
     with Session(db) as session:
         audits = session.exec(
@@ -285,6 +295,70 @@ def test_shadow_disabled_does_not_read_or_write_new_state(db, monkeypatch):
     )
     assert watchdog.check("current", POLICY) == "disabled"
     with Session(db) as session:
+        assert (
+            session.exec(
+                select(FactoryAudit).where(FactoryAudit.action == shadow.ACTION)
+            ).all()
+            == []
+        )
+
+
+def test_collector_keeps_blobs_out_of_price_reads_and_marks_unpriced_supervision(db):
+    from sqlalchemy import event
+
+    queries = []
+    event.listen(
+        db,
+        "before_cursor_execute",
+        lambda conn, cursor, statement, parameters, context, executemany: (
+            queries.append(statement)
+        ),
+    )
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                task_id="old",
+                actor="factory:watchdog",
+                action="watchdog_assessed",
+                detail_json='{"cost_usd":null}',
+            )
+        )
+        session.commit()
+        result = shadow.snapshot(session, session.get(FactoryReceipt, 838), POLICY)
+        assert result["prices"]["unpriced_supervision_assessments"] == 1
+    turn_queries = [
+        query for query in queries if "SELECT" in query and "agent_turns" in query
+    ]
+    assert len(turn_queries) == 1
+    assert all(
+        field not in turn_queries[0]
+        for field in (
+            "diff_blob",
+            "artifact_blob",
+            "result_text",
+            "prompt",
+            "usage_json",
+        )
+    )
+
+
+def test_shadow_failure_does_not_disable_legacy_watchdog_or_resume(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_PROGRESS_SHADOW_ENABLED", "true")
+
+    def broken(*args):
+        raise ValueError("unreadable candidate evidence")
+
+    monkeypatch.setattr(shadow, "snapshot", broken)
+    with Session(db) as session:
+        for row in session.exec(select(FactoryStart)).all():
+            row.cost_usd = 0
+        session.commit()
+    assert (
+        watchdog.check("current", {**POLICY, "progress_watchdog": {"enabled": True}})
+        == "under_threshold"
+    )
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, 838).task_paused
         assert (
             session.exec(
                 select(FactoryAudit).where(FactoryAudit.action == shadow.ACTION)

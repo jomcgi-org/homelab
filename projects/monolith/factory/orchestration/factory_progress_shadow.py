@@ -106,7 +106,9 @@ def _amount(value):
     )
 
 
-def price_projection(starts, turns, *, session_ids=(), supervision_list_usd=0.0):
+def price_projection(
+    starts, turns, *, session_ids=(), supervision_list_usd=0.0, unpriced_supervision=0
+):
     """Deduplicate native turns; keep reservations and unpriced work visible.
 
     AgentTurn.list_cost_usd already includes drain continuations. Provider
@@ -152,7 +154,13 @@ def price_projection(starts, turns, *, session_ids=(), supervision_list_usd=0.0)
                 else None,
                 "unpriced_turns": sum(value is None for value in listed),
                 "missing_turns": not session_turns,
-                "unbounded_unknown_usage": (not listed or None in listed) and held == 0,
+                # A reservation is accounting, never a bound on unmetered work.
+                "unbounded_unknown_usage": not listed
+                or None in listed
+                or any(
+                    start.status in ("reserved", "uncertain")
+                    for start in owners[session_id]
+                ),
                 "unknown_or_reserved_exposure_usd": round(held, 6),
                 "proposed_backstop_usd": SESSION_BACKSTOP_USD,
                 "observed_backstop_exceeded": known >= SESSION_BACKSTOP_USD,
@@ -169,6 +177,7 @@ def price_projection(starts, turns, *, session_ids=(), supervision_list_usd=0.0)
         "sessions": sessions,
         "known_list_usd": round(known, 6),
         "supervision_list_usd": round(supervision_list_usd, 6),
+        "unpriced_supervision_assessments": unpriced_supervision,
         "unknown_or_reserved_exposure_usd": round(unknown, 6),
         "proposed_objective_backstop_usd": OBJECTIVE_BACKSTOP_USD,
         "observed_objective_backstop_exceeded": known >= OBJECTIVE_BACKSTOP_USD,
@@ -194,11 +203,18 @@ def snapshot(db, receipt, policy):
     starts = db.exec(
         select(FactoryStart).where(FactoryStart.task_id.in_(task_ids))
     ).all()
-    runs = db.exec(select(SwarmNodeRun).where(SwarmNodeRun.task_id.in_(task_ids))).all()
-    tasks = db.exec(select(SwarmTask).where(SwarmTask.id.in_(task_ids))).all()
+    runs = db.exec(
+        select(SwarmNodeRun.id, SwarmNodeRun.session_id, SwarmNodeRun.status).where(
+            SwarmNodeRun.task_id.in_(task_ids)
+        )
+    ).all()
+    tasks = db.exec(
+        select(SwarmTask.session_id).where(SwarmTask.id.in_(task_ids))
+    ).all()
     session_ids = {
-        row.session_id for row in [*starts, *runs, *tasks] if row.session_id is not None
+        row.session_id for row in [*starts, *runs] if row.session_id is not None
     }
+    session_ids.update(session_id for session_id in tasks if session_id is not None)
     # The same local-session links as #6716, including sessions whose response
     # was lost before the start/run association could be written.
     if task_ids:
@@ -216,8 +232,15 @@ def snapshot(db, receipt, policy):
                 )
             ).all()
         )
+    # Keep transcripts and potentially multi-MB artifacts out of serial ticks.
+    # Scalar projection still counts every attributed turn without truncation.
     turns = db.exec(
-        select(AgentTurn).where(AgentTurn.session_id.in_(session_ids))
+        select(
+            AgentTurn.session_id,
+            AgentTurn.seq,
+            AgentTurn.list_cost_usd,
+            AgentTurn.cost_usd,
+        ).where(AgentTurn.session_id.in_(session_ids))
     ).all()
     audits = db.exec(
         select(FactoryAudit)
@@ -233,6 +256,11 @@ def snapshot(db, receipt, policy):
         _amount(_detail(row).get("cost_usd")) or 0
         for row in audits
         if row.action == "watchdog_assessed"
+    )
+    unpriced_supervision = sum(
+        row.action == "watchdog_assessed"
+        and _amount(_detail(row).get("cost_usd")) is None
+        for row in audits
     )
     facts = []
     for row in audits:
@@ -262,7 +290,11 @@ def snapshot(db, receipt, policy):
             facts, authority_blocked=receipt.task_paused, waiting=active
         ),
         "prices": price_projection(
-            starts, turns, session_ids=session_ids, supervision_list_usd=supervision
+            starts,
+            turns,
+            session_ids=session_ids,
+            supervision_list_usd=supervision,
+            unpriced_supervision=unpriced_supervision,
         ),
         "binding_limits": {
             "task_budget_usd": policy["task_budget_usd"],
