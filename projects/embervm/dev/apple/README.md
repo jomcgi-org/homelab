@@ -1,6 +1,6 @@
 # Apple Silicon development
 
-Run a local HTTP scan server backed by the real EmberVM Firecracker driver.
+Run a local synthetic HTTP server backed by the real EmberVM Firecracker driver.
 The persistent Linux host has 4 vCPUs and 10 GiB RAM. The server keeps four ARM
 microVM slots, each with 1 vCPU and 1536 MiB RAM, restored from one shared snapshot.
 

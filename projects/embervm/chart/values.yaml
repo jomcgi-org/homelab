@@ -161,7 +161,7 @@ controlPlaneLivenessProbe:
 
 # Op-log backend settings. The chart default uses SQLite-WAL: the control
 # plane's durable book-of-record (ops, tasks, results) lives at
-# EMBERVM_OPLOG_PATH on this RWO Longhorn PVC, which provides DURABILITY, not
+# EMBERVM_OPLOG_PATH on this RWO PVC, which provides durability, not
 # availability. The reference deployment overrides postgres.enabled to true;
 # the isolated dev deployment retains this SQLite path. SQLite is single-writer
 # and the Deployment is Recreate + 1 replica, so a pod restart replays its
@@ -1856,7 +1856,7 @@ bricks:
   # than one small guest.
   #
   # By its documented meaning (noded/config/config.go:126, "covering the
-  # daemon's own RSS") 512 was ~50x oversized: measured 2026-08-16 on the idle
+  # daemon's own RSS") 512 was ~50x oversized: measured 2026-08-16 on historical idle
   # bricks, noded's container RSS is 9 MiB (node-1) and 11 MiB (node-2).
   #
   # DO NOT take it lower on the strength of that number alone. Two readings of
