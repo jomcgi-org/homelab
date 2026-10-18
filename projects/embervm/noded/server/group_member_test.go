@@ -877,8 +877,8 @@ func TestGroupRelightPlacedInflightFollowsOrigin(t *testing.T) {
 			done := make(chan error, 1)
 			go func() {
 				_, err := s.startGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
-					Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
-					Mode: nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT,
+					Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+					Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT,
 					GroupInstanceId: "grp-A", MemberName: "worker-0", MemberIndex: 0,
 					Ip: "127.0.0.1", SnapshotRef: banked.GetSnapshotRef(), HealthPort: port,
 					Trace: &nodev1.Trace{Workload: "wl-group"},
