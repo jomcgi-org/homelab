@@ -2317,6 +2317,53 @@ def test_paused_merged_delivery_is_not_settled_or_rearmed(db, monkeypatch):
     assert audits(db, "merged") == []
 
 
+@pytest.mark.parametrize("blocker", ["reserved", "dispatched", "rollout", "unmerged"])
+def test_paused_observed_merge_keeps_remaining_landing_gates(db, monkeypatch, blocker):
+    delivered(db, "t-1", 11, 3, state="landing")
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "t-1").task_paused = True
+        ready = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "delivery_ready")
+        ).one()
+        body = json.loads(ready.detail_json)
+        body["evidence"].update(state="merged_reviewed", review_session_id=11)
+        ready.detail_json = json.dumps(body)
+        if blocker == "reserved":
+            session.add(
+                FactoryStart(
+                    task_id="t-1",
+                    start_key="late",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="reserved",
+                )
+            )
+        elif blocker == "dispatched":
+            session.add(
+                SwarmNodeRun(
+                    task_id="t-1", node_key="late", attempt=1, status="dispatched"
+                )
+            )
+    landing._record("t-1", "owned_pr_merged", pr_number=3, head_sha=HEAD)
+    if blocker == "rollout":
+        monkeypatch.setattr(
+            factory_rollout,
+            "verify",
+            lambda *a: {"verified": False, "reason": "test_pending"},
+        )
+    calls = github(
+        monkeypatch,
+        pulls={3: pull(3, merged=blocker != "unmerged")},
+        issues={11: {"state": "closed"}},
+    )
+    landing.landing_tick(POLICY)
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "landing"
+    assert not audits(db, "issue_closed")
+    assert calls["write"] == calls["graphql"] == []
+
+
 @pytest.mark.parametrize("new_hold", [None, "pause", "landing"])
 @pytest.mark.parametrize(
     "verdict", ["approve", "changes_requested", "wrong_head", "wrong_pr", "ci_pending"]
@@ -2419,7 +2466,7 @@ def test_owned_merged_delivery_drains_live_review_before_settlement(
     )
     assert receipt_state(db, "t-1") == (
         "admitted"
-        if new_hold or verdict == "ci_pending"
+        if new_hold == "landing" or verdict == "ci_pending"
         else "landing"
         if verdict == "approve"
         else "escalated"
@@ -2428,6 +2475,15 @@ def test_owned_merged_delivery_drains_live_review_before_settlement(
     assert audits(db, "rollout_verified") == []
     with Session(db) as session:
         assert session.exec(select(FactoryStart.cost_usd)).one() == 2
+    if new_hold == "pause" and verdict == "approve":
+        calls = github(monkeypatch, pulls={3: pr}, issues={11: {"state": "closed"}})
+        landing.landing_tick(POLICY)
+        assert receipt_state(db, "t-1") == "succeeded"
+        assert len(audits(db, "rollout_verified")) == 1
+        assert len(audits(db, "issue_closed")) == 1
+        landing.landing_tick(POLICY)
+        assert len(audits(db, "issue_closed")) == 1
+        assert calls["write"] == calls["graphql"] == []
 
 
 @pytest.mark.parametrize("hold", ["paused", "landing", "cancelled"])
