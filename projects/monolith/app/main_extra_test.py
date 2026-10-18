@@ -69,7 +69,6 @@ def _lifespan_patches_with_discord(mock_bot):
     return [
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
     ]
 
@@ -97,11 +96,6 @@ class TestSingletonBotClose:
             patches[0],
             patches[1],
             patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
         ):
             await _start_singletons(app)
             await _stop_singletons(app)  # must NOT raise
@@ -124,11 +118,6 @@ class TestSingletonBotClose:
             patches[0],
             patches[1],
             patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
         ):
             await _start_singletons(app)
 
@@ -161,11 +150,6 @@ class TestLifespanBotStartException:
             patches[0],
             patches[1],
             patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
         ):
             async with lifespan(app):
                 started = True
@@ -188,11 +172,6 @@ class TestLifespanBotStartException:
             patches[0],
             patches[1],
             patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
         ):
             async with lifespan(app):
                 pass

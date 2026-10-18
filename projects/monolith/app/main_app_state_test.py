@@ -80,7 +80,6 @@ def _lifespan_patches_with_discord(mock_bot):
     return [
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
     ]
 
@@ -153,11 +152,6 @@ class TestLifespanAppStateBotAssignment:
             patches[0],
             patches[1],
             patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
         ):
             await _start_singletons(app)
             assert app.state.bot is mock_bot, (
@@ -184,9 +178,6 @@ class TestLifespanAppStateBotAssignment:
             patch("asyncio.create_task", side_effect=capture_create_task),
             patches[0],
             patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
         ):
             async with lifespan(app):
                 assert app.state.bot is None, (
@@ -213,9 +204,6 @@ class TestLifespanAppStateBotAssignment:
             patch("asyncio.create_task", side_effect=capture_create_task),
             patches[0],
             patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
         ):
             async with lifespan(app):
                 assert hasattr(app.state, "backfill_task"), (

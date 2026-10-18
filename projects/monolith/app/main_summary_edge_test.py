@@ -67,9 +67,6 @@ class TestLifespanShutdownBackfillDone:
             patch("asyncio.create_task", side_effect=capture_create_task),
             patches[0],
             patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
         ):
             async with lifespan(app):
                 # Inject the already-done backfill task during the lifespan body
@@ -100,9 +97,6 @@ class TestLifespanShutdownBackfillDone:
             patch("asyncio.create_task", side_effect=capture_create_task),
             patches[0],
             patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
         ):
             async with lifespan(app):
                 app.state.backfill_task = backfill_mock

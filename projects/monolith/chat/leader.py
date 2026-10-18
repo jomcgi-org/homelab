@@ -54,8 +54,6 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
 
     from chat.acl import bootstrap_defaults
     from chat.bot import create_bot
-    from chat.summarizer import build_llm_caller
-    from chat.summarizer import on_startup as chat_startup
 
     tasks: list[asyncio.Task] = []
 
@@ -71,8 +69,6 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
 
     bot = create_bot()
     app.state.bot = bot
-    with Session(get_engine()) as session:
-        chat_startup(session, bot=bot, llm_call=build_llm_caller())
 
     async def _start_bot_when_ready():
         await wait_for_sidecar()

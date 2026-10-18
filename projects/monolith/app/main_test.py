@@ -241,7 +241,10 @@ async def test_lifespan_creates_background_tasks_on_startup():
 
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with (
+            patches[0],
+            patches[1],
+        ):
             await _start_singletons(app)
 
     # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe, quota refresh.
@@ -263,7 +266,10 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
 
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with (
+            patches[0],
+            patches[1],
+        ):
             await _start_singletons(app)
             await _stop_singletons(app)
 
@@ -288,7 +294,10 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
 
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with (
+            patches[0],
+            patches[1],
+        ):
             await _start_singletons(app)
             # Ships, pending-message sweep, titles, KG feed, retention, cd probe, quota refresh.
             assert len(mock_tasks) == 8
@@ -386,7 +395,10 @@ async def test_lifespan_logs_monolith_started_on_startup():
 
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with (
+            patches[0],
+            patches[1],
+        ):
             with patch("framework.core.logger") as mock_logger:
                 async with lifespan(app):
                     pass
@@ -409,7 +421,10 @@ async def test_lifespan_logs_shutting_down_on_exit():
 
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with (
+            patches[0],
+            patches[1],
+        ):
             with patch("framework.core.logger") as mock_logger:
                 async with lifespan(app):
                     pass
@@ -433,7 +448,6 @@ def _lifespan_patches_with_discord(mock_bot):
     return [
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
     ]
 
@@ -465,11 +479,6 @@ async def test_lifespan_registers_done_callback_on_bot_task_when_token_set():
                 patches[0],
                 patches[1],
                 patches[2],
-                patches[3],
-                patches[4],
-                patches[5],
-                patches[6],
-                patches[7],
             ):
                 async with lifespan(app):
                     pass
@@ -496,11 +505,6 @@ async def test_lifespan_logs_discord_bot_starting_when_token_set():
                 patches[0],
                 patches[1],
                 patches[2],
-                patches[3],
-                patches[4],
-                patches[5],
-                patches[6],
-                patches[7],
             ):
                 with patch("chat.leader.logger") as mock_logger:
                     await _start_singletons(app)
@@ -534,11 +538,6 @@ async def test_lifespan_creates_discord_and_service_tasks_when_token_set():
                 patches[0],
                 patches[1],
                 patches[2],
-                patches[3],
-                patches[4],
-                patches[5],
-                patches[6],
-                patches[7],
             ):
                 await _start_singletons(app)
 
@@ -563,7 +562,10 @@ async def test_lifespan_does_not_log_discord_bot_starting_when_token_absent():
     patches = _lifespan_patches_no_discord()
     with patch.dict(os.environ, env_without_token, clear=True):
         with patch("asyncio.create_task", side_effect=capture_create_task):
-            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            with (
+                patches[0],
+                patches[1],
+            ):
                 with patch("chat.leader.logger") as mock_logger:
                     async with lifespan(app):
                         pass

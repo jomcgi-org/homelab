@@ -52,7 +52,6 @@ def _singleton_patches_with_discord(mock_bot):
     return [
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
     ]
 
@@ -86,8 +85,6 @@ class TestSingletons:
             patches[0],
             patches[1],
             patches[2],
-            patches[3],
-            patches[4],
         ):
             await _start_singletons(app)
 
@@ -131,8 +128,6 @@ class TestSingletons:
             patches[0],
             patches[1],
             patches[2],
-            patches[3],
-            patches[4],
         ):
             await _start_singletons(app)
             await _stop_singletons(app)
