@@ -7,7 +7,7 @@ import json
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from factory.execution import admission, result_receipts, store
+from factory.execution import admission, result_receipts, store, runtime_meter_evidence
 from factory.execution.models import (
     AgentSession,
     AgentTurn,
@@ -604,7 +604,7 @@ def test_success_requires_exact_durable_terminal_usage(database, monkeypatch, pr
         row = result_receipts._receipt_metadata(db, receipt["id"])
         if proof == "sealed":
             assert result_receipts._result(db, row)
-            meter.validate_completion(db, receipt["id"], value)
+            runtime_meter_evidence.validate_completion(db, receipt["id"], value)
         else:
             with pytest.raises(
                 result_receipts.ReceiptRejected, match="meter_terminal_usage_unverified"
@@ -613,8 +613,8 @@ def test_success_requires_exact_durable_terminal_usage(database, monkeypatch, pr
             with pytest.raises(
                 result_receipts.ReceiptRejected, match="meter_terminal_usage_unverified"
             ):
-                meter.validate_completion(db, receipt["id"], value)
-        meter.validate_completion(
+                runtime_meter_evidence.validate_completion(db, receipt["id"], value)
+        runtime_meter_evidence.validate_completion(
             db, receipt["id"], {"terminal_reason": "error", "usage": {}}
         )
 
