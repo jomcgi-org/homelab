@@ -40,18 +40,6 @@ go_binary(
 )
 
 go_test(
-    name = "auth_test",
-    srcs = ["auth_test.go"],
-    embed = [":cmd_lib"],
-    deps = [
-        "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//codes",
-        "@org_golang_google_grpc//metadata",
-        "@org_golang_google_grpc//status",
-    ],
-)
-
-go_test(
     name = "cmd_test",
     srcs = [
         "auth_test.go",
