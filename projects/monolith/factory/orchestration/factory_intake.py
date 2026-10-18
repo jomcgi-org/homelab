@@ -294,6 +294,9 @@ def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
     first slot, because delivery is what the lane exists to do and a ceiling an
     operator set low must never leave it unable to start anything.
     """
+    from factory.orchestration.factory_controls import execution_slot_holders
+
+    rows = execution_slot_holders(policy, rows, include_queued=True)
     wanted = lane_max_tasks(policy)
     held = {lane: 0 for lane in LANES}
     for row in rows:

@@ -1528,13 +1528,27 @@ def test_lane_usage_counts_in_flight_and_waiting_receipts(monkeypatch):
     receipts = [
         {"state": "admitted", "task_class": "bug-fix", "generation": 0},
         {"state": "uncertain", "task_class": "docs", "generation": 0},
-        {"state": "queued", "task_class": "judgment-analysis", "generation": 0},
+        {
+            "state": "queued",
+            "issue_number": 1,
+            "actor": "operator",
+            "task_class": "judgment-analysis",
+            "generation": 0,
+        },
         {"state": "admitted", "task_class": "refine", "generation": 0},
         {"state": "succeeded", "task_class": "refine", "generation": 0},
         # A receipt written before classes existed reads as delivery.
-        {"state": "queued", "task_class": None, "generation": 0},
+        {
+            "state": "queued",
+            "issue_number": 1,
+            "actor": "operator",
+            "task_class": None,
+            "generation": 0,
+        },
     ]
-    usage = controls.lane_usage({"max_tasks": {"delivery": 2, "advisory": 2}}, receipts)
+    usage = controls.lane_usage(
+        {"issue_numbers": [1], "max_tasks": {"delivery": 2, "advisory": 2}}, receipts
+    )
     assert usage == {
         "delivery": {"limit": 2, "active": 2, "queued": 2},
         "advisory": {"limit": 2, "active": 1, "queued": 0},
@@ -1720,12 +1734,29 @@ def test_lane_usage_counts_old_active_tasks_but_not_old_queues(monkeypatch):
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
     receipts = [
         {"state": "admitted", "task_class": "bug-fix", "generation": 2},
-        {"state": "queued", "task_class": "refine", "generation": 2},
+        {
+            "state": "queued",
+            "issue_number": 1,
+            "actor": "operator",
+            "task_class": "refine",
+            "generation": 2,
+        },
         {"state": "admitted", "task_class": "bug-fix", "generation": 1},
-        {"state": "queued", "task_class": "refine", "generation": 0},
+        {
+            "state": "queued",
+            "issue_number": 1,
+            "actor": "operator",
+            "task_class": "refine",
+            "generation": 0,
+        },
     ]
     usage = controls.lane_usage(
-        {"generation": 2, "max_tasks": {"delivery": 2, "advisory": 2}}, receipts
+        {
+            "issue_numbers": [1],
+            "generation": 2,
+            "max_tasks": {"delivery": 2, "advisory": 2},
+        },
+        receipts,
     )
     assert usage == {
         "delivery": {"limit": 2, "active": 2, "queued": 0},

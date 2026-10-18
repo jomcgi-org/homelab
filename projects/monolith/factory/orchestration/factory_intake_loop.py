@@ -19,6 +19,7 @@ from factory.orchestration.factory_controls import (
     _read_session,
     delivery_admissions,
     enabled_repos,
+    execution_slot_holders,
     intake_policy,
     intake_state,
     is_advisory,
@@ -233,12 +234,7 @@ def _slot_holders(rows, policy: dict) -> list:
     the allowlist can never admit, so counting it let four such receipts
     fill a delivery lane and stall intake with no audit (#6483).
     """
-    return [
-        row
-        for row in rows
-        if row.state != "queued"
-        or admission_eligible(policy, row.issue_number, row.actor)
-    ]
+    return execution_slot_holders(policy, rows, include_queued=True)
 
 
 def _listing_due(now: datetime) -> bool:
@@ -468,6 +464,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
     without touching the policy.
     """
     try:
+        policy = {**policy, "generation": generation}
         intake = intake_policy(policy)
         lanes = tuple(lane for lane in LANES if lane in lanes)
         deferred_lanes = tuple(lane for lane in LANES if lane not in lanes)
@@ -496,13 +493,12 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             held = _slot_holders(
                 db.exec(
                     select(FactoryReceipt).where(
-                        FactoryReceipt.generation == generation,
                         FactoryReceipt.state.in_(
                             ("queued", "admitted", "uncertain", "landing")
                         ),
                     )
                 ).all(),
-                policy,
+                {**policy, "generation": generation},
             )
             room = open_lanes(policy, held, lanes)
             if not any(room.values()):
@@ -990,13 +986,12 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 held = _slot_holders(
                     db.exec(
                         select(FactoryReceipt).where(
-                            FactoryReceipt.generation == generation,
                             FactoryReceipt.state.in_(
                                 ("queued", "admitted", "uncertain", "landing")
                             ),
                         )
                     ).all(),
-                    policy,
+                    {**policy, "generation": generation},
                 )
                 room = open_lanes(policy, held, lanes)
                 held_counts: dict[str, int] = {}

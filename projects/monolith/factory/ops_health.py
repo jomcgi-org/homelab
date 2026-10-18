@@ -457,12 +457,52 @@ def _watchdog_paused_sync() -> list:
         return paused_receipts(session)
 
 
+def _stale_delivery_sync() -> list:
+    """Observe lifecycle stalls without changing work or adding a scheduler."""
+    from sqlmodel import select
+    from factory.orchestration.factory_controls import landing_held
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+
+    cutoff = _now() - timedelta(minutes=30)
+    with _db_session() as session:
+        rows = session.exec(
+            select(FactoryReceipt)
+            .where(
+                FactoryReceipt.state.in_(("admitted", "uncertain", "landing")),
+                FactoryReceipt.task_paused.is_(False),
+                FactoryReceipt.updated_at < cutoff,
+            )
+            .order_by(FactoryReceipt.updated_at)
+            .limit(200)
+        ).all()
+        task_ids = [row.task_id for row in rows]
+        merged = (
+            session.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id.in_(task_ids),
+                    FactoryAudit.action == "owned_pr_merged",
+                    FactoryAudit.created_at < cutoff,
+                )
+            ).all()
+            if task_ids
+            else []
+        )
+        observed = {event.task_id for event in merged}
+        return [
+            (row.id, row.issue_number, row.state)
+            for row in rows
+            if not landing_held(row)
+            and (row.state == "landing" or row.task_id in observed)
+        ]
+
+
 def evaluate_factory(
     policy_json: str | None,
     uncertain: list,
     queued: list,
     now: datetime,
     watchdog_paused: list = (),
+    stale_delivery: list = (),
 ) -> dict:
     """Uncertain receipts older than 2h, queued receipts admit_next never takes,
     and tasks the no-progress watchdog paused for a person.
@@ -540,6 +580,14 @@ def evaluate_factory(
             f"{len(watchdog_paused)} task(s) paused by the no-progress watchdog: "
             f"{listed}{more}"
         )
+    if stale_delivery:
+        listed = ", ".join(
+            f"receipt {rid} (#{issue}, {state})"
+            for rid, issue, state in stale_delivery[:5]
+        )
+        problems.append(
+            f"{len(stale_delivery)} delivery receipt(s) awaiting reconciliation or rollout over 30m: {listed}"
+        )
     if problems:
         return {"ok": False, "detail": "; ".join(problems)}
     return {
@@ -554,7 +602,10 @@ def evaluate_factory(
 async def _factory_stuck() -> dict:
     policy_json, uncertain, queued = await asyncio.to_thread(_factory_rows_sync)
     paused = await asyncio.to_thread(_watchdog_paused_sync)
-    return evaluate_factory(policy_json, uncertain, queued, _now(), paused)
+    stale_delivery = await asyncio.to_thread(_stale_delivery_sync)
+    return evaluate_factory(
+        policy_json, uncertain, queued, _now(), paused, stale_delivery
+    )
 
 
 # ---------------------------------------------------------------------------

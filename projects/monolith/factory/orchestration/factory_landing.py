@@ -3,8 +3,8 @@
 Phase 4 of #6002, and the first factory step that writes to the repository
 rather than reading it. Merge mutations are behind the policy ``auto_merge``
 flag, while review check publication has its own environment gate. Both default
-off, so a lane that has not opted in behaves exactly as it did before: it
-verifies the delivery, settles the task, and stops.
+off. Merge observation and rollout reconciliation still follow deliveries
+merged by another actor; observing a merge never enables arming.
 
 Landing is deliberately serial. This repository merges through the GitHub
 merge queue, and a queue ejection cascades across every candidate behind the
@@ -47,6 +47,8 @@ ACTOR = "factory:landing"
 # that has waited longest takes the free slot.
 LANDING_BATCH = 200
 REVIEW_PUBLISH_BATCH = 5
+OBSERVATION_BATCH = 10
+_delivery_cursors: dict[str, int] = {}
 # Only for a delivery landing has never touched. Turning the flag on for the
 # first time must not stampede over every delivery in the lane's history, but
 # anything the lane has already armed is followed to a terminal state whatever
@@ -412,7 +414,7 @@ def _delivery_prs(db, task_ids: list[str]) -> dict[str, tuple[int, str | None]]:
 
 
 def _deliveries(
-    policy: dict, *, include_refused: bool = False, session=None
+    policy: dict, *, include_refused: bool = False, rotate: bool = False, session=None
 ) -> list[dict]:
     """Every delivery whose landing is unfinished, oldest first.
 
@@ -422,9 +424,9 @@ def _deliveries(
     issue never closed, and the one-at-a-time holder reading as absent so a
     second pull request was armed behind it.
 
-    Terminal is a refusal, which hands the pull request to a human, or a closed
-    issue, which is the last step of a successful landing. A merged delivery
-    whose issue is not closed yet is still live work.
+    Arming refuses previously rejected work. Observation revisits refusals
+    because another actor may subsequently merge the PR. Closed issues and
+    completed repository deliveries leave the scan.
     """
     repo = policy["repo"]
     cutoff = _now() - timedelta(hours=LANDING_WINDOW_HOURS)
@@ -433,7 +435,7 @@ def _deliveries(
             FactoryAudit.action.in_(("issue_closed", "repository_delivery_complete")),
             FactoryAudit.task_id.is_not(None),
         )
-        rows = db.exec(
+        query = (
             select(FactoryReceipt)
             .where(
                 FactoryReceipt.repo == repo,
@@ -447,8 +449,17 @@ def _deliveries(
                 ),
             )
             .order_by(FactoryReceipt.id)
-            .limit(LANDING_BATCH)
-        ).all()
+        )
+        if rotate:
+            cursor = _delivery_cursors.get(repo, 0)
+            rows = db.exec(
+                query.where(FactoryReceipt.id > cursor).limit(OBSERVATION_BATCH)
+            ).all()
+            if not rows:
+                rows = db.exec(query.limit(OBSERVATION_BATCH)).all()
+            _delivery_cursors[repo] = rows[-1].id if rows else 0
+        else:
+            rows = db.exec(query.limit(LANDING_BATCH)).all()
         task_ids = [row.task_id for row in rows]
         prs = _delivery_prs(db, task_ids)
         state = _landing_state(db, task_ids)
@@ -492,6 +503,7 @@ def _deliveries(
         result.append(
             {
                 "task_id": row.task_id,
+                "paused": row.task_paused,
                 "issue_number": row.issue_number,
                 "conductor_gates": (
                     json.loads(row.direction_json) if row.direction_json else {}
@@ -675,18 +687,7 @@ def _arm(repo: str, item: dict) -> None:
     try:
         pr = github_get(repo, f"pulls/{number}")
         if pr.get("merged"):
-            # Someone merged it by hand between approval and this tick. The
-            # rest of the landing still owes the issue its close.
-            if _record(
-                item["task_id"],
-                "merged",
-                pr_number=number,
-                armed_by_factory=False,
-                merge_commit_sha=pr.get("merge_commit_sha"),
-            ):
-                _record_ci(repo, item, pr)
-            item["merged"] = True
-            item["merge_commit_sha"] = pr.get("merge_commit_sha")
+            _record_merged(repo, item, pr)
             return
         if pr.get("state") != "open" or pr.get("draft"):
             _refuse(item, "pull request is not open and ready")
@@ -786,7 +787,7 @@ def _recover_delivery(
 def _recover_refused(policy: dict) -> None:
     """Reassess one historical refusal per tick without touching other closures."""
     for item in _deliveries(policy, include_refused=True):
-        if _enforce_landing_hold(policy["repo"], item):
+        if _enforce_landing_hold(policy["repo"], item) or item.get("paused"):
             continue
         if item.get("recovery_skipped"):
             continue
@@ -801,8 +802,8 @@ def _recover_refused(policy: dict) -> None:
         try:
             pr = github_get(policy["repo"], f"pulls/{item['pr_number']}")
             if pr.get("merged"):
-                _observe(policy["repo"], item)
-                _close_issue(policy["repo"], item)
+                if _record_merged(policy["repo"], item, pr):
+                    _close_issue(policy["repo"], item)
                 return
             if pr.get("state") != "open" or pr.get("draft"):
                 _record(
@@ -841,6 +842,60 @@ def _recover_refused(policy: dict) -> None:
             return
 
 
+def _record_merged(repo: str, item: dict, pr: dict) -> bool:
+    """Observation is not permission to accept a different delivery head."""
+    from factory.orchestration import factory_conductor as conductor
+
+    from factory.orchestration.models import SwarmTask
+    from factory.orchestration.factory_controls import granted_delivery_surface
+
+    with _read_session() as db:
+        row = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == item["task_id"])
+        ).one()
+        task = db.get(SwarmTask, item["task_id"]).model_dump()
+        direction = json.loads(row.direction_json or "{}")
+        branch, _number = granted_delivery_surface(direction)
+        if branch:
+            task["delivery_branch"] = branch
+            task["delivery_adoption"] = direction.get("delivery_adoption")
+    approved = item.get("approved_head_sha", item["head_sha"])
+    if (
+        not pr.get("merged")
+        or not conductor.delivery_identity_matches(task, pr)
+        or not isinstance(approved, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", approved)
+        or (pr.get("head") or {}).get("sha") != approved
+        or not re.fullmatch(r"[0-9a-f]{40}", pr.get("merge_commit_sha") or "")
+    ):
+        _refuse(item, "merged_delivery_identity_mismatch")
+        return False
+    detail = {
+        "pr_number": item["pr_number"],
+        "merge_commit_sha": pr["merge_commit_sha"],
+        "armed_by_factory": bool(item["armed"]),
+    }
+    if item["armed"]:
+        detail["rollout_verified"] = None
+    if _record(item["task_id"], "merged", **detail):
+        _record_ci(repo, item, pr)
+    item["merged"] = True
+    item["merge_commit_sha"] = pr["merge_commit_sha"]
+    return True
+
+
+def _observe_merge(repo: str, item: dict) -> None:
+    """Read merged state even when publication or a previous arming refused."""
+    if item["merged"]:
+        return
+    try:
+        pr = github_get(repo, f"pulls/{item['pr_number']}")
+        if pr.get("merged"):
+            _record_merged(repo, item, pr)
+    except (httpx.HTTPError, ValueError) as exc:
+        _error(item["task_id"], "observe_merge", exc)
+
+
 def _observe(repo: str, item: dict) -> None:
     number = item["pr_number"]
     try:
@@ -849,19 +904,7 @@ def _observe(repo: str, item: dict) -> None:
         _error(item["task_id"], "observe", exc)
         return
     if pr.get("merged"):
-        if _record(
-            item["task_id"],
-            "merged",
-            pr_number=number,
-            merge_commit_sha=pr.get("merge_commit_sha"),
-            armed_by_factory=True,
-            # Merge is not rollout proof. A separate rollout_verified audit
-            # records publication, actual revisions and running workloads.
-            rollout_verified=None,
-        ):
-            _record_ci(repo, item, pr)
-        item["merged"] = True
-        item["merge_commit_sha"] = pr.get("merge_commit_sha")
+        _record_merged(repo, item, pr)
         return
     if pr.get("state") == "closed":
         _refuse(item, "pull request closed without merging")
@@ -1219,11 +1262,10 @@ def landing_tick(policy: dict) -> None:
         publish_enabled = review_publisher.enabled()
         deliveries = [
             item
-            for item in _deliveries(policy)
+            for item in _deliveries(policy, include_refused=True, rotate=True)
             if not _enforce_landing_hold(policy["repo"], item)
+            and not item.get("paused")
         ]
-        if not merge_enabled and not publish_enabled:
-            return
         repo = policy["repo"]
         if merge_enabled:
             _recover_refused(policy)
@@ -1232,9 +1274,16 @@ def landing_tick(policy: dict) -> None:
             item for item in deliveries if not _handoff_human_delivery(repo, item)
         ]
         for item in deliveries:
-            item["refused"] = False
+            item["refused"] = bool(item.get("refusal"))
+            _observe_merge(repo, item)
+            if item["merged"] and not item["closed"]:
+                _close_issue(repo, item)
         if publish_enabled:
-            candidates = [item for item in deliveries if arm_eligible(item)]
+            candidates = [
+                item
+                for item in deliveries
+                if not item["refused"] and arm_eligible(item)
+            ]
             for item in candidates[:REVIEW_PUBLISH_BATCH]:
                 _publish_review_gate(item)
             for item in candidates[REVIEW_PUBLISH_BATCH:]:
@@ -1242,7 +1291,7 @@ def landing_tick(policy: dict) -> None:
         if not merge_enabled:
             return
         for item in deliveries:
-            if holding(item):
+            if holding(item) and not item["refused"]:
                 _observe(repo, item)
             if item["merged"] and not item["closed"]:
                 _close_issue(repo, item)

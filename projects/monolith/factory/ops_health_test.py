@@ -15,6 +15,7 @@ from factory import ops_health
 from factory.execution import create_outcome
 from factory.execution.models import AgentSession, AgentTurn
 from factory.orchestration.factory_models import (
+    FactoryAudit,
     FactoryControl,
     FactoryReceipt,
     WorkItem,
@@ -47,6 +48,7 @@ def engine(tmp_path, monkeypatch):
                 AgentTurn,
                 SwarmTask,
                 WorkItem,
+                FactoryAudit,
                 FactoryControl,
                 FactoryReceipt,
                 Note,
@@ -528,3 +530,19 @@ def test_checks_are_time_bounded():
     result = asyncio.run(check())
     assert result["status"] == "unknown"
     assert "timed out" in result["detail"]
+
+
+def test_factory_health_reports_stale_landing_but_excludes_pause(engine, monkeypatch):
+    monkeypatch.setattr(ops_health, "_now", lambda: NOW)
+    with Session(engine) as session:
+        _receipt(session, 881, 7049, "landing", updated=NOW - timedelta(minutes=31))
+        _receipt(session, 864, 7082, "landing", updated=NOW - timedelta(hours=1))
+        row = session.get(FactoryReceipt, 864)
+        row.task_paused = True
+        session.commit()
+    stale = ops_health._stale_delivery_sync()
+    assert stale == [(881, 7049, "landing")]
+    result = ops_health.evaluate_factory(
+        json.dumps(POLICY), [], [], NOW, stale_delivery=stale
+    )
+    assert not result["ok"] and "#7049" in result["detail"]

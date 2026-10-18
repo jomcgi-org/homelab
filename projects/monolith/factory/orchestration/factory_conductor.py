@@ -2431,6 +2431,21 @@ def _required_checks_passed(checks: dict) -> bool:
     )
 
 
+class IndependentReviewMissing(ValueError):
+    """No eligible independent approval exists for the observed delivery head."""
+
+
+def delivery_identity_matches(task: dict, pr: dict) -> bool:
+    """Match the owned branch, repository and target independently of PR state."""
+    return (
+        (pr.get("head") or {}).get("ref") == delivery_branch(task)
+        and ((pr.get("head") or {}).get("repo") or {}).get("full_name") == task["repo"]
+        and (pr.get("base") or {}).get("ref") == task["base_branch"]
+        and ((pr.get("base") or {}).get("repo") or {}).get("full_name", task["repo"])
+        == task["repo"]
+    )
+
+
 def verify_delivery(
     task: dict,
     number: int,
@@ -2438,6 +2453,7 @@ def verify_delivery(
     reviewers: tuple | list | None = None,
     *,
     judgment: bool = False,
+    allow_merged: bool = False,
     issue_number: int | None = None,
 ) -> dict:
     """Confirm an approved review of this exact head by an independent session.
@@ -2468,13 +2484,15 @@ def verify_delivery(
     if granted_pr is not None and number != granted_pr:
         raise ValueError("delivery PR does not match the operator-granted PR")
     pr = github_get(task["repo"], f"pulls/{number}")
-    branch = delivery_branch(task)
+    merged = allow_merged and pr.get("merged") is True
+    if merged and task.get("landing_hold"):
+        raise DeliveryRefused(
+            "held_delivery_already_merged", "Held delivery was merged outside this task"
+        )
     if (
-        pr.get("state") != "open"
+        (pr.get("state") != "open" and not merged)
         or (pr.get("draft") and not task.get("landing_hold"))
-        or pr.get("head", {}).get("ref") != branch
-        or pr.get("head", {}).get("repo", {}).get("full_name") != task["repo"]
-        or pr.get("base", {}).get("ref") != task["base_branch"]
+        or not delivery_identity_matches(task, pr)
     ):
         raise ValueError("delivery PR does not match the factory task branch")
     head = pr["head"]["sha"]
@@ -2519,7 +2537,9 @@ def verify_delivery(
         or not review.get("session_id")
         or any(review["session_id"] == worker["session_id"] for worker in implementers)
     ):
-        raise ValueError("independent exact-head review evidence is missing")
+        raise IndependentReviewMissing(
+            "independent exact-head review evidence is missing"
+        )
     dependency_prs.verify(task, pr, runs)
     checks = github_get(task["repo"], f"commits/{head}/status")
     if not _required_checks_passed(checks):
@@ -2562,6 +2582,8 @@ def verify_delivery(
         "reviewer_model": reviewer_model,
         "state": "reviewed_draft"
         if task.get("landing_hold") and pr.get("draft")
+        else "merged_reviewed"
+        if merged
         else "ready_for_review",
     }
 
@@ -6368,6 +6390,12 @@ def reconcile_task(
         # retry immediately because this tick proved both zero spend and no
         # external invocation.
         runs = graph.node_runs(task_id)
+        from factory.orchestration.factory_merged_delivery import (
+            reconcile_merged_delivery,
+        )
+
+        if reconcile_merged_delivery(task, policy, runs):
+            return
         running = [
             r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")
         ]
@@ -6398,6 +6426,10 @@ def reconcile_task(
                 policy=policy,
             )
             return
+    from factory.orchestration.factory_merged_delivery import reconcile_merged_delivery
+
+    if reconcile_merged_delivery(task, policy, runs):
+        return
     permission = can_start(task_id)
     from factory.orchestration import factory_funding
 

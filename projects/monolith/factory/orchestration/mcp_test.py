@@ -1556,3 +1556,129 @@ def test_review_recovery_requires_human_operator_and_uses_subject(monkeypatch):
     calls.clear()
     assert not _as(_principal(groups=()), invoke)["ok"]
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "proof,expected",
+    [
+        (None, "pending"),
+        ("rollout_observed", "pending"),
+        ("rollout_verified", "verified"),
+    ],
+)
+def test_lifecycle_reports_merge_separately_from_rollout(tmp_path, proof, expected):
+    from types import SimpleNamespace
+    from sqlmodel import Session, SQLModel, create_engine
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReviewVerdict
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'merge-proof.db'}",
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[model.__table__ for model in (FactoryAudit, FactoryReviewVerdict)],
+    )
+    with Session(engine) as db:
+        db.add(
+            FactoryAudit(
+                task_id="task-1",
+                actor="factory:landing",
+                action="owned_pr_merged",
+                detail_json="{}",
+            )
+        )
+        if proof:
+            db.add(
+                FactoryAudit(
+                    task_id="task-1",
+                    actor="factory:landing",
+                    action=proof,
+                    detail_json=json.dumps(
+                        {
+                            "verified": proof == "rollout_verified",
+                            "applications": [],
+                            "approved_head_sha": "a" * 40,
+                            "pr_number": 3,
+                        }
+                    ),
+                )
+            )
+        db.commit()
+        result = mcp._lifecycle_evidence(
+            db,
+            SimpleNamespace(task_id="task-1", repo="owner/repo"),
+            {
+                "evidence": {
+                    "head_sha": "a" * 40,
+                    "pr_url": "https://github.com/owner/repo/pull/3",
+                }
+            },
+        )
+        assert result["repository_delivery"]["status"] == "merged"
+        assert result["deployment"]["status"] == expected
+        assert result["delivery_accepted"]["status"] == "not_observed"
+    engine.dispose()
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_lifecycle_does_not_reuse_old_rollout_proof(tmp_path, recovery):
+    from types import SimpleNamespace
+    from sqlmodel import Session, SQLModel, create_engine
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReviewVerdict
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'old-proof.db'}",
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[model.__table__ for model in (FactoryAudit, FactoryReviewVerdict)],
+    )
+    with Session(engine) as db:
+        db.add(
+            FactoryAudit(
+                task_id="task-1",
+                actor="factory:landing",
+                action="rollout_verified",
+                detail_json=json.dumps(
+                    {"verified": True, "approved_head_sha": "a" * 40, "pr_number": 3}
+                ),
+            )
+        )
+        db.flush()
+        if recovery:
+            db.add(
+                FactoryAudit(
+                    task_id="task-1",
+                    actor="factory",
+                    action="landing_recovery_requested",
+                )
+            )
+            db.flush()
+            db.add(
+                FactoryAudit(task_id="task-1", actor="factory", action="delivery_ready")
+            )
+            db.flush()
+            db.add(
+                FactoryAudit(
+                    task_id="task-1",
+                    actor="factory:landing",
+                    action="rollout_observed",
+                    detail_json='{"verified":false}',
+                )
+            )
+        db.commit()
+        result = mcp._lifecycle_evidence(
+            db,
+            SimpleNamespace(task_id="task-1", repo="owner/repo"),
+            {
+                "evidence": {
+                    "head_sha": "b" * 40,
+                    "pr_url": "https://github.com/owner/repo/pull/3",
+                }
+            },
+        )
+        assert result["deployment"]["status"] != "verified"
+        assert result["repository_delivery"]["status"] == "not_observed"
+    engine.dispose()
