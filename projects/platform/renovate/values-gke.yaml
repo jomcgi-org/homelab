@@ -1,6 +1,6 @@
-# The hub is enrolled before cutover so its Application, secret reference, and
-# CronWorkflows can be checked safely. Both repository-writing schedules remain
-# off until an operator completes the single-writer handoff in README.md.
+# The hub is the sole intended deployment. Both schedules remain default-off
+# pending separately authorized credential/identity verification and enablement.
+# Operational acceptance stays on #7068, with overlapping enablement in #7001.
 suspend: true
 
 apkoLockMaintenance:
