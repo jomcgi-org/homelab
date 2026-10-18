@@ -36,7 +36,7 @@ from agent import notify as notify_mod
 from agent import routine_jobs
 from core.mcp_app import mcp
 from auth.api import current_principal
-from factory.access import is_operator, OPERATOR_REQUIRED
+from factory.api import is_operator, OPERATOR_REQUIRED
 import chat.api as chat_api
 
 
