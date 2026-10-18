@@ -6480,6 +6480,9 @@ def reconcile_task(
             return
     from factory.orchestration.factory_merged_delivery import reconcile_merged_delivery
 
+    # A merged PR can hold unresolved starts even after every graph run ends.
+    # Record the aged pause without settling it before delivery returns early.
+    _expire_reconciler_pause(task_id, held_only=True)
     if reconcile_merged_delivery(task, policy, runs):
         return
     permission = can_start(task_id)
