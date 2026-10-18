@@ -4,6 +4,8 @@ kind: HTTPRoute
 metadata:
   name: loom-private
   namespace: loom
+  labels:
+    ingress-tier: trusted
 spec:
   parentRefs:
     - group: gateway.networking.k8s.io
@@ -40,6 +42,8 @@ kind: HTTPRoute
 metadata:
   name: loom-private-slash-redirect
   namespace: loom
+  labels:
+    ingress-tier: trusted
 spec:
   parentRefs:
     - group: gateway.networking.k8s.io
@@ -60,3 +64,30 @@ spec:
               type: ReplaceFullPath
               replaceFullPath: /app/loom/
             statusCode: 301
+---
+# Match cf-ingress.security-policy without changing the upstream Loom chart.
+# Only loom-private serves a backend; the slash route above only redirects.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: loom-private-cf-access
+  namespace: loom
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: loom-private
+  jwt:
+    providers:
+      - name: cloudflare-access
+        issuer: https://jomcgi.cloudflareaccess.com
+        remoteJWKS:
+          # Spell out the Envoy default for ServerSideApply field ownership.
+          cacheDuration: 300s
+          uri: https://jomcgi.cloudflareaccess.com/cdn-cgi/access/certs
+        extractFrom:
+          headers:
+            - name: Cf-Access-Jwt-Assertion
+        claimToHeaders:
+          - claim: email
+            header: X-Auth-Email

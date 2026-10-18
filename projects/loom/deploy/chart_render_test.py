@@ -243,12 +243,27 @@ def test_ui_prefix_and_config_mount(rendered):
 
 
 def test_private_route_matches_rendered_service_and_redirect(rendered):
-    routes = list(yaml.safe_load_all((DEPLOY / "httproute.yaml").read_text()))
-    assert [route["metadata"]["name"] for route in routes] == [
-        "loom-private",
-        "loom-private-slash-redirect",
+    documents = list(yaml.safe_load_all((DEPLOY / "httproute.yaml").read_text()))
+    resources = {(doc["kind"], doc["metadata"]["name"]): doc for doc in documents}
+    assert len(documents) == len(resources) == 3
+    assert set(resources) == {
+        ("HTTPRoute", "loom-private"),
+        ("HTTPRoute", "loom-private-slash-redirect"),
+        ("SecurityPolicy", "loom-private-cf-access"),
+    }
+    routes = [
+        resources[("HTTPRoute", name)]
+        for name in ("loom-private", "loom-private-slash-redirect")
+    ]
+    policy = resources[("SecurityPolicy", "loom-private-cf-access")]
+    assert policy["metadata"]["namespace"] == "loom"
+    assert policy["spec"]["targetRefs"] == [
+        {"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "loom-private"}
     ]
     for route in routes:
+        assert route["metadata"]["namespace"] == policy["metadata"]["namespace"]
+        assert route["metadata"]["labels"]["ingress-tier"] == "trusted"
+        assert len(route["spec"]["rules"]) == 1
         assert route["spec"]["parentRefs"] == [
             {
                 "group": "gateway.networking.k8s.io",
@@ -289,6 +304,7 @@ def test_private_route_matches_rendered_service_and_redirect(rendered):
         {"name": "http", "port": 8080, "targetPort": "http"}
     ]
     redirect = routes[1]["spec"]["rules"][0]
+    assert set(redirect) == {"matches", "filters"}
     assert redirect["matches"] == [{"path": {"type": "Exact", "value": "/app/loom"}}]
     assert redirect["filters"] == [
         {

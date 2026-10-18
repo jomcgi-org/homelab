@@ -40,8 +40,14 @@ on the existing account endpoint. The operator syncs `r2-s3-credentials` to
 `loom-s3-credentials`; chart values map its `access-key-id` and
 `secret-access-key` fields. The chart creates the `loom` ServiceAccount with
 `ghcr-imagepull-secret`. No hand-written ServiceAccount or S3 Secret is needed.
-The private gateway serves the UI and API at `private.jomcgi.dev/app/loom/`,
-rewriting the prefix and redirecting the bare path to its trailing slash.
+The staged private routes serve the UI and API at
+`private.jomcgi.dev/app/loom/`, rewriting the prefix and redirecting the bare
+path to its trailing slash. Both carry `ingress-tier: trusted`.
+`loom-private-cf-access` targets the backend-serving `loom-private` route in
+the `loom` namespace, validates `Cf-Access-Jwt-Assertion` with the shared
+Cloudflare issuer and JWKS settings, and projects `email` to `X-Auth-Email`.
+The slash route only redirects and has no backend. Runtime enforcement is
+unverified while the Application remains off.
 
 ## Operator checks (#6605)
 
@@ -75,8 +81,8 @@ Neither production overlay enables it. The flag appends an in-cluster GET probe
 to `http://loom-query-api.loom.svc:8080/docs` and creates the backup checker in
 the collector release namespace. The pinned Loom chart renders that Service on
 8080 with no NetworkPolicies. Cluster reachability remains a live check.
-Switch `loom.probeEndpoint` and the trigger's `http.url` filter to `/healthz`
-once weave-hand/loom#694 ships; `/docs` currently checks HTTP reachability only.
+Switch `loom.probeEndpoint` to `/healthz` once weave-hand/loom#694 ships;
+`/docs` currently checks HTTP reachability only.
 
 The checker is a native `batch/v1` CronJob: Argo Workflows is single-namespace
 and watches only `monolith-workflows`, so it cannot run a CronWorkflow here.
@@ -89,42 +95,30 @@ from `metadata.creationTimestamp` and carries
 The flag requires `httpcheck.enabled` and a non-empty `allowedServices` so both
 probe and OTLP paths exist; the GKE overlay already supplies these.
 
-Before this change, no repository consumer alerted on CNPG backup age for
-monolith-pg, authentik, context-forge or loom-pg. Monolith-pg needs the same freshness and
-checker-absence checks. The 9187 metrics Services are not scraped by this
-collector, which has no Prometheus receiver.
+The 9187 metrics Services are not scraped by this collector, which has no
+Prometheus receiver. Probe and backup-age telemetry can be inspected in
+Honeycomb after enablement. There are no Loom probe, backup-age or
+checker-absence trigger specs. The
+[Honeycomb one-trigger policy](../../platform/honeycomb/README.md) reserves the
+only trigger for the public health composite.
 
-Three disabled specs in `projects/platform/honeycomb/triggers/` use the
-`metrics` dataset and `deployment.environment=homelab-hub`:
+The [shared backup advisory](../../../docs/observability.md#staged-shared-backup-advisory)
+is staged off under #7002. It can include Loom when `loom.enabled` is on;
+its producer status and monolith reader have separate default-off gates.
+Missing or stale checker observations report unknown without a new
+checker-absence notification. This does not provide a Loom probe alert.
 
-| Trigger | Query and threshold |
-| ------- | ------------------- |
-| `loom query-api successful probe absent` | COUNT of `httpcheck.status=1`, `http.status_class=2xx`, matching the probe's `http.url`, below 1 over 600 seconds, evaluated every 300 seconds |
-| `loom-pg backup older than 36h` | MAX of `cnpg.backup.last_success_age_seconds` for `cnpg.cluster.name=loom-pg`, `k8s.namespace.name=loom`, above 129600 seconds over 3600 seconds, evaluated every 1800 seconds |
-| `loom-pg backup age metric absent` | COUNT of the same age gauge below 1 over 7200 seconds (four job periods), evaluated every 1800 seconds |
-
-Collector 0.159.0's `receiver/httpcheckreceiver/scraper.go` records
-`httpcheck.error` on connection errors and zero for every status class.
-Counting successful 2xx datapoints covers transport errors, non-2xx and absent
-probes. A non-2xx MAX test alone misses a refused connection. The backup age
-trigger also needs its absence companion: MAX cannot fire without a datapoint.
-All three notify the existing Discord webhook recipient and require one
-exceeded evaluation. They remain disabled until the operator checks pass.
-
-Enable in this order, through separate PRs and the Honeycomb sync workflow:
+Enable telemetry in this order, through separate PRs:
 
 1. Finish #6605 and verify the Loom Application is Synced and Healthy.
 2. Flip `loom.enabled` in the GKE overlay through a PR and verify the collector
    rollout, the Loom probe and the backup CronJob's API access and export.
 3. Confirm successful probe datapoints and the age gauge, including the
    cluster, namespace, environment and fallback attributes, in Honeycomb.
-4. Enable the trigger specs and apply with `sync.py`. Test-fire probe failure,
-   stale backup and missing checker data, and confirm Discord notifications
-   and recovery. If the endpoint changes to `/healthz`, change its trigger
-   filter in the same PR.
 
-This PR delivers default-off repository configuration. Live acceptance remains
-in #6604; it does not enable Loom, sync Honeycomb triggers or close the issue.
+Monitoring acceptance remains in #6604, application activation in #6605 and
+shared backup advisory acceptance in #7002. This configuration enables none
+of them and creates no Honeycomb alerts.
 
 ## Restore into a new cluster
 
