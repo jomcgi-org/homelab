@@ -284,6 +284,38 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
         control.policy_json = json.dumps(policy)
         db.commit()
         eligible_view = build_factory_view(session=db)
+
+        # This Bazel target deliberately lacks the decision executor. Read-only
+        # pause visibility must work for real cards and pending requests here.
+        from factory.orchestration import factory_controls as controls, factory_pause
+
+        task_id = "paused-status-only"
+        db.add(SwarmTask(id=task_id, task_text="paused", conductor_model="astra"))
+        db.flush()
+        receipt = db.get(FactoryReceipt, view["queued"][0]["id"])
+        receipt.task_id, receipt.state, receipt.task_paused = task_id, "admitted", True
+        receipt.policy_json = json.dumps({**policy, "task_timeout_seconds": 3600})
+        receipt.escalation_json = json.dumps(
+            {
+                "kind": "automatic_pause",
+                "task_id": task_id,
+                "options": [factory_pause.STOP],
+            }
+        )
+        db.commit()
+        visible = controls.escalation_view(controls._snapshot(db, receipt))
+        assert visible["open"] and visible["options"]
+        controls._audit(
+            db,
+            "operator",
+            "decision_request",
+            request={"receipt_id": receipt.id, "request_key": "unknown"},
+            result={"state": "outcome_unknown"},
+        )
+        db.commit()
+        blocked = controls.escalation_view(controls._snapshot(db, receipt))
+        assert not blocked["open"] and blocked["options"] == []
+        assert blocked["pause_warning"] == "active_paused_without_actionable_question"
     assert view["ok"] is True
     assert view["state"] == "enabled"
     assert view["policy"]["conductor_model"] == "astra"
