@@ -238,13 +238,6 @@ else
 	fail "test_source_reachability_in_pr_checks" "test source guard must run before affected-target selection"
 fi
 
-if grep -qx $'\tcmd_ratchet' "$CI" &&
-	grep -q 'central_build_ratchet.py "$merge_base" HEAD' "$CI"; then
-	pass "central_build_ratchet_in_local_ci"
-else
-	fail "central_build_ratchet_in_local_ci" "bare ci must run the ratchet against the merge base"
-fi
-
 if grep -q 'deleted_packages=bazel/tools/python' "$LOCAL_AFFECTED_TEST" &&
 	grep -q 'test_tag_filters=-external,-future' "$LOCAL_AFFECTED_TEST" &&
 	grep -q -- '--script=' "$CI"; then
@@ -284,6 +277,10 @@ cat >"$STUB_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1 ${2:-}" == "rev-parse --show-toplevel" ]]; then
 	echo "$CI_FAKE_ROOT"
+elif [[ "$1" == "merge-base" ]]; then
+	[[ -z "${MERGE_BASE_LOG:-}" ]] || printf '%s\n' "$*" >>"$MERGE_BASE_LOG"
+	[[ "${FAIL_MERGE_BASE:-0}" == 0 ]] || exit 1
+	echo resolved-merge-base
 fi
 exit 0
 EOF
@@ -296,6 +293,15 @@ cat "$BB_FIXTURE"
 exit "${BB_STATUS:-0}"
 EOF
 chmod +x "$STUB_BIN/bb"
+
+cat >"$STUB_BIN/python3" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$GUARD_LOG"
+if [[ "${1##*/}" == "${FAIL_GUARD:-}" ]]; then
+	exit 7
+fi
+EOF
+chmod +x "$STUB_BIN/python3"
 
 cat >"$TMP/green_run" <<'EOF'
 INFO: Analyzed 361 targets
@@ -373,6 +379,76 @@ ci-local-affected: running bazel test on 137 affected target(s)
 affected-targets: 137 affected targets, 0 of them verification genrules
 Executed 0 out of 137 tests: 137 tests pass.
 EOF
+
+# Exercise bare ci, including lint/regen, with no changed files in the fake repo.
+# Only the Python boundary is stubbed: guard logic has its own test suites.
+run_guard_case() {
+	local name="$1" base_ref="$2" skip_remote="$3" failed_guard="$4"
+	local fail_base="$5" want_status="$6" expected_guards="$7"
+	local output="$TMP/$name.out" got_status=0
+	local guard_log="$TMP/$name.guards" base_log="$TMP/$name.base"
+	local bb_log="$TMP/$name.bb.log"
+	: >"$guard_log"
+	: >"$base_log"
+	if (cd "$FAKE_ROOT" && HOME="$TMP/$name-home" XDG_CACHE_HOME="$TMP/$name-cache" \
+		PATH="$STUB_BIN:$PATH" CI_FAKE_ROOT="$FAKE_ROOT" \
+		CI_BASE_REF="$base_ref" SKIP_REMOTE="$skip_remote" \
+		GUARD_LOG="$guard_log" MERGE_BASE_LOG="$base_log" \
+		FAIL_GUARD="$failed_guard" FAIL_MERGE_BASE="$fail_base" \
+		BB_FIXTURE="$TMP/green_run" BB_STATUS=0 BB_LOG="$bb_log" \
+		"$CI" >"$output" 2>&1); then
+		got_status=0
+	else
+		got_status=$?
+	fi
+	if [[ "$got_status" -eq "$want_status" ]]; then
+		pass "$name status"
+	else
+		fail "$name status" "expected $want_status, got $got_status: $(tr '\n' ' ' <"$output")"
+	fi
+	if [[ "$(<"$guard_log")" == "$expected_guards" ]]; then
+		pass "$name guard arguments and order"
+	else
+		fail "$name guard arguments and order" "expected [$expected_guards], got [$(<"$guard_log")]"
+	fi
+	if [[ "$(grep -cxF "merge-base ${base_ref:-origin/main} HEAD" "$base_log" || true)" == 1 ]]; then
+		pass "$name merge base"
+	else
+		fail "$name merge base" "expected one ratchet resolution for ${base_ref:-origin/main}: $(<"$base_log")"
+	fi
+	if [[ "$want_status" == 0 && "$skip_remote" == 0 ]]; then
+		if [[ -s "$bb_log" ]]; then
+			pass "$name remote reached"
+		else
+			fail "$name remote reached" "bb was not invoked"
+		fi
+	elif [[ ! -e "$bb_log" ]]; then
+		pass "$name remote prevented"
+	else
+		fail "$name remote prevented" "bb must not run after a guard error or with SKIP_REMOTE=1"
+	fi
+}
+
+guard_calls=""
+for guard in verification_genrule_guard.py central_build_ratchet.py chart_version_guard.py source_ratchet.py; do
+	if [[ "$guard" == verification_genrule_guard.py ]]; then
+		guard_calls="./bazel/tools/ci/$guard ."
+	else
+		guard_calls+=$'\n'"./bazel/tools/ci/$guard resolved-merge-base HEAD"
+	fi
+	for skip in 0 1; do
+		run_guard_case "guard_failure_${guard}_${skip}" "" "$skip" "$guard" 0 7 "$guard_calls"
+	done
+done
+run_guard_case guards_default_base "" 0 "" 0 0 "$guard_calls"
+run_guard_case guards_custom_base origin/release 0 "" 0 0 "$guard_calls"
+run_guard_case guards_skip_remote "" 1 "" 0 0 "$guard_calls"
+run_guard_case guards_missing_base origin/missing 0 "" 1 1 ""
+if grep -qF 'ratchet: cannot find the merge base of origin/missing and HEAD' "$TMP/guards_missing_base.out"; then
+	pass "missing base diagnostic"
+else
+	fail "missing base diagnostic" "missing fail-closed ratchet diagnostic"
+fi
 
 run_behavioral_case() {
 	local name="$1"
