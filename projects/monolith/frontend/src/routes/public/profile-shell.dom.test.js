@@ -39,6 +39,25 @@ async function render(path, surface, host = "jomcgi.dev", data = {}) {
 
 describe("home/CV composed route chrome", () => {
   it.each([
+    ["/", "home", true],
+    ["/", "home", false],
+    ["/cv", "cv", true],
+    ["/cv", "cv", false],
+  ])(
+    "keeps %s (%s) footer Blog navigation conditional on hasBlog=%s",
+    async (path, surface, hasBlog) => {
+      await render(path, surface, "jomcgi.dev", { hasBlog });
+      const navigation = target.querySelector(
+        'nav[aria-label="Continue reading"]',
+      );
+      expect(navigation).not.toBeNull();
+      expect(navigation.querySelectorAll('a[href="/blog"]')).toHaveLength(
+        hasBlog ? 1 : 0,
+      );
+    },
+  );
+
+  it.each([
     ["/", "home"],
     ["/public/", "home"],
     ["/cv", "cv"],
