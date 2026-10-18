@@ -795,7 +795,9 @@ def rows(*lanes):
     from types import SimpleNamespace
 
     return [
-        SimpleNamespace(task_class="bug-fix" if lane == "delivery" else "refine")
+        SimpleNamespace(
+            state="admitted", task_class="bug-fix" if lane == "delivery" else "refine"
+        )
         for lane in lanes
     ]
 

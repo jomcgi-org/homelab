@@ -2575,3 +2575,37 @@ def test_human_ownership_excludes_both_intake_lanes_without_policy_exclusion(
         assert session.exec(select(FactoryReceipt)).all() == []
     detail = json.loads(audits(db, "intake_idle")[-1].detail_json)
     assert detail["excluded"]["human"] == 1
+
+
+@pytest.mark.parametrize(
+    "state,old,paused,expected",
+    [
+        ("landing", False, False, 1),
+        ("landing", True, False, 1),
+        ("admitted", True, False, 0),
+        ("admitted", True, True, 0),
+        ("uncertain", True, False, 0),
+        ("queued", True, False, 1),
+        ("queued", False, False, 0),
+    ],
+)
+def test_intake_capacity_matches_admission_across_generations(
+    db, monkeypatch, state, old, paused, expected
+):
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=99,
+                generation=2 if old else 3,
+                title="existing",
+                body="",
+                url="https://github.com/owner/repo/issues/99",
+                actor=intake_loop.ACTOR,
+                state=state,
+                task_paused=paused,
+            )
+        )
+        session.commit()
+    assert len(intake_loop.intake_tick(policy(), generation=3)) == expected

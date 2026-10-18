@@ -628,6 +628,7 @@ def _queue_context(db, row) -> dict | None:
 def _lifecycle_evidence(db, row, snapshot: dict) -> dict:
     """Keep activity, artifact, acceptance, landing and deployment distinct."""
     from sqlmodel import select
+    from sqlalchemy import func
 
     from factory.orchestration.factory_models import (
         FactoryAudit,
@@ -644,33 +645,72 @@ def _lifecycle_evidence(db, row, snapshot: dict) -> dict:
         if getattr(row, "task_id", None)
         else None
     )
+    latest_actions = (
+        select(func.max(FactoryAudit.id))
+        .where(
+            FactoryAudit.task_id == row.task_id,
+            FactoryAudit.action.in_(
+                (
+                    "delivery_ready",
+                    "landing_recovery_requested",
+                    "merge_armed",
+                    "merged",
+                    "owned_pr_merged",
+                    "rollout_observed",
+                    "rollout_verified",
+                    "issue_closed",
+                    "repository_delivery_complete",
+                )
+            ),
+        )
+        .group_by(FactoryAudit.action)
+    )
     landing_actions = (
-        db.exec(
-            select(FactoryAudit)
-            .where(
-                FactoryAudit.task_id == row.task_id,
-                FactoryAudit.action.in_(
-                    (
-                        "merge_armed",
-                        "merged",
-                        "issue_closed",
-                        "repository_delivery_complete",
-                    )
-                ),
-            )
-            .order_by(FactoryAudit.id.desc())
-            .limit(20)
-        ).all()
+        db.exec(select(FactoryAudit).where(FactoryAudit.id.in_(latest_actions))).all()
         if getattr(row, "task_id", None)
         else []
     )
-    actions = {audit.action: audit for audit in landing_actions}
+    reset = max(
+        (
+            event.id
+            for event in landing_actions
+            if event.action == "landing_recovery_requested"
+        ),
+        default=0,
+    )
+    actions = {audit.action: audit for audit in landing_actions if audit.id > reset}
     evidence = _evidence_summary(snapshot.get("evidence"))
     accepted = bool(
-        evidence and evidence.get("state") in {"ready_for_review", "reviewed_draft"}
+        evidence
+        and evidence.get("state")
+        in {"ready_for_review", "reviewed_draft", "merged_reviewed"}
     )
     repository_complete = actions.get("repository_delivery_complete") or actions.get(
         "issue_closed"
+    )
+    merged = actions.get("merged") or actions.get("owned_pr_merged")
+    ready = actions.get("delivery_ready")
+    proof_floor = ready.id if ready else reset
+    rollout = max(
+        (
+            event
+            for event in landing_actions
+            if event.action in ("rollout_verified", "rollout_observed")
+            and event.id > proof_floor
+        ),
+        key=lambda event: event.id,
+        default=None,
+    )
+    rollout_evidence = json.loads(rollout.detail_json) if rollout else None
+    verified = bool(
+        rollout
+        and rollout.actor == "factory:landing"
+        and rollout.action == "rollout_verified"
+        and rollout_evidence.get("verified") is True
+        and evidence is not None
+        and rollout_evidence.get("approved_head_sha") == evidence.get("head_sha")
+        and evidence.get("pr_url")
+        == f"https://github.com/{getattr(row, 'repo', '')}/pull/{rollout_evidence.get('pr_number')}"
     )
     return {
         "work_started": {
@@ -697,14 +737,28 @@ def _lifecycle_evidence(db, row, snapshot: dict) -> dict:
             ),
         },
         "repository_delivery": {
-            "status": "complete" if repository_complete else "not_observed",
-            "action": repository_complete.action if repository_complete else None,
-            "at": _iso(repository_complete.created_at) if repository_complete else None,
+            "status": "complete"
+            if repository_complete
+            else "merged"
+            if merged
+            else "not_observed",
+            "action": (repository_complete or merged).action
+            if repository_complete or merged
+            else None,
+            "at": _iso((repository_complete or merged).created_at)
+            if repository_complete or merged
+            else None,
         },
         "deployment": {
-            "status": "unknown",
-            "coverage": "not_tracked_by_factory",
-            "evidence": None,
+            "status": "verified"
+            if verified
+            else "pending"
+            if rollout or merged
+            else "unknown",
+            "coverage": "infrastructure_rollout"
+            if rollout or merged
+            else "not_tracked_by_factory",
+            "evidence": rollout_evidence,
         },
     }
 

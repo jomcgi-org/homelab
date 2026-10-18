@@ -32,6 +32,7 @@ HEAD = "a" * 40
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
+    landing._delivery_cursors.clear()
     monkeypatch.setattr(
         factory_rollout, "verify", lambda *_args: {"verified": True, "applications": []}
     )
@@ -168,15 +169,30 @@ def receipt_state(db, task_id):
         ).one()
 
 
-def pull(number, *, merged=False, state="open", draft=False, armed=False, head=HEAD):
+def pull(
+    number,
+    *,
+    merged=False,
+    state="open",
+    draft=False,
+    armed=False,
+    head=HEAD,
+    task_id="t-1",
+):
     return {
         "number": number,
+        "html_url": f"https://github.com/owner/repo/pull/{number}",
         "state": "closed" if merged else state,
         "draft": draft,
         "merged": merged,
         "node_id": f"PR_{number}",
         "body": "Closes #11",
-        "head": {"sha": head, "ref": f"factory/t-{number}"},
+        "head": {
+            "sha": head,
+            "ref": f"factory/{task_id}",
+            "repo": {"full_name": "owner/repo"},
+        },
+        "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
         "auto_merge": {"merge_method": "REBASE"} if armed else None,
         "merge_commit_sha": "b" * 40 if merged else None,
     }
@@ -236,23 +252,12 @@ def github(monkeypatch, *, pulls=None, issues=None, refuse=None):
     return calls
 
 
-def test_landing_is_inert_without_the_flag(db, monkeypatch):
-    from factory import review_publisher
-
+def test_landing_observes_without_mutating_open_pr_when_flags_off(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
-    monkeypatch.setattr(
-        review_publisher,
-        "collect",
-        lambda *_args: pytest.fail("disabled landing collected review evidence"),
-    )
-    monkeypatch.setattr(
-        landing,
-        "github_get",
-        lambda *_args: pytest.fail("landing read GitHub with auto_merge off"),
-    )
+    calls = github(monkeypatch, pulls={3: pull(3)})
     landing.landing_tick({"repo": "owner/repo"})
-    landing.landing_tick({"repo": "owner/repo", "auto_merge": False})
-    assert audits(db, "merge_armed") == []
+    assert "pulls/3" in calls["get"]
+    assert calls["write"] == calls["graphql"] == []
 
 
 def test_missing_publisher_token_refuses_to_arm_when_enabled(db, monkeypatch):
@@ -325,9 +330,7 @@ def test_review_canary_publishes_while_merge_remains_disabled(db, monkeypatch):
         landing,
         "github_get",
         lambda _repo, suffix: (
-            {"labels": []}
-            if suffix.startswith("issues/")
-            else pytest.fail("merge-disabled canary reached arming")
+            {"labels": []} if suffix.startswith("issues/") else pull(3)
         ),
     )
 
@@ -1010,7 +1013,11 @@ def test_a_terminal_delivery_leaves_the_batch(db, monkeypatch):
     reads = len(calls["get"])
     landing.landing_tick(POLICY)
     # The landed delivery is not read again; only the one still working is.
-    assert [suffix for suffix in calls["get"][reads:]] == ["issues/12", "pulls/4"]
+    assert [suffix for suffix in calls["get"][reads:]] == [
+        "issues/12",
+        "pulls/4",
+        "pulls/4",
+    ]
 
 
 def test_an_advisory_settlement_is_not_a_delivery(db, monkeypatch):
@@ -1295,10 +1302,10 @@ def test_historical_changed_head_is_skipped_once_without_blocking_next_refusal(
         pulls={3: pull(3, head="d" * 40), 4: {**pull(4), "mergeable": False}},
     )
     landing.landing_tick(POLICY)
-    assert calls["get"] == ["issues/11", "pulls/3"]
+    assert calls["get"][:2] == ["issues/11", "pulls/3"]
     assert audits(db, "landing_recovery_skipped", "t-1")[0]["reason"] == "head_moved"
     landing.landing_tick(POLICY)
-    assert calls["get"] == ["issues/11", "pulls/3", "issues/12", "pulls/4"]
+    assert "pulls/4" in calls["get"]
     assert receipt_state(db, "t-2") == "admitted"
 
 
@@ -1381,7 +1388,7 @@ def test_merge_waits_for_rollout_and_retries_after_bounded_observation(
     delivered(db, "t-wait", 11, 3, state=state)
     calls = github(
         monkeypatch,
-        pulls={3: pull(3, merged=True)},
+        pulls={3: pull(3, merged=True, task_id="t-wait")},
         issues={11: {"number": 11, "state": "open"}},
     )
     observations = []
@@ -1595,7 +1602,7 @@ def test_unavailable_rollout_evidence_keeps_operational_acceptance_pending(
     delivered(db, "t-unavailable", 11, 3)
     github(
         monkeypatch,
-        pulls={3: pull(3, merged=True)},
+        pulls={3: pull(3, merged=True, task_id="t-unavailable")},
         issues={11: {"number": 11, "state": "open"}},
     )
     monkeypatch.setattr(
@@ -2087,9 +2094,10 @@ def test_close_reloads_live_gate_recorded_after_delivery_snapshot(db, monkeypatc
     ]
 
 
+@pytest.mark.parametrize("paused", [False, True])
 @pytest.mark.parametrize("entry", ["auto-merge", "queue"])
 def test_receipt_landing_hold_disarms_and_rechecks_even_with_global_flags_off(
-    db, monkeypatch, entry
+    db, monkeypatch, entry, paused
 ):
     from factory import review_publisher
 
@@ -2097,6 +2105,7 @@ def test_receipt_landing_hold_disarms_and_rechecks_even_with_global_flags_off(
     with Session(db) as session, session.begin():
         row = controls._receipt(session, "t-held")
         row.direction_json = '{"landing_hold":{"actor":"operator"}}'
+        row.task_paused = paused
     pulls = {3: pull(3, armed=entry == "auto-merge")}
     if entry == "queue":
         pulls[3]["queue_entry"] = {"id": "MQ_3", "state": "QUEUED"}
@@ -2205,3 +2214,262 @@ def test_unmerged_hold_is_persisted_before_external_writes(db, monkeypatch):
         assert controls.landing_held(controls._receipt(session, "t-unmerged"))
     with pytest.raises(ValueError, match="invalid gate"):
         gates.validate_gate({**gate, "leave_unmerged": False})
+
+
+@pytest.mark.parametrize("refused", [False, True])
+@pytest.mark.parametrize("merge_enabled", [False, True])
+def test_merged_delivery_precedes_publisher_and_recovers_old_refusal(
+    db, monkeypatch, refused, merge_enabled
+):
+    from factory import review_publisher
+
+    delivered(db, "t-1", 11, 3, state="landing")
+    if refused:
+        landing._record(
+            "t-1",
+            "merge_arm_refused",
+            reason="review_not_published",
+            review_reason="pr_not_open",
+        )
+    monkeypatch.setattr(review_publisher, "enabled", lambda: True)
+    monkeypatch.setattr(
+        review_publisher,
+        "collect",
+        lambda *_: pytest.fail("merged PR reached publisher"),
+    )
+    calls = github(
+        monkeypatch, pulls={3: pull(3, merged=True)}, issues={11: {"state": "closed"}}
+    )
+    for _ in range(3):
+        landing.landing_tick({**POLICY, "auto_merge": merge_enabled})
+        landing._delivery_cursors.clear()  # Leader restart is a replay, not a new merge.
+    assert len(audits(db, "merged", "t-1")) == 1
+    assert len(audits(db, "issue_closed", "t-1")) == 1
+    assert calls["write"] == calls["graphql"] == []
+    assert bool(audits(db, "merge_arm_refused", "t-1")) == refused
+
+
+@pytest.mark.parametrize("wrong", ["head", "repo", "base", "branch", "merge_sha"])
+def test_merged_delivery_requires_exact_owned_identity(db, monkeypatch, wrong):
+    delivered(db, "t-1", 11, 3)
+    pr = pull(3, merged=True)
+    if wrong == "head":
+        pr["head"]["sha"] = "c" * 40
+    if wrong == "repo":
+        pr["head"]["repo"]["full_name"] = "other/repo"
+    if wrong == "base":
+        pr["base"]["ref"] = "other"
+    if wrong == "branch":
+        pr["head"]["ref"] = "factory/other"
+    if wrong == "merge_sha":
+        pr["merge_commit_sha"] = None
+    calls = github(monkeypatch, pulls={3: pr})
+    landing.landing_tick(POLICY)
+    assert audits(db, "merged") == audits(db, "issue_closed") == []
+    assert calls["write"] == calls["graphql"] == []
+
+
+def test_merge_during_publication_recovers_next_tick(db, monkeypatch):
+    from factory import review_publisher
+
+    delivered(db, "t-1", 11, 3)
+    pr = pull(3)
+    calls = github(monkeypatch, pulls={3: pr}, issues={11: {"state": "closed"}})
+    monkeypatch.setattr(review_publisher, "enabled", lambda: True)
+
+    def race(_item):
+        pr.update(pull(3, merged=True))
+        return review_publisher.Refusal("t-1", "pr_not_open")
+
+    monkeypatch.setattr(review_publisher, "collect", race)
+    monkeypatch.setattr(review_publisher, "publish", lambda *_: {"action": "refused"})
+    landing.landing_tick(POLICY)
+    assert audits(db, "merge_arm_refused")
+    landing.landing_tick(POLICY)
+    assert len(audits(db, "merged")) == 1
+    assert calls["graphql"] == []
+
+
+def test_merge_observation_reaches_beyond_refused_batch(db, monkeypatch):
+    monkeypatch.setattr(landing, "OBSERVATION_BATCH", 2)
+    for n in range(1, 6):
+        delivered(db, f"t-{n}", 10 + n, n)
+        landing._record(f"t-{n}", "merge_arm_refused", reason="review_not_published")
+    pulls = {n: pull(n, merged=n == 5, task_id=f"t-{n}") for n in range(1, 6)}
+    calls = github(monkeypatch, pulls=pulls, issues={15: {"state": "closed"}})
+    for _ in range(3):
+        landing.landing_tick({"repo": "owner/repo"})
+    assert audits(db, "merged", "t-5")
+    assert calls["graphql"] == []
+
+
+def test_paused_merged_delivery_is_not_settled_or_rearmed(db, monkeypatch):
+    delivered(db, "t-1", 11, 3, state="landing")
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        row.task_paused = True
+        session.commit()
+    monkeypatch.setattr(
+        landing, "github_get", lambda *_: pytest.fail("paused delivery mutated")
+    )
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "landing"
+    assert audits(db, "merged") == []
+
+
+@pytest.mark.parametrize("new_hold", [None, "pause", "landing"])
+@pytest.mark.parametrize(
+    "verdict", ["approve", "changes_requested", "wrong_head", "wrong_pr", "ci_pending"]
+)
+def test_owned_merged_delivery_drains_live_review_before_settlement(
+    db, monkeypatch, verdict, new_hold
+):
+    from factory.orchestration import factory_conductor as conductor, factory_refine
+    from factory.orchestration.factory_merged_delivery import reconcile_merged_delivery
+
+    delivered(db, "t-1", 11, 3, state="admitted")
+    task = {
+        "id": "t-1",
+        "repo": "owner/repo",
+        "base_branch": "main",
+        "conductor_model": "opus",
+        "issue_number": 11,
+    }
+    pr = pull(3, merged=True)
+    reads = 0
+
+    def read(_repo, path):
+        nonlocal reads
+        if path.startswith("pulls/"):
+            reads += 1
+            if reads == 2 and new_hold:
+                with Session(db) as session:
+                    row = controls._receipt(session, "t-1")
+                    if new_hold == "pause":
+                        row.task_paused = True
+                    else:
+                        row.direction_json = '{"landing_hold":{"actor":"operator"}}'
+                    session.commit()
+            return pr
+        return {
+            "statuses": [
+                {
+                    "context": "pr-checks",
+                    "state": "pending" if verdict == "ci_pending" else "success",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    monkeypatch.setattr(conductor, "pool_for", lambda *_: ["opus"])
+    monkeypatch.setattr(factory_refine, "task_class_for", lambda *_: "bug-fix")
+
+    def run(rid, key, session, status, value):
+        return {
+            "id": rid,
+            "node_key": key,
+            "session_id": session,
+            "status": status,
+            "head_sha": HEAD,
+            "pin": {"model": "opus"},
+            "outcome_json": json.dumps(
+                {"value": value, "artifact": {"status": "ok", "value": value}}
+            ),
+        }
+
+    implementation = run(
+        1, "implement_fix", 10, "succeeded", {"pr_number": 3, "head_sha": HEAD}
+    )
+    review = run(
+        2,
+        "review_fix",
+        11,
+        "dispatched",
+        {
+            "pr_number": 99 if verdict == "wrong_pr" else 3,
+            "head_sha": "c" * 40 if verdict == "wrong_head" else HEAD,
+            "verdict": "changes_requested"
+            if verdict == "changes_requested"
+            else "approve",
+        },
+    )
+    with Session(db) as session:
+        session.add(
+            FactoryStart(
+                task_id="t-1",
+                start_key="review",
+                actor="factory",
+                model="opus",
+                max_cost_usd=4,
+                status="reserved",
+            )
+        )
+        session.commit()
+    assert reconcile_merged_delivery(task, POLICY, [implementation, review])
+    assert receipt_state(db, "t-1") == "admitted"
+    with Session(db) as session:
+        start = session.exec(select(FactoryStart)).one()
+        assert start.status == "reserved" and start.cost_usd is None
+        start.status = "succeeded"
+        start.cost_usd = 2
+        session.commit()
+    review["status"] = "succeeded"
+    assert reconcile_merged_delivery(
+        task, {**POLICY, "auto_merge": False}, [implementation, review]
+    )
+    assert receipt_state(db, "t-1") == (
+        "admitted"
+        if new_hold or verdict == "ci_pending"
+        else "landing"
+        if verdict == "approve"
+        else "escalated"
+    )
+    assert len(audits(db, "owned_pr_merged")) == 1
+    assert audits(db, "rollout_verified") == []
+    with Session(db) as session:
+        assert session.exec(select(FactoryStart.cost_usd)).one() == 2
+
+
+@pytest.mark.parametrize("hold", ["paused", "landing", "cancelled"])
+def test_owned_merge_cannot_clear_receipt_hold(db, monkeypatch, hold):
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration.factory_merged_delivery import reconcile_merged_delivery
+
+    delivered(db, "t-1", 11, 3, state="admitted")
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        if hold == "paused":
+            row.task_paused = True
+        if hold == "landing":
+            row.direction_json = '{"landing_hold":{"actor":"operator"}}'
+        if hold == "cancelled":
+            row.cancellation_requested = True
+        session.commit()
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda *_: pytest.fail("held task reached reconciliation"),
+    )
+    assert not reconcile_merged_delivery({"id": "t-1"}, POLICY, [])
+    assert receipt_state(db, "t-1") == "admitted"
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_historical_conflict_refusal_cannot_accept_wrong_merged_head(
+    db, monkeypatch, paused
+):
+    delivered(db, "t-1", 11, 3, state="landing")
+    landing._record("t-1", "merge_arm_refused", reason="merge_conflict", pr_number=3)
+    with Session(db) as session:
+        controls._receipt(session, "t-1").task_paused = paused
+        session.commit()
+    calls = github(monkeypatch, pulls={3: pull(3, merged=True, head="c" * 40)})
+    monkeypatch.setattr(
+        factory_rollout,
+        "verify",
+        lambda *_: pytest.fail("wrong-head merge reached rollout"),
+    )
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "landing"
+    assert audits(db, "rollout_verified") == audits(db, "issue_closed") == []
+    assert calls["write"] == calls["graphql"] == []

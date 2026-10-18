@@ -14689,7 +14689,8 @@ def test_review_recovery_keeps_task_accounting_and_stops_at_its_durable_cap(
     nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
     assert "conductor_1" in nodes and "correct_4" not in nodes
     assert conductor._review_rounds_used(task["id"]) == 3
-    assert len(reads) == 8
+    # Three ticks also observe whether the owned PR merged outside the factory.
+    assert len(reads) == 11
 
 
 def test_review_recovery_waits_for_ci_without_spending_a_planner_turn(
@@ -21143,3 +21144,25 @@ def test_landing_hold_reaches_preexisting_nodes_at_actual_dispatch(
     assert conductor._planner_direction({"landing_hold": True})["landing_hold"]
     context = json.loads(conductor._planner_context(task, [], []))
     assert context["task_identity"]["landing_hold"]
+
+
+@pytest.mark.parametrize(
+    "review_head,check_state,accepted",
+    [(None, "success", True), ("b" * 40, "success", False), (None, "pending", False)],
+)
+def test_owned_merged_verification_keeps_review_and_ci_gates(
+    monkeypatch, review_head, check_state, accepted
+):
+    task, runs = delivery(monkeypatch, review_head=review_head, check_state=check_state)
+    pr = conductor.github_get(task["repo"], "pulls/3")
+    pr.update(state="closed", merged=True, merge_commit_sha="b" * 40)
+    if accepted:
+        assert (
+            conductor.verify_delivery(task, 3, runs, allow_merged=True)["state"]
+            == "merged_reviewed"
+        )
+    else:
+        with pytest.raises(ValueError):
+            conductor.verify_delivery(task, 3, runs, allow_merged=True)
+    with pytest.raises(ValueError):
+        conductor.verify_delivery(task, 3, runs)

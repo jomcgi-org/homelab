@@ -1332,6 +1332,30 @@ def lane_limits(policy: dict) -> dict:
     return {"delivery": delivery, "advisory": advisory}
 
 
+def execution_slot_holders(
+    policy: dict, receipts, *, include_queued: bool = False
+) -> list:
+    """One capacity projection for status, intake and admission.
+
+    Paused active work retains its slot across generations. Landing retains
+    ownership, but has no guest work. Only admissible current queues reserve
+    future intake room.
+    """
+    from factory.orchestration.factory_intake import admission_eligible
+
+    def holds(row):
+        get = row.get if isinstance(row, dict) else lambda key: getattr(row, key, None)
+        if get("state") in _ACTIVE:
+            return True
+        return (
+            include_queued
+            and is_current_generation_queue(policy, row)
+            and admission_eligible(policy, get("issue_number"), get("actor"))
+        )
+
+    return [row for row in receipts if holds(row)]
+
+
 def lane_usage(policy: dict, receipts: list[dict]) -> dict:
     """Per-lane limits beside what is in flight and what is waiting.
 
@@ -1340,7 +1364,7 @@ def lane_usage(policy: dict, receipts: list[dict]) -> dict:
     """
     limits = lane_limits(policy)
     usage = {lane: {"limit": limits[lane], "active": 0, "queued": 0} for lane in LANES}
-    for receipt in receipts:
+    for receipt in execution_slot_holders(policy, receipts, include_queued=True):
         lane = receipt.get("routing_tier") or lane_for(
             receipt.get("task_class") or DEFAULT_TASK_CLASS
         )
@@ -3463,6 +3487,17 @@ def finish_task(
             return {"ok": False, "reason": "unknown_task"}
         if outcome == "succeeded" and review_recovery_held(task_id, session=db):
             return {"ok": False, "reason": "review_only_recovery"}
+        if outcome == "succeeded" and row.task_paused:
+            return {"ok": False, "reason": "task_paused"}
+        if (evidence or {}).get("state") in (
+            "merged_reviewed",
+            "merged_review_missing",
+            "merged_review_not_approved",
+        ):
+            if row.task_paused:
+                return {"ok": False, "reason": "task_paused"}
+            if landing_held(row) or row.cancellation_requested:
+                return {"ok": False, "reason": "held_delivery_already_merged"}
         if row.state in _SETTLED:
             last = db.exec(
                 select(FactoryAudit)
@@ -3609,10 +3644,13 @@ def finish_task(
             outcome == "succeeded"
             and not landing_held(row)
             and row.state != "landing"
-            and (evidence or {}).get("state") == "ready_for_review"
+            and (evidence or {}).get("state") in ("ready_for_review", "merged_reviewed")
             and (evidence or {}).get("pr_url")
-            and repo_auto_merge_enabled(
-                json.loads(_control.policy_json or "{}"), row.repo
+            and (
+                (evidence or {}).get("state") == "merged_reviewed"
+                or repo_auto_merge_enabled(
+                    json.loads(_control.policy_json or "{}"), row.repo
+                )
             )
         ):
             # Delivery approval ends guest execution, not the deployment task.

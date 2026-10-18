@@ -546,6 +546,25 @@ rather than a wedge, and a head that moves under an armed pull request takes the
 arming back off. Landing verifies publication and the live rollout before closing
 the issue (#6002).
 
+**Why.** Merge observation runs before review publication, including previously
+refused deliveries, because publishing an open-PR check after another owner
+merged the PR permanently hid it from landing. A bounded rotating scan revisits
+those receipts with merging disabled too. Observed merges must match the owned
+repository, base, branch and approved head. They do not authorize a new merge.
+For an active task whose owned PR merged elsewhere, existing invocations drain
+through normal accounting before exact-head review and CI verification. Approved
+work enters landing even with auto-merge off; missing or rejected review escalates
+without another planner or funding grant. Paused and explicitly held receipts
+remain fenced. Infrastructure rollout and outstanding functional acceptance are
+separate from repository merge observation, including externally closed issues.
+
+Execution capacity uses one projection: admitted and uncertain receipts retain
+slots across generations, including pauses; current admission-eligible queues
+reserve intake room; landing receipts retain issue ownership without guest slots.
+The existing operational health loop reports landing or observed-merged active
+work awaiting reconciliation or rollout for over 30 minutes. It does not settle,
+resume or otherwise repair a task as a side effect of health evaluation.
+
 **Why.** Rollout verification gates only on the Applications the merged PR's
 files deploy through: registry chart versions moved since the merge, git paths
 and their kustomize surface, and `$values` files (#6660). Chart scope uses the
