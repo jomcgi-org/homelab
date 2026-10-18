@@ -250,7 +250,8 @@ def test_activator_ranges_match_control_plane_and_every_noded(stateful, composit
 @pytest.mark.parametrize("gate", ["xds.enabled", "servingEnvoy.enabled"])
 def test_control_plane_activator_envs_remain_gated(gate):
     rendered = _render_with_set(
-        "activator-off", ["xds.enabled=true", "servingEnvoy.enabled=true", f"{gate}=false"]
+        "activator-off",
+        ["xds.enabled=true", "servingEnvoy.enabled=true", f"{gate}=false"],
     )
     control = next(
         container
@@ -260,12 +261,14 @@ def test_control_plane_activator_envs_remain_gated(gate):
         if container["name"] == "control-plane"
     )
     env = {entry["name"] for entry in control["env"]}
-    assert env.isdisjoint({
-        "EMBERVM_STATEFUL_ACTIVATOR_IP",
-        "EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE",
-        "EMBERVM_COMPOSITE_LISTEN_PORT_RANGE",
-        "EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE",
-    })
+    assert env.isdisjoint(
+        {
+            "EMBERVM_STATEFUL_ACTIVATOR_IP",
+            "EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE",
+            "EMBERVM_COMPOSITE_LISTEN_PORT_RANGE",
+            "EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE",
+        }
+    )
     if gate == "servingEnvoy.enabled":
         assert not any(
             port["name"].startswith(("state-", "group-")) for port in control["ports"]
@@ -286,8 +289,14 @@ def test_dead_values_are_absent_from_defaults_and_overlays():
 
 @pytest.mark.parametrize(
     "value_keys",
-    [(), ("PROD_VALUES",), ("PROD_VALUES", "GKE_VALUES"), ("DEV_VALUES",),
-     ("DEV_VALUES", "DEV_GKE_VALUES"), ("RECOVERY_VALUES",)],
+    [
+        (),
+        ("PROD_VALUES",),
+        ("PROD_VALUES", "GKE_VALUES"),
+        ("DEV_VALUES",),
+        ("DEV_VALUES", "DEV_GKE_VALUES"),
+        ("RECOVERY_VALUES",),
+    ],
     ids=["defaults", "prod", "gke", "dev", "dev-gke", "recovery"],
 )
 def test_staged_cleanup_renders_without_dead_configuration(value_keys):
@@ -2712,7 +2721,9 @@ def test_recovery_disarms_destructive_defaults() -> None:
 
 def test_filesystem_schema_only_advertises_consumed_properties():
     schema = yaml.safe_load((_chart_dir() / "crds/workload-crd.yaml").read_text())
-    spec = schema["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+    spec = schema["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"][
+        "spec"
+    ]
     persistence = spec["properties"]["persistence"]["properties"]
     assert set(persistence) == {"memory", "filesystem"}
     filesystem = persistence["filesystem"]["properties"]
@@ -2725,17 +2736,22 @@ def test_filesystem_schema_only_advertises_consumed_properties():
 @pytest.mark.parametrize("persistence_enabled", [False, True])
 def test_runtime_workloads_render_supported_persistence(persistence_enabled):
     enabled = str(persistence_enabled).lower()
-    rendered = _render_with_set("persistence", [
-        "claudeRuntimeWorkload.enabled=true", "piRuntimeWorkload.enabled=true",
-        f"claudeRuntimeWorkload.persistenceEnabled={enabled}",
-        f"piRuntimeWorkload.persistenceEnabled={enabled}",
-        "claudeRuntimeWorkload.workspaceSizeBytes=4096",
-        "piRuntimeWorkload.workspaceSizeBytes=8192",
-    ])
+    rendered = _render_with_set(
+        "persistence",
+        [
+            "claudeRuntimeWorkload.enabled=true",
+            "piRuntimeWorkload.enabled=true",
+            f"claudeRuntimeWorkload.persistenceEnabled={enabled}",
+            f"piRuntimeWorkload.persistenceEnabled={enabled}",
+            "claudeRuntimeWorkload.workspaceSizeBytes=4096",
+            "piRuntimeWorkload.workspaceSizeBytes=8192",
+        ],
+    )
     workloads = {
         doc["metadata"]["name"]: doc["spec"]
         for doc in yaml.safe_load_all(rendered)
-        if isinstance(doc, dict) and doc.get("kind") == "Workload"
+        if isinstance(doc, dict)
+        and doc.get("kind") == "Workload"
         and doc["spec"].get("class") == "session"
     }
     assert set(workloads) == {"claude-runtime", "pi-runtime"}
@@ -2743,7 +2759,11 @@ def test_runtime_workloads_render_supported_persistence(persistence_enabled):
         if persistence_enabled:
             assert workloads[name]["persistence"] == {
                 "memory": False,
-                "filesystem": {"enabled": True, "sizeBytes": size, "mountPath": "/session"},
+                "filesystem": {
+                    "enabled": True,
+                    "sizeBytes": size,
+                    "mountPath": "/session",
+                },
             }
         else:
             assert "persistence" not in workloads[name]
