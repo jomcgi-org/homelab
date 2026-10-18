@@ -1563,8 +1563,9 @@ def test_premature_finish_is_processed_once_and_next_planner_gets_reason(
     assert after["committed_cost_usd"] == before["committed_cost_usd"]
 
 
+@pytest.mark.parametrize("batch", [False, True])
 def test_graph_refusal_survives_audit_gap_and_reaches_next_planner(
-    feedback_db, monkeypatch
+    feedback_db, monkeypatch, batch
 ):
     from sqlmodel import Session, select
     from factory.orchestration.models import SwarmConductorCall
@@ -1583,6 +1584,13 @@ def test_graph_refusal_survives_audit_gap_and_reaches_next_planner(
             "reason": "needed",
         },
     )
+    if batch:
+        decision = {
+            "action": "plan",
+            "reason": "bounded repair",
+            "edits": [conductor._artifact(run)],
+        }
+        run = {**run, "outcome_json": json.dumps({"value": decision})}
     reject = conductor._reject_decision
 
     def crash(*_args):
@@ -15949,6 +15957,73 @@ def test_oversight_alone_cannot_renew_the_same_funding_blocker(
         assert reason["code"] == "funding_without_progress"
 
 
+@pytest.mark.parametrize(
+    "change",
+    ["lost_before_guest", "capacity_denied", "accounting_only", "repeated_artifact"],
+)
+def test_bookkeeping_without_new_evidence_cannot_renew_funding(
+    feedback_db, monkeypatch, change
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+    from factory.orchestration.models import SwarmNodeRun
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "One bounded correction")
+    settle_funding(task, funding_decision())
+    prior = next(
+        run
+        for run in conductor.graph.node_runs(task["id"])
+        if not run["node_key"].startswith("conductor_")
+    )
+    if change == "accounting_only":
+        with controls._locked_session() as (db, _):
+            run = db.get(SwarmNodeRun, prior["id"])
+            run.cost_usd = 0.5
+            outcome = json.loads(run.outcome_json)
+            outcome.update(cost_usd=0.5, accounting="Late provider reconciliation")
+            run.outcome_json = json.dumps(outcome)
+    elif change == "repeated_artifact":
+        complete_feedback_node(
+            task,
+            policy,
+            "investigate_same",
+            conductor._artifact(prior),
+            head=prior["head_sha"],
+        )
+    else:
+        attempt = complete_feedback_node(
+            task, policy, "investigate_unstarted", {}, status="failed"
+        )
+        with controls._locked_session() as (db, _):
+            run = db.get(SwarmNodeRun, attempt["id"])
+            run.cost_usd = 0
+            run.outcome_json = json.dumps(
+                {
+                    "invocation_phase": "lost_before_guest",
+                    "capacity_denied": change == "capacity_denied",
+                }
+            )
+            start = db.exec(
+                select(FactoryStart).where(
+                    FactoryStart.task_id == task["id"],
+                    FactoryStart.start_key == run.dispatch_key,
+                )
+            ).one()
+            start.cost_usd = 0
+    assert not funding.request(task, "Same blocker, no new work evidence")
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["task_paused"]
+    assert snapshot["policy"]["task_budget_usd"] == 20
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"]) is None
+        blocked = funding.latest(db, task["id"], "allocation_recovery_required")
+        assert blocked["code"] == "funding_without_progress"
+
+
 def exhausted_allocation_task(monkeypatch, node_key, ceiling):
     from factory.orchestration import (
         factory_controls as controls,
@@ -16606,7 +16681,9 @@ def test_existing_funding_lifecycle_continues_after_creation_flag_disabled(
         "investigate",
         "Useful work before the next funding review",
     ).ok
-    run_feedback_node(task, "investigate_progress", {})
+    run_feedback_node(
+        task, "investigate_progress", {"summary": "Confirmed the repair input"}
+    )
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
     now = controls._now()
     monkeypatch.setattr(controls, "_now", lambda: now + timedelta(minutes=31))

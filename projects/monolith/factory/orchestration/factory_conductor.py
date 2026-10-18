@@ -573,7 +573,9 @@ def _decision_processed(task_id: str, cause: str) -> bool:
         calls = db.exec(
             select(SwarmConductorCall.args_json).where(
                 SwarmConductorCall.task_id == task_id,
-                SwarmConductorCall.tool.in_(["add_node", "discard_node"]),
+                SwarmConductorCall.tool.in_(
+                    ["add_node", "discard_node", "apply_edits"]
+                ),
             )
         ).all()
         return any(json.loads(raw).get("cause_ref") == cause for raw in calls)
@@ -785,7 +787,9 @@ def _decision_evidence(task_id: str) -> list[dict]:
             .where(
                 SwarmConductorCall.task_id == task_id,
                 SwarmConductorCall.outcome == "refused",
-                SwarmConductorCall.tool.in_(["add_node", "discard_node"]),
+                SwarmConductorCall.tool.in_(
+                    ["add_node", "discard_node", "apply_edits"]
+                ),
             )
             .order_by(SwarmConductorCall.id.desc())
             .limit(DECISION_EVIDENCE_LIMIT)
@@ -804,6 +808,15 @@ def _decision_evidence(task_id: str) -> list[dict]:
 
         def identity(call):
             values = args[call.id]
+            if call.tool == "apply_edits":
+                edits = values.get("edits") or []
+                if len(edits) == 1:
+                    return (
+                        values.get("cause_ref"),
+                        edits[0].get("op"),
+                        edits[0].get("node_key"),
+                    )
+                return values.get("cause_ref"), "plan", None
             return values.get("cause_ref"), call.tool, values.get("node_key")
 
         def graph_evidence(call):

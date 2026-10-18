@@ -22,25 +22,32 @@ def digest(value):
 
 
 def progress(runs, through_run_id=None):
-    """Include useful investigation and recovered evidence, excluding oversight."""
-    return digest(
-        [
-            {
-                key: run.get(key)
-                for key in (
-                    "id",
-                    "node_key",
-                    "status",
-                    "accounted_cost_usd",
-                    "head_sha",
-                    "outcome_json",
-                )
-            }
-            for run in sorted(runs, key=lambda item: item["id"])
-            if not run["node_key"].startswith("conductor_")
-            and (through_run_id is None or run["id"] <= through_run_id)
-        ]
-    )
+    """Hash work evidence, never attempt bookkeeping or accounting corrections."""
+    from factory.orchestration import graph
+
+    evidence = set()
+    for run in runs:
+        if (
+            run["node_key"].startswith("conductor_")
+            or run["status"] not in graph.TERMINAL_RUN_STATUSES
+            or (through_run_id is not None and run["id"] > through_run_id)
+        ):
+            continue
+        outcome = json.loads(run.get("outcome_json") or "{}")
+        if graph.settled_zero_basis(outcome) or run.get("capacity_denied"):
+            continue
+        artifact = outcome.get("artifact")
+        value = outcome.get("value")
+        if isinstance(artifact, dict) and "status" in artifact:
+            value = artifact.get("value") if artifact["status"] == "ok" else None
+        elif value is None:
+            value = artifact
+        if isinstance(value, dict) and value:
+            evidence.add(digest({"artifact": value}))
+        head = run.get("head_sha")
+        if head and head != run.get("base_sha"):
+            evidence.add(digest({"head_sha": head}))
+    return digest(sorted(evidence))
 
 
 def blockers(db, task_id):
