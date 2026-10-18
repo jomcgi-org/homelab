@@ -3310,20 +3310,25 @@ def test_bounded_review_carries_budget_and_preserves_expired_episode(db, recover
     )
 
 
-def test_bounded_review_deficits_and_no_budget_defaults(db, recovery_case, monkeypatch):
+def test_bounded_review_deficits_are_turns_only(db, recovery_case, monkeypatch):
     recovery, args, task_id, calls, _pr = recovery_case
     monkeypatch.setattr(recovery.Reviewer, "ceiling", lambda *_: 32)
-    result = recovery.run(**args)
+    with pytest.raises(ValueError, match="cannot_increase_authority"):
+        recovery.run(**{**args, "cumulative_turn_limit": 19})
+    result = recovery.run(**{**args, "cumulative_turn_limit": 16})
     assert result["reason"] == "recovery_allowance_deficit"
-    assert result["usd_deficit"] == pytest.approx(0.2402535)
-    assert result["turn_deficit"] == 0
+    assert result["turn_deficit"] == 1 and "usd_deficit" not in result
     assert not calls
     assert not recovery.held(task_id)
-    with pytest.raises(ValueError, match="cannot_increase_authority"):
-        recovery.run(**{**args, "cumulative_budget_usd": 200})
-    result = recovery.run(**{**args, "cumulative_turn_limit": 16})
-    assert result["turn_deficit"] == 1
     assert controls.task_snapshot(task_id)["turns_used"] == 16
+    # A review whose reservation passes the dollar figures, the task budget
+    # included, is recorded for accounting and never refused (#7161).
+    result = recovery.run(**{**args, "cumulative_budget_usd": 200})
+    assert result["state"] == "awaiting_landing_approval"
+    assert len(calls) == 1
+    assert controls.task_snapshot(task_id)["committed_cost_usd"] == pytest.approx(
+        48.2402535 + 32
+    )
 
 
 def test_bounded_review_uncertainty_blocks_retry_and_retains_reservation(
@@ -3546,8 +3551,11 @@ def test_bounded_review_counts_historical_tasks_and_reservations(db, recovery_ca
             session, "test", "admit_next", task_id=old.id, receipt_id=args["receipt_id"]
         )
         session.commit()
-    result = recovery.run(**args)
+    # The older episode's turn counts against the cumulative limit, so a
+    # limit that only fits this task's own history is a turn deficit.
+    result = recovery.run(**{**args, "cumulative_turn_limit": 17})
     assert result["reason"] == "recovery_allowance_deficit"
+    assert result["turn_deficit"] == 1
     assert result["committed_usd"] == pytest.approx(80.2402535)
     assert not calls
     with Session(db) as session:

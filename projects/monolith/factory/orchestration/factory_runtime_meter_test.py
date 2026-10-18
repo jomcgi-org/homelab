@@ -404,18 +404,29 @@ def test_policy_preview_changes_or_unresolved_work_prevent_application(
 @pytest.mark.parametrize(
     "overlay",
     [
-        {"task_budget_usd": 201},
         {"auto_merge": True},
         {"allowed_models": ["opus"]},
         {"task_budget_usd": 3},
     ],
 )
-def test_amendment_does_not_expand_objective_or_provider_authority(database, overlay):
+def test_amendment_does_not_expand_provider_authority(database, overlay):
     from factory.orchestration import factory_policy_amendment as amendments
 
     paused(database)
     with pytest.raises(ValueError):
         amendments.preview(838, overlay, "continue")
+
+
+def test_amendment_past_the_old_objective_ceiling_is_recorded(database):
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    paused(database)
+    # Dollars are recorded but never refuse an amendment (#7161).
+    proposal = amendments.preview(838, {"task_budget_usd": 201}, "continue")
+    assert proposal["policy_overlay"]["task_budget_usd"] == 201
+    assert proposal["remaining_task_allocation_usd"] == (
+        201 - proposal["committed_cost_usd"]
+    )
 
 
 def test_single_field_amendment_retains_graph_funding_contract(database):

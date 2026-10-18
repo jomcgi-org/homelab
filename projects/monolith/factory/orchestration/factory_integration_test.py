@@ -517,9 +517,10 @@ def test_planner_preview_does_not_authorize_submission_after_state_changes(
     proposal = {**preview_proposal(), "expected_version": s.revision}
     assert s.call(proposal, s.revision)["ok"]
     # Real submission recomputes policy accounting even after a fitting preview.
+    # Turns are the envelope that binds; dollars never refuse a plan (#7161).
     conductor._apply_decision(
         s.task,
-        {**s.policy, "task_budget_usd": 1.0},
+        {**s.policy, "max_task_turns_hard": 0},
         proposal,
         "test:stale-preview",
         graph.node_runs(s.task["id"]),
