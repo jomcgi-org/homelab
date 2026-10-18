@@ -610,8 +610,9 @@ def test_changed_issue_body_supersedes_card_without_inferring_an_answer(
     assert resolution["effects"] == {"dismissed": True}
 
 
+@pytest.mark.parametrize("pinned_generation", [False, True])
 def test_active_paused_body_rewrite_replaces_card_without_answer(
-    db, github, notices, monkeypatch
+    db, github, notices, monkeypatch, pinned_generation
 ):
     task_id, _policy = admitted(ISSUE)
     controls.set_control("pause_task", "test:pause", task_id=task_id)
@@ -621,6 +622,13 @@ def test_active_paused_body_rewrite_replaces_card_without_answer(
     )
     before = controls.task_snapshot(task_id)
     old_id = controls.decision_identity(before)
+    if pinned_generation:
+        monkeypatch.setenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", "true")
+        with controls._locked_session() as (session, control):
+            current = json.loads(control.policy_json)
+            control.policy_json = json.dumps(
+                {**current, "generation": current["generation"] + 1}
+            )
     body = "Decision: only deliver the API path."
     github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": body}})
     monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")

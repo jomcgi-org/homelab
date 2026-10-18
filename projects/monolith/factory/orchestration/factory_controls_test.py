@@ -270,6 +270,142 @@ def test_pause_view_never_offers_a_refused_stop(db, policy, transition):
     assert bool(snapshot["pause_warning"]) is (transition == "stale_generation")
 
 
+@pytest.mark.parametrize("durable", [False, True])
+def test_automatic_stop_claim_and_resolution_share_control_lock(
+    db, policy, monkeypatch, durable
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    identity = controls.decision_identity(before)
+    claimed, release, resuming = Event(), Event(), Event()
+    original = decisions._resolve
+
+    def resolve(*args, **kwargs):
+        claimed.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    def answer():
+        if durable:
+            return decisions.request_decision(
+                before["id"], identity, "stop", "operator", request_key="stop-race"
+            )
+        return decisions.apply_decision(
+            before["id"], "stop", "operator", expected_decision_id=identity
+        )
+
+    def resume():
+        resuming.set()
+        return controls.set_control("resume_task", "operator", task_id=task_id)
+
+    monkeypatch.setattr(decisions, "_resolve", resolve)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stopping = pool.submit(answer)
+        assert claimed.wait(5)
+        competing = pool.submit(resume)
+        try:
+            assert resuming.wait(5)
+            with pytest.raises(TimeoutError):
+                competing.result(timeout=0.1)
+        finally:
+            release.set()
+        assert stopping.result(timeout=5)["ok"]
+        assert competing.result(timeout=5)["reason"] == "cancellation_pending"
+    after = controls.task_snapshot(task_id)
+    assert after["task_paused"] and after["cancellation_requested"]
+    assert after["escalation"]["resolved"]["decision_id"] == identity
+    with Session(db) as session:
+        assert not decisions.decision_in_flight(session, before["id"])
+
+
+@pytest.mark.parametrize("state", ["accepted", "outcome_unknown", "legacy_claim"])
+def test_pending_pause_decision_is_flagged_and_has_no_enabled_options(
+    db, policy, state
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    with controls._locked_session() as (session, _control):
+        if state == "legacy_claim":
+            decisions._claim(before["id"], "stop", "operator", session=session)
+        else:
+            decisions._request_event(
+                session,
+                "operator",
+                {"receipt_id": before["id"], "request_key": "unknown"},
+                {"state": state},
+            )
+    after = controls.task_snapshot(task_id)
+    card = controls.escalation_view(after)
+    assert not after["paused_card_actionable"]
+    assert after["pause_warning"] == "active_paused_without_actionable_question"
+    assert not card["open"] and card["options"] == []
+    assert not factory_pause.pause(task_id, "test", "must preserve pending claim")
+    assert controls.task_snapshot(task_id)["escalation"] == before["escalation"]
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_automatic_stop_failure_rolls_back_claim_and_resolution(
+    db, policy, monkeypatch, durable
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    identity = controls.decision_identity(before)
+    original = decisions._resolve
+
+    def fail_after_write(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("interrupted local answer")
+
+    monkeypatch.setattr(decisions, "_resolve", fail_after_write)
+    with pytest.raises(RuntimeError, match="interrupted local answer"):
+        if durable:
+            decisions.request_decision(
+                before["id"], identity, "stop", "operator", request_key="interrupted"
+            )
+        else:
+            decisions.apply_decision(
+                before["id"], "stop", "operator", expected_decision_id=identity
+            )
+    after = controls.task_snapshot(task_id)
+    assert after["escalation"] == before["escalation"]
+    assert after["task_paused"] and not after["cancellation_requested"]
+    assert after["paused_card_actionable"]
+    with Session(db) as session:
+        assert not decisions.decision_in_flight(session, before["id"])
+        assert not decisions._request_records(session)
+
+
+def test_resume_winning_before_stop_is_refused_without_unknown_outcome(db, policy):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    controls.set_control("resume_task", "operator", task_id=task_id)
+    result = decisions.request_decision(
+        before["id"],
+        controls.decision_identity(before),
+        "stop",
+        "operator",
+        request_key="after-resume",
+    )
+    assert result["state"] == "refused"
+    after = controls.task_snapshot(task_id)
+    assert not after["task_paused"] and not after["cancellation_requested"]
+    with Session(db) as session:
+        assert not decisions.decision_in_flight(session, before["id"])
+    assert factory_pause.pause(task_id, "test", "new safety refusal")
+
+
 @pytest.mark.parametrize(
     "evidence",
     [None, {"state": "ready_for_review"}, {"state": "merged_review_missing"}],

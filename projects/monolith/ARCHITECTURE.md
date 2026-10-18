@@ -696,16 +696,20 @@ and its operator question commit under the control lock. Allocation recovery,
 nonrenewable recovery, conductor/refine refusals and runtime metering share this
 path. A valid pending question keeps its identity. Missing or dismissed cards
 are repaired when that path is reached again; status reports
-`active_paused_without_actionable_question` for existing orphan pauses.
+`active_paused_without_actionable_question` for existing orphan pauses and
+cards blocked by a pending or unknown decision outcome.
 
 **Why.** A paused task can still own an uncertain invocation or a nonrenewable
 envelope. Its recovery card offers a local stop request, using the existing
 `hold` decision effect, and cancellation waits for normal reconciliation.
+Claim and resolution commit under one control lock, including the durable
+request acknowledgement, so resume cannot interleave with a local stop.
 It offers no continuation, funding or GitHub mutation. An issue-body rewrite
 refreshes a still-active paused non-watchdog card under its observed control
 version and decision identity. The audit retains the prior card and both
 identities; no operator answer is inferred. A competing answer, resume or
-handoff fences the refresh. Active watchdog cards keep their own contract
+handoff fences the refresh. Pinned older-generation tasks retain refresh only
+under the existing active-receipt decision flag. Active watchdog cards keep their own contract
 (#7165). Feature defaults are unchanged. Historical audit attribution and
 post-rollout observation remain acceptance work on that issue.
 

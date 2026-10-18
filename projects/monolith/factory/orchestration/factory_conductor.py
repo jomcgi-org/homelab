@@ -2979,7 +2979,10 @@ def revalidate_escalations() -> dict[str, int]:
     from factory.orchestration.factory_controls import (
         reconcile_generation_stale_receipts,
     )
-    from factory.orchestration.factory_decisions import DecisionError
+    from factory.orchestration.factory_decisions import (
+        DecisionError,
+        _pinned_and_active,
+    )
     from factory.orchestration.factory_decisions import apply_decision as decide
     from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
     from factory.orchestration.factory_progress_watchdog import decidable
@@ -3010,7 +3013,11 @@ def revalidate_escalations() -> dict[str, int]:
             # A bounded local pass above owns old-generation cleanup. Do not
             # spend a GitHub read or offer an external decision for a stale
             # card still waiting for a later pass or an in-flight decision.
-            if type(current_generation) is int and row.generation != current_generation:
+            if (
+                type(current_generation) is int
+                and row.generation != current_generation
+                and not (row.task_paused and _pinned_and_active(row))
+            ):
                 continue
             # This card owns an execution pause, not an issue-text question.
             # Rewriting (including our own rescope checklist) or closing the
