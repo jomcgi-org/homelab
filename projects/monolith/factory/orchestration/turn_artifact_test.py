@@ -207,3 +207,14 @@ class TestLadder:
         """A node configured with no retries still reaches the conductor rather
         than dying where it stands."""
         assert ta.next_action(ta.ArtifactOutcome(ta.MISSING), 1, 0) == ta.ESCALATE
+
+
+def test_run_artifact_reads_value_then_artifact_and_rejects_junk():
+    assert ta.run_artifact({"outcome_json": '{"value": {"verdict": "approve"}}'}) == {
+        "verdict": "approve"
+    }
+    assert ta.run_artifact({"outcome_json": '{"artifact": {"k": 1}}'}) == {"k": 1}
+    assert ta.run_artifact({"outcome_json": None}) == {}
+    assert ta.run_artifact({"outcome_json": "not json"}) == {}
+    assert ta.run_artifact({"outcome_json": "[1]"}) == {}
+    assert ta.run_artifact({"outcome_json": '{"value": "str"}'}) == {}

@@ -47,6 +47,8 @@ from uuid import uuid4
 
 from sqlmodel import Session, select
 
+from shared.env import float_env, int_env
+from core.clock import aware
 from chat import ambient_analysis, directives
 from chat.models import ChannelDirective, DirectiveAutopilot, UserStylePref
 
@@ -68,36 +70,14 @@ _DEFAULT_LOOKBACK_DAYS = 7  # analysis window the apply phase gathers over
 _DEFAULT_MAX_LEN_DELTA = 300
 
 
-def _int_env(name: str, default: int) -> int:
-    try:
-        value = int(os.environ.get(name, ""))
-    except (TypeError, ValueError):
-        return default
-    return value if value > 0 else default
-
-
-def _float_env(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, ""))
-    except (TypeError, ValueError):
-        return default
-
-
 def _mode() -> str:
     mode = os.environ.get("AUTOPILOT_MODE", _DEFAULT_MODE).strip().lower()
     return mode if mode in ("live", "shadow") else _DEFAULT_MODE
 
 
-def _as_utc(dt: datetime) -> datetime:
-    """Coerce a possibly-naive datetime to UTC-aware. SQLite test fixtures store
-    naive datetimes; production (Postgres) is tz-aware. Coercing both sides of a
-    subtraction keeps the age math valid under both."""
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-
-
 def _length_ok(current: str, proposed: str) -> bool:
     """A bounded refinement changes the directive length by at most the cap."""
-    cap = _int_env("AUTOPILOT_MAX_LEN_DELTA", _DEFAULT_MAX_LEN_DELTA)
+    cap = int_env("AUTOPILOT_MAX_LEN_DELTA", _DEFAULT_MAX_LEN_DELTA)
     return abs(len(proposed) - len(current or "")) <= cap
 
 
@@ -153,8 +133,8 @@ def _manual_block(
     )
     if row is None or row.source != "manual":
         return False
-    cooldown = _int_env("AUTOPILOT_MANUAL_COOLDOWN_DAYS", _DEFAULT_MANUAL_COOLDOWN_DAYS)
-    return _as_utc(now) - _as_utc(row.created_at) < timedelta(days=cooldown)
+    cooldown = int_env("AUTOPILOT_MANUAL_COOLDOWN_DAYS", _DEFAULT_MANUAL_COOLDOWN_DAYS)
+    return aware(now) - aware(row.created_at) < timedelta(days=cooldown)
 
 
 def _autopilot_cooldown(
@@ -169,8 +149,8 @@ def _autopilot_cooldown(
     ).first()
     if row is None:
         return False
-    cooldown = _int_env("AUTOPILOT_COOLDOWN_DAYS", _DEFAULT_COOLDOWN_DAYS)
-    return _as_utc(now) - _as_utc(row.created_at) < timedelta(days=cooldown)
+    cooldown = int_env("AUTOPILOT_COOLDOWN_DAYS", _DEFAULT_COOLDOWN_DAYS)
+    return aware(now) - aware(row.created_at) < timedelta(days=cooldown)
 
 
 # --- APPLY phase -------------------------------------------------------------
@@ -198,7 +178,7 @@ def _gather_candidates(since: datetime, now: datetime) -> list[dict]:
     """
     from core.db import get_engine
 
-    min_evidence = _int_env("AUTOPILOT_MIN_EVIDENCE", _DEFAULT_MIN_EVIDENCE)
+    min_evidence = int_env("AUTOPILOT_MIN_EVIDENCE", _DEFAULT_MIN_EVIDENCE)
     candidates: list[dict] = []
     with Session(get_engine()) as session:
         clusters = ambient_analysis.gather_scope_episodes(session, since)
@@ -276,8 +256,8 @@ def _apply_or_log(
     evidence_ids = list(result.get("evidence_ids") or [])
     rationale = result.get("rationale") or ""
 
-    min_conf = _float_env("AUTOPILOT_MIN_CONFIDENCE", _DEFAULT_MIN_CONFIDENCE)
-    min_evidence = _int_env("AUTOPILOT_MIN_EVIDENCE", _DEFAULT_MIN_EVIDENCE)
+    min_conf = float_env("AUTOPILOT_MIN_CONFIDENCE", _DEFAULT_MIN_CONFIDENCE)
+    min_evidence = int_env("AUTOPILOT_MIN_EVIDENCE", _DEFAULT_MIN_EVIDENCE)
 
     if confidence < min_conf or not proposed:
         return "abstain"
@@ -311,7 +291,7 @@ def _apply_or_log(
                     )
                     target_version = 0
                 status = "pending_validation"
-                validate_days = _int_env(
+                validate_days = int_env(
                     "AUTOPILOT_VALIDATE_DAYS", _DEFAULT_VALIDATE_DAYS
                 )
                 validate_after = now + timedelta(days=validate_days)
@@ -435,7 +415,7 @@ def _validate_one(row_id: int, now: datetime, mode: str) -> str:
         post = ambient_analysis.score_window(
             session, scope_kind, scope_id, da.applied_at, now
         )
-        margin = _float_env("AUTOPILOT_REGRESS_MARGIN", _DEFAULT_REGRESS_MARGIN)
+        margin = float_env("AUTOPILOT_REGRESS_MARGIN", _DEFAULT_REGRESS_MARGIN)
 
         regressed = (
             baseline is not None and post is not None and post < baseline - margin
@@ -488,7 +468,7 @@ async def directive_autopilot_handler(session: Session) -> None:
             logger.exception("autopilot validate: row %d failed", row_id)
 
     # Phase 2: APPLY.
-    lookback = _int_env("AUTOPILOT_LOOKBACK_DAYS", _DEFAULT_LOOKBACK_DAYS)
+    lookback = int_env("AUTOPILOT_LOOKBACK_DAYS", _DEFAULT_LOOKBACK_DAYS)
     since = now - timedelta(days=lookback)
     candidates = await asyncio.to_thread(_gather_candidates, since, now)
     if not candidates:

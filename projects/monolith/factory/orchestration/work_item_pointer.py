@@ -28,6 +28,7 @@ import httpx
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from core.clock import aware
 from factory.orchestration.factory_controls import _audit, _locked_session
 from factory.orchestration.factory_models import FactoryAudit, WorkItem, WorkItemEvent
 
@@ -77,10 +78,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
-
 def _comment_id(response: object) -> int:
     value = response.get("id") if isinstance(response, dict) else None
     if type(value) is not int or value <= 0:
@@ -94,7 +91,7 @@ def _audit_error(db: Session, actor: str, item: WorkItem, exc: Exception) -> Non
         .where(FactoryAudit.action == "work_item_pointer_error")
         .order_by(FactoryAudit.id.desc())
     ).first()
-    if last is not None and _aware(last.created_at) >= _now() - POINTER_ERROR_THROTTLE:
+    if last is not None and aware(last.created_at) >= _now() - POINTER_ERROR_THROTTLE:
         return
     _audit(
         db,

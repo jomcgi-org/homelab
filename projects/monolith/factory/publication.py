@@ -45,6 +45,7 @@ from sqlalchemy import BigInteger, Integer, String, bindparam
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select, text
 
+from core.db import row_value
 from factory.utils import sanitize_payload
 
 logger = logging.getLogger(__name__)
@@ -1918,15 +1919,6 @@ _AGENT_ACTIVITY_UPSERT = text(
 )
 
 
-def _row_value(row, name: str):
-    mapping = getattr(row, "_mapping", None)
-    if mapping is not None:
-        return mapping[name]
-    if isinstance(row, dict):
-        return row[name]
-    return getattr(row, name)
-
-
 def _day_iso(value) -> str:
     if isinstance(value, datetime):
         value = value.date()
@@ -1959,7 +1951,7 @@ def shape_agent_activity(
     daily_start = today - timedelta(days=ACTIVITY_DAILY_WINDOW_DAYS - 1)
 
     def in_window(row) -> str | None:
-        day = _row_value(row, "day")
+        day = row_value(row, "day")
         if isinstance(day, datetime):
             day = day.date()
         if day < daily_start or day > today:
@@ -1974,14 +1966,14 @@ def shape_agent_activity(
         daily.append(
             {
                 "day": day,
-                "model": _row_value(row, "model"),
-                "sessions": int(_row_value(row, "sessions") or 0),
-                "turns": int(_row_value(row, "turns") or 0),
-                "input_tokens": int(_row_value(row, "input_tokens") or 0),
-                "output_tokens": int(_row_value(row, "output_tokens") or 0),
-                "cache_read_tokens": int(_row_value(row, "cache_read_tokens") or 0),
-                "list_cost_usd": _float(_row_value(row, "list_cost_usd")),
-                "unpriced": int(_row_value(row, "unpriced_turns") or 0),
+                "model": row_value(row, "model"),
+                "sessions": int(row_value(row, "sessions") or 0),
+                "turns": int(row_value(row, "turns") or 0),
+                "input_tokens": int(row_value(row, "input_tokens") or 0),
+                "output_tokens": int(row_value(row, "output_tokens") or 0),
+                "cache_read_tokens": int(row_value(row, "cache_read_tokens") or 0),
+                "list_cost_usd": _float(row_value(row, "list_cost_usd")),
+                "unpriced": int(row_value(row, "unpriced_turns") or 0),
             }
         )
     daily.sort(key=lambda row: row["model"])
@@ -1995,15 +1987,15 @@ def shape_agent_activity(
         local_daily.append(
             {
                 "day": day,
-                "model": _row_value(row, "model"),
-                "source": _row_value(row, "source"),
-                "sessions": int(_row_value(row, "sessions") or 0),
+                "model": row_value(row, "model"),
+                "source": row_value(row, "source"),
+                "sessions": int(row_value(row, "sessions") or 0),
                 "turns": 0,
-                "input_tokens": int(_row_value(row, "input_tokens") or 0),
-                "output_tokens": int(_row_value(row, "output_tokens") or 0),
-                "cache_read_tokens": int(_row_value(row, "cache_read_tokens") or 0),
-                "list_cost_usd": _float(_row_value(row, "list_cost_usd")),
-                "unpriced": int(_row_value(row, "unpriced_sessions") or 0),
+                "input_tokens": int(row_value(row, "input_tokens") or 0),
+                "output_tokens": int(row_value(row, "output_tokens") or 0),
+                "cache_read_tokens": int(row_value(row, "cache_read_tokens") or 0),
+                "list_cost_usd": _float(row_value(row, "list_cost_usd")),
+                "unpriced": int(row_value(row, "unpriced_sessions") or 0),
             }
         )
     local_daily.sort(key=lambda row: (row["model"], row["source"]))
@@ -2013,10 +2005,10 @@ def shape_agent_activity(
         "snapshotted_at": snapshotted_at,
         "cost_basis": "list",
         "now": {
-            "active_last_hour": int(_row_value(now_row, "active_last_hour") or 0),
-            "sessions_today": int(_row_value(now_row, "sessions_today") or 0),
-            "running": int(_row_value(now_row, "running") or 0),
-            "last_turn_at": _iso(_row_value(now_row, "last_turn_at")),
+            "active_last_hour": int(row_value(now_row, "active_last_hour") or 0),
+            "sessions_today": int(row_value(now_row, "sessions_today") or 0),
+            "running": int(row_value(now_row, "running") or 0),
+            "last_turn_at": _iso(row_value(now_row, "last_turn_at")),
         },
         "daily": daily,
         "local_daily": local_daily,

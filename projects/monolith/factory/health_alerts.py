@@ -26,6 +26,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
+from core.clock import aware
 from factory import ops_health
 
 logger = logging.getLogger(__name__)
@@ -89,10 +90,6 @@ def _write_sync(name: str, ok: bool, detail: str, now: datetime) -> None:
         session.commit()
 
 
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
-
 def _hours(delta: timedelta) -> str:
     hours = delta.total_seconds() / 3600
     return f"{hours:.0f}h" if hours >= 1 else f"{delta.total_seconds() / 60:.0f}m"
@@ -120,7 +117,7 @@ def decide(
         return "unhealthy", True
     if not was_ok and ok:
         return "recovered", True
-    if not ok and now - _utc(announced_at) >= renotify:
+    if not ok and now - aware(announced_at) >= renotify:
         return "still", True
     return None, False
 
@@ -133,7 +130,7 @@ def message(
         return f"Health alert: {name} is unhealthy. {detail}"
     if kind == "recovered":
         return f"Health recovered: {name} is healthy again. {detail}"
-    ago = f" (last notice {_hours(now - _utc(since))} ago)" if since else ""
+    ago = f" (last notice {_hours(now - aware(since))} ago)" if since else ""
     return f"Health alert: {name} is still unhealthy{ago}. {detail}"
 
 

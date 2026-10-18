@@ -12,6 +12,7 @@ import httpx
 from sqlalchemy import or_
 from sqlmodel import select
 
+from core.clock import aware
 from factory.orchestration.factory_controls import (
     DEFAULT_TASK_CLASS,
     ESCALATED,
@@ -396,10 +397,6 @@ def task_class_for(task_id: str) -> str:
         return DEFAULT_TASK_CLASS if row is None else receipt_task_class(row)
 
 
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
-
 def _recorded_mismatch(task_id: str) -> str | None:
     """The stored verdict when this task has already failed verification.
 
@@ -766,7 +763,7 @@ def _brief_comment(repo: str, number: int, admitted: datetime, claimed) -> tuple
             created_at = datetime.fromisoformat(created.replace("Z", "+00:00"))
         except ValueError:
             continue
-        if _aware(created_at) < admitted:
+        if aware(created_at) < admitted:
             continue
         login = (comment.get("user") or {}).get("login")
         if executor and (not isinstance(login, str) or login.lower() != executor):

@@ -1324,7 +1324,7 @@ def test_server_app_version_comes_from_dbos_not_the_environment(monkeypatch):
     monkeypatch.setenv("APP_VERSION", "chart-0.285.531")
     monkeypatch.setenv("GIT_SHA", "deadbeef")
     monkeypatch.setattr(GlobalParams, "app_version", "dbos-computed-hash")
-    assert swarm_router._server_app_version() == "dbos-computed-hash"
+    assert swarm_router.running_app_version() == "dbos-computed-hash"
 
 
 def test_server_app_version_is_empty_when_dbos_has_not_launched(monkeypatch):
@@ -1332,7 +1332,7 @@ def test_server_app_version_is_empty_when_dbos_has_not_launched(monkeypatch):
     from dbos._utils import GlobalParams
 
     monkeypatch.setattr(GlobalParams, "app_version", "")
-    assert swarm_router._server_app_version() == ""
+    assert swarm_router.running_app_version() == ""
 
 
 @pytest.mark.parametrize("message", ["workflow not found", "workflow non-existent"])
@@ -1342,7 +1342,7 @@ def test_compose_run_view_maps_dbos_missing_workflow_errors(monkeypatch, message
 
     monkeypatch.setattr(swarm_router, "_session_rows", lambda _workflow_id: [])
     monkeypatch.setattr(swarm_router, "_decision_rows", lambda _workflow_id: [])
-    monkeypatch.setattr(swarm_router, "_server_app_version", lambda: "version")
+    monkeypatch.setattr(swarm_router, "running_app_version", lambda: "version")
     monkeypatch.setattr(
         "factory.orchestration.view.compose_run",
         lambda *args: (_ for _ in ()).throw(DBOSMissingWorkflowError(message)),
@@ -1384,7 +1384,7 @@ def test_list_runs_clamps_limit_query_parameter(monkeypatch):
     # list_runs is a READ, so it resolves through _dbos_read and answers on a
     # follower replica that never launched DBOS.
     monkeypatch.setattr(swarm_router, "_dbos_read", lambda: object())
-    monkeypatch.setattr(swarm_router, "_server_app_version", lambda: "version")
+    monkeypatch.setattr(swarm_router, "running_app_version", lambda: "version")
     monkeypatch.setattr("factory.orchestration.view.compose_master", compose)
 
     assert client().get("/api/swarm/runs?active=false&limit=100").status_code == 200

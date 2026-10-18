@@ -14,6 +14,7 @@ from sqlmodel.pool import StaticPool
 
 import chat.observer as observer
 import chat.observer_job as observer_job
+from shared.env import int_env
 from chat.models import ChannelDirective, DiscordFeatureGrant, Message
 
 NOW = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
@@ -69,22 +70,22 @@ def _message(
 
 def test_int_env_defaults_when_missing(monkeypatch):
     monkeypatch.delenv("OBSERVER_MIN_EVIDENCE", raising=False)
-    assert observer_job._int_env("OBSERVER_MIN_EVIDENCE", 3) == 3
+    assert int_env("OBSERVER_MIN_EVIDENCE", 3) == 3
 
 
 def test_int_env_parses_valid(monkeypatch):
     monkeypatch.setenv("OBSERVER_MIN_EVIDENCE", "5")
-    assert observer_job._int_env("OBSERVER_MIN_EVIDENCE", 3) == 5
+    assert int_env("OBSERVER_MIN_EVIDENCE", 3) == 5
 
 
 def test_int_env_falls_back_on_garbage(monkeypatch):
     monkeypatch.setenv("OBSERVER_COOLDOWN_DAYS", "not-a-number")
-    assert observer_job._int_env("OBSERVER_COOLDOWN_DAYS", 14) == 14
+    assert int_env("OBSERVER_COOLDOWN_DAYS", 14) == 14
 
 
 def test_int_env_falls_back_on_non_positive(monkeypatch):
     monkeypatch.setenv("OBSERVER_COOLDOWN_DAYS", "0")
-    assert observer_job._int_env("OBSERVER_COOLDOWN_DAYS", 14) == 14
+    assert int_env("OBSERVER_COOLDOWN_DAYS", 14) == 14
 
 
 # --- granted-channel enumeration -------------------------------------------

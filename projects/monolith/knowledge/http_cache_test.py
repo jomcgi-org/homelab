@@ -1,4 +1,4 @@
-"""Unit tests for knowledge.http_cache -- _as_utc and _graph_etag helpers.
+"""Unit tests for knowledge.http_cache -- as_utc and _graph_etag helpers.
 
 Both functions are pure (no I/O, no DB), so no fixtures are needed.
 These helpers back the Cache-Control / ETag / Last-Modified behaviour for both
@@ -9,21 +9,22 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from knowledge.http_cache import _as_utc, _GRAPH_CACHE_CONTROL, _graph_etag
+from core.clock import as_utc
+from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _graph_etag
 
 
 # ---------------------------------------------------------------------------
-# _as_utc
+# as_utc
 # ---------------------------------------------------------------------------
 
 
 class TestAsUtc:
     def test_none_returns_none(self):
-        assert _as_utc(None) is None
+        assert as_utc(None) is None
 
     def test_naive_datetime_treated_as_utc(self):
         naive = datetime(2024, 6, 1, 12, 0, 0)
-        result = _as_utc(naive)
+        result = as_utc(naive)
         assert result is not None
         assert result.tzinfo is not None
         assert result.tzinfo == timezone.utc
@@ -37,7 +38,7 @@ class TestAsUtc:
 
         plus2 = timezone(timedelta(hours=2))
         aware = datetime(2024, 6, 1, 14, 0, 0, tzinfo=plus2)
-        result = _as_utc(aware)
+        result = as_utc(aware)
         assert result is not None
         assert result.tzinfo == timezone.utc
         # 14:00 +02:00 == 12:00 UTC
@@ -45,13 +46,13 @@ class TestAsUtc:
 
     def test_already_utc_passthrough(self):
         utc_dt = datetime(2024, 3, 15, 9, 30, 0, tzinfo=timezone.utc)
-        result = _as_utc(utc_dt)
+        result = as_utc(utc_dt)
         assert result == utc_dt
         assert result.tzinfo == timezone.utc
 
     def test_returns_datetime_instance(self):
         naive = datetime(2025, 1, 1, 0, 0, 0)
-        result = _as_utc(naive)
+        result = as_utc(naive)
         assert isinstance(result, datetime)
 
 

@@ -31,6 +31,7 @@ from sqlalchemy import bindparam, text
 from sqlmodel import Session
 
 from agent.api import list_jobs, load_drainer_settings
+from factory.orchestration.runtime import running_app_version
 from factory.execution.constants import (
     DRAINER_NODE_KEY,
     GRIMOIRE_KG_NODE_KEY,
@@ -96,17 +97,6 @@ def _enrich_pr(pr: dict) -> dict:
 
     _PR_CACHE[cache_key] = (time.monotonic() + _PR_CACHE_TTL_SECONDS, enrichment)
     return {**pr, **enrichment}
-
-
-def _server_app_version() -> str:
-    """See swarm/router.py _server_app_version: "" means cannot tell."""
-    try:
-        from dbos._utils import GlobalParams
-
-        return GlobalParams.app_version or ""
-    except Exception:  # noqa: BLE001
-        logger.warning("could not read the DBOS app version", exc_info=True)
-        return ""
 
 
 def _load_cycles(limit: int = _CYCLE_SCAN_LIMIT) -> list[dict]:
@@ -376,7 +366,7 @@ def drain_console_view() -> dict:
     lane = drain_console.compose_lane(
         cycles,
         step_stats,
-        _server_app_version(),
+        running_app_version(),
         counts.get("due", 0),
         settings["enabled"],
         now,

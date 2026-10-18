@@ -2514,6 +2514,16 @@ py_test(
 )
 
 py_test(
+    name = "clock_test",
+    srcs = ["core/clock_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "identity_test",
     srcs = ["core/identity_test.py"],
     imports = ["."],
@@ -4403,6 +4413,16 @@ py_test(
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "shared_env_test",
+    srcs = ["shared/env_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
     ],
 )
 
@@ -6342,6 +6362,16 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "grimoire_images_test",
+    srcs = ["grimoire/images_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//pytest",
     ],
 )
 

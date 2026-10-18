@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
+from core.clock import aware_iso
+
 RECENT_LIMIT = 12
 RESULT_HEAD = 240
 ACTIVE_STATES = ("admitted", "uncertain", "landing")
@@ -35,14 +37,10 @@ _RUN_STATE = {
 }
 
 
-def _iso(value) -> str | None:
-    if value is None:
-        return None
+def _iso(value: object) -> str | None:
     if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.isoformat()
-    return str(value)
+        return aware_iso(value)
+    return None if value is None else str(value)
 
 
 def first_line(text: str | None, limit: int = RESULT_HEAD) -> str:

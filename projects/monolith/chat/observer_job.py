@@ -35,11 +35,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
+from shared.env import int_env
 from chat import observer, outbox
 from chat.models import ChannelDirective, DiscordFeatureGrant, Message
 
@@ -54,17 +54,6 @@ _WINDOW_MESSAGES = 200
 # Evidence-snippet budget in the proposal message a human confirms against.
 _MAX_EVIDENCE_SNIPPETS = 3
 _SNIPPET_CHARS = 120
-
-
-def _int_env(name: str, default: int) -> int:
-    """Read a positive int knob from the job env, falling back to ``default`` on a
-    missing, unparseable, or non-positive value: a bad deploy value degrades to
-    the default rather than crashing or disabling the run."""
-    try:
-        value = int(os.environ.get(name, ""))
-    except (TypeError, ValueError):
-        return default
-    return value if value > 0 else default
 
 
 def _granted_channel_ids(session: Session) -> list[str]:
@@ -223,8 +212,8 @@ async def observe_directives_handler(session: Session) -> None:
     sessions. The Argo cron schedule drives cadence, so there is no next-run hint
     to return.
     """
-    min_evidence = _int_env("OBSERVER_MIN_EVIDENCE", _DEFAULT_MIN_EVIDENCE)
-    cooldown_days = _int_env("OBSERVER_COOLDOWN_DAYS", _DEFAULT_COOLDOWN_DAYS)
+    min_evidence = int_env("OBSERVER_MIN_EVIDENCE", _DEFAULT_MIN_EVIDENCE)
+    cooldown_days = int_env("OBSERVER_COOLDOWN_DAYS", _DEFAULT_COOLDOWN_DAYS)
     now = datetime.now(timezone.utc)
 
     candidates = await asyncio.to_thread(_gather_candidates, now, cooldown_days)

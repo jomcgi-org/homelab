@@ -19,11 +19,11 @@ whether automatic routing returns and on what signal.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
+from factory.orchestration.turn_artifact import run_artifact
 from factory.orchestration.factory_controls import (
     ADVISORY_CLASSES,
     _audit,
@@ -46,17 +46,6 @@ APPROVAL_FLOOR = 0.60
 RECENT_REJECTION_LIMIT = 5
 SUMMARY_CHARS = 2_000
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-
-
-def _artifact(run: dict) -> dict:
-    try:
-        outcome = json.loads(run.get("outcome_json") or "{}")
-    except (TypeError, ValueError):
-        return {}
-    if not isinstance(outcome, dict):
-        return {}
-    value = outcome.get("value") or outcome.get("artifact") or {}
-    return value if isinstance(value, dict) else {}
 
 
 def _first_review(runs: list[dict]) -> dict | None:
@@ -86,7 +75,7 @@ def _recipe_run(runs: list[dict], review: dict) -> dict | None:
 
 
 def _classified_verdict(run: dict) -> tuple[str, str, str | None]:
-    artifact = _artifact(run)
+    artifact = run_artifact(run)
     if run.get("status") == "succeeded":
         verdict = artifact.get("verdict")
         if verdict not in ("approve", "changes_requested"):

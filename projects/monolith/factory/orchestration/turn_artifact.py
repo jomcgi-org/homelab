@@ -26,6 +26,7 @@ is deliberately no "fail" branch: see `next_action`. Nothing calls
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from factory.orchestration.unified_diff import parse_unified_diff
@@ -181,3 +182,14 @@ def next_action(outcome: ArtifactOutcome, attempts: int, max_attempts: int) -> s
     if attempts < max_attempts:
         return RETRY
     return ESCALATE
+
+
+def run_artifact(run: dict) -> dict:
+    try:
+        outcome = json.loads(run.get("outcome_json") or "{}")
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(outcome, dict):
+        return {}
+    value = outcome.get("value") or outcome.get("artifact") or {}
+    return value if isinstance(value, dict) else {}

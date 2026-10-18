@@ -34,6 +34,8 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
+from core.clock import aware
+
 logger = logging.getLogger(__name__)
 
 ENABLED_ENV = "FACTORY_NOTIFY_DIGEST_ENABLED"
@@ -70,10 +72,6 @@ def pages(kind: str) -> bool:
     if kind in SELF_RELEASING_KINDS:
         return not automatic_release()
     return True
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
 def _now() -> datetime:
@@ -241,13 +239,13 @@ def digest_tick() -> str:
             ).first()
             watermark = floor or 0
         else:
-            if _aware(last.created_at) > now - DIGEST_INTERVAL:
+            if aware(last.created_at) > now - DIGEST_INTERVAL:
                 return "not_due"
             watermark = _detail(last).get("watermark", 0)
         if (
             failed is not None
             and (last is None or failed.id > last.id)
-            and _aware(failed.created_at) > now - RETRY_AFTER
+            and aware(failed.created_at) > now - RETRY_AFTER
         ):
             return "retry_wait"
         rows = _items(db, watermark)

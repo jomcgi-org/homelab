@@ -19,3 +19,12 @@ def get_engine():
 def get_session():
     with Session(get_engine()) as session:
         yield session
+
+
+def row_value(row: object, name: str) -> object:
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return mapping[name]
+    if isinstance(row, dict):
+        return row[name]
+    return getattr(row, name)

@@ -162,7 +162,7 @@ def test_follower_enqueues_workflow_through_dbos_client(monkeypatch):
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: False)
     monkeypatch.setattr(drainer_router.runtime, "read_client", lambda: FakeDBOSClient())
     monkeypatch.setattr(drainer_router, "drainer_queue", no_queue)
-    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+    monkeypatch.setattr(drainer_router, "running_app_version", lambda: "")
 
     response = _client().post("/internal/agent/drain")
 
@@ -224,7 +224,7 @@ def test_follower_returns_already_queued_for_live_cycle(monkeypatch):
             AssertionError("a follower must not resolve the leader queue")
         ),
     )
-    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+    monkeypatch.setattr(drainer_router, "running_app_version", lambda: "")
 
     response = _client().post("/internal/agent/drain")
 
@@ -253,7 +253,7 @@ def test_follower_enqueue_failure_returns_retry_after(monkeypatch):
     )
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: False)
     monkeypatch.setattr(drainer_router.runtime, "read_client", lambda: FakeDBOSClient())
-    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+    monkeypatch.setattr(drainer_router, "running_app_version", lambda: "")
 
     response = _client().post("/internal/agent/drain")
 
@@ -314,7 +314,7 @@ def test_follower_reaps_stale_pending_cycle(monkeypatch):
         ),
     )
     monkeypatch.setattr(drainer_router.runtime, "read_client", lambda: FakeDBOSClient())
-    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+    monkeypatch.setattr(drainer_router, "running_app_version", lambda: "")
     monkeypatch.setattr(
         drainer_router, "_quarantine_unknown_outcome_jobs", lambda *_args: True
     )
@@ -1008,7 +1008,7 @@ def test_version_stranded_enqueued_cycle_is_cancelled(monkeypatch):
     forever.
     """
     cancelled = []
-    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "v-new")
+    monkeypatch.setattr(drainer_router, "running_app_version", lambda: "v-new")
     _stranded_dbos(monkeypatch, "v-old", cancelled)
 
     _client().post("/internal/agent/drain")
@@ -1019,7 +1019,7 @@ def test_version_stranded_enqueued_cycle_is_cancelled(monkeypatch):
 def test_matching_version_enqueued_cycle_is_left_alone(monkeypatch):
     """A successor queued by THIS image is healthy work waiting for the slot."""
     cancelled = []
-    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "v-new")
+    monkeypatch.setattr(drainer_router, "running_app_version", lambda: "v-new")
     _stranded_dbos(monkeypatch, "v-new", cancelled)
 
     _client().post("/internal/agent/drain")
@@ -1030,7 +1030,7 @@ def test_matching_version_enqueued_cycle_is_left_alone(monkeypatch):
 def test_null_version_enqueued_cycle_is_cancelled_after_rollback(monkeypatch):
     """A NULL-version row is stranded when this leader is not the latest."""
     cancelled = []
-    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "v-old")
+    monkeypatch.setattr(drainer_router, "running_app_version", lambda: "v-old")
     _stranded_dbos(monkeypatch, None, cancelled, latest_version="v-new")
 
     _client().post("/internal/agent/drain")
@@ -1046,7 +1046,7 @@ def test_unresolvable_app_version_cancels_nothing(monkeypatch):
     here: an empty version means do nothing.
     """
     cancelled = []
-    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+    monkeypatch.setattr(drainer_router, "running_app_version", lambda: "")
     _stranded_dbos(monkeypatch, "v-old", cancelled)
 
     _client().post("/internal/agent/drain")
@@ -1064,7 +1064,7 @@ def test_status_read_failure_cannot_create_worker_intents(monkeypatch):
     monkeypatch.setattr(
         drainer_router.runtime, "read_client", lambda: BrokenInventory()
     )
-    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+    monkeypatch.setattr(drainer_router, "running_app_version", lambda: "")
     response = _client().post("/internal/agent/drain")
     assert response.status_code == 503
     assert routine_jobs.drainer_worker_intents() == {}

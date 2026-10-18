@@ -11,6 +11,7 @@ from email.utils import format_datetime
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
+from core.clock import as_utc, iso
 from core.db import get_session
 from observability.factory_goals import (
     goals_payload,
@@ -39,19 +40,9 @@ _GOALS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate
 _GOALS_MERGE_WINDOW_DAYS = 90
 
 
-def _as_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 def _iso(value: datetime | None) -> str | None:
-    coerced = _as_utc(value)
-    if coerced is None:
-        return None
-    return coerced.isoformat().replace("+00:00", "Z")
+    stamp = iso(value)
+    return None if stamp is None else stamp.replace("+00:00", "Z")
 
 
 def _now_utc() -> datetime:
@@ -59,7 +50,7 @@ def _now_utc() -> datetime:
 
 
 def _payload(session: Session, now: datetime) -> tuple[dict, datetime | None]:
-    now = _as_utc(now) or _now_utc()
+    now = as_utc(now) or _now_utc()
     first_day = now.date() - timedelta(days=29)
     cutoff_30d = datetime.combine(first_day, time.min, tzinfo=timezone.utc)
     cutoff_7d = now - timedelta(days=7)
@@ -78,7 +69,7 @@ def _payload(session: Session, now: datetime) -> tuple[dict, datetime | None]:
         for offset in range(30)
     }
     for row in rows:
-        merged_at = _as_utc(row.merged_at)
+        merged_at = as_utc(row.merged_at)
         if merged_at is not None and merged_at.date() in daily_by_date:
             daily_by_date[merged_at.date()][row.type] += 1
 
@@ -88,7 +79,7 @@ def _payload(session: Session, now: datetime) -> tuple[dict, datetime | None]:
     week_rows = [
         row
         for row in rows
-        if (_as_utc(row.merged_at) or datetime.min.replace(tzinfo=timezone.utc))
+        if (as_utc(row.merged_at) or datetime.min.replace(tzinfo=timezone.utc))
         >= cutoff_7d
     ]
     week = [
@@ -112,7 +103,7 @@ def _payload(session: Session, now: datetime) -> tuple[dict, datetime | None]:
         "del_7d": sum(row.deletions for row in week_rows),
         "n_30d": len(rows),
     }
-    snapshotted_at = _as_utc(max((row.snapshotted_at for row in rows), default=None))
+    snapshotted_at = as_utc(max((row.snapshotted_at for row in rows), default=None))
     return (
         {
             "daily": daily,
@@ -153,7 +144,7 @@ def get_public_merges(
 
 def _goals_payload(session: Session, now: datetime) -> dict:
     goals = list_active_goals(session)
-    cutoff = (_as_utc(now) or _now_utc()) - timedelta(days=_GOALS_MERGE_WINDOW_DAYS)
+    cutoff = (as_utc(now) or _now_utc()) - timedelta(days=_GOALS_MERGE_WINDOW_DAYS)
     rows = list(
         session.exec(
             select(MergedPR)

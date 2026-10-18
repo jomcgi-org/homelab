@@ -11,6 +11,7 @@ from sqlmodel import Session
 
 from agent.api import drainer_enabled
 from agent.api import hold_job_for_unknown_outcome
+from factory.orchestration.runtime import running_app_version
 from factory.execution import store as agent_session_store
 from factory.execution.constants import UNKNOWN_INVOCATION, UNKNOWN_INVOCATION_MESSAGE
 from core.db import get_engine
@@ -251,24 +252,6 @@ def _reap_stale_drain_cycles(dbos) -> tuple[int, bool]:
     return reaped + _reap_version_stranded_cycles(dbos), quarantine_blocked
 
 
-def _current_app_version() -> str:
-    """The running DBOS app version, or "" when it cannot be resolved.
-
-    Mirrors _server_app_version in swarm/router.py, including its discipline:
-    an unresolvable version returns "" and callers must treat that as "cannot
-    tell" rather than as evidence of stranding. That module documents a real
-    incident where "unknown" was compared literally and marked every live run
-    stranded.
-    """
-    try:
-        from dbos._utils import GlobalParams
-
-        return GlobalParams.app_version or ""
-    except Exception:  # noqa: BLE001
-        logger.warning("could not read the DBOS app version", exc_info=True)
-        return ""
-
-
 def _reap_version_stranded_cycles(dbos) -> int:
     """Cancel ENQUEUED cycles that no running worker can dequeue.
 
@@ -290,7 +273,7 @@ def _reap_version_stranded_cycles(dbos) -> int:
     is a row no worker will ever claim, so it is dead the moment it is
     observed.
     """
-    current_version = _current_app_version()
+    current_version = running_app_version()
     if not current_version:
         # Cannot tell, so do not guess. Cancelling on an unresolvable version
         # would reap healthy queued work.
@@ -405,7 +388,7 @@ def trigger_drain(response: Response) -> dict:
 
     # Every replica runs the staleness reaper through its DBOS or DBOSClient
     # handle, preserving one reap attempt per tick. The version-stranded reaper
-    # remains leader-only because _current_app_version() returns "" on a
+    # remains leader-only because running_app_version() returns "" on a
     # follower, and its cannot-tell rule declines to cancel anything.
     _, quarantine_blocked = _reap_stale_drain_cycles(submitter)
     if quarantine_blocked:

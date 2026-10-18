@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
@@ -188,3 +189,25 @@ def structured_output(schema: dict[str, Any], *, name: str) -> dict[str, Any]:
             },
         },
     }
+
+
+def extract_json(raw: str) -> str:
+    start, end = raw.find("{"), raw.rfind("}")
+    return raw[start : end + 1] if start != -1 and end > start else raw
+
+
+def is_retryable(exc: Exception) -> bool:
+    if isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteError,
+            httpx.RemoteProtocolError,
+            httpx.PoolTimeout,
+            httpx.NetworkError,
+        ),
+    ):
+        return True
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500

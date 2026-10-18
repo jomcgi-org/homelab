@@ -340,3 +340,11 @@ def test_chat_provider_returns_none_when_empty(monkeypatch, provider):
     monkeypatch.setenv(shared.inference.CHAT_PROVIDER_ENV, provider)
 
     assert shared.inference.chat_provider() is None
+
+
+def test_extract_json_returns_the_outermost_object():
+    from shared.inference import extract_json
+
+    assert extract_json('noise {"a": {"b": 1}} trailing') == '{"a": {"b": 1}}'
+    assert extract_json("no braces here") == "no braces here"
+    assert extract_json("} before {") == "} before {"
