@@ -1822,6 +1822,113 @@ def feedback_task(
     return conductor._task(admitted["task_id"]), policy
 
 
+def test_same_task_recovery_replaces_old_decision_and_retry(feedback_db, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_task_recovery as recovery
+
+    task, policy = feedback_task(max_planner_turns=3)
+    complete_feedback_node(
+        task, policy, "conductor_1", {"action": "pause", "reason": "old decision"}
+    )
+    complete_feedback_node(task, policy, "investigate_old", {}, status="failed")
+    runs = conductor.graph.node_runs(task["id"])
+    assert [
+        n["node_key"]
+        for n in conductor._ready_nodes(conductor.graph.load_graph(task["id"]), runs)
+    ] == ["investigate_old"]
+    with Session(feedback_db) as db, db.begin():
+        row = controls._receipt(db, task["id"])
+        row.direction_json = json.dumps(
+            {
+                "landing_hold": {"actor": "operator"},
+                "nonrenewable_recovery": {"actor": "operator"},
+            }
+        )
+        controls._audit(
+            db,
+            "operator",
+            recovery.ACTION,
+            task_id=task["id"],
+            proposal={
+                "run_id_floor": max(r["id"] for r in runs),
+                "expected_revision": conductor.graph.current_version(
+                    task["id"], session=db
+                ),
+                "planner_node_key": "conductor_2",
+                "planner_turn_ceiling": 3,
+                "work_turn_ceiling": 18,
+                "direction": "Replace the failed preflight atomically, then independently review the draft.",
+                "deadline_at": (
+                    datetime.now(timezone.utc) + timedelta(hours=1)
+                ).isoformat(),
+            },
+        )
+    dispatched = []
+    monkeypatch.setattr(
+        conductor,
+        "_dispatch_ready",
+        lambda task, nodes, *a, **kw: dispatched.append([n["node_key"] for n in nodes]),
+    )
+    monkeypatch.setattr(conductor, "_observed_branch_head", lambda _task: None)
+    conductor.reconcile_task(task["id"], policy, object())
+    planner = next(
+        n
+        for n in conductor.graph.load_graph(task["id"])
+        if n["node_key"] == "conductor_2"
+    )
+    assert planner["max_attempts"] == 1
+    assert "Replace the failed preflight atomically" in planner["prompt"]
+    assert not dispatched
+    conductor.reconcile_task(task["id"], policy, object())
+    assert dispatched == [["conductor_2"]]
+    edits = [
+        {
+            "action": "discard_node",
+            "node_key": "investigate_old",
+            "reason": "Retire the failed prerequisite after terminal cessation",
+        },
+        {
+            "action": "add_node",
+            "node_key": "implement_replacement",
+            "role": "implement",
+            "prompt": "Fix the issue",
+            "deps": [],
+            "reason": "Implement the corrected scope",
+            "max_attempts": 1,
+        },
+        {
+            "action": "add_node",
+            "node_key": "review_replacement",
+            "role": "review",
+            "prompt": "Independently review the draft",
+            "deps": ["implement_replacement"],
+            "reason": "Require exact-head independent review",
+            "max_attempts": 1,
+        },
+    ]
+    run_feedback_node(
+        task,
+        "conductor_2",
+        {"action": "plan", "reason": "Replace the failed chain", "edits": edits},
+    )
+    before = controls.task_snapshot(task["id"])
+    conductor.reconcile_task(task["id"], policy, object())
+    assert not controls.task_recovery_needs_plan(task["id"])
+    nodes = conductor.graph.load_graph(task["id"])
+    assert "investigate_old" not in {n["node_key"] for n in nodes}
+    assert {"implement_replacement", "review_replacement"} <= {
+        n["node_key"] for n in nodes
+    }
+    after = controls.task_snapshot(task["id"])
+    assert not after["task_paused"] and after["state"] == "admitted"
+    assert after["committed_cost_usd"] == before["committed_cost_usd"]
+    assert len(conductor.graph.node_runs(task["id"])) == 3
+    assert controls.can_start(
+        task["id"], start_key=f"factory-node:{task['id']}:implement_replacement:1"
+    )["ok"]
+
+
 def complete_feedback_node(
     task, policy, node_key, value, *, head=None, deps=None, model=None, **kwargs
 ):

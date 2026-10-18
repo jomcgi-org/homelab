@@ -2552,3 +2552,25 @@ retain ordinary renewal behavior. **Why:** the existing funding reconciler
 ran before graph admission and treated an exhausted planner cap as a reason
 to buy oversight and extend limits, defeating a one-attempt operator recovery.
 No separate graph-preview service is needed.
+
+An expired, escalated task can receive one explicit
+`factory_recover_expired_task` preview/apply grant. It preserves the original
+receipt, task identity, pinned policy, timestamps, graph and accounting. The
+operator supplies a deadline within six hours and a cumulative work cap no
+larger than the existing hard cap. Two remaining planner turns must fit the
+existing planner cap: one replacement plan and one final delivery assessment,
+with one attempt each. The grant reacquires normal global, lane and repository
+capacity, checks open issue ownership and work-item blockers, and leaves the
+task paused for explicit resume. A new receipt is not created, so the original
+autonomous daily-admission count remains unchanged.
+
+The preview binds current issue, receipt, escalation, graph, policy and charge
+evidence. Unknown execution, any queued session message and in-flight operator
+decisions refuse it. Apply records the prior settlement and adds mandatory
+landing and nonrenewable holds. A run boundary keeps old planner decisions
+historical, and only the exact new planner can dispatch until its replacement
+graph is accepted. The same recovery deadline governs snapshots, admission,
+dispatch pins and deadline supervision. A second recovery cannot renew it.
+**Why:** ordinary Continue deliberately creates a new task and clears its
+pinned policy. Merely reopening the old task would replay its previous decision
+or retry its failed preflight before the operator's replacement plan was read.

@@ -1310,6 +1310,11 @@ def _add(
                 policy["turn_budget_usd"],
             )
         )
+    if planner and max_attempts is None:
+        from factory.orchestration.factory_controls import task_recovery_grant
+
+        if task_recovery_grant(task["id"], session=session):
+            max_attempts = 1
     return graph.add_node(
         task["id"],
         author_kind="conductor",
@@ -6471,6 +6476,10 @@ def reconcile_task(
         else:
             if len(running) >= parallel or not can_start(task_id)["ok"]:
                 return
+            from factory.orchestration.factory_controls import task_recovery_needs_plan
+
+            if task_recovery_needs_plan(task_id):
+                return
             # Nothing may be admitted against an allowance the graph has
             # outgrown, so the top-up path resyncs exactly as the settled path
             # does.
@@ -6583,11 +6592,18 @@ def reconcile_task(
         and not r["node_key"].startswith("conductor_funding_")
         and r["status"] == "succeeded"
     ]
-    from factory.orchestration.factory_controls import landing_recovery_barrier
+    from factory.orchestration.factory_controls import (
+        landing_recovery_barrier,
+        task_recovery_grant,
+        task_recovery_needs_plan,
+    )
 
     barrier = landing_recovery_barrier(task_id)
+    recovery = task_recovery_grant(task_id)
     if barrier is not None:
         planners = [r for r in planners if r["id"] > barrier["run_id_floor"]]
+    if recovery is not None:
+        planners = [r for r in planners if r["id"] > recovery["run_id_floor"]]
     if planners:
         latest = max(planners, key=lambda r: r["id"])
         cause = f"factory-decision:{latest['node_key']}:{latest['attempt']}"
@@ -6599,7 +6615,10 @@ def reconcile_task(
     # node whose fan-in does not exist never gets a branch, so a refused
     # insertion strands nothing: it asks the planner instead.
     integration_refusal = None
-    group = _integration_group(task, nodes, runs, parallel)
+    recovery_planning = task_recovery_needs_plan(task_id)
+    group = (
+        None if recovery_planning else _integration_group(task, nodes, runs, parallel)
+    )
     if group:
         integrated, integration_refusal = _insert_integration(
             task, policy, nodes, runs, group, insertion_revision
@@ -6607,21 +6626,27 @@ def reconcile_task(
         if integrated:
             return
     ready = [] if integration_refusal else _ready_nodes(nodes, runs)
+    if recovery_planning:
+        # Old failed work can have attempts left. Only the one newly authorized
+        # planner may run until its replacement plan has been applied.
+        ready = [
+            node for node in ready if node["node_key"] == recovery["planner_node_key"]
+        ]
     # A review that requested changes is a bounded, mechanical correction the
     # engine owns. Only a deviation this reconciler can name reaches the
     # planner, so an open review loop never spends a planning turn.
     max_rounds = policy.get("max_review_rounds", DEFAULT_MAX_REVIEW_ROUNDS)
     rounds_used = _review_rounds_used(task_id)
-    pending = _pending_correction(nodes, runs)
+    pending = None if recovery_planning else _pending_correction(nodes, runs)
     reopened = False
     conflict = None
-    if pending is None:
+    if pending is None and not recovery_planning:
         conflict_pending = _pending_landing_recovery(
             task, nodes, runs, detect_live=not ready
         )
         if conflict_pending is not None:
             pending, conflict = conflict_pending
-    if pending is None:
+    if pending is None and not recovery_planning:
         # A round the engine opened and that then failed is the engine's to
         # reopen. The planner cannot: it is refused the round keys and cannot
         # discard a node that has run, so the task would only pause.
@@ -6717,7 +6742,7 @@ def reconcile_task(
             loop_refusal=loop_refusal,
             integration_refusal=integration_refusal,
         )
-        if _insert_handoff_round(
+        if not recovery_planning and _insert_handoff_round(
             task, policy, nodes, runs, deviation, insertion_revision
         ):
             return
@@ -6731,7 +6756,11 @@ def reconcile_task(
         ):
             return
         ordinal = sum(n["node_key"].startswith("conductor_") for n in nodes) + 1
-        key = f"conductor_{ordinal}"
+        key = (
+            recovery["planner_node_key"]
+            if recovery_planning
+            else f"conductor_{ordinal}"
+        )
         # The operator's answer is carried until a planner round has actually
         # read it, which means a SUCCEEDED conductor run. A round that failed
         # every attempt produced no plan and no decision feedback, so gating on
@@ -6741,13 +6770,17 @@ def reconcile_task(
         # feedback under it are the record and repeating the direction would
         # spend context on something the graph already carries.
         direction = (
-            operator_direction(task_id)
-            if not any(
-                run["node_key"].startswith("conductor_")
-                and run["status"] == "succeeded"
-                for run in runs
+            {"note": recovery["direction"], "effect": "operator_task_recovery"}
+            if recovery_planning
+            else (
+                operator_direction(task_id)
+                if not any(
+                    run["node_key"].startswith("conductor_")
+                    and run["status"] == "succeeded"
+                    for run in runs
+                )
+                else None
             )
-            else None
         )
         if direction is not None:
             _audit_once(
@@ -6814,7 +6847,13 @@ def reconcile_task(
             set_control("pause_task", ACTOR, task_id=task_id)
         return
     _dispatch_ready(
-        task, nodes, runs, parallel, fan_out=False, parallel=parallel, policy=policy
+        task,
+        ready if recovery_planning else nodes,
+        runs,
+        parallel,
+        fan_out=False,
+        parallel=parallel,
+        policy=policy,
     )
 
 

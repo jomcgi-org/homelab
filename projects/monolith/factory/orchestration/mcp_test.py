@@ -1577,6 +1577,48 @@ def test_landing_release_requires_human_operator_and_reviewed_preview(monkeypatc
     assert calls == []
 
 
+def test_expired_task_recovery_requires_human_and_reviewed_preview(monkeypatch):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    calls = []
+    monkeypatch.setattr(
+        recovery, "apply", lambda *a, **kw: calls.append((a, kw)) or {"ok": True}
+    )
+
+    async def invoke():
+        return await mcp.factory_recover_expired_task(
+            "apply",
+            838,
+            "2026-10-18T23:00:00+00:00",
+            9,
+            "Recover the original task",
+            request_key="once",
+            expected_preview_sha256="a" * 64,
+        )
+
+    assert _as(_principal(), invoke)["ok"]
+    assert calls[0][1]["actor"] == "joe"
+    calls.clear()
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(principal, invoke)["ok"]
+    assert calls == []
+
+    async def unpreviewed():
+        return await mcp.factory_recover_expired_task(
+            "apply", 838, "2026-10-18T23:00:00+00:00", 9, "Recover"
+        )
+
+    assert (
+        _as(_principal(), unpreviewed)["reason"]
+        == "task_recovery_requires_preview_and_request_key"
+    )
+    assert calls == []
+
+
 def test_review_recovery_requires_human_operator_and_uses_subject(monkeypatch):
     from factory.orchestration import review_recovery
 
