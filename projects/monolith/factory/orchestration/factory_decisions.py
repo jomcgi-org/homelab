@@ -739,6 +739,7 @@ def _resolve(
     *,
     expected_decision_id: str,
     request: dict | None = None,
+    session=None,
 ) -> dict:
     """Write the resolution onto the escalation and audit what it did."""
     effects = dict(effects)
@@ -754,7 +755,8 @@ def _resolve(
         "decided_at": iso(_now()),
         "decision_id": expected_decision_id,
     }
-    with _locked_session() as (db, _control):
+    context = _locked_session() if session is None else nullcontext((session, None))
+    with context as (db, _control):
         row = _receipt(db, receipt_id)
         escalation = escalation_of(row) or {}
         if _fields(row)["decision_id"] != expected_decision_id:
@@ -902,11 +904,27 @@ def apply_decision(
     expected_decision_id: str | None = None,
 ) -> dict:
     """Answer one escalation with one of its options."""
-    fields, escalation, resolved = _claim(
-        receipt_id, option_key, actor, expected_decision_id
-    )
-    if resolved is not None:
-        return {"ok": True, "applied": False, "resolution": resolved}
+    from factory.orchestration import factory_pause
+
+    with _locked_session() as (db, _control):
+        fields, escalation, resolved = _claim(
+            receipt_id, option_key, actor, expected_decision_id, session=db
+        )
+        if resolved is not None:
+            return {"ok": True, "applied": False, "resolution": resolved}
+        if factory_pause.is_card(escalation):
+            # Stop is database-only. Keep claim and answer under one control
+            # lock so resume, another pause or handoff cannot split them.
+            resolution = _resolve(
+                receipt_id,
+                factory_pause.STOP,
+                actor,
+                note,
+                {"held": True},
+                expected_decision_id=fields["decision_id"],
+                session=db,
+            )
+            return {"ok": True, "applied": True, "resolution": resolution}
     option = _option(escalation, option_key)
     try:
         effects = _apply(fields, option, note)
@@ -1507,6 +1525,23 @@ def request_decision(
             reason="completion unconfirmed; retry this same request to inspect its outcome",
         )
         _request_event(db, actor, request, accepted)
+
+        from factory.orchestration import factory_pause
+
+        if action == "decide" and factory_pause.is_card(escalation):
+            # No external effect or separately committed accepted state exists
+            # for a local stop. A crash rolls back the claim and answer together.
+            resolution = _resolve(
+                receipt_id,
+                factory_pause.STOP,
+                actor,
+                note,
+                {"held": True},
+                expected_decision_id=decision_id,
+                request=request,
+                session=db,
+            )
+            return _decision_result(request, resolution)
 
     fields["effect_namespace"] = decision_id
     try:
