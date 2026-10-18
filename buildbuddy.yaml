@@ -451,7 +451,13 @@ actions:
           # heads and chart writebacks. A drifted PR exits above after pushing;
           # its fresh head must pass these checks. Main and queue still cannot
           # push repairs. Explicit labels leave per-target Linux evidence.
-          bazel build --config=ci \
+          # --remote_download_outputs=toplevel overrides --config=ci's
+          # --remote_download_minimal for this build only, so the two generated
+          # stubs are on disk for :check_go_stubs. Without it a remote-cache
+          # hit leaves its runfiles dangling and the check fails on a
+          # ci-format-bot or queue head (#6961). Same fix as
+          # bazel/images/push/push-changed.sh's digest manifest build.
+          bazel build --config=ci --remote_download_outputs=toplevel \
             //projects/embervm/proto/embervm/node/v1:node_go_src \
             //projects/embervm/proto/embervm/node/v1:nodev1
           bazel test --config=ci //bazel/helm/gazelle:gazelle_test
