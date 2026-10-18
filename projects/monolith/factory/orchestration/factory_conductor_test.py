@@ -146,6 +146,7 @@ def delivery(
         "issue_number": 77,
     }
     pr = {
+        "node_id": "PR_3",
         "state": "open",
         "draft": draft,
         "body": body,
@@ -20377,3 +20378,89 @@ def test_planner_defaults_to_one_implementation_and_atomic_repair():
     assert "Do not spend a planner session per cleanup edit" in charter
     assert "retained history and server correction/re-review reserves" in charter
     assert "Review must run in a separate session from every implementer" in charter
+
+
+def test_held_delivery_accepts_reviewed_draft_but_keeps_exact_head_and_ci_gates(
+    monkeypatch,
+):
+    from factory.orchestration import factory_landing
+
+    monkeypatch.setattr(factory_landing, "_queued_ids", lambda _: set())
+    task, runs = delivery(monkeypatch, draft=True)
+    task["landing_hold"] = True
+    result = conductor.verify_delivery(task, 3, runs)
+    assert result["state"] == "reviewed_draft"
+    for options in (
+        {"review_head": "b" * 40},
+        {"check_state": "pending"},
+        {"review_session": 10},
+    ):
+        task, runs = delivery(monkeypatch, draft=True, **options)
+        task["landing_hold"] = True
+        with pytest.raises(ValueError):
+            conductor.verify_delivery(task, 3, runs)
+
+
+def test_held_delivery_rejects_auto_merge(monkeypatch):
+    task, runs = delivery(monkeypatch, draft=True)
+    task["landing_hold"] = True
+    get = conductor.github_get
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda repo, path: {**get(repo, path), "auto_merge": {"enabled": True}},
+    )
+    with pytest.raises(ValueError, match="auto-merge"):
+        conductor.verify_delivery(task, 3, runs)
+
+
+@pytest.mark.parametrize("draft", [True, False])
+def test_held_delivery_rejects_queue_membership_with_null_auto_merge(
+    monkeypatch, draft
+):
+    from factory.orchestration import factory_landing
+
+    task, runs = delivery(monkeypatch, draft=draft)
+    task["landing_hold"] = True
+    monkeypatch.setattr(factory_landing, "_queued_ids", lambda ids: set(ids))
+    with pytest.raises(ValueError, match="outside the merge queue"):
+        conductor.verify_delivery(task, 3, runs)
+
+
+@pytest.mark.parametrize("role", ["implement", "correct", "review", "planner"])
+def test_landing_hold_reaches_preexisting_nodes_at_actual_dispatch(
+    feedback_db, monkeypatch, role
+):
+    from factory.orchestration import factory_controls as controls
+
+    if role == "planner":
+        task, policy = feedback_task()
+        conductor.reconcile_task(task["id"], policy, object())
+        node_key = "conductor_1"
+    elif role == "correct":
+        task, policy = reviewed_task()
+        conductor.reconcile_task(task["id"], policy, object())
+        node_key = "correct_1"
+    else:
+        task, _policy = planned_task(feedback_task(), [plan_edit("late_hold", role)])
+        node_key = f"{role}_late_hold"
+    stored = next(
+        n for n in conductor.graph.load_graph(task["id"]) if n["node_key"] == node_key
+    )
+    assert "operator landing hold" not in stored["prompt"]
+    with Session(feedback_db) as db, db.begin():
+        row = controls._receipt(db, task["id"])
+        row.direction_json = json.dumps(
+            {
+                **json.loads(row.direction_json or "{}"),
+                "landing_hold": {"actor": "operator"},
+            }
+        )
+    task = conductor._task(task["id"])
+    prompt, pin = dispatch_closing_prompt(task, node_key, monkeypatch)
+    assert "Keep the delivery PR draft, unmerged and outside the merge queue" in prompt
+    assert "operator landing hold" in pin["closing_instruction"]
+    assert "operator landing hold" in conductor._boundary(task, review=role == "review")
+    assert conductor._planner_direction({"landing_hold": True})["landing_hold"]
+    context = json.loads(conductor._planner_context(task, [], []))
+    assert context["task_identity"]["landing_hold"]

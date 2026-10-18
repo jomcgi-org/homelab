@@ -2614,8 +2614,8 @@ def test_runtime_meter_sends_normalized_cumulative_usage(
     manager = _codex_manager(tmp_path, monkeypatch)
     result = manager.turn("work", model="astra", runtime_meter={"fixture": True})
     assert observed[0] == ({}, "parent")
-    assert observed[-1] == (result["usage"], "parent")
-    assert all(coverage == "parent" for _, coverage in observed)
+    assert observed[-1] == (result["usage"], "complete")
+    assert all(coverage == "parent" for _, coverage in observed[:-1])
     manager._close_process()
 
 
@@ -11674,3 +11674,99 @@ def test_required_mcp_probe_timeout_is_retryable(monkeypatch):
     ) as raised:
         shim._agent_mcp_endpoint_alive("http://agents.test/mcp", required=True)
     assert "secret" not in str(raised.value)
+
+
+@pytest.mark.parametrize("missing", ["all", "final", "prior-turn", "replayed-final"])
+def test_runtime_meter_requires_usage_covering_final_request(
+    tmp_path, monkeypatch, missing
+):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "multi-request")
+    observed = []
+
+    class Meter:
+        def __init__(self, receipt):
+            pass
+
+        def send(self, usage, coverage="parent"):
+            observed.append(coverage)
+
+    monkeypatch.setattr(shim, "_RuntimeMeter", Meter)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    read = manager._read_event
+    usage_count = 0
+    first_usage = None
+    queued = []
+
+    def missing_usage(timeout):
+        nonlocal usage_count, first_usage
+        if queued:
+            return queued.pop(0)
+        while True:
+            event = read(timeout)
+            if not event or event.get("method") != "thread/tokenUsage/updated":
+                return event
+            usage_count += 1
+            if missing == "all":
+                continue
+            if missing == "prior-turn":
+                event["params"]["turnId"] = "previous-turn"
+                return event
+            if usage_count == 1:
+                first_usage = event
+                # A second request emits activity after the first usage report.
+                queued.append(
+                    {
+                        "method": "item/agentMessage/delta",
+                        "params": {
+                            "threadId": event["params"]["threadId"],
+                            "turnId": event["params"]["turnId"],
+                            "delta": {"text": "second request"},
+                        },
+                    }
+                )
+                return event
+            if missing == "replayed-final":
+                return first_usage
+            # Drop every later usage report, retaining successful completion.
+
+    monkeypatch.setattr(manager, "_read_event", missing_usage)
+    with pytest.raises(RuntimeError, match="native usage evidence is incomplete"):
+        manager.turn("work", model="astra", runtime_meter={"fixture": True})
+    assert observed[-1] == "unknown"
+    assert "complete" not in observed
+    assert manager.process is None
+
+
+@pytest.mark.parametrize("silence", [False, True])
+def test_runtime_meter_freshness_deadline_is_not_extended_by_output(
+    tmp_path, monkeypatch, silence
+):
+    observed = []
+
+    class Meter:
+        def __init__(self, receipt):
+            pass
+
+        def send(self, usage, coverage="parent"):
+            observed.append(coverage)
+
+    monkeypatch.setattr(shim, "_RuntimeMeter", Meter)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    read = manager._read_event
+    now = [0.0]
+    monkeypatch.setattr(shim.time, "monotonic", lambda: now[0])
+
+    def silent(timeout):
+        event = read(timeout)
+        if event and event.get("method") == "item/completed":
+            assert timeout <= 900
+            if silence:
+                raise TimeoutError("no native usage")
+            now[0] = 900
+        return event
+
+    monkeypatch.setattr(manager, "_read_event", silent)
+    with pytest.raises(RuntimeError, match="native usage evidence is stale"):
+        manager.turn("work", model="astra", runtime_meter={"fixture": True})
+    assert observed[-1] == "unknown"
+    assert manager.process is None

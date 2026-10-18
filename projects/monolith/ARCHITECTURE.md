@@ -2427,13 +2427,21 @@ history. Server-owned correction/re-review remains unchanged.
 **Why native runtime stops remain separate from hard ceilings.** The staged
 `FACTORY_RUNTIME_METER_ENABLED` path binds usage to the existing physical result
 receipt, before invocation, under the control/pool/session lock order. It is off
-by default and supports only the configured Astra Codex adapter. Acknowledged
+by default. Enrollment additionally requires an exact task ID in
+`FACTORY_RUNTIME_METER_TASK_IDS` and the Astra Codex adapter. Empty or invalid
+allowlists enroll nothing; other adapters keep their existing receipt behavior.
+Both Helm values ship disabled through the hub overlay. Acknowledged
 cumulative counters are priced with a pinned table, retained across retries and
 readmissions, and reconciled with final AgentTurn cost without charging both.
 An interrupted prefix from before enrollment remains charged. Provider amounts,
 cash, subscription quota and unknown reservations remain separate.
 
-Missing acknowledgements terminate the current adapter; counter conflicts,
+Missing acknowledgements terminate the current adapter. Native usage must
+advance within 900 seconds, independently of text/tool output or duplicate
+reports. The guest requires current-turn usage covering the final request and
+acknowledges a terminal seal; both synchronous responses and receipt adoption
+reject successful completion without the exact durable seal and counters.
+Partial/error bodies remain evidence. Counter conflicts,
 unattributed descendants, or observed $500/session or $1,000/objective usage pause
 the task and request the existing exact-attempt stop owner. The normal conductor
 tick retries durable stop requests. Cancellation does not release reservations;
@@ -2443,8 +2451,10 @@ and its rollout budget checks usage after requests finish. No tested maximum
 request exposure exists on the subscription endpoint. A strict hard cap needs
 a trusted request-boundary reservation before forwarding, including children,
 retries and compaction. Unknown request exposure must refuse dispatch. This
-draft does not change credential injection, egress policy, provider quotas or
-deployment configuration and must not be activated as a hard-cap guarantee.
+draft does not change credential injection, egress policy or provider quotas.
+It wires default-off deployment settings. The practical observed-usage backstop
+does not bound in-flight overshoot: provider work may continue while a callback
+or stop is delayed. Activation is a separate decision, never a hard-cap claim.
 
 The human-only `factory_amend_policy` surface previews an exact paused receipt's
 task/turn allocations, planner/work caps, review rounds and timeout. Applying
@@ -2453,6 +2463,13 @@ accounting or pending funding changes invalidate it. It refuses live or unknown
 execution, preserves prior grants, supersedes a stale pending funding review
 and records direction through the existing funding owner. It leaves the task
 paused, retains all history and existing node pins, and cannot change models,
-auto-merge, provider controls or the $200 objective allocation ceiling. A
-separate explicit resume follows a feasible replacement-plan review. Raising
+global auto-merge, provider controls or the $200 objective allocation ceiling.
+An operator may add a sticky receipt-specific `landing_hold=true`; it preserves
+existing direction and cannot be removed by this amendment or later escalation
+direction. Held deliveries accept reviewed drafts only with passing exact-head
+checks, auto-merge off and confirmed absence from the merge queue. They settle
+without entering landing, and the landing reconciler disarms/dequeues any held
+delivery even when global merge and review-publication flags are off. Handoff
+instructions retain the draft. A separate explicit resume follows a feasible
+replacement-plan review. Raising
 that objective ceiling still requires the missing request-boundary guarantee.

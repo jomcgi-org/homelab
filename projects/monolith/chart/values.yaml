@@ -1790,6 +1790,10 @@ swarm:
   factoryMeritJudgePriorityIssues: ""
   factoryAutonomousContinuationEnabled: false
   factoryStopSupervisionEnabled: false
+  # Observed list-price backstop for Astra on explicitly named task IDs only.
+  # Both switches are required. Existing bound invocations keep their fences.
+  factoryRuntimeMeterEnabled: false
+  factoryRuntimeMeterTaskIds: ""
   # Sample transient stop refusals for a fixed bounded window before notifying.
   # Keep staged off until the brick-roll and restart live checks pass (#6266).
   factoryTransientStopRetryEnabled: false

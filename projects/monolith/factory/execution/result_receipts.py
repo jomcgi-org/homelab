@@ -50,12 +50,26 @@ def enabled() -> bool:
     return os.getenv("AGENT_RESULT_RECEIPTS_ENABLED", "false").lower() == "true"
 
 
-def required(local_session_id: str) -> bool:
-    """Metered factory work cannot bypass receipts through the optional flag."""
-    return enabled() or (
-        local_session_id.startswith("factory:")
-        and os.getenv("FACTORY_RUNTIME_METER_ENABLED", "false").lower() == "true"
+def meter_enrolled(local_session_id: str, model: str) -> bool:
+    """Only explicitly named factory tasks on Astra join the observed canary."""
+    parts = local_session_id.split(":")
+    tasks = {
+        value.strip()
+        for value in os.getenv("FACTORY_RUNTIME_METER_TASK_IDS", "").split(",")
+    }
+    return (
+        os.getenv("FACTORY_RUNTIME_METER_ENABLED", "false").lower() == "true"
+        and model == "astra"
+        and all(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", task) for task in tasks)
+        and len(parts) == 4
+        and parts[0] == "factory"
+        and parts[1] in tasks
     )
+
+
+def required(local_session_id: str, model: str = "") -> bool:
+    """Metered factory work cannot bypass receipts through the optional flag."""
+    return enabled() or meter_enrolled(local_session_id, model)
 
 
 def _now():
@@ -79,10 +93,12 @@ def _prepare_transaction(session_id):
             yield db, False
         return
     with Session(get_engine()) as probe:
-        local_id = probe.exec(
-            select(AgentSession.local_session_id).where(AgentSession.id == session_id)
+        identity = probe.exec(
+            select(AgentSession.local_session_id, AgentSession.model).where(
+                AgentSession.id == session_id
+            )
         ).first()
-    metered = bool(local_id and local_id.startswith("factory:"))
+    metered = bool(identity and meter_enrolled(*identity))
     if metered:
         from factory.orchestration import factory_controls
 
@@ -204,6 +220,7 @@ def prepare_receipt(
             from factory.orchestration import factory_runtime_meter as meter
 
             result["runtime_meter"] = meter.bind(db, receipt, agent, request_body)
+            result["runtime_meter_max_age_seconds"] = meter.MAX_USAGE_AGE_SECONDS
         return result
 
 
@@ -396,6 +413,9 @@ def _result(db: Session, receipt: dict) -> dict:
         or receipt["received_at"] is None
     ):
         raise ReceiptRejected(409, "receipt_result_changed")
+    from factory.orchestration.factory_runtime_meter import validate_completion
+
+    validate_completion(db, receipt["id"], json.loads(body))
     provenance = {
         key: receipt[key]
         for key in (

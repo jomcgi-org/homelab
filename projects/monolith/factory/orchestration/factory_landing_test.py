@@ -2085,3 +2085,42 @@ def test_close_reloads_live_gate_recorded_after_delivery_snapshot(db, monkeypatc
     assert audits(db, "repository_delivery_complete")[0][
         "operational_acceptance_pending"
     ]
+
+
+@pytest.mark.parametrize("entry", ["auto-merge", "queue"])
+def test_receipt_landing_hold_disarms_and_rechecks_even_with_global_flags_off(
+    db, monkeypatch, entry
+):
+    from factory import review_publisher
+
+    delivered(db, "t-held", 11, 3, settled=NOW - timedelta(days=30))
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-held")
+        row.direction_json = '{"landing_hold":{"actor":"operator"}}'
+    pulls = {3: pull(3, armed=entry == "auto-merge")}
+    if entry == "queue":
+        pulls[3]["queue_entry"] = {"id": "MQ_3", "state": "QUEUED"}
+    calls = github(monkeypatch, pulls=pulls)
+    monkeypatch.setattr(review_publisher, "enabled", lambda: False)
+    off = {**POLICY, "auto_merge": False}
+    landing.landing_tick(off)
+    assert pulls[3]["auto_merge"] is None
+    assert pulls[3].get("queue_entry") is None
+    assert (
+        audits(db, "merge_arm_refused", "t-held")[0]["reason"] == "receipt_landing_held"
+    )
+    assert receipt_state(db, "t-held") == "succeeded"
+    assert calls["write"] == []
+    # A refusal is not a license to forget the hold on later ticks.
+    pulls[3]["auto_merge"] = {"merge_method": "REBASE"}
+    landing.landing_tick(off)
+    assert pulls[3]["auto_merge"] is None
+    assert len(audits(db, "merge_arm_refused", "t-held")) == 1
+    item = landing._deliveries(POLICY)[0]
+    landing._arm(POLICY["repo"], item)
+    assert (
+        landing._recover_delivery(item, HEAD, "test")["reason"]
+        == "receipt_landing_held"
+    )
+    assert not audits(db, "merge_armed")
+    assert not audits(db, "landing_recovery_requested")

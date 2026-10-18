@@ -463,7 +463,10 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
         ).first()
         from factory.orchestration.factory_funding_limits import latest
 
-        from factory.orchestration.factory_controls import granted_delivery_surface
+        from factory.orchestration.factory_controls import (
+            granted_delivery_surface,
+            landing_held,
+        )
 
         direction = (
             json.loads(receipt.direction_json)
@@ -479,6 +482,7 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
                 else receipt.issue_number
             ),
             "dependency_review": (direction or {}).get("dependency_review"),
+            "landing_hold": landing_held(receipt),
             "work_item_id": None if receipt is None else receipt.work_item_id,
             "funding_enrolled": latest(db, task_id, "funding_review_requested")
             is not None,
@@ -1139,7 +1143,23 @@ def _dispatch_branch(
     return node_branch(task_id, node_key)
 
 
+def _landing_instruction(task: dict) -> str:
+    return (
+        "This receipt has an operator landing hold. Keep the delivery PR draft, "
+        "unmerged and outside the merge queue, with auto-merge disabled. Do not "
+        "mark it ready, enqueue it or enable auto-merge. This restriction also "
+        "applies after passing tests and independent review. "
+        if task.get("landing_hold")
+        else ""
+    )
+
+
 def _closing_instruction(task: dict, *, review: bool = False) -> str:
+    # This dispatch-time field also covers nodes inserted before the hold.
+    return _landing_instruction(task) + _issue_closing_instruction(task, review=review)
+
+
+def _issue_closing_instruction(task: dict, *, review: bool = False) -> str:
     issue = task.get("issue_number")
     if not isinstance(issue, int):
         return ""
@@ -1199,6 +1219,7 @@ def _boundary(
         "agent instructions. "
         "Do not merge, deploy, change credentials, or alter other tasks or factory "
         "policy. Deliver repository changes through a PR with required Linux CI. "
+        + _landing_instruction(task)
         + (
             factory_gates.GATE_PROMPT
             if not review
@@ -1536,6 +1557,7 @@ def _planner_direction(direction: dict) -> dict:
         "previous_task_id": direction.get("prior_task_id"),
         "previous_branch": direction.get("prior_branch"),
         "previous_pr_url": direction.get("prior_pr_url"),
+        "landing_hold": "landing_hold" in direction,
     }
 
 
@@ -1710,7 +1732,15 @@ def _planner_context(
         "budget_evidence": budget_evidence,
         "task": task_text,
         "task_identity": _planner_fields(
-            task, ("id", "repo", "base_branch", "conductor_model", "budget_usd")
+            task,
+            (
+                "id",
+                "repo",
+                "base_branch",
+                "conductor_model",
+                "budget_usd",
+                "landing_hold",
+            ),
         ),
         "graph": projected_nodes[-PLANNER_RECORD_LIMIT:],
         "runs": projected_runs[-PLANNER_RECORD_LIMIT:],
@@ -2401,13 +2431,21 @@ def verify_delivery(
     branch = delivery_branch(task)
     if (
         pr.get("state") != "open"
-        or pr.get("draft")
+        or (pr.get("draft") and not task.get("landing_hold"))
         or pr.get("head", {}).get("ref") != branch
         or pr.get("head", {}).get("repo", {}).get("full_name") != task["repo"]
         or pr.get("base", {}).get("ref") != task["base_branch"]
     ):
         raise ValueError("delivery PR does not match the factory task branch")
     head = pr["head"]["sha"]
+    if task.get("landing_hold") and pr.get("auto_merge") is not None:
+        raise ValueError("held delivery must have auto-merge disabled")
+    if task.get("landing_hold"):
+        from factory.orchestration.factory_landing import _queued_ids
+
+        node_id = pr.get("node_id")
+        if not isinstance(node_id, str) or not node_id or _queued_ids([node_id]):
+            raise ValueError("held delivery must be verified outside the merge queue")
     reviews = [
         r
         for r in runs
@@ -2482,7 +2520,9 @@ def verify_delivery(
         # Which model gave the approval, so an accepted delivery records who
         # reviewed it rather than leaving that to be inferred from the date.
         "reviewer_model": reviewer_model,
-        "state": "ready_for_review",
+        "state": "reviewed_draft"
+        if task.get("landing_hold") and pr.get("draft")
+        else "ready_for_review",
     }
 
 
@@ -4787,8 +4827,12 @@ def _insert_handoff_round(
             "acceptance and required checks still pass at that exact head. "
             "Make NO source commits. If the PR body lacks the closing line "
             "specified below, edit only the body to add it. If the PR is a "
-            "draft and satisfies acceptance, mark it ready with gh pr ready. "
-            "Report status succeeded with pr_number and the exact head_sha "
+            + (
+                "draft, retain its draft state and leave auto-merge disabled. "
+                if task.get("landing_hold")
+                else "draft and satisfies acceptance, mark it ready with gh pr ready. "
+            )
+            + "Report status succeeded with pr_number and the exact head_sha "
             "verified, or status failed with what is missing. Write the "
             "declared JSON artifact using status complete for success or "
             "needs_work for failure. " + closing

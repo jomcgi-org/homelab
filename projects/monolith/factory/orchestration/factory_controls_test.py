@@ -3679,3 +3679,31 @@ def test_bounded_review_rechecks_receipt_identity_after_evidence(
     assert controls.task_snapshot(task_id)["committed_cost_usd"] == pytest.approx(
         48.2402535
     )
+
+
+@pytest.mark.parametrize("state", ["ready_for_review", "reviewed_draft"])
+def test_receipt_landing_hold_finishes_without_entering_global_merge_lane(
+    db, policy, state
+):
+    policy["auto_merge"] = True
+    task = admitted(policy)
+    with Session(db) as session, session.begin():
+        controls._receipt(
+            session, task
+        ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+    result = controls.finish_task(
+        task,
+        "succeeded",
+        "scheduler",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/9",
+            "head_sha": "a" * 40,
+            "state": state,
+        },
+    )
+    assert result["ok"]
+    with Session(db) as session:
+        assert controls._receipt(session, task).state == "succeeded"
+        assert not session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "delivery_ready")
+        ).all()

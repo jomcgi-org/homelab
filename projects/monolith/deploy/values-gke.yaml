@@ -34,6 +34,9 @@ swarm:
   factoryMeritJudgePriorityIssues: "6460,6461,6462,6463,6481,6482"
   factoryAutonomousContinuationEnabled: true
   factoryStopSupervisionEnabled: true
+  # Activation is a separate reviewed operator action, never implied by merge.
+  factoryRuntimeMeterEnabled: false
+  factoryRuntimeMeterTaskIds: ""
   # Repository-staged for #6266. Live brick-roll, restart, and uncertain DELETE
   # checks must pass before this hub behavior is enabled.
   factoryTransientStopRetryEnabled: false

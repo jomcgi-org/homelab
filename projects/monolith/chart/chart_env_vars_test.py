@@ -467,3 +467,35 @@ def test_discord_ambient_pause_keeps_bot_and_kg_enabled(chart_context):
     assert "name: DISCORD_BOT_TOKEN" in rendered
     assert re.search(r'- name: KG_FEED_ENABLED\n\s+value: "true"', rendered)
     assert "name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID" in rendered
+
+
+def test_runtime_meter_canary_is_default_off_through_hub_overlay():
+    chart = find_chart_dir()
+    command = [os.environ.get("HELM_BIN", "helm"), "template", "monolith", str(chart)]
+    for overlay in ("values.yaml", "values-gke.yaml"):
+        command.extend(["--values", str(chart.parent / "deploy" / overlay)])
+    rendered = subprocess.run(
+        command, capture_output=True, text=True, check=True
+    ).stdout
+    assert re.search(
+        r'- name: FACTORY_RUNTIME_METER_ENABLED\n\s+value: "false"', rendered
+    )
+    assert re.search(r'- name: FACTORY_RUNTIME_METER_TASK_IDS\n\s+value: ""', rendered)
+    rendered = subprocess.run(
+        command
+        + [
+            "--set",
+            "swarm.factoryRuntimeMeterEnabled=true",
+            "--set-string",
+            "swarm.factoryRuntimeMeterTaskIds=t-canary",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert re.search(
+        r'- name: FACTORY_RUNTIME_METER_ENABLED\n\s+value: "true"', rendered
+    )
+    assert re.search(
+        r'- name: FACTORY_RUNTIME_METER_TASK_IDS\n\s+value: "t-canary"', rendered
+    )
