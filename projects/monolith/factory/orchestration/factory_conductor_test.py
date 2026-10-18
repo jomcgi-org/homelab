@@ -16046,6 +16046,31 @@ def test_exhausted_node_is_not_a_task_funding_request(
         assert reason["nodes"][0]["node_key"] == node_key
 
 
+def test_legacy_pending_funding_cannot_grant_against_exhausted_node(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_allocation_recovery as recovery,
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, _ = exhausted_allocation_task(monkeypatch, "review_retirement_audit", 10)
+    # A request persisted before deployment must pass the new check at settlement.
+    with monkeypatch.context() as old_request:
+        old_request.setattr(recovery, "funding_blocker", lambda *_: None)
+        assert funding.request(task, "Legacy request against the exhausted review")
+    settle_funding(task, funding_decision(task_budget_usd=60))
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["task_paused"]
+    assert snapshot["policy"]["task_budget_usd"] == 50
+    with controls._read_session() as db:
+        assert funding.amendment(db, task["id"]) is None
+        assert funding.pending(db, task["id"]) is None
+        settled = funding.latest(db, task["id"], "funding_review_settled")
+        assert settled["refusal"] == "node_allocation_exhausted"
+
+
 def test_discard_and_rename_cannot_reset_exhausted_allocation(feedback_db, monkeypatch):
     from factory.orchestration import factory_controls as controls
 
