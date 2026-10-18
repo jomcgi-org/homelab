@@ -1,7 +1,7 @@
 {
   "system": "embervm",
   "system_dir": "projects/embervm",
-  "commit": "b1514fe38",
+  "commit": "81b210a51",
   "nodes": [
     {
       "key": "dispatcher",
@@ -103,10 +103,11 @@
     },
     {
       "key": "s3-store",
-      "label": "S3-compatible object store (SeaweedFS gateway)",
+      "label": "S3-compatible artifact store (production GCS interop)",
       "view": "physical",
       "layer": "data",
-      "maturity": "built"
+      "maturity": "built",
+      "evidence": "projects/embervm/deploy/values-gke.yaml:89; projects/embervm/noded/store/store.go:252"
     },
     {
       "key": "caller",

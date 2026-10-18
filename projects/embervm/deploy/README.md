@@ -1,158 +1,140 @@
-# EmberVM reference deployment (homelab)
+# EmberVM reference deployment (GKE hub)
 
-The architecture is deployment-agnostic and lives in
-[../ARCHITECTURE.md](../ARCHITECTURE.md). This file records the checked-in
-reference overlays and their operational caveats.
+The GKE hub, `homelab-hub`, is the only cluster and management plane.
+The deployment-agnostic design lives in [../ARCHITECTURE.md](../ARCHITECTURE.md).
+This guide describes checked-in configuration, not a live acceptance result.
 
-## Checked-in home fleet overlay
+## Values and placement
 
-The table and commands in this section describe the checked-in home deployment
-overlay, which is residual: the GKE hub is the sole management plane and the
-plan to bring the shipped nodes back as UK home capacity was dropped on
-2026-09-18 ([#4964](https://github.com/jomcgi-org/homelab/issues/4964) closed, not
-planned). No home placement is planned. The closed Vancouver teardown and
-GPU-serving proposals ([#5485](https://github.com/jomcgi-org/homelab/issues/5485) and
-[#5461](https://github.com/jomcgi-org/homelab/issues/5461)) remain separate
-decisions and authorize no hardware wipe or disposal.
+The production [Application](../../gke-apps/embervm/application.yaml) renders
+release `embervm` into namespace `embervm`, in this order:
 
-| Node | CPU | Memory | Role |
-| ---- | --- | ------ | ---- |
-| node-1/2/3 | Intel Alder Lake-S, 12 vCPU each | ~15.3 GiB (~12.3 allocatable) | k3s control-plane/etcd masters; cold/CPU-rich tier (task-class, bazel clones) |
-| node-4 | AMD Zen4, 16 threads | 62 GiB | warm tier: banked sessions, serving, stateful volumes |
+1. Published chart defaults.
+2. [values.yaml](values.yaml), shared deployment settings.
+3. [values-gke.yaml](values-gke.yaml), hub placement and production identities.
 
-- The home overlay encodes the guest/etcd co-location clause from the
-  architecture's deployment section: its etcd masters carry task-class guests
-  when that overlay is deployed.
-- Home overlay brick mix: `desiredReplicas` 2gi 1 and 16gi 1, plus per-node 2gi
-  floor bricks pinned on node-1, node-2, node-3 and a second 16gi brick
-  pinned on node-4 (doubles session admission headroom and keeps one 16gi
-  brick up through every roll); the 4gi and 8gi classes are at zero
-  replicas; chart clamps are min 16gi 1 and max 2gi 4 / 4gi 3 / 8gi 2 /
-  16gi 2.
-- Warmth is vendor-keyed, so the overlay's Intel pool restores from intel-keyed
-  bases and node-4 is assigned the AMD tier's; labelling a node of a new vendor
-  into the pool refuses cross-vendor restores loudly rather than
-  mis-placing them.
-- The reference values configure the CP op-log on the `monolith-pg` CNPG
-  cluster (`opLog.postgres.enabled: true` in `values.yaml`). A second cluster
-  would cost ~1Gi of requests on a fleet at 99% of memory limits on node-4,
-  and the coupling is bounded because a CP outage is a designed-for state.
-  At runtime, `Embervm.Application.op_log_mod/0` selects Postgres only when
-  the rendered pod has a non-empty `EMBERVM_OPLOG_DSN`; the verification
-  command is documented in
-  [../../monolith/deploy/embervm-oplog-secret.md](../../monolith/deploy/embervm-oplog-secret.md#verifying-which-backend-is-live).
-- SQLite-WAL remains the chart-default, zero-dependency backend. The isolated
-  dev deployment uses it on a PVC, and the reference values retain the SQLite
-  size and storage settings for a backend flip that starts with an empty
-  op-log. These configured roles are defined in `../chart/values.yaml`,
-  `../dev/deploy/values.yaml`, and this directory's `values.yaml`; they do not
-  decide SQLite's future.
-- The Kubernetes node taint is recorded but not applied.
-- Platform services: SeaweedFS for the S3 store, the 1Password Operator
-  for secrets, Cloudflare Tunnel for the zero-trust edge, SigNoz for
-  observability.
+The shared file retains historical node floors and scratch settings. It is not
+a deployable hub profile on its own. The final overlay clears the floors,
+selects the hub brick mix and enables scratch preparation. Do not copy this
+production overlay into dev: it carries production object-store, broker and
+guest-callback identities. [Dev's guide](../dev/deploy/README.md) records its
+separate value order and inactive presets.
 
-## Node enrollment
+Bricks run on the `ember-bricks` Spot pool with nested virtualization. Their
+selector is `homelab.io/firecracker: "true"`; they tolerate
+`embervm.jomcgi.dev/node=true:NoSchedule`. The serving relay separately selects
+`embervm.io/serving: "true"`. The on-demand core pool must not receive that
+serving label. Pool enrollment is infrastructure configuration, not a command
+to label retired home nodes. See [platform architecture](../../platform/ARCHITECTURE.md#1-clusters).
 
-noded runs on every brick; bricks schedule onto Kubernetes nodes carrying
-the enrollment label. Each daemon dials home: on start and on a jittered
-interval it POSTs its identity to `/v1/nodes/register`, and the control
-plane adopts it keyed by `(node, pod_uid)`. A node label is node-lifecycle
-configuration, the same class as joining the node, so growing the fleet is
-a label, not a values edit:
+Production's scratch-prep DaemonSet prepares the capped scratch mount on brick
+nodes. Normal dev uses its own `dev` subtree and waits for production's mount
+generation marker. Scratch is ephemeral across Spot replacement. CPU-vendor
+keying still prevents restoring incompatible memory snapshots.
+
+## Durable state and telemetry
+
+- Production uses the `embervm_oplog` Postgres database on `monolith-pg`.
+  `opLog.postgres.enabled` renders `EMBERVM_OPLOG_DSN` and suppresses the SQLite
+  PVC. The password comes from a 1Password-managed Secret. Inspect references
+  and environment-variable names, never the resolved DSN or Secret data.
+- SQLite remains the chart-default backend. Its PVC uses `standard-rwo` on
+  the hub; the standalone quickstart explicitly selects `local-path`.
+  Switching backends does not migrate the journal and can start an empty one.
+- Production's artifact store is GCS through `https://storage.googleapis.com`,
+  bucket `h0melab-ember-bases`, with HMAC credentials delivered by the
+  1Password Operator. Chart defaults disable the store with an empty endpoint.
+  Normal dev also clears the bucket and disables store credentials. It is
+  local-only and does not exercise GCS export or restore.
+- The hub OpenTelemetry collector exports telemetry to Honeycomb. External
+  traffic goes through Cloudflare. Kargo is at
+  `private.jomcgi.dev/app/kargo`; the ArgoCD UI has no hub route.
+
+## Read-only preflight
+
+From the repository root, render the exact production value order:
 
 ```bash
-kubectl label nodes node-1 node-2 node-3 homelab.io/firecracker=true
+helm template embervm projects/embervm/chart --namespace embervm \
+  -f projects/embervm/deploy/values.yaml \
+  -f projects/embervm/deploy/values-gke.yaml
 ```
 
-Serving-capable nodes also carry the serving label so the relay schedules
-there:
+This checks source manifests. The source chart has build-time image placeholders;
+it is not an installation artifact. Kargo owns the live chart revision and the
+git pin is a bootstrap floor. On the hub context, inspect the live Application:
 
 ```bash
-kubectl label nodes node-1 node-2 node-3 embervm.io/serving=true
+kubectl get application embervm -n argocd -o json | jq '{
+  chart: .spec.sources[0].targetRevision,
+  values: .spec.sources[0].helm.valueFiles,
+  destination: .spec.destination,
+  sync: .status.sync.status,
+  health: .status.health.status
+}'
+kubectl get nodes -l cloud.google.com/gke-nodepool=ember-bricks -o json | \
+  jq '.items[] | {name: .metadata.name, labels: .metadata.labels, taints: .spec.taints}'
+kubectl get deployments,pods,pvc -n embervm
+kubectl get workloads -n embervm
+kubectl get deployment embervm-embervm -n embervm -o json | \
+  jq '[.spec.template.spec.containers[] | select(.name == "control-plane") |
+    .env[].name | select(startswith("EMBERVM_OPLOG_"))]'
 ```
 
-Decided direction (#4696): both labels consolidate on one
-chart-configurable key, `embervm.jomcgi.dev/node`, with serving implied.
-Never remove the firecracker label from an enrolled node before every
-consumer of it has migrated; the label is overloaded beyond noded.
+The production environment-name list must include `EMBERVM_OPLOG_DSN` and
+exclude `EMBERVM_OPLOG_PATH`; no op-log PVC is rendered with Postgres enabled.
+Application health alone does not prove the workload or store works. Management
+reads include `/v1/nodes`, `/v1/usage`, and `/v1/health/store`, using existing
+authorized access. These commands do not enroll nodes, trigger a rollout or
+run a drill.
 
-Before labelling a node:
+The [stateful generation quarantine runbook](../../../docs/runbooks/embervm-stateful-generation-quarantine.md)
+covers the supported quarantine observation and recovery boundary. Recovery
+and store-validation operations require their own authorization and evidence.
 
-- Bind-mount its real scratch device at `/var/lib/embervm/scratch` (fstab
-  entry or a systemd mount unit); the hostPath fails closed if the mount
-  is missing. Use a separate disk from the etcd WAL disk.
-- Expect vendor keying: memory snapshots never cross the AMD/Intel
-  boundary, so a node of a new CPU vendor refuses cross-vendor restores
-  loudly until its own warmth builds. This is the fail-closed gate, not a
-  fault.
+## Inactive store-validation preset
 
-The hard node taint (`embervm.jomcgi.dev/node=true:NoSchedule`) stays a
-recorded option, not applied. If a node ever needs it, confirm the chart
-tolerations are live first: tolerations first, taint second, never the
-reverse.
+Issue #6193 owns the operational acceptance. The repository stage is inactive:
+neither Application nor kustomization references
+`../dev/deploy/values-store-validation-gke.yaml`. It is an alternate
+configuration of the same `embervm-dev` release, not a second release. Render
+chart defaults, dev `values.yaml`, dev `values-gke.yaml`, then the validation
+preset. Never substitute production's GKE overlay.
 
-## Operational entry points
+The preset selects `h0melab-ember-bases-dev` and required references to the
+`embervm-store-validation-gcs` Secret, with an empty 1Password item path.
+It disarms the application retention deletion gates. Missing credentials
+prevent store-using containers from starting. No bucket, credential, IAM
+binding, lifecycle or budget is created by rendering this configuration.
 
-ArgoCD and SigNoz at `private.jomcgi.dev/app/*`, `kubectl get workloads`
-for definition status, `/v1/usage` for metering, and
-`docs/runbooks/embervm-*.md` for break-glass procedures.
+[store-validation/README.md](store-validation/README.md) records the separately
+authorized operator work: a dev-only seven-day delete lifecycle and an
+alerts-only USD 15 monthly budget for the project's Cloud Storage service.
+The budget covers more than this bucket and does not cap spending. The stage
+defines no production lifecycle deletion policy; live production policy still
+requires inspection before and after that validation.
 
-## GKE store validation stage
-
-Issue #6193 has a repository-only, default-off validation stage. The live GKE
-Application remains configured for `h0melab-ember-bases` in `values-gke.yaml`.
-The inactive
-`../dev/deploy/values-store-validation-gke.yaml` preset instead fixes every
-rendered store consumer to `h0melab-ember-bases-dev`, but neither Application
-nor kustomization references it. It cannot change live routing automatically.
-The isolated render order is chart defaults, dev values, GKE overrides, then
-the validation preset. That preserves the dev workload scope while the GKE
-layer removes the home-only node pin and enables GKE
-scratch preparation.
-
-The preset enables required Secret references to
-`embervm-store-validation-gcs` and deliberately leaves the 1Password item path
-empty. A missing Secret therefore prevents store-using containers from
-starting, while the repository does not guess an external credential path. It
-also overrides the base dev values to disarm all application-level retention
-delete gates, leaving the separately applied seven-day GCS lifecycle as the
-only intended deletion policy for the validation bucket.
-
-The checked-in desired policies and the inspect-before-apply operator steps are
-in [store-validation/README.md](store-validation/README.md). They specify a
-dev-only delete lifecycle at age seven days and an alerts-only USD 15 monthly
-budget filtered to the `h0melab` project and Cloud Storage service resource
-`services/95FF-2EF5-5EA1`. The budget covers all project Cloud Storage usage,
-not only one bucket. Alerts do not cap spending. No bucket, lifecycle, budget,
-notification channel, credential, or IAM resource is created by this repository
-stage. It defines no production lifecycle deletion rule. An operator must still
-verify the live production bucket has none before and after validation.
-
-## Warmth GC operations
+## Warmth GC
 
 An empty control-plane store of a kind whose S3 keys exist aborts the sweep
-as possibly not rebuilt. `warmthS3Gc.allowEmptyKinds` is the operator
-statement that a class is retired and its store is legitimately empty, which
-exempts that kind's branch. Unknown tokens fail chart rendering and are
-dropped by the application, so the guard can only be weakened deliberately.
+as possibly not rebuilt. `warmthS3Gc.allowEmptyKinds` explicitly identifies
+retired kinds whose empty projection is expected. Unknown tokens fail chart
+rendering and are dropped by the application.
 
-The S3 warmth GC is dry-run in code and may delete only the explicit
-allowlist of warmth prefixes. It is armed in the reference deployment
-(`warmthS3Gc.enabled: "1"`); rollback is setting `enabled` back to `""` and
-bumping the chart. Its 8-hour stateful TTL keeps the newest reference per
-vendor and workload for active workloads, meaning any non-terminal instance
-or volume row. Older superseded references are eligible after the grace
-window. Dead workload namespaces, including their newest reference, are
-evicted after the TTL. `base/` remains excluded, so the current base and the
-newest stateful reference for active workloads are preserved by construction.
+The S3 warmth GC defaults to dry-run in code. The production values arm it
+with `warmthS3Gc.enabled: "1"`. A rollback changes that value to `""` through
+a reviewed GitOps change; chart publication manages the version. Its 8-hour
+stateful TTL keeps the newest reference per vendor and workload for active
+workloads, meaning any non-terminal instance or volume row. Older superseded
+references become eligible after the grace window. Dead workload namespaces,
+including their newest reference, are evicted after the TTL. `base/` remains
+excluded.
 
 Session and serving references, plus session-workspace lineages, have no
 history retention guard. They are protected while the corresponding instance
 is active, including attached and in-flight transition states. Banked and
 parked states are not active, and their warmth is eligible after the
 configured TTL once a parked session's CP `expires_at` has passed. A later
-resume therefore follows the existing session-expiry 410 path rather than
-reattaching an empty workspace. Terminal states are expired, evicted,
-destroyed, or failed for sessions, and evicted, destroyed, or failed for
-serving.
+resume follows the session-expiry 410 path. Terminal states are expired,
+evicted, destroyed, or failed for sessions, and evicted, destroyed, or failed
+for serving. This documentation change does not alter any retention gate.

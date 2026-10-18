@@ -24,11 +24,9 @@ image:
 # Uniform size-capped scratch (warmth cache-cap retention decisions 2026-07-22).
 # The scratch-prep DaemonSet provisions a loop file of THIS size at
 # /var/lib/embervm/scratch on every FC node that does NOT already have a mount
-# there (node-4's dedicated-NVMe bind is left untouched by the mountpoint guard).
-# ONE uniform knob, no per-node map: a hard cap makes a warmth leak physically
-# unable to starve etcd/root on the etcd-master FC nodes. Sized to the ~30-40G
-# true working set (bases + placed instances' warmth); the fs is sparse, so an
-# unfilled cap costs only what is written. Raise fleet-wide here, never per node.
+# there; the mountpoint guard leaves an existing dedicated-device bind alone.
+# The cap bounds scratch growth on the host disk. Deployment overlays choose
+# the size for their working set; the sparse file consumes only written space.
 scratchSizeGi: 35
 
 # Warmth generation of the vendored Firecracker binary (MODULE.bazel
@@ -162,7 +160,7 @@ controlPlaneLivenessProbe:
 
 # Op-log backend settings. The chart default uses SQLite-WAL: the control
 # plane's durable book-of-record (ops, tasks, results) lives at
-# EMBERVM_OPLOG_PATH on this RWO Longhorn PVC, which provides DURABILITY, not
+# EMBERVM_OPLOG_PATH on this RWO PVC, which provides durability, not
 # availability. The reference deployment overrides postgres.enabled to true;
 # the isolated dev deployment retains this SQLite path. SQLite is single-writer
 # and the Deployment is Recreate + 1 replica, so a pod restart replays its
@@ -176,9 +174,8 @@ opLog:
   # is the whole cutover.
   #
   # The database lives on the existing monolith-pg CNPG cluster rather than a
-  # cluster of its own: a second 2-instance cluster costs ~1Gi of requests on a
-  # fleet already at 99% of memory limits on node-4, for a database that is 5%
-  # utilized. Because the adapter owns its own DDL, the monolith chart needs a
+  # cluster of its own, avoiding another database cluster's resource requests.
+  # Because the adapter owns its own DDL, the monolith chart needs a
   # Database CR and a role ONCE and never changes again. The coupling that buys
   # is bounded: EmberVM is already engineered for control-plane absence (the
   # node-local activator, ADR 018, and fail-open metering, ADR 020), so a
@@ -208,7 +205,7 @@ opLog:
       # 1Password item exposing a field that lands as a Secret key named
       # exactly `password`. The SAME item seeds the out-of-band basic-auth
       # secret CNPG needs, so the role password cannot drift between the two.
-      # See projects/monolith/deploy/embervm-oplog-secret.md.
+      # See projects/embervm/deploy/README.md for backend inspection.
       itemPath: ""
   # SQLite op-log PVC. Ignored when postgres.enabled is true: Postgres makes the
   # durable store network-reachable, so the control plane stops needing a
@@ -216,7 +213,8 @@ opLog:
   # strategy: Recreate regardless, because multi-replica needs ADR 007's
   # single-writer-per-cell op-log appender, which is separate work.
   persistentVolume: true
-  storageClass: longhorn
+  # Hub default; standalone-values.yaml explicitly selects k3s local-path.
+  storageClass: standard-rwo
   size: 2Gi
   # How often the supervised sweeper runs bounded-batch compaction (ADR
   # embervm/002). Correctness (result TTLs) is enforced at read time, so this only
@@ -651,15 +649,11 @@ servingEnvoy:
   # condition. A capacity guardrail: a group is a set of live microVMs, so an
   # unbounded member count is an unbounded resource claim.
   maxGroupSize: 4
-  # node-4 pinning: serving runs where Firecracker serving VMs run. A dedicated
-  # serving label (not the noded homelab.io/firecracker label) so the two tiers can
-  # diverge later; v1 both land on node-4.
+  # Serving relays select serving-capable hosts, separately from noded's
+  # homelab.io/firecracker selector. On the hub both select the brick pool.
   nodeSelector:
     embervm.io/serving: "true"
-  # Tolerate the FC-node taint so the serving relay still schedules onto the
-  # guest-memory hosts once they are tainted (embervm.jomcgi.dev/node=true:
-  # NoSchedule locks general workloads off those nodes). See projects/embervm/
-  # README.md: the taint is applied by an operator AFTER this toleration is live.
+  # The hub brick pool carries this NoSchedule taint; the relay tolerates it.
   tolerations:
     - key: embervm.jomcgi.dev/node
       operator: Equal
@@ -1379,10 +1373,9 @@ rootfsReclaim:
   targetFreeBytes: "6442450944"
 
 # embervm-noded: the node daemon (gRPC NodeService) that owns Firecracker microVM
-# lifecycle on node-4. A SECOND Deployment in this chart, privileged and node-
-# pinned, forked from the fc-invoke node layer (ADR embervm/001). It coexists with
-# fc-invoke on node-4; this release primes ZERO VMs (the control-plane dispatcher
-# is Task 11), so its steady footprint is just the daemon.
+# lifecycle on KVM-capable hosts. The privileged node-local daemon runs
+# guests requested by the control plane. Production uses
+# size-class brick Deployments; the standalone profile uses the DaemonSet.
 noded:
   enabled: true
   # Brick size-classes whose noded gets warm restore with volume enabled;
@@ -1424,14 +1417,11 @@ noded:
   # across a control-plane Recreate, the failure this survives.
   activatorPort: 8081
 
-  # node-4 pinning: the lone Firecracker node (homelab.io/firecracker=true).
+  # Select KVM-capable nodes. The hub assigns this label to ember-bricks.
   nodeSelector:
     homelab.io/firecracker: "true"
-  # Tolerate the FC-node taint so noded still schedules onto the guest-memory
-  # hosts once they are tainted (embervm.jomcgi.dev/node=true:NoSchedule locks
-  # general workloads off those nodes so they never compete with guest memory).
-  # See projects/embervm/README.md: the taint is an operator action applied AFTER
-  # this toleration is live (tolerations first, taint second, never the reverse).
+  # The hub brick pool carries this NoSchedule taint. Standalone overrides
+  # the selector and tolerations for its own host.
   tolerations:
     - key: embervm.jomcgi.dev/node
       operator: Equal
@@ -1539,9 +1529,9 @@ noded:
     onepassword:
       itemPath: ""
 
-  # Firecracker substrate on node-4. The firecracker + jailer binaries and guest
+  # Firecracker substrate. The firecracker + jailer binaries and guest
   # kernel are baked into the image at /opt/fc, so the node only provides
-  # /dev/kvm and the nvme scratch dir (see projects/platform/firecracker-node).
+  # /dev/kvm and the prepared scratch directory.
   firecracker:
     nvmeRoot: /var/lib/embervm/scratch
     # Shared scratch (off by default): place this release's bricks in a
@@ -1616,12 +1606,9 @@ noded:
   # noded never inspects the bytes. The archive is never a block device: the base
   # snapshot is memory + rootfs only, so it is self-contained and portable.
   #
-  # Read-path decision: noded fetches the archive over the POD network from the
-  # in-cluster SeaweedFS S3 endpoint (the same one the monolith chat-blobs pattern
-  # uses, http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333). The control plane
-  # mints a fully-qualified archive_url against that endpoint and passes it in the
-  # BuildBaseRequest, so noded needs no endpoint or bucket in its own config, only
-  # the fetch timeout and size cap below. The zero-egress policy applies to task
+  # Read-path decision: noded fetches the fully-qualified archive_url supplied
+  # in BuildBaseRequest over the pod network. The zip source can differ from
+  # the banked-artifact store. The zero-egress policy applies to task
   # microVMs, not the host daemon: this GET is the daemon's own pod-network call,
   # not guest egress. When store credentials below are enabled, an archive URL
   # under that store endpoint is signed with the same identity; other archive
@@ -1636,12 +1623,12 @@ noded:
 
   # R6 off-node durability (ADR embervm/009): the S3-API object store the
   # continuity verbs move banked artifacts to and from, so a node (or its NVMe)
-  # can be lost without losing data. The first backend is the in-cluster SeaweedFS
-  # S3 gateway. Optional static credentials enable SigV4 on every noded and
-  # control-plane request. An EMPTY endpoint DISABLES the store: exports are skipped and
-  # restore-on-miss is impossible, so state stays local-only (a safe degrade).
+  # can recover successfully exported state after node loss. Production's hub
+  # overlay selects GCS's S3 interop endpoint. Optional static credentials enable
+  # SigV4 on noded and control-plane requests. The default EMPTY endpoint
+  # DISABLES the store: exports are skipped and restore-on-miss is unavailable.
   store:
-    endpoint: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
+    endpoint: ""
     # Baked rootfs payloads use
     # rootfs/<architecture-digest>/size-<size>/format-<format>/<payload-sha256>.ext4;
     # rootfs.ext4.sha256 in that identity prefix names the complete payload.
@@ -1659,9 +1646,8 @@ noded:
     # Optional override for the daemon's retry suppression period after an
     # artifact-specific control-plane wrap refusal. Empty uses the Go default.
     unexportableTTL: ""
-    # One 1Password item named embervm-store supplies access_key_id and
-    # secret_access_key. These are the same keys used by the embervm identity in
-    # the SeaweedFS identities policy. The env names rendered when enabled are
+    # A deployment-selected 1Password item supplies access_key_id and
+    # secret_access_key for its own store. The env names rendered when enabled are
     # EMBERVM_NODED_STORE_ACCESS_KEY_ID and EMBERVM_NODED_STORE_SECRET_ACCESS_KEY.
     credentials:
       enabled: false
@@ -1692,13 +1678,8 @@ noded:
   #   semgrep 16 x 1536Mi = 24Gi + sandbox 16 x 512Mi = 8Gi + ~2Gi transient
   #   base-build cold-boot + ~0.3Gi daemon ~= 34Gi -> 36Gi ceiling.
   #
-  # node-4 has 63.4GiB allocatable. The two daemons' CEILINGS oversubscribe
-  # (fc-invoke halved ~40Gi + embervm 36Gi = 76Gi), which is SAFE because these
-  # are cgroup caps, not reservations: real simultaneous cap-16 peak never occurs
-  # during side-by-side (production PR scans stay on fc-invoke, so embervm idles at
-  # its floor: semgrep 4x1536 + sandbox 4x512 = 8Gi steady), and post-drain only
-  # embervm peaks (fc-invoke drained). oom_score_adj kills guests before the
-  # daemon/DB. The absolute cap-16 throughput run is a post-drain Task 16 gate.
+  # This is the legacy DaemonSet budget. Size-class brick Deployments use their
+  # own resource blocks; do not treat this as the hub pool's allocatable memory.
   resources:
     requests:
       cpu: 100m
@@ -1716,8 +1697,7 @@ noded:
 #
 # DISABLED by default (this is brick-capacity PR-1, inert): with enabled=false no
 # Deployment renders and the fleet stays on the legacy noded DaemonSet (the
-# wildcard class). PR-3 flips this true for a canary (one small + one large brick
-# beside the DS on node-4) and the BrickController owns each Deployment's replica
+# wildcard class). Deployment overlays enable bricks; the BrickController owns each Deployment's replica
 # count thereafter. ArgoCD already ignores Deployment /spec/replicas fleet-wide
 # (the HPA ignoreDifferences rule), so the controller scaling a brick never shows
 # as drift and selfHeal never fights it; the `replicas` here is only the value at
@@ -1875,7 +1855,7 @@ bricks:
   # than one small guest.
   #
   # By its documented meaning (noded/config/config.go:126, "covering the
-  # daemon's own RSS") 512 was ~50x oversized: measured 2026-08-16 on the idle
+  # daemon's own RSS") 512 was ~50x oversized: measured 2026-08-16 on historical idle
   # bricks, noded's container RSS is 9 MiB (node-1) and 11 MiB (node-2).
   #
   # DO NOT take it lower on the strength of that number alone. Two readings of
@@ -2133,7 +2113,7 @@ egress:
 # parked session on placement memory headroom, not on cap, so a wake burst can
 # transiently exceed it. Placement admission is the per-node RAM gate for that
 # burst, worst case bounded by maxSessions (8 x 4 GiB = 32 GiB) on the 16gi
-# brick, with room left for the task pools it shares node-4 scratch with.
+# brick. Scratch capacity is a separate host-level bound.
 # The fourth create slot covers the */5 Muse Spark probe overlapping three
 # interactive sessions. The probe destroys its session before returning.
 # Raised from cap 1 / maxSessions 2 once the lane earned its keep (a turn reached

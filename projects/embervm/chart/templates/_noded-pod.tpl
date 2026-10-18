@@ -140,7 +140,7 @@ securityContext:
   runAsGroup: 0
 {{- if or $scratchGate $sharedOn (and (not $inPodBake) $ctx.Values.workloads) }}
 # Build each workload's base rootfs in-cluster from its pinned guest image
-# (crane export + mkfs.ext4 onto the nvme scratch), so node-4 never needs a
+# (crane export + mkfs.ext4 onto scratch), so a brick host never needs a
 # manual sudo rootfs placement. The default keeps one sequential builder per
 # workload. The opt-in gate renders one bounded driver with the same image,
 # environment, mounts, and resources, and gives each child its own work tree.
@@ -699,7 +699,7 @@ containers:
       {{- end }}
       # R1 zip lane: bounds a single archive HTTP GET and caps the fetched
       # bytes. The archive_url is minted by the control plane (fully-qualified
-      # SeaweedFS S3 read URL); noded fetches it on the pod network. See
+      # HTTP(S) read URL); noded fetches it on the pod network. See
       # noded.zipLane in values.yaml for the read-path decision.
       - name: EMBERVM_NODED_ARCHIVE_FETCH_TIMEOUT
         value: {{ $ctx.Values.noded.zipLane.fetchTimeout | quote }}
@@ -991,9 +991,8 @@ volumes:
       #
       # DirectoryOrCreate is for a path UNDER an already-mounted parent, where
       # the mount is guaranteed by the parent's existence and only the leaf needs
-      # creating. embervm-dev uses that shape: scratch/dev under node-4's NVMe,
-      # so it inherits the NVMe's capacity rather than living uncapped on root
-      # (ADR 012's uniform cap, and #4832).
+      # creating. Normal hub dev instead uses sharedScratch's mount-generation
+      # gate and subPath, so it cannot race the parent's preparation.
       type: {{ $ctx.Values.noded.firecracker.nvmeRootHostPathType | default "Directory" }}
       {{- end }}
   {{- if $ctx.Values.workloads }}

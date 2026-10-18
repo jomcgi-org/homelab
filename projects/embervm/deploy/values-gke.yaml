@@ -35,8 +35,8 @@ claudeRuntimeWorkload:
   # guest memory pressure.
   memMib: 3072
 
-# The hub starts with node-local state only. An empty endpoint is the chart's
-# safe store-disabled mode, and no object-store credentials are rendered.
+# Production uses the GCS store below. Normal dev has its own hub overlay
+# with an empty endpoint and disabled store credentials.
 noded:
   enforceBundleRootfsIdentity: false
   jailer:

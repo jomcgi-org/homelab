@@ -1,22 +1,18 @@
-# Cluster-specific overrides for the EmberVM control plane. The image tag is
+# Shared production settings; the hub Application layers values-gke.yaml last.
+# Historical home placement below is overridden there. The image tag is
 # pinned into the chart at build time (helm_chart images=), so it is not set
 # here. Defaults in the chart are sized small to start (historical 7-day peak
 # resizing later).
-# ENOSPC orphan reclaim (#4458). DISARMED deliberately: land it, wait for a
-# brick to hit ENOSPC, read the dry-run manifest it logs ("WOULD DELETE ...
-# would_free_bytes=N"), and arm only once that manifest names what you expect.
-# Same sequence baseRetention was armed by.
+# ENOSPC orphan reclaim (#4458), armed by #4981 after dry-run inspection.
 #
 # Arming deletes abandoned build intermediates only (rootfs-*.ext4.tmp.* from a
 # dead bake, bases/*.building from a dead SnapshotBase), never a published rootfs
 # or base, and never anything younger than the min age. Rollback is setting this
-# back to "" and bumping the chart.
+# back to "" through a reviewed values change.
 rootfsReclaim:
-  # ARMED (#4981). Checked before arming that no brick held a reclaimable
-  # orphan (no *.tmp.* and no *.building under the noded scratch on either a
-  # master brick or node-4), so this arms an EMPTY path: it deletes nothing
-  # today and only acts the first time a bake dies mid-write. Arming a
-  # deletion path while it has nothing to delete is the safe moment.
+  # Historical #4981 preflight found no reclaimable orphan. This does not
+  # describe today's scratch contents; the enabled gate can reclaim eligible
+  # abandoned intermediates when ENOSPC occurs.
   #
   # It matters more now: six sandbox rootfs bakes per brick (ADR agents/057)
   # is six more chances to die mid-write and strand an intermediate, and the
@@ -46,7 +42,7 @@ opLog:
   # Postgres op-log tier (ADR embervm/007), hosted as its own database on the
   # existing monolith-pg CNPG cluster. This retires the node-pinned RWO SQLite
   # PVC: the durable store becomes network-reachable, so the control plane is no
-  # longer tied to whichever node holds the Longhorn volume.
+  # longer tied to whichever node holds a SQLite RWO volume.
   #
   # The op-log starts EMPTY. Embervm.OpLog.Postgres runs its own DDL on first
   # boot and nothing migrates the SQLite file, which is the accepted trade
@@ -61,7 +57,7 @@ opLog:
     secretName: embervm-oplog-password
     onepassword:
       itemPath: vaults/k8s-homelab/items/embervm-oplog-db
-  storageClass: longhorn
+  storageClass: standard-rwo
   # Ignored while postgres.enabled is true (no PVC is rendered). Kept so a
   # rollback is a single values flip, at the cost of coming back up with an
   # empty SQLite op-log.
@@ -218,10 +214,9 @@ noded:
   # the control plane supplies a short-lived capability scoped to the principal,
   # artifact lineage, target brick, workload, generation, and lease.
   requireRestoreCapability: true
-  # SigV4 credentials for the artifact store (#4708). The embervm identity in
-  # the SeaweedFS identities policy; clients sign every request once these are
-  # present, and the gateway starts checking them when s3.enableAuth flips in
-  # projects/platform/seaweedfs.
+  # SigV4 credentials for the artifact store. The hub overlay selects the GCS
+  # endpoint, bucket and 1Password item. This shared file is not a complete
+  # store configuration on its own.
   store:
     # The reader is already unconditional on every brick. New session,
     # session-workspace, stateful, volume, and group-set exports are encrypted;
@@ -286,39 +281,15 @@ noded:
   # every time. Uniform, per the rollback contract above, never partial.
   warmRestoreWithVolumeClasses: ["2gi", "4gi", "8gi", "16gi"]
 
-# Node-provisioning contract (ADR embervm/012 storage-tiers amendment; warmth
-# cache-cap retention decisions 2026-07-22): DISABLED. The privileged runtime
-# DaemonSet that provisioned the capped loop scratch proved fragile in the
-# homelab (the masters' minimal host image lacks losetup/mkfs.ext4/mount on the
-# nsenter PATH, and the container-vs-host path split kept surfacing a new failure
-# per layer). Node scratch is instead provisioned ONCE per node out of band: a
-# manual host setup over SSH on the home nodes (that runbook went with the home cluster),
-# and cloud-init / a machine template when the fleet moves to the cloud. noded only
-# needs /var/lib/embervm/scratch to be a correctly-sized ext4 mount; how it gets
-# there does not need to be a runtime pod. node-4 keeps its dedicated NVMe mount.
+# Historical home profile used out-of-band scratch provisioning. The hub
+# overlay enables scratch-prep for its ephemeral brick nodes; this shared
+# setting does not describe the final hub manifest.
 scratchPrep:
   enabled: false
 
-# Size-class BRICK cutover REVERTED to the known-good single-instance DS fleet
-# (foundation plan Step 0, docs/plans/2026-07-20-embervm-brick-colocation-foundation.md).
-# The PR-3b canary (2gi+16gi co-located on node-4) exposed foundation bugs that
-# make co-location non-functional today: SUN_LEN socket-path overflow on the
-# PR-2.5 per-instance warmth root (firecracker cannot bind its API socket, so
-# EVERY VM op on EVERY brick fails), node-keyed wake addressing collapsing
-# co-located instances, BaseBuilder capturing the whole fleet's base provisioning
-# on one undersized brick, and absent memory facts. bricks.enabled=false removes
-# the brick Deployments so the registry expires the brick instances, BaseBuilder
-# un-pins and re-places every workload on the DS (flat warmth root, no SUN_LEN),
-# and bases rebuild. Re-canary at plan Step 6 once Steps 1-5 land. No chart bump
-# ($values git ref).
-# Size-class BRICK re-canary, step 1 (foundation plan Step 6, small-first). The
-# co-location foundation is now in place: SUN_LEN-safe short warmth root, real
-# cgroup memory facts, dual-key instance addressing, instance-aware wakes, and
-# size-aware placement + class-eligible base builds. This flip re-enables the
-# FIRST co-located brick (2gi beside the DS) on node-4, exercising all of the
-# above together. Deep-merged over the chart classes ladder. desiredReplicas
-# lists ONLY 2gi (others render at 0). The 16gi large brick follows in a second
-# flip after this small brick verifies against the decision-log checklist.
+# Size-class bricks replaced the legacy DaemonSet after the co-location
+# fixes: short socket paths, instance-keyed addressing and size-aware builds.
+# The hub overlay supplies the current replica mix and clears home node floors.
 bricks:
   enabled: true
   # The first grouped production roll's measured result is recorded on #4897.
@@ -376,11 +347,7 @@ bricks:
           memory: 16Gi
   desiredReplicas:
     2gi: 1
-    # Re-canary step 2 (large): the 16gi brick, added after the 2gi brick verified
-    # clean on the co-located fleet (real mem facts, SUN_LEN-safe short warmth,
-    # instance-aware demo-postgres wake, no fleet_full). node-4's serving/session
-    # workloads with a large composite group need the 16gi class.
-    # Values-only flip: foundation images already deployed at 0.1.169.
+    # Historical home large-brick floor. The hub overlay sets this to zero.
     16gi: 1
   # Demand-driven brick autoscale (fleet plan Axis C), pinned explicitly so the
   # cluster's rollout rung is visible here, not implied by a chart default. The
@@ -403,13 +370,8 @@ bricks:
     # act after its idle and fully-exported victim rails pass. Post-rollout
     # operational acceptance remains tracked on #6059.
     mode: full
-  # Per-node brick floor guarantees (PR-3, #35): pins one small brick onto a
-  # specific node so it joins active duty instead of the fleet bin-packing
-  # everything onto node-4 and spilling under load. All three master nodes
-  # (node-1/2/3) carry a live 2gi floor; each had its scratch pre-flight
-  # (mountpoint + ~35Gi ext4 loop file) verified on the host before being
-  # added. Adding a new floor node is a values-only change once that host's
-  # scratch is confirmed and a canary invoke lands a VM with no fleet_full flag.
+  # Historical home node floors, retained as shared input only. The hub
+  # overlay replaces this entire list with []; none of these hosts is live.
   nodeFloors:
     - node: node-1
       class: 2gi
@@ -417,18 +379,7 @@ bricks:
       class: 2gi
     - node: node-3
       class: 2gi
-    # Second 16gi brick, PINNED to node-4 (2026-08-05, after #4371 closed). A
-    # floor rather than desiredReplicas 2 because the class Deployment
-    # bin-packs by the fleet-wide FC label and could land the second replica
-    # on a master's 35Gi loop scratch; session volumes and 4Gi VMs belong on
-    # node-4's NVMe. Every node-4 lineage is servable by EITHER brick (the
-    # VolumeRoot is node-shared and rejoin dials the scheduler's brick since
-    # #4380), so this doubles session admission headroom AND keeps one 16gi
-    # brick up through every merge's roll (floors and the class Deployment
-    # are separate Deployments on separate sync waves). First same-class
-    # co-located pair in the fleet: instance addressing is dual-key
-    # (node, pod uid) by design, but watch the first roll. Rollback: delete
-    # this entry; volumes strand nothing (node-shared).
+    # Historical co-located pair (#4371, #4380) shared its node's volume root.
     - node: node-4
       class: 16gi
 
@@ -478,11 +429,10 @@ grpcConnectionSweeper:
   enabled: "1"
   sweepIntervalMs: ""
 
-# Arm the base-retention sweep (base-durability PR-3): one-shot supervised
-# reclaim of ~290G of superseded base versions on node-4, then the ongoing
-# retention backstop. Every current base is confirmed durable in S3 before any
+# Base-retention sweep (base-durability PR-3), the ongoing retention backstop.
+# Every current base is confirmed durable in the store before any
 # local eviction, and hydrate-on-miss restores from S3 on a cold start.
-# Rollback: set back to "" and bump the chart; that stops further eviction.
+# Rollback: set back to "" through GitOps; that stops further eviction.
 baseRetention:
   # RE-ARMED 2026-08-05 after reading the manifest live (#4290). The sweep named
   # exactly two candidates, both on node-3, both claude-runtime/intel superseded
@@ -718,11 +668,9 @@ egress:
         key: GH_AUTH_TOKEN
     # The monolith-agents MCP surface (#5633, #5656). The broker mints this
     # token from the authentik client_credentials grant, so no guest ever holds
-    # it. Only the hub declares the agent-mcp grant: on the home cluster this
-    # entry is dead and its host is DENIED, which is the intended fail-closed
-    # state. No guest image dials this host on its own yet: #5569 lands the
-    # shim-written MCP client config; until then a guest registers the server
-    # at runtime (codex mcp add / claude mcp add), verified 2026-09-05.
+    # it. The hub overlay declares the agent-mcp grant. This shared entry needs
+    # that grant to authorize its host; never copy the production grant or
+    # callback identity into dev.
     - header: Authorization
       valuePrefix: "Bearer "
       brokerGrant: "agent-mcp"
@@ -866,16 +814,9 @@ claudeRuntimeWorkload:
   # /bin/sh because init= was never put on its kernel cmdline (#4271). It was
   # long blamed on noded's lineage-volume Prime path, which was wrong.
   #
-  # The disarm that followed was also diagnosed wrong, twice over. It blamed
-  # "seven arms of 10 GiB workspace images", but the volumes are sparse
-  # (noded/volume/volume.go:142 Truncates rather than zero-fills), and it named
-  # node-4, whose NVMe scratch was 26% used the whole time. What actually filled
-  # was the masters' 35 GiB capped loop scratch, holding FOUR retired 4 GiB
-  # claude-runtime bases each, one per chart publish. The base retention sweep
-  # logs "0 candidates" against them because it only sweeps live registry
-  # entries (#4286). That is the real cost of arming this: every publish leaks
-  # another 4 GiB per brick until the GC is fixed, so watch headroom under
-  # /var/lib/embervm/scratch on node-1/2/3 rather than on node-4.
+  # Historical home incident (#4286): sparse workspace volumes were blamed
+  # for ENOSPC, but retired rootfs bases filled the capped scratch instead.
+  # Scratch usage includes both workspace data and retired build artifacts.
   persistenceEnabled: true
   # Raised from the chart's 4 and 8 for the factory's two lanes. The monolith
   # grants agentSessions.admission.total permits, 16, and a permit the guest
@@ -922,17 +863,13 @@ piRuntimeWorkload:
   # this flip (#5051). 4 GiB lineage from the chart default.
   persistenceEnabled: true
   # 1536 MiB, up from 512, to stop the long-task OOM (a multi-turn go/python
-  # build with thinking on exit -9'd pi at 512, #5051 cycle 4). This value is
-  # chosen to land pi on the 16gi brick, not the 2gi one: placement is purely
+  # build with thinking on exit -9'd pi at 512, #5051 cycle 4). Placement is
   # memMib-driven and a 2gi brick's usable envelope is 1792 (nameplate 2048
   # minus the 256 daemon reserve), so the eligibility gate needs
   # memMib + 512 reject-floor <= usable. 1024 (#5068) satisfied 1024+512=1536
   # <= 1792 and so still placed on 2gi with zero margin, which is what wedged
-  # creates. 1536+512=2048 > 1792 makes every 2gi brick ineligible, so pi lands
-  # on the 16gi class (usable 16128), which is already running and kept warm on
-  # node-4 (desiredReplicas + a nodeFloor). This mirrors claude-runtime, which
-  # runs at memMib 4096 on the same 16gi class. The base re-keys and rebuilds on
-  # the 16gi brick on rollout; watch the first creates land there.
+  # creates. 1536+512=2048 > 1792 excludes 2gi under these margins. The hub
+  # overlay determines the eligible larger classes and their replica bounds.
   memMib: 1536
 
 # SpecTrace gate for spec validation (GitHub issue #4770). Debug-gated, spec-shaped

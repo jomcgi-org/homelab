@@ -25,19 +25,23 @@ def _load_yaml(name: str) -> dict:
 
 
 def _render_validation_release() -> list[dict]:
+    application = _load_yaml("DEV_GKE_APPLICATION")
+    release = application["spec"]["sources"][0]["helm"]["releaseName"]
+    namespace = application["spec"]["destination"]["namespace"]
+    assert release == namespace == "embervm-dev"
     command = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
-        "embervm-store-validation",
+        release,
         str(Path(__file__).resolve().parent),
         "--namespace",
-        "embervm-store-validation",
+        namespace,
         "--values",
         str(Path(__file__).resolve().parent / "values.yaml"),
         "--values",
         str(_path("DEV_VALUES")),
         "--values",
-        str(_path("PROD_GKE_VALUES")),
+        str(_path("DEV_GKE_VALUES")),
         "--values",
         str(_path("STORE_VALIDATION_VALUES")),
     ]
@@ -103,11 +107,14 @@ def test_validation_overlay_is_unreferenced_and_production_is_unchanged() -> Non
     validation_value_order = [
         "--values projects/embervm/chart/values.yaml",
         "--values projects/embervm/dev/deploy/values.yaml",
-        "--values projects/embervm/deploy/values-gke.yaml",
+        "--values projects/embervm/dev/deploy/values-gke.yaml",
         "--values projects/embervm/dev/deploy/values-store-validation-gke.yaml",
     ]
     positions = [runbook.index(value_file) for value_file in validation_value_order]
     assert positions == sorted(positions)
+    assert "helm template embervm-dev" in runbook
+    assert "--namespace embervm-dev" in runbook
+    assert "--values projects/embervm/deploy/values-gke.yaml" not in runbook
 
     production = _load_yaml("PROD_GKE_VALUES")
     assert production["noded"]["store"]["bucket"] == PROD_BUCKET
@@ -125,12 +132,35 @@ def test_validation_render_routes_every_store_consumer_to_dev() -> None:
         for doc in documents
         if str(doc.get("apiVersion", "")).startswith("cilium.io/")
     ]
-    assert [
+    assert not [
         doc
         for doc in documents
         if doc.get("kind") == "DaemonSet"
         and doc.get("metadata", {}).get("name", "").endswith("scratch-prep")
     ]
+    assert sorted(
+        doc["metadata"]["name"] for doc in documents if doc["kind"] == "Workload"
+    ) == ["pi-runtime", "sandbox-elixir", "sandbox-python"]
+    # The preset must retain normal dev's rootfs, scratch and broker isolation.
+    for document in documents:
+        pod = document.get("spec", {}).get("template", {}).get("spec", {})
+        for volume in pod.get("volumes", []):
+            if volume["name"] == "nvme":
+                assert volume["hostPath"] == {
+                    "path": "/var/lib/embervm/scratch",
+                    "type": "Directory",
+                }
+        for container in _pod_containers(document):
+            env = _env(container)
+            if container["name"] == "noded":
+                assert "embervm-dev" in env["EMBERVM_NODED_CONTROL_PLANE_URL"]["value"]
+            for mount in container.get("volumeMounts", []):
+                if (
+                    mount["name"] == "nvme"
+                    and container["name"] != "wait-for-shared-scratch"
+                ):
+                    assert mount.get("subPath") == "dev"
+    assert not any("embervm-authentik-agent" in value for value in strings)
     assert not [
         doc
         for doc in documents

@@ -371,6 +371,113 @@ def test_store_credentials_are_default_off_and_share_one_secret() -> None:
     assert 'itemPath: "vaults/x/items/y"' in signed
 
 
+def test_chart_defaults_disable_the_store_and_use_hub_sqlite_storage() -> None:
+    """Overlays must not mask retired infrastructure in the chart defaults."""
+    defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert defaults["opLog"]["storageClass"] == "standard-rwo"
+    assert defaults["noded"]["store"]["endpoint"] == ""
+    assert defaults["noded"]["store"]["credentials"]["enabled"] is False
+
+    rendered = _render("neutral", [])
+    documents = [d for d in yaml.safe_load_all(rendered) if isinstance(d, dict)]
+    (pvc,) = [d for d in documents if d["kind"] == "PersistentVolumeClaim"]
+    assert pvc["spec"]["storageClassName"] == "standard-rwo"
+    endpoints = []
+    for document in documents:
+        pod = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod.get("containers", []) + pod.get("initContainers", []):
+            env = {e["name"]: e for e in container.get("env", [])}
+            for prefix in ("EMBERVM_STORE_", "EMBERVM_NODED_STORE_"):
+                if prefix + "ENDPOINT" in env:
+                    endpoints.append(env[prefix + "ENDPOINT"]["value"])
+                assert prefix + "ACCESS_KEY_ID" not in env
+                assert prefix + "SECRET_ACCESS_KEY" not in env
+    assert len(endpoints) >= 2, "must check the control plane and noded"
+    assert set(endpoints) == {""}
+    assert all(
+        not any(e["name"].startswith("EMBERVM_NODED_STORE_") for e in c.get("env", []))
+        for c in _rootfs_builder_init_containers(rendered)
+    )
+
+
+def test_production_application_selects_gcs_and_hub_safe_sqlite_fallback() -> None:
+    application = yaml.safe_load(Path(os.environ["GKE_APPLICATION"]).read_text())
+    helm = application["spec"]["sources"][0]["helm"]
+    assert helm["valueFiles"] == [
+        "$values/projects/embervm/deploy/values.yaml",
+        "$values/projects/embervm/deploy/values-gke.yaml",
+    ]
+    assert (
+        helm["releaseName"]
+        == application["spec"]["destination"]["namespace"]
+        == "embervm"
+    )
+    values = [Path(os.environ["PROD_VALUES"]), Path(os.environ["GKE_VALUES"])]
+    documents = [
+        d for d in yaml.safe_load_all(_render("embervm", values)) if isinstance(d, dict)
+    ]
+    assert not [d for d in documents if d["kind"] == "PersistentVolumeClaim"]
+    consumers = set()
+    for document in documents:
+        pod = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod.get("containers", []) + pod.get("initContainers", []):
+            env = {e["name"]: e for e in container.get("env", [])}
+            for prefix in ("EMBERVM_STORE_", "EMBERVM_NODED_STORE_"):
+                if prefix + "ENDPOINT" not in env:
+                    continue
+                consumers.add(container["name"])
+                assert (
+                    env[prefix + "ENDPOINT"]["value"]
+                    == "https://storage.googleapis.com"
+                )
+                assert env[prefix + "BUCKET"]["value"] == "h0melab-ember-bases"
+                for suffix in ("ACCESS_KEY_ID", "SECRET_ACCESS_KEY"):
+                    assert (
+                        env[prefix + suffix]["valueFrom"]["secretKeyRef"]["name"]
+                        == "embervm-embervm-store"
+                    )
+    assert {"control-plane", "noded"} <= consumers
+    assert any(
+        name.startswith("build-") or name == "rootfs-baker" for name in consumers
+    )
+
+    # The shared deploy layer must not reintroduce Longhorn if SQLite is selected.
+    fallback = _render("embervm", values, ["opLog.postgres.enabled=false"])
+    (pvc,) = [
+        d
+        for d in yaml.safe_load_all(fallback)
+        if isinstance(d, dict) and d["kind"] == "PersistentVolumeClaim"
+    ]
+    assert pvc["spec"]["storageClassName"] == "standard-rwo"
+
+
+@pytest.mark.parametrize(
+    "values_names",
+    [
+        ("DEV_VALUES", "DEV_GKE_VALUES"),
+        ("RECOVERY_VALUES",),
+    ],
+    ids=["normal-hub-dev", "inactive-recovery"],
+)
+def test_local_only_dev_profiles_have_no_store_identity(values_names) -> None:
+    rendered = _render("embervm-dev", [Path(os.environ[n]) for n in values_names])
+    endpoints = []
+    for document in yaml.safe_load_all(rendered):
+        if not isinstance(document, dict):
+            continue
+        pod = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod.get("containers", []) + pod.get("initContainers", []):
+            env = {e["name"]: e for e in container.get("env", [])}
+            for prefix in ("EMBERVM_STORE_", "EMBERVM_NODED_STORE_"):
+                if prefix + "ENDPOINT" in env:
+                    endpoints.append(env[prefix + "ENDPOINT"]["value"])
+                    assert env[prefix + "BUCKET"]["value"] == ""
+                assert prefix + "ACCESS_KEY_ID" not in env
+                assert prefix + "SECRET_ACCESS_KEY" not in env
+    assert len(endpoints) >= 2
+    assert set(endpoints) == {""}
+
+
 def test_rootfs_builders_receive_store_env_only_when_store_enabled() -> None:
     enabled = _render_with_set(
         "rootfs-store",
