@@ -8,6 +8,8 @@ import pytest
 from pydantic_ai.messages import ToolCallPart
 from sqlalchemy import text
 
+from chat.models import UserChannelSummary
+
 
 def test_postgres_is_running(pg):
     """Smoke test: PostgreSQL is reachable and has pgvector."""
@@ -260,97 +262,6 @@ class TestMessageStore:
         assert att.filename == "photo.jpg"
         assert blob.content_type == "image/jpeg"
 
-    @pytest.mark.asyncio
-    async def test_upsert_summary_insert_and_update(self, store):
-        """Insert then update same (channel, user) pair."""
-        # Create referenced messages (last_message_id has FK to messages.id)
-        msg1 = await store.save_message(
-            discord_message_id="sum-msg-001",
-            channel_id="ch-sum",
-            user_id="u-1",
-            username="alice",
-            content="Message for summary ref 1",
-            is_bot=False,
-        )
-        msg2 = await store.save_message(
-            discord_message_id="sum-msg-002",
-            channel_id="ch-sum",
-            user_id="u-1",
-            username="alice",
-            content="Message for summary ref 2",
-            is_bot=False,
-        )
-        store.upsert_summary(
-            channel_id="ch-sum",
-            user_id="u-1",
-            username="alice",
-            summary_text="Initial summary",
-            last_message_id=msg1.id,
-        )
-        summary = store.get_user_summary("ch-sum", "alice")
-        assert summary is not None
-        assert summary.summary == "Initial summary"
-
-        store.upsert_summary(
-            channel_id="ch-sum",
-            user_id="u-1",
-            username="alice",
-            summary_text="Updated summary",
-            last_message_id=msg2.id,
-        )
-        summary = store.get_user_summary("ch-sum", "alice")
-        assert summary is not None
-        assert summary.summary == "Updated summary"
-        assert summary.last_message_id == msg2.id
-
-    @pytest.mark.asyncio
-    async def test_upsert_summary_unique_constraint(self, store):
-        """(channel_id, user_id) enforced, exactly one row."""
-        from sqlmodel import select
-
-        from chat.models import UserChannelSummary
-
-        # Create referenced messages (last_message_id has FK to messages.id)
-        msg1 = await store.save_message(
-            discord_message_id="uniq-msg-001",
-            channel_id="ch-uniq",
-            user_id="u-1",
-            username="alice",
-            content="Message for unique constraint ref 1",
-            is_bot=False,
-        )
-        msg2 = await store.save_message(
-            discord_message_id="uniq-msg-002",
-            channel_id="ch-uniq",
-            user_id="u-1",
-            username="alice",
-            content="Message for unique constraint ref 2",
-            is_bot=False,
-        )
-        store.upsert_summary(
-            channel_id="ch-uniq",
-            user_id="u-1",
-            username="alice",
-            summary_text="First",
-            last_message_id=msg1.id,
-        )
-        store.upsert_summary(
-            channel_id="ch-uniq",
-            user_id="u-1",
-            username="alice",
-            summary_text="Second",
-            last_message_id=msg2.id,
-        )
-        rows = store.session.exec(
-            select(UserChannelSummary).where(
-                UserChannelSummary.channel_id == "ch-uniq",
-                UserChannelSummary.user_id == "u-1",
-            )
-        ).all()
-        assert len(rows) == 1
-        assert rows[0].summary == "Second"
-
-
 # ---------------------------------------------------------------------------
 # Task 6: Agent Tool Execution E2E Tests
 # ---------------------------------------------------------------------------
@@ -405,7 +316,7 @@ class TestAgentTools:
 
     @pytest.mark.asyncio
     async def test_get_user_summary_returns_real_data(self, store, embed_client):
-        """Upsert a summary, run agent with TestModel, verify agent retrieves it."""
+        """Seed a summary, run agent with TestModel, verify agent retrieves it."""
         from unittest.mock import patch
 
         from pydantic_ai.models.test import TestModel
@@ -421,13 +332,16 @@ class TestAgentTools:
             content="Message for agent summary ref",
             is_bot=False,
         )
-        store.upsert_summary(
-            channel_id="ch-agent-sum",
-            user_id="u-1",
-            username="alice",
-            summary_text="Alice has been discussing Kubernetes and GitOps workflows.",
-            last_message_id=msg.id,
+        store.session.add(
+            UserChannelSummary(
+                channel_id="ch-agent-sum",
+                user_id="u-1",
+                username="alice",
+                summary="Alice has been discussing Kubernetes and GitOps workflows.",
+                last_message_id=msg.id,
+            )
         )
+        store.session.commit()
 
         agent = create_agent()
         deps = ChatDeps(

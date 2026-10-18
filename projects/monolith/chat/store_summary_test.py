@@ -1,5 +1,6 @@
 """Tests for MessageStore summary and username lookup methods."""
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -122,8 +123,28 @@ class TestGetUserSummaryByUserId:
 class TestListUserSummaries:
     def test_returns_all_summaries_for_channel(self, store, session):
         """list_user_summaries returns all summaries in the channel."""
-        store.upsert_summary("ch1", "u1", "Alice", "Alice summary.", 10)
-        store.upsert_summary("ch1", "u2", "Bob", "Bob summary.", 20)
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u1",
+                username="Alice",
+                summary="Alice summary.",
+                last_message_id=10,
+                updated_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u2",
+                username="Bob",
+                summary="Bob summary.",
+                last_message_id=20,
+                updated_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
         result = store.list_user_summaries("ch1")
         assert len(result) == 2
         usernames = {s.username for s in result}
@@ -136,34 +157,56 @@ class TestListUserSummaries:
 
     def test_scoped_to_channel(self, store, session):
         """list_user_summaries only returns summaries for the given channel."""
-        store.upsert_summary("ch1", "u1", "Alice", "Alice summary.", 10)
-        store.upsert_summary("ch2", "u2", "Bob", "Bob summary.", 20)
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u1",
+                username="Alice",
+                summary="Alice summary.",
+                last_message_id=10,
+                updated_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+        session.add(
+            UserChannelSummary(
+                channel_id="ch2",
+                user_id="u2",
+                username="Bob",
+                summary="Bob summary.",
+                last_message_id=20,
+                updated_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
         result = store.list_user_summaries("ch1")
         assert len(result) == 1
         assert result[0].username == "Alice"
 
     def test_ordered_by_most_recently_updated(self, store, session):
         """list_user_summaries returns most recently updated first."""
-        store.upsert_summary("ch1", "u1", "Alice", "First.", 10)
-        store.upsert_summary("ch1", "u2", "Bob", "Second.", 20)
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u1",
+                username="Alice",
+                summary="First.",
+                last_message_id=10,
+                updated_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u2",
+                username="Bob",
+                summary="Second.",
+                last_message_id=20,
+                updated_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
         result = store.list_user_summaries("ch1")
         assert result[0].username == "Bob"
         assert result[1].username == "Alice"
-
-
-class TestUpsertSummary:
-    def test_inserts_new_summary(self, store, session):
-        """upsert_summary creates a new summary when none exists."""
-        store.upsert_summary("ch1", "u1", "Alice", "First summary.", 10)
-        result = store.get_user_summary("ch1", "Alice")
-        assert result is not None
-        assert result.summary == "First summary."
-        assert result.last_message_id == 10
-
-    def test_updates_existing_summary(self, store, session):
-        """upsert_summary updates an existing summary."""
-        store.upsert_summary("ch1", "u1", "Alice", "First.", 10)
-        store.upsert_summary("ch1", "u1", "Alice", "Updated.", 20)
-        result = store.get_user_summary("ch1", "Alice")
-        assert result.summary == "Updated."
-        assert result.last_message_id == 20

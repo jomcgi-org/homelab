@@ -25,8 +25,7 @@ a user reacting to something the bot just said. That is exactly the
 style-friction signal (a correction of the bot), needs no bot-id configuration,
 and is deterministic. Recency is bounded by a newest-first message-count window.
 
-Concurrency: this follows ``chat.summarizer.conversational_chat_reply`` -- a sync
-DB fetch phase (``asyncio.to_thread``, own session), an async LLM classify phase,
+Concurrency: a sync DB fetch phase (``asyncio.to_thread``, own session), an async LLM classify phase,
 then a sync enqueue phase (``asyncio.to_thread``, own session). No ``Session``
 ever crosses an ``await`` (semgrep no-sync-session-in-async-def /
 no-session-in-to-thread).
