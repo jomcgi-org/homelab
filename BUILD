@@ -70,6 +70,11 @@ exports_files(
 )
 
 exports_files(
+    ["projects/platform-gke/otel-collector/application.yaml"],
+    visibility = ["//projects/platform/otel-collector:__pkg__"],
+)
+
+exports_files(
     ["buildbuddy.yaml"],
     visibility = ["//bazel/tools/ci:__pkg__"],
 )

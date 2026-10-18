@@ -4,6 +4,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # The chart mounts this script and runs it with the image's Python.
 # Keep it as chart data without a generated Bazel binary or nested package.
 # gazelle:exclude files/backup_check.py
+exports_files(["files/backup_check.py"])
 
 helm_chart(
     name = "chart",
@@ -80,6 +81,7 @@ py_test(
     name = "collector_optin_test",
     srcs = ["collector_optin_test.py"],
     data = [
+        "//:projects/platform-gke/otel-collector/application.yaml",
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",

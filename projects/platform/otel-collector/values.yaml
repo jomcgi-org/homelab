@@ -5,6 +5,22 @@ image:
 
 replicas: 1
 
+# Repository-only staging for #7002. Enable in a later authorized PR.
+# Scheduling, image and resources retain the existing loom.backupCheck keys;
+# one job serves these targets and conditionally Loom, never two jobs.
+backupCheck:
+  enabled: false
+  targets:
+    - namespace: monolith
+      cluster: monolith-pg
+    - namespace: authentik
+      cluster: authentik-pg
+    - namespace: mcp
+      cluster: context-forge-pg
+  status:
+    enabled: false
+    configMapName: cnpg-backup-status
+
 # Enable only after #6605 has the Loom Application Synced and Healthy.
 loom:
   enabled: false

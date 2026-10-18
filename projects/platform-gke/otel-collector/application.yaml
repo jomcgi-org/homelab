@@ -20,6 +20,13 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: otel-collector
+  ignoreDifferences:
+    - group: ""
+      kind: ConfigMap
+      namespace: otel-collector
+      name: cnpg-backup-status
+      jsonPointers:
+        - /data/observation.json
   syncPolicy:
     automated:
       prune: true
@@ -27,6 +34,7 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:

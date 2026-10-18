@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from collections.abc import Awaitable, Callable
@@ -71,6 +72,11 @@ UNCERTAIN_MAX_AGE = timedelta(hours=2)
 # kg_dispute_resolution
 KG_DISPUTE_FAILURE_WINDOW = timedelta(hours=24)
 KG_DISPUTE_NOTE_LIMIT = 5
+
+# cnpg_backups: the shared collector checker owns the observation. No CNPG
+# scanner or database writer runs in this process.
+BACKUP_MAX_AGE_S = 129600
+BACKUP_OBSERVATION_MAX_AGE_S = 7200
 
 
 def _now() -> datetime:
@@ -582,6 +588,113 @@ async def _kg_dispute_resolution() -> dict:
     return evaluate_kg_dispute_resolution(count, note_ids)
 
 
+def _backup_timestamp(value) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError("missing timestamp")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp without timezone")
+    return parsed
+
+
+def evaluate_cnpg_backups(document, required, optional, now: datetime) -> dict:
+    """Unknown cannot clear a failure. A known failure dominates partial unknowns.
+
+    Healthy evidence expires after two hours. Recompute age from the successful
+    backup timestamp while an observation is fresh; creation age is never proof
+    of a backup. Collector acceptance is required for healthy recovery.
+    """
+    try:
+        def identity(target):
+            namespace, cluster = target["namespace"], target["cluster"]
+            if not isinstance(namespace, str) or not isinstance(cluster, str):
+                raise ValueError("invalid identity")
+            return namespace, cluster
+
+        expected = {identity(target) for target in required}
+        allowed = expected | {identity(target) for target in optional}
+        if not expected or len(expected) != len(required) or len(allowed) > 4:
+            raise ValueError("invalid target configuration")
+        if type(document["version"]) is not int or document["version"] != 1 or not isinstance(document["targets"], list):
+            raise ValueError("unsupported observation")
+        rows = {identity(row): row for row in document["targets"]}
+        if len(rows) != len(document["targets"]) or not set(rows) <= allowed:
+            raise ValueError("duplicate or unexpected target")
+    except (ValueError, KeyError, TypeError):
+        return _unknown("CNPG backup observation invalid or absent")
+
+    failures, unknowns = [], []
+    for target in sorted(expected | set(rows)):
+        label = "/".join(target)
+        row = rows.get(target)
+        if row is None or row.get("status") != "observed":
+            unknowns.append(f"{label}: observation unavailable")
+            continue
+        try:
+            observed_at = _backup_timestamp(row["observed_at"])
+            elapsed = (now - observed_at).total_seconds()
+            if elapsed < 0 or elapsed > BACKUP_OBSERVATION_MAX_AGE_S:
+                unknowns.append(f"{label}: observation stale or future-dated")
+                continue
+            has_backup = row["has_successful_backup"]
+            age_at_read = row["age_seconds"]
+            if (
+                type(has_backup) is not bool
+                or type(age_at_read) not in (int, float)
+                or not math.isfinite(age_at_read)
+                or age_at_read < 0
+                or type(row["export_ok"]) is not bool
+            ):
+                raise ValueError("invalid observation fields")
+            if not has_backup:
+                if row["last_successful_backup"] is not None:
+                    raise ValueError("inconsistent backup indication")
+                failures.append(f"{label}: never backed up")
+                continue
+            successful_at = _backup_timestamp(row["last_successful_backup"])
+            if successful_at > observed_at:
+                raise ValueError("future backup")
+            if abs((observed_at - successful_at).total_seconds() - age_at_read) > 1:
+                raise ValueError("inconsistent backup age")
+            age = (now - successful_at).total_seconds()
+            if age > BACKUP_MAX_AGE_S:
+                failures.append(f"{label}: last successful backup {int(age)}s old (>129600s)")
+            elif not row["export_ok"]:
+                unknowns.append(f"{label}: metric export failed")
+        except (ValueError, KeyError, TypeError, OverflowError):
+            unknowns.append(f"{label}: invalid observation")
+    if failures:
+        return {"ok": False, "detail": "; ".join(failures + unknowns)}
+    if unknowns:
+        return _unknown("; ".join(unknowns))
+    return {"ok": True, "detail": f"{len(rows)} CNPG clusters have fresh successful backups and checker observations"}
+
+
+async def _cnpg_backups() -> dict:
+    if os.environ.get("CNPG_BACKUP_HEALTH_ENABLED", "").lower() != "true":
+        return _unknown("CNPG backup advisory disabled")
+    try:
+        from kubernetes_asyncio import client, config
+
+        namespace = os.environ["CNPG_BACKUP_STATUS_NAMESPACE"]
+        name = os.environ["CNPG_BACKUP_STATUS_CONFIGMAP"]
+        required = json.loads(os.environ["CNPG_BACKUP_TARGETS"])
+        optional = json.loads(os.environ.get("CNPG_BACKUP_OPTIONAL_TARGETS", "[]"))
+        config.load_incluster_config()
+        async with client.ApiClient() as api:
+            snapshot = await client.CoreV1Api(api).read_namespaced_config_map(
+                name, namespace, _request_timeout=5,
+            )
+        raw = (snapshot.data or {}).get("observation.json", "")
+        if len(raw) > 16384:
+            return _unknown("CNPG backup observation too large")
+        document = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001 - never expose API bodies or credentials
+        return _unknown(f"CNPG backup observation unreadable ({type(exc).__name__})")
+    return evaluate_cnpg_backups(document, required, optional, _now())
+
+
+cnpg_backups_health = _CachedCheck("cnpg_backups", _cnpg_backups)
 embervm_capacity_health = _CachedCheck("embervm_capacity", _embervm_capacity)
 agent_turns_health = _CachedCheck("agent_turns", _agent_turns)
 codex_quota_fresh_health = _CachedCheck("codex_quota_fresh", _codex_quota_fresh)
@@ -598,6 +711,7 @@ CHECKS: dict[str, _CachedCheck] = {
         codex_quota_fresh_health,
         factory_stuck_health,
         kg_dispute_resolution_health,
+        cnpg_backups_health,
     )
 }
 

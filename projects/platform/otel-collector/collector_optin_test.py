@@ -26,6 +26,7 @@ Chart.yaml, which holds in the repo and in the runfiles tree alike.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import ssl
 import subprocess
@@ -684,7 +685,7 @@ def test_gke_loom_monitoring_has_scoped_rbac_and_hardened_job():
         },
         {"endpoint": "http://loom-query-api.loom.svc:8080/docs", "method": "GET"},
     ]
-    name = "otel-collector-loom-backup"
+    name = "otel-collector-cnpg-backup"
     resources = {d["kind"]: d for d in docs if d["metadata"]["name"] == name}
     assert set(resources) == {
         "CronJob",
@@ -759,8 +760,7 @@ def test_gke_loom_monitoring_has_scoped_rbac_and_hardened_job():
     } in service["spec"]["ports"]
     env = {e["name"]: e["value"] for e in container["env"]}
     assert env == {
-        "CNPG_NAMESPACE": "loom",
-        "CNPG_CLUSTER": "loom-pg",
+        "CNPG_TARGETS": '[{"cluster":"loom-pg","namespace":"loom"}]',
         "OTLP_METRICS_ENDPOINT": f"http://{service['metadata']['name']}.{service['metadata']['namespace']}.svc:4318/v1/metrics",
     }
     assert container["command"] == ["/usr/bin/python", "-B", "/check/backup_check.py"]
@@ -821,8 +821,7 @@ def test_loom_checker_follows_release_and_cluster_overrides():
     env = {e["name"]: e["value"] for e in pod["containers"][0]["env"]}
     assert service["metadata"]["name"] == "monitoring-otel-collector"
     assert env == {
-        "CNPG_NAMESPACE": "restored-loom",
-        "CNPG_CLUSTER": "loom-pg-r1",
+        "CNPG_TARGETS": '[{"cluster":"loom-pg-r1","namespace":"restored-loom"}]',
         "OTLP_METRICS_ENDPOINT": "http://monitoring-otel-collector.observability.svc:4318/v1/metrics",
     }
     assert _of_kind(docs, "Role")["metadata"]["namespace"] == "restored-loom"
@@ -845,6 +844,106 @@ def test_loom_rejects_a_disabled_metrics_or_probe_path(override):
     )
     assert result.returncode != 0
     assert "loom.enabled requires" in result.stderr
+
+
+BACKUP_TARGETS = {("monolith", "monolith-pg"), ("authentik", "authentik-pg"), ("mcp", "context-forge-pg")}
+
+
+def _checker_can(docs, sa, verb, group, resource, namespace, name):
+    """Resolve every rendered binding, including additive cluster/group grants."""
+    subject_matches = lambda s: (
+        s["kind"] == "ServiceAccount" and s["name"] == sa and s.get("namespace") == RELEASE
+        or s["kind"] == "User" and s["name"] == f"system:serviceaccount:{RELEASE}:{sa}"
+        or s["kind"] == "Group" and s["name"] in {"system:authenticated", "system:serviceaccounts", f"system:serviceaccounts:{RELEASE}"}
+    )
+    for binding in docs:
+        if binding["kind"] not in {"RoleBinding", "ClusterRoleBinding"}:
+            continue
+        if not any(subject_matches(s) for s in binding["subjects"]):
+            continue
+        if binding["kind"] == "RoleBinding" and binding["metadata"]["namespace"] != namespace:
+            continue
+        ref = binding["roleRef"]
+        roles = [d for d in docs if d["kind"] == ref["kind"] and d["metadata"]["name"] == ref["name"]
+                 and (ref["kind"] == "ClusterRole" or d["metadata"]["namespace"] == binding["metadata"]["namespace"])]
+        assert len(roles) == 1, "binding must resolve to exactly one role"
+        for rule in roles[0]["rules"]:
+            if (verb in rule["verbs"] or "*" in rule["verbs"]) and (group in rule["apiGroups"] or "*" in rule["apiGroups"]) and (resource in rule["resources"] or "*" in rule["resources"]):
+                if "resourceNames" not in rule or name in rule["resourceNames"]:
+                    return True
+    return False
+
+
+@pytest.mark.parametrize("shared,loom", [(False, False), (True, False), (False, True), (True, True)])
+def test_shared_checker_matrix_and_effective_permissions(shared, loom):
+    docs = _render_overlay("values-gke", ["--set", f"backupCheck.enabled={str(shared).lower()}", "--set", f"loom.enabled={str(loom).lower()}", "--set", f"backupCheck.status.enabled={str(shared).lower()}"])
+    jobs = [d for d in docs if d["kind"] == "CronJob"]
+    if not shared and not loom:
+        assert jobs == []
+        assert not any(d["metadata"]["name"] == "cnpg-backup-status" for d in docs)
+        return
+    assert len(jobs) == 1
+    job = jobs[0]
+    pod = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    sa = pod["serviceAccountName"]
+    assert sa == "otel-collector-cnpg-backup"
+    assert not any(d["metadata"]["name"] == "otel-collector-loom-backup" for d in docs)
+    expected = (BACKUP_TARGETS if shared else set()) | ({("loom", "loom-pg")} if loom else set())
+    env = {e["name"]: e["value"] for e in pod["containers"][0]["env"]}
+    assert {(t["namespace"], t["cluster"]) for t in json.loads(env["CNPG_TARGETS"])} == expected
+    assert job["spec"]["schedule"] == "*/30 * * * *"
+    assert job["spec"]["concurrencyPolicy"] == "Forbid"
+    assert job["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 120
+    assert env["OTLP_METRICS_ENDPOINT"] == "http://otel-collector.otel-collector.svc:4318/v1/metrics"
+    config = _collector_config(docs)
+    assert "otlp" in config["service"]["pipelines"]["metrics"]["receivers"]
+    for namespace, name in BACKUP_TARGETS | {("loom", "loom-pg"), ("monolith", "unrelated"), ("other", "monolith-pg")}:
+        assert _checker_can(docs, sa, "get", "postgresql.cnpg.io", "clusters", namespace, name) is ((namespace, name) in expected)
+        for verb in ("list", "watch", "create", "update", "patch", "delete"):
+            assert not _checker_can(docs, sa, verb, "postgresql.cnpg.io", "clusters", namespace, name)
+    for verb in ("get", "patch", "list", "watch", "create", "update", "delete"):
+        assert _checker_can(docs, sa, verb, "", "configmaps", RELEASE, "cnpg-backup-status") is (shared and verb in {"get", "patch"})
+        assert not _checker_can(docs, sa, verb, "", "configmaps", RELEASE, "unrelated")
+        assert not _checker_can(docs, sa, verb, "", "configmaps", "other", "cnpg-backup-status")
+        assert not _checker_can(docs, sa, verb, "", "secrets", RELEASE, "cnpg-backup-status")
+    if shared:
+        assert env["CNPG_STATUS_NAMESPACE"] == RELEASE
+        assert env["CNPG_STATUS_CONFIGMAP"] == "cnpg-backup-status"
+        assert next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "cnpg-backup-status")["data"] == {}
+    else:
+        assert "CNPG_STATUS_CONFIGMAP" not in env
+
+
+@pytest.mark.parametrize("overlay", ["values", "values-gke", "values-prod"])
+def test_shared_checker_defaults_off(overlay):
+    base = yaml.safe_load(_values("values").read_text())
+    override = yaml.safe_load(_values(overlay).read_text())
+    assert base["backupCheck"]["enabled"] is False
+    assert base["backupCheck"]["status"]["enabled"] is False
+    assert override["backupCheck"]["enabled"] is False
+    assert override["backupCheck"]["status"]["enabled"] is False
+
+
+@pytest.mark.parametrize("setting", ["allowedServices=null", "backupCheck.targets=[]", "backupCheck.targets[1].namespace=monolith,backupCheck.targets[1].cluster=monolith-pg", "backupCheck.targets[0].namespace=loom,backupCheck.targets[0].cluster=loom-pg"])
+def test_shared_checker_rejects_invalid_configuration(setting):
+    assert _run_render(["values-gke"], ["--set", "backupCheck.enabled=true", "--set", setting]).returncode != 0
+
+
+def test_status_enablement_requires_shared_checker():
+    result = _run_render(["values-gke"], ["--set", "backupCheck.status.enabled=true"])
+    assert result.returncode != 0
+    assert "backupCheck.status.enabled requires" in result.stderr
+
+
+def test_shared_checker_does_not_require_http_probes_or_loom():
+    docs = _render_overlay("values-gke", ["--set", "backupCheck.enabled=true", "--set", "httpcheck.enabled=false", "--set", "httpcheck.caMount.enabled=false"])
+    assert len([d for d in docs if d["kind"] == "CronJob"]) == 1
+
+
+def test_runtime_handoff_survives_argocd_diff_and_sync():
+    app = yaml.safe_load((_chart_dir().parents[1] / "platform-gke/otel-collector/application.yaml").read_text())
+    assert app["spec"]["ignoreDifferences"] == [{"group": "", "kind": "ConfigMap", "namespace": "otel-collector", "name": "cnpg-backup-status", "jsonPointers": ["/data/observation.json"]}]
+    assert "RespectIgnoreDifferences=true" in app["spec"]["syncPolicy"]["syncOptions"]
 
 
 def test_health_route_rewrites_to_the_extension_root():
