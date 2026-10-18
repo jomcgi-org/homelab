@@ -1437,6 +1437,15 @@ def settle_lost_drainer_reservations(
                     "unknown": unknown,
                 },
             ).rowcount
+            if released and permit.routine_job_name == "kg-fact-review":
+                from knowledge.api import fail_fact_review_batch
+
+                fail_fact_review_batch(
+                    session,
+                    permit.local_session_id,
+                    "owning workflow terminated before session dispatch",
+                    commit=False,
+                )
             settled.append(permit.id)
             logger.warning(
                 "Luna drainer settled permit %s before dispatch: workflow %s "

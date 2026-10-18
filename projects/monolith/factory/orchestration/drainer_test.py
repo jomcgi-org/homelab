@@ -4434,6 +4434,45 @@ def _lock_holder(engine, job):
         ).scalar_one()
 
 
+@pytest.mark.parametrize(
+    "state,unknown",
+    [("ERROR", False), ("PENDING", False), (None, False), ("ERROR", True)],
+)
+def test_prestart_batch_receipts_retire_only_with_proven_permit_and_lease_release(
+    admission_database, monkeypatch, state, unknown
+):
+    monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
+    _, local = _lost_permit(
+        admission_database,
+        workflow_id="_drainer-worker:0:batch-lost",
+        job="kg-fact-review",
+    )
+    _workflow_states(monkeypatch, {"_drainer-worker:0:batch-lost": state})
+    if unknown:
+        with Session(admission_database) as session:
+            session.execute(
+                text(
+                    "UPDATE routine_jobs SET last_status='invocation_outcome_unknown' WHERE name='kg-fact-review'"
+                )
+            )
+            session.commit()
+    calls = []
+
+    def retire(session, key, reason, *, commit):
+        assert session.in_transaction() and commit is False
+        assert (
+            session.execute(
+                text("SELECT locked_by FROM routine_jobs WHERE name='kg-fact-review'")
+            ).scalar_one()
+            is None
+        )
+        calls.append(key)
+
+    monkeypatch.setattr("knowledge.api.fail_fact_review_batch", retire)
+    drainer.settle_lost_drainer_reservations("_drainer-worker:0:next")
+    assert calls == ([local] if state == "ERROR" and not unknown else [])
+
+
 def test_lost_before_session_sweep_settles_dead_workflow_permit(
     admission_database, monkeypatch
 ):
