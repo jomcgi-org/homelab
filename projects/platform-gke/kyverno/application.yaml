@@ -17,7 +17,6 @@ spec:
       releaseName: kyverno
       valueFiles:
         - values.yaml
-        - values-prod.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: kyverno
