@@ -429,8 +429,15 @@ def test_payload_transcript_excludes_ooc_other_pc_and_dm(harness):
         h.rows["campaign_session"].id,
         h.rows["character_a"].id,
     )
-    assert len(payload["utterances"]) == 1
-    assert payload["utterances"][0]["body"]["text"] == "known table speech"
+    # The shared leak harness also contains table speech and this character's
+    # own DM whisper. Both are visible; none of the three excluded rows above is.
+    utterances = {event["id"]: event for event in payload["utterances"]}
+    assert set(utterances) == {
+        h.rows["utterance_table"].id,
+        h.rows["utterance_whisper"].id,
+        rows[0].id,
+    }
+    assert utterances[rows[0].id]["body"]["text"] == "known table speech"
 
 
 def embed_fact(h, fact):
