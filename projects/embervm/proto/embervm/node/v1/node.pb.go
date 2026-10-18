@@ -7793,6 +7793,51 @@ type NodeStatus struct {
 	// Sum of positive oom_kill deltas within individual host activations since
 	// daemon start. The first report of every activation is a baseline only.
 	GuestOomCount uint64 `protobuf:"varint,42,opt,name=guest_oom_count,json=guestOomCount,proto3" json:"guest_oom_count,omitempty"`
+	// -- Admission ledger (one predicate, evaluated by the daemon) -------------
+	// admission_reported is true when the daemon fills mem_admittable_mib. A
+	// daemon that predates these fields leaves it false, and the control plane
+	// falls back to evaluating the per-model predicate on the facts above, so a
+	// half-rolled fleet stays placeable.
+	AdmissionReported bool `protobuf:"varint,44,opt,name=admission_reported,json=admissionReported,proto3" json:"admission_reported,omitempty"`
+	// mem_admittable_mib is the largest guest memMib this brick would admit for
+	// ONE more VM at the instant of the report, computed by the same function the
+	// daemon's boot verbs call. The reserved model subtracts declared claims, boots
+	// still in flight and the per-VM overhead of every live and in-flight VM plus
+	// the new one from the budget; both models are also bounded by observed
+	// headroom minus in-flight boots minus the reject floor whenever headroom is
+	// known. Signed: a negative value admits nothing, not even a zero-need probe.
+	// The control plane admits need N here iff N is at most this value minus its
+	// own placements the daemon has not yet acknowledged.
+	MemAdmittableMib int64 `protobuf:"varint,45,opt,name=mem_admittable_mib,json=memAdmittableMib,proto3" json:"mem_admittable_mib,omitempty"`
+	// mem_inflight_mib and inflight_vms are boots the daemon has admitted whose VM
+	// has not yet joined its live map. They are already reflected in
+	// mem_admittable_mib; they are reported for diagnosis and parity tests.
+	MemInflightMib uint64 `protobuf:"varint,46,opt,name=mem_inflight_mib,json=memInflightMib,proto3" json:"mem_inflight_mib,omitempty"`
+	InflightVms    uint32 `protobuf:"varint,47,opt,name=inflight_vms,json=inflightVms,proto3" json:"inflight_vms,omitempty"`
+	// mem_inflight_placed_mib and inflight_placed_vms are the part of the
+	// in-flight boots above that answer a control-plane placement whose RPC is
+	// still open, each at the memMib the control plane declared for it. A
+	// node-local wake (the activators), the excess of a restore over its declared
+	// size, and a boot that outlives its RPC are left out: no control-plane claim
+	// stands behind them. The control plane nets its own unsettled claims against
+	// these two, never against the totals above, so a boot it did not place can
+	// never cancel one of its claims.
+	MemInflightPlacedMib uint64 `protobuf:"varint,51,opt,name=mem_inflight_placed_mib,json=memInflightPlacedMib,proto3" json:"mem_inflight_placed_mib,omitempty"`
+	InflightPlacedVms    uint32 `protobuf:"varint,52,opt,name=inflight_placed_vms,json=inflightPlacedVms,proto3" json:"inflight_placed_vms,omitempty"`
+	// admission_refusals is cumulative since daemon start, keyed by the stable
+	// refusal token: "pressure:mem", "pressure:taps", "slots". Never labelled by
+	// VM or workload IDs.
+	AdmissionRefusals map[string]uint64 `protobuf:"bytes,48,rep,name=admission_refusals,json=admissionRefusals,proto3" json:"admission_refusals,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// -- Jailer facts (#5255) ---------------------------------------------------
+	// jailer_armed is the daemon's configured jailer flag after its startup
+	// preflight passed. A daemon whose preflight fails never registers, so a
+	// registered brick with jailer_armed true has proven containment at start.
+	JailerArmed bool `protobuf:"varint,49,opt,name=jailer_armed,json=jailerArmed,proto3" json:"jailer_armed,omitempty"`
+	// launch_modes is cumulative since daemon start, keyed "jailed",
+	// "direct_exec" (jailer disarmed) and "refused" (a jailed launch that failed
+	// closed, or a legacy bundle with no jail metadata that an armed brick will
+	// not run unjailed). An armed brick never moves direct_exec.
+	LaunchModes   map[string]uint64 `protobuf:"bytes,50,rep,name=launch_modes,json=launchModes,proto3" json:"launch_modes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8126,6 +8171,69 @@ func (x *NodeStatus) GetGuestOomCount() uint64 {
 		return x.GuestOomCount
 	}
 	return 0
+}
+
+func (x *NodeStatus) GetAdmissionReported() bool {
+	if x != nil {
+		return x.AdmissionReported
+	}
+	return false
+}
+
+func (x *NodeStatus) GetMemAdmittableMib() int64 {
+	if x != nil {
+		return x.MemAdmittableMib
+	}
+	return 0
+}
+
+func (x *NodeStatus) GetMemInflightMib() uint64 {
+	if x != nil {
+		return x.MemInflightMib
+	}
+	return 0
+}
+
+func (x *NodeStatus) GetInflightVms() uint32 {
+	if x != nil {
+		return x.InflightVms
+	}
+	return 0
+}
+
+func (x *NodeStatus) GetMemInflightPlacedMib() uint64 {
+	if x != nil {
+		return x.MemInflightPlacedMib
+	}
+	return 0
+}
+
+func (x *NodeStatus) GetInflightPlacedVms() uint32 {
+	if x != nil {
+		return x.InflightPlacedVms
+	}
+	return 0
+}
+
+func (x *NodeStatus) GetAdmissionRefusals() map[string]uint64 {
+	if x != nil {
+		return x.AdmissionRefusals
+	}
+	return nil
+}
+
+func (x *NodeStatus) GetJailerArmed() bool {
+	if x != nil {
+		return x.JailerArmed
+	}
+	return false
+}
+
+func (x *NodeStatus) GetLaunchModes() map[string]uint64 {
+	if x != nil {
+		return x.LaunchModes
+	}
+	return nil
 }
 
 var File_embervm_node_v1_node_proto protoreflect.FileDescriptor
@@ -8706,7 +8814,7 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"<\n" +
 	"\x06CpuSku\x12\x16\n" +
 	"\x06vendor\x18\x01 \x01(\tR\x06vendor\x12\x1a\n" +
-	"\btemplate\x18\x02 \x01(\tR\btemplate\"\xa4\x13\n" +
+	"\btemplate\x18\x02 \x01(\tR\btemplate\"\x92\x18\n" +
 	"\n" +
 	"NodeStatus\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12?\n" +
@@ -8759,11 +8867,26 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\x12scratch_generation\x18' \x01(\tR\x11scratchGeneration\x12V\n" +
 	"\x0fvmm_exit_counts\x18( \x03(\v2..embervm.node.v1.NodeStatus.VmmExitCountsEntryR\rvmmExitCounts\x12r\n" +
 	"\x19guest_memory_state_counts\x18) \x03(\v27.embervm.node.v1.NodeStatus.GuestMemoryStateCountsEntryR\x16guestMemoryStateCounts\x12&\n" +
-	"\x0fguest_oom_count\x18* \x01(\x04R\rguestOomCount\x1a@\n" +
+	"\x0fguest_oom_count\x18* \x01(\x04R\rguestOomCount\x12-\n" +
+	"\x12admission_reported\x18, \x01(\bR\x11admissionReported\x12,\n" +
+	"\x12mem_admittable_mib\x18- \x01(\x03R\x10memAdmittableMib\x12(\n" +
+	"\x10mem_inflight_mib\x18. \x01(\x04R\x0ememInflightMib\x12!\n" +
+	"\finflight_vms\x18/ \x01(\rR\vinflightVms\x125\n" +
+	"\x17mem_inflight_placed_mib\x183 \x01(\x04R\x14memInflightPlacedMib\x12.\n" +
+	"\x13inflight_placed_vms\x184 \x01(\rR\x11inflightPlacedVms\x12a\n" +
+	"\x12admission_refusals\x180 \x03(\v22.embervm.node.v1.NodeStatus.AdmissionRefusalsEntryR\x11admissionRefusals\x12!\n" +
+	"\fjailer_armed\x181 \x01(\bR\vjailerArmed\x12O\n" +
+	"\flaunch_modes\x182 \x03(\v2,.embervm.node.v1.NodeStatus.LaunchModesEntryR\vlaunchModes\x1a@\n" +
 	"\x12VmmExitCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\x1aI\n" +
 	"\x1bGuestMemoryStateCountsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\x1aD\n" +
+	"\x16AdmissionRefusalsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\x1a>\n" +
+	"\x10LaunchModesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01*o\n" +
 	"\x0fStopServingMode\x12!\n" +
@@ -8859,7 +8982,7 @@ func file_embervm_node_v1_node_proto_rawDescGZIP() []byte {
 }
 
 var file_embervm_node_v1_node_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
-var file_embervm_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 96)
+var file_embervm_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 98)
 var file_embervm_node_v1_node_proto_goTypes = []any{
 	(StopServingMode)(0),               // 0: embervm.node.v1.StopServingMode
 	(StartStatefulMode)(0),             // 1: embervm.node.v1.StartStatefulMode
@@ -8967,6 +9090,8 @@ var file_embervm_node_v1_node_proto_goTypes = []any{
 	nil,                                // 103: embervm.node.v1.StartGroupMemberRequest.EnvEntry
 	nil,                                // 104: embervm.node.v1.NodeStatus.VmmExitCountsEntry
 	nil,                                // 105: embervm.node.v1.NodeStatus.GuestMemoryStateCountsEntry
+	nil,                                // 106: embervm.node.v1.NodeStatus.AdmissionRefusalsEntry
+	nil,                                // 107: embervm.node.v1.NodeStatus.LaunchModesEntry
 }
 var file_embervm_node_v1_node_proto_depIdxs = []int32{
 	10,  // 0: embervm.node.v1.BuildBaseRequest.trace:type_name -> embervm.node.v1.Trace
@@ -9056,71 +9181,73 @@ var file_embervm_node_v1_node_proto_depIdxs = []int32{
 	77,  // 84: embervm.node.v1.NodeStatus.activator_endpoint:type_name -> embervm.node.v1.Endpoint
 	104, // 85: embervm.node.v1.NodeStatus.vmm_exit_counts:type_name -> embervm.node.v1.NodeStatus.VmmExitCountsEntry
 	105, // 86: embervm.node.v1.NodeStatus.guest_memory_state_counts:type_name -> embervm.node.v1.NodeStatus.GuestMemoryStateCountsEntry
-	13,  // 87: embervm.node.v1.NodeService.BuildBase:input_type -> embervm.node.v1.BuildBaseRequest
-	15,  // 88: embervm.node.v1.NodeService.Prime:input_type -> embervm.node.v1.PrimeRequest
-	18,  // 89: embervm.node.v1.NodeService.Assign:input_type -> embervm.node.v1.AssignRequest
-	22,  // 90: embervm.node.v1.NodeService.Destroy:input_type -> embervm.node.v1.DestroyRequest
-	61,  // 91: embervm.node.v1.NodeService.WatchNode:input_type -> embervm.node.v1.WatchNodeRequest
-	62,  // 92: embervm.node.v1.NodeService.GetNodeStatus:input_type -> embervm.node.v1.GetNodeStatusRequest
-	66,  // 93: embervm.node.v1.NodeService.SyncRegistry:input_type -> embervm.node.v1.SyncRegistryRequest
-	68,  // 94: embervm.node.v1.NodeService.RegisterWorkload:input_type -> embervm.node.v1.RegisterWorkloadRequest
-	70,  // 95: embervm.node.v1.NodeService.DeregisterWorkload:input_type -> embervm.node.v1.DeregisterWorkloadRequest
-	25,  // 96: embervm.node.v1.NodeService.SessionAssign:input_type -> embervm.node.v1.SessionAssignRequest
-	27,  // 97: embervm.node.v1.NodeService.SessionInterrupt:input_type -> embervm.node.v1.SessionInterruptRequest
-	29,  // 98: embervm.node.v1.NodeService.Bank:input_type -> embervm.node.v1.BankRequest
-	31,  // 99: embervm.node.v1.NodeService.Relight:input_type -> embervm.node.v1.RelightRequest
-	33,  // 100: embervm.node.v1.NodeService.EvictSnapshot:input_type -> embervm.node.v1.EvictSnapshotRequest
-	37,  // 101: embervm.node.v1.NodeService.StartServing:input_type -> embervm.node.v1.StartServingRequest
-	39,  // 102: embervm.node.v1.NodeService.StopServing:input_type -> embervm.node.v1.StopServingRequest
-	41,  // 103: embervm.node.v1.NodeService.StartStateful:input_type -> embervm.node.v1.StartStatefulRequest
-	43,  // 104: embervm.node.v1.NodeService.StopStateful:input_type -> embervm.node.v1.StopStatefulRequest
-	45,  // 105: embervm.node.v1.NodeService.ResolveStateful:input_type -> embervm.node.v1.ResolveStatefulRequest
-	47,  // 106: embervm.node.v1.NodeService.DeleteVolume:input_type -> embervm.node.v1.DeleteVolumeRequest
-	51,  // 107: embervm.node.v1.NodeService.RetireVolume:input_type -> embervm.node.v1.RetireVolumeRequest
-	49,  // 108: embervm.node.v1.NodeService.ArchiveVolume:input_type -> embervm.node.v1.ArchiveVolumeRequest
-	53,  // 109: embervm.node.v1.NodeService.CreateGroupNetwork:input_type -> embervm.node.v1.CreateGroupNetworkRequest
-	55,  // 110: embervm.node.v1.NodeService.DeleteGroupNetwork:input_type -> embervm.node.v1.DeleteGroupNetworkRequest
-	57,  // 111: embervm.node.v1.NodeService.StartGroupMember:input_type -> embervm.node.v1.StartGroupMemberRequest
-	59,  // 112: embervm.node.v1.NodeService.StopGroupMember:input_type -> embervm.node.v1.StopGroupMemberRequest
-	88,  // 113: embervm.node.v1.NodeService.ExportArtifact:input_type -> embervm.node.v1.ExportArtifactRequest
-	90,  // 114: embervm.node.v1.NodeService.RestoreArtifact:input_type -> embervm.node.v1.RestoreArtifactRequest
-	92,  // 115: embervm.node.v1.NodeService.EvictArtifact:input_type -> embervm.node.v1.EvictArtifactRequest
-	94,  // 116: embervm.node.v1.NodeService.ListArtifacts:input_type -> embervm.node.v1.ListArtifactsRequest
-	14,  // 117: embervm.node.v1.NodeService.BuildBase:output_type -> embervm.node.v1.BuildBaseResponse
-	16,  // 118: embervm.node.v1.NodeService.Prime:output_type -> embervm.node.v1.PrimeResponse
-	21,  // 119: embervm.node.v1.NodeService.Assign:output_type -> embervm.node.v1.AssignResponse
-	24,  // 120: embervm.node.v1.NodeService.Destroy:output_type -> embervm.node.v1.DestroyResponse
-	98,  // 121: embervm.node.v1.NodeService.WatchNode:output_type -> embervm.node.v1.NodeStatus
-	98,  // 122: embervm.node.v1.NodeService.GetNodeStatus:output_type -> embervm.node.v1.NodeStatus
-	67,  // 123: embervm.node.v1.NodeService.SyncRegistry:output_type -> embervm.node.v1.SyncRegistryResponse
-	69,  // 124: embervm.node.v1.NodeService.RegisterWorkload:output_type -> embervm.node.v1.RegisterWorkloadResponse
-	71,  // 125: embervm.node.v1.NodeService.DeregisterWorkload:output_type -> embervm.node.v1.DeregisterWorkloadResponse
-	26,  // 126: embervm.node.v1.NodeService.SessionAssign:output_type -> embervm.node.v1.SessionAssignResponse
-	28,  // 127: embervm.node.v1.NodeService.SessionInterrupt:output_type -> embervm.node.v1.SessionInterruptResponse
-	30,  // 128: embervm.node.v1.NodeService.Bank:output_type -> embervm.node.v1.BankResponse
-	32,  // 129: embervm.node.v1.NodeService.Relight:output_type -> embervm.node.v1.RelightResponse
-	34,  // 130: embervm.node.v1.NodeService.EvictSnapshot:output_type -> embervm.node.v1.EvictSnapshotResponse
-	38,  // 131: embervm.node.v1.NodeService.StartServing:output_type -> embervm.node.v1.StartServingResponse
-	40,  // 132: embervm.node.v1.NodeService.StopServing:output_type -> embervm.node.v1.StopServingResponse
-	42,  // 133: embervm.node.v1.NodeService.StartStateful:output_type -> embervm.node.v1.StartStatefulResponse
-	44,  // 134: embervm.node.v1.NodeService.StopStateful:output_type -> embervm.node.v1.StopStatefulResponse
-	46,  // 135: embervm.node.v1.NodeService.ResolveStateful:output_type -> embervm.node.v1.ResolveStatefulResponse
-	48,  // 136: embervm.node.v1.NodeService.DeleteVolume:output_type -> embervm.node.v1.DeleteVolumeResponse
-	52,  // 137: embervm.node.v1.NodeService.RetireVolume:output_type -> embervm.node.v1.RetireVolumeResponse
-	50,  // 138: embervm.node.v1.NodeService.ArchiveVolume:output_type -> embervm.node.v1.ArchiveVolumeResponse
-	54,  // 139: embervm.node.v1.NodeService.CreateGroupNetwork:output_type -> embervm.node.v1.CreateGroupNetworkResponse
-	56,  // 140: embervm.node.v1.NodeService.DeleteGroupNetwork:output_type -> embervm.node.v1.DeleteGroupNetworkResponse
-	58,  // 141: embervm.node.v1.NodeService.StartGroupMember:output_type -> embervm.node.v1.StartGroupMemberResponse
-	60,  // 142: embervm.node.v1.NodeService.StopGroupMember:output_type -> embervm.node.v1.StopGroupMemberResponse
-	89,  // 143: embervm.node.v1.NodeService.ExportArtifact:output_type -> embervm.node.v1.ExportArtifactResponse
-	91,  // 144: embervm.node.v1.NodeService.RestoreArtifact:output_type -> embervm.node.v1.RestoreArtifactResponse
-	93,  // 145: embervm.node.v1.NodeService.EvictArtifact:output_type -> embervm.node.v1.EvictArtifactResponse
-	96,  // 146: embervm.node.v1.NodeService.ListArtifacts:output_type -> embervm.node.v1.ListArtifactsResponse
-	117, // [117:147] is the sub-list for method output_type
-	87,  // [87:117] is the sub-list for method input_type
-	87,  // [87:87] is the sub-list for extension type_name
-	87,  // [87:87] is the sub-list for extension extendee
-	0,   // [0:87] is the sub-list for field type_name
+	106, // 87: embervm.node.v1.NodeStatus.admission_refusals:type_name -> embervm.node.v1.NodeStatus.AdmissionRefusalsEntry
+	107, // 88: embervm.node.v1.NodeStatus.launch_modes:type_name -> embervm.node.v1.NodeStatus.LaunchModesEntry
+	13,  // 89: embervm.node.v1.NodeService.BuildBase:input_type -> embervm.node.v1.BuildBaseRequest
+	15,  // 90: embervm.node.v1.NodeService.Prime:input_type -> embervm.node.v1.PrimeRequest
+	18,  // 91: embervm.node.v1.NodeService.Assign:input_type -> embervm.node.v1.AssignRequest
+	22,  // 92: embervm.node.v1.NodeService.Destroy:input_type -> embervm.node.v1.DestroyRequest
+	61,  // 93: embervm.node.v1.NodeService.WatchNode:input_type -> embervm.node.v1.WatchNodeRequest
+	62,  // 94: embervm.node.v1.NodeService.GetNodeStatus:input_type -> embervm.node.v1.GetNodeStatusRequest
+	66,  // 95: embervm.node.v1.NodeService.SyncRegistry:input_type -> embervm.node.v1.SyncRegistryRequest
+	68,  // 96: embervm.node.v1.NodeService.RegisterWorkload:input_type -> embervm.node.v1.RegisterWorkloadRequest
+	70,  // 97: embervm.node.v1.NodeService.DeregisterWorkload:input_type -> embervm.node.v1.DeregisterWorkloadRequest
+	25,  // 98: embervm.node.v1.NodeService.SessionAssign:input_type -> embervm.node.v1.SessionAssignRequest
+	27,  // 99: embervm.node.v1.NodeService.SessionInterrupt:input_type -> embervm.node.v1.SessionInterruptRequest
+	29,  // 100: embervm.node.v1.NodeService.Bank:input_type -> embervm.node.v1.BankRequest
+	31,  // 101: embervm.node.v1.NodeService.Relight:input_type -> embervm.node.v1.RelightRequest
+	33,  // 102: embervm.node.v1.NodeService.EvictSnapshot:input_type -> embervm.node.v1.EvictSnapshotRequest
+	37,  // 103: embervm.node.v1.NodeService.StartServing:input_type -> embervm.node.v1.StartServingRequest
+	39,  // 104: embervm.node.v1.NodeService.StopServing:input_type -> embervm.node.v1.StopServingRequest
+	41,  // 105: embervm.node.v1.NodeService.StartStateful:input_type -> embervm.node.v1.StartStatefulRequest
+	43,  // 106: embervm.node.v1.NodeService.StopStateful:input_type -> embervm.node.v1.StopStatefulRequest
+	45,  // 107: embervm.node.v1.NodeService.ResolveStateful:input_type -> embervm.node.v1.ResolveStatefulRequest
+	47,  // 108: embervm.node.v1.NodeService.DeleteVolume:input_type -> embervm.node.v1.DeleteVolumeRequest
+	51,  // 109: embervm.node.v1.NodeService.RetireVolume:input_type -> embervm.node.v1.RetireVolumeRequest
+	49,  // 110: embervm.node.v1.NodeService.ArchiveVolume:input_type -> embervm.node.v1.ArchiveVolumeRequest
+	53,  // 111: embervm.node.v1.NodeService.CreateGroupNetwork:input_type -> embervm.node.v1.CreateGroupNetworkRequest
+	55,  // 112: embervm.node.v1.NodeService.DeleteGroupNetwork:input_type -> embervm.node.v1.DeleteGroupNetworkRequest
+	57,  // 113: embervm.node.v1.NodeService.StartGroupMember:input_type -> embervm.node.v1.StartGroupMemberRequest
+	59,  // 114: embervm.node.v1.NodeService.StopGroupMember:input_type -> embervm.node.v1.StopGroupMemberRequest
+	88,  // 115: embervm.node.v1.NodeService.ExportArtifact:input_type -> embervm.node.v1.ExportArtifactRequest
+	90,  // 116: embervm.node.v1.NodeService.RestoreArtifact:input_type -> embervm.node.v1.RestoreArtifactRequest
+	92,  // 117: embervm.node.v1.NodeService.EvictArtifact:input_type -> embervm.node.v1.EvictArtifactRequest
+	94,  // 118: embervm.node.v1.NodeService.ListArtifacts:input_type -> embervm.node.v1.ListArtifactsRequest
+	14,  // 119: embervm.node.v1.NodeService.BuildBase:output_type -> embervm.node.v1.BuildBaseResponse
+	16,  // 120: embervm.node.v1.NodeService.Prime:output_type -> embervm.node.v1.PrimeResponse
+	21,  // 121: embervm.node.v1.NodeService.Assign:output_type -> embervm.node.v1.AssignResponse
+	24,  // 122: embervm.node.v1.NodeService.Destroy:output_type -> embervm.node.v1.DestroyResponse
+	98,  // 123: embervm.node.v1.NodeService.WatchNode:output_type -> embervm.node.v1.NodeStatus
+	98,  // 124: embervm.node.v1.NodeService.GetNodeStatus:output_type -> embervm.node.v1.NodeStatus
+	67,  // 125: embervm.node.v1.NodeService.SyncRegistry:output_type -> embervm.node.v1.SyncRegistryResponse
+	69,  // 126: embervm.node.v1.NodeService.RegisterWorkload:output_type -> embervm.node.v1.RegisterWorkloadResponse
+	71,  // 127: embervm.node.v1.NodeService.DeregisterWorkload:output_type -> embervm.node.v1.DeregisterWorkloadResponse
+	26,  // 128: embervm.node.v1.NodeService.SessionAssign:output_type -> embervm.node.v1.SessionAssignResponse
+	28,  // 129: embervm.node.v1.NodeService.SessionInterrupt:output_type -> embervm.node.v1.SessionInterruptResponse
+	30,  // 130: embervm.node.v1.NodeService.Bank:output_type -> embervm.node.v1.BankResponse
+	32,  // 131: embervm.node.v1.NodeService.Relight:output_type -> embervm.node.v1.RelightResponse
+	34,  // 132: embervm.node.v1.NodeService.EvictSnapshot:output_type -> embervm.node.v1.EvictSnapshotResponse
+	38,  // 133: embervm.node.v1.NodeService.StartServing:output_type -> embervm.node.v1.StartServingResponse
+	40,  // 134: embervm.node.v1.NodeService.StopServing:output_type -> embervm.node.v1.StopServingResponse
+	42,  // 135: embervm.node.v1.NodeService.StartStateful:output_type -> embervm.node.v1.StartStatefulResponse
+	44,  // 136: embervm.node.v1.NodeService.StopStateful:output_type -> embervm.node.v1.StopStatefulResponse
+	46,  // 137: embervm.node.v1.NodeService.ResolveStateful:output_type -> embervm.node.v1.ResolveStatefulResponse
+	48,  // 138: embervm.node.v1.NodeService.DeleteVolume:output_type -> embervm.node.v1.DeleteVolumeResponse
+	52,  // 139: embervm.node.v1.NodeService.RetireVolume:output_type -> embervm.node.v1.RetireVolumeResponse
+	50,  // 140: embervm.node.v1.NodeService.ArchiveVolume:output_type -> embervm.node.v1.ArchiveVolumeResponse
+	54,  // 141: embervm.node.v1.NodeService.CreateGroupNetwork:output_type -> embervm.node.v1.CreateGroupNetworkResponse
+	56,  // 142: embervm.node.v1.NodeService.DeleteGroupNetwork:output_type -> embervm.node.v1.DeleteGroupNetworkResponse
+	58,  // 143: embervm.node.v1.NodeService.StartGroupMember:output_type -> embervm.node.v1.StartGroupMemberResponse
+	60,  // 144: embervm.node.v1.NodeService.StopGroupMember:output_type -> embervm.node.v1.StopGroupMemberResponse
+	89,  // 145: embervm.node.v1.NodeService.ExportArtifact:output_type -> embervm.node.v1.ExportArtifactResponse
+	91,  // 146: embervm.node.v1.NodeService.RestoreArtifact:output_type -> embervm.node.v1.RestoreArtifactResponse
+	93,  // 147: embervm.node.v1.NodeService.EvictArtifact:output_type -> embervm.node.v1.EvictArtifactResponse
+	96,  // 148: embervm.node.v1.NodeService.ListArtifacts:output_type -> embervm.node.v1.ListArtifactsResponse
+	119, // [119:149] is the sub-list for method output_type
+	89,  // [89:119] is the sub-list for method input_type
+	89,  // [89:89] is the sub-list for extension type_name
+	89,  // [89:89] is the sub-list for extension extendee
+	0,   // [0:89] is the sub-list for field type_name
 }
 
 func init() { file_embervm_node_v1_node_proto_init() }
@@ -9141,7 +9268,7 @@ func file_embervm_node_v1_node_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_embervm_node_v1_node_proto_rawDesc), len(file_embervm_node_v1_node_proto_rawDesc)),
 			NumEnums:      10,
-			NumMessages:   96,
+			NumMessages:   98,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
