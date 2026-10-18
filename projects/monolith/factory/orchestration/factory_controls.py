@@ -3485,7 +3485,12 @@ def finish_task(
     actor = _text(actor, "actor")
     if outcome not in (*_SETTLED, "uncertain"):
         raise ValueError("invalid task outcome")
-    if paused_trigger not in (None, "objective_closed", "deadline"):
+    if paused_trigger not in (
+        None,
+        "objective_closed",
+        "deadline",
+        "reconciler_pause_expired",
+    ):
         raise ValueError("invalid paused settlement trigger")
     if evidence is not None:
         if not isinstance(evidence, dict) or set(evidence) - {
