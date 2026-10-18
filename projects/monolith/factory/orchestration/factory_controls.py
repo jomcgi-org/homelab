@@ -1332,6 +1332,20 @@ def lane_limits(policy: dict) -> dict:
     return {"delivery": delivery, "advisory": advisory}
 
 
+def admission_eligible(policy: dict, issue_number: int, actor: str) -> bool:
+    """Whether admit_next could ever admit a queued receipt for this issue.
+
+    One rule shared by the admission query, the intake lane-slot count and
+    the MCP submit path, so the three can never disagree about what
+    "eligible" means (#6483). An operator submission qualifies only through
+    the policy allowlist; an intake receipt qualifies the same way, or by
+    intake authorship while intake is enabled.
+    """
+    if issue_number in set(policy.get("issue_numbers") or ()):
+        return True
+    return actor == INTAKE_ACTOR and bool(intake_policy(policy).get("enabled"))
+
+
 def execution_slot_holders(
     policy: dict, receipts, *, include_queued: bool = False
 ) -> list:
@@ -1341,7 +1355,6 @@ def execution_slot_holders(
     ownership, but has no guest work. Only admissible current queues reserve
     future intake room.
     """
-    from factory.orchestration.factory_intake import admission_eligible
 
     def holds(row):
         get = row.get if isinstance(row, dict) else lambda key: getattr(row, key, None)
