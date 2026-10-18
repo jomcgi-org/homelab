@@ -162,6 +162,55 @@ class TestSearchHttp5xxErrors:
         assert result.exit_code != 0
 
 
+class TestTasksAddErrors:
+    def test_uncertain_post_is_not_retried(self, runner):
+        requests = []
+
+        def handle(request):
+            requests.append(request)
+            raise httpx.ReadTimeout("Response lost", request=request)
+
+        with patch(
+            "tools.cli.tasks_cmd._client",
+            return_value=httpx.Client(
+                base_url="https://tasks.test", transport=httpx.MockTransport(handle)
+            ),
+        ):
+            result = runner.invoke(app, ["tasks", "add", "A task"])
+
+        assert result.exit_code != 0
+        assert isinstance(result.exception, httpx.ReadTimeout)
+        assert result.output == ""
+        assert len(requests) == 1
+
+    @pytest.mark.parametrize("prefix", [["tasks"], ["knowledge", "tasks"]])
+    @pytest.mark.parametrize("status_code", [403, 422, 500, 503])
+    def test_failure_has_no_id_or_success_output(self, runner, prefix, status_code):
+        requests = []
+
+        def handle(request):
+            requests.append(request)
+            return httpx.Response(
+                status_code,
+                json={"detail": "failed", "note_id": "must-not-print"},
+            )
+
+        with patch(
+            "tools.cli.tasks_cmd._client",
+            return_value=httpx.Client(
+                base_url="https://tasks.test", transport=httpx.MockTransport(handle)
+            ),
+        ):
+            result = runner.invoke(app, [*prefix, "add", "A task"])
+
+        assert result.exit_code != 0
+        assert isinstance(result.exception, httpx.HTTPStatusError)
+        assert result.output == ""
+        assert len(requests) == 1
+        assert requests[0].method == "POST"
+        assert requests[0].url.path == "/api/knowledge/tasks"
+
+
 class TestNoteHttp5xxErrors:
     def test_note_500_exits_nonzero(self, runner):
         """500 Internal Server Error during note fetch results in a non-zero exit."""

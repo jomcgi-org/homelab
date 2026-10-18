@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from collections.abc import Iterable
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
+from uuid import uuid4
 
 from sqlalchemy import and_, case, false, func, not_, or_
 from sqlalchemy.orm.attributes import flag_modified
@@ -1154,6 +1156,41 @@ class KnowledgeStore:
         self.session.execute(delete(NoteLink).where(NoteLink.src_note_fk == existing))
         self.session.execute(delete(Note).where(Note.id == existing))
         self.session.commit()
+
+    def create_task(
+        self, *, title: str, status: str = "todo", due: str | None = None
+    ) -> str:
+        """Commit a private task from validated input and return its stable id.
+
+        Task state lives in extra, matching list_tasks and patch_task. Keep
+        titles out of frontmatter and insert rather than upsert, so even an
+        identifier collision cannot replace an existing note. Scope remains
+        NULL, like the existing private task collection.
+        """
+        note_id = f"task-{uuid4().hex}"
+        now = datetime.now(UTC)
+        extra = {"status": status}
+        if due is not None:
+            extra["due"] = due
+        if status in _DONE_STATUSES:
+            extra["task-completed"] = now.date().isoformat()
+        content = f"# {title}\n"
+        self.session.add(
+            Note(
+                note_id=note_id,
+                path=f"_processed/tasks/{note_id}.md",
+                title=title,
+                type="active",
+                visibility="private",
+                content=content,
+                content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                extra=extra,
+                created_at=now,
+                indexed_at=now,
+            )
+        )
+        self.session.commit()
+        return note_id
 
     def list_tasks(
         self,
