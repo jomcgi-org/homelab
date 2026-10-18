@@ -342,6 +342,7 @@ def _record_ci(repo: str, item: dict, pr: dict) -> None:
 
 
 LANDING_ACTIONS = (
+    "owned_pr_merged",
     "merge_armed",
     "merge_ejected",
     "landing_recovery_requested",
@@ -504,6 +505,7 @@ def _deliveries(
             {
                 "task_id": row.task_id,
                 "paused": row.task_paused,
+                "owned_merge_observed": bool(audits["owned_pr_merged"]),
                 "issue_number": row.issue_number,
                 "conductor_gates": (
                     json.loads(row.direction_json) if row.direction_json else {}
@@ -1264,7 +1266,7 @@ def landing_tick(policy: dict) -> None:
             item
             for item in _deliveries(policy, include_refused=True, rotate=True)
             if not _enforce_landing_hold(policy["repo"], item)
-            and not item.get("paused")
+            and (not item.get("paused") or item.get("owned_merge_observed"))
         ]
         repo = policy["repo"]
         if merge_enabled:
@@ -1278,6 +1280,9 @@ def landing_tick(policy: dict) -> None:
             _observe_merge(repo, item)
             if item["merged"] and not item["closed"]:
                 _close_issue(repo, item)
+        # A paused delivery with an observed owned merge can finish verification,
+        # but can never publish a review, recover, or arm an unmerged PR.
+        deliveries = [item for item in deliveries if not item.get("paused")]
         if publish_enabled:
             candidates = [
                 item
