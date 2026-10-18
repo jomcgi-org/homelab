@@ -1,6 +1,6 @@
 """dr_jobs: in-monolith NHS Scotland vacancy aggregator (/app/dr-jobs).
 
-Scrapes apply.jobs.scot.nhs.uk daily for anaesthetics-consultant posts and
+Scrapes apply.jobs.scot.nhs.uk hourly for anaesthetics-consultant posts and
 serves them as a live/history listing table. Same shape as the hikes domain:
 a scheduled scrape job upserts a Postgres table, an SSR-only read endpoint backs
 the page, and the CDN fans the result out.
@@ -23,7 +23,7 @@ def register_public(app: FastAPI) -> None:
 
 
 def on_startup_jobs(session: Session) -> None:
-    """Register the daily NHS Scotland scrape job."""
+    """Register metadata for the hourly NHS Scotland scrape job."""
     from scheduler.api import register_job
 
     from dr_jobs.jobs import scrape_nhs_handler

@@ -1,6 +1,6 @@
 """Scheduled job handler for the dr_jobs domain.
 
-scrape_nhs_handler runs the daily NHS Scotland vacancy scrape. The network
+scrape_nhs_handler runs the hourly NHS Scotland vacancy scrape. The network
 phase runs in the async handler and the synchronous Session upsert is delegated
 to a worker thread (asyncio.to_thread) so it never blocks the scheduler event
 loop, mirroring hikes.scrape_walks_handler. The scheduler passes a session, but
@@ -231,7 +231,7 @@ def _notify_pending_sync() -> None:
 
 
 async def scrape_nhs_handler(session) -> datetime | None:
-    """Daily NHS Scotland scrape: full network phase, then one upsert pass.
+    """Hourly NHS Scotland scrape: full network phase, then one upsert pass.
 
     If the scrape produced nothing (transient site outage), keep the existing
     rows and write nothing, so the live view degrades to "stale" rather than
