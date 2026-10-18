@@ -22,7 +22,7 @@ from factory.orchestration.factory_models import (
     WorkItemEdge,
     WorkItemEvent,
 )
-from factory.orchestration.models import SwarmTask
+from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
 
 @pytest.fixture
@@ -43,6 +43,7 @@ def db(tmp_path, monkeypatch):
             m.__table__
             for m in (
                 SwarmTask,
+                SwarmNodeRun,
                 FactoryClassTier,
                 FactoryControl,
                 FactoryReceipt,
@@ -105,6 +106,119 @@ def grant(task_id, key="one", **kwargs):
         model=kwargs.get("model", "luna"),
         max_cost_usd=kwargs.get("cost", 2.0),
     )
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [None, {"state": "ready_for_review"}, {"state": "merged_review_missing"}],
+)
+def test_paused_generic_success_is_still_refused(db, policy, evidence):
+    task = admitted(policy)
+    controls.set_control("pause_task", "operator", task_id=task)
+    assert controls.finish_task(task, "succeeded", "reconciler", evidence=evidence) == {
+        "ok": False,
+        "reason": "task_paused",
+    }
+
+
+def test_paused_success_requires_observed_merge_evidence(db, policy):
+    task = admitted(policy)
+    controls.set_control("pause_task", "operator", task_id=task)
+    assert controls.finish_task(
+        task,
+        "succeeded",
+        "reconciler",
+        evidence={
+            "state": "merged_reviewed",
+            "head_sha": "a" * 40,
+            "pr_url": "https://github.com/owner/repo/pull/3",
+            "review_session_id": 123,
+        },
+    ) == {"ok": False, "reason": "merged_delivery_unverified"}
+
+
+@pytest.mark.parametrize("trigger", ["deadline", "objective_closed", "merged"])
+@pytest.mark.parametrize("blocker", ["reserved", "uncertain", "admitted", "dispatched"])
+def test_paused_settlement_primitive_rechecks_both_ledgers(
+    db, policy, monkeypatch, trigger, blocker
+):
+    task = admitted(policy)
+    controls.set_control("pause_task", "operator", task_id=task)
+    deadline = datetime.fromisoformat(controls.task_snapshot(task)["deadline_at"])
+    monkeypatch.setattr(controls, "_now", lambda: deadline + timedelta(seconds=1))
+    assert controls.paused_settlement_snapshot(task)["ok"]
+    # Work appears after preflight. The primitive must observe it itself.
+    with Session(db) as session, session.begin():
+        if blocker in ("reserved", "uncertain"):
+            session.add(
+                FactoryStart(
+                    task_id=task,
+                    start_key="late",
+                    actor="test",
+                    model="luna",
+                    max_cost_usd=1,
+                    status=blocker,
+                )
+            )
+        else:
+            session.add(
+                SwarmNodeRun(task_id=task, node_key="late", attempt=1, status=blocker)
+            )
+    kwargs = {"paused_trigger": trigger} if trigger != "merged" else {}
+    state = {
+        "merged": "merged_reviewed",
+        "deadline": "conductor_escalated",
+        "objective_closed": "objective_closed",
+    }[trigger]
+    outcome = {
+        "merged": "succeeded",
+        "deadline": "escalated",
+        "objective_closed": "cancelled",
+    }[trigger]
+    result = controls.finish_task(
+        task, outcome, "reconciler", evidence={"state": state}, **kwargs
+    )
+    assert result == {
+        "ok": False,
+        "reason": "unresolved_starts"
+        if blocker in ("reserved", "uncertain")
+        else "live_runs",
+    }
+    assert controls.task_snapshot(task)["state"] == "admitted"
+
+
+@pytest.mark.parametrize(
+    "change", ["resume", "landing_hold", "cancel", "stop", "deadline"]
+)
+def test_paused_deadline_settlement_rechecks_authority(db, policy, monkeypatch, change):
+    task = admitted(policy)
+    controls.set_control("pause_task", "operator", task_id=task)
+    deadline = datetime.fromisoformat(controls.task_snapshot(task)["deadline_at"])
+    clock = [deadline + timedelta(seconds=1)]
+    monkeypatch.setattr(controls, "_now", lambda: clock[0])
+    assert controls.paused_settlement_snapshot(task)["ok"]
+    if change == "resume":
+        controls.set_control("resume_task", "operator", task_id=task)
+    elif change == "stop":
+        controls.set_control("stop", "operator")
+    elif change == "deadline":
+        clock[0] = deadline - timedelta(seconds=1)
+    else:
+        with Session(db) as session, session.begin():
+            row = controls._receipt(session, task)
+            if change == "landing_hold":
+                row.direction_json = '{"landing_hold":{"actor":"operator"}}'
+            else:
+                row.cancellation_requested = True
+    result = controls.finish_task(
+        task,
+        "escalated",
+        "reconciler",
+        evidence={"state": "conductor_escalated"},
+        paused_trigger="deadline",
+    )
+    assert not result["ok"]
+    assert controls.task_snapshot(task)["state"] == "admitted"
 
 
 @pytest.fixture

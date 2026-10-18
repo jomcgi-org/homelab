@@ -31,12 +31,10 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
     with controls._read_session() as db:
         receipt = controls._receipt(db, task["id"])
         if receipt and (
-            receipt.task_paused
-            or receipt.cancellation_requested
-            or controls.landing_held(receipt)
+            receipt.cancellation_requested or controls.landing_held(receipt)
         ):
             return False
-    if task.get("task_paused") or task.get("landing_hold"):
+    if task.get("landing_hold"):
         return False
     if controls.review_recovery_held(task["id"]):
         return False
@@ -52,7 +50,9 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
         pr = conductor.github_get(task["repo"], f"pulls/{number}")
     except (httpx.HTTPError, ValueError):
         # Once observed, a transient read failure cannot reopen implementation.
-        return prior is not None
+        # Nor may unknown merge state on a paused task fall through to generic
+        # issue-closed cancellation, which would lose delivery verification.
+        return prior is not None or bool(receipt and receipt.task_paused)
     if not pr.get("merged") or not conductor.delivery_identity_matches(task, pr):
         return prior is not None
     landing._record(
