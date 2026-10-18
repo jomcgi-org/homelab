@@ -390,7 +390,7 @@ run_guard_case() {
 	local bb_log="$TMP/$name.bb.log"
 	: >"$guard_log"
 	: >"$base_log"
-	if (cd "$FAKE_ROOT" && HOME="$TMP/$name-home" XDG_CACHE_HOME="$TMP/$name-cache" \
+	if (cd "$FAKE_ROOT" && XDG_CACHE_HOME="$TMP/$name-cache" \
 		PATH="$STUB_BIN:$PATH" CI_FAKE_ROOT="$FAKE_ROOT" \
 		CI_BASE_REF="$base_ref" SKIP_REMOTE="$skip_remote" \
 		GUARD_LOG="$guard_log" MERGE_BASE_LOG="$base_log" \
