@@ -4,7 +4,7 @@
 # Steps:
 #   1. lint     format only files changed vs origin/main
 #   2. regen    generators only when their inputs changed (BUILD generation is CI-only)
-#   3. ratchet  reject new central monolith BUILD enumeration
+#   3. ratchet  verification tags, central BUILD entries, chart versions, source patterns
 #   4. test     bb remote (Linux) affected Bazel tests with the PR Test flags
 #
 # Usage:
@@ -228,15 +228,18 @@ cmd_regen() {
 	log "regen: done"
 }
 
-# ---------- central monolith BUILD ratchet ----------
+# ---------- pure-Python PR guards ----------
 cmd_ratchet() {
 	local merge_base
 	if ! merge_base="$(git merge-base "$BASE_REF" HEAD)"; then
 		err "ratchet: cannot find the merge base of $BASE_REF and HEAD"
 		return 1
 	fi
-	log "ratchet: checking central monolith BUILD entries"
+	log "ratchet: checking verification tags, central BUILD entries, chart versions and source patterns"
+	python3 ./bazel/tools/ci/verification_genrule_guard.py .
 	python3 ./bazel/tools/ci/central_build_ratchet.py "$merge_base" HEAD
+	python3 ./bazel/tools/ci/chart_version_guard.py "$merge_base" HEAD
+	python3 ./bazel/tools/ci/source_ratchet.py "$merge_base" HEAD
 }
 
 # ---------- test (bb remote = Workflows backend, Linux) ----------
