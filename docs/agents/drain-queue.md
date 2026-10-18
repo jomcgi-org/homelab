@@ -12,7 +12,7 @@ fresh Luna session each, strictly serially, claimed by a `*/15` CronWorkflow
 tick. The lane spends subscription quota rather than per-token billing, so it
 exists to turn idle capacity into audits, reports, and small PRs. The same
 drainer claims `kg-drain` jobs for knowledge extraction, and `docfix:` jobs are
-one-shot `qwen-drain` tasks for human-reviewed documentation PRs.
+one-shot `qwen-drain` tasks for independently reviewed documentation PRs.
 
 The default-off KG audit uses that same `kg-drain` admission, quota floors and
 daily job cap. Its recurring `kg-audit` payload is
@@ -128,7 +128,8 @@ and label. The recipe:
 6. `export GH_TOKEN=placeholder` (gh refuses to run without one; the sidecar
    replaces it).
 7. `gh pr create` with title prefixed `[qwen]`, label `qwen-agent-for-review`,
-   the job name in the body. Never enable auto-merge.
+   the job name in the body. The implementing worker leaves landing to the
+   reviewer or dispatcher; it does not approve its own diff.
 8. "Your final answer must be only the PR URL."
 
 A doc PR touches only the doc: the docs manifests are genrule outputs.
@@ -185,11 +186,16 @@ Review keys on diff class, not author.
   both the claim and the edit. Read the evidence block first; if its two sides
   do not disagree, close the PR.
 
-Lane PRs are human-merged, except docs-only `docs:` PRs, which a
-`docfix-review` job verifies against main and queues when `docFixAutoMerge` is
-on. The protected set (`knowledge/docfix.py`, `DOCFIX_PROTECTED_PATH_GLOBS`) is
-always human-merged. Cap a batch at what you are willing to review in one
-sitting.
+An authorized dispatcher can land eligible lane PRs under `AGENTS.md` "Merge
+authority" after the applicable review and CI. Human review is required only
+for an unresolved decision or explicit hold.
+
+The bounded `docfix-review` job queues docs-only `docs:` PRs when
+`docFixAutoMerge` is on. Its protected paths (`knowledge/docfix.py`,
+`DOCFIX_PROTECTED_PATH_GLOBS`), scope/size gates and configured switch still
+restrict that worker. Work outside those limits needs separate dispatcher
+review and authority; this guidance does not enable the switch or expand the
+worker's allowlist. Cap a batch at the available independent review capacity.
 
 ## The factory retro job
 
