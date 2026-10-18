@@ -112,15 +112,6 @@ actions:
           # silently skipping a guard, so optional secrets use ${VAR:-}.
           set -eu
 
-          # Temporary #7090 recovery: run the scoped relock on the Linux runner.
-          # Remove this block after retrieving the generated lock for the PR.
-          if [ "${GIT_BRANCH:-}" = "factory/t-71bff926-97fa-4727-9bc2-8e8acb36748f" ] && [ "${GIT_PR_NUMBER:-0}" = "7126" ]; then
-            bazel/tools/format/update-apko-locks.sh projects/embervm/runtimes/claude/apko.yaml
-            echo "NODE22_7090_LOCK_BEGIN"
-            base64 -w 76 projects/embervm/runtimes/claude/apko.lock.json
-            echo "NODE22_7090_LOCK_END"
-          fi
-
           # Disk high-water sampling. `disk: 120GB` above was set in 2026-07
           # (db9ea2ce0) for actions that no longer exist in that shape, and
           # nothing has measured what this runner actually uses since.
