@@ -213,11 +213,22 @@ def apply_fact_review(
 
 
 def fail_fact_review_batch(
-    session: Session, invocation_key: str, reason: str, *, transaction_guard=None
+    session: Session,
+    invocation_key: str,
+    reason: str,
+    *,
+    transaction_guard=None,
+    commit=True,
 ) -> None:
     from knowledge.fact_review_batch import fail
 
-    fail(session, invocation_key, reason, transaction_guard=transaction_guard)
+    fail(
+        session,
+        invocation_key,
+        reason,
+        transaction_guard=transaction_guard,
+        commit=commit,
+    )
 
 
 def defer_audit_if_over_budget(

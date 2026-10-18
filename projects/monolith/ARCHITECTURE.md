@@ -1360,8 +1360,10 @@ records an unavailable outcome only for its claim; valid sibling verdicts can
 still commit. Recovery uses the first durable model response and applies each
 receipt once. Changed claims create ordinary disputes. Unsupported claims wait
 for a new revision. Known session failures release unfinished receipts with
-backoff; unknown invocations retain their fences. A wholly unavailable batch,
-empty eligible set or exhausted allowance backs off for 15 minutes.
+backoff; unknown invocations retain their fences. The pre-session recovery sweep
+retires batch receipts in the same transaction as its proven permit cancellation
+and dead-holder lease release. A wholly unavailable batch, empty eligible set
+or exhausted allowance backs off for 15 minutes.
 
 **Why.** Batching amortizes session startup and repeated source reads while
 retaining the freshness owner's per-fact renewal contract. One model judgment

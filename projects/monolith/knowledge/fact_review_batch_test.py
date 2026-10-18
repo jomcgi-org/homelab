@@ -326,6 +326,21 @@ def test_known_failure_releases_with_backoff_but_unresolved_batch_stays_fenced(d
     assert len(db.exec(select(ReviewOutcome)).all()) == 3
 
 
+def test_prestart_recovery_receipts_share_the_callers_transaction(db):
+    notes(db)
+    prepare(db)
+    batch.fail(db, "batch", "proved no session was started", now=NOW, commit=False)
+    assert db.get(FactReviewBatch, "batch").status == "complete"
+    db.rollback()
+    assert db.get(FactReviewBatch, "batch").status == "prepared"
+    assert db.exec(select(ReviewOutcome)).all() == []
+    assert all(row.status == "prepared" for row in db.exec(select(FactReviewRun)).all())
+    batch.fail(db, "batch", "proved no session was started", now=NOW, commit=False)
+    db.commit()
+    assert db.get(FactReviewBatch, "batch").status == "complete"
+    assert len(db.exec(select(ReviewOutcome)).all()) == 3
+
+
 def test_interrupted_fetch_resumes_same_main_revision_and_saved_sources(db):
     notes(db, 2, paths=["projects/a.py", "projects/b.py"])
 

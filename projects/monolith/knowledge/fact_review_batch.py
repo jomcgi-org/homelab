@@ -94,7 +94,7 @@ def _reserve(session, key, now):
     return keys
 
 
-def _failure(session, key, status, reason, now):
+def _failure(session, key, status, reason, now, *, commit=True):
     run = session.exec(
         select(FactReviewRun)
         .where(FactReviewRun.invocation_key == key)
@@ -118,7 +118,8 @@ def _failure(session, key, status, reason, now):
             "summary": f"Source review: {status}",
             "reason": reason[:300],
         }
-    session.commit()
+    if commit:
+        session.commit()
 
 
 def _prompt(runs):
@@ -166,7 +167,7 @@ def _prompt(runs):
     )
 
 
-def _finish(session, key, now, *, transaction_guard=None):
+def _finish(session, key, now, *, transaction_guard=None, commit=True):
     if transaction_guard:
         transaction_guard(session)
     batch = _batch(session, key, lock=True)
@@ -186,7 +187,8 @@ def _finish(session, key, now, *, transaction_guard=None):
         "retry_required": bool(counts) and set(counts) <= {"unavailable"},
     }
     result = dict(batch.result)
-    session.commit()
+    if commit:
+        session.commit()
     return result
 
 
@@ -403,19 +405,28 @@ def apply(
     return result
 
 
-def fail(session: Session, key: str, reason: str, *, transaction_guard=None, now=None):
+def fail(
+    session: Session,
+    key: str,
+    reason: str,
+    *,
+    transaction_guard=None,
+    now=None,
+    commit=True,
+):
     """Release claims only after a known failure; unknown invocations never call this."""
     now = utc(now or datetime.now(UTC))
     batch = session.get(FactReviewBatch, key)
     if batch is None or batch.status == "complete":
         return
     keys = list(batch.member_keys)
-    session.commit()
+    if commit:
+        session.commit()
     for member in keys:
         if transaction_guard:
             transaction_guard(session)
-        _failure(session, member, "unavailable", reason[:300], now)
-    _finish(session, key, now, transaction_guard=transaction_guard)
+        _failure(session, member, "unavailable", reason[:300], now, commit=commit)
+    _finish(session, key, now, transaction_guard=transaction_guard, commit=commit)
 
 
 def status(session: Session, *, now: datetime) -> dict:
