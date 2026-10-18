@@ -247,8 +247,7 @@ def test_unconfigured_broker_omits_provider_quota_transport() -> None:
     workflow = _object(objects, "CronWorkflow", "factory-public-snapshot")
 
     assert not any(
-        name.startswith("EMBER_TOKENBROKER_")
-        for name in _env(_job_container(workflow))
+        name.startswith("EMBER_TOKENBROKER_") for name in _env(_job_container(workflow))
     )
 
 
