@@ -854,3 +854,61 @@ func TestReconcileGroupReadsInstanceSidecar(t *testing.T) {
 		t.Fatalf("worker-1 (pre-sidecar) groupInstanceID = %q, want \"\"", got)
 	}
 }
+
+// Local group wakes hold memory without cancelling unrelated control-plane claims.
+func TestGroupRelightPlacedInflightFollowsOrigin(t *testing.T) {
+	for _, origin := range []nodev1.InstanceOrigin{
+		nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE,
+		nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR,
+	} {
+		t.Run(origin.String(), func(t *testing.T) {
+			port := tcpHealthServer(t)
+			s, _, driver, _ := newGroupMemberTestServer(t)
+			fresh := startFreshMember(t, s, port, "worker-0", 0)
+			banked, err := s.StopGroupMember(context.Background(), &nodev1.StopGroupMemberRequest{
+				VmId: fresh.GetVmId(), Mode: nodev1.StopGroupMemberMode_STOP_GROUP_MEMBER_MODE_BANK,
+				SetId: "placed-origin", MemberName: "worker-0",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			driver.restoreStarted = make(chan struct{}, 1)
+			driver.releaseRestore = make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				_, err := s.startGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+					Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+					Mode: nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT,
+					GroupInstanceId: "grp-A", MemberName: "worker-0", MemberIndex: 0,
+					Ip: "127.0.0.1", SnapshotRef: banked.GetSnapshotRef(), HealthPort: port,
+					Trace: &nodev1.Trace{Workload: "wl-group"},
+				}, origin)
+				done <- err
+			}()
+			select {
+			case <-driver.restoreStarted:
+			case err := <-done:
+				close(driver.releaseRestore)
+				t.Fatalf("restore returned before admission observation: %v", err)
+			case <-time.After(3 * time.Second):
+				close(driver.releaseRestore)
+				t.Fatal("restore did not start")
+			}
+			during := s.admissionStatus()
+			close(driver.releaseRestore)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if during.inflightMib != 512 || during.inflightVMs != 1 {
+				t.Fatalf("restore reservation = %+v, want 512 MiB and one VM", during)
+			}
+			wantMib, wantVMs := uint64(0), 0
+			if origin == nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
+				wantMib, wantVMs = 512, 1
+			}
+			if during.placedMib != wantMib || during.placedVMs != wantVMs {
+				t.Fatalf("placed ledger = %+v, want %d MiB and %d VMs", during, wantMib, wantVMs)
+			}
+		})
+	}
+}

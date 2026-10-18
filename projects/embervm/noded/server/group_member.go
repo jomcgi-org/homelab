@@ -70,7 +70,11 @@ func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	// RELIGHT is charged at least the member bundle's recorded size, which is
 	// what the restored VM lands at.
 	need := s.groupMemberAdmitMib(req)
-	ticket, err := s.admit(ctx, "StartGroupMember", need, placedShare(uint64(req.GetResources().GetMemMib()), need), classMemOnly)
+	placed := uint64(0)
+	if origin == nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
+		placed = placedShare(uint64(req.GetResources().GetMemMib()), need)
+	}
+	ticket, err := s.admit(ctx, "StartGroupMember", need, placed, classMemOnly)
 	if err != nil {
 		return nil, err
 	}
