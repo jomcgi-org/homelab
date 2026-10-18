@@ -38,7 +38,6 @@ spec:
     memory: false
     filesystem:
       enabled: true
-      retention: 1
       sizeBytes: {{ .Values.piRuntimeWorkload.workspaceSizeBytes }}
       mountPath: /session
   {{- end }}

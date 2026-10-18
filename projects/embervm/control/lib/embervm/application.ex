@@ -1637,7 +1637,8 @@ defmodule Embervm.Application do
   # wired (same gate as stateful: no point binding ports nothing dials on), and reads
   # the SAME EMBERVM_COMPOSITE_LISTEN_PORT_RANGE the watcher + publisher use so the
   # bound listeners match the rendered group-<listenPort> listeners.
-  defp tcp_activator_opts do
+  @doc false
+  def tcp_activator_opts do
     [
       port_range: stateful_activator_port_range() ++ composite_activator_port_range(),
       activator_ip: stateful_activator_ip(),
@@ -1678,21 +1679,12 @@ defmodule Embervm.Application do
   # unless they also override the range); with no activator_ip configured this
   # returns [] (no listener), so an ordinary `mix test` / no-chart-values run
   # never claims fixed ports. EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE is a
-  # "start-end" pair (e.g. "5400-5409"); EMBERVM_STATEFUL_ACTIVATOR_PORT_START/
-  # _END are the split form the chart may render instead.
+  # "start-end" pair (e.g. "5400-5409").
   defp stateful_activator_port_range do
     if stateful_activator_ip() do
       case trimmed_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE") do
         "" ->
-          start_port =
-            int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_START") ||
-              @default_stateful_activator_port_start
-
-          end_port =
-            int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_END") ||
-              @default_stateful_activator_port_end
-
-          Enum.to_list(start_port..end_port)
+          Enum.to_list(@default_stateful_activator_port_start..@default_stateful_activator_port_end)
 
         raw ->
           case String.split(raw, "-", parts: 2) do

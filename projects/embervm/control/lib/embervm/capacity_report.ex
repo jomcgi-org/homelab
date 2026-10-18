@@ -88,20 +88,6 @@ defmodule Embervm.CapacityReport do
     }
   end
 
-  @doc "Parse the inert future-facing desired-capacity knob."
-  @spec parse_desired_capacity(String.t() | nil) :: {:ok, non_neg_integer() | nil} | {:error, :invalid_desired_capacity}
-  def parse_desired_capacity(nil), do: {:ok, nil}
-  def parse_desired_capacity(""), do: {:ok, nil}
-
-  def parse_desired_capacity(raw) when is_binary(raw) do
-    case Integer.parse(raw) do
-      {value, ""} when value >= 0 -> {:ok, value}
-      _ -> {:error, :invalid_desired_capacity}
-    end
-  end
-
-  def parse_desired_capacity(_), do: {:error, :invalid_desired_capacity}
-
   @doc "Parse and bound the cron demand horizon."
   @spec parse_horizon_seconds(String.t() | nil) :: {:ok, pos_integer()} | {:error, :invalid_capacity_horizon}
   def parse_horizon_seconds(nil), do: {:ok, @default_horizon_seconds}

@@ -216,6 +216,7 @@ def test_activator_ranges_match_control_plane_and_every_noded(stateful, composit
     ), "expected a per-node brick Deployment"
 
     cp_env = {entry["name"]: entry.get("value") for entry in control[0]["env"]}
+    assert "EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE" not in cp_env
     for cp_name, noded_name, ports in (
         (
             "EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE",
@@ -223,13 +224,19 @@ def test_activator_ranges_match_control_plane_and_every_noded(stateful, composit
             stateful or (5400, 5409),
         ),
         (
-            "EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE",
+            "EMBERVM_COMPOSITE_LISTEN_PORT_RANGE",
             "EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE",
             composite or (5410, 5419),
         ),
     ):
         expected = f"{ports[0]}-{ports[1]}"
         assert cp_env.get(cp_name) == expected
+        prefix = "state-" if "STATEFUL" in cp_name else "group-"
+        assert {
+            port["containerPort"]
+            for port in control[0]["ports"]
+            if port["name"].startswith(prefix)
+        } == set(range(ports[0], ports[1] + 1))
         for kind, name, container in noded:
             env = {entry["name"]: entry.get("value") for entry in container["env"]}
             assert env.get(noded_name) == expected, (
@@ -238,6 +245,63 @@ def test_activator_ranges_match_control_plane_and_every_noded(stateful, composit
                 noded_name,
                 env.get(noded_name),
             )
+
+
+@pytest.mark.parametrize("gate", ["xds.enabled", "servingEnvoy.enabled"])
+def test_control_plane_activator_envs_remain_gated(gate):
+    rendered = _render_with_set(
+        "activator-off", ["xds.enabled=true", "servingEnvoy.enabled=true", f"{gate}=false"]
+    )
+    control = next(
+        container
+        for document in yaml.safe_load_all(rendered)
+        if isinstance(document, dict) and document.get("kind") == "Deployment"
+        for container in document["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "control-plane"
+    )
+    env = {entry["name"] for entry in control["env"]}
+    assert env.isdisjoint({
+        "EMBERVM_STATEFUL_ACTIVATOR_IP",
+        "EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE",
+        "EMBERVM_COMPOSITE_LISTEN_PORT_RANGE",
+        "EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE",
+    })
+    if gate == "servingEnvoy.enabled":
+        assert not any(
+            port["name"].startswith(("state-", "group-")) for port in control["ports"]
+        )
+
+
+def test_dead_values_are_absent_from_defaults_and_overlays():
+    defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert "trustDomain" not in defaults["controlPlane"]["spiffe"]
+    assert defaults["noded"]["spiffe"]["trustDomain"] == "embervm.jomcgi.dev"
+    for key in ("GKE_VALUES", "DEV_GKE_VALUES"):
+        values = yaml.safe_load(Path(os.environ[key]).read_text())
+        assert "networkPolicy" not in values.get("tokenBroker", {}), key
+    for key in ("DEV_VALUES", "RECOVERY_VALUES"):
+        values = yaml.safe_load(Path(os.environ[key]).read_text())
+        assert "sandboxSessionWorkload" not in values, key
+
+
+@pytest.mark.parametrize(
+    "value_keys",
+    [(), ("PROD_VALUES",), ("PROD_VALUES", "GKE_VALUES"), ("DEV_VALUES",),
+     ("DEV_VALUES", "DEV_GKE_VALUES"), ("RECOVERY_VALUES",)],
+    ids=["defaults", "prod", "gke", "dev", "dev-gke", "recovery"],
+)
+def test_staged_cleanup_renders_without_dead_configuration(value_keys):
+    values = [Path(os.environ[key]) for key in value_keys]
+    rendered = _render("embervm-dev", values)
+    assert "EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE" not in rendered
+    assert "EMBERVM_DESIRED_CAPACITY" not in rendered
+    documents = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+    assert documents
+    assert all(doc["kind"] != "CiliumNetworkPolicy" for doc in documents)
+    for doc in documents:
+        if doc["kind"] == "Workload":
+            filesystem = doc["spec"].get("persistence", {}).get("filesystem", {})
+            assert "retention" not in filesystem, doc["metadata"]["name"]
 
 
 def test_store_probe_interval_renders_into_control_plane() -> None:
@@ -830,6 +894,10 @@ def test_control_plane_runtime_envs_render(renders):
     prod_env = control_plane_env(renders["prod"])
     gke_env = control_plane_env(renders["gke"])
     dev_env = control_plane_env(renders["dev"])
+
+    for env in (prod_env, gke_env, dev_env):
+        assert "EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE" not in env
+        assert "EMBERVM_DESIRED_CAPACITY" not in env
 
     assert prod_env.get("EMBERVM_BRICK_AUTOSCALE_MODE") == "full"
     assert gke_env.get("EMBERVM_BRICK_AUTOSCALE_MODE") == "full"
@@ -2640,6 +2708,45 @@ def test_recovery_disarms_destructive_defaults() -> None:
     assert values["opLog"]["postgres"]["secretName"] == (
         "monolith-dev-pg-embervm-oplog"
     )
+
+
+def test_filesystem_schema_only_advertises_consumed_properties():
+    schema = yaml.safe_load((_chart_dir() / "crds/workload-crd.yaml").read_text())
+    spec = schema["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+    persistence = spec["properties"]["persistence"]["properties"]
+    assert set(persistence) == {"memory", "filesystem"}
+    filesystem = persistence["filesystem"]["properties"]
+    assert set(filesystem) == {"enabled", "sizeGi", "sizeBytes", "mountPath"}
+    assert filesystem["sizeGi"]["default"] == 8
+    assert filesystem["sizeBytes"]["minimum"] == 1
+    assert filesystem["mountPath"]["default"] == "/session"
+
+
+@pytest.mark.parametrize("persistence_enabled", [False, True])
+def test_runtime_workloads_render_supported_persistence(persistence_enabled):
+    enabled = str(persistence_enabled).lower()
+    rendered = _render_with_set("persistence", [
+        "claudeRuntimeWorkload.enabled=true", "piRuntimeWorkload.enabled=true",
+        f"claudeRuntimeWorkload.persistenceEnabled={enabled}",
+        f"piRuntimeWorkload.persistenceEnabled={enabled}",
+        "claudeRuntimeWorkload.workspaceSizeBytes=4096",
+        "piRuntimeWorkload.workspaceSizeBytes=8192",
+    ])
+    workloads = {
+        doc["metadata"]["name"]: doc["spec"]
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict) and doc.get("kind") == "Workload"
+        and doc["spec"].get("class") == "session"
+    }
+    assert set(workloads) == {"claude-runtime", "pi-runtime"}
+    for name, size in (("claude-runtime", 4096), ("pi-runtime", 8192)):
+        if persistence_enabled:
+            assert workloads[name]["persistence"] == {
+                "memory": False,
+                "filesystem": {"enabled": True, "sizeBytes": size, "mountPath": "/session"},
+            }
+        else:
+            assert "persistence" not in workloads[name]
 
 
 def test_agent_invokes_fit_runtime_schema_and_fresh_session_lifetime():

@@ -288,13 +288,6 @@ spec:
                         enabled:
                           type: boolean
                           description: Keep a durable filesystem artifact for this lineage.
-                        retention:
-                          type: integer
-                          description: >-
-                            Accepted but not yet enforced. Newest-only artifact
-                            retention is currently used.
-                          minimum: 0
-                          default: 0
                         sizeGi:
                           type: integer
                           description: >-

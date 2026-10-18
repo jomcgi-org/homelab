@@ -160,8 +160,6 @@ sandboxWorkloads:
     enabled: false
   sandboxJavascript:
     enabled: false
-sandboxSessionWorkload:
-  enabled: false
 bazelQueryWorkload:
   enabled: false
 shotterWorkload:

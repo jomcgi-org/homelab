@@ -463,12 +463,6 @@ spec:
             {{- end }}
             {{- if .Values.xds.enabled }}
             {{- if .Values.servingEnvoy.enabled }}
-            # The R5 composite (group) TCP activator port range: the values-declared
-            # range the activator physically binds on the pod (Task 7), so the node
-            # Envoy's group tcp_proxy fallback dials podIP:<listenPort>. Same range as
-            # the container ports above, mirroring EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE.
-            - name: EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE
-              value: "{{ .Values.servingEnvoy.compositeTcpPortRange.start }}-{{ .Values.servingEnvoy.compositeTcpPortRange.end }}"
             # The composite supernet the CONTROL PLANE allocates per-group /24s from
             # (lowest-free) and the DNAT port base it re-derives each group's entry
             # vmPort from. BOTH are the SAME chart values that feed noded's

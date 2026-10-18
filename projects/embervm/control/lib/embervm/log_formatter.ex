@@ -66,8 +66,6 @@ defmodule Embervm.LogFormatter do
     :release_reason,
     :mem_mib,
     :claim_age_ms,
-    # Parsed, inert future-facing capacity configuration.
-    :desired_capacity,
     # Brick portfolio floor transitions.
     :computed_floor,
     :max_replicas,

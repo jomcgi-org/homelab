@@ -32,7 +32,16 @@ defmodule Embervm.ApplicationTest do
             "EMBERVM_NODED_TLS_PORT",
             "EMBERVM_NODED_SVID_CERT",
             "EMBERVM_NODED_SVID_KEY",
-            "EMBERVM_NODED_SVID_BUNDLE"
+            "EMBERVM_NODED_SVID_BUNDLE",
+            "EMBERVM_STATEFUL_ACTIVATOR_IP",
+            "EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE",
+            "EMBERVM_STATEFUL_ACTIVATOR_PORT_START",
+            "EMBERVM_STATEFUL_ACTIVATOR_PORT_END",
+            "EMBERVM_COMPOSITE_LISTEN_PORT_RANGE",
+            "EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE",
+            "EMBERVM_DESIRED_CAPACITY",
+            "EMBERVM_CAPACITY_HORIZON_SECONDS",
+            "OTEL_EXPORTER_OTLP_ENDPOINT"
           ] do
         {k, System.get_env(k)}
       end
@@ -79,6 +88,97 @@ defmodule Embervm.ApplicationTest do
 
     System.put_env("EMBERVM_ARTIFACT_ENCRYPTION", "0")
     assert App.artifact_encryption_enabled() == false
+  end
+
+  test "TCP activators bind nothing without an IP, including with configured ranges" do
+    assert App.tcp_activator_opts()[:port_range] == []
+    assert App.tcp_activator_opts()[:activator_ip] == nil
+
+    System.put_env("EMBERVM_STATEFUL_ACTIVATOR_IP", "  ")
+    System.put_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE", "15400-15409")
+    System.put_env("EMBERVM_COMPOSITE_LISTEN_PORT_RANGE", "16410-16419")
+    assert App.tcp_activator_opts()[:port_range] == []
+  end
+
+  test "TCP activator defaults ignore removed split and duplicate envs" do
+    System.put_env("EMBERVM_STATEFUL_ACTIVATOR_IP", "192.0.2.1")
+    expected = Enum.to_list(5400..5419)
+    assert App.tcp_activator_opts()[:port_range] == expected
+
+    System.put_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_START", "15400")
+    System.put_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_END", "15409")
+    System.put_env("EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE", "16410-16419")
+    assert App.tcp_activator_opts()[:port_range] == expected
+
+    System.put_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE", "  ")
+    System.put_env("EMBERVM_COMPOSITE_LISTEN_PORT_RANGE", "")
+    assert App.tcp_activator_opts()[:port_range] == expected
+  end
+
+  test "TCP activators read the combined stateful and shared composite ranges" do
+    System.put_env("EMBERVM_STATEFUL_ACTIVATOR_IP", "192.0.2.1")
+    System.put_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE", " 15400 - 15409 ")
+    assert App.tcp_activator_opts()[:port_range] ==
+             Enum.to_list(15400..15409) ++ Enum.to_list(5410..5419)
+
+    System.put_env("EMBERVM_COMPOSITE_LISTEN_PORT_RANGE", "16410-16419")
+    assert App.tcp_activator_opts()[:port_range] ==
+             Enum.to_list(15400..15409) ++ Enum.to_list(16410..16419)
+
+    System.delete_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE")
+    assert App.tcp_activator_opts()[:port_range] ==
+             Enum.to_list(5400..5409) ++ Enum.to_list(16410..16419)
+    assert App.tcp_activator_opts()[:activator_ip] == "192.0.2.1"
+  end
+
+  test "malformed combined stateful ranges still disable only the stateful listeners" do
+    System.put_env("EMBERVM_STATEFUL_ACTIVATOR_IP", "192.0.2.1")
+
+    for raw <- ["invalid", "5400-nope", "5400-5409-extra"] do
+      System.put_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE", raw)
+      assert App.tcp_activator_opts()[:port_range] == Enum.to_list(5410..5419)
+    end
+  end
+
+  test "runtime config ignores malformed removed capacity env without losing the horizon" do
+    System.put_env("EMBERVM_DESIRED_CAPACITY", "not-an-integer")
+    config = runtime_config()
+    assert config[:embervm][:capacity_horizon_seconds] == 3_600
+    refute Keyword.has_key?(config[:embervm], :desired_capacity)
+    refute Keyword.has_key?(config, :opentelemetry_exporter)
+
+    for horizon <- ["1", "86400"] do
+      System.put_env("EMBERVM_CAPACITY_HORIZON_SECONDS", horizon)
+      assert runtime_config()[:embervm][:capacity_horizon_seconds] == String.to_integer(horizon)
+    end
+  end
+
+  test "runtime config still fails on malformed or out-of-bounds capacity horizon" do
+    for horizon <- ["invalid", "0", "-1", "86401", "1.5"] do
+      System.put_env("EMBERVM_CAPACITY_HORIZON_SECONDS", horizon)
+
+      assert_raise ArgumentError,
+                   "EMBERVM_CAPACITY_HORIZON_SECONDS must be between 1 and 86400",
+                   fn -> runtime_config() end
+    end
+  end
+
+  test "runtime config keeps OTLP traces and metrics wiring" do
+    endpoint = "http://collector.test:4317"
+    System.put_env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+    config = runtime_config()
+    assert config[:opentelemetry][:traces_exporter] == :otlp
+    assert config[:opentelemetry_exporter] == [otlp_protocol: :grpc, otlp_endpoint: endpoint]
+    assert [%{
+             module: :otel_metric_reader,
+             config: %{exporter: {:otel_exporter_metrics_otlp, exporter}}
+           }] =
+             config[:opentelemetry_experimental][:readers]
+    assert exporter == %{protocol: :grpc, endpoints: [endpoint]}
+  end
+
+  defp runtime_config do
+    Config.Reader.read!(Path.expand("../../config/runtime.exs", __DIR__), env: :test)
   end
 
   test "the noded SPIFFE dial is off by default and its boot wiring is a pure env read" do

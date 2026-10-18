@@ -335,7 +335,7 @@ defmodule Embervm.WorkloadWatcherTest do
     refute Map.has_key?(status_map, "conditions")
   end
 
-  test "session persistence does not carry the unenforced retention field" do
+  test "session persistence preserves the supported filesystem fields without memory" do
     table = unique_table()
     agent = start_recorder()
 
@@ -344,7 +344,7 @@ defmodule Embervm.WorkloadWatcherTest do
         "spec" => %{
           "persistence" => %{
             "memory" => false,
-            "filesystem" => %{"enabled" => true, "retention" => 7, "sizeBytes" => 4096}
+            "filesystem" => %{"enabled" => true, "sizeBytes" => 4096, "mountPath" => "/workspace"}
           }
         }
       })
@@ -353,10 +353,10 @@ defmodule Embervm.WorkloadWatcherTest do
     :ok = WorkloadWatcher.reconcile_now(watcher)
 
     assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-session")
-    assert entry.persistence.memory == false
-    assert entry.persistence.filesystem.enabled == true
-    assert entry.persistence.filesystem.size_bytes == 4096
-    refute Map.has_key?(entry.persistence.filesystem, :retention)
+    assert entry.persistence == %{
+             memory: false,
+             filesystem: %{enabled: true, size_bytes: 4096, mount_path: "/workspace"}
+           }
   end
 
   test "session class: session block defaults apply when fields are omitted" do

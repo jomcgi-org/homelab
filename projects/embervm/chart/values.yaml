@@ -140,7 +140,6 @@ controlPlane:
   spiffe:
     enabled: false
     dialNoded: false
-    trustDomain: embervm.jomcgi.dev
     svidDir: /run/embervm-svid
     helper:
       hint: embervm-platform
