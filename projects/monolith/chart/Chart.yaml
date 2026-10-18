@@ -1,7 +1,7 @@
 apiVersion: v2
 name: monolith
 description: Consolidated homelab web services
-version: 0.685.73
+version: 0.685.74
 type: application
 dependencies:
   - name: cf-ingress
