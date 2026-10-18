@@ -1557,6 +1557,27 @@ not be the party that asserts its provenance.
 
 ## 7. MCP surface
 
+`monolith_agent_schema_retirement_inventory` is a parameterless private-tier
+operator read for the exact feature-retirement manifest in PR #7134 at
+`16708fa99b2ab3e1fdee69d326b4949e6a3da0e0`. It uses the existing standing human
+operator gate and application database connection, with no new credentials or
+grants. All queries run in a repeatable-read, read-only transaction, with
+five-second statement and one-second lock timeouts. Each section is limited to
+1024 rows and the combined inventory to 192 KiB. Any query failure or overflow
+returns `complete: false` without partial inventory or exception text.
+
+The fixed inventory includes target presence, the exact zero-argument function
+and notification trigger, both retired namespaces, recursive catalog dependency
+closure and edges, and retained relation identities, column signatures and
+effective `public_reader` privileges. The closure conservatively includes owning
+relations of dependent columns, rules, defaults, constraints and triggers. It is
+an inspection set, not a simulated DROP result. No application rows, SQL bodies,
+default values, comments or credentials are exported. The manifest and query
+digest bind the observation to this implementation. A complete snapshot does
+not prove dynamic or external consumer compatibility, a future DDL-free window,
+public-origin health, or post-migration replica catch-up, and does not authorize
+the destructive migration. Those remain separate acceptance requirements.
+
 The direct `mcp.jomcgi.dev` route is staged, not live until the hub value flips
 (#3832). `cfIngress.mcp.enabled` defaults to false. When enabled, the chart uses
 the private Gateway to serve RFC 9728 metadata at

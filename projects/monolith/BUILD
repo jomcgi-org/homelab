@@ -8835,6 +8835,11 @@ py_test(
 )
 
 bdd_test(
+    name = "agent_schema_retirement_test",
+    srcs = ["agent/schema_retirement_test.py"],
+)
+
+bdd_test(
     name = "agent_bdd_locks_test",
     srcs = [
         "agent/tests/__init__.py",
