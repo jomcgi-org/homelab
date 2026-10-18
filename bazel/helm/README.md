@@ -72,9 +72,14 @@ helm_chart(
     },
     lint = False,
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = ["//visibility:public"],
 )
 ```
+
+Gazelle gives generated chart filegroups public visibility. Deploy packages,
+same-package applications and repository-wide validation can consume them
+without scanning Application manifests or depending on a directory layout.
+This controls Bazel target access only; it does not publish a chart.
 
 `images` maps a dotted Helm values path to a label exposing `OciImageInfo`
 (the `{name}.info` target produced by `go_image` / `apko_image` / `py3_image`).
@@ -90,6 +95,12 @@ auto-bumps the chart version via `chart-version.sh` at push time.
 
 Declares an ArgoCD overlay. Always emits a `template_test`; opt into
 pre-rendered `render_manifests` and a live `diff`.
+
+When a package already declares its own `helm_admissibility_render` targets,
+set `# gazelle:argocd_generate_manifests false` in its BUILD file. Gazelle
+still generates the Application's template test, while the hand-written
+renders retain their names, output paths and values-file inputs. Context
+Forge uses this for `render_manifests` and `render_manifests_gke`.
 
 ```python
 # projects/my_app/deploy/BUILD

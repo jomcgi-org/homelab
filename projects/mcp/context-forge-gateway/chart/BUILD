@@ -13,7 +13,7 @@ helm_chart(
     lint = False,
     visibility = [
         "//overlays:__subpackages__",
-        "//projects/mcp/context-forge-gateway:__subpackages__",  # keep
+        "//projects/mcp/context-forge-gateway:__subpackages__",
     ],
 )
 
