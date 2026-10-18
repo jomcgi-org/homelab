@@ -20,5 +20,9 @@ serde.workspace = true
 serde_json.workspace = true
 libc = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+oominf-metal = { path = "../oominf-metal" }
+oominf-models-qwen35 = { path = "../oominf-models-qwen35" }
+
 [lints]
 workspace = true

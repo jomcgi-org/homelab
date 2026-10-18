@@ -82,20 +82,7 @@ pub struct Profile {
     pub cpu_expert_us: Option<f64>,
 }
 
-/// How `serve` gets its profile.
-#[derive(clap::Args, Debug, Clone, Default)]
-pub struct ProfileArgs {
-    /// Do not measure or read a hardware profile: use the built-in defaults.
-    #[arg(long, conflicts_with_all = ["reprobe", "profile"])]
-    pub no_probe: bool,
-    /// Measure the hardware again even when a cached profile matches.
-    #[arg(long)]
-    pub reprobe: bool,
-    /// Read the profile from this file (e.g. written by `oominf tune --out`)
-    /// instead of the cache.
-    #[arg(long)]
-    pub profile: Option<PathBuf>,
-}
+pub use crate::profile_args::ProfileArgs;
 
 const GB: f64 = 1e9;
 
@@ -240,6 +227,8 @@ fn storage_of(path: &Path) -> String {
         return "unknown".into();
     };
     let dev = meta.dev();
+    #[cfg(target_os = "macos")]
+    let dev = dev as libc::dev_t;
     let (major, minor) = (libc::major(dev), libc::minor(dev));
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
     // Fields: id parent major:minor root mountpoint options ... - fstype source ...
@@ -296,6 +285,7 @@ impl Profile {
 }
 
 /// Where `serve` gets the profile, and how it was obtained.
+#[cfg(not(target_os = "macos"))]
 pub enum Source {
     Cached(PathBuf),
     Measured(PathBuf),
@@ -304,6 +294,7 @@ pub enum Source {
 
 /// The profile for `serve`: a given file, else the cached one matching this
 /// machine, else measured now (and cached). `None` with `--no-probe`.
+#[cfg(not(target_os = "macos"))]
 pub fn resolve(
     args: &ProfileArgs,
     gpu: &Gpu,
@@ -342,6 +333,7 @@ pub fn resolve(
 
 /// The tuning `serve` applies: the profile's choices (see [`derive`]), logged with
 /// why; built-in defaults without a profile.
+#[cfg(not(target_os = "macos"))]
 pub fn tuning(
     args: &ProfileArgs,
     gpu: &Gpu,
@@ -377,13 +369,16 @@ struct Region(*mut u8, usize);
 
 impl Region {
     fn new(len: usize) -> Result<Region> {
+        let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
+        #[cfg(target_os = "linux")]
+        let flags = flags | libc::MAP_POPULATE;
         // SAFETY: anonymous private mapping, checked below.
         let p = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_POPULATE,
+                flags,
                 -1,
                 0,
             )
@@ -480,6 +475,7 @@ pub fn measure(
     let (n, rounds) = if thorough { (192, 3) } else { (48, 1) };
     let stride = main.stride;
     let buf = Region::new(n * stride)?;
+    #[cfg(target_os = "linux")]
     if mode == ReadMode::Buffered {
         // Earlier reads must not be served from the page cache.
         if let Ok(f) = std::fs::File::open(&path) {

@@ -3,7 +3,7 @@
 | Platform                       | Status                 | What works                                                               |
 | ------------------------------ | ---------------------- | ------------------------------------------------------------------------ |
 | Linux x86-64 + NVIDIA GPU      | Supported              | Everything. Developed and measured on an RTX 4090 (24 GB) with CUDA 13.0 |
-| macOS (Apple silicon)          | In progress            | Does not build today; a Metal backend is in progress (#6896)            |
+| macOS (Apple silicon)          | Qwen3.5 text decoder   | Direct Metal, measured on a 16 GiB M1 Pro                                |
 | Windows                        | Untested               | Does not build natively today; WSL2 is the likely path but untested      |
 
 ## Linux (supported)
@@ -85,13 +85,36 @@ Every test binary should report `ok`; the GPU tests show as `ignored`.
 
 Next: [quickstart](quickstart.md).
 
-## macOS: in progress
+## macOS (Apple Silicon)
 
-The workspace does not build on macOS today: the expert tiers and the hardware
-probe use Linux interfaces (io_uring, O_DIRECT, `/proc/meminfo` and cgroup
-limits). A Metal backend for Apple Silicon, with macOS expert reads, is being
-built in [#6896](https://github.com/jomcgi-org/homelab/issues/6896); this
-section will carry the steps once it serves a model.
+Build with the pinned Rust toolchain and `cargo build --release -p oominf`.
+Convert a local Qwen3.5 MoE NVFP4 checkpoint, then verify it:
+
+    target/release/oominf convert --src <checkpoint-dir> --out model.oom
+    target/release/oominf verify model.oom
+    target/release/oominf doctor --model model.oom
+    target/release/oominf generate --model model.oom --no-thinking \
+      --prompt "What is the capital of France?" --max-tokens 16
+    target/release/oominf serve --model model.oom
+
+The server listens on `127.0.0.1:8091`. Mac defaults are one active request,
+4096 context tokens, fp32 KV state and prompt lookup disabled. For short answers,
+set `"chat_template_kwargs":{"enable_thinking":false}` in an OpenAI request.
+The tested HTTP request is in [measurements](../dev/measurements.md#apple-silicon).
+
+Metal and host allocations share a budget based on current reclaimable RAM.
+`--vram-expert-gib` caps the shared expert cache; it shrinks to fit.
+When less than 6 GiB of RAM is currently available, the default cache cap is
+1 GiB. An explicit cache size overrides that cap.
+The default RAM reserve is 3 GiB when at least 6 GiB is currently available,
+otherwise 1 GiB. `--host-reserve-gib` overrides it. Embedding rows are read on
+demand; dense projections and the output head stay resident.
+
+This path prefills one token at a time and supports the text decoder only.
+Vision, MTP, prompt lookup, compressed KV and prefix snapshots are unavailable.
+CUDA hardware profiles are unused; `doctor` estimates the shared memory budget
+and `bench` measures actual inference. MLX is required only for the independent
+validation script in [testing](../dev/testing.md#apple-silicon).
 
 ## Windows: untested
 

@@ -6,9 +6,19 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+#[cfg(any(not(target_os = "macos"), test))]
+use anyhow::Context;
+use anyhow::Result;
 
 const GIB: f64 = (1u64 << 30) as f64;
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn mach_port_deallocate(
+        task: libc::mach_port_t,
+        name: libc::mach_port_t,
+    ) -> libc::kern_return_t;
+}
 
 /// A control group's memory limit and use, in bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +59,7 @@ pub struct HostMemory {
 
 impl HostMemory {
     /// Reads `/proc/meminfo` and the process's control group.
+    #[cfg(not(target_os = "macos"))]
     pub fn probe() -> Result<Self> {
         let info = std::fs::read_to_string("/proc/meminfo").context("read /proc/meminfo")?;
         let (total, available) = parse_meminfo(&info)?;
@@ -57,6 +68,61 @@ impl HostMemory {
             total,
             available,
             cgroup: cgroup_memory(Path::new("/sys/fs/cgroup"), &own),
+        })
+    }
+
+    /// Reads physical memory and reclaimable pages from the macOS kernel.
+    #[cfg(target_os = "macos")]
+    #[allow(deprecated)]
+    pub fn probe() -> Result<Self> {
+        use anyhow::ensure;
+        let mut total = 0u64;
+        let mut size = std::mem::size_of_val(&total);
+        // SAFETY: sysctl receives a valid u64 output and its size; no write value.
+        ensure!(
+            unsafe {
+                libc::sysctlbyname(
+                    c"hw.memsize".as_ptr(),
+                    (&mut total as *mut u64).cast(),
+                    &mut size,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            } == 0,
+            "hw.memsize: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut stats = std::mem::MaybeUninit::<libc::vm_statistics64>::zeroed();
+        let mut count = libc::HOST_VM_INFO64_COUNT;
+        // SAFETY: a host send right is acquired, queried into a sufficiently sized
+        // vm_statistics64, then released. The output is used only on success.
+        let result = unsafe {
+            let host = libc::mach_host_self();
+            let result = libc::host_statistics64(
+                host,
+                libc::HOST_VM_INFO64,
+                stats.as_mut_ptr().cast(),
+                &mut count,
+            );
+            mach_port_deallocate(libc::mach_task_self(), host);
+            result
+        };
+        ensure!(
+            result == libc::KERN_SUCCESS,
+            "host_statistics64: Mach error {result}"
+        );
+        // SAFETY: the successful call initialized this output.
+        let stats = unsafe { stats.assume_init() };
+        // Inactive pages may be reclaimed; wired and compressed memory are excluded.
+        // Darwin already includes speculative pages in free_count.
+        let pages = u64::from(stats.free_count) + u64::from(stats.inactive_count);
+        // SAFETY: sysconf has no pointer arguments.
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        ensure!(page_size > 0, "could not read the host page size");
+        Ok(HostMemory {
+            total,
+            available: (pages * page_size as u64).min(total),
+            cgroup: None,
         })
     }
 
@@ -92,6 +158,7 @@ impl HostMemory {
 }
 
 /// `(MemTotal, MemAvailable)` in bytes.
+#[cfg(any(not(target_os = "macos"), test))]
 fn parse_meminfo(info: &str) -> Result<(u64, u64)> {
     let field = |name: &str| -> Option<u64> {
         info.lines()

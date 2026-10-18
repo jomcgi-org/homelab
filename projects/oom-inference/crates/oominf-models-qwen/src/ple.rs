@@ -12,12 +12,16 @@
 //! out_c  = v_c + silu(dilated_conv(norm_conv(v)_c))
 //! ```
 //!
-//! Only the rows a step needs are read, all at once through io_uring.
+//! Only the rows a step needs are read, through io_uring on Linux and pread elsewhere.
 
 use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
+#[cfg(not(target_os = "linux"))]
+use std::os::unix::fs::FileExt;
 use std::sync::Mutex;
 
+#[cfg(target_os = "linux")]
 use io_uring::{IoUring, opcode, types};
 
 use anyhow::{Context, Result, ensure};
@@ -137,6 +141,7 @@ pub fn ngram_ids(
 
 /// One batch of table-row reads in flight: `ids[i]` lands at `buf[i * row_bytes..]`.
 struct RowReads {
+    #[cfg(target_os = "linux")]
     ring: IoUring,
     ids: Vec<i64>,
     buf: Vec<u8>,
@@ -145,6 +150,7 @@ struct RowReads {
 }
 
 /// Submission queue depth for row reads.
+#[cfg(target_os = "linux")]
 const ROW_QUEUE_DEPTH: u32 = 256;
 
 impl<B: Backend> Ple<B> {
@@ -240,6 +246,7 @@ impl<B: Backend> Ple<B> {
             shard_offsets,
             tables,
             rows: Mutex::new(RowReads {
+                #[cfg(target_os = "linux")]
                 ring: IoUring::new(ROW_QUEUE_DEPTH)?,
                 ids: Vec::new(),
                 buf: Vec::new(),
@@ -352,6 +359,7 @@ impl<B: Backend> Ple<B> {
     }
 
     /// Fills free submission slots with the next queued row reads.
+    #[cfg(target_os = "linux")]
     fn push_rows(&self, r: &mut RowReads) -> Result<()> {
         let fd = types::Fd(self.tables.as_raw_fd());
         while r.next < r.ids.len() && r.inflight < ROW_QUEUE_DEPTH as usize {
@@ -375,7 +383,24 @@ impl<B: Backend> Ple<B> {
         Ok(())
     }
 
+    #[cfg(not(target_os = "linux"))]
+    fn push_rows(&self, r: &mut RowReads) -> Result<()> {
+        while r.next < r.ids.len() {
+            let i = r.next;
+            let id = r.ids[i] as u64;
+            let offset = self.shard_offsets[(id / self.rows_per_shard) as usize]
+                + (id % self.rows_per_shard) * self.row_bytes as u64;
+            self.tables.read_exact_at(
+                &mut r.buf[i * self.row_bytes..(i + 1) * self.row_bytes],
+                offset,
+            )?;
+            r.next += 1;
+        }
+        Ok(())
+    }
+
     /// Waits until every queued row read has landed.
+    #[cfg(target_os = "linux")]
     fn wait_rows(&self, r: &mut RowReads) -> Result<()> {
         let mut failed = None;
         while r.inflight > 0 {
@@ -401,6 +426,12 @@ impl<B: Backend> Ple<B> {
             r.ids.clear();
             return Err(e);
         }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn wait_rows(&self, r: &mut RowReads) -> Result<()> {
+        ensure!(r.next == r.ids.len(), "PLE row batch did not finish");
         Ok(())
     }
 
