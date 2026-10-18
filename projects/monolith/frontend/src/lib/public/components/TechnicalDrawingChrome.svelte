@@ -1,13 +1,17 @@
 <script>
   import SchemeToggle from "./SchemeToggle.svelte";
 
+  // `trail` is optional: a page with no spine to dock a trail in renders
+  // its own inline and keeps only the scheme switch here.
   let { trail } = $props();
 </script>
 
 <div class="td chrome">
-  <div class="trail-slot">
-    {@render trail()}
-  </div>
+  {#if trail}
+    <div class="trail-slot">
+      {@render trail()}
+    </div>
+  {/if}
   <SchemeToggle />
 </div>
 
@@ -26,6 +30,10 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 1rem;
+  }
+
+  .chrome :global(.scheme) {
+    margin-left: auto;
   }
 
   .trail-slot {

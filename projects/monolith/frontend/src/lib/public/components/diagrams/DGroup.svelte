@@ -1,14 +1,16 @@
 <script>
   /**
-   * Labeled cluster of nodes, the subgraph motif: dashed border, mono
-   * label tab. `stack` lays children vertically (default horizontal).
+   * Labelled cluster of parts, drawn as one outline partitioned by lines
+   * that run edge to edge: a title band, then the parts as cells divided by
+   * rules, never a box drawn inside a box. `stack` lays the cells
+   * vertically (default horizontal).
    * @type {{ label: string, stack?: boolean, children: import('svelte').Snippet }}
    */
   let { label, stack = false, children } = $props();
 </script>
 
 <div class="dgroup" class:stack>
-  <span class="dgroup-label mono">{label}</span>
+  <span class="dgroup-label">{label}</span>
   <div class="dgroup-body" class:stack>
     {@render children()}
   </div>
@@ -16,44 +18,61 @@
 
 <style>
   .dgroup {
-    border: 2px dashed var(--rule-2);
-    border-radius: var(--radius);
-    padding: 18px 12px 12px;
-    position: relative;
-    flex-shrink: 0;
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    border: 1px solid var(--ink);
+    background: var(--sheet);
   }
 
   .dgroup-label {
-    position: absolute;
-    top: -9px;
-    left: 10px;
-    background: var(--paper);
-    padding: 0 6px;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.12em;
+    padding: 0.3em 0.7em;
+    border-bottom: 1px solid var(--stroke);
+    background: var(--band);
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.62rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--ink-3);
   }
 
   .dgroup-body {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    align-items: stretch;
   }
 
   .dgroup-body.stack {
     flex-direction: column;
-    align-items: stretch;
+  }
+
+  /* The group is the outline; its parts become cells. */
+  .dgroup-body > :global(.dbox) {
+    flex: 1 1 auto;
+    border: 0;
+  }
+
+  .dgroup-body > :global(.dbox + .dbox) {
+    border-left: 1px solid var(--stroke);
+  }
+
+  .dgroup-body.stack > :global(.dbox + .dbox) {
+    border-top: 1px solid var(--stroke);
+    border-left: 0;
   }
 
   @media (max-width: 720px) {
     .dgroup {
       width: 100%;
     }
+
     .dgroup-body {
       flex-direction: column;
-      align-items: stretch;
+    }
+
+    .dgroup-body > :global(.dbox + .dbox) {
+      border-top: 1px solid var(--stroke);
+      border-left: 0;
     }
   }
 </style>

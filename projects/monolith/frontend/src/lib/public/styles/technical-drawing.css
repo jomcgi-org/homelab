@@ -7,6 +7,10 @@
  * localStorage), then prefers-color-scheme. The night block therefore
  * appears twice: once under the media query guarded against an explicit
  * "light", once under data-theme="dark". Keep the two blocks identical.
+ *
+ * Below the tokens: the --ds-* roles the shared @homelab/design-system
+ * primitives read, derived from the page tokens, and the page vocabulary
+ * (.sheet) every technical-drawing page is built from.
  */
 
 .td {
@@ -19,6 +23,10 @@
   --line: rgba(64, 58, 42, 0.13);
   --accent: #46709f;
   --ok: #3d8f5f;
+  /* Warn sits between ok and the error tone; the value is the package
+   * theme's, measured at 5.6:1 on the day sheet. The private copy in
+   * dashboard-theme.css carries its own --warn for the dashboard. */
+  --warn: #8a5700;
   --font-ui:
     "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-code: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
@@ -62,6 +70,7 @@
     --accent: #d3a45f;
     --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
     --ok: #6fbf8d;
+    --warn: #d0a050;
     --tone-gpu: #63a8ff;
     --tone-ram: #3ddc84;
     --tone-cache: #4dd0e1;
@@ -82,6 +91,7 @@
   --accent: #d3a45f;
   --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
   --ok: #6fbf8d;
+  --warn: #d0a050;
   --tone-gpu: #63a8ff;
   --tone-ram: #3ddc84;
   --tone-cache: #4dd0e1;
@@ -122,4 +132,933 @@ body:has(.td) {
    * restores it; which wins depends on bundle order (the dev server picks
    * hidden, which stops touch scrolling). Assert it by specificity instead. */
   overflow: auto;
+}
+
+/* ── Shared-component roles ───────────────────────────────────────────
+ * @homelab/design-system primitives read --ds-* roles and expect an
+ * explicit data-ds-theme boundary. On a technical-drawing page the page
+ * tokens above are the source of truth and already flip with the scheme
+ * toggle, so the roles are derived from them here rather than opened as a
+ * second boundary: a primitive dropped anywhere inside .td follows the
+ * sheet, in both schemes, with no wrapper. Where the package theme and the
+ * page disagree (its line and faint-ink values are a shade stronger), the
+ * page wins, so one toggle moves everything on the sheet together. */
+.td {
+  --ds-surface: var(--sheet);
+  --ds-surface-raised: var(--band);
+  --ds-ink: var(--ink);
+  --ds-ink-muted: var(--ink-2);
+  /* --ink-3 is ornament-only (2.78:1 on the day sheet), so text-capable
+   * faint ink stops at --ink-2, the interactive floor. */
+  --ds-ink-faint: var(--ink-2);
+  --ds-line: var(--line);
+  --ds-line-strong: var(--stroke);
+  --ds-accent: var(--accent-ink);
+  --ds-on-accent: var(--sheet);
+  --ds-accent-ink: var(--accent-ink);
+  --ds-focus: var(--accent-ink);
+  --ds-focus-width: 2px;
+  --ds-shadow: none;
+  --ds-shadow-raised: none;
+  --ds-border-weight: 1px;
+  --ds-radius: 0;
+  --ds-font-display: var(--font-ui);
+  --ds-font-body: var(--font-ui);
+  --ds-font-mono: var(--font-code);
+  --ds-space-xs: 8px;
+  --ds-space-sm: 12px;
+  --ds-space-md: 16px;
+  --ds-space-lg: 24px;
+  --ds-space-xl: 40px;
+  --ds-space-2xl: 60px;
+  --ds-ok: var(--ok);
+  --ds-warn: var(--warn);
+  --ds-err: var(--tone-disk);
+  --ds-series-1: var(--tone-gpu);
+  --ds-series-2: var(--tone-ram);
+  --ds-series-3: var(--tone-cache);
+  --ds-series-4: var(--tone-disk);
+  --ds-series-5: var(--tone-hot);
+}
+
+/* ── The sheet: shared page vocabulary ─────────────────────────────────
+ * The classes every technical-drawing page is built from, lifted from the
+ * blog, the slop factory and the private updates journal, which each grew
+ * a private copy. A page opts in with class="td sheet" on its root; .td
+ * alone only sets tokens. The scope is .sheet rather than .td on purpose:
+ * the pages that still carry their own copies of these rules (the blog
+ * post, factory.css) use the same class names, and a page-scoped
+ * `.factory-page .frame` would tie a shared `.td .frame` on specificity
+ * and resolve by bundle order. Those pages adopt the sheet by adding the
+ * class and deleting their copy, never by both applying at once.
+ *
+ * The rules themselves are the tier's drawing conventions (.impeccable.md,
+ * "technical drawing"): one bright sheet, a spine beside a text measure,
+ * content in outlined panels partitioned by rules, one mono label style
+ * for all chrome, no shadow, no radius, no gradient, meaningful colour
+ * only. */
+
+.sheet {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 1.5rem clamp(4rem, 5vw, 4.5em) 6em;
+  background: var(--sheet);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.sheet *,
+.sheet *::before,
+.sheet *::after {
+  box-sizing: border-box;
+}
+
+.sheet a {
+  color: inherit;
+}
+
+.sheet button,
+.sheet input {
+  color: inherit;
+  font: inherit;
+}
+
+/* One focus ring for the whole sheet. The public reset rounds focused
+   elements (border-radius on :focus-visible); square corners here. */
+.sheet :focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 3px;
+  border-radius: 0;
+}
+
+.sheet .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Layout ── */
+
+/* Sheet width = spine + gap + a 54em text measure, so no rule stroke runs
+   past the content it delimits. */
+.sheet .frame {
+  position: relative;
+  max-width: 75em;
+  margin: 0 auto;
+}
+
+.sheet .journal {
+  display: grid;
+  grid-template-columns: minmax(12em, 15em) minmax(0, 54em);
+  gap: clamp(2em, 4vw, 4em);
+}
+
+/* A page with nothing to put in a spine centres its measure. */
+.sheet .journal.single {
+  grid-template-columns: minmax(0, 54em);
+  justify-content: center;
+}
+
+.sheet .spine {
+  position: sticky;
+  top: 1.5rem;
+  align-self: start;
+  max-height: calc(100vh - 3rem);
+  /* Left padding keeps the offset focus ring inside this element's own
+     scroll container instead of clipping it. */
+  padding-left: 0.4rem;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.sheet .content {
+  min-width: 0;
+}
+
+/* The trail docks at the top of the spine on a wide screen; on a phone the
+   chrome row carries it, so the dock hides. */
+.sheet .trail-dock {
+  margin-bottom: 1.4rem;
+}
+
+.sheet .trail-inline {
+  margin-bottom: 1.25rem;
+}
+
+/* ── Chrome ── */
+
+/* The one heading style for all chrome: a mono slash-label over a rule. */
+.sheet .sec-label {
+  margin: 0 0 1em;
+  padding-bottom: 0.55em;
+  border-bottom: 1px solid var(--stroke);
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sheet .num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Spine index ──
+   A list of places on or near the page: entries carry a left bar when
+   active (the vertical selection marker), groups are native details that
+   collapse long lists, closed unless a selection inside them is active. */
+
+.sheet .index + .index {
+  margin-top: 1.8rem;
+}
+
+.sheet .index-group > summary {
+  display: flex;
+  gap: 0.6em;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0.5em 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  list-style: none;
+}
+
+.sheet .index-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sheet .group-name {
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68em;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sheet .index-group > summary:hover .group-name {
+  color: var(--accent-ink);
+}
+
+.sheet .group-count {
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.7em;
+}
+
+.sheet .group-count::after {
+  padding-left: 0.5em;
+  content: "+";
+}
+
+.sheet .index-group[open] > summary .group-count::after {
+  content: "\2212";
+}
+
+.sheet .index-list {
+  padding: 0.35em 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.sheet .index-list a {
+  display: flex;
+  gap: 0.65em;
+  align-items: baseline;
+  padding: 0.4em 0 0.4em 0.6rem;
+  border-left: 2px solid transparent;
+  color: var(--ink-2);
+  font-size: 0.8em;
+  line-height: 1.3;
+  text-decoration: none;
+}
+
+/* The number is a fixed column so every title starts on the same line and
+   a wrapped title hangs under itself, not under its number. */
+.sheet .index-list .num {
+  flex: none;
+  width: 1.7em;
+  font-family: var(--font-code);
+  font-size: 0.95em;
+}
+
+.sheet .index-list a.sub {
+  padding-left: 1.4rem;
+  font-size: 0.74em;
+}
+
+.sheet .index-list a.sub .num {
+  width: 2.3em;
+}
+
+/* Colour and the bar mark the active entry; no weight change, which would
+   rewrap the line and jog the whole index on every change. */
+.sheet .index-list a:hover,
+.sheet .index-list a.active {
+  color: var(--accent-ink);
+}
+
+.sheet .index-list a.active {
+  border-left-color: var(--accent-ink);
+}
+
+/* ── Panels ──
+   Content lives in outlined panels: each record is one 1px ink-bordered
+   panel with 1px --stroke partitions between its head band, lead, rows
+   and body. Text floating between horizontal rules was tried and vetoed
+   twice: rules alone read as noise, panels read as a diagram. */
+
+.sheet .edition {
+  border: 1px solid var(--ink);
+  scroll-margin-top: 1.5rem;
+}
+
+.sheet .editions > .edition + .edition {
+  margin-top: 1.5rem;
+}
+
+/* Records that are one continuous ruled list share their borders: the
+   tinted head band is the separator. */
+.sheet .editions.ruled > .edition + .edition {
+  margin-top: -1px;
+}
+
+/* The head band: structure reads from ground colour before the rules are
+   parsed. Sentence-case mono, never a second slash-label. */
+.sheet .ed-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35em 1.4em;
+  align-items: baseline;
+  margin: 0;
+  padding: 0.55em 1rem;
+  border-bottom: 1px solid var(--stroke);
+  background: var(--band);
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.sheet .ed-head .num {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Whatever sits at the end of the band (links, a tab strip) parks right. */
+.sheet .ed-head .end {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35em 1.2em;
+  margin-left: auto;
+}
+
+.sheet .ed-head a {
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.sheet .ed-head a:hover {
+  color: var(--accent-ink);
+}
+
+/* A tab strip inside a band: cells divided by rules, the current one
+   underlined (a left bar in a horizontal row reads as a divider). */
+.sheet .ed-head .tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  margin: -0.55em 0;
+}
+
+.sheet .ed-head .tabs a,
+.sheet .ed-head .tabs span {
+  padding: 0.55em 0.8em;
+  border-bottom: 2px solid transparent;
+}
+
+.sheet .ed-head .tabs > * + * {
+  border-left: 1px solid var(--stroke);
+}
+
+.sheet .ed-head .tabs .here {
+  border-bottom-color: var(--accent-ink);
+  color: var(--accent-ink);
+}
+
+.sheet .ed-lead {
+  padding: 0.9rem 1rem 1rem;
+}
+
+.sheet .ed-lead h1,
+.sheet .ed-lead h2 {
+  max-width: 40ch;
+  margin: 0;
+  font-size: clamp(1.25rem, 2.5vw, 1.6rem);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+}
+
+.sheet .ed-lead h2 a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.sheet .ed-lead h2 a:hover {
+  color: var(--accent-ink);
+}
+
+.sheet .ed-lead p {
+  margin: 0.6rem 0 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.sheet .ed-body {
+  padding: 0 1rem 1rem;
+  border-top: 1px solid var(--stroke);
+}
+
+/* A row of plain links closing a panel: one divided value, each cell its
+   own control. */
+.sheet .ed-foot {
+  display: flex;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--stroke);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+}
+
+.sheet .ed-foot a {
+  padding: 0.6em 1rem;
+  border-right: 1px solid var(--stroke);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.sheet .ed-foot a:hover {
+  color: var(--accent-ink);
+}
+
+/* ── Spec table ──
+   Metadata rows: a fixed mono label column with its own vertical rule,
+   the value flowing left beside it (right-aligned values wrap ragged
+   against a gulf and were vetoed), one hairline per row. */
+.sheet .spec {
+  margin: 0;
+  border-top: 1px solid var(--stroke);
+}
+
+.sheet .spec .row {
+  display: grid;
+  grid-template-columns: minmax(7em, 11em) minmax(0, 1fr);
+  margin: 0;
+}
+
+.sheet .spec .row + .row {
+  border-top: 1px solid var(--line);
+}
+
+.sheet .spec dt {
+  margin: 0;
+  padding: 0.55em 0.6em 0.55em 1rem;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.sheet .spec dd {
+  margin: 0;
+  padding: 0.55em 1rem 0.55em 1.2em;
+  /* Label column rule, drawn by the value cell so it spans row height. */
+  border-left: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* Inside a body the table runs to the panel's edges so its rules join the
+   outline, and a body that ends on it ends on the panel's own border: no
+   strip of sheet between the last rule and the outline. */
+.sheet .ed-body > .spec,
+.sheet .prose > .spec {
+  margin: 1rem -1rem;
+}
+
+.sheet .ed-body > .spec:last-child,
+.sheet .prose > .spec:last-child,
+.sheet .ed-body > .divided:last-child {
+  margin-bottom: -1rem;
+}
+
+/* A table that follows a figure or a section band docks to it: the rule
+   above is shared, never doubled with a strip of sheet between. */
+.sheet .prose > figure.fig + .spec {
+  margin-top: calc(-1.5rem - 1px);
+}
+
+.sheet .prose > h2 + .spec {
+  margin-top: calc(-0.85rem - 1px);
+}
+
+/* A code block straight after a spec table closes the table's last row
+   with its own top rule. */
+.sheet .prose > .spec + pre.doc-code {
+  margin-top: 0;
+}
+
+/* ── Divided row ──
+   Repeated values render as one divided value: cells in a full-width row
+   separated by hairlines, the row supplying the frame. Each cell draws its
+   own top and left rule and the row tucks under the rule above it, so the
+   grid closes on the panel wall and the last row ends on the panel border. */
+.sheet .divided {
+  display: flex;
+  flex-wrap: wrap;
+  margin: -1px 0 0 -1px;
+  padding: 0;
+  list-style: none;
+}
+
+.sheet .divided > li {
+  padding: 0.45em 0.9em;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+/* ── Prose ──
+   Rendered markdown inside a panel body: whole sections get framed bands,
+   subsections use typography, and tables, figures and code blocks run to
+   the panel's edges so their rules join the outline (boxes made of lines
+   inside the boundary, never a box inside a box). */
+
+.sheet .prose {
+  counter-reset: fig;
+}
+
+.sheet .prose h1,
+.sheet .prose h2,
+.sheet .prose h3,
+.sheet .prose h4,
+.sheet .prose h5,
+.sheet .prose h6 {
+  color: var(--ink);
+  scroll-margin-top: 4rem;
+}
+
+.sheet .prose h1,
+.sheet .prose h2 {
+  margin: 1.4rem -1rem 0.85rem;
+  padding: 0.45em 1rem;
+  border-top: 1px solid var(--stroke);
+  border-bottom: 1px solid var(--stroke);
+  background: var(--band);
+  font-family: var(--font-ui);
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+/* The body's top rule already closes the lead, so a section band that
+   opens the body sits directly on it. */
+.sheet .prose > h2:first-child {
+  margin-top: 0;
+  border-top: 0;
+}
+
+.sheet .prose > :last-child {
+  margin-bottom: 0;
+}
+
+.sheet .prose > table:last-child,
+.sheet .prose > figure.fig:last-child,
+.sheet .prose > pre.doc-code:last-child {
+  margin-bottom: -1rem;
+}
+
+.sheet .prose > table:last-child tr:last-child td,
+.sheet .prose > figure.fig:last-child {
+  border-bottom: 0;
+}
+
+.sheet .prose h3 {
+  margin: 1.25rem 0 0.55rem;
+  padding: 0;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.045em;
+  line-height: 1.25;
+}
+
+.sheet .prose h2 + h3 {
+  margin-top: 0.85rem;
+}
+
+.sheet .prose h4,
+.sheet .prose h5,
+.sheet .prose h6 {
+  margin: 0.8rem 0 0.45rem;
+  font-family: var(--font-code);
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.sheet .prose p {
+  margin: 0.85rem 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.sheet .prose a {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.sheet .prose strong {
+  font-weight: 650;
+}
+
+/* The public reset strips list markers; prose wants them. Square markers,
+   drawn in ink like everything else on the sheet. */
+.sheet .prose ul,
+.sheet .prose ol {
+  margin: 0.85rem 0;
+  padding-left: 1.5rem;
+}
+
+.sheet .prose ul {
+  list-style: square;
+}
+
+.sheet .prose ol {
+  list-style: decimal;
+}
+
+.sheet .prose li::marker {
+  color: var(--ink-2);
+}
+
+.sheet .prose li {
+  margin: 0.25rem 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.sheet .prose blockquote {
+  margin: 1rem 0;
+  padding-left: 1rem;
+  border-left: 2px solid var(--stroke);
+  color: var(--ink-2);
+}
+
+.sheet .prose blockquote p {
+  color: inherit;
+}
+
+.sheet .prose details {
+  margin: 1rem 0;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--stroke);
+}
+
+.sheet .prose summary {
+  padding-block: 0.8rem;
+  color: var(--ink);
+  font: 0.8rem var(--font-code);
+  cursor: pointer;
+}
+
+.sheet .prose details[open] > summary {
+  margin-bottom: 0.25rem;
+}
+
+.sheet .prose hr {
+  margin: 1.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--stroke);
+}
+
+.sheet .prose code {
+  padding: 0.12em 0.3em;
+  background: var(--band);
+  font-family: var(--font-code);
+  font-size: 0.85em;
+}
+
+.sheet .prose pre.doc-code {
+  position: relative;
+  margin: 1rem -1rem;
+  padding: 1rem;
+  overflow-x: auto;
+  border-top: 1px solid var(--stroke);
+  border-bottom: 1px solid var(--stroke);
+  background: var(--band);
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.sheet .prose pre.doc-code code {
+  padding: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* The fence's language, as a label in the block's corner. */
+.sheet .prose pre.doc-code[data-lang]::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 0.2em 0.7em;
+  border-bottom: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  color: var(--ink-2);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sheet .prose table {
+  width: calc(100% + 2rem);
+  margin: 1rem -1rem;
+  border-collapse: collapse;
+}
+
+/* Column labels sit on the sheet, framed by stroke-weight rules, while
+   data rows keep hairlines: the header is a drawn grid line, never a
+   second band. */
+.sheet .prose th {
+  padding: 0.5em 1rem;
+  border-top: 1px solid var(--stroke);
+  border-bottom: 1px solid var(--stroke);
+  background: none;
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.sheet .prose td {
+  padding: 0.55em 1rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 0.85rem;
+  line-height: 1.45;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.sheet .prose td + td {
+  border-left: 1px solid var(--line);
+}
+
+.sheet .prose th + th {
+  border-left: 1px solid var(--stroke);
+}
+
+.sheet .prose tr:last-child td {
+  border-bottom: 1px solid var(--stroke);
+}
+
+.sheet .prose img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.sheet .prose .fig {
+  margin: 1.5rem -1rem;
+  border-top: 1px solid var(--stroke);
+  border-bottom: 1px solid var(--stroke);
+  counter-increment: fig;
+}
+
+/* The drawing is flush with the panel: its partitions meet the panel
+   walls and the figure's rules, and those four lines are its outline. */
+.sheet .prose .fig-art {
+  padding: 0;
+  overflow-x: auto;
+  margin-right: -1px;
+  border-right: 1px solid var(--ink);
+  color: var(--ink);
+}
+
+/* A keyed figure is drawn for a 48em measure. Below that it scrolls
+   sideways inside its panel instead of shrinking its labels. Only the
+   drawing itself (the art's direct child): a figure built from parts
+   carries its own small glyphs. */
+.sheet .prose .fig-art > svg {
+  display: block;
+  width: 100%;
+  min-width: 36em;
+  height: auto;
+}
+
+/* The caption leads the drawing, as a stroke-framed title row like a
+   table header (no band: the panel's title keeps the only one). */
+.sheet .prose .fig figcaption {
+  padding: 0.45em 1rem;
+  border-bottom: 1px solid var(--stroke);
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+}
+
+.sheet .prose .fig figcaption::before {
+  content: "Fig. " counter(fig) "  ";
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.sheet .prose figure.fig + table {
+  margin-top: calc(-1.5rem - 1px);
+}
+
+/* A table or figure that opens a section docks to the band: the band's
+   bottom rule is the table's top rule. */
+.sheet .prose h2 + table,
+.sheet .prose h2 + figure.fig {
+  margin-top: calc(-0.85rem - 1px);
+}
+
+.sheet .prose figure.fig + table th:first-child,
+.sheet .prose figure.fig + table td:first-child {
+  width: 3.5em;
+  font-family: var(--font-code);
+  text-align: center;
+}
+
+.sheet .prose table.fig-key th:first-child,
+.sheet .prose table.fig-key td.key {
+  width: 3.4em;
+  padding: 0.55em 0.4em;
+  border-right: 1px solid var(--line);
+  text-align: center;
+  vertical-align: middle;
+}
+
+.sheet .prose td.key .co {
+  font-family: var(--font-code);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* ── Phone ──
+   The spine has no column to live in: the chrome row carries the trail,
+   the page index becomes a sticky strip across the top, and the rest of
+   the spine (site links, long lists) hides behind the trail's root. */
+@media (max-width: 760px) {
+  .sheet {
+    padding: 1rem 1em 4em;
+  }
+
+  .sheet .journal {
+    display: block;
+  }
+
+  .sheet .spine {
+    position: static;
+    max-height: none;
+    padding-left: 0;
+    overflow: visible;
+  }
+
+  .sheet .trail-dock,
+  .sheet .site-index {
+    display: none;
+  }
+
+  .sheet .index.strip {
+    position: sticky;
+    z-index: 4;
+    top: 0;
+    display: flex;
+    gap: 1em;
+    align-items: baseline;
+    margin: 1.2rem -1em 2rem;
+    padding: 0.5em 1em;
+    overflow-x: auto;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--stroke);
+    background: var(--sheet);
+  }
+
+  .sheet .index.strip > .sec-label {
+    display: none;
+  }
+
+  .sheet .index.strip .index-list {
+    display: flex;
+    gap: 0.35em;
+    align-items: center;
+    padding: 0;
+    border-bottom: 0;
+  }
+
+  .sheet .index.strip .index-list a {
+    padding: 0.5em 0.4em;
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+  }
+
+  .sheet .index.strip .index-list a.sub {
+    display: none;
+  }
+
+  .sheet .index.strip .index-list .num {
+    width: auto;
+  }
+
+  .sheet .index.strip .index-list a:hover,
+  .sheet .index.strip .index-list a.active {
+    border-bottom-color: var(--accent-ink);
+  }
+
+  .sheet .ed-head .end {
+    margin-left: 0;
+  }
+
+  .sheet .spec .row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sheet .spec dt {
+    padding-bottom: 0;
+  }
+
+  .sheet .spec dd {
+    padding: 0.2em 1rem 0.6em;
+    border-left: 0;
+  }
 }

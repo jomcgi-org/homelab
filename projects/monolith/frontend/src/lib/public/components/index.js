@@ -8,3 +8,5 @@ export { default as ScrollCta } from "./ScrollCta.svelte";
 export { default as TurnstileGate } from "./TurnstileGate.svelte";
 export { default as TechnicalDrawingChrome } from "./TechnicalDrawingChrome.svelte";
 export { default as SchemeToggle } from "./SchemeToggle.svelte";
+export { default as Trail } from "./Trail.svelte";
+export { default as SiteIndex } from "./SiteIndex.svelte";

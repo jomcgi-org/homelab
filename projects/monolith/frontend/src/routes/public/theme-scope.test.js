@@ -63,7 +63,9 @@ describe("public theme token scope", () => {
       ),
     );
 
-    expect(importers).toHaveLength(2);
+    // The root error boundary left this list when it moved to the
+    // technical-drawing sheet, which scopes its own tokens under .td.
+    expect(importers).toHaveLength(1);
     for (const path of importers) {
       expect(readFileSync(path, "utf8"), path).toContain(
         '<div class="public-theme" hidden></div>',

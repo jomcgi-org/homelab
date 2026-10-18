@@ -57,45 +57,39 @@
   type="article"
 />
 
-<DocsShell sidebar={data.sidebar} toc={data.toc} activeSlug={data.slug}>
-  <p class="doc-eyebrow mono">{data.project}</p>
-  <header class="doc-header">
-    <h1>{data.title}</h1>
-    <DocsTabs tabs={data.tabs} activeKind={data.kind} />
-  </header>
-  <!-- Server-rendered, sanitised first-party markdown (raw HTML escaped by the
-       renderer). The manifest never reaches the client; only this HTML does. -->
-  <article class="doc-body" bind:this={articleEl}>{@html data.html}</article>
+<DocsShell
+  sidebar={data.sidebar}
+  toc={data.toc}
+  activeSlug={data.slug}
+  current={data.title}
+>
+  <article class="edition doc" aria-labelledby="doc-h">
+    <div class="ed-head">
+      <span>{data.project}</span>
+      <span class="end">
+        <DocsTabs tabs={data.tabs} activeKind={data.kind} />
+      </span>
+    </div>
+    <div class="ed-lead">
+      <h1 id="doc-h">{data.title}</h1>
+    </div>
+    <!-- Server-rendered, sanitised first-party markdown (raw HTML escaped by the
+         renderer). The manifest never reaches the client; only this HTML does. -->
+    <div class="ed-body prose" bind:this={articleEl}>{@html data.html}</div>
+  </article>
 </DocsShell>
 
 <style>
-  .doc-eyebrow {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--ink);
-    background: var(--accent);
-    display: inline-block;
-    padding: 3px 9px;
-    border: 2px solid var(--ink);
-    margin: 0 0 18px;
-  }
-
-  .doc-header h1 {
-    margin-bottom: 14px;
-  }
-
   /* Client-rendered mermaid SVG, replacing a pre.doc-mermaid block. */
-  .doc-body :global(.doc-mermaid-rendered) {
+  .prose :global(.doc-mermaid-rendered) {
     display: block;
     max-width: 100%;
+    margin: 1rem 0;
     overflow-x: auto;
     text-align: center;
-    margin: 0 0 20px;
   }
 
-  .doc-body :global(.doc-mermaid-rendered svg) {
+  .prose :global(.doc-mermaid-rendered svg) {
     max-width: 100%;
     height: auto;
   }
