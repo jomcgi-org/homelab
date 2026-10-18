@@ -6,20 +6,15 @@ chart/values.yaml jobs.cronWorkflows). Pipeline:
 1. Sync DB phase (asyncio.to_thread, own session): gather the labeled
    moderation-event dataset (feature vectors + labels) over the training
    window, newest first, capped.
-2. Compute phase: fit the forest OFF this pod by shipping the literal source
-   of chat.safeguards_forest plus a driver into the Firecracker sandbox
-   (sandbox.client.run_code_in_sandbox); the guest has numpy transitively
-   via pandas/scipy and a 25s wall-clock cap, which the dataset cap and tree
-   count are sized to fit. When the sandbox is unreachable or errors, fall
-   back to fitting in-process (same code, this pod's CPU): the job pod is
-   ephemeral anyway, so the fallback trades isolation for availability.
+2. Compute phase (asyncio.to_thread): fit the forest in-process in the
+   trainer job pod, then check its feature count and probability evaluation.
 3. Sync DB phase: store the forest as a new chat.trust_model row with
    status='shadow' and retire superseded shadow rows. Promotion to 'live' is
    a manual decision after reviewing shadow scores on moderation events.
 
-Skips (without writing a model) when the dataset is too small or too
-one-sided to learn from: an RF fit on a handful of rows memorizes noise, and
-the heuristic + LLM lanes keep enforcing regardless.
+Skips without writing a model when the dataset is too small or too one-sided
+to learn from, or the trained forest fails the usability check. The heuristic
+and LLM lanes keep enforcing regardless.
 
 No Session ever crosses an await (monolith async/session rule; semgrep
 no-sync-session-in-async-def / no-session-in-to-thread).
@@ -46,7 +41,7 @@ _MIN_SAMPLES = int(os.environ.get("SAFEGUARDS_TRAIN_MIN_SAMPLES", "200"))
 _MIN_POSITIVE = int(os.environ.get("SAFEGUARDS_TRAIN_MIN_POSITIVE", "25"))
 _MIN_NEGATIVE = int(os.environ.get("SAFEGUARDS_TRAIN_MIN_NEGATIVE", "25"))
 _WINDOW_DAYS = int(os.environ.get("SAFEGUARDS_TRAIN_WINDOW_DAYS", "90"))
-# Sized with the tree count to fit the sandbox guest's 25s wall-clock cap.
+# Bound dataset memory and training work in the job pod.
 _MAX_SAMPLES = int(os.environ.get("SAFEGUARDS_TRAIN_MAX_SAMPLES", "10000"))
 _N_TREES = int(os.environ.get("SAFEGUARDS_TRAIN_N_TREES", "48"))
 _SEED = 7
@@ -127,8 +122,7 @@ def _store_model(forest: dict, n_samples: int, n_positive: int, trained_in: str)
 
 def _forest_usable(forest: dict) -> bool:
     """Structural sanity check on a forest before it is stored: right feature
-    count and a probability that actually evaluates. The sandbox is trusted
-    code but a truncated file or a partial write must not become a model."""
+    count and a probability that evaluates in [0, 1]."""
     try:
         if int(forest["n_features"]) != len(safeguards.FEATURE_NAMES):
             return False
@@ -168,15 +162,16 @@ async def safeguards_train_handler(session: Session) -> None:
         n_trees=_N_TREES,
         seed=_SEED,
     )
-    trained_in = "local"
+    if not _forest_usable(forest):
+        logger.info("safeguards-train: trained forest unusable; skipping")
+        return
 
-    version = await asyncio.to_thread(_store_model, forest, n, n_pos, trained_in)
+    version = await asyncio.to_thread(_store_model, forest, n, n_pos, "local")
     safeguards.invalidate_model_cache()
     logger.info(
-        "safeguards-train: stored shadow model v%d (n=%d pos=%d %s) metrics=%s",
+        "safeguards-train: stored shadow model v%d (n=%d pos=%d local) metrics=%s",
         version,
         n,
         n_pos,
-        trained_in,
         json.dumps(forest.get("metrics") or {}),
     )

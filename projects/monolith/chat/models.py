@@ -620,13 +620,13 @@ class TrustModel(SQLModel, table=True):
     """A trained safeguards random forest (ADR chat/003).
 
     ``model_json`` is the JSON tree ensemble exported by the trainer
-    (chat.safeguards_forest.train_forest, run inside the Firecracker sandbox);
-    inference walks it in pure Python so no ML dependency enters the monolith.
+    (chat.safeguards_forest.train_forest, run in-process in the trainer job);
+    inference walks it in pure Python without loading numpy.
     Every fresh train lands as status='shadow' (scored, never enforced);
-    promoting a row to 'live' is a deliberate manual step via SQL or the MCP
-    surface, and supersession retires old shadow rows. ``feature_names_json``
-    pins the feature order the model was trained against; the loader refuses a
-    model whose features do not match the running code (schema drift guard).
+    promoting a row to 'live' is a deliberate manual SQL step, and supersession
+    retires old shadow rows. ``feature_names_json`` pins the feature order the
+    model was trained against; the loader refuses a model whose features do
+    not match the running code (schema drift guard).
     The status CHECK mirrors the migration so the SQLite test fixtures enforce
     it too.
     """
