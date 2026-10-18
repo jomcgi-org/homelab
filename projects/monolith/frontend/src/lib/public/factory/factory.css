@@ -1985,8 +1985,8 @@
   }
 }
 
-/* Quota uses solid actual observations and a dashed reset baseline so the
-   comparison remains legible in both schemes without a color-only legend. */
+/* Pace is the first read; the measured history remains available on demand.
+   A solid fill plus a target tick works without relying on status colours. */
 .factory-page .quota-panel {
   flex: none;
   border: 1px solid var(--ink);
@@ -1994,7 +1994,7 @@
 .factory-page .quota-heading {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem 1rem;
+  gap: 0.15rem 1rem;
   justify-content: space-between;
   padding: 0.35rem 0.7rem;
   border-bottom: 1px solid var(--stroke);
@@ -2003,16 +2003,26 @@
 .factory-page .quota-heading h2,
 .factory-page .quota-heading p,
 .factory-page .quota-provider h3,
-.factory-page .quota-window p,
-.factory-page .quota-meta,
+.factory-page .quota-provider p,
+.factory-page .quota-details p,
+.factory-page .quota-history-window h4,
 .factory-page .quota-refresh {
   margin: 0;
+}
+.factory-page .quota-heading h2,
+.factory-page .quota-heading p,
+.factory-page .quota-provider-label span,
+.factory-page .quota-values,
+.factory-page .quota-meta,
+.factory-page .quota-method,
+.factory-page .quota-warning,
+.factory-page .quota-refresh {
   font-family: var(--font-code);
   font-size: 0.7rem;
   line-height: 1.5;
 }
 .factory-page .quota-heading h2 {
-  text-transform: uppercase;
+  font-weight: 600;
 }
 .factory-page .quota-providers {
   display: grid;
@@ -2020,28 +2030,125 @@
 }
 .factory-page .quota-provider {
   min-width: 0;
-  padding: 0.55rem 0.7rem;
+  padding: 0.6rem 0.7rem 0.75rem;
 }
 .factory-page .quota-provider + .quota-provider {
   border-left: 1px solid var(--stroke);
 }
-.factory-page .quota-provider h3 {
-  font-weight: 700;
-  font-size: 0.8rem;
-}
-.factory-page .quota-window + .quota-window {
-  margin-top: 0.55rem;
-}
+.factory-page .quota-provider-label,
 .factory-page .quota-values {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.1rem 0.75rem;
+  align-items: baseline;
   justify-content: space-between;
+  gap: 0.1rem 0.7rem;
+}
+.factory-page .quota-provider h3 {
   font-size: 0.8rem;
+  font-weight: 700;
+}
+.factory-page .quota-status {
+  font-size: 1.1rem;
+  line-height: 1.35;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.factory-page .quota-provider[data-state="fast"] > .quota-status,
+.factory-page .quota-provider[data-state="exhausted"] > .quota-status {
+  color: var(--tone-disk);
+}
+.factory-page .quota-provider[data-state="under"] > .quota-status {
+  color: var(--accent-ink);
+}
+.factory-page .quota-provider[data-state="on"] > .quota-status {
+  color: var(--tone-ram);
+}
+.factory-page .quota-window {
+  margin-top: 0.65rem;
+}
+.factory-page .quota-evidence {
+  font-family: var(--font-code);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+.factory-page .quota-meter {
+  position: relative;
+  height: 0.6rem;
+  margin: 0.15rem 0 0.2rem;
+  border: 1px solid var(--stroke);
+  background: var(--band);
+}
+.factory-page .quota-fill {
+  display: block;
+  height: 100%;
+  background: var(--ink-2);
+}
+.factory-page .quota-window[data-state="fast"] .quota-fill,
+.factory-page .quota-window[data-state="exhausted"] .quota-fill {
+  background: var(--tone-disk);
+}
+.factory-page .quota-window[data-state="under"] .quota-fill {
+  background: var(--accent-ink);
+}
+.factory-page .quota-window[data-state="on"] .quota-fill {
+  background: var(--tone-ram);
+}
+.factory-page .quota-target {
+  position: absolute;
+  top: -0.2rem;
+  bottom: -0.2rem;
+  width: 2px;
+  transform: translateX(-50%);
+  border: 0;
+  background: var(--ink);
+  outline: 1px solid var(--sheet);
+}
+.factory-page .quota-warning {
+  color: var(--warn);
+}
+.factory-page .quota-provider .quota-scope-note {
+  margin-top: 0.45rem;
 }
 .factory-page .quota-meta,
-.factory-page .quota-heading p {
+.factory-page .quota-heading p,
+.factory-page .quota-provider-label span,
+.factory-page .quota-values span,
+.factory-page .quota-evidence span,
+.factory-page .quota-method {
   color: var(--ink-2);
+}
+.factory-page .quota-details {
+  border-top: 1px solid var(--stroke);
+}
+.factory-page .quota-details > summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-code);
+  font-size: 0.75rem;
+}
+.factory-page .quota-details > summary::-webkit-details-marker {
+  display: none;
+}
+.factory-page .quota-details > summary::after {
+  content: "+";
+}
+.factory-page .quota-details[open] > summary::after {
+  content: "−";
+}
+.factory-page .quota-method,
+.factory-page .quota-history-window,
+.factory-page .quota-unknown {
+  padding: 0.45rem 0.7rem;
+  border-top: 1px solid var(--line);
+}
+.factory-page .quota-history-window h4 {
+  font-size: 0.8rem;
 }
 .factory-page .quota-refresh {
   padding: 0.3rem 0.7rem;
@@ -2057,10 +2164,19 @@
   }
   .factory-page .quota-heading h2,
   .factory-page .quota-heading p,
+  .factory-page .quota-provider-label span,
+  .factory-page .quota-values,
   .factory-page .quota-meta,
-  .factory-page .quota-window p,
-  .factory-page .quota-refresh {
+  .factory-page .quota-method,
+  .factory-page .quota-warning,
+  .factory-page .quota-refresh,
+  .factory-page .quota-details > summary {
     font-size: 0.8rem;
+  }
+  .factory-page .quota-provider h3,
+  .factory-page .quota-evidence,
+  .factory-page .quota-history-window h4 {
+    font-size: 0.85rem;
   }
 }
 
