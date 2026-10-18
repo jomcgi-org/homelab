@@ -35,6 +35,8 @@ from agent import factory_goals as goals_mod
 from agent import notify as notify_mod
 from agent import routine_jobs
 from core.mcp_app import mcp
+from auth.api import current_principal
+from factory.access import is_operator, OPERATOR_REQUIRED
 import chat.api as chat_api
 
 
@@ -73,6 +75,24 @@ def _serialize_scheduled_job(row: dict) -> dict:
 
 def _serialize_dead_letter(row: dict) -> dict:
     return {**row, "last_failed_at": _iso(row.get("last_failed_at"))}
+
+
+@mcp.tool
+async def monolith_agent_schema_retirement_inventory() -> dict:
+    """Read fixed database metadata for the feature retirement in PR 7134.
+
+    Requires a standing human operator. Returns bounded object identities,
+    dependency closure, retained column signatures and public reader privileges
+    from a consistent read-only snapshot. Takes no object names or SQL and reads
+    no application rows or object bodies. An incomplete result cannot establish
+    absence of dependencies. This does not authorize migration or establish a
+    future DDL-free window, consumer compatibility or public route health.
+    """
+    if not is_operator(current_principal()):
+        return {"complete": False, "error": OPERATOR_REQUIRED}
+    from agent.schema_retirement import read_inventory
+
+    return await asyncio.to_thread(read_inventory)
 
 
 # --- Locks ---------------------------------------------------------------

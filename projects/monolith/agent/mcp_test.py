@@ -22,6 +22,7 @@ EXPECTED_TOOLS = {
     "monolith_agent_deregister_routine_job",
     "monolith_agent_trigger_routine_job",
     "monolith_agent_set_factory_goals",
+    "monolith_agent_schema_retirement_inventory",
 }
 
 
@@ -37,9 +38,54 @@ async def test_all_agent_tools_registered():
     assert "monolith_agent_check_orphan_jobs" not in registered
 
 
-def test_expected_tool_count_is_fifteen():
+def test_expected_tool_count_is_sixteen():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
-    assert len(EXPECTED_TOOLS) == 15
+    assert len(EXPECTED_TOOLS) == 16
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "authority,kind,groups,allowed",
+    [
+        ("standing", "human", ("operators",), True),
+        ("standing", "human", (), False),
+        ("standing", "workload", ("operators",), False),
+        ("delegated", "human", ("operators",), False),
+    ],
+)
+async def test_schema_inventory_requires_standing_human_operator(
+    monkeypatch, authority, kind, groups, allowed
+):
+    import threading
+    from auth.api import Authority, Principal, PrincipalKind
+    from auth.dependencies import reset_current_principal, set_current_principal
+    from agent import mcp, schema_retirement
+
+    caller, calls = threading.get_ident(), []
+
+    def read():
+        assert threading.get_ident() != caller
+        calls.append(True)
+        return {"complete": True}
+
+    monkeypatch.setattr(schema_retirement, "read_inventory", read)
+    token = set_current_principal(
+        Principal(
+            subject="operator",
+            actor=(),
+            scope=(),
+            groups=groups,
+            email=None,
+            kind=PrincipalKind(kind),
+            authority=Authority(authority),
+        )
+    )
+    try:
+        result = await mcp.monolith_agent_schema_retirement_inventory()
+    finally:
+        reset_current_principal(token)
+    assert result["complete"] is allowed
+    assert bool(calls) is allowed
 
 
 @pytest.mark.asyncio
