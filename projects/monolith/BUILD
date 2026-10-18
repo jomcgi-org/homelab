@@ -8302,6 +8302,20 @@ py_test(
 )
 
 py_test(
+    name = "streaming_router_test",
+    srcs = ["chat/streaming_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//starlette",
+    ],
+)
+
+py_test(
     name = "sse_test",
     srcs = ["chat/sse_test.py"],
     imports = ["."],

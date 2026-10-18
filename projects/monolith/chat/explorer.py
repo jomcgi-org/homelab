@@ -1,17 +1,23 @@
 """PydanticAI explorer agent -- searches and traverses the knowledge graph."""
 
+import asyncio
 import os
+from collections.abc import Callable
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import anyio
+import shared.inference
+from core.db import get_engine
+from knowledge.api import KnowledgeStore, get_store, result_current
 from pydantic_ai import Agent, ModelSettings, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from shared.embedding import EmbeddingClient
+from sqlmodel import Session
 
 from chat.sse import SSEEmitter
-from knowledge.api import KnowledgeStore, result_current
-from shared.embedding import EmbeddingClient
-import shared.inference
 
 SYSTEM_PROMPT = """\
 You are a knowledge graph explorer. The user asks questions and you search \
@@ -40,9 +46,37 @@ _FRESHNESS_KEYS = (
 
 @dataclass
 class ExplorerDeps:
-    store: KnowledgeStore
+    store: Callable[[], AbstractContextManager[KnowledgeStore]]
     embed_client: EmbeddingClient
     emitter: SSEEmitter
+
+
+@contextmanager
+def explorer_store():
+    """Create, use and close each session on the same worker thread."""
+    with Session(get_engine()) as session:
+        yield get_store(session)
+
+
+async def _read_store(deps: ExplorerDeps, method: str, *args, **kwargs):
+    def read():
+        with deps.store() as store:
+            return getattr(store, method)(*args, **kwargs)
+
+    worker = asyncio.create_task(asyncio.to_thread(read))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # Cancelling to_thread cannot stop its synchronous operation. Join it
+        # before releasing the producer so its session has exited as well.
+        joined = asyncio.gather(worker, return_exceptions=True)
+        with anyio.CancelScope(shield=True):
+            while not joined.done():
+                try:
+                    await asyncio.shield(joined)
+                except asyncio.CancelledError:
+                    continue
+        raise
 
 
 def create_explorer_agent() -> Agent[ExplorerDeps]:
@@ -90,7 +124,9 @@ async def _search_kg(
     deps: ExplorerDeps, query: str, *, now: datetime | None = None
 ) -> str:
     vector = await deps.embed_client.embed(query)
-    results = deps.store.search_notes_with_context(query_embedding=vector, limit=5)
+    results = await _read_store(
+        deps, "search_notes_with_context", query_embedding=vector, limit=5
+    )
     now = now if now is not None else datetime.now(timezone.utc)
     lines = []
     for r in results:
@@ -125,17 +161,17 @@ async def _expand_node(
     deps: ExplorerDeps, note_id: str, *, now: datetime | None = None
 ) -> str:
     now = now if now is not None else datetime.now(timezone.utc)
-    source = deps.store.get_note_by_id(note_id)
+    source = await _read_store(deps, "get_note_by_id", note_id)
     if source is None or not result_current(source, now=now):
         return f"No current evidence for {note_id}; use history search to investigate."
-    links = deps.store.get_note_links(note_id)
+    links = await _read_store(deps, "get_note_links", note_id)
     if not links:
         return f"No edges found from {note_id}."
 
     lines = []
     for link in links:
         target_id = link.get("resolved_note_id") or link["target_id"]
-        target = deps.store.get_note_by_id(target_id)
+        target = await _read_store(deps, "get_note_by_id", target_id)
         if target is None or not result_current(target, now=now):
             continue
         deps.emitter.emit(

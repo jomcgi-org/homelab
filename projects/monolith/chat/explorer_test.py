@@ -1,4 +1,5 @@
 import json
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -56,7 +57,7 @@ def make_deps(emitter: SSEEmitter) -> ExplorerDeps:
     embed_client.embed.return_value = [0.1] * 1024
 
     return ExplorerDeps(
-        store=store,
+        store=lambda: nullcontext(store),
         embed_client=embed_client,
         emitter=emitter,
     )
@@ -123,13 +124,13 @@ async def test_discard_node_emits_event():
 @pytest.mark.anyio
 async def test_explorer_search_and_edges_exclude_due_and_unknown_context():
     deps = make_deps(SSEEmitter())
-    deps.store.search_notes_with_context.return_value[0]["review_after"] = (
-        NOW.isoformat()
-    )
+    deps.store().enter_result.search_notes_with_context.return_value[0][
+        "review_after"
+    ] = NOW.isoformat()
     assert await _search_kg(deps, "query", now=NOW) == "No results found."
-    deps.store.get_note_by_id.return_value["review_after"] = None
+    deps.store().enter_result.get_note_by_id.return_value["review_after"] = None
     assert "No current evidence" in await _expand_node(deps, "note-1", now=NOW)
-    deps.store.get_note_links.assert_not_called()
+    deps.store().enter_result.get_note_links.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -155,7 +156,7 @@ async def test_expand_node_dates_and_warns_for_current_volatile_target():
         "freshness": "current",
         "requires_authoritative_observation": True,
     }
-    deps.store.get_note_by_id.side_effect = lambda note_id: (
+    deps.store().enter_result.get_note_by_id.side_effect = lambda note_id: (
         source if note_id == "note-1" else target
     )
 
