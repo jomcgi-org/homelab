@@ -1,5 +1,10 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 
+exports_files(
+    ["platform-gke/otel-collector/application.yaml"],
+    visibility = ["//projects/platform/otel-collector:__pkg__"],
+)
+
 py_library(
     name = "projects",
     srcs = ["__init__.py"],
