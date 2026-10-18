@@ -2153,7 +2153,10 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # those booleans and free reason prose, adding about 450 characters.
     # #6992 adds typed per-node effort and the complexity rules needed to
     # request xhigh before dispatch. Allow 500 characters for that contract.
-    assert len(prompt) < 22_500
+    # Review floors and the correction/re-review reserve add about 430
+    # characters: a planner must include those server costs even when its
+    # requested review budget is smaller. Allow 500 for that funding contract.
+    assert len(prompt) < 23_000
     assert (task, nodes, runs) == before
 
 
@@ -9858,6 +9861,29 @@ def test_planner_prompt_explains_cost_clamping_and_other_bound_refusals():
     )
 
 
+def test_planner_budget_exposes_server_review_floor_and_round_reserve(feedback_db):
+    task, policy = feedback_task(turn_budget_usd=4.0, task_budget_usd=50.0)
+    evidence = conductor._budget_evidence(task["id"])
+    assert evidence["new_node_max_cost_usd"] == 4.0
+    assert evidence["review_node_min_cost_usd"] == {"opus": 10.0}
+    assert evidence["new_review_round_reserve_usd"] == 14.0
+    decision = {
+        "action": "plan",
+        "reason": "Plan the replacement using actual review reservations",
+        "edits": [
+            plan_edit("scope", "investigate", max_cost_usd=4.0),
+            plan_edit("fix", "implement", ["investigate_scope"], max_cost_usd=4.0),
+            plan_edit("check", "review", ["implement_fix"], max_cost_usd=4.0),
+        ],
+    }
+    preview = conductor.preview_decision(
+        task["id"], decision, expected_revision=0, policy=policy
+    )
+    assert preview["ok"]
+    assert preview["projection"]["allowance"]["usd"] == 32.0
+    assert "even when you request a lower max_cost_usd" in conductor._PLANNER_CHARTER
+
+
 @pytest.mark.parametrize(
     "bad, code",
     [
@@ -12797,6 +12823,65 @@ def test_a_stale_allowance_is_re_derived_on_the_next_tick(feedback_db, monkeypat
     monkeypatch.setattr(conductor, "reserve_node", lambda *_a, **_k: True)
     conductor.reconcile_task(task["id"], policy, object())
     assert controls.task_snapshot(task["id"])["allowance"] == derived
+
+
+def test_resume_applies_completed_replacement_plan_before_admitting_work(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = feedback_task(max_turns=9, task_budget_usd=50.0)
+    # The exhausted preflight remains charged after its graph node is retired.
+    complete_feedback_node(task, policy, "investigate_old", {}, status="failed")
+    assert conductor.graph.discard_node(
+        task["id"],
+        "investigate_old",
+        author_kind="conductor",
+        author="opus",
+        cause_kind="factory_conductor",
+        cause_ref="test:retire",
+        stated_reason="Confirmed cessation; replace the exhausted preflight",
+        expected_version=conductor.graph.current_version(task["id"]),
+    ).ok
+    conductor._record_allowance(task["id"], policy, "test:retire")
+    before = controls.task_snapshot(task["id"])
+    assert before["turns_used"] == before["allowance"]["turns"] == 1
+    complete_feedback_node(
+        task,
+        policy,
+        "conductor_1",
+        {
+            "action": "plan",
+            "reason": "Replace the exhausted chain within the original envelope",
+            "edits": [
+                plan_edit("fresh", "investigate", max_attempts=1),
+                plan_edit("fix", "implement", ["investigate_fresh"], max_attempts=2),
+                plan_edit("check", "review", ["implement_fix"], max_attempts=1),
+            ],
+        },
+    )
+    assert controls.set_control("pause_task", "factory:watchdog", task_id=task["id"])[
+        "ok"
+    ]
+    conductor.reconcile_task(task["id"], policy, object())
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
+        "conductor_1"
+    ]
+    assert controls.set_control("resume_task", "operator", task_id=task["id"])["ok"]
+
+    conductor.reconcile_task(task["id"], policy, object())
+
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["allowance"]["turns"] == 7
+    assert snapshot["policy"]["task_budget_usd"] == 50.0
+    assert snapshot["turns_used"] == 1
+    monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+    conductor.reconcile_task(task["id"], policy, object())
+    runs = conductor.graph.node_runs(task["id"])
+    assert [
+        (r["node_key"], r["status"]) for r in runs if r["status"] == "admitted"
+    ] == [("investigate_fresh", "admitted")]
+    assert sum(r["node_key"].startswith("conductor_") for r in runs) == 1
 
 
 def test_only_wave_members_dispatch_when_the_graph_order_disagrees(

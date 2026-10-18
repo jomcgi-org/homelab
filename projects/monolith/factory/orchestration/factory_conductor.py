@@ -854,6 +854,7 @@ def _decision_evidence(task_id: str) -> list[dict]:
 def _budget_evidence(task_id: str) -> dict:
     """Read the graph accounting owner and immutable factory limits for context."""
     from factory.orchestration.factory_controls import (
+        allowance_from_graph,
         parallel_limit,
         planner_turn_cap,
         task_snapshot,
@@ -877,6 +878,18 @@ def _budget_evidence(task_id: str) -> dict:
             "max_parallel_nodes": parallel_limit(policy),
             "deadline_at": receipt["deadline_at"],
             "new_node_max_cost_usd": policy["turn_budget_usd"],
+            "review_node_min_cost_usd": {
+                model: review_reservation_usd(model, 0, policy["turn_budget_usd"])
+                for model in pool_for("reviewer", policy)
+            },
+            "new_review_round_reserve_usd": allowance_from_graph(
+                [],
+                [],
+                policy,
+                review_rounds_remaining=1,
+                graph_revision=0,
+                reviewable=True,
+            )["usd"],
             "max_attempts": policy["max_attempts"],
             "pending_planner_max_cost_usd": turn_reservation_usd(
                 select_model("conductor", policy)["model"],
@@ -2008,6 +2021,12 @@ _PLANNER_CHARTER = (
     "requirement in the issue or operator direction. "
     "A valid max_cost_usd above new_node_max_cost_usd (or the review "
     "reservation for review nodes) is lowered to that ceiling and audited. "
+    "Review nodes always use the server's review reservation, even when you "
+    "request a lower max_cost_usd. budget_evidence.review_node_min_cost_usd "
+    "gives each reviewer's minimum; an existing PR's size can raise it. "
+    "When a review round is reserved, also include "
+    "budget_evidence.new_review_round_reserve_usd for correction and re-review "
+    "headroom, in addition to charged history and the proposed nodes. "
     "max_attempts and turn_timeout_seconds above policy are still refused "
     "with bound_exceeds_policy. "
     "Size each node's turn_timeout_seconds to the work that node really "
@@ -2822,6 +2841,7 @@ def revalidate_escalations() -> dict[str, int]:
     from factory.orchestration.factory_decisions import DecisionError
     from factory.orchestration.factory_decisions import apply_decision as decide
     from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
+    from factory.orchestration.factory_progress_watchdog import decidable
 
     generation = reconcile_generation_stale_receipts(ESCALATION_REVALIDATION_ACTOR)
     counts["cards"] += generation["cards_resolved"]
@@ -2850,6 +2870,12 @@ def revalidate_escalations() -> dict[str, int]:
             # spend a GitHub read or offer an external decision for a stale
             # card still waiting for a later pass or an in-flight decision.
             if type(current_generation) is int and row.generation != current_generation:
+                continue
+            # This card owns an execution pause, not an issue-text question.
+            # Rewriting (including our own rescope checklist) or closing the
+            # issue does not answer resume/stop. Dismissing it would hide the
+            # only decision while the watchdog keeps awaiting that decision.
+            if decidable(row, escalation):
                 continue
             snapshot = {
                 "id": row.id,

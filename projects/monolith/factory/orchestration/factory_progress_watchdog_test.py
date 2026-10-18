@@ -625,6 +625,72 @@ def test_plain_resume_task_also_rearms_and_answers_the_card(
     assert document["resolved"]["option_key"] == "resume"
 
 
+@pytest.mark.parametrize("issue_state", ["OPEN", "CLOSED"])
+def test_issue_changes_do_not_dismiss_an_active_watchdog_pause(
+    db, github, notices, model, spans, monkeypatch, issue_state
+):
+    task_id, policy = looped(db, github, notices, spans)
+    before = json.loads(receipt(db, task_id).escalation_json)
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+    monkeypatch.setattr(conductor, "_last_escalation_revalidation", None)
+    monkeypatch.setattr(
+        conductor,
+        "_github_issue_batch",
+        lambda *_: {ISSUE: {"state": issue_state, "body": "New staged scope"}},
+    )
+
+    conductor.revalidate_escalations()
+
+    row = receipt(db, task_id)
+    assert row.task_paused
+    assert json.loads(row.escalation_json) == before
+    assert watchdog.check(task_id, policy) == "awaiting_person"
+    decided = decisions.apply_decision(row.id, "resume", "operator")
+    assert decided["applied"]
+    assert watchdog.check(task_id, policy) == "cleared"
+
+
+def test_direct_resume_replaces_automatic_dismissal_with_operator_evidence(
+    db, github, notices, model, spans
+):
+    task_id, policy = looped(db, github, notices, spans)
+    decisions.apply_decision(
+        receipt(db, task_id).id,
+        "escape:dismiss",
+        conductor.ESCALATION_REVALIDATION_ACTOR,
+        "Issue body changed",
+    )
+    # A dismissed card is not a resume, and must not clear the execution hold.
+    assert watchdog.check(task_id, policy) == "awaiting_person"
+    assert receipt(db, task_id).task_paused
+    assert controls.set_control("resume_task", "operator", task_id=task_id)["ok"]
+
+    assert watchdog.check(task_id, policy) == "cleared"
+
+    document = json.loads(receipt(db, task_id).escalation_json)
+    assert document["resolved"]["option_key"] == "resume"
+    assert document["resolved"]["actor"] == "operator"
+    assert audits(db, watchdog.CLEARED)[0]["resumed_by"] == "operator"
+    assert not receipt(db, task_id).task_paused
+
+
+def test_card_resume_keeps_operator_attribution_after_interrupted_clear(
+    db, github, notices, model, spans
+):
+    task_id, policy = looped(db, github, notices, spans)
+    decisions.apply_decision(receipt(db, task_id).id, "resume", "operator")
+    # Reproduce a process exit after _enact commits the resume, before _clear.
+    assert controls.set_control("resume_task", watchdog.ACTOR, task_id=task_id)["ok"]
+
+    assert watchdog.check(task_id, policy) == "cleared"
+
+    assert audits(db, watchdog.CLEARED)[0]["resumed_by"] == "operator"
+    assert (
+        json.loads(receipt(db, task_id).escalation_json)["resolved"]["actor"]
+        == "operator"
+    )
+
+
 def _bump_generation():
     # Configure accepts a new generation while work runs; the active task
     # keeps its pinned generation-0 policy.
