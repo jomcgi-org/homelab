@@ -126,6 +126,7 @@ def test_factory_tools_are_registered():
         "factory_escalations",
         "factory_decide",
         "factory_amend_policy",
+        "factory_release_landing_hold",
         "factory_request_brief",
         "factory_context",
     } <= registered, f"factory tools not registered; got: {sorted(registered)}"
@@ -1527,6 +1528,53 @@ def test_permit_diagnostics_wire_schema_rejects_invalid_ids(monkeypatch):
         assert calls == [[11254]]
 
     _as(_principal(), exercise)
+
+
+def test_landing_release_requires_human_operator_and_reviewed_preview(monkeypatch):
+    from factory.orchestration import factory_landing_release as releases
+
+    calls = []
+    monkeypatch.setattr(
+        releases,
+        "apply",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"ok": True},
+    )
+
+    async def invoke():
+        return await mcp.factory_release_landing_hold(
+            operation="apply",
+            receipt_id=890,
+            pr_number=7170,
+            head_sha="a" * 40,
+            reason="Joe authorized this reviewed delivery",
+            request_key="one",
+            expected_preview_sha256="b" * 64,
+        )
+
+    assert _as(_principal(), invoke)["ok"]
+    assert calls[0][1]["actor"] == "joe"
+    calls.clear()
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(principal, invoke)["ok"]
+    assert calls == []
+
+    async def unpreviewed():
+        return await mcp.factory_release_landing_hold(
+            operation="apply",
+            receipt_id=890,
+            pr_number=7170,
+            head_sha="a" * 40,
+            reason="approved",
+        )
+
+    assert _as(_principal(), unpreviewed)["reason"] == (
+        "landing_release_requires_preview_and_request_key"
+    )
+    assert calls == []
 
 
 def test_review_recovery_requires_human_operator_and_uses_subject(monkeypatch):

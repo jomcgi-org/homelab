@@ -2500,6 +2500,24 @@ without entering landing, and the landing reconciler disarms/dequeues any held
 delivery even when global merge and review-publication flags are off. Handoff
 instructions retain the draft.
 
+The human-only `factory_release_landing_hold` operation is the explicit exit
+from that staged-delivery hold. A preview binds the receipt, owned PR head,
+merge state, direction, policy and graph revision. Apply re-reads GitHub and
+requires the same digest and an idempotent request key. Live or unknown starts,
+node runs, claimed session work and an in-flight decision refuse release. The
+operation records the superseded hold and operator authorization, then removes
+only `landing_hold`. It preserves pause and settlement state, all accounting,
+the existing graph, independent-review gates and outstanding operational checks.
+An already merged PR can be acknowledged without claiming its review or rollout
+passed. Restricted review-only recovery holds remain fenced.
+
+**Why an explicit release.** An operator can authorize landing after a task has
+produced its staged PR, but the sticky hold otherwise keeps dequeuing that PR
+and blocks reconciliation of an external merge. A merge or changed issue body
+is not proof that the operator authorized removing the hold. A separate exact
+preview/apply operation records that decision without conflating it with task
+resume, review approval or delivery acceptance.
+
 A typed `live_validation` gate may carry `leave_unmerged=true`. The gate owner
 persists the same sticky landing hold before any GitHub write. Operational
 checklists alone only preserve the issue's outstanding acceptance; they are not
