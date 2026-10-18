@@ -430,17 +430,17 @@ against the envelope as it happens, and an engine insertion is checked on the
 nodes it really adds, with no forward reserve counted on top: that reserve is
 headroom for the planner's next edit, not a charge against the round the engine
 is opening. Money is the same sum over node cost
-ceilings plus charged history. Review rounds are reserved only when the plan
-holds a review node. That allowance is
+ceilings plus charged history, recorded for accounting only: no dollar figure
+refuses an edit, a dispatch or a start (#7161). Review rounds are reserved only
+when the plan holds a review node. That allowance is
 persisted on the receipt with the graph revision it came from, re-derived and
 audited on every accepted plan, add, discard and engine round, and it is the
-bound `authorize_start` and the board actually read. Policy keeps only an
-envelope, `max_task_turns_hard` beside `task_budget_usd` and the deadline. An
-edit whose derived allowance would exceed either is refused whole with
-`envelope_exceeded` and the excess named as needed against allowed, beside the
-spare turns and dollars the graph still leaves under the reserve that edit
-implies, which reaches the planner as decision feedback so it can shrink the
-edit, split the work, or pause.
+bound `authorize_start` and the board actually read. Policy keeps only a turn
+envelope, `max_task_turns_hard` beside the deadline. An edit whose derived turn
+allowance would exceed it is refused whole with `envelope_exceeded` and the
+excess named as needed against allowed, beside the spare turns the graph still
+leaves under the reserve that edit implies, which reaches the planner as
+decision feedback so it can shrink the edit, split the work, or pause.
 
 Nodes that can start together fan out, up to `max_parallel_nodes`. A wave is
 read from the live graph rather than from the plan as a whole: source-writing
@@ -878,8 +878,8 @@ policy field that inherits the work cap when a policy predates it.
 choice when nothing is known about the spend, but a Codex turn is not unknown:
 its token usage is recorded and priceable, so charging the ceiling overstated a
 task by more than an order of magnitude and retired it with most of its real
-budget unspent. A list price is an estimate, so it settles the ledger but never
-fails a delivery; only a provider-measured overrun does that. Counting planner
+budget unspent. Neither a list price nor a provider-measured overrun fails a
+delivery: both settle the ledger and the work is kept (#7161). Counting planner
 rounds against the delivery cap let a task exhaust itself deciding, but the task
 budget alone is not the answer either: a planning round costs a few cents, so
 the budget would admit hundreds of them and a refused decision mints the next
@@ -2067,6 +2067,15 @@ of Opus went on recovery samples that could not converge. No ARCHITECTURE
 section described the loop, so no reviewer saw its bound. Quality routing
 stays retired; review rounds already bound quality (#6283, closed 2026-10-01).
 
+The no-progress watchdog is such a loop. It measures settled turns, planner
+rounds included, since the task was admitted or last cleared without a new
+commit or pull request. Every `progress_watchdog.threshold_turns` turns (default
+8) it assesses the task once; a loop pauses the task and raises a Resume, Stop
+or Rescope card. A delivery or a resume re-arms it a full step from the current
+count, and the pause holds until a person answers. It counted dollars until
+#7161; a task whose last watchdog row predates that re-arms from its current
+turn count on the first tick rather than reading dollars as turns.
+
 
 ### Adversarial dependency PR intake
 
@@ -2404,8 +2413,9 @@ as emergency maximums, never targets or renewed allocations. It remains shadow
 only. `FACTORY_PROGRESS_SHADOW_ENABLED=true` enables deterministic observations
 before the legacy watchdog's spend gate, under a separate audit action exposed in
 task detail. The default is off. Observation cannot pause, resume, admit, fund,
-clear a watchdog decision, or change graph eligibility. Existing $50 task,
-$200 objective, work-turn and per-node limits retain their own owners.
+clear a watchdog decision, or change graph eligibility. Work-turn, planner-turn,
+attempt and deadline limits retain their own owners; dollar limits no longer
+gate work (#7161).
 
 The collector reuses the funding owner's immutable objective identities and
 counts each native session turn once, including prior admissions. It separates
@@ -2430,10 +2440,8 @@ shadow observation under the existing #6781 human owner. Enforcement of larger
 list-price backstops additionally requires authoritative incremental metering,
 versioned pricing, complete objective attribution, atomic admission and a bounded
 stop path that preserves uncertainty until exact cessation. Terminal token usage
-alone cannot implement a hard in-flight cap. Raising funding's $200 ceiling or a
-receipt's $50 allocation alone would not supply these guarantees, remove the
-work-turn/per-node limits, or grant paid API authority. No provider quota, global
-cash limit, credential or security setting follows from this candidate policy.
+alone cannot implement a hard in-flight cap. No provider quota, global cash
+limit, credential or security setting follows from this candidate policy.
 
 Ordinary planning defaults to one capable implementation session and independent
 exact-head review. Non-trivial work uses xhigh effort within pinned model policy;
@@ -2482,7 +2490,8 @@ accounting or pending funding changes invalidate it. It refuses live or unknown
 execution, preserves prior grants, supersedes a stale pending funding review
 and records direction through the existing funding owner. It leaves the task
 paused, retains all history and existing node pins, and cannot change models,
-global auto-merge, provider controls or the $200 objective allocation ceiling.
+global auto-merge or provider controls. Its dollar fields are recorded and never
+refuse an amendment.
 An operator may add a sticky receipt-specific `landing_hold=true`; it preserves
 existing direction and cannot be removed by this amendment or later escalation
 direction. Held deliveries accept reviewed drafts only with passing exact-head
@@ -2497,27 +2506,20 @@ checklists alone only preserve the issue's outstanding acceptance; they are not
 landing authority. Recording the typed restriction blocks automatic landing even
 when global auto-merge is enabled, and later scope gates cannot remove it.
 
-**Why node exhaustion is not a funding request.** In #7040 and #7087, a failed
-invocation with unknown cost consumed its entire node reservation. Increasing
-the task envelope could not make that node dispatchable. Funding now pauses on
-exhausted node allocations before commissioning another judge, including hidden
-nodes. Successive automatic grants also require new work evidence: useful
-investigation counts, while planner and funding turns alone do not. The same
-checks run when a completed funding verdict settles. Historical charges remain
-charged; this does not infer cash spending from reservations or list prices.
-
-Graph admission refuses new work that would silently reset an exhausted
-allocation by renaming it. A paused operator amendment can explicitly name every
-current exhausted key in `recover_exhausted_nodes`, with a nonrenewable envelope
-and exactly one remaining planner attempt. Its digest binds the predecessor
-ledger. One atomic replacement plan may consume that authorization only after
-normal graph admission succeeds. Refused plans leave it unused, old node keys
-cannot be reused by it, and original pins and costs remain intact. A replacement
-failure creates a fresh blocker rather than renewing the authorization. No
-budget increase or live recovery follows from deploying these checks.
-The existing server-validated, one-time correction/review continuation remains
-available for an already reviewed PR. It admits only its exact pair and leaves
-unrelated exhausted allocations blocked.
+**Why dollars never gate factory work.** In #7040, #7087 and #6619 a failed
+invocation with unknown cost was charged its whole node reservation, which left
+the node unretryable however much the task or the funding judge granted. Raising
+budgets in policy could not help: node ceilings are clamped to
+`turn_budget_usd`, so a larger turn budget inflates every reservation and trips
+the objective ceiling and the spend watchdog sooner. The factory spends
+subscription quota, so dollars are an accounting view, not a limit (#7161). No
+graph edit, dispatch, start, continuation, refine settlement, review recovery or
+amendment is refused for a dollar amount, an overrun never fails a node, and
+`factoryEnforceCostCeilingEnabled` is off. What bounds work is the quota guard
+plus turn, planner-turn, attempt and deadline limits. The funding judge stays on
+because it renews leases, deadlines and turn ceilings, and successive automatic
+grants still require new work evidence: useful investigation counts, while
+planner and funding turns alone do not. Historical charges remain recorded.
 
 An operator may also select sticky `nonrenewable_recovery=true` and bound the
 remaining planning attempts with `max_planner_turns`. This uses the same
@@ -2531,5 +2533,4 @@ only another explicit human amendment can change its bounds. Other receipts
 retain ordinary renewal behavior. **Why:** the existing funding reconciler
 ran before graph admission and treated an exhausted planner cap as a reason
 to buy oversight and extend limits, defeating a one-attempt operator recovery.
-No separate graph-preview service is needed. Raising the objective allocation
-ceiling still requires the missing request-boundary guarantee.
+No separate graph-preview service is needed.

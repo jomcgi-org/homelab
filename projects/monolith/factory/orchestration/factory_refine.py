@@ -1197,7 +1197,6 @@ def reconcile(
     }
     if NODE_KEY in ready:
         return
-    accounted = sum(run["accounted_cost_usd"] for run in attempts)
     # Attempts the node actually spent, which is what readiness above counted:
     # a create the control plane refused for capacity is excluded up to its
     # bound, so a saturated EmberVM does not read as a node out of attempts.
@@ -1208,17 +1207,10 @@ def reconcile(
             f"{spent} of {node['max_attempts']} attempts without a "
             "verified brief."
         )
-    elif accounted >= node["max_cost_usd"]:
-        reason = (
-            "Refine cost limit exhausted after "
-            f"{spent} of {node['max_attempts']} attempts: "
-            f"{accounted:.2f} USD accounted against the "
-            f"{node['max_cost_usd']:.2f} USD node allowance without a verified brief."
-        )
     else:
         # Refine has no dependencies, but keep this conservative if its graph
-        # shape ever changes. Only the same attempt or cost bounds used by the
-        # scheduler authorize terminal settlement here.
+        # shape ever changes. Only the attempt bound the scheduler uses
+        # authorizes terminal settlement here.
         return
     settled = finish_task(
         task["id"],

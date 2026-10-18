@@ -146,11 +146,11 @@ def sections(rows) -> dict[str, list[str]]:
         elif row.action == "watchdog_assessed":
             if detail.get("verdict") != "progressing" or detail.get("short_circuit"):
                 continue
-            spend = detail.get("spend_usd")
+            turns = detail.get("turns_used")
             reason = " ".join(str(detail.get("reason") or "").split())[:120]
             out["resumed"].append(
-                f"{task} at ${spend:.2f}: {reason}"
-                if isinstance(spend, (int, float))
+                f"{task} after {turns} turns: {reason}"
+                if type(turns) is int
                 else f"{task}: {reason}"
             )
         elif row.action == "repository_scope_delivered":

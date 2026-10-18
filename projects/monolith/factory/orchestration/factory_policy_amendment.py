@@ -2,8 +2,7 @@
 
 No resume, graph replacement, retry, or budget renewal is implicit. Preview is
 read-only; application requires the same control version and graph revision.
-The existing $200 objective allocation ceiling remains binding. Raising it
-requires a proven pre-request backstop, which observed-usage stops do not supply.
+Dollar amounts are recorded but never refuse an amendment (#7161).
 """
 
 from datetime import timedelta, timezone
@@ -14,7 +13,6 @@ from sqlmodel import select
 
 from factory.execution.models import AgentSession, PendingMessage
 from factory.orchestration import factory_controls as controls, graph
-from factory.orchestration import factory_allocation_recovery as recovery
 from factory.orchestration import factory_funding_limits as funding
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 from factory.orchestration.models import SwarmNodeRun
@@ -38,7 +36,7 @@ def _preview(db, control, receipt_id, overlay, direction):
         not isinstance(overlay, dict)
         or not overlay
         or not set(overlay)
-        <= FIELDS | {"landing_hold", "nonrenewable_recovery", "recover_exhausted_nodes"}
+        <= FIELDS | {"landing_hold", "nonrenewable_recovery"}
     ):
         raise ValueError("unsupported_policy_amendment")
     if "landing_hold" in overlay and overlay["landing_hold"] is not True:
@@ -98,32 +96,6 @@ def _preview(db, control, receipt_id, overlay, direction):
         raise ValueError("amendment_task_deadline_expired")
     objective = funding.objective_for_receipt(db, row)
     spent = controls._accounting(starts)
-    blocked = recovery.blockers(db, row.task_id)
-    if "recover_exhausted_nodes" in overlay:
-        names = overlay["recover_exhausted_nodes"]
-        if (
-            not isinstance(names, list)
-            or not names
-            or not all(isinstance(name, str) for name in names)
-            or len(names) != len(set(names))
-            or sorted(names) != [item["node_key"] for item in blocked]
-        ):
-            raise ValueError("recovery_requires_exact_exhausted_nodes")
-        if not (
-            controls.nonrenewable_recovery(row) or overlay.get("nonrenewable_recovery")
-        ):
-            raise ValueError("recovery_requires_nonrenewable_envelope")
-        if amended["max_planner_turns"] != spent["planner_turns_used"] + 1:
-            raise ValueError("recovery_requires_one_planner_attempt")
-    objective_allocation = (
-        objective["committed_cost_usd"]
-        - spent["committed_cost_usd"]
-        + amended["task_budget_usd"]
-    )
-    if objective_allocation > funding.OBJECTIVE_CEILING_USD:
-        raise ValueError("amendment_exceeds_objective_allocation_ceiling")
-    if amended["task_budget_usd"] < spent["committed_cost_usd"]:
-        raise ValueError("amendment_below_committed_exposure")
     revision = graph.current_version(row.task_id, session=db)
     result = {
         "receipt_id": row.id,
@@ -149,8 +121,6 @@ def _preview(db, control, receipt_id, overlay, direction):
         "nonrenewable_recovery": controls.nonrenewable_recovery(row)
         or overlay.get("nonrenewable_recovery", False),
         "runtime_hard_ceiling_enforced": False,
-        "exhausted_allocations": blocked,
-        "replacement_plan_authorized": "recover_exhausted_nodes" in overlay,
     }
     result["preview_sha256"] = hashlib.sha256(
         controls._json(result).encode()
@@ -203,18 +173,6 @@ def apply(
                 },
             )
             row.direction_json = controls._json(previous_direction)
-        if proposal["replacement_plan_authorized"]:
-            controls._audit(
-                db,
-                actor,
-                recovery.AUTHORIZED,
-                task_id=row.task_id,
-                blockers=[
-                    item["fingerprint"] for item in proposal["exhausted_allocations"]
-                ],
-                preview_sha256=proposal["preview_sha256"],
-                request_key=request_key,
-            )
         policy = {**proposal["previous_policy"], **proposal["policy_overlay"]}
         # Preserve any earlier funding overlay when writing its next revision.
         existing = funding.amendment(db, row.task_id)

@@ -498,25 +498,28 @@ def test_known_completion_missing_cost_consumes_full_ceiling_and_settles(db, pol
     assert controls.finish_task(task, "succeeded", "scheduler")["ok"]
 
 
-def test_task_turn_and_cost_limits_are_cumulative(db, policy):
+def test_task_turn_limit_is_cumulative_and_cost_never_refuses(db, policy):
     policy["task_budget_usd"] = 3
     task = admitted(policy)
     grant(task)
     controls.record_start_outcome(task, "one", "failed", "worker", cost_usd=2)
-    assert grant(task, "two")["reason"] == "budget_limit"
-    assert grant(task, "two", cost=1)["ok"]
-    controls.record_start_outcome(task, "two", "failed", "worker", cost_usd=0)
+    # Two dollars committed plus a three dollar pin passes both the task and
+    # the turn budget: recorded for accounting, never refused (#7161).
+    assert grant(task, "two", cost=3)["ok"]
+    controls.record_start_outcome(task, "two", "failed", "worker", cost_usd=3)
+    assert controls.task_snapshot(task)["committed_cost_usd"] == 5
     assert grant(task, "three", cost=1)["ok"]
     controls.record_start_outcome(task, "three", "succeeded", "worker", cost_usd=0)
     assert grant(task, "four", cost=1)["reason"] == "turn_limit"
 
 
-def test_actual_overrun_is_retained_and_blocks_later_budget(db, policy):
+def test_actual_overrun_is_retained_and_does_not_block_later_starts(db, policy):
     task = admitted(policy)
     grant(task)
     controls.record_start_outcome(task, "one", "succeeded", "worker", cost_usd=9)
     assert controls.task_snapshot(task)["committed_cost_usd"] == 9
-    assert grant(task, "two", cost=0.1)["reason"] == "budget_limit"
+    assert grant(task, "two", cost=0.1)["ok"]
+    assert controls.task_snapshot(task)["committed_cost_usd"] == 9.1
 
 
 def test_terminal_outcome_replay_is_exact(db, policy):
@@ -1088,9 +1091,9 @@ def test_planner_rounds_meet_their_own_cap_while_work_still_admits(db, policy):
     assert grant(task, node_key(task, "implement_fix"), cost=0.5)["ok"]
 
 
-def test_planner_starts_answer_to_the_task_budget(db, policy):
-    # A refused decision can mint a planner every tick, so the budget has to
-    # fence deliberation even while the planning cap has room left.
+def test_planner_starts_past_the_task_budget_are_recorded_not_refused(db, policy):
+    # The planning cap fences deliberation; dollars are accounting only, so a
+    # planner start past the task budget is charged, never refused (#7161).
     policy["max_planner_turns"] = 50
     task = admitted(policy)
     for index, node in enumerate(("conductor_1", "conductor_2")):
@@ -1103,10 +1106,8 @@ def test_planner_starts_answer_to_the_task_budget(db, policy):
     assert snapshot["committed_cost_usd"] == 4.0
     assert snapshot["planner_turns_used"] == 2
     assert snapshot["limits"]["planner_turn_limit_reached"] is False
-    assert grant(task, node_key(task, "conductor_3"), cost=2.0) == {
-        "ok": False,
-        "reason": "budget_limit",
-    }
+    assert grant(task, node_key(task, "conductor_3"), cost=2.0)["ok"]
+    assert controls.task_snapshot(task)["committed_cost_usd"] == 6.0
 
 
 def test_review_rounds_default_and_bounds_are_server_owned(db, policy):
@@ -1306,42 +1307,40 @@ def test_history_is_counted_once_when_a_node_still_has_an_attempt_left(policy):
     assert allowance["turns"] == 2
 
 
-def test_the_envelope_names_both_excesses(policy):
+def test_the_envelope_names_only_the_turn_excess(policy):
     policy = controls.validate_policy(policy)
     fits = {"turns": 3, "usd": 5.0}
     assert controls.envelope_excess(fits, policy) is None
+    # Dollars over the task budget alone never make an excess (#7161).
+    assert controls.envelope_excess({"turns": 3, "usd": 11.0}, policy) is None
     excess = controls.envelope_excess({"turns": 9, "usd": 11.0}, policy)
-    assert excess == {
-        "turns": {"needed": 9, "allowed": 3},
-        "usd": {"needed": 11.0, "allowed": 5.0},
-    }
+    assert excess == {"turns": {"needed": 9, "allowed": 3}}
 
 
-def test_a_refusal_names_the_turns_and_dollars_that_would_still_fit(policy):
+def test_a_refusal_names_the_turns_that_would_still_fit(policy):
     policy = controls.validate_policy(policy)
     excess = controls.envelope_excess(
         {"turns": 9, "usd": 1.0}, policy, accounted={"turns": 1, "usd": 1.5}
     )
-    # Three turns allowed against one already accounted leaves two, and five
-    # dollars against one and a half leaves three and a half, either of which
-    # the planner can size its next edit against.
+    # Three turns allowed against one already accounted leaves two, which the
+    # planner can size its next edit against. Dollars are not a spare figure.
     assert excess["spare_turns"] == 2
-    assert excess["spare_usd"] == 3.5
+    assert "spare_usd" not in excess and "usd" not in excess
     at_the_wall = controls.envelope_excess(
         {"turns": 9, "usd": 1.0}, policy, accounted={"turns": 4, "usd": 7.0}
     )
-    assert at_the_wall["spare_turns"] == 0 and at_the_wall["spare_usd"] == 0.0
+    assert at_the_wall["spare_turns"] == 0
 
 
-def test_a_dollar_only_refusal_still_names_both_spare_figures(policy):
+def test_a_dollar_only_overrun_is_not_a_refusal(policy):
     policy = controls.validate_policy(policy)
-    # Turns fit and money does not, which is the case that reported a spare
-    # turn count and left the binding figure unnamed.
-    excess = controls.envelope_excess(
-        {"turns": 2, "usd": 11.0}, policy, accounted={"turns": 1, "usd": 4.0}
+    # Turns fit and money does not: dollars are accounting only (#7161).
+    assert (
+        controls.envelope_excess(
+            {"turns": 2, "usd": 11.0}, policy, accounted={"turns": 1, "usd": 4.0}
+        )
+        is None
     )
-    assert excess["turns"]["needed"] <= excess["turns"]["allowed"]
-    assert excess["spare_turns"] == 2 and excess["spare_usd"] == 1.0
 
 
 def test_a_reserve_can_be_imposed_on_a_graph_that_has_no_review_node(policy):
@@ -2140,8 +2139,13 @@ def test_objective_budget_keeps_all_readmissions_beyond_display_history(
         total = funding.objective(session, task)
         assert len(total["task_ids"]) == 13
         assert total["committed_cost_usd"] == pytest.approx(199.2)
-    denied = grant(task, cost=1)
-    assert denied["reason"] == "objective_budget_limit"
+    # The objective total is reporting only: crossing the old $200 line is
+    # charged, never refused (#7161).
+    assert grant(task, cost=1)["ok"]
+    with Session(db) as session:
+        assert funding.objective(session, task)["committed_cost_usd"] == (
+            pytest.approx(200.2)
+        )
 
 
 def test_objective_unions_work_item_and_legacy_issue_receipts(db):
@@ -2292,9 +2296,11 @@ def test_objective_with_null_work_item_uses_issue_identity_only(db):
     assert total["committed_cost_usd"] == pytest.approx(3.0)
 
 
-def test_concurrent_objective_reservations_cannot_cross_ceiling(
+def test_concurrent_reservations_past_the_old_objective_ceiling_serialize(
     db, policy, monkeypatch
 ):
+    from factory.orchestration import factory_funding_limits as funding
+
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
     task = admitted(policy)
     with Session(db) as session:
@@ -2323,8 +2329,14 @@ def test_concurrent_objective_reservations_cannot_cross_ceiling(
         results = list(
             pool.map(lambda key: grant(task, key=key, cost=1), ["first", "second"])
         )
+    # Dollars no longer refuse either start (#7161); the task still admits one
+    # start at a time, so the other waits on the pending one.
     assert sum(result["ok"] for result in results) == 1
-    assert any(result.get("reason") == "objective_budget_limit" for result in results)
+    assert any(result.get("reason") == "start_pending" for result in results)
+    with Session(db) as session:
+        assert funding.objective(session, task)["committed_cost_usd"] == (
+            pytest.approx(200)
+        )
 
 
 def test_control_request_replay_never_reapplies_after_a_newer_stop(db, policy):

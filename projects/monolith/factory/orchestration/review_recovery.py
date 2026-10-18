@@ -398,25 +398,22 @@ def run(
         if decision_in_flight(db, row.id):
             raise ValueError("recovery_decision_in_flight")
         prior = [json.loads(e.detail_json) for e in _events(db, task.id, AUTHORIZED)]
-        budget_authority = min(
-            [policy["task_budget_usd"]] + [p["cumulative_budget_usd"] for p in prior]
-        )
         turn_authority = min(
             [controls._stored_allowance(row, policy)["turns"]]
             + [p["cumulative_turn_limit"] for p in prior]
         )
-        if cap > budget_authority or cumulative_turn_limit > turn_authority:
+        # Only turns bound a recovery review; its dollar figures are recorded
+        # for accounting and never refuse it (#7161).
+        if cumulative_turn_limit > turn_authority:
             raise ValueError("recovery_cannot_increase_authority")
         used = _accounting(db, row)
         if used["unresolved_starts"]:
             raise ValueError("recovery_unresolved_execution")
-        usd_deficit = max(0.0, used["committed_cost_usd"] + reserved - cap)
         turn_deficit = max(0, used["turns_used"] + 1 - cumulative_turn_limit)
-        if usd_deficit or turn_deficit:
+        if turn_deficit:
             return {
                 "ok": False,
                 "reason": "recovery_allowance_deficit",
-                "usd_deficit": usd_deficit,
                 "turn_deficit": turn_deficit,
                 "committed_usd": used["committed_cost_usd"],
                 "review_reservation_usd": reserved,

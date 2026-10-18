@@ -1056,7 +1056,9 @@ def test_preview_and_actual_submission_share_projection(
     )
     assert len(submitted) == 1
     assert preview["projection"] == asdict(submitted[0])
-    if scenario in ("usd", "turns"):
+    # A task budget below the plan's dollar allowance no longer refuses it
+    # (#7161): only the turn envelope binds.
+    if scenario == "turns":
         assert not preview["ok"]
         audit = feedback_audits(feedback_db, task["id"])[-1]
         assert audit["refusal_code"] == preview["refusal"]["code"]
@@ -1066,7 +1068,10 @@ def test_preview_and_actual_submission_share_projection(
         assert preview["ok"]
         assert conductor.graph.current_version(task["id"]) > revision
         stored = controls.task_allowance(task["id"])
-        for field in ("turns", "usd", "review_rounds_reserved", "fan_ins_reserved"):
+        # record_allowance still clamps the stored dollar figure to the task
+        # budget, so the over-budget plan is compared on turns and reserves.
+        fields = ("turns", "review_rounds_reserved", "fan_ins_reserved")
+        for field in fields + (("usd",) if scenario != "usd" else ()):
             assert stored[field] == preview["projection"]["allowance"][field]
     if scenario == "first_planner":
         assert preview["projection"]["allowance"]["usd"] == 5.0
@@ -1148,14 +1153,18 @@ def test_preview_is_read_only_and_stale_has_no_figures(feedback_db, monkeypatch)
     monkeypatch.setattr(
         conductor, "github_get", lambda *_: pytest.fail("preview must not read GitHub")
     )
-    for budget in (40.0, 1.0, 40.0):
+    # Only the turn envelope refuses (#7161): a $1 task budget previews fine.
+    for turns, budget in ((None, 40.0), (1, 40.0), (None, 1.0), (None, 40.0)):
+        limits = {"task_budget_usd": budget}
+        if turns is not None:
+            limits["max_turns_per_task"] = turns
         result = conductor.preview_decision(
             task["id"],
             preview_add(),
             expected_revision=revision,
-            policy={**policy, "task_budget_usd": budget},
+            policy={**policy, **limits},
         )
-        assert result["ok"] is (budget == 40.0)
+        assert result["ok"] is (turns is None)
     stale = conductor.preview_decision(
         task["id"], preview_add(), expected_revision=revision + 1
     )
@@ -1165,7 +1174,7 @@ def test_preview_is_read_only_and_stale_has_no_figures(feedback_db, monkeypatch)
     # A preview never grants stale admission or locks in a more generous policy.
     conductor._apply_decision(
         task,
-        {**policy, "task_budget_usd": 1.0},
+        {**policy, "max_turns_per_task": 1},
         preview_add(),
         "test:current-policy",
         [],
@@ -1359,11 +1368,16 @@ def test_preview_does_not_fetch_review_patch_but_submission_keeps_live_sizing(
     )
     assert actual == [asdict(expected)]
     assert cost > 10.0
-    # The live graph is judged anew, not admitted by a smaller advisory figure.
-    assert (
-        feedback_audits(feedback_db, task["id"])[-1]["reason"]
-        == expected.refusal["detail"]
+    # The live graph is sized anew, not by the smaller advisory figure. The
+    # larger dollar figure is accounting only and no longer refuses (#7161).
+    assert expected.refusal is None
+    assert feedback_audits(feedback_db, task["id"]) == []
+    node = next(
+        n
+        for n in conductor.graph.load_graph(task["id"])
+        if n["node_key"] == "review_check"
     )
+    assert node["max_cost_usd"] == cost
 
 
 def clamp_audits(engine, task_id):
@@ -16397,9 +16411,8 @@ def test_funding_oversight_accepts_only_the_recorded_allowed_judge(
     with controls._read_session() as db:
         request = funding.pending(db, task["id"])
         node_key, cost = request["node_key"], funding.REVIEW_COST_USD
-        assert limits.oversight_node(db, task["id"], node_key, "opus", cost)
+        assert limits.judge_pin_ok(db, task["id"], request, "opus")
         # Astra is not allowed by this policy, and was not the recorded judge.
-        assert not limits.oversight_node(db, task["id"], node_key, "astra", cost)
         assert not limits.judge_pin_ok(db, task["id"], request, "astra")
         # A request recorded before the judge model was (legacy Astra) is
         # refused once policy no longer allows Astra.

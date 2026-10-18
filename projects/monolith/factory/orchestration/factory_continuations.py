@@ -140,31 +140,14 @@ def try_grant(
             not n["node_key"].startswith("conductor_")
             and n["node_key"] not in terminal_keys
             and graph.attempts_spent(runs, n["node_key"]) < n["max_attempts"]
-            and sum(
-                r["accounted_cost_usd"] for r in runs if r["node_key"] == n["node_key"]
-            )
-            < n["max_cost_usd"]
             for n in nodes
         ):
             # Exclude competing work, including nodes waiting on dependencies.
-            # An exhausted node budget cannot dispatch its unused attempt slot.
             return False, "continuation_scope_refused"
-        if allowance["usd"] > policy["task_budget_usd"]:
-            return False, "continuation_budget"
-        cost = sum(e["max_cost_usd"] for e in edits)
-        if any(
-            e["model"] not in policy["allowed_models"]
-            # Reviews are sized by the engine from model and diff evidence.
-            # They share the task envelope but may exceed the worker ceiling.
-            or (
-                not e["node_key"].startswith("review_")
-                and e["max_cost_usd"] > policy["turn_budget_usd"]
-            )
-            for e in edits
-        ) or budget["committed_cost_usd"] + cost > min(
-            policy["task_budget_usd"], stored_task.budget_usd
-        ):
-            return False, "continuation_budget"
+        # Dollars never refuse a continuation (#7161); only the model must be
+        # one policy allows.
+        if any(e["model"] not in policy["allowed_models"] for e in edits):
+            return False, "continuation_model"
         ceiling = budget["turns_used"] + 2
         if ceiling > controls.task_turn_ceiling(policy) + 2:
             return False, "continuation_turns"
@@ -177,10 +160,6 @@ def try_grant(
             expected_version=expected_version,
             edits=edits,
             session=db,
-            # This server-validated, one-time correction/review pair cannot
-            # rename the failed node or renew its allocation. Other exhausted
-            # work remains blocked after this exact pair is admitted.
-            _bounded_continuation=True,
         )
         if not result.ok:
             return (

@@ -145,17 +145,6 @@ def graph_budget(db, task, *, node_key=None, model=None, cost=None):
     return ceiling
 
 
-def oversight_node(db, task_id, node_key, model, cost):
-    request = pending(db, task_id)
-    return bool(
-        request
-        and request["node_key"] == node_key
-        and cost == REVIEW_COST_USD
-        and review_authority(db, task_id, request["start_key"])
-        and judge_pin_ok(db, task_id, request, model)
-    )
-
-
 def dispatch_prompt(db, task_id, node_key, prompt):
     grant = amendment(db, task_id)
     if grant and not node_key.startswith("conductor_funding_"):

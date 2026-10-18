@@ -1206,12 +1206,11 @@ def execute_node(pin: dict) -> dict:
             "list_priced_cost: the provider reported no spend, so this attempt "
             f"settles at the list price of its token usage{ceiling}"
         )
-    # Only measured provider spend fails a delivery. A list price is an estimate,
-    # so it settles the ledger without discarding completed work.
-    overrun = basis == "provider" and cost > pin["max_cost_usd"]
-    if overrun:
+    # Spend over the reservation is recorded, never a failure (#7161): the
+    # ledger settles at the measured cost and completed work is kept.
+    if basis == "provider" and cost > pin["max_cost_usd"]:
         reasons.append(
-            "cost_exceeded: reported spend exceeds reservation; provider cutoff is not enforced"
+            "cost_exceeded: reported spend exceeds reservation; recorded only"
         )
     if artifact["status"] != "ok":
         reasons.append(
@@ -1231,7 +1230,7 @@ def execute_node(pin: dict) -> dict:
         "escalated"
         if escalated
         else "failed"
-        if overrun or artifact["status"] != "ok"
+        if artifact["status"] != "ok"
         else "succeeded"
     )
     result = _result(
@@ -1431,7 +1430,7 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
             "list_priced_cost: the provider reported no spend, so this attempt "
             f"settles at the list price of its token usage{ceiling}"
         )
-    # Completed artifacts survive an overrun; actual spend constrains later starts.
+    # Completed artifacts survive an overrun, which is recorded for accounting.
     overrun = cost is not None and cost > pin["max_cost_usd"]
     if overrun:
         reasons.append(

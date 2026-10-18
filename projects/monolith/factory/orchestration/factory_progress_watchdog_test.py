@@ -230,21 +230,24 @@ def admitted(**extra):
 _counter = Counter()
 
 
-def spend(db, task_id, usd, node_key="implement_fix"):
-    """One settled start that cost ``usd``."""
-    _counter[task_id] += 1
+def turns(db, task_id, count=1, node_key="implement_fix", status="succeeded"):
+    """``count`` starts of ``node_key``, settled unless ``status`` says otherwise."""
     with Session(db) as session:
-        session.add(
-            FactoryStart(
-                task_id=task_id,
-                start_key=f"factory-node:{task_id}:{node_key}:{_counter[task_id]}",
-                actor="test",
-                model="luna",
-                max_cost_usd=usd,
-                status="succeeded",
-                cost_usd=usd,
+        for _ in range(count):
+            _counter[task_id] += 1
+            session.add(
+                FactoryStart(
+                    task_id=task_id,
+                    start_key=(
+                        f"factory-node:{task_id}:{node_key}:{_counter[task_id]}"
+                    ),
+                    actor="test",
+                    model="luna",
+                    max_cost_usd=2.0,
+                    status=status,
+                    cost_usd=None if status == "reserved" else 1.0,
+                )
             )
-        )
         session.commit()
 
 
@@ -334,9 +337,9 @@ def audits(db, action):
 
 
 def looped(db, github, notices, spans):
-    """A task past $20 with the same refusal three times: paused, card up."""
+    """A task past 8 turns with the same refusal three times: paused, card up."""
     task_id, policy = admitted()
-    spend(db, task_id, 21.0)
+    turns(db, task_id, 9)
     refuse(db, task_id, "task_turns", 3)
     assert watchdog.check(task_id, policy) == "paused"
     return task_id, policy
@@ -347,16 +350,21 @@ def looped(db, github, notices, spans):
 
 def test_policy_defaults_the_watchdog_so_a_live_policy_needs_no_repost():
     validated = controls.validate_policy(policy_for())
-    assert validated["progress_watchdog"] == {"enabled": True, "threshold_usd": 20.0}
+    assert validated["progress_watchdog"] == {"enabled": True, "threshold_turns": 8}
     assert controls.progress_watchdog_policy({}) == {
         "enabled": True,
-        "threshold_usd": 20.0,
+        "threshold_turns": 8,
     }
     custom = controls.validate_policy(
-        policy_for(progress_watchdog={"threshold_usd": 35})
+        policy_for(progress_watchdog={"threshold_turns": 12})
     )
-    assert custom["progress_watchdog"]["threshold_usd"] == 35.0
-    for invalid in ({"threshold_usd": 0}, {"enabled": "yes"}, {"other": 1}):
+    assert custom["progress_watchdog"] == {"enabled": True, "threshold_turns": 12}
+    for bound in (1, 100):
+        accepted = controls.validate_policy(
+            policy_for(progress_watchdog={"threshold_turns": bound})
+        )
+        assert accepted["progress_watchdog"]["threshold_turns"] == bound
+    for invalid in ({"enabled": "yes"}, {"other": 1}):
         with pytest.raises(ValueError):
             controls.validate_policy(policy_for(progress_watchdog=invalid))
     # A stored policy from before the field compares equal to its re-post.
@@ -369,9 +377,32 @@ def test_policy_defaults_the_watchdog_so_a_live_policy_needs_no_repost():
     )
 
 
+def test_a_legacy_dollar_threshold_is_accepted_and_ignored():
+    # A policy stored before #7161 still carries threshold_usd. It validates,
+    # and the step is the turn default, never the dollar figure read as turns.
+    legacy = controls.validate_policy(
+        policy_for(progress_watchdog={"enabled": True, "threshold_usd": 35})
+    )
+    assert legacy["progress_watchdog"] == {"enabled": True, "threshold_turns": 8}
+    both = controls.progress_watchdog_policy(
+        {"progress_watchdog": {"threshold_usd": 35.0, "threshold_turns": 5}}
+    )
+    assert both == {"enabled": True, "threshold_turns": 5}
+
+
+@pytest.mark.parametrize("threshold", [0, 101, 8.0, "8", True, None, -1])
+def test_a_turn_threshold_outside_one_to_a_hundred_or_not_an_int_is_refused(
+    threshold,
+):
+    with pytest.raises(ValueError, match="threshold_turns"):
+        controls.validate_policy(
+            policy_for(progress_watchdog={"threshold_turns": threshold})
+        )
+
+
 def test_under_threshold_does_nothing(db, github, notices, model):
     task_id, policy = admitted()
-    spend(db, task_id, 19.5)
+    turns(db, task_id, 7)
     refuse(db, task_id, "task_turns", 5)
     assert watchdog.check(task_id, policy) == "under_threshold"
     assert model.calls == []
@@ -401,8 +432,8 @@ def test_loop_short_circuit_pauses_and_escalates(db, github, notices, model, spa
     ((name, span),) = spans.spans
     assert name == "factory.watchdog.assess"
     assert span.attributes["factory.task_id"] == task_id
-    assert span.attributes["factory.watchdog.spend_usd"] == 21.0
-    assert span.attributes["factory.watchdog.threshold_usd"] == 20.0
+    assert span.attributes["factory.watchdog.turns_used"] == 9
+    assert span.attributes["factory.watchdog.threshold_turns"] == 8
     assert span.attributes["factory.watchdog.verdict"] == "looping"
     assert span.attributes["factory.watchdog.short_circuit"] is True
     # The reconciler's own two-hour pause expiry never cancels this pause.
@@ -416,7 +447,7 @@ def test_progressing_verdict_continues_and_rearms_next_step(
     db, github, notices, model, spans
 ):
     task_id, policy = admitted()
-    spend(db, task_id, 21.0)
+    turns(db, task_id, 9)
     run(db, task_id, "investigate_bug", "succeeded")
 
     assert watchdog.check(task_id, policy) == "progressing"
@@ -430,18 +461,24 @@ def test_progressing_verdict_continues_and_rearms_next_step(
     (assessed,) = audits(db, watchdog.ASSESSED)
     assert assessed["verdict"] == "progressing"
     assert assessed["short_circuit"] is False
-    assert assessed["next_threshold_usd"] == 40.0
+    assert assessed["turns_used"] == 9
+    assert assessed["threshold_turns"] == 8
+    assert assessed["crossing_turns"] == 8
+    assert assessed["next_threshold_turns"] == 16
+    assert "next_threshold_usd" not in assessed
     assert 0 < assessed["cost_usd"] < 0.01
     assert spans.spans[0][1].attributes["factory.watchdog.short_circuit"] is False
-    # Once per crossing: more spend under the next step asks nothing.
-    spend(db, task_id, 10.0)
+    # Once per crossing: more turns under the next step ask nothing.
+    turns(db, task_id, 6)
     assert watchdog.check(task_id, policy) == "under_threshold"
     assert len(model.calls) == 1
     # The assessment is visible on the task detail, cost included.
     with Session(db) as session:
         shown = watchdog.detail(session, task_id, policy)
     assert shown["last"]["verdict"] == "progressing"
-    assert shown["next_threshold_usd"] == 40.0
+    assert shown["threshold_turns"] == 8
+    assert shown["turns_used"] == 15
+    assert shown["next_threshold_turns"] == 16
     assert shown["assessment_cost_usd"] == assessed["cost_usd"]
     assert shown["paused_by_watchdog"] is False
 
@@ -451,7 +488,7 @@ def test_unreadable_assessment_fails_closed_to_a_pause(
 ):
     model.content = "I think it is fine"
     task_id, policy = admitted()
-    spend(db, task_id, 25.0)
+    turns(db, task_id, 10)
     assert watchdog.check(task_id, policy) == "paused"
     (assessed,) = audits(db, watchdog.ASSESSED)
     assert assessed["reason"].startswith("assessment_unavailable")
@@ -466,7 +503,7 @@ def test_assessment_asks_for_minimal_reasoning_with_room_for_a_verdict(
     # 2026-10-01 (#6529, #6530): Spark spent 509 of 512 tokens reasoning and
     # returned no verdict, so every model assessment paged Joe.
     task_id, policy = admitted()
-    spend(db, task_id, 21.0)
+    turns(db, task_id, 9)
     run(db, task_id, "investigate_bug", "succeeded")
     assert watchdog.check(task_id, policy) == "progressing"
     (call,) = model.calls
@@ -520,7 +557,7 @@ def test_a_truncated_first_answer_is_retried_once_and_not_paged(
 
     monkeypatch.setattr(watchdog.httpx, "post", post)
     task_id, policy = admitted()
-    spend(db, task_id, 21.0)
+    turns(db, task_id, 9)
     run(db, task_id, "investigate_bug", "succeeded")
 
     assert watchdog.check(task_id, policy) == "progressing"
@@ -551,7 +588,7 @@ def test_merit_judging_gives_the_watchdog_progress_and_value(
         lambda task, runs: seen.append((task["id"], len(runs))) or merit,
     )
     task_id, policy = admitted()
-    spend(db, task_id, 21.0)
+    turns(db, task_id, 9)
     run(db, task_id, "investigate_bug", "succeeded")
     assert watchdog.check(task_id, policy) == "progressing"
     (call,) = model.calls
@@ -565,7 +602,7 @@ def test_without_merit_judging_the_watchdog_brief_is_unchanged(
 ):
     monkeypatch.delenv("FACTORY_MERIT_JUDGE_ENABLED", raising=False)
     task_id, policy = admitted()
-    spend(db, task_id, 21.0)
+    turns(db, task_id, 9)
     run(db, task_id, "investigate_bug", "succeeded")
     assert watchdog.check(task_id, policy) == "progressing"
     (call,) = model.calls
@@ -580,14 +617,14 @@ def test_a_looping_verdict_still_pages_after_one_call(
         {"verdict": "looping", "reason": "The same failure repeats unchanged."}
     )
     task_id, policy = admitted()
-    spend(db, task_id, 21.0)
+    turns(db, task_id, 9)
     run(db, task_id, "investigate_bug", "succeeded")
     assert watchdog.check(task_id, policy) == "paused"
     assert len(model.calls) == 1
     assert len(notices) == 1
 
 
-def test_resume_from_the_card_rearms_from_current_spend(
+def test_resume_from_the_card_rearms_from_current_turns(
     db, github, notices, model, spans
 ):
     task_id, policy = looped(db, github, notices, spans)
@@ -595,19 +632,19 @@ def test_resume_from_the_card_rearms_from_current_spend(
 
     decided = decisions.apply_decision(row.id, "resume", "operator")
     assert decided["ok"] and decided["applied"]
-    spend(db, task_id, 3.0)  # an attempt that was in flight at the pause settles
+    turns(db, task_id, 1)  # an attempt that was in flight at the pause settles
     assert watchdog.check(task_id, policy) == "cleared"
 
     assert not receipt(db, task_id).task_paused
     (cleared,) = audits(db, watchdog.CLEARED)
     assert cleared["reason"] == "resume"
-    assert cleared["spend_usd"] == 24.0
-    assert cleared["next_threshold_usd"] == 44.0
-    # Re-armed: the refusals before the resume no longer count, and spend up
-    # to the next step is left alone.
-    spend(db, task_id, 15.0)
+    assert cleared["turns_used"] == 10
+    assert cleared["next_threshold_turns"] == 18
+    # Re-armed: the refusals before the resume no longer count, and turns up
+    # to the next step are left alone.
+    turns(db, task_id, 7)
     assert watchdog.check(task_id, policy) == "under_threshold"
-    spend(db, task_id, 6.0)
+    turns(db, task_id, 1)
     assert watchdog.check(task_id, policy) == "progressing"
     assert len(model.calls) == 1
 
@@ -769,7 +806,7 @@ def test_delivery_clears_the_watchdog_without_an_assessment(
     db, github, notices, model, spans
 ):
     task_id, policy = admitted()
-    spend(db, task_id, 22.0)
+    turns(db, task_id, 10)
     refuse(db, task_id, "task_turns", 3)
     run(db, task_id, "implement_fix", "succeeded", head_sha="a" * 40)
 
@@ -779,11 +816,12 @@ def test_delivery_clears_the_watchdog_without_an_assessment(
     (cleared,) = audits(db, watchdog.CLEARED)
     assert cleared["reason"] == "delivery"
     assert cleared["delivered"] == ["sha:" + "a" * 40]
-    assert cleared["next_threshold_usd"] == 42.0
+    assert cleared["turns_used"] == 10
+    assert cleared["next_threshold_turns"] == 18
     assert not receipt(db, task_id).task_paused
     # The same commit reported again is not a second delivery.
     run(db, task_id, "review_1", "succeeded", head_sha="a" * 40)
-    spend(db, task_id, 21.0)
+    turns(db, task_id, 8)
     assert watchdog.check(task_id, policy) == "progressing"
 
 
@@ -791,16 +829,103 @@ def test_an_attempt_in_flight_is_waited_for_within_one_step(
     db, github, notices, model, spans
 ):
     task_id, policy = admitted()
-    spend(db, task_id, 21.0)
+    turns(db, task_id, 9)
     run(db, task_id, "implement_fix", "dispatched")
     assert watchdog.check(task_id, policy) == "waiting_for_attempt"
-    spend(db, task_id, 20.0)
+    turns(db, task_id, 6)
+    assert watchdog.check(task_id, policy) == "waiting_for_attempt"
+    # A whole further step past the crossing: assess without waiting.
+    turns(db, task_id, 1)
     assert watchdog.check(task_id, policy) == "progressing"
+
+
+def test_planner_turns_count_toward_the_threshold(db, github, notices, model, spans):
+    task_id, policy = admitted()
+    turns(db, task_id, 5)
+    turns(db, task_id, 2, node_key="conductor_plan")
+    # A start still reserved is an attempt in flight, not a settled turn.
+    turns(db, task_id, 3, status="reserved")
+    with Session(db) as session:
+        assert watchdog.turns(session, task_id) == 7
+    assert watchdog.check(task_id, policy) == "under_threshold"
+
+    turns(db, task_id, 1, node_key="conductor_plan")
+    with Session(db) as session:
+        assert watchdog.turns(session, task_id) == 8
+    assert watchdog.check(task_id, policy) == "progressing"
+    (assessed,) = audits(db, watchdog.ASSESSED)
+    assert assessed["turns_used"] == 8
+    assert assessed["crossing_turns"] == 8
+    assert assessed["next_threshold_turns"] == 16
+
+
+def _legacy(task_id, action, **detail):
+    with controls._locked_session() as (session, _control):
+        controls._audit(session, watchdog.ACTOR, action, task_id=task_id, **detail)
+
+
+@pytest.mark.parametrize("latest", [watchdog.CLEARED, watchdog.ASSESSED])
+def test_a_dollar_trail_is_rearmed_from_current_turns(
+    db, github, notices, model, spans, latest
+):
+    task_id, policy = admitted()
+    # A commit reported before the legacy row: already accounted for.
+    run(db, task_id, "implement_fix", "succeeded", head_sha="a" * 40)
+    (old_run,) = graph.node_runs(task_id)
+    _legacy(
+        task_id,
+        watchdog.CLEARED,
+        reason="delivery",
+        spend_usd=22.0,
+        next_threshold_usd=42.0,
+        run_watermark=old_run["id"],
+        threshold_usd=20.0,
+    )
+    if latest == watchdog.ASSESSED:
+        _legacy(
+            task_id,
+            watchdog.ASSESSED,
+            verdict="progressing",
+            reason="Each attempt narrows the bug.",
+            short_circuit=False,
+            cost_usd=0.001,
+            spend_usd=42.5,
+            threshold_usd=20.0,
+            crossing_usd=42.0,
+            next_threshold_usd=62.0,
+            ordinal=1,
+        )
+    # 42 dollars read as turns would already be past a crossing of 9.
+    turns(db, task_id, 9)
+    with Session(db) as session:
+        assert watchdog.detail(session, task_id, policy)["next_threshold_turns"] is None
+
+    assert watchdog.check(task_id, policy) == "rearmed"
+
+    assert model.calls == [] and spans.spans == []
+    rearm = audits(db, watchdog.CLEARED)[-1]
+    assert rearm["reason"] == "rearm_turns"
+    assert rearm["turns_used"] == 9
+    assert rearm["threshold_turns"] == 8
+    assert rearm["next_threshold_turns"] == 17
+    assert rearm["run_watermark"] == old_run["id"]
+    assert not receipt(db, task_id).task_paused
+    with Session(db) as session:
+        assert watchdog.detail(session, task_id, policy)["next_threshold_turns"] == 17
+    # Re-armed once: the next tick counts turns against the new step.
+    assert watchdog.check(task_id, policy) == "under_threshold"
+    assert len(audits(db, watchdog.CLEARED)) == 2
+    turns(db, task_id, 8)
+    # The kept watermark means the old commit is not read as a new delivery.
+    assert watchdog.check(task_id, policy) == "progressing"
+    assessed = audits(db, watchdog.ASSESSED)[-1]
+    assert assessed["crossing_turns"] == 17
+    assert assessed["next_threshold_turns"] == 25
 
 
 def test_disabled_policy_never_assesses(db, github, notices, model, spans):
     task_id, policy = admitted(progress_watchdog={"enabled": False})
-    spend(db, task_id, 50.0)
+    turns(db, task_id, 12)
     assert watchdog.check(task_id, policy) == "disabled"
 
 
@@ -808,10 +933,11 @@ def test_health_reports_watchdog_paused_tasks(db, github, notices, model, spans)
     task_id, _policy = looped(db, github, notices, spans)
     with Session(db) as session:
         held = watchdog.paused_receipts(session)
-    assert held == [(receipt(db, task_id).id, ISSUE, 21.0)]
+    assert held == [(receipt(db, task_id).id, ISSUE, 9)]
     result = ops_health.evaluate_factory(None, [], [], ops_health._now(), held)
     assert result["ok"] is False
     assert "1 task(s) paused by the no-progress watchdog" in result["detail"]
+    assert "after 9 turns" in result["detail"]
     # Resumed, it is no longer held.
     assert controls.set_control("resume_task", "operator", task_id=task_id)["ok"]
     with Session(db) as session:
@@ -927,7 +1053,7 @@ def test_the_daily_digest_lists_what_the_factory_decided_once_a_day(
         "watchdog_assessed",
         verdict="progressing",
         short_circuit=False,
-        spend_usd=21.5,
+        turns_used=9,
         reason="Each attempt narrows the bug.",
     )
     _audit(
@@ -950,6 +1076,7 @@ def test_the_daily_digest_lists_what_the_factory_decided_once_a_day(
     assert "Funding the judge approved (1)" in message
     assert "task budget $60 (asked $80)" in message
     assert "Watchdog let continue (1)" in message
+    assert "after 9 turns: Each attempt narrows the bug." in message
     assert "#6288 delivered in #6334, #6495, live checks in #6570" in message
     assert "[refine] Factory refine needs a human" in message
     assert "private.jomcgi.dev/agents/escalations" in message

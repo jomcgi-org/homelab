@@ -137,12 +137,14 @@ def needed(deficit: object, name: str) -> float | None:
 
 
 def deficit_refusal(deficit: object, bound: dict) -> str | None:
-    """Why a deficit is past what policy lets the judge fund, or None."""
+    """Why a deficit is past what policy lets the judge fund, or None.
+
+    Only turns bound a grant; a dollar deficit is recorded, never refused
+    (#7161).
+    """
     usd, turns = needed(deficit, "usd"), needed(deficit, "turns")
     if usd is None and turns is None:
         return "deficit_unreadable"
-    if usd is not None and usd > bound["ceiling_usd"]:
-        return "usd_over_ceiling"
     if turns is not None and turns > bound["turn_ceiling"]:
         return "turns_over_ceiling"
     return None
