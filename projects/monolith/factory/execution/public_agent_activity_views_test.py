@@ -1,103 +1,57 @@
-"""Real-Postgres contract tests for public agent activity views and grants."""
+"""Real-Postgres retirement and surviving public activity snapshot contracts."""
 
 from __future__ import annotations
 
 import json
 
 import pytest
+from fastapi import Request, Response
 from sqlmodel import Session, create_engine, text
 
 from app import jobs_main
+from factory.publication import build_agent_activity, write_agent_activity_snapshot
+from factory.public_view import get_public_agent_activity
 
 
-def test_agent_activity_view_columns_and_types(session):
-    daily_columns = session.execute(
-        text(
-            """
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = 'public_api'
-              AND table_name = 'agent_activity_daily'
-            ORDER BY ordinal_position
-            """
-        )
-    ).all()
-    assert daily_columns == [
-        ("day", "date"),
-        ("model", "text"),
-        ("sessions", "bigint"),
-        ("turns", "bigint"),
-        ("input_tokens", "numeric"),
-        ("output_tokens", "numeric"),
-        ("cache_read_tokens", "numeric"),
-        ("cache_write_tokens", "numeric"),
-        ("cost_usd", "numeric"),
-        ("list_cost_usd", "double precision"),
-        ("cost_source", "text"),
-    ]
-
-    now_columns = session.execute(
-        text(
-            """
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = 'public_api'
-              AND table_name = 'agent_activity_now'
-            ORDER BY ordinal_position
-            """
-        )
-    ).all()
-    assert now_columns == [
-        ("active_last_hour", "bigint"),
-        ("sessions_today", "bigint"),
-        ("last_turn_at", "timestamp with time zone"),
-        ("running", "bigint"),
-    ]
-
-    local_columns = session.execute(
-        text(
-            """
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = 'public_api'
-              AND table_name = 'local_session_activity_daily'
-            ORDER BY ordinal_position
-            """
-        )
-    ).all()
-    assert local_columns == [
-        ("day", "date"),
-        ("model", "text"),
-        ("source", "text"),
-        ("sessions", "bigint"),
-        ("input_tokens", "numeric"),
-        ("output_tokens", "numeric"),
-        ("cache_read_tokens", "numeric"),
-        ("list_cost_usd", "numeric"),
-    ]
-
-
-def test_agent_activity_views_use_owner_permissions_and_select_only_grants(session):
-    rows = session.execute(
-        text(
-            """
-            SELECT c.relname,
-                   COALESCE('security_invoker=true' = ANY(c.reloptions), false)
-            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public_api' AND c.relkind = 'v'
-              AND c.relname IN ('agent_activity_daily', 'agent_activity_now')
-            ORDER BY c.relname
-            """
-        )
-    ).all()
-    assert rows == [("agent_activity_daily", False), ("agent_activity_now", False)]
-    for view, _ in rows:
-        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
-            allowed = session.execute(
-                text("SELECT has_table_privilege('public_reader', :view, :privilege)"),
-                {"view": f"public_api.{view}", "privilege": privilege},
+def test_retired_activity_views_are_absent_and_snapshot_columns_survive(session):
+    for name in (
+        "agent_activity_daily",
+        "agent_activity_now",
+        "local_session_activity_daily",
+    ):
+        assert (
+            session.execute(
+                text("SELECT to_regclass(:name)"), {"name": f"public_api.{name}"}
             ).scalar_one()
-            assert allowed is (privilege == "SELECT")
+            is None
+        )
+    columns = session.execute(
+        text(
+            """
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public_api'
+              AND table_name = 'agent_activity_snapshot'
+            ORDER BY ordinal_position
+            """
+        )
+    ).all()
+    assert columns == [
+        ("id", "smallint"),
+        ("payload", "jsonb"),
+        ("snapshotted_at", "timestamp with time zone"),
+    ]
+
+
+def test_agent_activity_snapshot_has_select_only_grants(session):
+    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+        allowed = session.execute(
+            text(
+                "SELECT has_table_privilege('public_reader', 'public_api.agent_activity_snapshot', :privilege)"
+            ),
+            {"privilege": privilege},
+        ).scalar_one()
+        assert allowed is (privilege == "SELECT")
 
 
 def _insert_session(session, local_id, model):
@@ -150,7 +104,7 @@ def _insert_turn(
     )
 
 
-def test_daily_view_aggregates_json_and_guards_empty_values(session):
+def test_snapshot_aggregates_json_and_guards_empty_values(session):
     first = _insert_session(session, "activity-first", "luna")
     second = _insert_session(session, "activity-second", "luna")
     unknown = _insert_session(session, "activity-unknown", None)
@@ -195,25 +149,40 @@ def test_daily_view_aggregates_json_and_guards_empty_values(session):
         age="91 days",
     )
 
-    rows = session.execute(
-        text(
-            """
-            SELECT model, sessions, turns, input_tokens, output_tokens,
-                   cache_read_tokens, cache_write_tokens, cost_usd, list_cost_usd
-            FROM public_api.agent_activity_daily
-            ORDER BY model
-            """
+    payload = build_agent_activity(session)
+    luna, invalid_row, unknown_row = payload["daily"]
+    assert [row["model"] for row in payload["daily"]] == ["luna", "sol", "unknown"]
+    assert tuple(
+        luna[key]
+        for key in (
+            "sessions",
+            "turns",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "unpriced",
         )
-    ).all()
-    assert len(rows) == 2
-    luna, unknown_row = rows
-    assert tuple(luna[:7]) == ("luna", 2, 3, 17, 15, 20, 22)
-    assert float(luna.cost_usd) == pytest.approx(0.4)
-    assert float(luna.list_cost_usd) == pytest.approx(0.25)
-    assert tuple(unknown_row) == ("unknown", 1, 1, 1, 2, 0, 0, None, None)
+    ) == (2, 3, 17, 15, 20, 1)
+    assert luna["list_cost_usd"] == pytest.approx(0.25)
+    assert tuple(
+        unknown_row[key]
+        for key in (
+            "sessions",
+            "turns",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "list_cost_usd",
+            "unpriced",
+        )
+    ) == (1, 1, 1, 2, 0, None, 1)
+    assert invalid_row["turns"] == 2
+    assert invalid_row["input_tokens"] == 0
+    assert invalid_row["list_cost_usd"] == 0
+    assert payload["now"]["running"] == 5
 
 
-def test_daily_view_skips_nul_escape_but_keeps_literal_escape_text(session):
+def test_snapshot_ignores_nul_usage_but_keeps_literal_escape_text(session):
     agent = _insert_session(session, "activity-nul-guard", "luna-nul-guard")
     _insert_turn(
         session,
@@ -228,33 +197,25 @@ def test_daily_view_skips_nul_escape_but_keeps_literal_escape_text(session):
         json.dumps({"input_tokens": 7, "command": r"printf '\u0000'"}),
     )
 
-    row = session.execute(
-        text(
-            """
-            SELECT sessions, turns, input_tokens
-            FROM public_api.agent_activity_daily
-            WHERE model = 'luna-nul-guard'
-            """
-        )
-    ).one()
-
-    assert tuple(row) == (1, 1, 7)
+    (row,) = build_agent_activity(session)["daily"]
+    # The live writer retains the turn count but excludes invalid JSON usage.
+    assert (row["sessions"], row["turns"], row["input_tokens"]) == (1, 2, 7)
 
 
 @pytest.mark.parametrize(
-    ("costs", "expected_source", "expected_reported", "expected_list"),
+    ("costs", "expected_list", "unpriced"),
     [
-        ([(None, None)], None, None, None),
-        ([(0, None)], "reported", 0, None),
-        ([(None, 0)], "list", None, 0),
-        ([(0.1, 0.2)], "mixed", 0.1, 0.2),
-        ([(0.1, None), (None, 0.2), (None, None)], "mixed", 0.1, 0.2),
-        ([(0.1, None), (None, None)], "reported", 0.1, None),
-        ([(None, 0.2), (None, None)], "list", None, 0.2),
+        ([(None, None)], None, 1),
+        ([(0, None)], None, 1),
+        ([(None, 0)], 0, 0),
+        ([(0.1, 0.2)], 0.2, 0),
+        ([(0.1, None), (None, 0.2), (None, None)], 0.2, 2),
+        ([(0.1, None), (None, None)], None, 2),
+        ([(None, 0.2), (None, None)], 0.2, 1),
     ],
 )
-def test_daily_cost_source_preserves_day_model_grain(
-    session, costs, expected_source, expected_reported, expected_list
+def test_snapshot_uses_list_costs_and_counts_unpriced_turns(
+    session, costs, expected_list, unpriced
 ):
     agent = _insert_session(session, "activity-provenance", "provenance-model")
     for seq, (reported, listed) in enumerate(costs, start=1):
@@ -266,45 +227,27 @@ def test_daily_cost_source_preserves_day_model_grain(
             cost_usd=reported,
             list_cost_usd=listed,
         )
-    row = session.execute(
-        text(
-            """
-            SELECT sessions, turns, input_tokens, cost_usd, list_cost_usd, cost_source
-            FROM public_api.agent_activity_daily WHERE model = 'provenance-model'
-            """
-        )
-    ).one()
-    assert row.sessions == 1
-    assert row.turns == len(costs)
-    assert row.input_tokens == 10 * len(costs)
-    assert row.cost_source == expected_source
-    if expected_reported is None:
-        assert row.cost_usd is None
-    else:
-        assert float(row.cost_usd) == pytest.approx(expected_reported)
+    payload = build_agent_activity(session)
+    (row,) = payload["daily"]
+    assert row["sessions"] == 1
+    assert row["turns"] == len(costs)
+    assert row["input_tokens"] == 10 * len(costs)
+    assert row["unpriced"] == unpriced
+    assert payload["cost_basis"] == "list"
     if expected_list is None:
-        assert row.list_cost_usd is None
+        assert row["list_cost_usd"] is None
     else:
-        assert row.list_cost_usd == pytest.approx(expected_list)
+        assert row["list_cost_usd"] == pytest.approx(expected_list)
 
 
-def test_public_reader_can_select_views_but_not_agent_tables(pg):
+def test_public_reader_can_select_snapshot_but_not_agent_tables(pg):
     engine = create_engine(pg.url)
     try:
         with Session(engine) as session:
             session.execute(text("SET ROLE public_reader"))
             session.execute(
-                text("SELECT active_last_hour FROM public_api.agent_activity_now")
-            ).all()
-            session.execute(
                 text(
-                    "SELECT day, model, cost_source FROM public_api.agent_activity_daily"
-                )
-            ).all()
-            session.execute(
-                text(
-                    "SELECT day, model, source "
-                    "FROM public_api.local_session_activity_daily"
+                    "SELECT payload, snapshotted_at FROM public_api.agent_activity_snapshot"
                 )
             ).all()
     finally:
@@ -416,8 +359,8 @@ def test_public_reader_reads_but_cannot_write_the_activity_snapshot(pg):
         engine.dispose()
 
 
-def test_local_session_view_aggregates_collector_usage(session):
-    view_day = session.execute(text("SELECT CURRENT_DATE")).scalar_one()
+def test_snapshot_aggregates_local_collector_usage(session):
+    view_day = session.execute(text("SELECT CURRENT_DATE")).scalar_one().isoformat()
     session.execute(
         text(
             """
@@ -449,17 +392,20 @@ def test_local_session_view_aggregates_collector_usage(session):
         )
     )
 
-    rows = session.execute(
-        text(
-            """
-            SELECT day, model, source, sessions, input_tokens, output_tokens,
-                   cache_read_tokens, list_cost_usd
-            FROM public_api.local_session_activity_daily
-            WHERE day = CURRENT_DATE
-            ORDER BY model
-            """
-        )
-    ).all()
+    fields = (
+        "day",
+        "model",
+        "source",
+        "sessions",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "list_cost_usd",
+    )
+    rows = [
+        tuple(row[key] for key in fields)
+        for row in build_agent_activity(session)["local_daily"]
+    ]
 
     assert len(rows) == 4
     bad_input, claude, empty_start, unknown = rows
@@ -468,9 +414,9 @@ def test_local_session_view_aggregates_collector_usage(session):
         "bad-input",
         "codex-session",
         1,
-        None,
+        0,
         2,
-        None,
+        0,
         None,
     )
     assert tuple(claude[:7]) == (
@@ -482,7 +428,7 @@ def test_local_session_view_aggregates_collector_usage(session):
         9,
         11,
     )
-    assert float(claude.list_cost_usd) == pytest.approx(0.30)
+    assert claude[-1] == pytest.approx(0.30)
     assert tuple(unknown) == (
         view_day,
         "unknown",
@@ -499,10 +445,46 @@ def test_local_session_view_aggregates_collector_usage(session):
         "codex-session",
         1,
         3,
-        None,
-        None,
+        0,
+        0,
         None,
     )
+
+
+@pytest.mark.parametrize(
+    "counter",
+    ["cache_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens"],
+)
+def test_snapshot_counts_unpriced_cache_write_aliases(session, counter):
+    agent = _insert_session(session, "cache-writer", "luna")
+    _insert_turn(session, agent, 1, json.dumps({counter: 12}))
+    (row,) = build_agent_activity(session)["daily"]
+    assert row["unpriced"] == 1
+    assert row["list_cost_usd"] is None
+
+
+def test_snapshot_writer_and_public_route_survive_view_retirement(session):
+    agent = _insert_session(session, "snapshot-route", "luna")
+    _insert_turn(session, agent, 1, '{"input_tokens":12}', list_cost_usd=0.25)
+    write_agent_activity_snapshot(session)
+    write_agent_activity_snapshot(session)
+    assert (
+        session.execute(
+            text("SELECT count(*) FROM public_api.agent_activity_snapshot")
+        ).scalar_one()
+        == 1
+    )
+    session.execute(text("SET LOCAL ROLE public_reader"))
+    response = Response()
+    payload = get_public_agent_activity(
+        Request({"type": "http", "headers": []}), response, session
+    )
+    assert payload["totals_7d"]["combined"]["spend_usd"] == pytest.approx(0.25)
+    assert payload["daily"][0]["input_tokens"] == 12
+    assert "private prompt" not in json.dumps(payload)
+    assert "private result" not in json.dumps(payload)
+    assert "snapshot-route" not in json.dumps(payload)
+    assert response.headers["etag"].startswith('"agent-activity-v2-')
 
 
 def test_raw_pricing_backfill_recovers_after_failed_jsonb_merge(pg):

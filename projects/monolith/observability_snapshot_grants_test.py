@@ -13,14 +13,6 @@ import json
 
 from sqlmodel import Session, create_engine, text
 
-_UPSERT_TOPOLOGY = text(
-    """
-    INSERT INTO observability.topology_snapshot (id, payload, snapshot_at)
-    VALUES (1, :payload, now())
-    ON CONFLICT (id) DO UPDATE
-        SET payload = EXCLUDED.payload, snapshot_at = EXCLUDED.snapshot_at
-    """
-)
 _UPSERT_STATS = text(
     """
     INSERT INTO observability.stats_snapshot (id, payload, snapshot_at)
@@ -42,22 +34,11 @@ def test_snapshot_upsert_idempotent_and_public_reader_can_read(pg):
     }
     try:
         with Session(engine) as session:
-            session.execute(
-                _UPSERT_TOPOLOGY,
-                {
-                    "payload": json.dumps(
-                        {"nodes": [{"id": "a"}], "groups": [], "edges": []}
-                    )
-                },
-            )
-            # Second upsert on the singleton row: last write wins, no duplicate.
-            session.execute(
-                _UPSERT_TOPOLOGY,
-                {
-                    "payload": json.dumps(
-                        {"nodes": [{"id": "b"}], "groups": [], "edges": []}
-                    )
-                },
+            assert (
+                session.execute(
+                    text("SELECT to_regclass('observability.topology_snapshot')")
+                ).scalar_one()
+                is None
             )
             session.execute(
                 _UPSERT_STATS,
@@ -102,16 +83,12 @@ def test_snapshot_upsert_idempotent_and_public_reader_can_read(pg):
             session.commit()
 
             count = session.execute(
-                text("SELECT count(*) FROM observability.topology_snapshot")
+                text("SELECT count(*) FROM observability.stats_snapshot")
             ).scalar_one()
             assert count == 1
 
         with Session(engine) as session:
             session.execute(text("SET ROLE public_reader"))
-            topo = session.execute(
-                text("SELECT payload FROM observability.topology_snapshot WHERE id = 1")
-            ).first()
-            assert topo[0]["nodes"][0]["id"] == "b"
             stats = session.execute(
                 text("SELECT payload FROM observability.stats_snapshot WHERE id = 1")
             ).first()
