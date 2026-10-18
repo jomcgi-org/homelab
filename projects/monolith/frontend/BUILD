@@ -77,7 +77,6 @@ js_library(
         ":node_modules/@sveltejs/adapter-node",
         ":node_modules/@sveltejs/kit",
         ":node_modules/@sveltejs/vite-plugin-svelte",
-        ":node_modules/mdsvex",
         ":node_modules/svelte",
         ":node_modules/vite",
         # Hand-drawn SVG rendering
@@ -106,10 +105,6 @@ js_library(
         ":node_modules/d3-quadtree",
         ":node_modules/d3-selection",
         ":node_modules/d3-zoom",
-        # Terminal emulator for the private k8s demo tab (client-only dynamic
-        # import; the package must still be linked for vite to resolve it)
-        ":node_modules/@xterm/xterm",
-        ":node_modules/@xterm/addon-fit",
     ],
 )
 
@@ -158,7 +153,6 @@ js_library(
         ":node_modules/@sveltejs/adapter-node",
         ":node_modules/@sveltejs/kit",
         ":node_modules/@sveltejs/vite-plugin-svelte",
-        ":node_modules/mdsvex",
         ":node_modules/svelte",
         ":node_modules/vite",
         # Hand-drawn SVG rendering
@@ -591,7 +585,6 @@ js_library(
         ":node_modules/@sveltejs/adapter-node",
         ":node_modules/@sveltejs/kit",
         ":node_modules/@sveltejs/vite-plugin-svelte",
-        ":node_modules/mdsvex",
         ":node_modules/svelte",
         ":node_modules/vite",
         ":node_modules/vitest",
