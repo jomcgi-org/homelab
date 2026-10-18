@@ -9884,6 +9884,70 @@ def test_planner_budget_exposes_server_review_floor_and_round_reserve(feedback_d
     assert "even when you request a lower max_cost_usd" in conductor._PLANNER_CHARTER
 
 
+def test_unaffordable_review_plan_reports_full_cost_and_stops_replanning(
+    feedback_db, monkeypatch
+):
+    import json
+    from factory.orchestration import factory_controls as controls, factory_funding
+
+    task, policy = feedback_task(turn_budget_usd=4.0, task_budget_usd=32.0)
+    decision = {
+        "action": "plan",
+        "reason": "Complete the same objective including independent review",
+        "edits": [
+            plan_edit("scope", "investigate", max_cost_usd=4.0),
+            plan_edit("fix", "implement", ["investigate_scope"], max_cost_usd=4.0),
+            plan_edit("check", "review", ["implement_fix"], max_cost_usd=4.0),
+        ],
+    }
+    monkeypatch.setattr(factory_funding, "judge_deficit", lambda *_: False)
+    monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": "Same objective"})
+    monkeypatch.setattr(
+        "factory.orchestration.factory_landing.github_write", lambda *_: {}
+    )
+    monkeypatch.setattr(conductor, "_post_decision_card", lambda *_: "https://card")
+    monkeypatch.setattr(conductor, "_notify_escalation", lambda *_: None)
+
+    for attempt in (1, 2):
+        run = complete_feedback_node(task, policy, f"conductor_{attempt}", decision)
+        preview = conductor.preview_decision(
+            task["id"],
+            decision,
+            expected_revision=conductor.graph.current_version(task["id"]),
+            policy=policy,
+        )
+        assert not preview["ok"]
+        conductor.apply_decision(
+            task, policy, run, conductor.graph.node_runs(task["id"])
+        )
+        audit = feedback_audits(feedback_db, task["id"])[-1]
+        deficit = json.loads(audit["reason"].removeprefix("envelope exceeded: "))
+        assert deficit == json.loads(
+            preview["refusal"]["detail"].removeprefix("envelope exceeded: ")
+        )
+        assert deficit["usd"] == {"needed": 32.0 + 0.25 * attempt, "allowed": 32.0}
+        assert deficit["cost_breakdown_usd"] == {
+            "charged_history": 0.25 * attempt,
+            "remaining_nodes": 18.0,
+            "review_round_reserve": 14.0,
+            "fan_in_reserve": 0.0,
+        }
+        assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 32.0
+        if attempt == 1:
+            assert not conductor._check_consecutive_refusals(
+                task["id"], "envelope_exceeded"
+            )
+
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "escalated"
+    conductor.reconcile_task(task["id"], policy, object())
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
+        "conductor_1",
+        "conductor_2",
+    ]
+    assert len(conductor.graph.node_runs(task["id"])) == 2
+
+
 @pytest.mark.parametrize(
     "bad, code",
     [
