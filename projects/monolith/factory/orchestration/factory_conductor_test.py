@@ -21166,3 +21166,260 @@ def test_owned_merged_verification_keeps_review_and_ci_gates(
             conductor.verify_delivery(task, 3, runs, allow_merged=True)
     with pytest.raises(ValueError):
         conductor.verify_delivery(task, 3, runs)
+
+
+def test_failed_closed_objective_with_merged_pr_keeps_unknown_review_history(
+    feedback_db, monkeypatch
+):
+    """Receipt 882: PR #7137 merged, but review 20368 never approved its head."""
+    from datetime import datetime, timezone
+    from sqlmodel import create_engine
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_feedback,
+        factory_landing as landing,
+        factory_rollout,
+        factory_supervision,
+        mcp,
+        work_items,
+    )
+    from factory.orchestration.factory_merged_delivery import reconcile_merged_delivery
+    from factory.orchestration.factory_models import FactoryAudit, FactoryStart
+
+    clock = [datetime(2026, 10, 18, 10, 9, 49, tzinfo=timezone.utc)]
+    monkeypatch.setattr(controls, "_now", lambda: clock[0])
+    monkeypatch.setattr(landing, "_now", lambda: clock[0])
+    task, policy = feedback_task(task_budget_usd=50, auto_merge=False)
+    task_id = task["id"]
+    head = "a" * 40
+    implementation = complete_feedback_node(
+        task, policy, "implement_fix", {"pr_number": 7137, "head_sha": head}, head=head
+    )
+    assert conductor._add(
+        task,
+        policy,
+        "review_fix",
+        "Independently review the implemented head",
+        ["implement_fix"],
+        "opus",
+        "test:review",
+        "historical review",
+        review=True,
+        max_cost_usd=10,
+    ).ok
+    workflow = f"factory-node:{task_id}:review_fix:1"
+    assert conductor.reserve_node(
+        task_id,
+        "review_fix",
+        workflow,
+        {
+            "repo": task["repo"],
+            "branch": f"factory/{task_id}",
+            "workflow_id": workflow,
+            "artifact_path": ".factory/review_fix.json",
+            "artifact_schema": conductor._schema("review_fix"),
+            "hydration_branch": "main",
+            "retry_context": "[]",
+        },
+    )
+    assert conductor.graph.record_dispatch(task_id, "review_fix", 1, 20368, None).ok
+    with Session(feedback_db) as db:
+        # Retain the rest of the historical spend without replaying unrelated
+        # planners. Together with the implementation it accounts for $33.05.
+        db.add(
+            FactoryStart(
+                task_id=task_id,
+                start_key="historical-work",
+                actor="factory:reconciler",
+                model="opus",
+                max_cost_usd=32.80,
+                cost_usd=32.80,
+                status="failed",
+            )
+        )
+        db.commit()
+    pr = {
+        "number": 7137,
+        "state": "closed",
+        "merged": True,
+        "draft": False,
+        "auto_merge": None,
+        "body": "Closes #7",
+        "html_url": "https://github.com/owner/repo/pull/7137",
+        "head": {
+            "sha": head,
+            "ref": f"factory/{task_id}",
+            "repo": {"full_name": task["repo"]},
+        },
+        "base": {"ref": "main", "repo": {"full_name": task["repo"]}},
+        "merge_commit_sha": "b" * 40,
+    }
+
+    def github_read(_repo, path):
+        if path == "pulls/7137":
+            return pr
+        if path == "issues/7":
+            return {"state": "closed", "labels": []}
+        if path == f"commits/{head}/status":
+            return {"statuses": [{"context": "pr-checks", "state": "success"}]}
+        pytest.fail(f"unexpected GitHub read: {path}")
+
+    monkeypatch.setattr(conductor, "github_get", github_read)
+    monkeypatch.setattr(landing, "github_get", github_read)
+    monkeypatch.setattr(landing, "github_list", lambda *_: [])
+    monkeypatch.setattr(conductor, "pool_for", lambda *_: ["opus"])
+    assert reconcile_merged_delivery(task, policy, conductor.graph.node_runs(task_id))
+    assert controls.task_snapshot(task_id)["state"] == "admitted"
+
+    unknown = {
+        "status": "uncertain",
+        "session_id": 20368,
+        "cost_usd": None,
+        "reason": "invocation_outcome_unknown",
+        "artifact": {"status": "missing"},
+    }
+    assert conductor.graph.record_outcome(
+        task_id, "review_fix", 1, "uncertain", None, None, json.dumps(unknown)
+    ).ok
+    assert controls.record_start_outcome(
+        task_id, workflow, "uncertain", conductor.ACTOR, session_id=20368
+    )["ok"]
+    assert controls.task_snapshot(task_id)["unresolved_starts"] == 1
+
+    # Cessation is supplied historical evidence, not a successful review or
+    # zero-cost proof. Both ledgers must retain the full $10 reservation.
+    clock[0] = datetime(2026, 10, 18, 10, 45, 58, tzinfo=timezone.utc)
+    ceased = {**unknown, "status": "failed", "cessation_confirmed": True}
+    assert conductor.graph.record_outcome(
+        task_id, "review_fix", 1, "failed", None, None, json.dumps(ceased)
+    ).ok
+    assert controls.record_start_outcome(
+        task_id,
+        workflow,
+        "failed",
+        factory_supervision.ACTOR,
+        session_id=20368,
+        reconciled=True,
+    )["ok"]
+    with controls._locked_session() as (db, _):
+        controls._audit(
+            db,
+            factory_supervision.ACTOR,
+            "stop_settled",
+            task_id=task_id,
+            workflow_id=workflow,
+            session_id=20368,
+            cessation_confirmed=True,
+            intervention_required=False,
+        )
+    verdict = factory_feedback.record_first_pass(
+        task_id, conductor.graph.node_runs(task_id)
+    )
+    assert (verdict["verdict"], verdict["summary"], verdict["head_sha"]) == (
+        "blocked",
+        "",
+        None,
+    )
+    clock[0] = datetime(2026, 10, 18, 10, 53, 10, tzinfo=timezone.utc)
+    failure = {
+        "state": "objective_closed",
+        "reason": "The source issue is no longer open.",
+    }
+    assert controls.finish_task(task_id, "failed", "factory:funding", evidence=failure)[
+        "ok"
+    ]
+    before = controls.task_snapshot(task_id)
+    runs_before = conductor.graph.node_runs(task_id)
+    graph_before = conductor.graph.load_graph(task_id)
+    assert before["committed_cost_usd"] == pytest.approx(43.05)
+    assert before["unresolved_starts"] == 0
+    assert runs_before[0] == implementation
+    assert runs_before[1]["accounted_cost_usd"] == 10
+    assert runs_before[1]["head_sha"] is None
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("historical failed receipt restarted work or claimed delivery")
+
+    for name in (
+        "_submit_or_reconcile",
+        "_dispatch_ready",
+        "_add_planner_with_manifest",
+    ):
+        monkeypatch.setattr(conductor, name, forbidden)
+    monkeypatch.setattr(landing, "github_write", forbidden)
+    monkeypatch.setattr(landing, "github_graphql", forbidden)
+    monkeypatch.setattr(factory_rollout, "verify", forbidden)
+
+    engine = feedback_db
+    try:
+        for restarted in (False, True):
+            if restarted:
+                # Reopen the durable database and reset the only landing scan
+                # cursor, so process-local state cannot protect this history.
+                engine.dispose()
+                engine = create_engine(
+                    feedback_db.url,
+                    execution_options={"schema_translate_map": {"swarm": None}},
+                )
+                for module in (conductor, conductor.graph, controls, work_items):
+                    monkeypatch.setattr(module, "get_engine", lambda: engine)
+                monkeypatch.setattr(landing, "_delivery_cursors", {})
+            for _ in range(2):
+                assert controls.status()["active_tasks"] == []
+                assert (
+                    landing._deliveries(policy, include_refused=True, rotate=True) == []
+                )
+                # Also exercise a stale per-task call after settlement. It must
+                # not overwrite the terminal failure even after seeing a merge.
+                conductor.reconcile_task(task_id, policy, object())
+                landing.landing_tick(policy)
+                current = controls.task_snapshot(task_id)
+                for key in (
+                    "state",
+                    "evidence",
+                    "starts",
+                    "committed_cost_usd",
+                    "unresolved_starts",
+                    "turns_used",
+                    "policy",
+                    "deadline_at",
+                ):
+                    assert current[key] == before[key]
+                assert conductor.graph.node_runs(task_id) == runs_before
+                assert conductor.graph.load_graph(task_id) == graph_before
+                with Session(engine) as db:
+                    row = controls._receipt(db, task_id)
+                    lifecycle = mcp._lifecycle_evidence(db, row, current)
+                    accepted = lifecycle["delivery_accepted"]
+                    assert accepted["status"] == "not_observed"
+                    assert accepted["evidence"] is None
+                    assert accepted["first_pass_review"] == {
+                        "verdict": "blocked",
+                        "summary": None,
+                        "head_sha": None,
+                        "reviewed_at": verdict["reviewed_at"],
+                    }
+                    assert lifecycle["repository_delivery"]["status"] == "merged"
+                    assert lifecycle["deployment"]["status"] == "pending"
+                    events = db.exec(
+                        select(FactoryAudit).where(FactoryAudit.task_id == task_id)
+                    ).all()
+                    assert not {event.action for event in events} & {
+                        "delivery_ready",
+                        "merge_armed",
+                        "rollout_verified",
+                        "issue_closed",
+                        "repository_delivery_complete",
+                    }
+                    finishes = [
+                        event for event in events if event.action == "finish_task"
+                    ]
+                    assert len(finishes) == 1
+                    assert json.loads(finishes[0].detail_json)["evidence"] == failure
+                    cessation = [
+                        event for event in events if event.action == "stop_settled"
+                    ]
+                    assert len(cessation) == 1
+                    assert json.loads(cessation[0].detail_json)["cessation_confirmed"]
+    finally:
+        engine.dispose()
