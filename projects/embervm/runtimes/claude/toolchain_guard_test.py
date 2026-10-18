@@ -35,7 +35,7 @@ import yaml
 TOOLCHAIN_PACKAGES = [
     "helm-3",
     "go-1.26",
-    "nodejs-20",
+    "nodejs-22",
     "pnpm~10",
     "py3.12-pytest",
     "py3.12-pyyaml",
@@ -50,7 +50,7 @@ FORBIDDEN_BARE_PACKAGES = ["helm", "go", "nodejs", "pnpm", "pytest", "pyyaml"]
 EXPECTED_LOCK_ENTRIES = {
     "helm-3": "3.",
     "go-1.26": "1.26.",
-    "nodejs-20": "20.",
+    "nodejs-22": "22.",
     "pnpm": "10.",
     "py3.12-pytest": "",
     "py3.12-pyyaml": "",
@@ -175,12 +175,12 @@ def test_go_mod_stays_within_the_shipped_go_stream():
 
 
 def test_module_bazel_node_and_pnpm_match_the_shipped_streams():
-    """apko.yaml ships nodejs-20 and pnpm~10 because MODULE.bazel pins those."""
+    """apko.yaml ships nodejs-22 and pnpm~10 because MODULE.bazel pins those."""
     source = _repo_path(MODULE_BAZEL).read_text()
     node = NODE_VERSION.search(source)
     assert node, "MODULE.bazel has no node.toolchain(node_version = ...)"
-    assert node.group(1).startswith("20."), (
-        f"MODULE.bazel node_version is {node.group(1)}; the guest ships nodejs-20"
+    assert node.group(1).startswith("22."), (
+        f"MODULE.bazel node_version is {node.group(1)}; the guest ships nodejs-22"
     )
     pnpm = PNPM_VERSION.search(source)
     assert pnpm, "MODULE.bazel has no pnpm.pnpm(pnpm_version = ...)"

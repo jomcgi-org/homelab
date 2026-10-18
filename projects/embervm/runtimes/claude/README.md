@@ -218,14 +218,14 @@ instead of installing its own.
 |------|--------------|-----------------|
 | helm | `helm-3` | The repo pins helm 3.16.4 (`bazel/tools/tools.lock.json`); Wolfi's plain `helm` is 4.x. Wolfi only carries 3.19.x, so this is the nearest 3 release, not an exact match. |
 | go | `go-1.26` | `go.mod` says `go 1.26.0` with no toolchain line, so the packaged 1.26.x needs no toolchain download. |
-| node | `nodejs-20` | Matches the Bazel node toolchain (`node.toolchain` 20.19.0 in `MODULE.bazel`). The monolith frontend image runs `nodejs-22`; nothing in a session builds it. |
+| node | `nodejs-22` | Matches the major of the Bazel node toolchain (`node.toolchain` 22.22.0 in `MODULE.bazel`) and the monolith frontend image. Wolfi resolves the guest's patch version independently. |
 | pnpm | `pnpm~10` | Matches `pnpm_version` 10.34.5 in `MODULE.bazel`. A bare `pnpm` resolves to the pnpm 11 provider, which wants Node >= 22.13. |
 | pytest, yaml | `py3.12-pytest`, `py3.12-pyyaml` | Repo tests are pytest and import `yaml` almost everywhere. System packages for the image's `python-3.12`. |
 
 `toolchain_guard_test.py` pins the package names, the lock resolution (helm 3.x,
-go 1.26.x, node 20.x, pnpm 10.x for x86_64), the lock checksum against
+go 1.26.x, node 22.x, pnpm 10.x for x86_64), the lock checksum against
 `apko.yaml`, the repo streams those packages match (`go.mod` go directive 1.26.x
-with no newer `toolchain` line, `MODULE.bazel` node 20.x and pnpm 10.x), and the
+with no newer `toolchain` line, `MODULE.bazel` node 22.x and pnpm 10.x), and the
 PATH dependency below.
 
 **PATH dependency.** guest-init forces `PATH=/usr/bin:/bin:/usr/local/bin`
@@ -242,7 +242,8 @@ literal; a PATH without it leaves every tool above installed but unreachable.
 - Versions are whatever Wolfi resolved at relock time (see `apko.lock.json`), not
   the exact Bazel-pinned versions.
 
-**Measured, not guarded** (from the Wolfi APKINDEX `I:` field at relock time):
+**Measured, not guarded** (from the Wolfi APKINDEX `I:` field at the #6642
+relock, before the Node 22 migration):
 the resolved package set grew from about 152 MB to about 532 MB installed, a
 delta of about 380 MB. `go-1.26` is 186 MB, `helm-3` 60 MB, `nodejs-20` 58 MB (plus
 `icu78-data-full` 33 MB), `pnpm` 9 MB, pytest and its dependencies about 15 MB.
