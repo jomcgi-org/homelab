@@ -1801,11 +1801,11 @@ def record_allowance(
         )
         # Acceptance refuses an over-envelope plan, so this can only clamp a
         # graph that reached the server another way. Clamping never widens the
-        # envelope after the fact.
+        # turn envelope after the fact. Dollars are reported as derived, since
+        # no dollar figure bounds a plan (#7161).
         grant = continuation_grant(task_id, session=db)
         ceiling = grant["work_turn_ceiling"] if grant else task_turn_ceiling(policy)
         allowance["turns"] = min(allowance["turns"], ceiling)
-        allowance["usd"] = min(allowance["usd"], policy["task_budget_usd"])
         row.allowance_json = _json(allowance)
         row.updated_at = _now()
         db.add(row)
