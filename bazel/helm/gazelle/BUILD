@@ -24,6 +24,7 @@ go_test(
     name = "gazelle_test",
     srcs = [
         "config_test.go",
+        "generate_layout_test.go",
         "generate_test.go",
         "language_test.go",
     ],
@@ -35,6 +36,8 @@ go_test(
     deps = [
         "@gazelle//config",
         "@gazelle//label",
+        "@gazelle//language",
+        "@gazelle//merger",
         "@gazelle//rule",
     ],
 )

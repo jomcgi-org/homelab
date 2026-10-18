@@ -4,7 +4,7 @@ helm_chart(
     name = "chart",
     # The vendored upstream subchart is linted by its own repo, not ours.
     lint = False,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = ["//visibility:public"],
 )
 
 argocd_app(

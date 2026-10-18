@@ -2,7 +2,7 @@ load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 
 helm_chart(
     name = "chart",
-    visibility = ["//overlays:__subpackages__"],
+    visibility = ["//visibility:public"],
 )
 
 argocd_app(

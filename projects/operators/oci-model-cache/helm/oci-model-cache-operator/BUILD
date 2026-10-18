@@ -7,7 +7,7 @@ helm_chart(
     },
     publish = True,
     visibility = [
-        "//overlays:__subpackages__",
         "//projects/operators/oci-model-cache:__subpackages__",  # keep
+        "//visibility:public",
     ],
 )
