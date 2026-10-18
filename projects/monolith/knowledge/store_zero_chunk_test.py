@@ -161,20 +161,3 @@ class TestUpsertNoteZeroChunks:
         note = session.exec(select(Note).where(Note.path == "note_x.md")).first()
         assert note is not None
         assert note.content_hash == "new-hash"
-
-    def test_get_indexed_reflects_zero_chunk_note(self, store):
-        """get_indexed includes a note that was upserted with zero chunks."""
-        store.upsert_note(
-            note_id="idx-empty",
-            path="idx-empty.md",
-            content_hash="he1",
-            title="Indexed Empty",
-            metadata=_meta(title="Indexed Empty"),
-            chunks=[],
-            vectors=[],
-            links=[],
-        )
-
-        indexed = store.get_indexed()
-        assert "idx-empty.md" in indexed
-        assert indexed["idx-empty.md"] == "he1"

@@ -2,8 +2,7 @@
 
 from datetime import datetime, timezone
 
-from knowledge.frontmatter import ParsedFrontmatter, parse
-from knowledge.notes import _serialize_frontmatter
+from knowledge.frontmatter import parse
 
 
 def test_promoted_scoped_keys_parse_with_lenient_timestamps():
@@ -57,35 +56,3 @@ def test_invalid_verification_state_warns_and_leaves_default(caplog):
 
     assert metadata.verification_state is None
     assert any("verification_state" in record.message for record in caplog.records)
-
-
-def test_scoped_fields_round_trip_through_serializer():
-    metadata = ParsedFrontmatter(
-        note_id="round-trip",
-        title="Round Trip",
-        scope="environment:production",
-        verification_state="disputed",
-        confidence=0.4,
-        valid_from=datetime(2026, 9, 1, tzinfo=timezone.utc),
-        valid_until=datetime(2026, 9, 30, tzinfo=timezone.utc),
-        observed_at=datetime(2026, 9, 2, 6, 30, tzinfo=timezone.utc),
-    )
-
-    serialized = _serialize_frontmatter(metadata, "Body")
-    reparsed, body = parse(serialized)
-
-    assert reparsed.scope == metadata.scope
-    assert reparsed.verification_state == metadata.verification_state
-    assert reparsed.confidence == metadata.confidence
-    assert reparsed.valid_from == metadata.valid_from
-    assert reparsed.valid_until == metadata.valid_until
-    assert reparsed.observed_at == metadata.observed_at
-    assert body.strip() == "Body"
-
-
-def test_serializer_omits_legacy_verification_state():
-    serialized = _serialize_frontmatter(
-        ParsedFrontmatter(note_id="legacy", verification_state="legacy"), "Body"
-    )
-
-    assert "verification_state" not in serialized

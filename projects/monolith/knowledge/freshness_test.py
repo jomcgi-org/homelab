@@ -22,7 +22,6 @@ from knowledge.freshness import (
 from knowledge.freshness_backfill import backfill
 from knowledge.frontmatter import ParsedFrontmatter, parse
 from knowledge.models import Chunk, Note, RawInput
-from knowledge.notes import _serialize_frontmatter
 from knowledge.recall import (
     RECALL_HEADER,
     expire_recall,
@@ -232,16 +231,11 @@ def test_ordinary_writes_cannot_renew_or_replace_original_observation(
     due = utc(stored.review_after)
     if operation == "frontmatter":
         parsed, _ = parse(
-            _serialize_frontmatter(
-                ParsedFrontmatter(
-                    observed_at=NOW,
-                    extra={
-                        "review_after": (NOW + MAX_INTERVAL).isoformat(),
-                        "last_reviewed_at": NOW.isoformat(),
-                    },
-                ),
-                "body",
-            )
+            "---\n"
+            f"observed_at: '{NOW.isoformat()}'\n"
+            f"review_after: '{(NOW + MAX_INTERVAL).isoformat()}'\n"
+            f"last_reviewed_at: '{NOW.isoformat()}'\n"
+            "---\nbody\n"
         )
         extra = parsed.extra
     else:

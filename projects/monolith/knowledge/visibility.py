@@ -1,25 +1,11 @@
-"""Visibility helper: criteria, coalescing rule, wikilink sanitiser, SQL filter.
-
-All knowledge-pipeline code that needs to reason about public vs private
-content imports from here. Drift between the criteria the LLM sees and
-the criteria the routes enforce is the most common way these systems leak.
-"""
+"""Fail-closed visibility decisions and public-body wikilink sanitisation."""
 
 from __future__ import annotations
 
 import re
 from typing import Iterable, Literal
 
-from sqlalchemy.sql import ColumnElement
-
 from knowledge.models import Note
-
-# Re-export VISIBILITY_CRITERIA from the canonical profile module so existing
-# consumers (gardener.py:161, 197 inline {VISIBILITY_CRITERIA};
-# gardener_distill_test.py:30 asserts it in rendered prompts) keep importing
-# from knowledge.visibility without modification. The rubric itself lives
-# once, in profile.py.
-from knowledge.profile import VISIBILITY_CRITERIA  # noqa: F401 (re-export)
 
 EffectiveVisibility = Literal["public", "private"]
 
@@ -89,12 +75,3 @@ def strip_private_wikilinks(body: str, public_note_ids: Iterable[str]) -> str:
         return display
 
     return _WIKILINK_RE.sub(_replace, body)
-
-
-def public_notes_filter() -> ColumnElement[bool]:
-    """SQLAlchemy clause selecting only public notes.
-
-    Use ``Note.visibility == 'public'`` rather than ``COALESCE(..., 'private')``
-    so the partial index ``notes_visibility_idx`` is selected by the planner.
-    """
-    return Note.visibility == "public"

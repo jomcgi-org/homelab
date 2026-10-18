@@ -6,7 +6,6 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
-POLICY_VERSION = "v1"
 STANDARD = "standard-90d/v1"
 VOLATILE = "volatile-24h/v1"
 MAX_INTERVAL = timedelta(days=90)

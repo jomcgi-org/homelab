@@ -11,7 +11,6 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from knowledge.deployment_observations import (
     DEPLOYMENT_OBSERVATION_FIELDS,
     build_deployment_observation,
-    list_deployment_observations,
     persist_deployment_observation,
     persist_deployment_observation_sync,
 )
@@ -124,56 +123,6 @@ async def test_later_unchanged_poll_is_a_distinct_observation(session):
     assert len(session.exec(select(RawInput)).all()) == 2
     assert len(session.exec(select(Note)).all()) == 2
     assert len(session.exec(select(AtomRawProvenance)).all()) == 2
-
-
-@pytest.mark.asyncio
-async def test_active_as_of_excludes_expiry_but_history_keeps_overlaps(session):
-    poll_time = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
-    await _persist(session, _observation(poll_time))
-    await _persist(session, _observation(poll_time + timedelta(seconds=300)))
-
-    history = list_deployment_observations(session)
-    overlap = list_deployment_observations(
-        session, active_as_of=poll_time + timedelta(seconds=500)
-    )
-    first_boundary = list_deployment_observations(
-        session, active_as_of=poll_time + timedelta(seconds=750)
-    )
-    later = list_deployment_observations(
-        session, active_as_of=poll_time + timedelta(seconds=800)
-    )
-
-    assert len(history) == 2
-    assert len(overlap) == 2
-    assert len(first_boundary) == 1
-    assert len(later) == 1
-    assert first_boundary[0]["observed_at"].replace(tzinfo=timezone.utc) == (
-        poll_time + timedelta(seconds=300)
-    )
-
-
-@pytest.mark.asyncio
-async def test_expired_observation_is_history_but_not_active(session):
-    """Hiding observations from search must not hide them from this reader."""
-    poll_time = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
-    await _persist(session, _observation(poll_time))
-    expiry = poll_time + timedelta(seconds=750)
-
-    history = list_deployment_observations(session)
-    before_expiry = list_deployment_observations(
-        session, active_as_of=expiry - timedelta(seconds=1)
-    )
-    after_expiry = list_deployment_observations(
-        session, active_as_of=expiry + timedelta(seconds=1)
-    )
-
-    assert len(history) == 1
-    assert history[0]["valid_until"].replace(tzinfo=timezone.utc) == expiry
-    assert history[0]["valid_until"].replace(tzinfo=timezone.utc) < datetime.now(
-        timezone.utc
-    )
-    assert len(before_expiry) == 1
-    assert after_expiry == []
 
 
 def test_payload_allowlist_rejects_telemetry_fields():

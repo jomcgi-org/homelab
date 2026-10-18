@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from knowledge.gaps import GAPS_PIPELINE_VERSION
 from knowledge.models import Gap, Note
 
 
@@ -82,7 +81,7 @@ def _make_gap(
         context="",
         gap_class=gap_class,
         state=state,
-        pipeline_version=GAPS_PIPELINE_VERSION,
+        pipeline_version="gaps@v1",
         created_at=created_at or datetime.now(timezone.utc),
     )
     session.add(gap)

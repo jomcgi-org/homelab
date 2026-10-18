@@ -178,27 +178,3 @@ class TestUpsertZipMismatch:
         assert len(notes) == 1
         assert notes[0].title == "Original"
         assert notes[0].content_hash == "h1"
-
-
-# ---------------------------------------------------------------------------
-# get_indexed — multiple entries
-# ---------------------------------------------------------------------------
-
-
-class TestGetIndexedExtra:
-    def test_returns_all_notes_in_map(self, store):
-        """get_indexed returns an entry for every indexed note."""
-        _upsert(store, note_id="a", path="a.md", content_hash="ha", title="A")
-        _upsert(store, note_id="b", path="b.md", content_hash="hb", title="B")
-        _upsert(store, note_id="c", path="c.md", content_hash="hc", title="C")
-
-        indexed = store.get_indexed()
-        assert indexed == {"a.md": "ha", "b.md": "hb", "c.md": "hc"}
-
-    def test_hash_updated_after_reupsert(self, store):
-        """After re-upserting, get_indexed reflects the new content_hash."""
-        _upsert(store, path="n.md", content_hash="old-hash", title="N")
-        _upsert(store, path="n.md", content_hash="new-hash", title="N v2")
-
-        indexed = store.get_indexed()
-        assert indexed["n.md"] == "new-hash"

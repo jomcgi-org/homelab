@@ -18,7 +18,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from knowledge.gaps import GAPS_PIPELINE_VERSION, answer_gap
+from knowledge.gaps import answer_gap
 from knowledge.models import Gap
 
 
@@ -56,7 +56,7 @@ def _make_gap(
         context="networking note",
         gap_class=gap_class,
         state=state,
-        pipeline_version=GAPS_PIPELINE_VERSION,
+        pipeline_version="gaps@v1",
     )
     session.add(gap)
     session.commit()

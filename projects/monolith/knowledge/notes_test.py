@@ -6,7 +6,6 @@ trash-file / frontmatter-rewrite helpers are gone. Covers:
 
   _read_note_snippet     — line/byte cap, missing content
   _note_to_review_dict   — serialization shape and snippet inclusion
-  _serialize_frontmatter — round-trip YAML fidelity and key ordering
   resolve_note_body      — passthrough of the Postgres ``content`` body
 """
 
@@ -14,12 +13,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from knowledge import frontmatter
 from knowledge.models import Note
 from knowledge.notes import (
     _note_to_review_dict,
     _read_note_snippet,
-    _serialize_frontmatter,
     resolve_note_body,
 )
 
@@ -206,85 +203,3 @@ class TestNoteToReviewDict:
         assert d["visibility"] == "public"
         assert d["type"] == "atom"
         assert d["source"] == "web"
-
-
-# ---------------------------------------------------------------------------
-# _serialize_frontmatter — unchanged by ADR 006.
-# ---------------------------------------------------------------------------
-
-
-class TestSerializeFrontmatter:
-    def test_round_trip_preserves_promoted_fields(self) -> None:
-        raw = (
-            "---\n"
-            "id: round-trip\n"
-            "title: Round Trip Note\n"
-            "type: atom\n"
-            "visibility: public\n"
-            "tags:\n- foo\n- bar\n"
-            "---\n\nbody text\n"
-        )
-        parsed, body = frontmatter.parse(raw)
-        reserialized = _serialize_frontmatter(parsed, body)
-        reparsed, rebodied = frontmatter.parse(reserialized)
-
-        assert reparsed.note_id == "round-trip"
-        assert reparsed.title == "Round Trip Note"
-        assert reparsed.type == "atom"
-        assert reparsed.visibility == "public"
-        assert reparsed.tags == ["foo", "bar"]
-        assert "body text" in rebodied
-
-    def test_none_fields_absent_from_output(self) -> None:
-        raw = "---\nid: minimal\ntitle: Minimal\n---\n\nbody\n"
-        parsed, body = frontmatter.parse(raw)
-        result = _serialize_frontmatter(parsed, body)
-        # Unset promoted fields must not appear as "null" entries.
-        assert "visibility:" not in result
-        assert "status:" not in result
-        assert "source:" not in result
-
-    def test_extra_fields_preserved_at_end(self) -> None:
-        raw = (
-            "---\n"
-            "id: extra-test\n"
-            "title: Extra Test\n"
-            "custom_field: my_value\n"
-            "---\n\nbody\n"
-        )
-        parsed, body = frontmatter.parse(raw)
-        result = _serialize_frontmatter(parsed, body)
-        assert "custom_field" in result
-        assert "my_value" in result
-
-    def test_visibility_none_removes_key(self) -> None:
-        raw = "---\nid: clear-vis\ntitle: Clear\nvisibility: public\n---\n\nbody\n"
-        parsed, body = frontmatter.parse(raw)
-        parsed.visibility = None
-        result = _serialize_frontmatter(parsed, body)
-        assert "visibility:" not in result
-
-    def test_output_wrapped_in_frontmatter_delimiters(self) -> None:
-        raw = "---\nid: fence\ntitle: Fence\n---\n\nbody\n"
-        parsed, body = frontmatter.parse(raw)
-        result = _serialize_frontmatter(parsed, body)
-        assert result.startswith("---\n")
-        # Must have the closing delimiter followed by blank line + body.
-        assert "---\n\n" in result
-
-    def test_body_preserved_verbatim(self) -> None:
-        body_text = "line one\nline two\n\nParagraph two.\n"
-        raw = f"---\nid: body-test\ntitle: Body Test\n---\n\n{body_text}"
-        parsed, body = frontmatter.parse(raw)
-        result = _serialize_frontmatter(parsed, body)
-        assert "line one" in result
-        assert "Paragraph two." in result
-
-    def test_promoted_key_ordering_id_before_title(self) -> None:
-        raw = "---\nid: order-check\ntitle: Order Check\ntype: atom\n---\n\nbody\n"
-        parsed, body = frontmatter.parse(raw)
-        result = _serialize_frontmatter(parsed, body)
-        id_pos = result.index("id:")
-        title_pos = result.index("title:")
-        type_pos = result.index("type:")
-        assert id_pos < title_pos < type_pos

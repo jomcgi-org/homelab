@@ -9,15 +9,14 @@ from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import and_, case, false, func, not_, or_
+from sqlalchemy import and_, case, false, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, delete, select
 
 from knowledge.chunker import Chunk as ChunkPayload
 from knowledge.entities import Entity, NoteEntity
-from knowledge.extraction import LANE_OWNED_SOURCES
 from knowledge.frontmatter import ParsedFrontmatter
-from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES, _slugify
+from knowledge.gardener import _slugify
 from knowledge.links import Link
 from knowledge.models import (
     AtomRawProvenance,
@@ -417,82 +416,6 @@ class KnowledgeStore:
     def now(self) -> datetime:
         # Long-lived explorer stores must not freeze the production clock.
         return self._now if self._now is not None else datetime.now(timezone.utc)
-
-    def get_indexed(self) -> dict[str, str]:
-        # Soft-deleted rows are excluded so the reconciler doesn't see a
-        # note's _trash/ path as "indexed" and then hard-delete the row
-        # when _walk() reports the file is missing from _processed/ /
-        # _researching/. Without this filter the soft-delete window would
-        # silently collapse to one reconciler cycle (~5 min).
-        result = self.session.execute(
-            select(Note.path, Note.content_hash).where(Note.deleted_at.is_(None))
-        )
-        return {path: ch for path, ch in result.all()}
-
-    def entities_for_note(self, note_id: str) -> list[dict]:
-        """Fetch entity subjects and mentions linked to a stable note id."""
-        return _entities_for_note_ids(self.session, [note_id]).get(note_id, [])
-
-    def notes_for_entity(
-        self,
-        entity_id: int,
-        states: Iterable[str] | None = None,
-        limit: int = 100,
-        public_only: bool = False,
-    ) -> list[dict]:
-        """Fetch live notes linked to an entity with optional state/visibility filters."""
-        stmt = (
-            select(
-                Note.note_id,
-                Note.title,
-                Note.type,
-                Note.scope,
-                Note.verification_state,
-                NoteEntity.role,
-            )
-            .join(NoteEntity, NoteEntity.note_id == Note.note_id)
-            .where(
-                NoteEntity.entity_id == entity_id,
-                Note.deleted_at.is_(None),
-            )
-            .order_by(Note.indexed_at.desc(), Note.note_id, NoteEntity.role)
-            .limit(limit)
-        )
-        if states is not None:
-            state_values = list(states)
-            if not state_values:
-                return []
-            stmt = stmt.where(Note.verification_state.in_(state_values))
-        if public_only:
-            stmt = stmt.where(Note.visibility == "public")
-        return [
-            {
-                "note_id": row.note_id,
-                "title": row.title,
-                "type": row.type,
-                "scope": row.scope,
-                "verification_state": row.verification_state,
-                "role": row.role,
-            }
-            for row in self.session.execute(stmt).all()
-        ]
-
-    def notes_missing_content(self) -> list[Note]:
-        """Live notes whose ``content`` column has not been populated yet.
-
-        Drives the ADR 006 one-shot backfill: pre-existing rows predate the
-        ``content`` column and carry NULL until the reconciler reads their
-        body from disk and fills it in. Returns tracked ORM rows so the
-        caller can mutate ``content`` and commit once (no per-row commit,
-        no re-embedding). After the corpus is backfilled this returns ``[]``.
-        """
-        return list(
-            self.session.execute(
-                select(Note).where(Note.content.is_(None), Note.deleted_at.is_(None))
-            )
-            .scalars()
-            .all()
-        )
 
     def upsert_note(
         self,
@@ -1440,72 +1363,3 @@ class KnowledgeStore:
             "resolved_at": gap.resolved_at,
             "pipeline_version": gap.pipeline_version,
         }
-
-    def raws_needing_decomposition(self, limit: int = 10) -> list[RawInput]:
-        """Return raws the gardener still needs to decompose, fresh first.
-
-        Tier 1 (fresh): no current-version or pre-migration provenance at all.
-        Tier 2 (retriable): have a ``derived_note_id='failed'`` provenance row
-        with ``retry_count < MAX_GARDENER_RETRIES`` and no successful
-        current-version provenance.
-
-        Returns ``(fresh + retriable)[:limit]``, preserving tier order.
-        """
-        # Subquery: raw_fk values that have current-version or pre-migration
-        # provenance (i.e. successfully handled or grandfathered).
-        handled_subq = (
-            select(AtomRawProvenance.raw_fk)
-            .where(AtomRawProvenance.raw_fk.is_not(None))
-            .where(
-                or_(
-                    AtomRawProvenance.gardener_version == GARDENER_VERSION,
-                    AtomRawProvenance.gardener_version == "pre-migration",
-                )
-            )
-            .where(
-                or_(
-                    AtomRawProvenance.derived_note_id.is_(None),
-                    AtomRawProvenance.derived_note_id != "failed",
-                )
-            )
-            .subquery()
-        )
-
-        # Subquery: raw_fk values that have a "failed" provenance row
-        # (regardless of retry_count: filtered in tier 2).
-        failed_subq = (
-            select(AtomRawProvenance.raw_fk)
-            .where(AtomRawProvenance.raw_fk.is_not(None))
-            .where(AtomRawProvenance.derived_note_id == "failed")
-            .subquery()
-        )
-
-        # Tier 1: fresh raws, not handled AND not failed.
-        fresh_stmt = (
-            select(RawInput)
-            .where(RawInput.source.notin_(LANE_OWNED_SOURCES))
-            .where(not_(RawInput.id.in_(select(handled_subq.c.raw_fk))))
-            .where(not_(RawInput.id.in_(select(failed_subq.c.raw_fk))))
-            .order_by(RawInput.created_at.asc().nullslast(), RawInput.id.asc())
-        )
-        fresh = list(self.session.exec(fresh_stmt).all())
-
-        # Tier 2: retriable failed raws have a "failed" row with
-        # retry_count < _MAX_RETRIES and no successful current-version prov.
-        retriable_subq = (
-            select(AtomRawProvenance.raw_fk)
-            .where(AtomRawProvenance.raw_fk.is_not(None))
-            .where(AtomRawProvenance.derived_note_id == "failed")
-            .where(AtomRawProvenance.retry_count < MAX_GARDENER_RETRIES)
-            .subquery()
-        )
-        retriable_stmt = (
-            select(RawInput)
-            .where(RawInput.source.notin_(LANE_OWNED_SOURCES))
-            .where(RawInput.id.in_(select(retriable_subq.c.raw_fk)))
-            .where(not_(RawInput.id.in_(select(handled_subq.c.raw_fk))))
-            .order_by(RawInput.created_at.asc().nullslast(), RawInput.id.asc())
-        )
-        retriable = list(self.session.exec(retriable_stmt).all())
-
-        return (fresh + retriable)[:limit]

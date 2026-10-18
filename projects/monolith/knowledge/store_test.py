@@ -102,15 +102,6 @@ def _upsert(
     )
 
 
-class TestGetIndexed:
-    def test_empty(self, store):
-        assert store.get_indexed() == {}
-
-    def test_returns_path_to_hash_map(self, store):
-        _upsert(store, path="a.md", content_hash="h1")
-        assert store.get_indexed() == {"a.md": "h1"}
-
-
 class TestUpsertNote:
     def test_inserts_note_chunks_and_links(self, store, session):
         _upsert(
@@ -1058,7 +1049,7 @@ class TestGetNoteById:
 
 
 class TestEntityLinks:
-    def test_entities_for_note_and_note_payload(self, store, session):
+    def test_note_payload_includes_entities(self, store, session):
         _upsert(
             store,
             note_id="entity-note",
@@ -1097,97 +1088,7 @@ class TestEntityLinks:
                 "role": "subject",
             }
         ]
-        assert store.entities_for_note("entity-note") == expected
         assert store.get_note_by_id("entity-note")["entities"] == expected
-
-    def test_notes_for_entity_filters_state_and_deleted_notes(self, store, session):
-        entity = Entity(
-            kind="project",
-            slug="embervm",
-            title="EmberVM",
-            aliases=[],
-            source="manifest",
-        )
-        session.add(entity)
-        session.flush()
-        _upsert(
-            store,
-            note_id="verified-fact",
-            path="verified.md",
-            title="Verified",
-            metadata=_meta(
-                title="Verified",
-                type="fact",
-                visibility="public",
-                verification_state="verified",
-            ),
-        )
-        _upsert(
-            store,
-            note_id="unverified-fact",
-            path="unverified.md",
-            title="Unverified",
-            metadata=_meta(
-                title="Unverified",
-                type="fact",
-                visibility="private",
-                verification_state="unverified",
-            ),
-        )
-        _upsert(
-            store,
-            note_id="deleted-fact",
-            path="deleted.md",
-            title="Deleted",
-            metadata=_meta(
-                title="Deleted",
-                type="fact",
-                verification_state="verified",
-            ),
-        )
-        deleted_note = session.exec(
-            select(Note).where(Note.note_id == "deleted-fact")
-        ).one()
-        deleted_note.deleted_at = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                NoteEntity(
-                    note_id="verified-fact",
-                    entity_id=entity.id,
-                    role="subject",
-                    source="backfill",
-                ),
-                NoteEntity(
-                    note_id="unverified-fact",
-                    entity_id=entity.id,
-                    role="mentions",
-                    source="backfill",
-                ),
-                NoteEntity(
-                    note_id="deleted-fact",
-                    entity_id=entity.id,
-                    role="subject",
-                    source="backfill",
-                ),
-            ]
-        )
-        session.commit()
-
-        rows = store.notes_for_entity(entity.id, states=["verified"], limit=10)
-        public_rows = store.notes_for_entity(entity.id, public_only=True, limit=10)
-
-        assert rows == [
-            {
-                "note_id": "verified-fact",
-                "title": "Verified",
-                "type": "fact",
-                "scope": None,
-                "verification_state": "verified",
-                "role": "subject",
-            }
-        ]
-        assert [row["note_id"] for row in public_rows] == ["verified-fact"]
-
 
 class TestGetNoteLinks:
     def test_edge_resolved_when_target_exists(self, store):
