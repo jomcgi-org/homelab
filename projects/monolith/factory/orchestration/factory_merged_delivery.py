@@ -48,11 +48,23 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
         prior = json.loads(observed.detail_json) if observed else None
     try:
         pr = conductor.github_get(task["repo"], f"pulls/{number}")
-    except (httpx.HTTPError, ValueError):
+    except (httpx.HTTPError, ValueError) as exc:
         # Once observed, a transient read failure cannot reopen implementation.
         # Nor may unknown merge state on a paused task fall through to generic
         # issue-closed cancellation, which would lose delivery verification.
-        return prior is not None or bool(receipt and receipt.task_paused)
+        if prior is not None:
+            return True
+        if receipt and receipt.task_paused:
+            if isinstance(exc, ValueError) or (
+                isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code in (404, 410)
+            ):
+                # Retrying an absent or unusable PR forever leaks the paused
+                # slot. Permit only deadline settlement, not objective-closed
+                # cancellation, and do not recurse into another merge read.
+                conductor._settle_paused_task(task, policy, runs, merge_unknown=True)
+            return True
+        return False
     if not pr.get("merged") or not conductor.delivery_identity_matches(task, pr):
         return prior is not None
     landing._record(
