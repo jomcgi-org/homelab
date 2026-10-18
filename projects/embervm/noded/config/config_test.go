@@ -667,6 +667,8 @@ func TestLoadArtifactEncryptionOverrides(t *testing.T) {
 
 func TestLoadCompositeSupernetOverride(t *testing.T) {
 	t.Setenv("EMBERVM_NODED_COMPOSITE_SUPERNET", "10.150.0.0/16")
+	t.Setenv("EMBERVM_NODED_STATEFUL_PROBE_INTERVAL", "11s")
+	t.Setenv("EMBERVM_NODED_STATEFUL_UNHEALTHY_THRESHOLD", "6")
 	t.Setenv("EMBERVM_NODED_GROUP_PROBE_INTERVAL", "7s")
 	t.Setenv("EMBERVM_NODED_GROUP_UNHEALTHY_THRESHOLD", "4")
 	c, err := Load()
@@ -675,6 +677,12 @@ func TestLoadCompositeSupernetOverride(t *testing.T) {
 	}
 	if c.CompositeSupernet != "10.150.0.0/16" {
 		t.Errorf("CompositeSupernet = %q", c.CompositeSupernet)
+	}
+	if c.StatefulProbeInterval != 11*time.Second {
+		t.Errorf("StatefulProbeInterval = %v, want 11s", c.StatefulProbeInterval)
+	}
+	if c.StatefulUnhealthyThreshold != 6 {
+		t.Errorf("StatefulUnhealthyThreshold = %d, want 6", c.StatefulUnhealthyThreshold)
 	}
 	if c.GroupProbeInterval != 7*time.Second {
 		t.Errorf("GroupProbeInterval = %v", c.GroupProbeInterval)

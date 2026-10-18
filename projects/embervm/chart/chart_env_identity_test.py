@@ -165,6 +165,81 @@ def _render_with_set(release: str, settings: list[str]) -> str:
     return result.stdout
 
 
+@pytest.mark.parametrize(
+    "stateful, composite",
+    [
+        (None, None),
+        ((15400, 15409), None),
+        (None, (16410, 16419)),
+        ((15400, 15409), (16410, 16419)),
+    ],
+    ids=["defaults", "stateful-only", "composite-only", "both"],
+)
+def test_activator_ranges_match_control_plane_and_every_noded(stateful, composite):
+    settings = [
+        "noded.enabled=true",
+        "bricks.enabled=true",
+        "bricks.nodeFloors[0].node=node-x",
+        "bricks.nodeFloors[0].class=1gi",
+        "xds.enabled=true",
+        "servingEnvoy.enabled=true",
+    ]
+    for key, ports in (
+        ("statefulTcpPortRange", stateful),
+        ("compositeTcpPortRange", composite),
+    ):
+        if ports is not None:
+            settings += [
+                f"servingEnvoy.{key}.start={ports[0]}",
+                f"servingEnvoy.{key}.end={ports[1]}",
+            ]
+    rendered = _render_with_set("activator-ranges", settings)
+    containers = [
+        (document["kind"], document["metadata"]["name"], container)
+        for document in yaml.safe_load_all(rendered)
+        if isinstance(document, dict)
+        and document.get("kind") in {"DaemonSet", "Deployment"}
+        for container in document["spec"]["template"]["spec"]["containers"]
+    ]
+    control = [c for _, _, c in containers if c["name"] == "control-plane"]
+    assert len(control) == 1, "expected one control-plane container"
+    noded = [(kind, name, c) for kind, name, c in containers if c["name"] == "noded"]
+    assert noded, "expected at least one rendered noded container"
+    assert any(kind == "DaemonSet" for kind, _, _ in noded)
+    assert any(
+        kind == "Deployment" and name.endswith("-noded-brick-1gi")
+        for kind, name, _ in noded
+    ), "expected a class brick Deployment"
+    assert any(
+        kind == "Deployment" and name.endswith("-noded-brick-1gi-node-x")
+        for kind, name, _ in noded
+    ), "expected a per-node brick Deployment"
+
+    cp_env = {entry["name"]: entry.get("value") for entry in control[0]["env"]}
+    for cp_name, noded_name, ports in (
+        (
+            "EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE",
+            "EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE",
+            stateful or (5400, 5409),
+        ),
+        (
+            "EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE",
+            "EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE",
+            composite or (5410, 5419),
+        ),
+    ):
+        expected = f"{ports[0]}-{ports[1]}"
+        assert cp_env.get(cp_name) == expected
+        for kind, name, container in noded:
+            env = {entry["name"]: entry.get("value") for entry in container["env"]}
+            assert env.get(noded_name) == expected, (
+                kind,
+                name,
+                noded_name,
+                env.get(noded_name),
+            )
+
+
 def test_store_probe_interval_renders_into_control_plane() -> None:
     values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
     assert values["controlPlane"]["storeProbe"]["intervalSeconds"] == 300

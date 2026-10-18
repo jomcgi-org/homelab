@@ -9,9 +9,34 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	"github.com/jomcgi/homelab/projects/embervm/noded/server"
 )
+
+func TestStatefulAndGroupProbeOptionsAreIndependent(t *testing.T) {
+	cfg := config.Config{
+		StatefulProbeInterval:      11 * time.Second,
+		StatefulUnhealthyThreshold: 6,
+		GroupProbeInterval:         7 * time.Second,
+		GroupUnhealthyThreshold:    4,
+	}
+	var opts server.Options
+	setStatefulAndGroupProbeOptions(&opts, cfg)
+	if opts.StatefulProbeInterval != 11*time.Second {
+		t.Errorf("StatefulProbeInterval = %v, want 11s", opts.StatefulProbeInterval)
+	}
+	if opts.StatefulUnhealthyThreshold != 6 {
+		t.Errorf("StatefulUnhealthyThreshold = %d, want 6", opts.StatefulUnhealthyThreshold)
+	}
+	if opts.GroupProbeInterval != 7*time.Second {
+		t.Errorf("GroupProbeInterval = %v, want 7s", opts.GroupProbeInterval)
+	}
+	if opts.GroupUnhealthyThreshold != 4 {
+		t.Errorf("GroupUnhealthyThreshold = %d, want 4", opts.GroupUnhealthyThreshold)
+	}
+}
 
 func TestSetupTracingContinuesWhenConfigurationIsInvalid(t *testing.T) {
 	t.Setenv("OTEL_SDK_DISABLED", "false")
