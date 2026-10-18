@@ -6,8 +6,6 @@ Routine can pull one signal at a time without a wrapping aggregate.
 
 - ``check_stuck_jobs``    : ``scheduler.scheduled_jobs`` rows whose lock
                             has held longer than ``threshold_mins``.
-- ``check_orphan_jobs``   : ``scheduler.scheduled_jobs`` rows whose
-                            handler is not in the in-cluster registry.
 - ``check_dead_letters``  : ``knowledge.atom_raw_provenance`` rows
                             indicating a raw input that exhausted all
                             retry attempts (mirrors ``GET /api/knowledge/dead-letter``).
@@ -57,43 +55,6 @@ def check_stuck_jobs(threshold_mins: int = 10) -> list[dict]:
             "ttl_secs": r[7],
         }
         for r in rows
-    ]
-
-
-def check_orphan_jobs() -> list[dict]:
-    """Return scheduler rows whose ``name`` has no registered handler.
-
-    Reads the in-process scheduler registry once (via
-    ``scheduler.api.registered_names``), so this only sees handlers wired
-    by the running monolith. Useful for spotting rows left behind by
-    removed handlers.
-    """
-    from scheduler.api import registered_names
-
-    registered = set(registered_names())
-    sql = text(
-        """
-        SELECT name, interval_secs, next_run_at, last_run_at, last_status,
-               locked_by, locked_at, ttl_secs
-          FROM scheduler.scheduled_jobs
-         ORDER BY name
-        """
-    )
-    with Session(get_engine()) as session:
-        rows = session.execute(sql).fetchall()
-    return [
-        {
-            "name": r[0],
-            "interval_secs": r[1],
-            "next_run_at": r[2],
-            "last_run_at": r[3],
-            "last_status": r[4],
-            "locked_by": r[5],
-            "locked_at": r[6],
-            "ttl_secs": r[7],
-        }
-        for r in rows
-        if r[0] not in registered
     ]
 
 

@@ -19,4 +19,3 @@ class SchedulerJobView(BaseModel):
     next_run_at: datetime
     last_run_at: datetime | None = None
     last_status: str | None = None
-    has_handler: bool

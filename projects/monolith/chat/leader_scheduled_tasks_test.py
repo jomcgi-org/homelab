@@ -22,7 +22,6 @@ async def test_leader_tracks_scheduler_for_framework_shutdown():
         patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token"}),
         patch("chat.acl.bootstrap_defaults"),
         patch("chat.bot.create_bot", return_value=bot),
-        patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=AsyncMock()),
         patch("chat.leader.wait_for_sidecar", new_callable=AsyncMock),
         patch("core.db.get_engine", return_value=MagicMock()),

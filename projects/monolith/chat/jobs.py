@@ -1,10 +1,8 @@
 """Scheduler job draining due reminders into the Discord outbox.
 
 Runs as the chat-drain-reminders Argo CronWorkflow one-shot (see
-app/jobs_main.py, chart/values.yaml jobs.cronWorkflows), not the legacy
-in-process scheduler.register_job path: that dispatch loop was deleted (see
-app/main.py's lifespan comment), so Argo's own cron schedule is the sole
-cadence driver here and the handler's return value is unused by anything.
+app/jobs_main.py, chart/values.yaml jobs.cronWorkflows). Argo owns the cadence;
+the handler's return value is unused.
 
 Pure DB work, no network phase, so the whole job runs in one worker thread via
 asyncio.to_thread rather than splitting an async network phase from a sync DB
@@ -55,7 +53,6 @@ async def drain_reminders_handler(session: Session) -> None:
     All Session I/O runs in a worker thread (semgrep no-sync-session-in-async-def
     / no-session-in-to-thread); the ``session`` argument passed in by the
     one-shot CLI wrapper is unused and never touched here. The Argo cron
-    schedule is what actually determines cadence, so unlike the legacy
-    register_job contract there is no next-run hint to return.
+    schedule determines cadence. There is no next-run hint to return.
     """
     await asyncio.to_thread(_drain_reminders)

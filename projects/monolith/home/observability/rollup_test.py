@@ -53,14 +53,6 @@ async def test_stats_rollup_builds_then_writes():
     session.__exit__.assert_called_once()
 
 
-def test_register_registers_stats_rollup_job():
-    session = MagicMock()
-    with patch("home.observability.rollup.register_job") as mock_register:
-        rollup.register(session)
-    names = {call.kwargs["name"] for call in mock_register.call_args_list}
-    assert names == {"observability.stats_rollup"}
-
-
 @pytest.mark.asyncio
 async def test_prime_snapshots_swallows_errors():
     with patch(
@@ -68,5 +60,23 @@ async def test_prime_snapshots_swallows_errors():
         new_callable=AsyncMock,
         side_effect=Exception("snapshot database unavailable"),
     ):
-        # Must not raise: a failed prime is logged and the scheduler retries.
+        # Must not raise: a failed prime is logged and the Argo rollup retries.
         await rollup.prime_snapshots()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [None, "true", "false", "0", " NO "])
+async def test_home_module_startup_preserves_snapshot_priming(monkeypatch, enabled):
+    from home.module import MODULE
+
+    if enabled is None:
+        monkeypatch.delenv("HOME_OBSERVABILITY_PRIME_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("HOME_OBSERVABILITY_PRIME_ENABLED", enabled)
+    with patch.object(rollup, "prime_snapshots", new_callable=AsyncMock) as prime:
+        assert MODULE.startup is not None
+        await MODULE.startup(None)
+    if enabled in (None, "true"):
+        prime.assert_awaited_once_with()
+    else:
+        prime.assert_not_awaited()

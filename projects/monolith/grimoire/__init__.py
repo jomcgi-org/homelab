@@ -7,7 +7,6 @@ campaign/grant CRUD stays private-tier only.
 """
 
 from fastapi import FastAPI
-from sqlmodel import Session
 
 
 def register(app: FastAPI) -> None:
@@ -23,33 +22,3 @@ def register_public(app: FastAPI) -> None:
     from grimoire.router_public import router as public_router
 
     app.include_router(public_router)
-
-
-def on_startup_jobs(session: Session) -> None:
-    """Register grimoire ingest jobs (spec #4.2): a daily chunk loader and a
-    daily heavy entity-extraction pass.
-
-    Both are idempotent batch jobs; ``register_job`` omits metadata for names a
-    replacing Argo CronWorkflow owns. ``heavy`` is legacy registry metadata and
-    does not serialize execution. Argo carries the actual concurrency, resource,
-    and deadline controls.
-    """
-    from scheduler.api import register_job
-
-    from grimoire.jobs import grimoire_extract_entities, grimoire_load_chunks
-
-    register_job(
-        session,
-        name="grimoire.load_chunks",
-        interval_secs=86_400,
-        handler=grimoire_load_chunks,
-        ttl_secs=600,
-    )
-    register_job(
-        session,
-        name="grimoire.extract_entities",
-        interval_secs=86_400,
-        handler=grimoire_extract_entities,
-        ttl_secs=1_500,
-        heavy=True,
-    )

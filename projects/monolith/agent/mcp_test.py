@@ -13,7 +13,6 @@ EXPECTED_TOOLS = {
     "monolith_agent_list_locks",
     "monolith_agent_notify",
     "monolith_agent_check_stuck_jobs",
-    "monolith_agent_check_orphan_jobs",
     "monolith_agent_check_dead_letters",
     "monolith_agent_trigger_job",
     "monolith_agent_list_routine_jobs",
@@ -35,11 +34,12 @@ async def test_all_agent_tools_registered():
     registered = {t.name for t in tools}
     missing = EXPECTED_TOOLS - registered
     assert not missing, f"Missing agent tools: {missing}"
+    assert "monolith_agent_check_orphan_jobs" not in registered
 
 
-def test_expected_tool_count_is_sixteen():
+def test_expected_tool_count_is_fifteen():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
-    assert len(EXPECTED_TOOLS) == 16
+    assert len(EXPECTED_TOOLS) == 15
 
 
 @pytest.mark.asyncio

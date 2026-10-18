@@ -908,10 +908,9 @@ def stars_load_climatology() -> None:
 
 
 def _run_job(name: str, import_path: str, handler_name: str) -> None:
-    """Run a session-taking async scheduler handler as a one-shot.
+    """Run a session-taking async batch handler as a one-shot.
 
-    Shared body for the simple cutovers: import the handler lazily (keeps CLI
-    startup cheap), open a fresh session mirroring the scheduler's contract, and
+    Import the handler lazily (keeps CLI startup cheap), open a fresh session, and
     run it to completion. Each command below is a thin wrapper so Typer still
     sees a distinct, documented subcommand per job.
     """

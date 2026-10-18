@@ -7,7 +7,7 @@ from kubernetes_asyncio.client.exceptions import ApiException
 from sqlmodel import Session, SQLModel, create_engine
 
 from scheduler import service
-from scheduler.api import ScheduledJob, _registry
+from scheduler.api import ScheduledJob
 
 
 @pytest.fixture(name="session")
@@ -32,13 +32,6 @@ def session_fixture(tmp_path):
             table.schema = original_schemas[table.name]
 
 
-@pytest.fixture(autouse=True)
-def _clear_registry():
-    _registry.clear()
-    yield
-    _registry.clear()
-
-
 def _seed(session: Session, name: str, *, next_run_at: datetime) -> None:
     session.add(
         ScheduledJob(
@@ -59,21 +52,21 @@ class TestListJobs:
 
         jobs = service.list_jobs(session)
         assert [j.name for j in jobs] == ["a.job", "b.job"]
+        assert all(
+            set(j.model_dump())
+            == {
+                "name",
+                "interval_secs",
+                "ttl_secs",
+                "next_run_at",
+                "last_run_at",
+                "last_status",
+            }
+            for j in jobs
+        )
 
     def test_returns_empty_when_no_jobs(self, session):
         assert service.list_jobs(session) == []
-
-    def test_has_handler_reflects_registry(self, session):
-        async def _h(s: Session) -> None:
-            return None
-
-        _registry["registered.job"] = _h
-        _seed(session, "registered.job", next_run_at=datetime.now(timezone.utc))
-        _seed(session, "orphan.job", next_run_at=datetime.now(timezone.utc))
-
-        by_name = {j.name: j for j in service.list_jobs(session)}
-        assert by_name["registered.job"].has_handler is True
-        assert by_name["orphan.job"].has_handler is False
 
 
 class TestGetJob:
@@ -83,6 +76,7 @@ class TestGetJob:
         assert view is not None
         assert view.name == "j"
         assert view.interval_secs == 60
+        assert "has_handler" not in view.model_dump()
 
     def test_returns_none_for_missing_job(self, session):
         assert service.get_job(session, "nope") is None
@@ -131,11 +125,9 @@ class TestRunNow:
 
     @pytest.mark.asyncio
     async def test_argo_handled_name_without_row_submits(self, session, monkeypatch):
-        """A manual-only CronWorkflow (replaces + suspend) has no scheduled_jobs
-        row because register_job skips argo-handled names; run-now must still
-        find it through ARGO_JOBS and submit it."""
+        """ARGO_JOBS accepts a suspended CronWorkflow without a legacy row."""
         name = "knowledge.review_backfill_dry_run"
-        monkeypatch.setenv("ARGO_JOBS", f"worldcup.refresh,{name},")
+        monkeypatch.setenv("ARGO_JOBS", f" worldcup.refresh, {name} , ,")
         assert session.get(ScheduledJob, name) is None
         cronworkflow = {
             "metadata": {
@@ -190,6 +182,7 @@ class TestRunNow:
 
         assert result.status_code == 409
         assert fake.created == []
+        assert fake.closed is True
 
     @pytest.mark.asyncio
     async def test_name_with_neither_row_nor_argo_jobs_returns_404(
@@ -241,6 +234,7 @@ class TestRunNow:
             },
             "spec": {
                 "workflowMetadata": {
+                    "name": "must-not-reuse-cron-name",
                     "annotations": {"example.test/source": "cron"},
                     "labels": {"example.test/job": "nightly"},
                 },
@@ -268,6 +262,7 @@ class TestRunNow:
         assert manifest["apiVersion"] == "argoproj.io/v1alpha1"
         assert manifest["kind"] == "Workflow"
         assert manifest["metadata"]["generateName"] == "nightly-manual-"
+        assert "name" not in manifest["metadata"]
         assert manifest["metadata"]["namespace"] == "workflows-test"
         assert manifest["metadata"]["labels"] == {
             "app.kubernetes.io/name": "monolith",
@@ -276,6 +271,11 @@ class TestRunNow:
         }
         assert manifest["metadata"]["annotations"] == {"example.test/source": "cron"}
         assert manifest["spec"] == cronworkflow["spec"]["workflowSpec"]
+        assert manifest["spec"] is not cronworkflow["spec"]["workflowSpec"]
+        assert (
+            cronworkflow["spec"]["workflowMetadata"]["name"]
+            == "must-not-reuse-cron-name"
+        )
         persisted = session.get(ScheduledJob, "j")
         assert persisted is not None
         assert persisted.next_run_at.replace(tzinfo=timezone.utc) == original_next_run
@@ -300,6 +300,7 @@ class TestRunNow:
         assert result.status_code == 409
         assert result.message == "no CronWorkflow replaces job j"
         assert fake.created == []
+        assert fake.closed is True
 
     @pytest.mark.asyncio
     async def test_kubernetes_api_error_returns_502(self, session, monkeypatch):
@@ -312,3 +313,33 @@ class TestRunNow:
         assert result.status_code == 502
         assert result.workflow_name is None
         assert "Kubernetes API error" in (result.message or "")
+        assert fake.closed is True
+
+    @pytest.mark.asyncio
+    async def test_submission_error_returns_502_and_closes_client(
+        self, session, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        _seed(session, "j", next_run_at=datetime.now(timezone.utc))
+        fake = FakeKubernetesClient(
+            [
+                {
+                    "metadata": {
+                        "name": "nightly",
+                        "annotations": {"monolith.jomcgi.dev/replaces": "j"},
+                    },
+                    "spec": {"workflowSpec": {"entrypoint": "run"}},
+                }
+            ]
+        )
+        fake.create_workflow = AsyncMock(
+            side_effect=ApiException(status=403, reason="denied")
+        )
+        monkeypatch.setattr(service, "KubernetesClient", lambda: fake)
+
+        result = await service.run_now(session, "j")
+
+        assert result.status_code == 502
+        fake.create_workflow.assert_awaited_once()
+        assert fake.closed is True

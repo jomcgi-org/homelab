@@ -1,11 +1,6 @@
-"""Tests for the summary-related startup hooks in app.main.
+"""Tests for lifespan singleton tasks and their failure callbacks.
 
-With the scheduler rewrite, summary generation is now handled by the chat.summarizer
-on_startup hook which registers a job with the shared scheduler. These tests verify:
-- chat_startup is called when Discord token is set
-- Both bot task and scheduler task register done callbacks
-- Appropriate log messages appear
-- chat_startup is NOT called without a token
+Summary generation runs separately through the one-shot Argo job.
 """
 
 from __future__ import annotations
@@ -48,12 +43,8 @@ def _lifespan_patches_with_discord(mock_bot):
     return [
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("home.on_startup_jobs"),
-        patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
-        patch("ships.on_startup_jobs"),
-        patch("hikes.on_startup_jobs"),
     ]
 
 
@@ -65,9 +56,6 @@ def _lifespan_patches_no_discord():
     return [
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("home.on_startup_jobs"),
-        patch("ships.on_startup_jobs"),
-        patch("hikes.on_startup_jobs"),
     ]
 
 
@@ -95,10 +83,6 @@ class TestChatStartupHook:
             patch("asyncio.create_task", side_effect=capture),
             patch("core.db.get_engine", return_value=MagicMock()),
             patch("sqlmodel.Session", return_value=mock_session),
-            patch("home.on_startup_jobs"),
-            patch("ships.on_startup_jobs"),
-            patch("hikes.on_startup_jobs"),
-            patch("chat.summarizer.on_startup", mock_chat_startup),
             patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
             patch("chat.bot.create_bot", return_value=mock_bot),
         ):
@@ -178,9 +162,6 @@ class TestSummaryLoopLogging:
             patch("asyncio.create_task", side_effect=capture),
             patch("core.db.get_engine", return_value=MagicMock()),
             patch("sqlmodel.Session", return_value=mock_session),
-            patch("home.on_startup_jobs"),
-            patch("ships.on_startup_jobs"),
-            patch("hikes.on_startup_jobs"),
         ):
             await _start_singletons(app)
 

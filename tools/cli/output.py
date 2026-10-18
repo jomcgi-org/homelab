@@ -73,7 +73,6 @@ def scheduler_line(
     next_run_at: str,
     last_run_at: str | None,
     last_status: str | None,
-    has_handler: bool,
 ) -> str:
     """One-line summary of a scheduled job."""
     next_short = _short_time(next_run_at)
@@ -82,8 +81,7 @@ def scheduler_line(
         last_short = _short_time(last_run_at)
         status = last_status or "unknown"
         last = f"last {status} at {last_short}"
-    orphan = "" if has_handler else "  [orphan]"
-    return f"{name:<32} every {interval_secs:>5}s  next {next_short}  {last}{orphan}"
+    return f"{name:<32} every {interval_secs:>5}s  next {next_short}  {last}"
 
 
 def _short_time(iso: str) -> str:

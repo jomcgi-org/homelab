@@ -4,8 +4,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from datetime import datetime, timezone
 
 import httpx
 from sqlmodel import Session, select
@@ -13,9 +12,6 @@ from sqlmodel import Session, select
 from chat import channel_notes
 from chat.models import ChannelSummary, Message, UserChannelSummary
 import shared.inference
-
-if TYPE_CHECKING:
-    import discord
 
 logger = logging.getLogger(__name__)
 
@@ -302,96 +298,12 @@ async def run_summary_generation(
 ) -> None:
     """Generate per-user and per-channel chat summaries.
 
-    Module-level entrypoint so the one-shot jobs image (jobs_main
-    chat-summary-generation) can run it without the scheduler closure. Builds
+    Entrypoint for the one-shot jobs image (jobs_main chat-summary-generation). Builds
     its own LLM caller (via LLAMA_CPP_URL) when one is not injected."""
     if llm_call is None:
         llm_call = build_llm_caller()
     await generate_summaries(session, llm_call)
     await generate_channel_summaries(session, llm_call)
-
-
-def on_startup(
-    session: "Session",
-    *,
-    bot: "discord.Client | None" = None,
-    llm_call: Callable[[str], Awaitable[str]] | None = None,
-) -> None:
-    """Register chat jobs with the scheduler."""
-    from scheduler.api import register_job
-
-    if llm_call is None:
-        llm_call = build_llm_caller()
-
-    async def _summary_handler(session: "Session") -> None:
-        await run_summary_generation(session, llm_call)
-        return None
-
-    register_job(
-        session,
-        name="chat.summary_generation",
-        interval_secs=86400,
-        handler=_summary_handler,
-        ttl_secs=1800,
-    )
-
-    if bot is not None:
-        from chat.changelog import (
-            ChangelogConfig,
-            load_changelog_configs,
-            run_changelog_iteration,
-        )
-        from shared.embedding import EmbeddingClient
-
-        changelog_configs = load_changelog_configs(
-            os.environ.get("CHANGELOG_CONFIGS", "")
-        )
-
-        for cfg in changelog_configs:
-
-            def _make_handler(config: ChangelogConfig):
-                async def _changelog_handler(session: "Session") -> datetime | None:
-                    from chat.store import MessageStore
-
-                    embed_client = EmbeddingClient()
-
-                    async def _store_message(
-                        discord_message_id: str,
-                        channel_id: str,
-                        user_id: str,
-                        username: str,
-                        content: str,
-                    ) -> None:
-                        store = MessageStore(session=session, embed_client=embed_client)
-                        await store.save_message(
-                            discord_message_id=discord_message_id,
-                            channel_id=channel_id,
-                            user_id=user_id,
-                            username=username,
-                            content=content,
-                            is_bot=True,
-                        )
-
-                    await run_changelog_iteration(
-                        bot, llm_call, config, store_message=_store_message
-                    )
-                    # Align to next interval boundary
-                    now = datetime.now(timezone.utc)
-                    interval = timedelta(hours=config.interval_hours)
-                    epoch = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                    elapsed = now - epoch
-                    periods = int(elapsed / interval) + 1
-                    return epoch + interval * periods
-
-                return _changelog_handler
-
-            register_job(
-                session,
-                name=f"chat.changelog.{cfg.name}",
-                interval_secs=cfg.interval_hours * 3600,
-                handler=_make_handler(cfg),
-                ttl_secs=1200,
-            )
 
 
 def _agent_reply_context(

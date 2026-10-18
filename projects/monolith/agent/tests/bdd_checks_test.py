@@ -172,26 +172,6 @@ class TestCheckStuckJobs:
         assert {row["name"] for row in result} == {"just-now"}
 
 
-class TestCheckOrphanJobs:
-    def test_returns_only_rows_without_handler(self, checks_db: Session) -> None:
-        from scheduler.api import _registry
-
-        # Seed two rows; register a handler for only one.
-        _insert_scheduled_job(checks_db, name="known")
-        _insert_scheduled_job(checks_db, name="orphan")
-
-        async def _noop(_session: Session) -> None:
-            return None
-
-        _registry["known"] = _noop
-        try:
-            result = checks.check_orphan_jobs()
-        finally:
-            _registry.pop("known", None)
-
-        assert {row["name"] for row in result} == {"orphan"}
-
-
 class TestCheckDeadLetters:
     def test_returns_only_exhausted_raws(self, checks_db: Session) -> None:
         retriable_id = _insert_raw_input(

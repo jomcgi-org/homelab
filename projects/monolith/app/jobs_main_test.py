@@ -74,6 +74,67 @@ def test_grimoire_embed_play_dispatches_to_offloaded_handler():
     )
 
 
+@pytest.mark.parametrize(
+    ("command", "handler_path"),
+    [
+        ("ships-heat-rollup", "ships.heat.heat_rollup_handler"),
+        (
+            "ships-partition-maintenance",
+            "ships.retention.partition_maintenance_handler",
+        ),
+        ("dr-jobs-scrape-nhs", "dr_jobs.jobs.scrape_nhs_handler"),
+        ("campsites-refresh", "campsites.jobs.refresh_handler"),
+        ("grimoire-load-chunks", "grimoire.jobs.grimoire_load_chunks"),
+        ("grimoire-extract-entities", "grimoire.jobs.grimoire_extract_entities"),
+        ("hikes-scrape-walks", "hikes.jobs.scrape_walks_handler"),
+        ("hikes-refresh-forecasts", "hikes.jobs.refresh_forecasts_handler"),
+        ("hikes-prune-windows", "hikes.jobs.prune_windows_handler"),
+        ("stars-load-grid", "stars.grid.load_grid_handler"),
+        ("stars-load-climatology", "stars.grid.load_climatology_handler"),
+        ("stars-refresh", "stars.jobs.refresh_handler"),
+        ("stars-prune-hours", "stars.jobs.prune_hours_handler"),
+        ("chat-summary-generation", "chat.api.run_summary_generation"),
+    ],
+)
+def test_batch_handlers_dispatch_without_startup_registration(command, handler_path):
+    """Resolve the production import paths, but never execute a real job."""
+    handler = mock.AsyncMock(return_value=None)
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session") as session_factory,
+        mock.patch(handler_path, new=handler),
+        mock.patch(
+            "stars.materialize.materialize_handler", new_callable=mock.AsyncMock
+        ) as materialize,
+    ):
+        result = runner.invoke(jobs_main.app, [command])
+
+    assert result.exit_code == 0, result.output
+    handler.assert_awaited_once_with(
+        session_factory.return_value.__enter__.return_value
+    )
+    if command == "stars-refresh":
+        materialize.assert_awaited_once_with(
+            session_factory.return_value.__enter__.return_value
+        )
+    else:
+        materialize.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("command", "handler_path"),
+    [
+        ("home-calendar-poll", "home.schedule.calendar_poll_handler"),
+        ("observability-stats-rollup", "home.observability.rollup.stats_rollup"),
+    ],
+)
+def test_sessionless_handlers_dispatch_without_registration(command, handler_path):
+    with mock.patch(handler_path, new_callable=mock.AsyncMock) as handler:
+        result = runner.invoke(jobs_main.app, [command])
+    assert result.exit_code == 0, result.output
+    handler.assert_awaited_once_with()
+
+
 def test_worldcup_sim_dispatches_to_refresh_handler():
     handler = mock.AsyncMock(return_value=None)
     with (

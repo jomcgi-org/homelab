@@ -1119,6 +1119,20 @@ manual submission.
 (see: /projects/monolith/chart/templates/cronworkflows.yaml)
 (see: /projects/monolith/app/jobs_main.py)
 
+The scheduler API retains `scheduler.scheduled_jobs` and its `ScheduledJob`
+model for list/get and legacy run-now names. The chart also puts every
+`replaces` name in `ARGO_JOBS`, including suspended manual-only entries, and
+uses the same annotation to locate the CronWorkflow for submission. The dormant
+in-process registry, registration hooks and registry-based orphan check are
+removed under #7021.
+
+**Why.** Existing row readers and manual callers still use this compatibility
+surface. Removing unused Python registration does not require deleting rows or
+changing migrations. Table retirement and CronWorkflow-native listing require
+separately scoped work; #6921 does not authorize either here.
+(see: /projects/monolith/scheduler/api.py)
+(see: /projects/monolith/scheduler/service.py)
+
 Leader election scopes side-effecting singleton hooks to one API replica: the
 Discord bot, outbox drain and message-lock sweep, AIS ingest, the agent-session
 loops (pending-message sweep, title refresh, Ember-session export into the
@@ -1959,6 +1973,7 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
+| Remove dormant scheduler registration while retaining rows and Argo run-now compatibility | section 4, batch execution | #7021 | repository removal; later table retirement and CronWorkflow-native listing need separate scope |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Every public, private and friends surface renders in the technical-drawing language; the brutalist, ember and grimoire stylesheets retire with their last consumer | section 8, visual language | #7016 | foundation, `/engineering`, `/docs` and the root error page shipped; home, cv, the apps, the private and friends tiers remain |
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
