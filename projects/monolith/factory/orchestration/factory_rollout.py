@@ -113,7 +113,9 @@ def ancestor(repo: str, older: str, newer: str, get) -> bool:
         raise Pending("missing_revision_identity")
     if older == newer:
         return True
-    comparison = get(repo, f"compare/{older}...{newer}?per_page=1")
+    # Page one includes up to 300 file patches regardless of per_page. The
+    # comparison-wide status is also present on page two, even with no commits.
+    comparison = get(repo, f"compare/{older}...{newer}?per_page=1&page=2")
     return comparison.get("status") in ("ahead", "identical")
 
 
@@ -132,7 +134,7 @@ def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
             # Publisher source commits can finish out of order. Only the
             # actual write-back commit can prove we passed the merge in main.
             comparison = get(
-                repo, f"compare/{merge_sha}...{receipt['commit_sha']}?per_page=1"
+                repo, f"compare/{merge_sha}...{receipt['commit_sha']}?per_page=1&page=2"
             )
             if comparison.get("status") == "behind":
                 complete = True
