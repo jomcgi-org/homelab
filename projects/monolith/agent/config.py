@@ -17,12 +17,6 @@ from core.github import GITHUB_REPO
 
 
 @dataclass(frozen=True)
-class AgentSettings:
-    discord_default_server_id: str
-    discord_default_channel_id: str
-
-
-@dataclass(frozen=True)
 class DrainerSettings:
     enabled: bool
     max_jobs_per_cycle: int
@@ -44,17 +38,6 @@ AgentSessionsChannelNotify = Literal["needs-input", "all", "none"]
 _AGENT_SESSIONS_CHANNEL_NOTIFY_VALUES = {"needs-input", "all", "none"}
 
 
-def load_settings() -> AgentSettings:
-    return AgentSettings(
-        discord_default_server_id=os.environ[
-            "MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID"
-        ],
-        discord_default_channel_id=os.environ[
-            "MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID"
-        ],
-    )
-
-
 def drainer_enabled() -> bool:
     return os.environ.get("DRAINER_ENABLED", "false").lower() == "true"
 
@@ -70,18 +53,12 @@ def _bool_setting(name: str, default: bool) -> bool:
 
 
 def load_drainer_settings() -> DrainerSettings:
-    configured_kinds = os.environ.get("DRAINER_JOB_KINDS")
-    if configured_kinds is not None:
-        job_kinds = tuple(
-            kind.strip() for kind in configured_kinds.split(",") if kind.strip()
-        )
-    else:
-        legacy_kind = os.environ.get("DRAINER_JOB_KIND", "").strip()
-        job_kinds = (
-            (legacy_kind,)
-            if legacy_kind
-            else ("qwen-drain", "kg-drain", "grimoire-kg-drain")
-        )
+    configured_kinds = os.environ.get(
+        "DRAINER_JOB_KINDS", "qwen-drain,kg-drain,grimoire-kg-drain"
+    )
+    job_kinds = tuple(
+        kind.strip() for kind in configured_kinds.split(",") if kind.strip()
+    )
     return DrainerSettings(
         enabled=drainer_enabled(),
         max_jobs_per_cycle=int(os.environ.get("DRAINER_MAX_JOBS_PER_CYCLE", "3")),
@@ -117,8 +94,7 @@ def load_drainer_settings() -> DrainerSettings:
 def agent_sessions_channel_id() -> str | None:
     """Channel for agent-session turn notifications, or None for the default.
 
-    Read on its own rather than through AgentSettings: notifying a turn must not
-    depend on the unrelated required Discord settings, and a session that cannot
+    Notifying a turn must not depend on unrelated Discord settings. A session that cannot
     resolve an optional channel should fall back, never fail. By default,
     sessions notify only when they need human input, so routing them apart keeps
     actionable requests off the channel used for unrelated alerts.

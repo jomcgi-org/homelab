@@ -293,16 +293,6 @@ def usage_has_tokens(usage: object) -> bool:
 # 1-hour cache writes included. The usage block it reports covers only the
 # main loop, so repricing that usage undercounts (by about a third over
 # September 2026). For these models the reported figure is the list price.
-_CLAUDE_CODE_ALIASES = frozenset({"opus", "sonnet", "fable", "haiku"})
-
-
-def reports_list_cost(model: str | None) -> bool:
-    """True when the runtime's reported cost is itself a list-price figure."""
-    if not model:
-        return False
-    return model in _CLAUDE_CODE_ALIASES or model.startswith("claude-")
-
-
 def list_price_usd(
     model: str | None,
     usage: Mapping[str, Any] | None,
@@ -310,13 +300,16 @@ def list_price_usd(
 ) -> float | None:
     """One turn's cost at list price, or None when it cannot be priced.
 
-    A positive reported cost from a Claude Code model is taken as is (see
-    _CLAUDE_CODE_ALIASES). Everything else prices from its token usage; a
+    A positive reported cost from a Claude Code model is taken as is.
+    Everything else prices from its token usage; a
     reported 0.0 from a non-Claude runtime is not evidence of a free turn.
     """
     if (
         reported_cost_usd is not None
-        and reports_list_cost(model)
+        and model
+        and (
+            model in {"opus", "sonnet", "fable", "haiku"} or model.startswith("claude-")
+        )
         and math.isfinite(reported_cost_usd)
         and reported_cost_usd > 0
     ):

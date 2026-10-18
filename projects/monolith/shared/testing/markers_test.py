@@ -93,8 +93,8 @@ class TestCoversPublic:
         assert result.mark.kwargs["name"] == "knowledge.search_notes"
 
     def test_simple_qualified_name(self):
-        result = covers_public("home.get_today_events")
-        assert result.mark.kwargs["name"] == "home.get_today_events"
+        result = covers_public("knowledge.search_notes")
+        assert result.mark.kwargs["name"] == "knowledge.search_notes"
 
     def test_deeply_nested_qualified_name(self):
         result = covers_public("app.module.submodule.function")

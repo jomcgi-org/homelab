@@ -101,13 +101,11 @@ def test_invalid_viewers_raise_in_both_paths(viewer, member):
 def test_invalid_audiences_raise(kind, ids):
     with pytest.raises(ValueError):
         Audience(kind, ids)
-    with pytest.raises(ValueError):
-        Audience.from_columns(kind, ids)
 
 
-def test_audience_immutable_and_round_trip():
+def test_audience_immutable_and_storage_columns():
     author = MEMBERS[1].id
-    value = Audience.from_columns("pcs", ["b", "a", "b"], author)
+    value = Audience("pcs", ["b", "a", "b"], author)
     assert value.pc_ids == frozenset({"a", "b"})
     assert isinstance(value.pc_ids, frozenset)
     assert value.to_columns() == {
@@ -115,7 +113,6 @@ def test_audience_immutable_and_round_trip():
         "audience_pc_ids": ["a", "b"],
         "author_member_id": author,
     }
-    assert Audience.from_columns(**value.to_columns()) == value
     assert hash(value) == hash(Audience("pcs", frozenset({"b", "a"}), author))
     with pytest.raises(FrozenInstanceError):
         value.kind = "dm"
@@ -132,7 +129,7 @@ def test_audience_immutable_and_round_trip():
                 "audience_pc_ids": [],
                 "author_member_id": provenance,
             }
-            assert Audience.from_columns(**columns).to_columns() == columns
+            assert Audience(kind, author_member_id=provenance).to_columns() == columns
 
 
 def test_storage_types_pin_both_dialects():

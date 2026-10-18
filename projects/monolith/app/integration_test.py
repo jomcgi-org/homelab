@@ -109,15 +109,13 @@ def test_healthz_reports_chart_version_from_env(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Schedule route
+# Retired schedule route
 # ---------------------------------------------------------------------------
 
 
-def test_get_schedule_today_returns_list(client):
-    """GET /api/home/schedule/today → 200, list (may be empty)."""
+def test_get_schedule_today_is_removed(client):
     response = client.get("/api/home/schedule/today")
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------

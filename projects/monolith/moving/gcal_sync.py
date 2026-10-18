@@ -243,25 +243,6 @@ def _sync_helper(outcome: _SyncOutcome) -> int:
     return touched
 
 
-def sync_milestones(session: Session) -> int:
-    """Synchronize milestones and tombstones using an explicit test session."""
-    if not google_calendar.configured():
-        return 0
-    milestones = _snapshot_milestones(session)
-    tombstones = _snapshot_tombstones(session)
-
-    async def run() -> _SyncOutcome:
-        async with httpx.AsyncClient(timeout=GCAL_TIMEOUT_SECS) as client:
-            return await _run_network_sync(
-                client, _calendar_id(), milestones, tombstones
-            )
-
-    outcome = asyncio.run(run())
-    touched = _apply_sync(session, outcome)
-    session.commit()
-    return touched
-
-
 async def gcal_sync_handler(session: Session) -> datetime | None:
     """Run the hourly moving milestone sync without using the scheduler session."""
     if not google_calendar.configured():

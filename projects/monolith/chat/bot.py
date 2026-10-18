@@ -96,7 +96,6 @@ AGENT_MODEL_CHOICES = _filter_agent_models(
 AGENT_REACTION_QUEUED = "⏳"
 
 
-DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 # Operational pause, independent of channel grants and trust safeguards.
 # Storage, explicit summons, commands and Notify keep their existing paths.
 DISCORD_AMBIENT_ENABLED = (
@@ -104,8 +103,6 @@ DISCORD_AMBIENT_ENABLED = (
 )
 DISCORD_MESSAGE_LIMIT = 2000
 THINKING_TRUNCATE_AT = 1985
-LLM_MAX_RETRIES = 3
-LLM_RETRY_BASE_DELAY = 1.0  # seconds
 STREAM_EDIT_INTERVAL = 1.0
 
 # run_code attachment flush (ADR agents/044). The sandbox handler already

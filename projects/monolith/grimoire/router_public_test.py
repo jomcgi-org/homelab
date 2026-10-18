@@ -19,6 +19,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from core.db import get_session
+from grimoire.explore import scope_entity_ids
 from grimoire.models import (
     Adventure,
     Book,
@@ -538,7 +539,7 @@ class TestEntities:
         assert r.status_code == 404
 
 
-class TestExploreGraph:
+class TestExploreScopes:
     def test_adventure_scope_world_lens_excludes_mechanics_and_private(
         self, session, client
     ):
@@ -567,10 +568,15 @@ class TestExploreGraph:
                 ChunkEntityMention(chunk_id=chunks[0].id, entity_id=secret_npc.id),
             ]
         )
-        session.add(
-            Relationship(
-                from_entity_id=strahd.id, to_entity_id=barovia.id, rel_type="LOCATED_IN"
-            )
+        session.add_all(
+            [
+                Relationship(
+                    from_entity_id=strahd.id,
+                    to_entity_id=neighbor.id,
+                    rel_type="LOCATED_IN",
+                )
+                for neighbor in (barovia, wizard, secret_npc)
+            ]
         )
         session.commit()
         adventure = Adventure(
@@ -581,7 +587,8 @@ class TestExploreGraph:
         session.refresh(adventure)
 
         r = client.get(
-            f"/api/grimoire/explore/graph?scope=adventure:{adventure.id}&lens=world"
+            f"/api/grimoire/explore/ego?id={strahd.id}"
+            f"&scope=adventure:{adventure.id}&lens=world"
         )
         assert r.status_code == 200
         body = r.json()
@@ -596,19 +603,17 @@ class TestExploreGraph:
         assert barovia_node["entity_type"] == "location"
         assert barovia_node["category"] == "lore"
         assert barovia_node["region"] == "Barovia Valley"
-        # this adventure roster has lore (Strahd, Barovia) and mechanics
-        # (Wizard) entities but no events/quests, so world/rules are
-        # non-empty while story/quests are empty: the lens buttons that
-        # should grey out on the public Explore page.
+        # Counts describe public neighbors before lens filtering. The focus
+        # and the private neighbor do not contribute.
         assert body["lens_counts"] == {
-            "world": 2,
+            "world": 1,
             "story": 0,
             "quests": 0,
             "rules": 1,
         }
 
     def test_everything_scope_has_no_roster_restriction_but_still_applies_lens(
-        self, session, client
+        self, session
     ):
         # seed_corpus: Aboleth (creature -> category lore) and Fireball (spell
         # -> category lore, but the "rules" lens unions spells in by
@@ -616,19 +621,16 @@ class TestExploreGraph:
         # the rules lens is what does the filtering: the spell is kept, the
         # creature is dropped.
         seed_corpus(session)
-        r = client.get("/api/grimoire/explore/graph?scope=everything&lens=rules")
-        assert r.status_code == 200
-        body = r.json()
-        assert {n["name"] for n in body["nodes"]} == {"Fireball"}
+        assert scope_entity_ids(session, "everything", "rules") == {"e-fireball"}
 
-    def test_unknown_adventure_scope_returns_empty_graph(self, session, client):
-        r = client.get("/api/grimoire/explore/graph?scope=adventure:nope&lens=world")
-        assert r.status_code == 200
-        assert r.json() == {
-            "nodes": [],
-            "edges": [],
-            "lens_counts": {"world": 0, "story": 0, "quests": 0, "rules": 0},
-        }
+    def test_unknown_adventure_scope_has_no_entities(self, session):
+        assert scope_entity_ids(session, "adventure:nope", "world") == set()
+
+
+@pytest.mark.parametrize("path", ["graph", "path"])
+def test_retired_explore_routes_are_not_registered(client, path):
+    response = client.get(f"/api/grimoire/explore/{path}")
+    assert response.status_code == 404
 
 
 class TestExploreEgo:
@@ -712,44 +714,6 @@ class TestExploreEgo:
         body = r.json()
         assert {n["name"] for n in body["nodes"]} == {"Fireball"}
         assert body["edges"] == []
-
-
-class TestExplorePath:
-    def test_two_hop_path_found(self, session, client):
-        seed_corpus(session)  # e-aboleth --knows--> e-fireball
-        elminster = Entity(entity_type="npc", name="Elminster", is_global=True)
-        session.add(elminster)
-        session.commit()
-        session.refresh(elminster)
-        session.add(
-            Relationship(
-                from_entity_id="e-fireball",
-                to_entity_id=elminster.id,
-                rel_type="taught_by",
-            )
-        )
-        session.commit()
-
-        r = client.get(f"/api/grimoire/explore/path?from=e-aboleth&to={elminster.id}")
-        assert r.status_code == 200
-        body = r.json()
-        assert [hop["entity"]["name"] for hop in body["path"]] == [
-            "Aboleth",
-            "Fireball",
-            "Elminster",
-        ]
-        assert [hop["via"] for hop in body["path"]] == [None, "knows", "taught_by"]
-
-    def test_no_path_between_disconnected_entities(self, session, client):
-        seed_corpus(session)
-        loner = Entity(entity_type="npc", name="Loner", is_global=True)
-        session.add(loner)
-        session.commit()
-        session.refresh(loner)
-
-        r = client.get(f"/api/grimoire/explore/path?from=e-aboleth&to={loner.id}")
-        assert r.status_code == 200
-        assert r.json() == {"path": []}
 
 
 class TestSearch:

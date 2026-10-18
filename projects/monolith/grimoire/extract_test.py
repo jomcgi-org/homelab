@@ -1307,7 +1307,6 @@ def test_book_kind_mapping():
 
 
 def test_book_kind_adventure_anthology_split():
-    from grimoire.extract import ADVENTURE_BOOK_KINDS
 
     assert book_kind("candlekeep-mysteries") == "adventure-anthology"
     assert book_kind("tales-from-the-yawning-portal") == "adventure-anthology"
@@ -1319,7 +1318,6 @@ def test_book_kind_adventure_anthology_split():
     assert book_kind("waterdeep-dungeon-of-the-mad-mage") == "adventure"
     # Unmapped slug still returns None, not a guessed adventure kind.
     assert book_kind("some-random-homebrew") is None
-    assert ADVENTURE_BOOK_KINDS == {"adventure", "adventure-anthology"}
 
 
 def test_client_user_message_layers_book_section_and_image():

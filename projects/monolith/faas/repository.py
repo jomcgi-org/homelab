@@ -16,7 +16,7 @@ until the new zip smokes again.
 
 from datetime import datetime, timezone
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from faas.models import Function
 
@@ -110,14 +110,6 @@ def get_public_function(session: Session, name: str) -> Function | None:
     if function.visibility != "public":
         return None
     return function
-
-
-def list_functions(session: Session, *, visible_only: bool = False) -> list[Function]:
-    """List all functions, optionally filtered to smoke-passed (visible) ones."""
-    stmt = select(Function)
-    if visible_only:
-        stmt = stmt.where(Function.last_smoke_at.is_not(None))
-    return list(session.exec(stmt).all())
 
 
 def delete_function(session: Session, name: str) -> bool:

@@ -76,31 +76,12 @@ export const adventureHref = (id) =>
 
 // ── EXPLORE fetchers (router_public.py's /explore/* + /adventures) ──
 
-// Induced subgraph {nodes, edges} for a scope + lens: the canvas's bulk load.
-// scope is "everything" | "adventure:{id}" | "book:{id}"; lens is
-// "world" | "story" | "quests" | "rules". See grimoire/explore.py's
-// scope_subgraph for the exact node/edge projection.
-export const exploreGraph = (scope, lens) =>
-  apiFetch(
-    `/explore/graph?scope=${encodeURIComponent(scope)}&lens=${encodeURIComponent(lens)}`,
-  );
-
-// Focus entity + its 1-hop is_global neighbors, same {nodes, edges,
-// lens_counts} shape as exploreGraph, for click-to-expand ("wander") and the
-// codex's relationship list. Query param is `id`, not `entity_id` (see
-// router_public.py). scope/lens narrow the neighbor set the same way they
-// narrow exploreGraph; the focus entity itself is always kept.
+// Focus entity and its 1-hop is_global neighbors as {nodes, edges, lens_counts}
+// for World and the codex's relationship list. scope/lens filter the neighbors;
+// the focus entity itself is always kept. Query param is `id` (router_public.py).
 export const exploreEgo = (id, scope = "everything", lens = "world") =>
   apiFetch(
     `/explore/ego?id=${encodeURIComponent(id)}&scope=${encodeURIComponent(scope)}&lens=${encodeURIComponent(lens)}`,
-  );
-
-// Six-degrees BFS between two entities -> {path: [{entity, via}, ...]}.
-// Wired here for completeness; no UI consumes it yet (deferred to a later
-// pathfinding task).
-export const explorePath = (from, to) =>
-  apiFetch(
-    `/explore/path?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
   );
 
 // Every adventure across the whole corpus (not scoped to one book), for the

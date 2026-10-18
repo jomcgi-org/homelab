@@ -95,36 +95,6 @@ def put_archive(name: str, sha256: str, data: bytes) -> None:
             raise
 
 
-def head_archive(name: str, sha256: str) -> bool:
-    """Return whether the archive object exists."""
-    from botocore.exceptions import ClientError
-
-    client = _client()
-    try:
-        client.head_object(Bucket=_bucket(), Key=_object_key(name, sha256))
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchKey", "NoSuchBucket", "404"):
-            return False
-        raise
-    return True
-
-
-def get_archive(name: str, sha256: str) -> bytes | None:
-    """Return the archive's raw bytes, or None if it is absent."""
-    from botocore.exceptions import ClientError
-
-    client = _client()
-    try:
-        resp = client.get_object(Bucket=_bucket(), Key=_object_key(name, sha256))
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchKey", "NoSuchBucket", "404"):
-            return None
-        raise
-    return resp["Body"].read()
-
-
 def delete_archive(name: str, sha256: str) -> None:
     """Delete the archive object, ignoring a missing bucket/key.
 

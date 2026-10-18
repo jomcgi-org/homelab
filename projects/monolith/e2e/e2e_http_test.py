@@ -76,19 +76,6 @@ class TestHomeDashboard:
 
 
 # ---------------------------------------------------------------------------
-# Schedule API (iCal feed not configured, returns empty list)
-# ---------------------------------------------------------------------------
-
-
-class TestScheduleAPI:
-    def test_today_schedule(self, live_server):
-        """GET /api/home/schedule/today returns a list (empty when no iCal feed)."""
-        r = httpx.get(f"{live_server}/api/home/schedule/today")
-        assert r.status_code == 200
-        assert isinstance(r.json(), list)
-
-
-# ---------------------------------------------------------------------------
 # Notes API
 # ---------------------------------------------------------------------------
 

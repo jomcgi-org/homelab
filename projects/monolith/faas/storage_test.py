@@ -47,45 +47,6 @@ def test_put_archive_creates_bucket_then_retries(monkeypatch):
     assert client.put_object.call_count == 2
 
 
-def test_head_archive_true_and_false(monkeypatch):
-    from botocore.exceptions import ClientError
-
-    client = MagicMock()
-    client.head_object.return_value = {}
-    _patch_client(monkeypatch, client)
-    assert storage.head_archive("echo-fn", "a" * 64) is True
-
-    client.head_object.side_effect = ClientError(
-        {"Error": {"Code": "404"}}, "HeadObject"
-    )
-    assert storage.head_archive("echo-fn", "a" * 64) is False
-
-
-def test_get_archive_returns_bytes(monkeypatch):
-    client = MagicMock()
-    body = MagicMock()
-    body.read.return_value = b"zipbytes"
-    client.get_object.return_value = {"Body": body}
-    _patch_client(monkeypatch, client)
-
-    got = storage.get_archive("echo-fn", "a" * 64)
-
-    assert got == b"zipbytes"
-    assert client.get_object.call_args.kwargs["Key"] == f"echo-fn/{'a' * 64}.zip"
-
-
-def test_get_archive_missing_returns_none(monkeypatch):
-    from botocore.exceptions import ClientError
-
-    client = MagicMock()
-    client.get_object.side_effect = ClientError(
-        {"Error": {"Code": "NoSuchKey"}}, "GetObject"
-    )
-    _patch_client(monkeypatch, client)
-
-    assert storage.get_archive("echo-fn", "a" * 64) is None
-
-
 def test_code_uri_matches_crd_sample_shape(monkeypatch):
     # This is the Helm-service-name form the CRD samples pin to
     # (projects/embervm/crd/samples/workload-echo-fn.yaml); production sets it

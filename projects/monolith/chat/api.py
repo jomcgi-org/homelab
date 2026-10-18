@@ -6,7 +6,6 @@ Other domains must import from ``chat.api`` (enforced by
 
 from __future__ import annotations
 
-from chat.bot import send_message  # re-exported
 from chat.changelog import run_changelog_for_config  # re-exported
 from chat.directive_admin import directive_history  # re-exported
 from chat.directive_admin import list_directives  # re-exported
@@ -30,7 +29,6 @@ __all__ = [
     "enqueue_message",
     "run_changelog_for_config",
     "run_summary_generation",
-    "send_message",
     "list_directives",
     "directive_history",
     "set_directive",

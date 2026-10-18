@@ -6,7 +6,7 @@ mount, OpenTelemetry setup, the static frontend mount, and the health
 endpoints. Entrypoints reduce to one ``build_app`` call over a module list.
 
 Import discipline: this file must stay importable inside the pruned PUBLIC
-binary, whose file set excludes the private domains and ``app/mcp_app.py``.
+binary, whose file set excludes the private domains.
 Profile-gated integrations are imported lazily inside the code paths that use
 them so disabled capabilities do not expand a binary's runtime surface.
 """
@@ -718,8 +718,7 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
     mcp_http_app = None
     mcp_lifespan = None
     if profile.mcp_enabled:
-        # The shared FastMCP instance lives in app/mcp_app.py (excluded from
-        # the public file set); domain tool modules attach to it on import.
+        # Domain tool modules attach to the shared core.mcp_app instance on import.
         # Mounted whenever the profile enables MCP, even if no composed module
         # registers tools, preserving the invariant that the private tier
         # always serves /mcp (an empty tool list is a visible symptom; a

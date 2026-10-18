@@ -13,7 +13,6 @@
 # gazelle:exclude factory
 # gazelle:exclude swarm
 # gazelle:exclude knowledge
-# gazelle:exclude notes
 # gazelle:exclude scripts
 # gazelle:exclude home
 # gazelle:exclude sandbox
@@ -1790,8 +1789,8 @@ py3_image(
 # ---------------------------------------------------------------------------
 # Public service (ADR 004 Phase 5): a pruned, read-only binary/image that runs
 # app/main_public.py. It deliberately excludes every private write-path domain
-# (agent/chat/scheduler/trips), the private entrypoints (app/main.py,
-# app/mcp_app.py), the private knowledge routers/write internals, and the
+# (agent/chat/scheduler/trips), the private entrypoint (app/main.py),
+# the private knowledge routers/write internals, and the
 # private home/observability writer paths. Those modules are
 # PROVEN absent from app.main_public's runtime closure by
 # app/main_public_imports_test.py, so excluding their FILES cannot break the
@@ -1848,9 +1847,8 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "campsites/client.py",
     "campsites/weather.py",
     "campsites/gen_catalog.py",
-    # Private entrypoint + MCP app.
+    # Private entrypoint.
     "app/main.py",
-    "app/mcp_app.py",
     # Private module registry (imports chat/agent/...) and the
     # single-domain entrypoint: never part of the public composition.
     "app/modules_private.py",
@@ -1870,7 +1868,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "observability/merged_prs_writer.py",
     # Private home scheduling + observability writer paths.
     "home/schedule.py",
-    "home/schedule_router.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
     # Grimoire: only the public read path ships. The daily ingest/extract jobs
@@ -1888,7 +1885,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "faas/router.py",
     "faas/storage.py",
     "faas/workload.py",
-    "faas/functions/**/*.py",
 ]
 
 # ---------------------------------------------------------------------------
@@ -1941,7 +1937,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     # Private entrypoints and registries. The import test itself is excluded
     # explicitly as well as by the standard test patterns above.
     "app/main.py",
-    "app/mcp_app.py",
     "app/modules_private.py",
     "app/main_domain.py",
     "app/jobs_main.py",
@@ -1961,7 +1956,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     # the allowlist today, but keeping the individual paths documents the
     # boundary if a narrow home dependency is added later.
     "home/schedule.py",
-    "home/schedule_router.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
 ]
@@ -2486,20 +2480,6 @@ py_test(
         "@pip//icalendar",
         "@pip//pytest",
         "@pip//pytest_asyncio",
-        "@pip//tzdata",
-    ],
-)
-
-py_test(
-    name = "home_schedule_router_test",
-    srcs = ["home/schedule_router_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        ":pkg_framework",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
         "@pip//tzdata",
     ],
 )
@@ -8682,15 +8662,6 @@ bdd_test(
 bdd_test(
     name = "ember_synthetic_probe_grants_test",
     srcs = ["ember_synthetic_probe_grants_test.py"],
-)
-
-bdd_test(
-    name = "home_bdd_public_test",
-    srcs = [
-        "home/tests/__init__.py",
-        "home/tests/bdd_public_test.py",
-        "home/tests/conftest.py",
-    ],
 )
 
 bdd_test(

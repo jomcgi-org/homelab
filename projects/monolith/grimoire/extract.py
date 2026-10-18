@@ -452,10 +452,6 @@ BOOK_KIND: dict[str, str] = {
     # bestiary appendix is a minority of the book.
     "the-book-of-many-things": "setting-guide",
 }
-# The two book_kind values the structural adventure layer (grimoire.adventure)
-# operates over: single-adventure books and multi-adventure anthologies. Used
-# to scope which books get classified into adventures, not for extraction.
-ADVENTURE_BOOK_KINDS = frozenset({"adventure", "adventure-anthology"})
 # Prefix families for slug variants (edition suffixes / multi-volume sets), tried
 # only after an exact BOOK_KIND miss. Conservative: only well-known families.
 _BOOK_KIND_PREFIXES: tuple[tuple[str, str], ...] = (
