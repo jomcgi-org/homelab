@@ -8,8 +8,8 @@ github.com/antlr4-go/antlr/v4 v4.13.1 h1:SqQKkuVZ+zWkMMNkjy5FZe5mr5WURWnlpmOuzYW
 github.com/antlr4-go/antlr/v4 v4.13.1/go.mod h1:GKmUxMtwp6ZgGwZSva4eWPC5mS6vUAmOABFgjdkM7Nw=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 h1:0CwZNZbxp69SHPdPJAN/hZIm0C4OItdklCFmMRWYpio=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5/go.mod h1:wHh0iHkYZB8zMSxRWpUBQtwG5a7fFgvEO+odwuTv2gs=
-github.com/bazel-contrib/bazel-gazelle/v2 v2.0.0-beta.2 h1:hdoeFbstUJGqZAJ2e4GRKtWz453vSfbHag8/VfFLfS4=
-github.com/bazel-contrib/bazel-gazelle/v2 v2.0.0-beta.2/go.mod h1:B76PjnaM2KyUG8ypV/ePHHDmGbyUNZ2PCEdEQIJISQM=
+github.com/bazel-contrib/bazel-gazelle/v2 v2.0.0-2.0.20260723164240-1208622c21a6 h1:pyXSJtRHP6P2SIYEf8SWm5T6ptW1PbWr0mZdBYgJBt4=
+github.com/bazel-contrib/bazel-gazelle/v2 v2.0.0-2.0.20260723164240-1208622c21a6/go.mod h1:B76PjnaM2KyUG8ypV/ePHHDmGbyUNZ2PCEdEQIJISQM=
 github.com/bazelbuild/bazel-gazelle v0.52.2 h1:QtesXLd3vugaaZW7+spf6K1kUcnWACWmrEds/S9aeao=
 github.com/bazelbuild/bazel-gazelle v0.52.2/go.mod h1:AeYjUGaxXcMZ51CYHBT1YK3Qxb2yrJl77A8g7GF6d+g=
 github.com/bazelbuild/buildtools v0.0.0-20250930140053-2eb4fccefb52 h1:njQAmjTv/YHRm/0Lfv9DXHFZ4MdT2IA/RKHTnqZkgDw=
