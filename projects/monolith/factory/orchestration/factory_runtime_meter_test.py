@@ -397,11 +397,23 @@ def expired_recovery(database, monkeypatch):
 
 
 def test_expired_recovery_preserves_identity_policy_history_and_stays_paused(
-    database, expired_recovery
+    database, expired_recovery, monkeypatch
 ):
+    from factory.orchestration import factory_conductor as conductor, graph
     from factory.orchestration import factory_task_recovery as recovery
 
     args, _, now = expired_recovery
+    monkeypatch.setattr(graph, "get_engine", lambda: database)
+    with Session(database) as db, db.begin():
+        db.add(
+            FactoryAudit(
+                actor=conductor.ACTOR,
+                action="pause_task",
+                task_id="task",
+                created_at=now - timedelta(hours=3),
+                detail_json=json.dumps({"ok": True, "reason": "old conductor pause"}),
+            )
+        )
     proposal = recovery.preview(**args)
     assert proposal["planner_turn_ceiling"] == 2
     assert proposal["accounting"]["committed_cost_usd"] == 4
@@ -419,6 +431,7 @@ def test_expired_recovery_preserves_identity_policy_history_and_stays_paused(
     snapshot = controls.task_snapshot("task")
     assert snapshot["deadline_at"] == args["deadline_at"]
     assert snapshot["deadline_reason"] == "operator_recovery_deadline"
+    conductor.reconcile_task("task", snapshot["policy"], object())
     with Session(database) as db:
         row = db.get(FactoryReceipt, 838)
         task = db.get(SwarmTask, "task")
@@ -436,6 +449,15 @@ def test_expired_recovery_preserves_identity_policy_history_and_stays_paused(
             "conductor_gates": [{"scope": "draft only"}]
         }
         assert db.exec(select(FactoryStart)).one().cost_usd == 4
+        pauses = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "pause_task")
+            .order_by(FactoryAudit.id)
+        ).all()
+        assert [pause.actor for pause in pauses][-2:] == [conductor.ACTOR, "operator"]
+        assert (
+            json.loads(pauses[-1].detail_json)["recovery_request_key"] == "recover-once"
+        )
     with pytest.raises(ValueError, match="conflicting_task_recovery_request"):
         recovery.apply(**{**args, "direction": "different"}, **apply_args)
 
@@ -452,6 +474,7 @@ def test_expired_recovery_preserves_identity_policy_history_and_stays_paused(
         ("body", "task_recovery_preview_changed"),
         ("issue_body", "task_recovery_preview_changed"),
         ("control", "task_recovery_preview_changed"),
+        ("landing_deadline", "recovery_exceeds_landing_deadline"),
         ("owner", "recovery_work_owned_elsewhere"),
         ("capacity", "recovery_capacity_unavailable"),
     ],
@@ -490,6 +513,16 @@ def test_expired_recovery_rechecks_fresh_authority(
             issue["body"] = "changed"
         elif change == "control":
             db.get(FactoryControl, "factory").version += 1
+        elif change == "landing_deadline":
+            controls._audit(
+                db,
+                "factory",
+                "landing_recovery_requested",
+                task_id="task",
+                deadline_at=(
+                    datetime.now(timezone.utc) - timedelta(minutes=1)
+                ).isoformat(),
+            )
         else:
             db.add(
                 FactoryReceipt(
