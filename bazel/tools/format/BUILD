@@ -14,6 +14,14 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 # gazelle:exclude
 package(default_visibility = ["//:__subpackages__"])
 
+exports_files(
+    [
+        "update-python-requirements-if-needed.sh",
+        "update-python-requirements.sh",
+    ],
+    visibility = ["//bazel/tools/ci:__pkg__"],
+)
+
 # Hermetic tests for the migration-ordering guard (no git; base versions are
 # overridden via MIGRATION_BASE_VERSIONS inside the test).
 sh_test(
