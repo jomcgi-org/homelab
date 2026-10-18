@@ -13,8 +13,14 @@ fi
 # Resolve runfiles before changing into the checkout for writeback.
 message=$(realpath "$2")
 service=$(realpath "$3")
-test -f "$message"
-test -f "$service"
+# A runfile can be a dangling symlink when a remote-cache output was never
+# downloaded; realpath resolves it silently, so name the missing input.
+for generated in "$message" "$service"; do
+	if [ ! -f "$generated" ]; then
+		echo "$0: generated stub $generated is missing (an output that was not downloaded?)" >&2
+		exit 1
+	fi
+done
 
 if [ "$mode" = --check ]; then
 	diff -u "$4" "$message"
