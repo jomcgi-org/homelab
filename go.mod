@@ -2,6 +2,8 @@ module github.com/jomcgi/homelab
 
 go 1.26.0
 
+tool google.golang.org/grpc/cmd/protoc-gen-go-grpc
+
 require (
 	github.com/bazelbuild/bazel-gazelle v0.52.2
 	github.com/envoyproxy/go-control-plane v0.14.0
@@ -43,12 +45,13 @@ require (
 	github.com/go-openapi/swag/typeutils v0.26.0 // indirect
 	github.com/go-openapi/swag/yamlutils v0.26.0 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
-	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.5.1 // indirect
 	golang.org/x/time v0.15.0 // indirect
+	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.5.1 // indirect
 	k8s.io/streaming v0.36.1 // indirect
 )
 
 require (
+	github.com/bazel-contrib/bazel-gazelle/v2 v2.0.0-beta.2 // indirect
 	github.com/bazelbuild/buildtools v0.0.0-20250930140053-2eb4fccefb52 // indirect
 	github.com/docker/cli v29.6.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
@@ -62,6 +65,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	golang.org/x/tools/go/vcs v0.1.0-deprecated // indirect
+	gotest.tools/v3 v3.5.2 // indirect
 )
 
 require (
