@@ -23,7 +23,7 @@ app = build_app(
 )
 
 
-def _view(name: str = "j", *, has_handler: bool = True) -> SchedulerJobView:
+def _view(name: str = "j") -> SchedulerJobView:
     return SchedulerJobView(
         name=name,
         interval_secs=60,
@@ -31,7 +31,6 @@ def _view(name: str = "j", *, has_handler: bool = True) -> SchedulerJobView:
         next_run_at=datetime(2026, 4, 25, 14, 0, 0, tzinfo=timezone.utc),
         last_run_at=datetime(2026, 4, 25, 13, 59, 0, tzinfo=timezone.utc),
         last_status="ok",
-        has_handler=has_handler,
     )
 
 
@@ -60,6 +59,7 @@ class TestListJobs:
         # Lock columns must not leak onto the wire.
         assert "locked_by" not in body[0]
         assert "locked_at" not in body[0]
+        assert "has_handler" not in body[0]
 
     def test_returns_empty(self, client):
         with patch("scheduler.router.service.list_jobs", return_value=[]):
@@ -75,6 +75,7 @@ class TestGetJob:
         assert r.status_code == 200
         body = r.json()
         assert body["name"] == "j"
+        assert "has_handler" not in body
 
     def test_returns_404_for_missing(self, client):
         with patch("scheduler.router.service.get_job", return_value=None):

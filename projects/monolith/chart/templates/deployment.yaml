@@ -65,13 +65,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-pg-app
                   key: uri
-            # Jobs an Argo CronWorkflow now owns; on_startup_jobs omits their
-            # legacy registry metadata. There is no in-process dispatch loop.
-            # Membership is driven by `replaces` alone, NOT suspend: `replaces`
-            # means "Argo owns this job", while `suspend` only controls whether
-            # the CronWorkflow auto-runs on its schedule. That lets an entry be
-            # manual-only (replaces + suspend:true): in-process off, no auto-run,
-            # still submittable by hand.
+            # `replaces` supplies accepted run-now names and the annotation
+            # used to find each CronWorkflow. Include suspended entries:
+            # suspend controls the recurring schedule; manual submission
+            # remains available without a legacy scheduled_jobs row.
             - name: ARGO_JOBS
               value: "{{- range .Values.jobs.cronWorkflows }}{{- if .replaces }}{{ .replaces }},{{- end }}{{- end }}"
             - name: SCHEDULER_WORKFLOW_NAMESPACE

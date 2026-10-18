@@ -9,7 +9,6 @@ instead of being accepted as harmless allowlist cleanup.
 
 from __future__ import annotations
 
-import ast
 import os
 import subprocess
 import tempfile
@@ -21,18 +20,6 @@ import yaml
 
 NATIVE_POLICY_SUFFIX = "-app-egress-native"
 DNS_PORTS = (("53", "TCP"), ("53", "UDP"))
-SCHEDULER_REGISTRATION_SOURCES = (
-    "campsites/__init__.py",
-    "chat/summarizer.py",
-    "dr_jobs/__init__.py",
-    "grimoire/__init__.py",
-    "hikes/__init__.py",
-    "home/__init__.py",
-    "home/observability/rollup.py",
-    "ships/__init__.py",
-    "stars/__init__.py",
-    "worldcup/__init__.py",
-)
 
 
 def _chart_dir() -> Path:
@@ -134,43 +121,6 @@ def _native_endpoint_rules(policy: dict) -> set[tuple]:
             labels = destination["podSelector"]["matchLabels"]
             rules.add((namespace, tuple(sorted(labels.items())), ports))
     return rules
-
-
-def _registered_job_names() -> set[str]:
-    names: set[str] = set()
-    source_root = _chart_dir().parent
-    for relative_path in SCHEDULER_REGISTRATION_SOURCES:
-        source_path = source_root / relative_path
-        tree = ast.parse(source_path.read_text())
-        register_aliases = {
-            alias.asname or alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module == "scheduler.api"
-            for alias in node.names
-            if alias.name == "register_job"
-        }
-        if not register_aliases:
-            continue
-        for node in ast.walk(tree):
-            if (
-                not isinstance(node, ast.Call)
-                or not isinstance(node.func, ast.Name)
-                or node.func.id not in register_aliases
-            ):
-                continue
-            name = next(
-                (
-                    keyword.value.value
-                    for keyword in node.keywords
-                    if keyword.arg == "name"
-                    and isinstance(keyword.value, ast.Constant)
-                    and isinstance(keyword.value.value, str)
-                ),
-                None,
-            )
-            if name:
-                names.add(name)
-    return names
 
 
 def _native_enabled() -> dict:
@@ -372,26 +322,9 @@ def test_dev_overlay_retargets_only_its_embervm_dependencies():
     )
 
 
-def test_in_pod_scheduler_extract_destination_inventory():
-    """Pin the external half of the register_job minus replaces audit.
-
-    The source inventory leaves only grimoire.load_chunks and
-    grimoire.extract_entities in the app pod. The loader uses internal S3 and
-    embeddings. Extraction dials the deploy-configured URL, so a provider
-    change must retain the public HTTPS transport the native policy allows.
-    """
-    chart_values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+def test_extract_destination_uses_public_https():
+    """Keep the configured extraction provider on public HTTPS."""
     deploy_values = yaml.safe_load(_deploy_values().read_text())
-    replacements = {
-        job.get("replaces")
-        for job in chart_values["jobs"]["cronWorkflows"]
-        if job.get("replaces")
-    }
-    assert _registered_job_names() - replacements == {
-        "grimoire.load_chunks",
-        "grimoire.extract_entities",
-    }
-
     extract_host = urlsplit(deploy_values["grimoire"]["extractBaseUrl"]).hostname
     assert extract_host == "api.deepseek.com"
     assert urlsplit(deploy_values["grimoire"]["extractBaseUrl"]).scheme == "https"

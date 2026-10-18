@@ -3,14 +3,14 @@
 Scoped guidance for `projects/monolith`, for any agent. The repo-root `AGENTS.md` still applies.
 See `README.md` in this directory for the domain map and public/private tier boundary.
 
-## Scheduled job registrations are metadata only
+## Scheduled execution uses Argo
 
-Handlers registered with `scheduler.api.register_job` have the signature
-`async def handler(session: Session) -> datetime | None`, but the in-process
-dispatcher was deleted. Registration now populates only legacy scheduler rows
-and handler metadata for views and orphan checks. Scheduled execution comes from
-Argo CronWorkflows invoking `app/jobs_main.py`; `replaces` adds a name to
-`ARGO_JOBS` and suppresses that metadata even when the CronWorkflow is suspended.
+Argo CronWorkflows invoke handlers through `app/jobs_main.py`. There is no
+in-process scheduler registry or registration startup hook. The retained
+`scheduler.scheduled_jobs` rows back list/get and accepted run-now names.
+`replaces` adds a name to `ARGO_JOBS` and the annotation used to find its
+CronWorkflow for manual submission, including suspended/manual-only entries.
+Table retirement or CronWorkflow-native listing needs separately scoped work.
 
 Async batch handlers must still keep synchronous SQLModel work off their event
 loop: no direct Session methods inside `async def`, and never move an existing
@@ -40,8 +40,7 @@ The established pattern (see `hikes/jobs.py`, `ships/retention.py`):
    rows and `session.add_all(...)` once, or mutate `session.get`-tracked rows
    and let them flush on `commit`.
 6. Put memory requests, limits, deadlines, and concurrency policy on the Argo
-   CronWorkflow. `register_job(..., heavy=True)` is legacy metadata and does not
-   serialize execution.
+   CronWorkflow.
 
 ## Test-writing traps
 

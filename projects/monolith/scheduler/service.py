@@ -10,7 +10,7 @@ from kubernetes_asyncio.client.exceptions import ApiException
 from sqlmodel import Session, select
 
 from cluster.api import KubernetesClient
-from scheduler.api import ScheduledJob, argo_handled, is_registered
+from scheduler.api import ScheduledJob, argo_handled
 from scheduler.views import SchedulerJobView
 
 _REPLACES_ANNOTATION = "monolith.jomcgi.dev/replaces"
@@ -36,7 +36,6 @@ def _to_view(job: ScheduledJob) -> SchedulerJobView:
         next_run_at=job.next_run_at,
         last_run_at=job.last_run_at,
         last_status=job.last_status,
-        has_handler=is_registered(job.name),
     )
 
 
@@ -55,11 +54,9 @@ async def run_now(session: Session, name: str) -> RunNowResult:
 
     ``name`` is accepted when a legacy ``scheduler.scheduled_jobs`` row exists
     or when ``ARGO_JOBS`` lists it (``scheduler.api.argo_handled``). The second
-    case is what makes a manual-only CronWorkflow (``replaces`` plus
-    ``suspend: true``) submittable by hand: ``register_job`` never writes a row
-    for an argo-handled name, so without it such a job would 404 here. Names
-    that are neither return 404; a name with no replacing CronWorkflow returns
-    409.
+    case accepts manual-only CronWorkflows (``replaces`` plus ``suspend: true``)
+    without requiring a legacy row. Names in neither set return 404; an accepted
+    name with no replacing CronWorkflow returns 409.
     """
     job = session.get(ScheduledJob, name)
     if job is None and not argo_handled(name):

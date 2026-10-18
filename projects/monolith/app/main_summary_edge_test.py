@@ -1,15 +1,12 @@
 """Edge-case tests for lifespan shutdown in app.main.
 
-With the scheduler rewrite, summary generation is now handled by the shared scheduler
-via chat.summarizer.on_startup. The staleness-check and exception-handling tests for
-the summary loop have been removed (those are now tested at the scheduler/summarizer
-level). This file retains the backfill_task shutdown tests.
+Summary generation runs in Argo jobs. These tests cover backfill_task shutdown.
 """
 
 from __future__ import annotations
 
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -39,9 +36,6 @@ def _lifespan_patches_no_discord():
     return [
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("home.on_startup_jobs"),
-        patch("ships.on_startup_jobs"),
-        patch("hikes.on_startup_jobs"),
     ]
 
 

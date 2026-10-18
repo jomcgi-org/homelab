@@ -20,12 +20,8 @@ from sqlmodel import Session, text
 
 from core.db import get_engine
 from home.observability.stats import build_stats
-from scheduler.api import register_job
 
 logger = logging.getLogger(__name__)
-
-# Stats is cheap and changes often (pod and knowledge counts), so refresh it frequently.
-STATS_ROLLUP_INTERVAL_SECS = 120
 
 
 def _write_stats_snapshot(payload: dict) -> None:
@@ -51,19 +47,9 @@ async def stats_rollup() -> None:
     logger.info("Stats snapshot refreshed")
 
 
-def register(session: Session) -> None:
-    """Register the rollup job. Called from home.on_startup_jobs."""
-    register_job(
-        session,
-        name="observability.stats_rollup",
-        interval_secs=STATS_ROLLUP_INTERVAL_SECS,
-        handler=lambda _: stats_rollup(),
-    )
-
-
 async def prime_snapshots() -> None:
     """Best-effort initial snapshot at startup so the first request has data."""
     try:
         await stats_rollup()
     except Exception:
-        logger.exception("Initial stats snapshot failed; scheduler will retry")
+        logger.exception("Initial stats snapshot failed; Argo rollup will retry")

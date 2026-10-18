@@ -14,9 +14,8 @@ The handlers wrap the async orchestrators in ``ingest.py``, ``extract.py``, and
 ``app/jobs_main.py`` exposes all three through the shared ``_run_job`` helper.
 The loader and extractor run off-pod as Argo CronWorkflows; verification is an
 explicit CLI pass so an operator chooses the verifier version and bounded run.
-Each handler is an ``async def`` keeping the scheduler Handler contract
-(``scheduler.api.Handler``: receives a Session, returns an optional next-run
-override), so ``_run_job`` opens a Session and awaits it directly. This module
+Each handler is an ``async def`` receiving a Session; ``_run_job`` opens that
+Session and awaits the handler directly. This module
 is excluded from the public binary (Grimoire is private-tier only).
 """
 

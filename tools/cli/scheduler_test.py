@@ -32,7 +32,6 @@ JOB_A = {
     "next_run_at": "2026-04-25T14:18:00+00:00",
     "last_run_at": "2026-04-25T14:08:00+00:00",
     "last_status": "ok",
-    "has_handler": True,
 }
 
 JOB_B = {
@@ -42,7 +41,6 @@ JOB_B = {
     "next_run_at": "2026-04-25T14:32:00+00:00",
     "last_run_at": None,
     "last_status": None,
-    "has_handler": True,
 }
 
 
@@ -66,7 +64,7 @@ class TestListJobs:
             result = runner.invoke(app, ["scheduler", "jobs", "list"])
 
         assert result.exit_code == 0
-        assert "No jobs registered." in result.output
+        assert "No scheduled job rows." in result.output
 
     def test_json_output(self, runner):
         resp = _mock_response([JOB_A])
@@ -135,11 +133,11 @@ class TestRunNow:
 
 
 class TestSchedulerLineFormatter:
-    def test_orphan_marker_when_handler_missing(self, runner):
-        orphan = {**JOB_A, "has_handler": False}
-        resp = _mock_response([orphan])
+    def test_retained_row_needs_no_registry_metadata(self, runner):
+        resp = _mock_response([JOB_A])
         with patch("tools.cli.scheduler_cmd._request", return_value=resp):
             result = runner.invoke(app, ["scheduler", "jobs", "list"])
 
         assert result.exit_code == 0
-        assert "[orphan]" in result.output
+        assert "knowledge.gardener" in result.output
+        assert "[orphan]" not in result.output

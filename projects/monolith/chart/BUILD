@@ -406,7 +406,6 @@ py_test(
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",
-        "//projects/monolith:scheduler_registration_sources",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
         "//projects/monolith/dev/deploy:deploy_values",

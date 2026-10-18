@@ -57,7 +57,6 @@ def _print_job(job: dict) -> None:
             next_run_at=job["next_run_at"],
             last_run_at=job.get("last_run_at"),
             last_status=job.get("last_status"),
-            has_handler=job.get("has_handler", True),
         )
     )
 
@@ -66,7 +65,7 @@ def _print_job(job: dict) -> None:
 def list_jobs(
     json_output: bool = typer.Option(False, "--json", help="Raw JSON output"),
 ) -> None:
-    """List every scheduled job."""
+    """List retained scheduled-job rows."""
     resp = _request("get", "/api/scheduler/jobs")
     resp.raise_for_status()
     data = resp.json()
@@ -76,7 +75,7 @@ def list_jobs(
         return
 
     if not data:
-        typer.echo("No jobs registered.")
+        typer.echo("No scheduled job rows.")
         return
 
     for job in data:

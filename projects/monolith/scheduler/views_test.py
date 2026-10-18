@@ -14,11 +14,11 @@ def test_excludes_lock_columns():
         next_run_at=datetime.now(timezone.utc),
         last_run_at=None,
         last_status=None,
-        has_handler=True,
     )
     dumped = view.model_dump()
     assert "locked_by" not in dumped
     assert "locked_at" not in dumped
+    assert "has_handler" not in dumped
 
 
 def test_optional_fields_default_to_none():
@@ -28,7 +28,6 @@ def test_optional_fields_default_to_none():
         interval_secs=60,
         ttl_secs=300,
         next_run_at=datetime.now(timezone.utc),
-        has_handler=False,
     )
     assert view.last_run_at is None
     assert view.last_status is None
@@ -44,7 +43,6 @@ def test_round_trip_through_dict():
         next_run_at=now,
         last_run_at=now,
         last_status="ok",
-        has_handler=True,
     )
     rebuilt = SchedulerJobView.model_validate(original.model_dump())
     assert rebuilt == original

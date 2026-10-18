@@ -9,7 +9,7 @@ underscores; FastMCP's wire identifiers use the dashed form
 
   Locks    : acquire_lock, extend_lock, release_lock, list_locks
   Notify   : notify
-  Check    : check_stuck_jobs, check_orphan_jobs, check_dead_letters
+  Check    : check_stuck_jobs, check_dead_letters
   Trigger  : trigger_job  (Argo CronWorkflow one-off submission)
   Routine  : list_routine_jobs, claim_routine_job, complete_routine_job,
              register_routine_job, deregister_routine_job,
@@ -144,13 +144,6 @@ async def monolith_agent_notify(
 async def monolith_agent_check_stuck_jobs(threshold_mins: int = 10) -> dict:
     """Scheduler rows whose lock has held longer than ``threshold_mins`` minutes."""
     rows = checks.check_stuck_jobs(threshold_mins)
-    return {"jobs": [_serialize_scheduled_job(r) for r in rows]}
-
-
-@mcp.tool
-async def monolith_agent_check_orphan_jobs() -> dict:
-    """Scheduler rows whose ``name`` has no registered handler in-process."""
-    rows = checks.check_orphan_jobs()
     return {"jobs": [_serialize_scheduled_job(r) for r in rows]}
 
 

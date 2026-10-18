@@ -52,12 +52,8 @@ def _lifespan_patches_with_discord(mock_bot):
     return [
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("home.on_startup_jobs"),
-        patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
-        patch("ships.on_startup_jobs"),
-        patch("hikes.on_startup_jobs"),
     ]
 
 
@@ -69,9 +65,6 @@ def _lifespan_patches_no_discord():
     return [
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("home.on_startup_jobs"),
-        patch("ships.on_startup_jobs"),
-        patch("hikes.on_startup_jobs"),
     ]
 
 

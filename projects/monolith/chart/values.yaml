@@ -253,8 +253,8 @@ agents:
 # concurrency, timeout, and history. The monolith does NOT manage these at
 # runtime - ArgoCD syncs the CRs like any other manifest.
 #
-# Cutover is per-job via `replaces`: naming the old scheduler job adds it to the
-# deployment's ARGO_JOBS env, so on_startup_jobs omits legacy registry metadata.
+# `replaces` adds an accepted run-now name to the deployment's ARGO_JOBS env
+# and the annotation used to locate its CronWorkflow for manual submission.
 # `suspend` controls only the recurring Argo schedule. A replacing, suspended
 # CronWorkflow remains available for manual one-off submission through run-now.
 #

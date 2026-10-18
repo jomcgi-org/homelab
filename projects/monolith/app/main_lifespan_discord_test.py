@@ -52,7 +52,6 @@ def _singleton_patches_with_discord(mock_bot):
     return [
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
     ]
@@ -160,14 +159,6 @@ async def test_lifespan_starts_elector_and_shuts_down_tracer():
         patch("home.observability.rollup.prime_snapshots", new_callable=AsyncMock),
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("home.on_startup_jobs"),
-        patch("ships.on_startup_jobs"),
-        patch("hikes.on_startup_jobs"),
-        patch("stars.on_startup_jobs"),
-        patch("dr_jobs.on_startup_jobs"),
-        patch("worldcup.on_startup_jobs"),
-        patch("knowledge.on_startup_jobs"),
-        patch("home.observability.rollup.register"),
     ):
         async with lifespan(app):
             mock_tracer_provider.shutdown.assert_not_called()
