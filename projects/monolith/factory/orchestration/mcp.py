@@ -1104,9 +1104,10 @@ async def factory_review_recovery(
 
     Requires an independently configured restricted reviewer. Supply the exact
     draft PR head, a timezone-aware future deadline, and the cumulative dollar
-    and work-turn ceilings INCLUDING old attempts. No default budget, lease,
+    and work-turn figures INCLUDING old attempts. No default budget, lease,
     funding review, DAG resume, source changes or landing permission is implied.
-    These ceilings cannot increase existing authority. Reuse request_key after
+    The turn limit cannot increase existing authority; the dollar figure is
+    recorded for accounting and never refuses the review. Reuse request_key after
     a lost response. A new key authorizes another paid review. An unresolved
     attempt refuses retries. The receipt stays escalated and a durable landing
     hold remains after success, awaiting a separate landing decision.

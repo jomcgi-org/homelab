@@ -57,7 +57,9 @@ SCHEMA = {
         "action": {"enum": ["continue", "steer", "stop", ESCALATE]},
         "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
         "next_plan": {"type": "string", "minLength": 1, "maxLength": 4000},
-        "task_budget_usd": {"type": "number", "minimum": 0, "maximum": 200},
+        # Accounting only (#7161): no maximum, so a figure past an old
+        # ceiling is recorded rather than refusing the review.
+        "task_budget_usd": {"type": "number", "minimum": 0},
         "additional_work_turns": {"type": "integer", "minimum": 0, "maximum": 20},
         "lease_minutes": {"type": "integer", "minimum": 0, "maximum": 30},
         "assessment": factory_judge.ASSESSMENT_SCHEMA,
@@ -476,10 +478,10 @@ def request(task, reason, *, recover=False):
                 "Return assessment with one line each for progress, proximity "
                 "and value, and any doubts. Use action escalate, with zeroes, "
                 "to hand the decision to the operator. Policy caps any continue "
-                f"or steer at task_budget_usd {merit['ceiling']['ceiling_usd']:g} "
-                f"and {merit['ceiling']['turn_ceiling']} total work turns: a "
-                "higher figure is reduced to that cap, and a dollar figure "
-                "below a recorded deficit is raised to it. Merit evidence "
+                f"or steer at {merit['ceiling']['turn_ceiling']} total work "
+                "turns: a higher figure is reduced to that cap. task_budget_usd "
+                "is recorded, never capped, and a dollar figure below a "
+                "recorded deficit is raised to it. Merit evidence "
                 "(server-read, untrusted):\n"
                 + json.dumps(merit["evidence"], default=str)
             )

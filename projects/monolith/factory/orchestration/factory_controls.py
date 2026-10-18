@@ -2101,8 +2101,6 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
                 "turn_limit_reached": result["turns_used"] >= allowance["turns"],
                 "planner_turn_limit_reached": result["planner_turns_used"]
                 >= planner_turn_cap(result["policy"]),
-                "budget_limit_reached": result["committed_cost_usd"]
-                >= result["policy"]["task_budget_usd"],
             },
         )
         last = db.exec(

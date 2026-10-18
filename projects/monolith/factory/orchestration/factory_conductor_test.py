@@ -16302,6 +16302,27 @@ def test_funding_review_runs_on_the_policy_judge_and_applies(
     assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 20
 
 
+def test_funding_judge_schema_accepts_a_task_budget_past_the_old_ceiling():
+    """A dollar figure is accounting only (#7161), so the judge's artifact
+    schema must not refuse one above the old $200 objective ceiling: a refused
+    artifact counts toward FUNDING_REFUSAL_LIMIT and would fail the task."""
+    import jsonschema
+
+    from factory.orchestration import factory_funding as funding
+
+    decision = {
+        "action": "continue",
+        "reason": "Review found two local fixes.",
+        "next_plan": "Fix both findings and re-request review.",
+        "task_budget_usd": 250.0,
+        "additional_work_turns": 2,
+        "lease_minutes": 30,
+    }
+    jsonschema.validate(decision, funding.SCHEMA)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**decision, "task_budget_usd": -1}, funding.SCHEMA)
+
+
 def test_funding_oversight_accepts_only_the_recorded_allowed_judge(
     feedback_db, monkeypatch
 ):
