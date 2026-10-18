@@ -2,10 +2,13 @@
 # Generate the Application's template test. The hand-written admissibility
 # targets below own both manifest outputs and their values-file contracts.
 
-load("//bazel/helm:defs.bzl", "helm_admissibility_render")
+load("//bazel/helm:defs.bzl", "argocd_app", "helm_admissibility_render")
 
 exports_files(
-    ["BUILD", "application.yaml"],
+    [
+        "BUILD",
+        "application.yaml",
+    ],
     visibility = ["//bazel/helm/gazelle:__pkg__"],
 )
 
@@ -54,4 +57,21 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+argocd_app(
+    name = "context-forge-gateway",
+    chart = "projects/mcp/context-forge-gateway/chart",
+    chart_files = "//projects/mcp/context-forge-gateway/chart:chart",
+    generate_manifests = False,
+    namespace = "mcp",
+    release_name = "context-forge-gateway",
+    tags = [
+        "helm",
+        "template",
+    ],
+    values_files = [
+        "//projects/mcp/context-forge-gateway/chart:values.yaml",
+        "values.yaml",
+    ],
 )

@@ -11,10 +11,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 helm_chart(
     name = "chart",
     lint = False,
-    visibility = [
-        "//overlays:__subpackages__",
-        "//projects/mcp/context-forge-gateway:__subpackages__",
-    ],
+    visibility = ["//visibility:public"],
 )
 
 # The deploy package renders both the home and GKE compositions. The GKE

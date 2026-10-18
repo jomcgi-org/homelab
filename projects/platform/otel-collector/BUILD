@@ -9,7 +9,7 @@ exports_files(["files/backup_check.py"])
 helm_chart(
     name = "chart",
     lint = False,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = ["//visibility:public"],
 )
 
 # The prod opt-in list, exposed to the monolith's chart tests. The allowlist and

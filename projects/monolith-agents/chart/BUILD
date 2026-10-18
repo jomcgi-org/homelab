@@ -9,8 +9,8 @@ helm_chart(
     lint = False,
     publish = True,
     visibility = [
-        "//overlays:__subpackages__",
         "//projects/monolith-agents:__subpackages__",  # keep
+        "//visibility:public",
     ],
 )
 

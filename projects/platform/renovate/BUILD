@@ -3,7 +3,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
     name = "chart",
-    visibility = ["//overlays:__subpackages__"],
+    visibility = ["//visibility:public"],
 )
 
 argocd_app(

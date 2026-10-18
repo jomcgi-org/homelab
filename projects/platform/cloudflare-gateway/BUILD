@@ -20,7 +20,7 @@ filegroup(
 helm_chart(
     name = "chart",
     lint = False,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = ["//visibility:public"],
 )
 
 argocd_app(
