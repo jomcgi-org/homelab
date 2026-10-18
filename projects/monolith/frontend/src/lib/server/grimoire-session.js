@@ -35,7 +35,13 @@ export async function sessionState(
   );
   const events = [];
   let journal = null;
+  let initiative = null;
   if (session) {
+    initiative = await grimoireJson(
+      fetch,
+      cookies,
+      `${base}/sessions/${session.id}/initiative`,
+    );
     let after = 0;
     for (;;) {
       const batch = await grimoireJson(
@@ -71,6 +77,7 @@ export async function sessionState(
     events,
     journal,
     voices,
+    initiative,
     user: lobby.user,
     ...(selectedSessionId ? { selectedSessionId } : {}),
     ...dmData,
