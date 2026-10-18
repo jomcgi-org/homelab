@@ -58,19 +58,19 @@ type ViewWindow struct {
 // Pacing is read-time advice for the longest reported budget. It does not
 // participate in exhaustion, admission, grant selection or token refresh.
 type Pacing struct {
-	State                   string   `json:"state"`
-	EvaluatedAt             string   `json:"evaluated_at"`
-	BudgetWindowMinutes     *int     `json:"budget_window_minutes,omitempty"`
-	BudgetUsedPercent       *float64 `json:"budget_used_percent,omitempty"`
-	BudgetRemainingPercent  *float64 `json:"budget_remaining_percent,omitempty"`
-	BudgetResetsAt          string   `json:"budget_resets_at,omitempty"`
-	BudgetRemainingSeconds  *float64 `json:"budget_remaining_seconds,omitempty"`
-	TargetUsedPercent       *float64 `json:"target_used_percent,omitempty"`
-	PaceDeltaPercent        *float64 `json:"pace_delta_percent,omitempty"`
-	BudgetPerDayPercent     *float64 `json:"budget_per_day_percent,omitempty"`
-	BlockedUntil            string   `json:"blocked_until,omitempty"`
-	ShortWindowMinutes      *int     `json:"short_window_minutes,omitempty"`
-	ShortResetsAt           string   `json:"short_resets_at,omitempty"`
+	State                  string   `json:"state"`
+	EvaluatedAt            string   `json:"evaluated_at"`
+	BudgetWindowMinutes    *int     `json:"budget_window_minutes,omitempty"`
+	BudgetUsedPercent      *float64 `json:"budget_used_percent,omitempty"`
+	BudgetRemainingPercent *float64 `json:"budget_remaining_percent,omitempty"`
+	BudgetResetsAt         string   `json:"budget_resets_at,omitempty"`
+	BudgetRemainingSeconds *float64 `json:"budget_remaining_seconds,omitempty"`
+	TargetUsedPercent      *float64 `json:"target_used_percent,omitempty"`
+	PaceDeltaPercent       *float64 `json:"pace_delta_percent,omitempty"`
+	BudgetPerDayPercent    *float64 `json:"budget_per_day_percent,omitempty"`
+	BlockedUntil           string   `json:"blocked_until,omitempty"`
+	ShortWindowMinutes     *int     `json:"short_window_minutes,omitempty"`
+	ShortResetsAt          string   `json:"short_resets_at,omitempty"`
 }
 
 // View is the latest observation plus state derived when it is read.
