@@ -50,13 +50,14 @@ loudly in CI or a git hook. Gotchas marked "Gated" are caught by
 ## How to work
 
 - A task that modifies tracked files runs in a dedicated worktree on a new
-  branch and ends as a pushed PR: ready when validation passes, draft when it
-  does not or a question is open. Report the PR URL and state. If you cannot
-  open the PR, stop and report the blocker.
-- Reach for the simplest approach that holds. On a genuine design fork, put
-  two or three options in front of Joe ranked by complexity with a
-  recommendation, then wait. Skip that for config fixes, renames, and anything
-  already scoped.
+  branch and becomes a pushed PR: ready when validation passes, draft when it
+  does not or a question is open. Follow eligible work through merge under
+  "Merge authority" below. Report the PR URL and state. If you cannot open
+  the PR, stop and report the blocker.
+- Reach for the simplest approach that holds within the established goals and
+  policies. Resolve design choices those already answer. For a genuine fork
+  they do not settle, put two or three options in front of Joe ranked by
+  complexity with a recommendation, then wait.
 - Verify completion claims (`git show --stat`, re-read the file) before
   building on or reporting another agent's work.
 - A change that must deploy is done only when the rollout is verified live.
@@ -75,6 +76,38 @@ loudly in CI or a git hook. Gotchas marked "Gated" are caught by
   report blockers to their dispatcher instead.
 
 ## Git and PRs
+
+### Merge authority
+
+Changes covered by an established goal, accepted issue/spec, explicit user
+request or standing maintenance policy may be implemented, reviewed and merged
+autonomously when they comply with the applicable policies. Human review or a
+fresh "please merge" instruction is not a routine prerequisite, including for
+features, documentation and policy-aligned security fixes. State the goal or
+policy and the evidence of alignment in the PR body.
+
+Before enqueueing, validate the current PR head, complete the applicable
+independent agent review (`docs/agents/review.md`), address blocking findings,
+and satisfy required checks. Follow the merge queue to completion and verify
+any required rollout. Do not stop at "ready for review" when these conditions
+are met. An informational review request or CODEOWNERS notification alone is
+not a human-approval requirement.
+
+Escalate only a concrete unresolved decision: conflicting or insufficient goals
+or policies, a proposed exception to a constraint or budget, an unapproved
+destructive action, or an explicit human-owned task or approval hold. Name the
+decision and the rule requiring it. Existing approval covers the same action
+and scope; do not ask again. Fix validation failures within scope and authority;
+escalate if doing so needs such a decision. Missing evidence is not approval.
+
+This is the merge policy for the procedures below and in `docs/agents/` and
+`docs/runbooks/`. Preserve branch protection, required CI, independent review,
+GitOps, factory admission and ownership controls, and narrower worker/reviewer
+allowlists. A constrained lane hands work to an authorized dispatcher for the
+applicable review and landing; it does not expand its own permissions. Never
+bypass a gate or clear an explicit hold just to merge.
+
+### Queue and delivery
 
 - Merge through the GitHub merge queue with `gh pr merge <n> --auto`. Pass no
   strategy flag: the queue sets it (rebase only) and refuses `--rebase`. A

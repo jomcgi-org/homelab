@@ -15,7 +15,7 @@ taxonomy, and drafts PRs editing the responsible lever (the ambient prompt, the
 agent-reply voice prompt, or the attention gate) or staging a channel directive,
 each with evidence tied to specific episodes.
 
-This runbook owns the human-reviewed code levers; the directive
+This runbook owns the independently reviewed code levers; the directive
 autopilot (`chat/autopilot_job.py`, ADR chat/001) owns the autonomous,
 self-validating directive levers in the background. Current state:
 `projects/monolith/ARCHITECTURE.md`, section 5.
@@ -171,8 +171,10 @@ even when suppressed, so scope rate claims to the current-generation window.
 
 ## 7. Write scope
 
-PRs may edit `agent.py` / `summarizer.py` / `attention.py` (Joe reviews every
-PR) and stage `channel_directive` proposals via `propose_update()`. Per-person
+PRs may edit `agent.py` / `summarizer.py` / `attention.py` and stage
+`channel_directive` proposals via `propose_update()`. Follow `AGENTS.md`
+"Merge authority": independent review and required CI permit aligned changes
+to land; unresolved behaviour or policy decisions go to Joe. Per-person
 friction is FLAGGED for the autopilot, never set directly (there is no per-user
 proposal flow). Every diff hunk cites at least one `episode_id`; an edit that
 cannot cite a specific episode is dropped. Sanity-check every edited Python file

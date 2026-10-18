@@ -5,6 +5,11 @@ In a Claude cloud session GraphQL is blocked and `gh` may be absent, so
 fail. Use GitHub REST with `curl`; the session proxy supplies auth, and every
 write needs `-H "Content-Type: application/json"`.
 
+`AGENTS.md` "Merge authority" applies here too. A cloud session follows
+eligible, reviewed work through the queue without waiting for routine human
+approval. Use the routes below or the connected GitHub tools; if neither can
+enqueue, report the transport blocker and PR state.
+
 - **Open a draft PR:** `POST /repos/{owner}/{repo}/pulls` with
   `{"title","body","head","base":"main","draft":true}`.
 - **State, mergeability, head:** `GET /repos/{owner}/{repo}/pulls/{n}`, fields

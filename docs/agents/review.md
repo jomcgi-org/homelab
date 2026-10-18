@@ -8,6 +8,12 @@ You report what is wrong; you do not edit. A review that quietly fixes things is
 a review nobody can audit, and the dispatcher needs your findings separately
 from any change made in response to them.
 
+An independent agent review satisfies the review step for autonomous delivery
+under `AGENTS.md` "Merge authority". Check the stated goal/spec or policy as
+well as the diff. Identify any unresolved decision or explicit human hold;
+do not invent a human sign-off requirement for otherwise eligible work. The
+dispatcher owns landing after the findings and required checks are satisfied.
+
 ## Scope
 
 One comprehensive pass over the **whole** PR diff. You are not reviewing a

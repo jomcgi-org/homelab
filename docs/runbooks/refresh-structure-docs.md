@@ -20,8 +20,10 @@ two-part scheme:
   name, a renamed subsystem, a count that has drifted, a new *major* project
   worth promoting into the layout tree, a description that no longer fits.
 
-Land every change as a PR against `main`. **Never auto-merge** (unlike the STPA
-routine): README prose is a human-voice artifact and Joe reviews it.
+Land factual structure corrections as PRs against `main` under `AGENTS.md`
+"Merge authority", with independent review and required CI. Preserve Joe's
+voice; a new positioning or voice decision outside the existing brief needs
+his input.
 
 ## Method
 
@@ -66,7 +68,9 @@ routine): README prose is a human-voice artifact and Joe reviews it.
      --title "docs: refresh README structure to match repo" \
      --body "Weekly structure-docs refresh. What changed and why:\n<one line per edit>"
    ```
-   Use rebase merge only, and only after Joe reviews. Do not enable auto-merge.
+   After independent review and required CI, enqueue with
+   `gh pr merge <n> --auto` and follow through to merged. The queue sets the
+   merge strategy; pass no strategy flag.
 
 ## Scope guardrails
 
@@ -76,5 +80,5 @@ routine): README prose is a human-voice artifact and Joe reviews it.
   coverage check is the author's job in their own PR (or a one-line
   `COVERAGE_ALLOWLIST` entry); do not paper over a genuinely undocumented new
   project just to green the check, surface it.
-- **One PR per run, small diff, no auto-merge.**
+- **One PR per run, small diff, independently reviewed.**
 

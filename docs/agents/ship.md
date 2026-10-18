@@ -81,13 +81,14 @@ Closing the issue is how "shipped" is recorded.
 - [ ] 4-implement pr= <!-- must include Closes #<this issue> -->
 - [ ] 5-stpa pr= systems= <!-- or n/a: reason -->
 
-## Phase 4 gates (all must be checked before "ready for review")
+## Phase 4 gates (all must be checked before enqueueing)
 
-- [ ] `ci` green on the worktree
+- [ ] `ci` green on the worktree, or PR CI green when `ci` is unavailable
 - [ ] PR body contains `Closes #<this issue>` (or the parent, if a sub-issue)
 - [ ] No chart version in the diff (`Chart.yaml` `version:` / `targetRevision:` are written post-merge)
 - [ ] Review (`docs/agents/review.md`) run on the full diff; findings acted on or answered
-- [ ] Human review requested
+- [ ] Goal/spec or policy alignment recorded; no unresolved decision or explicit human hold
+- [ ] Required checks and independent review apply to the current PR head
 
 ## Notes / blockers
 ```
@@ -122,8 +123,10 @@ work, so it goes to an implementing agent.
 2. Run `ci` and commit with Conventional Commits.
 3. Dispatch a review (`docs/agents/review.md`) **once**, on the full diff, at
    the end. Not per task.
-4. Check every Phase 4 gate before calling the PR ready.
-5. Human review only, no auto-merge. Report the PR URL and stop.
+4. Check every Phase 4 gate before enqueueing the PR.
+5. Follow `AGENTS.md` "Merge authority": enqueue eligible work, follow it
+   through merge, and verify any required rollout. Report the PR URL and state.
+   Ask Joe only for an unresolved decision or explicit approval hold.
 
 ## Phase 5: STPA
 
@@ -133,14 +136,17 @@ on the issue.
 
 ## Merge cadence
 
-Phases 2, 3 and 5 can enqueue with `gh pr merge --auto`, followed through to
-merged. Phase 4 is human review only.
+Every phase, including Phase 4, can enqueue with `gh pr merge <n> --auto` once
+its applicable gates pass. Follow it through to merged. Existing goals and
+policies authorize aligned work without a routine human review step.
 
 ## Stop conditions
 
 - Phase 0 clarification unanswered: ask and stop (Discord if Joe may be away).
-- Phase 4 gates incomplete: finish them before requesting human review.
-- Phase 4 PR awaiting human review with gates green: stop, report the URL.
+- Phase 4 gates incomplete: finish them; diagnose failed checks and address
+  review findings within scope.
+- Unresolved goal/policy decision or explicit human hold: name it and report
+  the PR URL. Green checks alone do not resolve it.
 - CI red on a real failure outside scope: stop and diagnose
   (`docs/agents/ci-triage.md`).
 - All lifecycle boxes checked and the issue closed: report shipped, with links.

@@ -1338,7 +1338,7 @@ Resolution states describe the dispute: `confirmed` upholds it and keeps the
 note disputed, while `rejected` means the fact holds as written and restores
 its captured verification state when safe.
 A distress report notifies Discord and is retained but never extracted. Doc
-drift found by the repository diff feed opens human-reviewed documentation PRs
+drift found by the repository diff feed opens independently reviewed documentation PRs
 on the routine lane, a demand-driven review turn verifies them against main,
 and the switch that would let it enqueue one stays off. Recall closes the loop:
 every new Ember session except a `kg-drain` one gets the top facts by embedding
@@ -2002,9 +2002,13 @@ number of ready replicas running the requested images.
 ### Control loops that gate work
 
 A factory control loop that can demote, pause or reroute work ships only with a
-human-reviewed bound recorded here first: what it measures, the threshold, how
+independently reviewed bound recorded here first: what it measures, the threshold, how
 it recovers, and the longest it may hold a class or lane restricted before it
 escalates to a person instead.
+
+Use `AGENTS.md` "Merge authority" to land changes within established goals and
+policies. A new policy decision or exception to an existing bound needs Joe's
+input; an aligned implementation does not need routine human approval.
 
 **Why.** On 2026-09-19 a factory-authored class-tier gate demoted `bug-fix` to
 the advisory tier on first-pass approval rate, 32 seconds after its window
