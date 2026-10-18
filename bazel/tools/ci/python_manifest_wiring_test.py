@@ -40,8 +40,12 @@ case "$*" in
   'test //bazel/requirements:'*) exit "${LOCK_STATUS:-0}" ;;
   'test //bazel/tools/python:gazelle_python_manifest.test --config=ci')
     if [[ ! -e "$REPAIRED" ]]; then exit "${INTEGRITY_STATUS:-0}"; fi ;;
-  'run //bazel/tools/python:gazelle_python_manifest.update'*) touch "$REPAIRED" ;;
+  'run //bazel/tools/python:gazelle_python_manifest.update'*)
+    if [[ "${UPDATE_STATUS:-0}" != 0 ]]; then exit "$UPDATE_STATUS"; fi
+    touch "$REPAIRED" ;;
+  'test //bazel/tools/python:gazelle_python_manifest.test //bazel/tools/python:manifest_generated_test'*) exit "${RECHECK_STATUS:-0}" ;;
   'test //bazel/tools/python:gazelle_python_manifest.test //bazel/tools/python:manifest_drift_test'*) exit "${CHECK_STATUS:-0}" ;;
+  'test //bazel/tools/python:manifest_generated_test'*) exit "${GENERATED_STATUS:-0}" ;;
 esac
 """,
             "git": """
@@ -102,6 +106,25 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
     def test_analysis_failure_is_not_a_stale_manifest(self):
         result, log = self.driver("update", INTEGRITY_STATUS="1")
         self.assertEqual(result.returncode, 1)
+        self.assertNotIn("bazel run", log)
+
+    def test_regeneration_analysis_failure_stops_before_recheck(self):
+        result, log = self.driver("update", INTEGRITY_STATUS="3", UPDATE_STATUS="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("bazel run //bazel/tools/python:gazelle_python_manifest.update", log)
+        self.assertNotIn("manifest_generated_test", log)
+        self.assertFalse((self.root / "repaired").exists())
+
+    def test_regeneration_requires_passing_integrity_and_generated_bytes(self):
+        result, log = self.driver("update", INTEGRITY_STATUS="3", RECHECK_STATUS="3")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("manifest_generated_test --config=ci --nocache_test_results", log)
+        self.assertEqual(log.count("bazel run"), 1)
+
+    def test_generated_byte_drift_fails_read_only_check(self):
+        result, log = self.driver("check", INPUTS_CHANGED="1", GENERATED_STATUS="3")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("manifest_generated_test --config=ci --nocache_test_results", log)
         self.assertNotIn("bazel run", log)
 
     def test_unsupported_or_nested_execution_is_refused(self):
