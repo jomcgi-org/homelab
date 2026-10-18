@@ -12130,7 +12130,18 @@ def test_handoff_advisory_failures_do_not_block(feedback_db, monkeypatch):
 def test_handoff_requires_granted_pr_match(feedback_db, monkeypatch):
     task, policy, _pull, _checks = handoff_task(monkeypatch)
     monkeypatch.setattr(conductor, "delivery_pr_number", lambda _task: 22)
+    reader = conductor.github_get
+    granted_reads = []
+
+    def read(repo, path):
+        if path == "pulls/22":
+            granted_reads.append(path)
+            return {"number": 22, "state": "open", "merged": False}
+        return reader(repo, path)
+
+    monkeypatch.setattr(conductor, "github_get", read)
     conductor.reconcile_task(task["id"], policy, object())
+    assert granted_reads == ["pulls/22"]
     assert_handoff_planner(task)
 
 
