@@ -1215,7 +1215,7 @@ def test_the_board_keeps_what_the_escalated_attempt_spent(db, github, notices):
     # The new task starts on its own clean allowance.
     assert snapshot["turns_used"] == 0
     assert snapshot["committed_cost_usd"] == 0
-    assert snapshot["limits"]["budget_limit_reached"] is False
+    assert "budget_limit_reached" not in snapshot["limits"]
 
 
 def test_resume_by_hand_applies_the_recommended_option(db, github, notices):

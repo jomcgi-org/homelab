@@ -314,7 +314,8 @@ fields are required. An example for one approved issue is:
 ```
 
 The plan sizes the task and policy keeps the envelope. `max_task_turns_hard`
-and `task_budget_usd` are what an accepted plan has to fit inside; the number of
+is what an accepted plan has to fit inside; `task_budget_usd` is recorded for
+accounting and never refuses a plan (#7161). The number of
 delivery starts a task actually gets is derived from the plan the conductor
 accepted. `max_turns_per_task` was the old fixed cap and is still accepted: a
 policy that carries it and no `max_task_turns_hard` reads it as the envelope, so
@@ -680,7 +681,7 @@ failed model is reused, as before, when it is the last member, when it is not
 in the pool at all (an explicit planner pin outside it), or when every member
 above it is walled. Judgment classes never escalate: they stay on the judgment
 floor. An escalated attempt is admitted and authorized against its new model,
-from the node's remaining `max_cost_usd`. Every `swarm.swarm_node_run` row
+reserving the node's full `max_cost_usd` for accounting. Every `swarm.swarm_node_run` row
 records the dispatched model in its `model` column.
 
 **Why.** Implementation starts on the cheapest capable model (Muse, `spark`)

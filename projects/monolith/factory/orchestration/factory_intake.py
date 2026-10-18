@@ -426,9 +426,10 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
     nothing rather than falling back to the policy.
 
     max_tasks bounds tasks in flight, not tasks ever admitted: an autonomous
-    intake must keep admitting as tasks settle. Total spend per generation is
+    intake must keep admitting as tasks settle. Total work per generation is
     bounded by the receipts it can hold (one per repo/issue/generation/class)
-    times task_budget_usd, not by a counter a human has to re-arm.
+    times each task's turn envelope, not by a counter a human has to re-arm.
+    Dollars are accounting only (#7161).
     admitted_count is kept for status only.
 
     Three paths return a settled receipt to queued, all of them in
@@ -443,7 +444,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
     whole new task with a fresh graph and allowance. Its task_budget_usd is the
     pinned policy unless an operator-authorized dispatch-refusal overlay was
     carried from the settled task. That overlay is revalidated against its
-    append-only source and the cumulative objective bound before admission.
+    append-only source before admission.
     The receipt carries its previous task ids so the board can show what the
     issue has cost across all of them.
     """

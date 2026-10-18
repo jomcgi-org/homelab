@@ -203,11 +203,10 @@ def test_task_row_keeps_only_tripped_limits():
                 "deadline_expired": False,
                 "turn_limit_reached": True,
                 "planner_turn_limit_reached": False,
-                "budget_limit_reached": True,
             },
         }
     )
-    assert row["limits_tripped"] == ["budget_limit_reached", "turn_limit_reached"]
+    assert row["limits_tripped"] == ["turn_limit_reached"]
     assert row["allowance_turns"] == 10
     assert row["task_budget_usd"] == 4.0
     assert row["unresolved_starts"] == 2

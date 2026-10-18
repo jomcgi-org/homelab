@@ -905,7 +905,7 @@ really inserts, and the envelope is checked again at each insertion, which is
 the check that was doing the work all along. The same reasoning keeps the
 reserve out of the engine's own check: headroom the planner needs for sizing
 would otherwise refuse a round the envelope can afford because of a round that
-may never open. Naming the spare turns and dollars in the refusal is the other
+may never open. Naming the spare turns in the refusal is the other
 half, computed under the reserve the refused edit implies: a planner that only
 hears no, or that shrinks to a figure which ignored the reserve its own review
 node brings, re-proposes until `max_planner_turns` pauses the task (#5419).
