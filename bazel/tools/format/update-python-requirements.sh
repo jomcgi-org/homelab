@@ -16,6 +16,8 @@ bazel run //bazel/requirements:runtime
 # Regenerate all.txt (includes test/tools dependencies)
 bazel run //bazel/requirements:requirements.all
 
-./bazel/tools/ci/python-manifest.sh update
+# Renovate runs this lock-only script without BuildBuddy credentials. The outer
+# PR Linux format stage refreshes and validates the manifest before Gazelle.
+echo 'Python manifest regeneration is deferred to PR Linux CI.'
 
 echo "✅ Python requirements updated"

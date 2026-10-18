@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Check every layer, including tools/test inputs and direct all.txt edits.
+# Check runtime and aggregate locks. Manifest regeneration belongs to PR CI.
 set -euo pipefail
 
-if [[ -n "${BUILD_WORKSPACE_DIRECTORY:-}" ]] || [[ "$(uname -s)" != Linux ]]; then
-	echo 'Run this script directly on a supported Linux runner, outside bazel run.' >&2
+if [[ -n "${BUILD_WORKSPACE_DIRECTORY:-}" ]]; then
+	echo 'Run this script directly, outside bazel run.' >&2
 	exit 2
+fi
+if [[ "$(uname -s)" != Linux ]]; then
+	echo 'Python lock and manifest regeneration is deferred to PR Linux CI.'
+	exit 0
 fi
 
 status=0
 bazel test //bazel/requirements:runtime_test //bazel/requirements:requirements.all_test || status=$?
 case "$status" in
-0)
-	./bazel/tools/ci/python-manifest.sh update
-	;;
+0) echo 'Python requirement locks are current' ;;
 3)
 	./bazel/tools/format/update-python-requirements.sh
 	;;
@@ -20,5 +22,5 @@ case "$status" in
 esac
 
 # Stage only tracked generated outputs.
-git add -u -- bazel/requirements/*.txt bazel/tools/python/gazelle_python.yaml
+git add -u -- bazel/requirements/*.txt
 echo "✓ Python requirements updated and staged"

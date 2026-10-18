@@ -107,11 +107,7 @@ sh_binary(
     srcs = ["update-apko-locks.sh"],
 )
 
-# Update Python requirements lock files
-sh_binary(
-    name = "update_python_requirements",
-    srcs = ["update-python-requirements.sh"],
-)
+# Python lock updates run as a direct script, outside Bazel (see exports_files).
 
 # Validate apko config files
 sh_binary(

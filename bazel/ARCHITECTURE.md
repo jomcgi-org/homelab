@@ -36,13 +36,19 @@ Ordinary test discovery keeps `--deleted_packages=bazel/tools/python`.
 regression test without that exclusion, including on format-bot heads, empty
 affected sets and explicit `ci test` overrides. Changes to the lock, manifest
 package or module pins additionally run `manifest_generated_test`, comparing
-the committed bytes against the pinned all-wheel generator.
+the committed bytes against the pinned Linux wheel generator. `python_manifest_wheels.bzl`
+excludes the universal lock's Windows-only and Emscripten-only packages from
+`modules_map`; the integrity hash still covers the entire lock. A regression
+checks those exclusions against the lock's PEP 508 markers for Linux CPython 3.13.
 
-Both requirements update scripts invoke `python-manifest.sh update`; the
-if-needed path checks runtime and aggregate locks before checking the manifest.
-These scripts run directly on Linux, outside `bazel run`. CI also invokes
-`update` before the parallel format batch, so direct lock edits regenerate
-before Gazelle reads the mapping. The existing tracked-only writeback handles
+Both requirements update scripts remain lock-only and run directly on Linux,
+outside `bazel run`. Renovate's pep621 post-upgrade task uses the full script
+with its existing local Bazel configuration; it does not fetch the manifest's
+wheels or require BuildBuddy remote execution. The pre-commit if-needed script
+prints a non-fatal deferral on Darwin. On Linux it checks runtime and aggregate
+locks. PR CI runs that script when lock inputs change, then invokes
+`python-manifest.sh update` before the parallel format batch so Gazelle reads
+the refreshed mapping. The existing tracked-only writeback handles
 the result and retains its main and merge-queue no-push guards. The read-only
 check runs outside all format skips. No Bazel invocation is nested in
 `run-generators.sh` or a formatter.

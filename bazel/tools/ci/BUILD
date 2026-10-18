@@ -115,9 +115,14 @@ py_test(
     srcs = ["python_manifest_wiring_test.py"],
     data = [
         "python-manifest.sh",
+        "python_manifest_wheels.bzl",
         "//:buildbuddy.yaml",
+        "//bazel/requirements:all.txt",
         "//bazel/tools/format:update-python-requirements-if-needed.sh",
         "//bazel/tools/format:update-python-requirements.sh",
     ],
-    deps = ["@pip//pytest"],
+    deps = [
+        "@pip//packaging",
+        "@pip//pytest",
+    ],
 )

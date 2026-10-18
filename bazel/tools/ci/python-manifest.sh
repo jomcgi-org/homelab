@@ -35,7 +35,8 @@ check)
 	# Compare the working tree too, so local ci test covers uncommitted edits.
 	base_ref="${2:-origin/main}"
 	git rev-parse --verify "$base_ref" >/dev/null
-	if ! git diff --quiet "$base_ref" -- MODULE.bazel MODULE.bazel.lock bazel/requirements/all.txt bazel/tools/python; then
+	base_ref="$(git merge-base "$base_ref" HEAD)"
+	if ! git diff --quiet "$base_ref" -- MODULE.bazel MODULE.bazel.lock bazel/requirements/all.txt bazel/tools/python bazel/tools/ci/python_manifest_wheels.bzl; then
 		bazel test //bazel/tools/python:manifest_generated_test --config=ci --nocache_test_results --test_output=all
 	fi
 	;;

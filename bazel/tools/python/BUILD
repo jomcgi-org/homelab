@@ -5,15 +5,16 @@ does not depend on modules_map; updates and generated-byte checks fetch wheels.
 """
 
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
-load("@pip//:requirements.bzl", "all_whl_requirements")
+load("@pip//:requirements.bzl", "all_whl_requirements_by_package")
 load("@rules_python_gazelle_plugin//manifest:defs.bzl", "gazelle_python_manifest")
 load("@rules_python_gazelle_plugin//modules_mapping:def.bzl", "modules_mapping")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel/tools/ci:python_manifest_wheels.bzl", "linux_wheels")
 
 # Fetches metadata for python packages we depend on.
 modules_mapping(
     name = "modules_map",
-    wheels = all_whl_requirements,
+    wheels = linux_wheels(all_whl_requirements_by_package),
 )
 
 # Provide a mapping from an import to the installed package that provides it.
