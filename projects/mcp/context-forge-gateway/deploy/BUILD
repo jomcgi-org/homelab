@@ -5,7 +5,7 @@
 load("//bazel/helm:defs.bzl", "helm_admissibility_render")
 
 exports_files(
-    ["application.yaml"],
+    ["BUILD", "application.yaml"],
     visibility = ["//bazel/helm/gazelle:__pkg__"],
 )
 
