@@ -221,7 +221,31 @@ def test_paused_deadline_settlement_rechecks_authority(db, policy, monkeypatch, 
         evidence={"state": "conductor_escalated"},
         paused_trigger="deadline",
     )
-    assert not result["ok"]
+    assert result["ok"] is (change == "landing_hold")
+    snapshot = controls.task_snapshot(task)
+    assert snapshot["state"] == (
+        "escalated" if change == "landing_hold" else "admitted"
+    )
+    if change == "landing_hold":
+        assert snapshot["direction"]["landing_hold"] == {"actor": "operator"}
+
+
+def test_paused_closed_objective_rechecks_landing_hold(db, policy):
+    task = admitted(policy)
+    controls.set_control("pause_task", "operator", task_id=task)
+    assert controls.paused_settlement_snapshot(task)["ok"]
+    # The hold arrives after preflight but before the settlement lock.
+    with Session(db) as session, session.begin():
+        controls._receipt(
+            session, task
+        ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+    assert controls.finish_task(
+        task,
+        "cancelled",
+        "reconciler",
+        evidence={"state": "objective_closed"},
+        paused_trigger="objective_closed",
+    ) == {"ok": False, "reason": "held_objective_closed"}
     assert controls.task_snapshot(task)["state"] == "admitted"
 
 

@@ -379,16 +379,23 @@ def test_legacy_pause_expiry_rechecks_changes_during_issue_read(
         assert not conductor._expire_reconciler_pause(s.task["id"])
     after = controls.task_snapshot(s.task["id"])
     before = snapshots[0]
-    for field in ("state", "task_paused", "starts", "committed_cost_usd", "evidence"):
+    for field in ("starts", "committed_cost_usd", "direction"):
         assert after[field] == before[field]
+    if change == "landing_hold":
+        assert after["state"] == "cancelled" and not after["task_paused"]
+        assert after["evidence"]["state"] == "reconciler_pause_expired"
+    else:
+        for field in ("state", "task_paused", "evidence"):
+            assert after[field] == before[field]
     assert not s.cards
     with Session(s.engine) as db:
-        assert not db.exec(
+        settlements = db.exec(
             select(FactoryAudit).where(
                 FactoryAudit.task_id == s.task["id"],
                 FactoryAudit.action.in_(("finish_task", "reconciler_pause_expired")),
             )
         ).all()
+        assert len(settlements) == (2 if change == "landing_hold" else 0)
 
 
 @pytest.mark.parametrize("paused_settlement", ["empty"], indirect=True)
@@ -640,9 +647,105 @@ def test_paused_terminal_facts_preserve_explicit_holds(
             row.cancellation_requested = True
     if hold == "review_recovery":
         monkeypatch.setattr(controls, "review_recovery_held", lambda *a, **kw: True)
-    conductor.tick()
-    assert controls.task_snapshot(s.task["id"])["state"] == "admitted"
+    for _ in range(3):
+        conductor.tick()
+    snapshot = controls.task_snapshot(s.task["id"])
+    expired_landing_hold = hold == "landing" and trigger in ("deadline", "combined")
+    assert snapshot["state"] == ("escalated" if expired_landing_hold else "admitted")
+    assert len(s.cards) == int(expired_landing_hold)
+    if expired_landing_hold:
+        assert snapshot["evidence"]["state"] == "conductor_escalated"
+        assert snapshot["escalation"]["resolved"] is None
+        assert snapshot["escalation"]["question"]
+    if hold == "landing":
+        assert snapshot["direction"]["landing_hold"] == {"actor": "operator"}
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_paused_closed_issue_with_landing_hold_waits_for_deadline(
+    paused_settlement, monkeypatch, merged
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    age_reconciler_pause(s, monkeypatch)
+    pause_trigger(s, "closed")
+    s.pr["merged"] = merged
+    with Session(s.engine) as db, db.begin():
+        controls._receipt(
+            db, s.task["id"]
+        ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+    # A held merge cannot be verified. Closure must neither claim success nor
+    # reclassify that delivery as objective_closed or legacy pause expiry.
+    for _ in range(2):
+        conductor.tick()
+    before = controls.task_snapshot(s.task["id"])
+    assert before["state"] == "admitted" and before["task_paused"]
+    assert before["evidence"] is None and not s.cards
+    pause_trigger(s, "deadline")
+    for _ in range(3):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "escalated"
+    assert after["evidence"]["state"] == "conductor_escalated"
+    assert after["escalation"]["resolved"] is None and len(s.cards) == 1
+    assert after["direction"] == before["direction"]
+    with Session(s.engine) as db:
+        settlements = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "finish_task",
+            )
+        ).all()
+        assert len(settlements) == 1
+
+
+def test_tick_aged_conductor_pause_with_landing_hold_expires(
+    paused_settlement, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    age_reconciler_pause(s, monkeypatch)
+    with Session(s.engine) as db, db.begin():
+        controls._receipt(
+            db, s.task["id"]
+        ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+    for _ in range(3):
+        conductor.tick()
+    snapshot = controls.task_snapshot(s.task["id"])
+    assert snapshot["state"] == "cancelled" and not snapshot["task_paused"]
+    assert snapshot["evidence"]["state"] == "reconciler_pause_expired"
+    assert snapshot["direction"]["landing_hold"] == {"actor": "operator"}
     assert not s.cards
+    with Session(s.engine) as db:
+        settlements = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "finish_task",
+            )
+        ).all()
+        assert len(settlements) == 1
+
+
+@pytest.mark.parametrize("path", ["active", "merged"])
+def test_unpaused_tick_skips_pause_expiry_audit(paused_settlement, monkeypatch, path):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    if path == "active":
+        pause_blocker(s, "admitted")
+    else:
+        pause_trigger(s, "merged")
+    monkeypatch.setattr(
+        conductor,
+        "_expire_reconciler_pause",
+        lambda *a, **kw: pytest.fail("Unpaused task acquired a pause-expiry lock"),
+    )
+    conductor.tick()
 
 
 def test_paused_open_unexpired_unmerged_task_stays_paused(paused_settlement):
