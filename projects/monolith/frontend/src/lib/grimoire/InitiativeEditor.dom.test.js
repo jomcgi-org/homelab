@@ -62,6 +62,28 @@ const ariaButton = (label) =>
 const lastCall = () => act.mock.calls.at(-1)[0];
 
 describe("initiative editor", () => {
+  it("preserves edits made while saving an earlier draft", async () => {
+    let finishSave;
+    const pendingAct = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    await render({ act: pendingAct });
+    await typeInto(rowFor("Ambusher").querySelector("input"), "First draft");
+    await click("Save order");
+    expect(pendingAct.mock.calls[0][0].entries[2].label).toBe("First draft");
+    await typeInto(rowFor("First draft").querySelector("input"), "Newer draft");
+    finishSave({ ok: true });
+    await settle();
+    expect(names()).toContain("Newer draft");
+    await click("Save order");
+    expect(pendingAct.mock.calls[1][0].entries[2].label).toBe("Newer draft");
+    finishSave({ ok: true });
+    await settle();
+  });
+
   it("lists the saved order and sends nothing until asked", async () => {
     await render();
     expect(names()).toEqual(["Aria", "Bram", "Ambusher"]);

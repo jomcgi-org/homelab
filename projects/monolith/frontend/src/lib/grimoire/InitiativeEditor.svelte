@@ -17,6 +17,7 @@
   let activeKey = $state(null);
   let hiddenDisplay = $state("mask");
   let dirty = $state(false);
+  let editRevision = $state(0);
   let note = $state("");
 
   const toRows = (entries) =>
@@ -49,10 +50,15 @@
     ),
   );
 
-  function edit(change) {
-    change();
+  function markDirty() {
+    editRevision += 1;
     dirty = true;
     note = "";
+  }
+
+  function edit(change) {
+    change();
+    markDirty();
   }
 
   const addRow = () =>
@@ -121,6 +127,7 @@
   }
 
   async function save() {
+    const savedRevision = editRevision;
     const index = rows.findIndex((row) => row.key === activeKey);
     const result = await act({
       operation: "initiativeSet",
@@ -134,7 +141,7 @@
       activeIndex: Math.max(index, 0),
       round: initiative?.round || 1,
     });
-    if (result) {
+    if (result && editRevision === savedRevision) {
       dirty = false;
       note = "Initiative order saved.";
     }
@@ -160,7 +167,7 @@
           >Name<input
             bind:value={row.label}
             maxlength="80"
-            oninput={() => (dirty = true)}
+            oninput={markDirty}
           /></label
         >
         <label
@@ -179,7 +186,7 @@
             type="number"
             step="1"
             bind:value={row.initiative}
-            oninput={() => (dirty = true)}
+            oninput={markDirty}
           /></label
         >
         <label class="check"
@@ -187,7 +194,7 @@
             type="checkbox"
             bind:checked={row.hidden}
             disabled={Boolean(row.player_character_id)}
-            onchange={() => (dirty = true)}
+            onchange={markDirty}
           />Hidden</label
         >
         <div class="row-actions">
@@ -225,7 +232,7 @@
         name="hidden-display"
         value="mask"
         bind:group={hiddenDisplay}
-        onchange={() => (dirty = true)}
+        onchange={markDirty}
       />Mask as ???</label
     >
     <label
@@ -234,7 +241,7 @@
         name="hidden-display"
         value="omit"
         bind:group={hiddenDisplay}
-        onchange={() => (dirty = true)}
+        onchange={markDirty}
       />Omit entirely</label
     >
   </fieldset>
