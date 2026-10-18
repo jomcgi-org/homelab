@@ -111,7 +111,9 @@ if [[ "$1" == merge-base ]]; then echo branch-base; fi
     def test_regeneration_analysis_failure_stops_before_recheck(self):
         result, log = self.driver("update", INTEGRITY_STATUS="3", UPDATE_STATUS="1")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("bazel run //bazel/tools/python:gazelle_python_manifest.update", log)
+        self.assertIn(
+            "bazel run //bazel/tools/python:gazelle_python_manifest.update", log
+        )
         self.assertNotIn("manifest_generated_test", log)
         self.assertFalse((self.root / "repaired").exists())
 
