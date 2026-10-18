@@ -51,7 +51,8 @@ require (
 )
 
 require (
-	github.com/bazel-contrib/bazel-gazelle/v2 v2.0.0-beta.2 // indirect
+	// Match the v0.52.2 shim's release commit; beta.2 removed CommonConfigurer.Name.
+	github.com/bazel-contrib/bazel-gazelle/v2 v2.0.0-2.0.20260723164240-1208622c21a6 // indirect
 	github.com/bazelbuild/buildtools v0.0.0-20250930140053-2eb4fccefb52 // indirect
 	github.com/docker/cli v29.6.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
