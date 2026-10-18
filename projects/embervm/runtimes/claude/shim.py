@@ -4021,18 +4021,14 @@ url = %s
                     if meter and event_type == "thread/tokenUsage/updated":
                         raw_usage = params.get("tokenUsage", {})
                         samples = [raw_usage.get("total"), raw_usage.get("last")]
-                        valid_usage = any(
-                            isinstance(sample, dict) for sample in samples
-                        )
-                        valid_usage &= all(
-                            sample is None
-                            or (
-                                isinstance(sample, dict)
-                                and all(
-                                    type(sample.get(field, 0)) is int
-                                    and sample.get(field, 0) >= 0
-                                    for _, field in _CODEX_USAGE_FIELDS
-                                )
+                        valid_usage = all(
+                            isinstance(sample, dict)
+                            and {"inputTokens", "outputTokens", "cachedInputTokens"}
+                            <= set(sample)
+                            and all(
+                                type(sample.get(field, 0)) is int
+                                and sample.get(field, 0) >= 0
+                                for _, field in _CODEX_USAGE_FIELDS
                             )
                             for sample in samples
                         )
