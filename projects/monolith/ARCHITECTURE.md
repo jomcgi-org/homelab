@@ -2472,6 +2472,34 @@ without entering landing, and the landing reconciler disarms/dequeues any held
 delivery even when global merge and review-publication flags are off. Handoff
 instructions retain the draft.
 
+A typed `live_validation` gate may carry `leave_unmerged=true`. The gate owner
+persists the same sticky landing hold before any GitHub write. Operational
+checklists alone only preserve the issue's outstanding acceptance; they are not
+landing authority. Recording the typed restriction blocks automatic landing even
+when global auto-merge is enabled, and later scope gates cannot remove it.
+
+**Why node exhaustion is not a funding request.** In #7040 and #7087, a failed
+invocation with unknown cost consumed its entire node reservation. Increasing
+the task envelope could not make that node dispatchable. Funding now pauses on
+exhausted node allocations before commissioning another judge, including hidden
+nodes. Successive automatic grants also require new work evidence: useful
+investigation counts, while planner and funding turns alone do not. The same
+checks run when a completed funding verdict settles. Historical charges remain
+charged; this does not infer cash spending from reservations or list prices.
+
+Graph admission refuses new work that would silently reset an exhausted
+allocation by renaming it. A paused operator amendment can explicitly name every
+current exhausted key in `recover_exhausted_nodes`, with a nonrenewable envelope
+and exactly one remaining planner attempt. Its digest binds the predecessor
+ledger. One atomic replacement plan may consume that authorization only after
+normal graph admission succeeds. Refused plans leave it unused, old node keys
+cannot be reused by it, and original pins and costs remain intact. A replacement
+failure creates a fresh blocker rather than renewing the authorization. No
+budget increase or live recovery follows from deploying these checks.
+The existing server-validated, one-time correction/review continuation remains
+available for an already reviewed PR. It admits only its exact pair and leaves
+unrelated exhausted allocations blocked.
+
 An operator may also select sticky `nonrenewable_recovery=true` and bound the
 remaining planning attempts with `max_planner_turns`. This uses the same
 amendment preview/apply and separate explicit resume. The final authorized

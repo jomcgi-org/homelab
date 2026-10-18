@@ -2124,3 +2124,84 @@ def test_receipt_landing_hold_disarms_and_rechecks_even_with_global_flags_off(
     )
     assert not audits(db, "merge_armed")
     assert not audits(db, "landing_recovery_requested")
+
+
+@pytest.mark.parametrize("entry", ["auto-merge", "queue"])
+def test_typed_unmerged_scope_prevents_landing_with_auto_merge_enabled(
+    db, monkeypatch, entry
+):
+    from factory.orchestration import (
+        factory_gates as gates,
+        factory_conductor as conductor,
+    )
+
+    delivered(db, "t-unmerged", 7040, 7134)
+    pulls = {7134: pull(7134, armed=entry == "auto-merge")}
+    if entry == "queue":
+        pulls[7134]["queue_entry"] = {"id": "MQ_7134", "state": "QUEUED"}
+    calls = github(monkeypatch, pulls=pulls)
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: {"body": "Keep this issue open"}
+    )
+    monkeypatch.setattr(conductor, "_post_decision_card", lambda *_: None)
+    gate = {
+        "kind": "live_validation",
+        "classification": "reversible",
+        "reason": "Repository SQL only. Landing requires separate authority.",
+        "scope": "Deliver an independently reviewed, unmerged PR.",
+        "live_checks": [
+            "An authorized operator validates the live schema before deployment."
+        ],
+        "leave_unmerged": True,
+        "effects": {key: False for key in gates.GATE_EFFECTS},
+    }
+    task = {"id": "t-unmerged", "repo": "owner/repo", "issue_number": 7040}
+    assert gates.resolve(task, {"gate": gate}, "unmerged-scope")
+    assert task["landing_hold"]
+    with Session(db) as session:
+        row = controls._receipt(session, "t-unmerged")
+        assert controls.landing_held(row)
+        assert json.loads(row.direction_json)["conductor_gates"] == [gate]
+    calls["write"].clear()
+    landing.landing_tick(POLICY)
+    assert pulls[7134]["auto_merge"] is None
+    assert pulls[7134].get("queue_entry") is None
+    assert not audits(db, "merge_armed")
+    assert calls["write"] == []
+    assert (
+        audits(db, "merge_arm_refused", "t-unmerged")[0]["reason"]
+        == "receipt_landing_held"
+    )
+
+
+def test_unmerged_hold_is_persisted_before_external_writes(db, monkeypatch):
+    from factory.orchestration import (
+        factory_gates as gates,
+        factory_conductor as conductor,
+    )
+
+    delivered(db, "t-unmerged", 7040, 7134)
+
+    def unavailable(*_):
+        raise httpx.ConnectError("GitHub unavailable")
+
+    monkeypatch.setattr(conductor, "_post_decision_card", unavailable)
+    gate = {
+        "kind": "live_validation",
+        "classification": "reversible",
+        "reason": "No landing authorized",
+        "scope": "Unmerged review only",
+        "live_checks": ["Separate rollout approval"],
+        "leave_unmerged": True,
+        "effects": {key: False for key in gates.GATE_EFFECTS},
+    }
+    with pytest.raises(httpx.ConnectError):
+        gates.resolve(
+            {"id": "t-unmerged", "repo": "owner/repo", "issue_number": 7040},
+            {"gate": gate},
+            "unmerged-scope",
+        )
+    with Session(db) as session:
+        assert controls.landing_held(controls._receipt(session, "t-unmerged"))
+    with pytest.raises(ValueError, match="invalid gate"):
+        gates.validate_gate({**gate, "leave_unmerged": False})

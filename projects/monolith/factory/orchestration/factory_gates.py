@@ -66,8 +66,13 @@ GATE_SCHEMA = {
             "items": {"type": "integer", "minimum": 1},
         },
         "tracked_in": {"type": "integer", "minimum": 1},
+        "leave_unmerged": {"const": True},
     },
     "allOf": [
+        {
+            "if": {"required": ["leave_unmerged"]},
+            "then": {"properties": {"kind": {"const": "live_validation"}}},
+        },
         {
             "if": {"properties": {"kind": {"const": "repository_delivered"}}},
             "then": {"required": ["live_checks", "delivered_prs"]},
@@ -84,6 +89,7 @@ GATE_SCHEMA = {
 }
 
 GATE_PROMPT = (
+    "Unmerged: leave_unmerged. "
     "Conductor policy for reversible gates: classify a missing name, retention "
     "count, threshold, schedule or similar parameter in `gate` with kind "
     "`parameter`, classification `reversible`, a concrete proposed `value`, and "
@@ -257,10 +263,20 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
         saved = direction.setdefault("conductor_gates", [])
         if gate not in saved:
             saved.append(gate)
+        if gate.get("leave_unmerged"):
+            direction.setdefault(
+                "landing_hold",
+                {
+                    "actor": "factory:conductor",
+                    "cause": cause,
+                    "reason": gate["reason"],
+                },
+            )
         row.direction_json = json.dumps(direction)
         row.updated_at = _now()
         db.add(row)
     task["conductor_gates"] = saved
+    task["landing_hold"] = "landing_hold" in direction
     conductor._post_decision_card(repo, number, marker, text)
     if gate["kind"] == "live_validation":
         issue = conductor.github_get(repo, f"issues/{number}")

@@ -24,7 +24,12 @@ from factory.orchestration.factory_models import (
     FactoryReceipt,
     FactoryStart,
 )
-from factory.orchestration.models import SwarmTask, SwarmNodeRun, SwarmPlanVersion
+from factory.orchestration.models import (
+    SwarmTask,
+    SwarmNodeRun,
+    SwarmPlanVersion,
+    SwarmPlanNode,
+)
 
 
 @pytest.fixture
@@ -50,6 +55,7 @@ def database(tmp_path, monkeypatch):
         SwarmTask,
         SwarmNodeRun,
         SwarmPlanVersion,
+        SwarmPlanNode,
     )
     SQLModel.metadata.create_all(engine, tables=[m.__table__ for m in models])
     for module in (admission, result_receipts, store, controls):
