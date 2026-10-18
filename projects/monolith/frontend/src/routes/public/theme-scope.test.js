@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -63,13 +64,21 @@ describe("public theme token scope", () => {
       ),
     );
 
-    // The root error boundary left this list when it moved to the
-    // technical-drawing sheet, which scopes its own tokens under .td.
-    expect(importers).toHaveLength(1);
-    for (const path of importers) {
-      expect(readFileSync(path, "utf8"), path).toContain(
-        '<div class="public-theme" hidden></div>',
-      );
-    }
+    // Two importers: the public layout, which renders the brutalist pages
+    // and marks the public theme, and the root error boundary, which
+    // renders a technical-drawing sheet (no marker: its tokens live under
+    // .td) but keeps the import because SvelteKit preloads the root error
+    // node on every page and the friends and private tiers rely on the
+    // sheet reaching them that way.
+    expect(importers.map((path) => relative(sourceDir, path)).sort()).toEqual([
+      "routes/+error.svelte",
+      "routes/public/+layout.svelte",
+    ]);
+    const errorPage = readFileSync(
+      join(sourceDir, "routes/+error.svelte"),
+      "utf8",
+    );
+    expect(errorPage).not.toContain('<div class="public-theme" hidden></div>');
+    expect(errorPage).toContain('<main class="td sheet');
   });
 });
