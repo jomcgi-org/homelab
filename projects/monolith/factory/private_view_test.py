@@ -202,6 +202,8 @@ def test_shape_policy_keeps_the_board_keys_only():
 def test_build_factory_view_reads_a_real_control_row(tmp_path):
     """Drive the glue through sqlite so the status call signature and the
     board keys are exercised, not just the pure shaping."""
+    import json
+
     from sqlalchemy import event
     from sqlmodel import Session, SQLModel, create_engine
 
@@ -276,6 +278,12 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
         )
         db.commit()
         view = build_factory_view(session=db)
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        policy["issue_numbers"] = [5983]
+        control.policy_json = json.dumps(policy)
+        db.commit()
+        eligible_view = build_factory_view(session=db)
     assert view["ok"] is True
     assert view["state"] == "enabled"
     assert view["policy"]["conductor_model"] == "astra"
@@ -290,10 +298,13 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     # lane and the advisory lane is shut.
     assert view["review_routing"]["action"] is None
     assert view["review_routing"]["pause_percent"] == 85
+    # Ineligible manual work remains visible but cannot reserve execution capacity.
     assert view["lanes"] == {
-        "delivery": {"limit": 1, "active": 0, "queued": 1},
+        "delivery": {"limit": 1, "active": 0, "queued": 0},
         "advisory": {"limit": 0, "active": 0, "queued": 0},
     }
+
+    assert eligible_view["lanes"]["delivery"]["queued"] == 1
 
 
 def test_a_policy_pinned_before_the_envelope_still_shows_its_turn_bound():
