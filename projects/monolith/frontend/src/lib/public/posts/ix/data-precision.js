@@ -65,10 +65,4 @@ export const settings = [
   },
 ];
 
-// Speed bar: share of the named phase's time saved (or decode rate gained,
-// for k8v6). FP8 dense uses the midpoints, 36 ms against 46.5 ms.
-export function percentSaved(before, after) {
-  return Math.round((1 - after / before) * 100);
-}
-
 export const KL_SCALE = 0.15;

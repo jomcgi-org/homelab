@@ -2,7 +2,6 @@
 // order across streams (ARCHITECTURE.md, "Why staging copies trickle").
 // A layer's stage-ahead is about 450 records, 1.2 GB and 45 ms of engine time.
 export const STAGE_RECORDS = 450;
-export const STAGE_GB = 1.2;
 export const STAGE_MS = 45;
 export const RECORD_MS = STAGE_MS / STAGE_RECORDS;
 export const PIECE_RECORDS = 8;

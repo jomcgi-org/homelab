@@ -38,8 +38,9 @@ The deployed application has distinct audience surfaces:
 The retired private Firecracker and Qwen demo pages, the Semgrep performance
 dashboard, the Semgrep MCP tool and the public Semgrep exhibit are not part of
 any tier. Public EmberVM pages and their probes remain independent. The
-committed Firecracker story measurements remain published, but their old capture workflow cannot be regenerated because it
-depended on the retired private demos API and the removed SigNoz span store.
+committed Firecracker story measurements and Qwen replay remain published.
+Their captures depended on the retired private demos API and the removed
+SigNoz span store and cannot be regenerated. The Qwen capture scripts are removed.
 
 The tier boundaries are enforced through separate compositions, database
 roles, and ingress policy; see [ARCHITECTURE.md](ARCHITECTURE.md) sections 1 to

@@ -6,7 +6,6 @@ import {
   projectHistory,
   historyView,
   relativeMax,
-  heatWeightExpression,
   isUpcoming,
   nightKey,
   liveWindows,
@@ -169,20 +168,6 @@ describe("relativeMax", () => {
 
   it("ignores non-finite values", () => {
     expect(relativeMax([NaN, Infinity, 5, null, "x"])).toBe(5);
-  });
-});
-
-describe("heatWeightExpression", () => {
-  it("builds an interpolate from 0..max onto 0..1", () => {
-    expect(heatWeightExpression(80)).toEqual([
-      "interpolate",
-      ["linear"],
-      ["get", "heat"],
-      0,
-      0,
-      80,
-      1,
-    ]);
   });
 });
 

@@ -22,7 +22,6 @@ export const CHAT_SCHEDULE = [
   [0.905, "resume"],
   [0.935, "resume"],
 ];
-export const CHAT_AT = CHAT_SCHEDULE.map(([at]) => at);
 
 export const CALLS = {
   wake: [

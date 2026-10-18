@@ -244,10 +244,6 @@ js_library(
         ["src/**/*.test.js"],
         allow_empty = True,
     ) + [
-        # The public replay capture retains these calculations after the
-        # private Qwen route was removed.
-        "scripts/qwen-replay-metrics.mjs",
-        "scripts/qwen-replay-metrics.test.mjs",
         "test/data-display/ChartHarness.svelte",
         "test/data-display/Fixture.svelte",
         "test/data-display/server.js",

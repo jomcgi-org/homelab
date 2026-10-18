@@ -7,7 +7,8 @@
   // (non-reactive) element refs. Same ExploreCanvas / grimoire ScrollStory
   // discipline: 60fps writes never go through Svelte's reactivity proxy.
   //
-  // Faithful port of the approved reference mockup (./reference-mockup.html).
+  // Faithful port of the approved reference mockup:
+  // ../../../../docs/reference-mockups/fcstory/reference-mockup.html.
   // Palette hex values live in ./fcstory.css as CSS custom properties (this
   // file's <style> block only ever references var(--fc-*)).
   import { onMount } from "svelte";

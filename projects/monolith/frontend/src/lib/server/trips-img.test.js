@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createHmac } from "node:crypto";
-import { signedImgUrl, signedFullUrl } from "./trips-img.js";
+import { signedImgUrl } from "./trips-img.js";
 
 // Hex-encoded fake key/salt (the real ones are random bytes from 1Password).
 const KEY = "00112233445566778899aabbccddeeff"; // gitleaks:allow
@@ -64,14 +64,6 @@ describe("trips imgproxy URL signer", () => {
     );
   });
 
-  it("signedFullUrl uses the full preset", () => {
-    setEnv(KEY, SALT);
-    const path = "/full/plain/s3://monolith-trips/img_abc.jpg";
-    expect(signedFullUrl("img_abc.jpg")).toBe(
-      `/img/${expectedSig(path, KEY, SALT)}${path}`,
-    );
-  });
-
   it("produces different signatures for different keys", () => {
     setEnv(KEY, SALT);
     const a = signedImgUrl("k", "display");
@@ -85,7 +77,7 @@ describe("trips imgproxy URL signer", () => {
     expect(signedImgUrl("img_abc.jpg", "thumb")).toBe(
       "/img/unsafe/thumb/plain/s3://monolith-trips/img_abc.jpg",
     );
-    expect(signedFullUrl("img_abc.jpg")).toBe(
+    expect(signedImgUrl("img_abc.jpg", "full")).toBe(
       "/img/unsafe/full/plain/s3://monolith-trips/img_abc.jpg",
     );
   });

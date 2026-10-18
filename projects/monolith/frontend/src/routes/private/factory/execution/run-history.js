@@ -51,14 +51,3 @@ export function clockTime(value) {
     date.getMinutes(),
   ).padStart(2, "0")}`;
 }
-
-export function recentRuns(
-  runs,
-  now = Date.now(),
-  windowMs = 24 * 60 * 60 * 1000,
-) {
-  return (runs ?? []).filter((run) => {
-    const at = Date.parse(runActivityAt(run) ?? "");
-    return !Number.isNaN(at) && now - at < windowMs;
-  });
-}

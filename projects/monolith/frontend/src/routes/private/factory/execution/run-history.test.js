@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  clockTime,
-  isInFlight,
-  partitionRuns,
-  recentRuns,
-} from "./run-history.js";
+import { clockTime, isInFlight, partitionRuns } from "./run-history.js";
 
 describe("run history", () => {
   it("partitions by the DBOS status field", () => {
@@ -21,14 +16,6 @@ describe("run history", () => {
     });
     expect(isInFlight(runs[0])).toBe(true);
     expect(isInFlight(runs[2])).toBe(false);
-  });
-
-  it("keeps terminal runs in the 24 hour window by completion time", () => {
-    const now = Date.parse("2026-08-13T12:00:00Z");
-    const recent = { completed_at: "2026-08-13T08:00:00Z" };
-    const old = { completed_at: "2026-08-12T11:59:59Z" };
-
-    expect(recentRuns([recent, old], now)).toEqual([recent]);
   });
 
   it("formats a timestamp as local 24 hour clock time", () => {

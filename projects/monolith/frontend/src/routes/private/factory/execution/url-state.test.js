@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import {
   backToRun,
   clearSelection,
-  parseUrlState,
   selectRun,
   selectSession,
   setVoiceMode,
@@ -10,21 +9,6 @@ import {
 } from "./url-state.js";
 
 describe("agent URL state", () => {
-  test("parses URL and returns null for absent params", () => {
-    expect(
-      parseUrlState(
-        new URL(
-          "/private/factory/execution?run=wf-123",
-          "https://example.test",
-        ),
-      ),
-    ).toEqual({
-      runId: "wf-123",
-      sessionId: null,
-      mode: null,
-    });
-  });
-
   test("selecting a session from a run preserves the run", () => {
     expect(
       selectSession(new URLSearchParams("run=wf-123"), "wf-123-call2"),
@@ -66,28 +50,21 @@ describe("agent URL state", () => {
   test("encodes ids and round-trips them", () => {
     const sessionId = "wf-parent-call#2/{child}";
     const search = selectSession("run=wf-parent", sessionId);
-    expect(
-      parseUrlState(
-        new URL(`/private/factory/execution?${search}`, "https://example.test"),
-      ),
-    ).toEqual({
-      runId: "wf-parent",
-      sessionId,
-      mode: null,
-    });
+    const params = new URL(
+      `/private/factory/execution?${search}`,
+      "https://example.test",
+    ).searchParams;
+    expect(params.get("run")).toBe("wf-parent");
+    expect(params.get("session")).toBe(sessionId);
+    expect(params.get("mode")).toBeNull();
   });
 
   test("voice mode round-trips and leaving preserves selection", () => {
     const entered = setVoiceMode("run=wf-123", true);
-    expect(parseUrlState(entered)).toEqual({
-      runId: "wf-123",
-      sessionId: null,
-      mode: "voice",
-    });
+    const params = new URLSearchParams(entered);
+    expect(params.get("run")).toBe("wf-123");
+    expect(params.get("session")).toBeNull();
+    expect(params.get("mode")).toBe("voice");
     expect(setVoiceMode(entered, false)).toBe("run=wf-123");
-  });
-
-  test("ignores unknown modes", () => {
-    expect(parseUrlState("mode=quiet").mode).toBeNull();
   });
 });

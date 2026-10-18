@@ -55,7 +55,3 @@ function build(key, preset) {
 export function signedImgUrl(key, preset = "gallery") {
   return build(key, preset);
 }
-
-export function signedFullUrl(key) {
-  return build(key, "full");
-}

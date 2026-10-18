@@ -3,8 +3,8 @@
 
   This file defines the --ds-* token roles, sourced from both the public
   neobrutalist visual language (design-system.css: surface, ink, accent,
-  line, shadow, type, radius) and the shared functional tokens (tokens.css:
-  spacing and status). Themes override these tokens inside their own scope
+  line, shadow, type, radius) and the legacy functional spacing and status
+  palette. Themes override these tokens inside their own scope
   class (e.g., .public, .ember-site, .grimoire) and never at :root.
   See ADR platform/013.
 */
@@ -37,6 +37,6 @@
   --ds-radius: 8px;
 
   --ds-ok: #00b300; /* --st-ok */
-  --ds-warn: #ff9900; /* --st-warn */
+  --ds-warn: #ff9900;
   --ds-err: #cc0000; /* --st-err */
 }

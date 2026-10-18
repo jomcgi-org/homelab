@@ -3,8 +3,6 @@ import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import {
   sandboxRestoreMs,
-  coldGuestWaitMs,
-  baseSnapshotBuildSec,
   runCount,
   agentRestoreWarmMs,
   agentRestoreColdMs,
@@ -25,13 +23,6 @@ describe("fcstory metrics: derived exports are sane", () => {
   it("runCount matches the number of baked restore runs (12)", () => {
     expect(runCount).toBe(12);
     expect(runCount).toBe(restores.length);
-  });
-
-  it("coldGuestWaitMs and baseSnapshotBuildSec are rounded and plausible", () => {
-    expect(Number.isInteger(coldGuestWaitMs)).toBe(true);
-    expect(coldGuestWaitMs).toBeGreaterThan(1000);
-    expect(baseSnapshotBuildSec).toBeGreaterThan(1);
-    expect(baseSnapshotBuildSec).toBeLessThan(60);
   });
 
   it("agent-platform figures are positive integers", () => {
