@@ -1,7 +1,10 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 
-exports_files(
-    ["platform-gke/otel-collector/application.yaml"],
+filegroup(
+    name = "backup_status_application",
+    # CI tests before Gazelle generates temporary enrollment packages. A glob
+    # follows those package boundaries during the later formatting checks.
+    srcs = glob(["platform-gke/otel-collector/application.yaml"], allow_empty = True),
     visibility = ["//projects/platform/otel-collector:__pkg__"],
 )
 

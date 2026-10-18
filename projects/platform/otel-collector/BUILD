@@ -81,7 +81,7 @@ py_test(
     name = "collector_optin_test",
     srcs = ["collector_optin_test.py"],
     data = [
-        "//projects:platform-gke/otel-collector/application.yaml",
+        "//projects:backup_status_application",
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",
