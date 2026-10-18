@@ -1045,7 +1045,16 @@ def main():
                 sheet.get_by_role("button", name="Approve version", exact=True).click()
                 expect(sheet.get_by_text("approved", exact=True)).to_be_visible()
             dm.goto("http://friends.localhost:4177/grimoire")
-            newcomers.get_by_role("link", name="Open session", exact=True).click()
+            # Same guard as the first open above: the session page is visible
+            # before it is mounted, and a click on its SSR "Start session"
+            # button before hydration is lost. Wait for the mounted page's
+            # first poll, listening from before the navigation so an early
+            # response cannot be missed.
+            with dm.expect_response(
+                lambda response: response.url.endswith("/session/state"),
+                timeout=10000,
+            ):
+                newcomers.get_by_role("link", name="Open session", exact=True).click()
             dm.get_by_role("button", name="Start session", exact=True).click()
             expect(
                 dm.get_by_role("button", name="Pause session", exact=True)
