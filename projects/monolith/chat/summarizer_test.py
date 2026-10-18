@@ -1,5 +1,6 @@
 """Tests for rolling summary generation."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -7,7 +8,11 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from chat.models import ChannelSummary, Message, UserChannelSummary
-from chat.summarizer import generate_channel_summaries, generate_summaries
+from chat.summarizer import (
+    _agent_reply_context,
+    generate_channel_summaries,
+    generate_summaries,
+)
 
 
 @pytest.fixture(name="session")
@@ -40,6 +45,8 @@ def _make_message(session, channel_id, user_id, username, content, msg_id):
         content=content,
         is_bot=False,
         embedding=[0.0] * 1024,
+        created_at=datetime(2025, 1, 1, tzinfo=timezone.utc)
+        + timedelta(seconds=msg_id),
     )
     session.add(msg)
     session.commit()
@@ -71,14 +78,16 @@ class TestGenerateSummaries:
     @pytest.mark.asyncio
     async def test_updates_existing_summary(self, session):
         """Subsequent runs update the existing summary with new messages."""
+        past = datetime(2020, 1, 1, tzinfo=timezone.utc)
         _make_message(session, "ch1", "u1", "Alice", "Old message", 1)
         session.add(
             UserChannelSummary(
                 channel_id="ch1",
                 user_id="u1",
-                username="Alice",
+                username="alice_old",
                 summary="Alice said old things.",
                 last_message_id=1,
+                updated_at=past,
             )
         )
         session.commit()
@@ -96,6 +105,14 @@ class TestGenerateSummaries:
         ).first()
         assert summary.summary == "Alice said old and new things."
         assert summary.last_message_id == 2
+        assert summary.user_id == "u1"
+        assert summary.username == "Alice"
+        assert summary.updated_at.replace(tzinfo=timezone.utc) > past
+        assert session.exec(
+            select(UserChannelSummary).where(
+                UserChannelSummary.username == "alice_old"
+            )
+        ).first() is None
 
     @pytest.mark.asyncio
     async def test_skips_when_no_new_messages(self, session):
@@ -247,3 +264,75 @@ class TestGenerateChannelSummaries:
             await generate_channel_summaries(session, mock_llm)
         finally:
             session.commit = original_commit
+
+
+class TestAgentReplyContext:
+    def test_includes_channel_and_user_summaries_and_recent(self, session):
+        _make_message(session, "ch1", "u1", "Alice", "how's the deploy going?", 1)
+        _make_message(session, "ch1", "u2", "Bob", "green across the board", 2)
+        session.add(
+            ChannelSummary(
+                channel_id="ch1",
+                summary="A homelab ops channel.",
+                message_count=2,
+                last_message_id=2,
+            )
+        )
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u1",
+                username="Alice",
+                summary="Alice runs the deploys.",
+                last_message_id=1,
+            )
+        )
+        session.commit()
+
+        ctx = _agent_reply_context(session, "ch1")
+
+        assert "A homelab ops channel." in ctx
+        assert "Alice: Alice runs the deploys." in ctx
+        assert "how's the deploy going?" in ctx
+        assert "Bob: green across the board" in ctx
+
+    def test_is_channel_scoped_by_provenance(self, session):
+        # Content authored in another channel must never leak into ch1's context,
+        # even the same user's summary in ch2.
+        _make_message(session, "ch1", "u1", "Alice", "ch1 only message", 1)
+        _make_message(session, "ch2", "u1", "Alice", "SECRET ch2 message", 2)
+        session.add(
+            ChannelSummary(
+                channel_id="ch2",
+                summary="SECRET ch2 channel summary.",
+                message_count=1,
+                last_message_id=2,
+            )
+        )
+        session.add(
+            UserChannelSummary(
+                channel_id="ch2",
+                user_id="u1",
+                username="Alice",
+                summary="SECRET ch2 user summary.",
+                last_message_id=2,
+            )
+        )
+        session.commit()
+
+        ctx = _agent_reply_context(session, "ch1")
+
+        assert "ch1 only message" in ctx
+        assert "SECRET" not in ctx
+
+    def test_empty_when_no_channel_data(self, session):
+        assert _agent_reply_context(session, "nope") == ""
+
+    def test_recent_is_chronological_and_limited(self, session):
+        for i in range(1, 21):
+            _make_message(session, "ch1", "u1", "Alice", f"msg{i}", i)
+        ctx = _agent_reply_context(session, "ch1", recent_limit=5)
+        # Only the last 5, oldest-first.
+        assert "msg16" in ctx and "msg20" in ctx
+        assert "msg15" not in ctx
+        assert ctx.index("msg16") < ctx.index("msg20")

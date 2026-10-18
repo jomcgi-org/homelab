@@ -231,23 +231,3 @@ class TestThinking:
             is_bot=False,
         )
         assert msg.thinking is None
-
-    @pytest.mark.asyncio
-    async def test_get_messages_with_thinking(self, store):
-        """get_messages_with_thinking returns only bot messages with thinking."""
-        store.embed_client.embed_batch.side_effect = [
-            [[0.0] * 1024],
-            [[0.0] * 1024],
-            [[0.0] * 1024],
-        ]
-
-        await store.save_message(
-            "m1", "ch1", "u1", "Bot", "resp1", True, thinking="thought1"
-        )
-        await store.save_message("m2", "ch1", "u1", "Bot", "resp2", True, thinking=None)
-        await store.save_message("m3", "ch1", "u2", "Alice", "human msg", False)
-
-        results = store.get_messages_with_thinking()
-        assert len(results) == 1
-        assert results[0].discord_message_id == "m1"
-        assert results[0].thinking == "thought1"

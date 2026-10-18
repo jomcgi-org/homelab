@@ -566,71 +566,10 @@ class MessageStore:
         )
         return self.session.exec(stmt).first()
 
-    def upsert_summary(
-        self,
-        channel_id: str,
-        user_id: str,
-        username: str,
-        summary_text: str,
-        last_message_id: int,
-    ) -> None:
-        """Insert or update a rolling summary for a user in a channel."""
-        existing = self.session.exec(
-            select(UserChannelSummary).where(
-                UserChannelSummary.channel_id == channel_id,
-                UserChannelSummary.user_id == user_id,
-            )
-        ).first()
-        if existing:
-            existing.summary = summary_text
-            existing.username = username
-            existing.last_message_id = last_message_id
-            existing.updated_at = datetime.now(timezone.utc)
-            self.session.add(existing)
-        else:
-            self.session.add(
-                UserChannelSummary(
-                    channel_id=channel_id,
-                    user_id=user_id,
-                    username=username,
-                    summary=summary_text,
-                    last_message_id=last_message_id,
-                )
-            )
-        self.session.commit()
-
     def get_channel_summary(self, channel_id: str) -> ChannelSummary | None:
         """Return the rolling summary for a channel, or None."""
         stmt = select(ChannelSummary).where(ChannelSummary.channel_id == channel_id)
         return self.session.exec(stmt).first()
-
-    def upsert_channel_summary(
-        self,
-        channel_id: str,
-        summary_text: str,
-        last_message_id: int,
-        message_count: int,
-    ) -> None:
-        """Insert or update a rolling summary for a channel."""
-        existing = self.session.exec(
-            select(ChannelSummary).where(ChannelSummary.channel_id == channel_id)
-        ).first()
-        if existing:
-            existing.summary = summary_text
-            existing.last_message_id = last_message_id
-            existing.message_count = message_count
-            existing.updated_at = datetime.now(timezone.utc)
-            self.session.add(existing)
-        else:
-            self.session.add(
-                ChannelSummary(
-                    channel_id=channel_id,
-                    summary=summary_text,
-                    last_message_id=last_message_id,
-                    message_count=message_count,
-                )
-            )
-        self.session.commit()
 
     def get_user_summaries_for_users(
         self, channel_id: str, user_ids: list[str]
@@ -641,16 +580,6 @@ class MessageStore:
         stmt = select(UserChannelSummary).where(
             UserChannelSummary.channel_id == channel_id,
             UserChannelSummary.user_id.in_(user_ids),
-        )
-        return list(self.session.exec(stmt).all())
-
-    def get_messages_with_thinking(self, limit: int = 200) -> list[Message]:
-        """Return recent bot messages that have stored thinking, newest first."""
-        stmt = (
-            select(Message)
-            .where(Message.is_bot == True, Message.thinking != None)  # noqa: E711,E712
-            .order_by(Message.created_at.desc())
-            .limit(limit)
         )
         return list(self.session.exec(stmt).all())
 

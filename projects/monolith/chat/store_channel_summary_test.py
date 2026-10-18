@@ -1,5 +1,6 @@
 """Tests for MessageStore channel summary methods."""
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -71,57 +72,47 @@ class TestGetChannelSummary:
         assert result.message_count == 10
 
 
-class TestUpsertChannelSummary:
-    def test_inserts_new_summary(self, store, session):
-        msg = Message(
-            id=1,
-            discord_message_id="1",
-            channel_id="ch1",
-            user_id="u1",
-            username="Alice",
-            content="hello",
-            is_bot=False,
-            embedding=[0.0] * 1024,
-        )
-        session.add(msg)
-        session.commit()
-        store.upsert_channel_summary("ch1", "Channel about infra.", 1, 5)
-        result = store.get_channel_summary("ch1")
-        assert result is not None
-        assert result.summary == "Channel about infra."
-        assert result.message_count == 5
-
-    def test_updates_existing_summary(self, store, session):
-        msg = Message(
-            id=1,
-            discord_message_id="1",
-            channel_id="ch1",
-            user_id="u1",
-            username="Alice",
-            content="hello",
-            is_bot=False,
-            embedding=[0.0] * 1024,
-        )
-        session.add(msg)
-        session.commit()
-        store.upsert_channel_summary("ch1", "First.", 1, 5)
-        store.upsert_channel_summary("ch1", "Updated.", 1, 10)
-        result = store.get_channel_summary("ch1")
-        assert result.summary == "Updated."
-        assert result.message_count == 10
-
-
 class TestGetUserSummariesForUsers:
     def test_returns_matching_summaries(self, store, session):
-        store.upsert_summary("ch1", "u1", "Alice", "Alice summary.", 10)
-        store.upsert_summary("ch1", "u2", "Bob", "Bob summary.", 20)
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u1",
+                username="Alice",
+                summary="Alice summary.",
+                last_message_id=10,
+                updated_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u2",
+                username="Bob",
+                summary="Bob summary.",
+                last_message_id=20,
+                updated_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
         result = store.get_user_summaries_for_users("ch1", ["u1", "u2"])
         assert len(result) == 2
         usernames = {s.username for s in result}
         assert usernames == {"Alice", "Bob"}
 
     def test_ignores_missing_users(self, store, session):
-        store.upsert_summary("ch1", "u1", "Alice", "Alice summary.", 10)
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u1",
+                username="Alice",
+                summary="Alice summary.",
+                last_message_id=10,
+                updated_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
         result = store.get_user_summaries_for_users("ch1", ["u1", "u_missing"])
         assert len(result) == 1
         assert result[0].username == "Alice"
@@ -135,8 +126,28 @@ class TestGetUserSummariesForUsers:
         assert result == []
 
     def test_scoped_to_channel(self, store, session):
-        store.upsert_summary("ch1", "u1", "Alice", "Alice in ch1.", 10)
-        store.upsert_summary("ch2", "u1", "Alice", "Alice in ch2.", 20)
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u1",
+                username="Alice",
+                summary="Alice in ch1.",
+                last_message_id=10,
+                updated_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+        session.add(
+            UserChannelSummary(
+                channel_id="ch2",
+                user_id="u1",
+                username="Alice",
+                summary="Alice in ch2.",
+                last_message_id=20,
+                updated_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
         result = store.get_user_summaries_for_users("ch1", ["u1"])
         assert len(result) == 1
         assert "ch1" in result[0].summary
