@@ -6447,7 +6447,7 @@ def reconcile_task(
         runs = graph.node_runs(task_id)
         # Live graph runs can coexist with unresolved factory starts. Audit
         # their aged pause before the active-run path returns, never settle it.
-        if task["task_paused"]:
+        if task.get("task_paused"):
             _expire_reconciler_pause(task_id, held_only=True)
         from factory.orchestration.factory_merged_delivery import (
             reconcile_merged_delivery,
@@ -6490,7 +6490,7 @@ def reconcile_task(
     if reconcile_merged_delivery(task, policy, runs):
         # A merged PR can hold unresolved starts after every graph run ends.
         # Audit the aged pause without settling it before returning early.
-        if task["task_paused"]:
+        if task.get("task_paused"):
             _expire_reconciler_pause(task_id, held_only=True)
         return
     permission = can_start(task_id)
