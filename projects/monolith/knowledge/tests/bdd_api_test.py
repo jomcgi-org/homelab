@@ -186,6 +186,14 @@ class TestDeadLetter:
 
 
 class TestTasks:
+    @covers_route("/api/knowledge/tasks", method="POST")
+    def test_create_task_requires_title(self, live_server_with_fake_embedding):
+        r = httpx.post(
+            f"{live_server_with_fake_embedding}/api/knowledge/tasks",
+            json={"title": "  "},
+        )
+        assert r.status_code == 422
+
     @covers_route("/api/knowledge/tasks")
     def test_list_tasks(self, live_server_with_fake_embedding):
         r = httpx.get(f"{live_server_with_fake_embedding}/api/knowledge/tasks")

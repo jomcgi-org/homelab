@@ -157,10 +157,23 @@ def activate(
 
 
 @tasks_app.command()
-def add() -> None:
-    """Add a new task (not implemented yet)."""
-    typer.echo("Not implemented yet.", err=True)
-    raise typer.Exit(1)
+def add(
+    title: Annotated[str, typer.Argument(help="Title of the new task")],
+    due: Annotated[
+        str | None, typer.Option("--due", help="Due date (YYYY-MM-DD)")
+    ] = None,
+    status: Annotated[
+        str,
+        typer.Option("--status", help="todo, in-progress, done, cancelled, or someday"),
+    ] = "todo",
+) -> None:
+    """Create a task and print its note ID."""
+    body = {"title": title, "status": status}
+    if due is not None:
+        body["due"] = due
+    resp = _request("post", "/api/knowledge/tasks", json=body)
+    resp.raise_for_status()
+    typer.echo(resp.json()["note_id"])
 
 
 @tasks_app.command()

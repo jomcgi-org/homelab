@@ -277,13 +277,44 @@ class TestActivate:
 
 
 class TestAdd:
-    def test_add_not_implemented(self, runner):
-        """`knowledge tasks add` prints 'Not implemented yet' to stderr and exits 1."""
-        result = runner.invoke(app, ["knowledge", "tasks", "add"])
+    @pytest.mark.parametrize("prefix", [["tasks"], ["knowledge", "tasks"]])
+    def test_add_defaults(self, runner, prefix):
+        resp = _mock_response({"note_id": "server-generated-id"}, 201)
+        with patch("tools.cli.tasks_cmd._request", return_value=resp) as request:
+            result = runner.invoke(app, [*prefix, "add", "Buy milk"])
 
-        assert result.exit_code == 1
-        # CliRunner mixes stderr into output by default
-        assert "Not implemented yet" in result.output
+        assert result.exit_code == 0, result.output
+        request.assert_called_once_with(
+            "post", "/api/knowledge/tasks", json={"title": "Buy milk", "status": "todo"}
+        )
+        resp.raise_for_status.assert_called_once_with()
+        assert result.output == "server-generated-id\n"
+
+    @pytest.mark.parametrize(
+        "status", ["todo", "in-progress", "done", "cancelled", "someday"]
+    )
+    def test_add_options(self, runner, status):
+        title = 'Title: "quoted"\nstatus: done'
+        resp = _mock_response({"note_id": "another-server-id"}, 201)
+        with patch("tools.cli.tasks_cmd._request", return_value=resp) as request:
+            result = runner.invoke(
+                app, ["tasks", "add", title, "--due", "2028-02-29", "--status", status]
+            )
+
+        assert result.exit_code == 0, result.output
+        request.assert_called_once_with(
+            "post",
+            "/api/knowledge/tasks",
+            json={"title": title, "due": "2028-02-29", "status": status},
+        )
+        resp.raise_for_status.assert_called_once_with()
+        assert result.output == "another-server-id\n"
+
+    def test_missing_title_never_requests(self, runner):
+        with patch("tools.cli.tasks_cmd._request") as request:
+            result = runner.invoke(app, ["tasks", "add"])
+        assert result.exit_code != 0
+        request.assert_not_called()
 
 
 class TestDaily:
