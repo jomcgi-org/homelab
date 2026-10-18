@@ -1239,8 +1239,7 @@ jobs:
       # sits inside this deadline, so the client gives up first.
       activeDeadlineSeconds: 300
       suspend: false
-      env:
-        MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
+      internalApi: true
       resources:
         requests:
           cpu: 100m
@@ -1279,7 +1278,6 @@ tokenBroker:
     enabled: false
     url: "https://embervm-embervm-tokenbroker.embervm.svc:8443"
     serverId: "spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-tokenbroker"
-    tlsPort: 8443
     helper:
       hint: monolith-platform
       image:

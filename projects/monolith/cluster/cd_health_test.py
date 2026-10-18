@@ -32,22 +32,20 @@ def _freight(version: str, created_at: datetime) -> dict:
     }
 
 
+_PRODUCTION_APPS = ("monolith", "embervm", "monolith-public", "monolith-agents")
+
+
 def _apps_config() -> str:
-    """The deploy-shaped CD_HEALTH_KARGO_APPS payload: monolith + embervm."""
+    """The production CD_HEALTH_KARGO_APPS payload covers all four pipelines."""
     return json.dumps(
         [
             {
-                "app": "monolith",
-                "kargo_namespace": "kargo-monolith",
-                "chart_repo_suffix": "/charts/monolith",
-                "chart_path": "projects/monolith/chart",
-            },
-            {
-                "app": "embervm",
-                "kargo_namespace": "kargo-embervm",
-                "chart_repo_suffix": "/charts/embervm",
-                "chart_path": "projects/embervm/chart",
-            },
+                "app": name,
+                "kargo_namespace": f"kargo-{name}",
+                "chart_repo_suffix": f"/charts/{name}",
+                "chart_path": f"projects/{name}/chart",
+            }
+            for name in _PRODUCTION_APPS
         ]
     )
 
@@ -138,17 +136,12 @@ def test_parse_apps_accepts_the_deploy_shape():
     apps = mod._parse_apps(_apps_config())
     assert apps == [
         {
-            "app": "monolith",
-            "namespace": "kargo-monolith",
-            "suffix": "/charts/monolith",
-            "chart_path": "projects/monolith/chart",
-        },
-        {
-            "app": "embervm",
-            "namespace": "kargo-embervm",
-            "suffix": "/charts/embervm",
-            "chart_path": "projects/embervm/chart",
-        },
+            "app": name,
+            "namespace": f"kargo-{name}",
+            "suffix": f"/charts/{name}",
+            "chart_path": f"projects/{name}/chart",
+        }
+        for name in _PRODUCTION_APPS
     ]
 
 
@@ -212,8 +205,34 @@ async def test_one_app_lagging_and_one_fresh_faults_once(monkeypatch):
     # Each app must be queried against ITS namespace and chart suffix, proving
     # the config list actually flows through rather than a shared constant.
     assert fake.freight_calls == [
-        ("kargo-monolith", "/charts/monolith"),
-        ("kargo-embervm", "/charts/embervm"),
+        (f"kargo-{name}", f"/charts/{name}") for name in _PRODUCTION_APPS
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lagging_app", _PRODUCTION_APPS)
+async def test_each_production_app_has_its_own_oldest_freight_clock(
+    monkeypatch, lagging_app
+):
+    monkeypatch.setenv("CD_HEALTH_KARGO_APPS", _apps_config())
+    now = datetime.now(timezone.utc)
+    freight = {f"kargo-{name}": [_freight("1.0.0", now)] for name in _PRODUCTION_APPS}
+    freight[f"kargo-{lagging_app}"] = [
+        _freight("1.1.0", now - timedelta(hours=3)),
+        _freight("1.2.0", now - timedelta(minutes=10)),
+    ]
+    fake = _fake_kubernetes({name: "1.0.0" for name in _PRODUCTION_APPS}, freight)
+    monkeypatch.setattr("cluster.kubernetes.KubernetesClient", lambda: fake)
+
+    ok, details = await mod._chart_lag_fault(7200)
+
+    assert ok is False
+    assert len(details) == 4
+    faults = [detail for detail in details if "waiting" in detail]
+    assert len(faults) == 1
+    assert faults[0].startswith(f"{lagging_app}:") and "180m" in faults[0]
+    assert fake.freight_calls == [
+        (f"kargo-{name}", f"/charts/{name}") for name in _PRODUCTION_APPS
     ]
 
 
@@ -693,7 +712,7 @@ async def test_per_app_write_failure_does_not_suppress_later_app(monkeypatch):
     await mod._record_deployment_observations(poll_time)
 
     assert fake.closed
-    assert [item["app"] for item in writes] == ["embervm"]
+    assert [item["app"] for item in writes] == list(_PRODUCTION_APPS[1:])
     assert writes[0]["observed_at"] == poll_time.isoformat()
 
 
@@ -725,7 +744,7 @@ async def test_observation_cycle_closes_kubernetes_client(monkeypatch, outcome):
         assert collected == ["monolith"]
     else:
         await mod._record_deployment_observations(datetime.now(timezone.utc))
-        assert collected == ["monolith", "embervm"]
+        assert collected == list(_PRODUCTION_APPS)
     assert fake.closed
 
 

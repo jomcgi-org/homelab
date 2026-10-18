@@ -87,71 +87,6 @@ publicWriter:
   onepassword:
     itemPath: ""
 
-# Public chat (ADR 005 / V3 plan Phase 1). The grimoire_chat module is composed
-# into the public backend ("web"); it reads these CHAT_PUBLIC_* budgets through
-# grimoire_chat/limits.py (the notes chat they were named for is retired). It
-# writes sessions + transcripts to the Postgres PRIMARY (monolith-pg-rw) via the
-# public_writer role (see the publicWriter block above), distinct from the
-# read-only public_reader the rest of the public tier uses. These are the
-# Phase 0 starting budget values from the plan; they are also surfaced as
-# CHAT_PUBLIC_* env on web.env below (Helm values cannot self-reference, so the
-# two must stay in sync, this block is the documented source of truth). Grep the test tree before changing any of these
-# (per CLAUDE.md).
-chatPublic:
-  # Per-message character cap on the user's single submitted message.
-  charCap: 8000
-  # Max conversational turns per session.
-  maxTurns: 20
-  # Max output tokens the model may emit in a single turn.
-  maxOutputTokens: 4000
-  # Max total tokens (in + out, accumulated) a single session may spend.
-  maxSessionTokens: 32000
-  # Session / cookie TTL in seconds (the SSR cookie maxAge mirrors this).
-  sessionTtlSeconds: 1800
-  # NOTE: the public concurrency ceiling is NOT set here. It lives solely as
-  # CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT on web.env below, because values.yaml
-  # cannot reference its own keys and web.env is a literal list. A
-  # `globalMaxConcurrent` key used to sit here describing itself as "mirrored"
-  # to that env, but nothing rendered it: it was referenced by no template in
-  # the repo, so editing it changed nothing while reading exactly like the live
-  # knob. Removed rather than wired, so there is one place to change.
-  # Turnstile siteverify HTTP timeout (seconds): keep short so a slow/unreachable
-  # Cloudflare fails closed quickly. Mirrored as TURNSTILE_TIMEOUT_SECONDS below.
-  turnstileTimeoutSeconds: 5
-  # Shared vLLM endpoint for public-chat inference (ADR 005 layer 6 / V3 Phase 3).
-  # In-cluster OpenAI-compatible service DNS on the vLLM HTTP port; the backend
-  # streams text-only turns from here (NO tools). This is a plain values literal
-  # (an in-cluster service URL, not a secret), mirrored as CHAT_PUBLIC_INFERENCE_URL
-  # on web.env below. The inference pods are unmeshed and in-cluster, so the public
-  # EgressNetwork off-cluster deny does not block this.
-  inferenceUrl: "http://inference.inference.svc.cluster.local:8080"
-  # Public-graph retrieval (ADR 005 layer 5 / V3 Phase 4a). The turn is grounded
-  # on public notes only by embedding the live query and cosine-searching the
-  # public_api.knowledge_chunks view as public_reader. Confinement is the view, not
-  # a prompt rule. Mirrored as the env on web.env below (Helm cannot self-reference).
-  # In-cluster embeddings endpoint (voyage-4-nano via llama.cpp). Plain values
-  # literal (in-cluster service URL, not a secret); unmeshed + in-cluster, so the
-  # public off-cluster EgressNetwork deny does not block it. Mirrored as EMBEDDING_URL.
-  embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
-  # How many distinct public notes a turn grounds on (the overlay's touched set).
-  # Mirrored as CHAT_PUBLIC_RETRIEVAL_K below.
-  retrievalK: 6
-  # Compaction knobs (ADR 005 layer 4 / V3 Phase 3): when the live context
-  # (system prompt + rolling summary + recent turns) approaches a fraction of the
-  # model window, older turns are folded into the session rolling summary so each
-  # request stays bounded. Mirrored as the CHAT_PUBLIC_* env on web.env below.
-  # Usable context window of the shared model, in tokens (compaction is sized as a
-  # fraction of this; keep at or below the real vLLM context length).
-  modelWindowTokens: 32768
-  # Fraction of the model window at which compaction triggers.
-  compactionTrigger: 0.70
-  # How many most-recent transcript messages are kept verbatim after a compaction
-  # (everything older is folded into the rolling summary). ~3 turns.
-  compactionKeepMessages: 6
-  # Max tokens the rolling-summary generation may emit (a summary is short and
-  # spends GPU under the same in-flight slot as a turn, so cap it tightly).
-  summaryMaxTokens: 512
-
 # Cloudflare Turnstile admission (ADR 005 layer 1). The SECRET is backend-only:
 # siteverify runs in the "web" FastAPI binary, so TURNSTILE_SECRET_KEY (and the
 # IP-hash salt) are sourced via secretKeyRef from the OnePasswordItem synced
@@ -161,9 +96,6 @@ chatPublic:
 # is set in deploy/values.yaml and left empty here so a bare `helm template` does
 # not emit a OnePasswordItem with a null path.
 turnstile:
-  # Public Turnstile site key. SSOT for frontend.env TURNSTILE_SITE_KEY below
-  # (Helm values cannot self-reference, so the literal is repeated there).
-  siteKey: "0x4AAAAAADm59tvOGWo09IYc"
   # Name of the Opaque Secret the OnePasswordItem syncs the Turnstile fields into
   # (keys SITE_KEY / SECRET_KEY / IP_HASH_SALT, mapped from the 1Password field
   # labels). Backend secretKeyRefs in web.env reference this name.
@@ -248,8 +180,7 @@ web:
   # chat write role owns DML on the chat_public and grimoire_chat schemas only.
   # The secretKeyRef names must match databaseSecretName /
   # publicWriter.databaseSecretName above.
-  # The CHAT_PUBLIC_* budget values mirror the chatPublic block above (Helm
-  # values cannot self-reference, so they are repeated here as literals).
+  # grimoire_chat/limits.py reads the CHAT_PUBLIC_* budgets from this env list.
   env:
     - name: DATABASE_URL
       valueFrom:
@@ -301,8 +232,7 @@ web:
     - name: CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT
       value: "1"
     # Shared vLLM endpoint for public-chat inference (ADR 005 layer 6 / Phase 3).
-    # In-cluster service URL literal (NOT a secret); mirrors chatPublic.inferenceUrl
-    # above (Helm values cannot self-reference). The backend refuses to call
+    # In-cluster service URL literal (NOT a secret). The backend refuses to call
     # inference if this is unset (no hardcoded service URL in code).
     - name: CHAT_PUBLIC_INFERENCE_URL
       value: "http://inference.inference.svc.cluster.local:8080"
@@ -314,17 +244,17 @@ web:
           optional: true
     # Public-graph retrieval (ADR 005 layer 5 / Phase 4a). EMBEDDING_URL is the
     # in-cluster embeddings endpoint the retrieval path embeds the live query
-    # against; CHAT_PUBLIC_RETRIEVAL_K is the number of distinct public notes a
-    # turn grounds on. Both mirror the chatPublic block above (Helm values cannot
-    # self-reference). EMBEDDING_URL is an in-cluster service URL literal, NOT a
+    # against; grimoire_chat/retrieval.py reads GRIMOIRE_CHAT_RETRIEVAL_K for the
+    # number of distinct public notes a turn grounds on.
+    # EMBEDDING_URL is an in-cluster service URL literal, NOT a
     # code default and NOT a secret; the endpoint is unmeshed + in-cluster so the
     # public EgressNetwork off-cluster deny does not block it.
     - name: EMBEDDING_URL
       value: "http://inference-embeddings.inference.svc.cluster.local:8080"
-    - name: CHAT_PUBLIC_RETRIEVAL_K
+    - name: GRIMOIRE_CHAT_RETRIEVAL_K
       value: "6"
-    # Compaction knobs (ADR 005 layer 4 / Phase 3). Mirror the chatPublic block
-    # above (Helm values cannot self-reference, so they are repeated as literals).
+    # Compaction knobs (ADR 005 layer 4 / Phase 3): model window, trigger
+    # fraction, retained messages and summary token cap.
     - name: CHAT_PUBLIC_MODEL_WINDOW_TOKENS
       value: "32768"
     - name: CHAT_PUBLIC_COMPACTION_TRIGGER
@@ -476,7 +406,6 @@ frontend:
     # Public Turnstile site key for the SSR-rendered widget (ADR 005 layer 1).
     # PUBLIC by design (it only identifies the widget), so it is a plain literal,
     # NOT a secretKeyRef: the frontend must never reference the Turnstile secret.
-    # Mirrors turnstile.siteKey above (Helm values cannot self-reference).
     - name: TURNSTILE_SITE_KEY
       value: "0x4AAAAAADm59tvOGWo09IYc"
     - name: PUBLIC_MAINTENANCE_BANNER

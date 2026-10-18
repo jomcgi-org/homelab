@@ -23,6 +23,10 @@
 # migrations stay identical to prod.
 
 backend:
+  # Keep this historical dev preset dormant independently of production sizing.
+  replicas: 0
+  autoscaling:
+    enabled: false
   # THE side-effect mute. One switch covers all five leader singletons (Discord
   # bot, chat outbox drain, DBOS swarm runtime, AIS ingest, cd probe writer).
   # This is the single most important line in this file: the nightly refresh

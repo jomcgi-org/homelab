@@ -12,8 +12,8 @@ is not the public site being down, so the signal is reported as metadata and
 does not make the health endpoint return 503.
 
 Coverage is configured, not hardcoded (#4890): ``CD_HEALTH_KARGO_APPS`` lists
-every Kargo-managed production app (monolith and embervm today, rendered from
-``cdHealth.apps`` in the chart), and the lag judgement below runs once per
+every Kargo-managed production app (rendered from ``cdHealth.apps`` in the
+chart), and the lag judgement below runs once per
 entry. Before embervm joined, its four-version lag on 2026-08-14 (#4884) was
 invisible here while `Synced`/`Healthy` stayed true, because those describe
 agreement with the pinned version, not currency with main.

@@ -27,6 +27,7 @@ outputs against each other finds them, which is what this does.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -83,9 +84,16 @@ def _chart_dir() -> Path:
     raise RuntimeError("Could not find chart Chart.yaml")
 
 
-def _render(release: str, values: list[Path]) -> str:
+def _render(release: str, values: list[Path], *, namespace: str | None = None) -> str:
     helm_bin = os.environ.get("HELM_BIN", "helm")
-    argv = [helm_bin, "template", release, str(_chart_dir()), "--namespace", release]
+    argv = [
+        helm_bin,
+        "template",
+        release,
+        str(_chart_dir()),
+        "--namespace",
+        namespace or release,
+    ]
     for v in values:
         argv += ["--values", str(v)]
     # jobs.image is injected at CHART BUILD TIME by helm_images_values, so a
@@ -1310,6 +1318,27 @@ def test_shared_s3_true_with_cleared_item_path_keeps_external_consumers(tmp_path
     assert ref["key"] == "access-key-id" and ref["name"].endswith("-r2-s3")
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("item_path", ["", None, "vaults/test/items/r2"])
+def test_r2_producer_requires_enabled_storage_and_item_path(
+    tmp_path, enabled, item_path
+):
+    override = _write_values(
+        tmp_path,
+        "r2-producer.yaml",
+        {
+            "sharedS3": {"enabled": enabled},
+            "stars": {"onepassword": {"itemPath": item_path}},
+        },
+    )
+    producers = _r2_producers(_render("test-r2", [override]))
+    if enabled and item_path:
+        assert len(producers) == 1
+        assert producers[0]["spec"]["itemPath"] == item_path
+    else:
+        assert producers == []
+
+
 @pytest.mark.parametrize(
     "enabled",
     ["false", "true", 1, 0, None, [True]],
@@ -1385,6 +1414,80 @@ def test_moving_calendar_credential_remains_optional_and_transport_independent(
         key: {"name": "monolith-google-calendar", "key": key, "optional": True}
         for key in keys
     }
+
+
+@pytest.mark.parametrize("environment", ["prod", "gke"])
+def test_calendar_feed_is_job_only_and_keeps_its_secret_producer(environment, renders):
+    rendered = renders[environment]
+    assert "ICAL_FEED_URL" not in _env_by_name(_deployment_backend_env(rendered))
+    jobs = dict(_cron_containers(rendered))
+    assert jobs, "production jobs must render with the forced image"
+    assert _env_by_name(jobs["home-calendar-poll"])["ICAL_FEED_URL"] == {
+        "name": "ICAL_FEED_URL",
+        "valueFrom": {
+            "secretKeyRef": {"name": "monolith-secrets", "key": "ICAL_FEED_URL"}
+        },
+    }
+    producer = next(
+        doc
+        for doc in yaml.safe_load_all(rendered)
+        if doc
+        and doc.get("kind") == "OnePasswordItem"
+        and doc["metadata"]["name"] == "monolith-secrets"
+    )
+    assert producer["spec"]["itemPath"] == "vaults/k8s-homelab/items/private-homepage"
+
+
+def test_codex_synthetic_uses_release_derived_internal_api():
+    docs = _cron_docs(_render("alternate", [], namespace="another-namespace"))
+    job = docs["ember-codex-session-synthetic"]
+    workflow = job["spec"]["workflowSpec"]
+    container = workflow["templates"][0]["container"]
+    entries = [
+        item for item in container["env"] if item["name"] == "MONOLITH_INTERNAL_URL"
+    ]
+    assert entries == [
+        {
+            "name": "MONOLITH_INTERNAL_URL",
+            "value": "http://alternate.another-namespace.svc:8000",
+        }
+    ]
+    assert job["spec"]["schedules"] == ["0 * * * *"]
+    assert job["spec"]["suspend"] is False
+    assert job["spec"]["concurrencyPolicy"] == "Forbid"
+    assert workflow["activeDeadlineSeconds"] == 300
+    assert container["resources"] == {"requests": {"cpu": "100m", "memory": "256Mi"}}
+
+
+@pytest.mark.parametrize("environment", ["prod", "gke"])
+def test_cd_health_renders_all_four_kargo_production_mappings(environment, renders):
+    env = _env_by_name(_deployment_backend_env(renders[environment]))
+    apps = json.loads(env["CD_HEALTH_KARGO_APPS"]["value"])
+    names = ("monolith", "embervm", "monolith-public", "monolith-agents")
+    assert apps == [
+        {
+            "app": name,
+            "kargo_namespace": f"kargo-{name}",
+            "chart_repo_suffix": f"/charts/{name}",
+            "chart_path": f"projects/{name}/chart",
+        }
+        for name in names
+    ]
+    assert env["CD_HEALTH_CHART_LAG_S"]["value"] == "7200"
+    assert env["CD_HEALTH_CI_RED_WINDOW_S"]["value"] == "3600"
+
+
+def test_cd_health_defaults_remain_inert():
+    env = _env_by_name(_deployment_backend_env(_render("default", [])))
+    assert json.loads(env["CD_HEALTH_KARGO_APPS"]["value"]) == []
+
+
+def test_historical_dev_keeps_its_own_dormancy_fence(renders):
+    docs = [doc for doc in yaml.safe_load_all(renders["dev"]) if doc]
+    backend = next(doc for doc in docs if doc["kind"] == "Deployment")
+    assert backend["spec"]["replicas"] == 0
+    assert not any(doc["kind"] == "HorizontalPodAutoscaler" for doc in docs)
+    assert not _cron_docs(renders["dev"])
 
 
 def _notification_projection(rendered):

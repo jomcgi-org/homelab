@@ -1,9 +1,6 @@
-# GKE cutover destination. HPAs were disabled here so zero replicas stayed
-# authoritative during the cutover; web has since been re-enabled (see below).
-# WINDOW: the web env list is a literal in chart values (Helm values cannot
-# self-reference), so pointing public chat at Meta Spark while retaining the
-# in-cluster embedding service means overriding the WHOLE list here. Fold this
-# back into a template-driven env in the chart post-window (#5457).
+# Hub production overrides, layered after deploy/values.yaml by gke-apps.
+# Helm replaces env lists. Keep the complete web.env list to select Meta Spark
+# and require its API key while preserving every other environment entry.
 otelEndpoint: "http://otel-collector.otel-collector.svc:4318/v1/traces"
 
 web:
@@ -43,7 +40,7 @@ web:
         name: monolith-public-meta-spark
   - name: EMBEDDING_URL
     value: http://inference-embeddings.inference.svc.cluster.local:8080
-  - name: CHAT_PUBLIC_RETRIEVAL_K
+  - name: GRIMOIRE_CHAT_RETRIEVAL_K
     value: '6'
   - name: CHAT_PUBLIC_MODEL_WINDOW_TOKENS
     value: '32768'
@@ -89,17 +86,10 @@ web:
     value: history-map.json
   - name: ARTIFACTS_S3_BUCKET
     value: artifacts
-  # The shared chart helper treats numeric zero as empty and defaults it to one.
-  # A string still renders as the numeric YAML scalar `replicas: 0`.
-  # Kept as the floor the HPA starts from, and as the count if autoscaling is
-  # turned off again: the deployment template stops rendering replicas while an
-  # HPA owns the component, so this value is inert until then.
+  # Fallback count when autoscaling is disabled. The helper always renders
+  # replicas; the hub Application ignores this field while the HPA owns web.
   replicas: "1"
-  # Re-enabled 2026-09-15. The cutover comment at the top of this file disabled
-  # HPAs so zero replicas stayed authoritative while the app was dormant; the
-  # tier has served live traffic since and the single replica makes any restart
-  # a full public outage, which is how an OOMKill at 12:03 on 2026-09-15 took
-  # the public site down with nothing alerting on it.
+  # The hub web tier uses an HPA with two replicas as its minimum.
   autoscaling:
     enabled: true
     # Floor of 2, above the chart default of 1. The HPA scales on CPU and an

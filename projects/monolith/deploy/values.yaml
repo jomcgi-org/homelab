@@ -1,10 +1,4 @@
 backend:
-  # WINDOW: writers stopped for the GKE cutover (runbook step 3). The HPA
-  # must go too: with autoscaling on the chart omits replicas and minPods 1
-  # keeps one backend alive.
-  replicas: 0
-  autoscaling:
-    enabled: false
   # Repointed off SigNoz onto the replacement collector (#5362). Cleared when
   # SigNoz was deleted, which left the backend with no traces destination at
   # all: the chart only renders OTEL_EXPORTER_OTLP_TRACES_ENDPOINT when this is
@@ -412,8 +406,7 @@ scratchPostgres:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
 
-# cd health chart-lag coverage (#4890): every Kargo-managed production app, so
-# embervm's lag is visible next to monolith's instead of invisible (#4884).
+# Advisory chart-lag coverage for every Kargo-managed production app.
 # Entries mirror projects/platform/kargo/values.yaml promotion.pipelines: app
 # is the pipeline's prod Stage application, kargo_namespace its project,
 # chart_repo_suffix picks its chart out of Freight repoURLs. The clock stays
@@ -430,6 +423,14 @@ cdHealth:
       kargo_namespace: kargo-embervm
       chart_repo_suffix: /charts/embervm
       chart_path: projects/embervm/chart
+    - app: monolith-public
+      kargo_namespace: kargo-monolith-public
+      chart_repo_suffix: /charts/monolith-public
+      chart_path: projects/monolith-public/chart
+    - app: monolith-agents
+      kargo_namespace: kargo-monolith-agents
+      chart_repo_suffix: /charts/monolith-agents
+      chart_path: projects/monolith-agents/chart
 
 # Staged separately after repository acceptance. Keep cdHealth and
 # podRestartWatch on their existing settings while this writer stays off.
