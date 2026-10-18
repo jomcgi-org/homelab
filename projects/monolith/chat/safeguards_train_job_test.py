@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
 
 from chat import safeguards, safeguards_train_job
 from chat.models import ModerationEvent, TrustModel
@@ -17,12 +16,11 @@ N_FEATURES = len(safeguards.FEATURE_NAMES)
 
 
 @pytest.fixture(name="engine")
-def engine_fixture():
-    """In-memory SQLite engine with the chat schema stripped for SQLite compat."""
+def engine_fixture(tmp_path):
+    """File-backed SQLite engine with the chat schema stripped for SQLite compat."""
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'safeguards.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -31,6 +29,7 @@ def engine_fixture():
             table.schema = None
     SQLModel.metadata.create_all(engine)
     yield engine
+    engine.dispose()
     for table in SQLModel.metadata.tables.values():
         if table.name in original_schemas:
             table.schema = original_schemas[table.name]
@@ -46,6 +45,27 @@ def _dataset(n: int = 300, seed: int = 5) -> dict:
         X.append(vec)
         y.append(label)
     return {"X": X, "y": y}
+
+
+def _model_snapshot(engine) -> dict:
+    with Session(engine) as session:
+        return {
+            row.version: row.model_dump()
+            for row in session.exec(select(TrustModel)).all()
+        }
+
+
+@pytest.fixture
+def existing_models(engine):
+    with Session(engine) as session:
+        session.add_all(
+            [
+                TrustModel(version=1, status="shadow"),
+                TrustModel(version=2, status="live"),
+            ]
+        )
+        session.commit()
+    return _model_snapshot(engine)
 
 
 class TestGatherDataset:
@@ -120,7 +140,15 @@ class TestStoreModel:
     def test_stores_shadow_and_retires_previous_shadow(self, engine):
         forest = {
             "n_features": N_FEATURES,
-            "trees": [],
+            "trees": [
+                {
+                    "feature": [-1],
+                    "threshold": [0.0],
+                    "left": [-1],
+                    "right": [-1],
+                    "value": [0.5],
+                }
+            ],
             "metrics": {"oob_accuracy": 0.9},
         }
         with Session(engine) as session:
@@ -128,7 +156,7 @@ class TestStoreModel:
             session.add(TrustModel(version=2, status="live"))
             session.commit()
         with patch("core.db.get_engine", return_value=engine):
-            version = safeguards_train_job._store_model(forest, 300, 40, "sandbox")
+            version = safeguards_train_job._store_model(forest, 300, 40, "local")
         assert version == 3
         with Session(engine) as session:
             rows = {r.version: r for r in session.exec(select(TrustModel)).all()}
@@ -136,34 +164,105 @@ class TestStoreModel:
             assert rows[2].status == "live"  # promotion state is never touched
             assert rows[3].status == "shadow"
             metrics = json.loads(rows[3].metrics_json)
-            assert metrics["trained_in"] == "sandbox"
+            assert metrics["trained_in"] == "local"
             assert json.loads(rows[3].feature_names_json) == list(
                 safeguards.FEATURE_NAMES
             )
 
 
 class TestHandler:
-    def test_skips_on_thin_dataset(self, engine):
-        thin = {"X": [[0.0] * N_FEATURES] * 10, "y": [1] * 5 + [0] * 5}
-        with (
-            patch.object(safeguards_train_job, "_gather_dataset", return_value=thin),
-            patch("core.db.get_engine", return_value=engine),
-        ):
-            asyncio.run(safeguards_train_job.safeguards_train_handler(MagicMock()))
-        with Session(engine) as session:
-            assert session.exec(select(TrustModel)).all() == []
-
-    def test_trains_in_process(self, engine):
+    @pytest.mark.parametrize(
+        "forest",
+        [
+            {"n_features": N_FEATURES, "trees": [{}]},
+            {
+                "n_features": N_FEATURES - 1,
+                "trees": [
+                    {
+                        "feature": [-1],
+                        "threshold": [0.0],
+                        "left": [-1],
+                        "right": [-1],
+                        "value": [0.5],
+                    }
+                ],
+            },
+        ],
+        ids=["malformed-tree", "wrong-feature-count"],
+    )
+    def test_skips_unusable_trained_forest(
+        self, engine, existing_models, forest, caplog
+    ):
         dataset = _dataset()
         with (
             patch.object(safeguards_train_job, "_gather_dataset", return_value=dataset),
+            patch.object(
+                safeguards_train_job.safeguards_forest,
+                "train_forest",
+                return_value=forest,
+            ) as train,
+            patch.object(
+                safeguards_train_job,
+                "_store_model",
+                wraps=safeguards_train_job._store_model,
+            ) as store,
+            patch.object(safeguards, "invalidate_model_cache") as invalidate,
+            patch("core.db.get_engine", return_value=engine),
+            caplog.at_level("INFO", logger=safeguards_train_job.logger.name),
+        ):
+            asyncio.run(safeguards_train_job.safeguards_train_handler(MagicMock()))
+        train.assert_called_once_with(
+            dataset["X"],
+            dataset["y"],
+            n_trees=safeguards_train_job._N_TREES,
+            seed=safeguards_train_job._SEED,
+        )
+        store.assert_not_called()
+        invalidate.assert_not_called()
+        assert _model_snapshot(engine) == existing_models
+        assert "safeguards-train: trained forest unusable; skipping" in caplog.text
+
+    @pytest.mark.parametrize(
+        "labels",
+        [[1] * 5 + [0] * 5, [1] * 300, [0] * 300],
+        ids=["too-few-samples", "no-negatives", "no-positives"],
+    )
+    def test_skips_on_thin_dataset(self, engine, existing_models, labels):
+        thin = {"X": [[0.0] * N_FEATURES] * len(labels), "y": labels}
+        with (
+            patch.object(safeguards_train_job, "_gather_dataset", return_value=thin),
+            patch.object(
+                safeguards_train_job.safeguards_forest, "train_forest"
+            ) as train,
+            patch.object(safeguards_train_job, "_store_model") as store,
+            patch.object(safeguards, "invalidate_model_cache") as invalidate,
             patch("core.db.get_engine", return_value=engine),
         ):
             asyncio.run(safeguards_train_job.safeguards_train_handler(MagicMock()))
+        train.assert_not_called()
+        store.assert_not_called()
+        invalidate.assert_not_called()
+        assert _model_snapshot(engine) == existing_models
+
+    def test_trains_in_process(self, engine, existing_models):
+        dataset = _dataset()
+        with (
+            patch.object(safeguards_train_job, "_gather_dataset", return_value=dataset),
+            patch.object(safeguards, "invalidate_model_cache") as invalidate,
+            patch("core.db.get_engine", return_value=engine),
+        ):
+            asyncio.run(safeguards_train_job.safeguards_train_handler(MagicMock()))
+        invalidate.assert_called_once_with()
+        stored = _model_snapshot(engine)
+        assert set(stored) == {1, 2, 3}
+        assert stored[1] == {**existing_models[1], "status": "retired"}
+        assert stored[2] == existing_models[2]
         with Session(engine) as session:
-            row = session.exec(select(TrustModel)).one()
+            row = session.exec(select(TrustModel).where(TrustModel.version == 3)).one()
             assert row.status == "shadow"
             assert row.n_samples == 300
+            assert row.n_positive == sum(dataset["y"])
+            assert safeguards_train_job._forest_usable(json.loads(row.model_json))
             metrics = json.loads(row.metrics_json)
             assert metrics["trained_in"] == "local"
             assert metrics["oob_accuracy"] > 0.8
