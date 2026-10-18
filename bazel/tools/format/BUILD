@@ -50,14 +50,21 @@ prettier.prettier_binary(
     ],
 )
 
+# Rust formatting belongs to cargo fmt under oom-inference's pinned toolchain.
 format_multirun(
     name = "format_code",
     go = "@aspect_rules_lint//format:gofumpt",
     javascript = ":prettier",
     python = "@aspect_rules_lint//format:ruff",
-    rust = "@rules_rust//tools/rustfmt:upstream_rustfmt",
     shell = "@aspect_rules_lint//format:shfmt",
     starlark = "@buildifier_prebuilt//:buildifier",
+)
+
+sh_test(
+    name = "format_code_test",
+    srcs = ["format-code_test.sh"],
+    args = ["$(rootpath :format_code.check)"],
+    data = [":format_code.check"],
 )
 
 # aspect_rules_lint has no Svelte dialect; format tracked *.svelte via the same

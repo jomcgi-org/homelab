@@ -31,7 +31,6 @@ bazel_dep(name = "rules_python", version = "1.7.0")
 bazel_dep(name = "rules_python_gazelle_plugin", version = "1.8.1")
 bazel_dep(name = "aspect_rules_py", version = "1.8.4")
 bazel_dep(name = "rules_uv", version = "0.88.0")
-bazel_dep(name = "rules_rust", version = "0.63.0")
 bazel_dep(name = "rules_go", version = "0.61.0")
 bazel_dep(name = "gazelle", version = "0.47.0")
 bazel_dep(name = "rules_shell", version = "0.6.1")
@@ -336,14 +335,6 @@ pip.parse(
     requirements_lock = "//bazel/requirements:all.txt",
 )
 use_repo(pip, "pip")
-
-#########################
-# Support for Rust, see https://github.com/bazelbuild/rules_rust
-rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-rust.toolchain(
-    edition = "2021",
-    versions = ["1.75.0"],
-)
 
 oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
 
