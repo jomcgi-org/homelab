@@ -50,6 +50,16 @@ html[data-theme="dark"] .td.console {
   color-scheme: dark;
 }
 
+/* The drain spine has a narrower measure than its three-link trail. Keep
+   each link visible there; the mobile chrome retains the horizontal row. */
+.drain-page .trail-dock .trail-row {
+  flex-direction: column;
+}
+.drain-page .trail-dock .trail-row .crumb + .crumb {
+  border-left: 0;
+  border-top: 1px solid var(--stroke);
+}
+
 /* The execution viewport owns two inner scrollers. This must beat the
    document sheet's body:has(.td) rule regardless of stylesheet order. Drain
    deliberately keeps document scrolling. The private layout's old link is

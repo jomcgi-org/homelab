@@ -23,6 +23,13 @@ def geometry(page):
         chromePosition: getComputedStyle(document.querySelector('.chrome')).position,
         legacyLoaded: getComputedStyle(document.documentElement).getPropertyValue('--cream').trim(),
         inbox: box('.inbox-body'), transcript: box('.turns'),
+        clippedCrumbs: [...document.querySelectorAll('.trail')].filter(e => e.checkVisibility()).flatMap(trail => {
+          const bounds = trail.getBoundingClientRect();
+          return [...trail.querySelectorAll('.crumb')].filter(crumb => {
+            const rect = crumb.getBoundingClientRect();
+            return rect.left < bounds.left - 1 || rect.right > bounds.right + 1;
+          }).map(crumb => crumb.textContent.trim());
+        }),
         navVisible: [...document.querySelectorAll('.md-nav, .back-to-dashboard')].some(e => e.checkVisibility()),
         maintenanceBanner: !!document.querySelector('.maintenance-banner')};
     }""")
@@ -32,6 +39,7 @@ def assert_geometry(page, view):
     measured = geometry(page)
     assert measured["pageOverflow"] == 0, f"horizontal page overflow: {measured}"
     assert not measured["navVisible"], f"legacy navigation overlaps sheet: {measured}"
+    assert not measured["clippedCrumbs"], f"clipped breadcrumb: {measured}"
     assert not measured["maintenanceBanner"], (
         "private route inherited public maintenance chrome"
     )
