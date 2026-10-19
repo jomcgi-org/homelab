@@ -137,7 +137,9 @@ def main():
                     assert passage_width >= 230, f"reader compressed: {passage_width}px"
                     record["assertions"]["readable_passage_width"] = True
                 if name == "library" and state == "normal":
-                    contrasts = page.locator(".cover-generated, .locked-badge").evaluate_all(
+                    contrasts = page.locator(
+                        ".cover-generated, .locked-badge"
+                    ).evaluate_all(
                         """elements => elements.map(e => {
                           const ctx=document.createElement('canvas').getContext('2d');
                           const luminance=color=>{
