@@ -3175,8 +3175,9 @@ def set_control(
                 if action == "pause_task":
                     row.task_paused = True
                     direction = json.loads(row.direction_json or "{}")
-                    direction.pop("pending_capacity_release", None)
-                    row.direction_json = _json(direction)
+                    if "pending_capacity_release" in direction:
+                        direction.pop("pending_capacity_release")
+                        row.direction_json = _json(direction)
                 else:
                     release_result = request_capacity_release(
                         db, control, row, actor, resume=True
@@ -4158,8 +4159,9 @@ def finish_task(
         row.state = outcome
         if outcome not in _ACTIVE:
             direction = json.loads(row.direction_json or "{}")
-            direction.pop("pending_capacity_release", None)
-            row.direction_json = _json(direction)
+            if "pending_capacity_release" in direction:
+                direction.pop("pending_capacity_release")
+                row.direction_json = _json(direction)
         row.updated_at = _now()
         db.add(row)
         if outcome == "landing":
