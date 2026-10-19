@@ -27,7 +27,7 @@ def check(root, output, chromium_path=None):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
                 executable_path=chromium_path,
-                args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+                args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
             )
             for width in [390, 1440]:
                 for scheme in ["light", "dark"]:
@@ -41,16 +41,27 @@ def check(root, output, chromium_path=None):
                         )
                         context.route(
                             "https://fonts.googleapis.com/**",
-                            lambda route: route.fulfill(content_type="text/css", body=""),
+                            lambda route: route.fulfill(
+                                content_type="text/css", body=""
+                            ),
                         )
                         page = context.new_page()
                         errors = []
                         page.on("pageerror", lambda error: errors.append(str(error)))
                         page.clock.set_fixed_time("2026-10-19T12:00:00Z")
-                        record = {"case": name, "width": width, "scheme": scheme, "mode": mode}
+                        record = {
+                            "case": name,
+                            "width": width,
+                            "scheme": scheme,
+                            "mode": mode,
+                        }
                         evidence.append(record)
                         try:
-                            query = "?mode=historical&month=10" if mode == "historical" else "?night=2026-10-19"
+                            query = (
+                                "?mode=historical&month=10"
+                                if mode == "historical"
+                                else "?night=2026-10-19"
+                            )
                             page.goto(base + query, wait_until="networkidle")
                             page.wait_for_function(
                                 "window.starsFixtureMap?.loaded() && window.starsFixtureMap.getSource('sites-cells')",
@@ -71,15 +82,32 @@ def check(root, output, chromium_path=None):
                             canvas.focus()
                             canvas.press("ArrowRight")
                             page.wait_for_timeout(350)
-                            page.evaluate("window.starsFixtureMap.jumpTo({center: [-4.633, 56.386], zoom: 10})")
+                            page.evaluate(
+                                "window.starsFixtureMap.jumpTo({center: [-4.633, 56.386], zoom: 10})"
+                            )
                             page.wait_for_function("window.starsFixtureMap.loaded()")
                             canvas.press("Enter")
                             page.locator(".card").wait_for()
-                            assert page.locator(".card-loc").get_attribute("href").startswith("https://www.google.com/maps/search/")
+                            assert (
+                                page.locator(".card-loc")
+                                .get_attribute("href")
+                                .startswith("https://www.google.com/maps/search/")
+                            )
                             if mode == "historical":
-                                assert page.get_by_role("img", name="Clear dark hours for each month of the year").count() == 1
+                                assert (
+                                    page.get_by_role(
+                                        "img",
+                                        name="Clear dark hours for each month of the year",
+                                    ).count()
+                                    == 1
+                                )
                             else:
-                                assert page.get_by_role("columnheader", name="Cloud").count() == 1
+                                assert (
+                                    page.get_by_role(
+                                        "columnheader", name="Cloud"
+                                    ).count()
+                                    == 1
+                                )
 
                             initial = page.evaluate("""() => {
                               const m = window.starsFixtureMap;
@@ -92,7 +120,12 @@ def check(root, output, chromium_path=None):
                             toggle = page.locator("button.scheme")
                             for _ in range(4):
                                 toggle.focus()
-                                assert toggle.evaluate("el => getComputedStyle(el).outlineStyle") != "none"
+                                assert (
+                                    toggle.evaluate(
+                                        "el => getComputedStyle(el).outlineStyle"
+                                    )
+                                    != "none"
+                                )
                                 toggle.press("Enter")
                                 page.wait_for_timeout(100)
                                 current = page.evaluate("""() => {
@@ -107,8 +140,12 @@ def check(root, output, chromium_path=None):
                                 assert page.locator(".card").count() == 1
                                 assert page.url == original_url
                                 paints.append(current)
-                            assert paints[0]["paint"] != initial["paint"], "heat paint did not follow scheme"
-                            assert paints[0]["background"] != initial["background"], "basemap did not follow scheme"
+                            assert paints[0]["paint"] != initial["paint"], (
+                                "heat paint did not follow scheme"
+                            )
+                            assert paints[0]["background"] != initial["background"], (
+                                "basemap did not follow scheme"
+                            )
                             assert paints[1] == initial
 
                             # Existing URL-backed filter remains keyboard operable, then open it
@@ -116,12 +153,27 @@ def check(root, output, chromium_path=None):
                             filter_toggle = page.locator(".filter-toggle")
                             filter_toggle.focus()
                             filter_toggle.press("Enter")
-                            assert filter_toggle.get_attribute("aria-expanded") == "true"
-                            choice = page.get_by_role("button", name="Dec" if mode == "historical" else "Tue 20", exact=True)
+                            assert (
+                                filter_toggle.get_attribute("aria-expanded") == "true"
+                            )
+                            choice = page.get_by_role(
+                                "button",
+                                name="Dec" if mode == "historical" else "Tue 20",
+                                exact=True,
+                            )
                             choice.focus()
-                            assert choice.evaluate("el => getComputedStyle(el).outlineStyle") != "none"
+                            assert (
+                                choice.evaluate(
+                                    "el => getComputedStyle(el).outlineStyle"
+                                )
+                                != "none"
+                            )
                             choice.press("Enter")
-                            assert ("month=12" if mode == "historical" else "night=2026-10-20") in page.url
+                            assert (
+                                "month=12"
+                                if mode == "historical"
+                                else "night=2026-10-20"
+                            ) in page.url
                             # Existing filter changes may close details; select the current row.
                             canvas.focus()
                             canvas.press("Enter")
@@ -135,7 +187,9 @@ def check(root, output, chromium_path=None):
                               expanded: document.querySelector('.filter-toggle').getAttribute('aria-expanded'),
                               selected: !!document.querySelector('.card')
                             })""")
-                            assert record["overflow"]["document"] <= width + 1, "horizontal page overflow"
+                            assert record["overflow"]["document"] <= width + 1, (
+                                "horizontal page overflow"
+                            )
                             assert record["overflow"]["expanded"] == "true"
                             record["contrast"] = page.evaluate("""() => {
                               const c = document.createElement('canvas').getContext('2d', {willReadFrequently: true});
@@ -147,18 +201,25 @@ def check(root, output, chromium_path=None):
                                 return {selector, ratio: (Math.max(fg,bg)+.05)/(Math.min(fg,bg)+.05)};
                               });
                             }""")
-                            assert all(item["ratio"] >= 4.5 for item in record["contrast"]), record["contrast"]
+                            assert all(
+                                item["ratio"] >= 4.5 for item in record["contrast"]
+                            ), record["contrast"]
                             record["paint"] = initial
                             record["screenshots"] = [name + ".png"]
                             record["errors"] = errors
                             assert not errors, errors
                             page.evaluate("window.scrollTo(0, 0)")
-                            page.screenshot(path=str(output / (name + ".png")), full_page=True)
+                            page.screenshot(
+                                path=str(output / (name + ".png")), full_page=True
+                            )
                             record["passed"] = True
                         except Exception as error:
                             record["error"] = str(error)
                             record["errors"] = errors
-                            page.screenshot(path=str(output / (name + "-failure.png")), full_page=True)
+                            page.screenshot(
+                                path=str(output / (name + "-failure.png")),
+                                full_page=True,
+                            )
                             raise
                         finally:
                             context.close()
