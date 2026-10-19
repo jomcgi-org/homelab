@@ -482,12 +482,15 @@ vitest_bin.vitest_test(
 # Hand-list the complete imported closure; fixture files never enter :src.
 js_library(
     name = "dr_jobs_fixture_src",
-    srcs = glob(["dr-jobs-preview/**"], exclude = ["dr-jobs-preview/__pycache__/**"]) + [
+    srcs = glob(
+        ["dr-jobs-preview/**"],
+        exclude = ["dr-jobs-preview/__pycache__/**"],
+    ) + [
         "package.json",
-        "preview/fonts.css",
-        "preview/fonts/SchibstedGrotesk.ttf",
-        "preview/fonts/OFL.txt",
         "preview/browser_check.py",
+        "preview/fonts.css",
+        "preview/fonts/OFL.txt",
+        "preview/fonts/SchibstedGrotesk.ttf",
         "src/lib/global.css",
         "src/lib/public/apps.js",
         "src/lib/public/components/SchemeToggle.svelte",
@@ -514,7 +517,11 @@ js_library(
 js_run_binary(
     name = "dr_jobs_fixture_preview",
     srcs = [":dr_jobs_fixture_src"],
-    args = ["build", "--config", "dr-jobs-preview/vite.config.js"],
+    args = [
+        "build",
+        "--config",
+        "dr-jobs-preview/vite.config.js",
+    ],
     chdir = package_name(),
     out_dirs = ["dr-jobs-fixture-preview"],
     tool = ":vite",
