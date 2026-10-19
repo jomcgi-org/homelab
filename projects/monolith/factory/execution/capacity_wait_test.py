@@ -7,7 +7,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.execution import admission, capacity_wait, store, transport
-from factory.execution.constants import exact_dispatch_id
+from factory.execution.constants import UNKNOWN_INVOCATION, exact_dispatch_id
 from factory.execution.models import (
     AgentCapacityPool,
     AgentCapacityReservation,
@@ -467,4 +467,4 @@ def test_unconfirmed_legacy_attempt_does_not_become_a_capacity_wait(database):
     assert store.claim_pending_message_for_session_sync(sid, "new-observer") is None
     with Session(engine) as db:
         turn = store.get_turn(db, sid, 1)
-        assert turn.stop_reason == "unknown_invocation"
+        assert turn.stop_reason == UNKNOWN_INVOCATION
