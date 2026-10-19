@@ -678,9 +678,14 @@ if __name__ == "__main__":
     subprocess.run(
         [
             sys.executable,
-            str(Path(__file__).resolve().parent.parent / "private-factory-preview/ci_check.py"),
-            "--output", str(args.output.resolve() / "private"),
-            "--expected-sha", args.expected_sha,
+            str(
+                Path(__file__).resolve().parent.parent
+                / "private-factory-preview/ci_check.py"
+            ),
+            "--output",
+            str(args.output.resolve() / "private"),
+            "--expected-sha",
+            args.expected_sha,
         ],
         check=True,
     )
