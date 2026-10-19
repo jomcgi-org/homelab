@@ -151,11 +151,15 @@ python3 projects/monolith/frontend/preview/browser_check.py \
   --output /tmp/fixture-preview-evidence
 ```
 
-After the blog checks, `preview/browser_check.py` also builds and checks the
-separate sheet fixture for the leaderboard and artifact wrapper. Its screenshots,
-traces and `result.json` go into `<output>/sheets`. Those checks cover 390px and
-1440px widths in light and dark, including artifact overflow with a maintenance
-banner. The sheet build stays outside the Pages publication artifact. See
+The workflow's `compare.py` calls `suite.py`, which imports
+`preview/browser_check.py` and calls `check()`. After the blog checks, that
+entry point builds and checks the leaderboard and artifact sheets in a separate
+process. Build output uses a temporary directory outside the checkout and the
+Pages publication artifact. Screenshots, traces and `result.json` are uploaded
+under `head/blog/sheets/` in `fixture-preview-evidence-<sha>`; the result records
+that SHA as `commit` and `head_sha`. Those checks cover 390px and 1440px widths
+in light and dark, including artifact overflow with a maintenance banner.
+Direct invocation of the blog checker uses `<output>/sheets/`. See
 [`sheet-preview/README.md`](../../projects/monolith/frontend/sheet-preview/README.md).
 
 The browser check needs Python Playwright 1.63.0 and its Chromium installation,
