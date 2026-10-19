@@ -685,6 +685,7 @@ defmodule Embervm.SessionManager do
       # session_id -> %{first_denied_at: monotonic_ms, last_reason: term}: wakes
       # parked behind node memory pressure, retried until the bound expires.
       pressure_waits: %{},
+      residency_owner: self(),
       residency_restore_limit: max(1, Keyword.get(opts, :residency_restore_limit, 2)),
       residency_last_principal: nil,
       # The registry sweep (adoption) and the TTL/eviction sweep cadences. Distinct
@@ -744,6 +745,9 @@ defmodule Embervm.SessionManager do
     # session_opts always carry a manager reference so the per-session idle timer can
     # call back for a bank; a test-supplied :manager wins (an isolated harness).
     state = %{state | session_opts: Keyword.put_new(state.session_opts, :manager, self())}
+    # Physical debt is reconstructed even when periodic lifecycle sweeps are
+    # disabled; no caller can place work before this initialization completes.
+    state = rebuild_residency_claims(state)
 
     if state.reconcile_interval_ms > 0 or state.sweep_interval_ms > 0 do
       {:ok, state, {:continue, :boot}}
@@ -757,7 +761,6 @@ defmodule Embervm.SessionManager do
   # so the residency/limbo heal lands before the first sweep can evict on it.
   @impl true
   def handle_continue(:boot, state) do
-    state = rebuild_residency_claims(state)
     schedule(:residency_tick, 1)
     state = do_reconcile(state)
     schedule(:reconcile, state.reconcile_interval_ms)
@@ -1406,6 +1409,14 @@ defmodule Embervm.SessionManager do
   def handle_info(:residency_tick, state) do
     state = residency_tick(state)
     schedule(:residency_tick, 5_000)
+    {:noreply, state}
+  end
+
+  def handle_info(:residency_claim_cleanup, state) do
+    case residency_rows(state) do
+      {:ok, rows} -> cleanup_residency_claims(state, rows)
+      _ -> :ok
+    end
     {:noreply, state}
   end
 
@@ -6384,11 +6395,15 @@ defmodule Embervm.SessionManager do
         spawn_monitor(fn ->
           confirmed =
             try do
-              if is_map(Map.get(session, :stop_intent)) do
-                terminate_session_process(state, session_id)
-                destroy_exact_vm(state, session.stop_intent)
-              else
-                stop_session_process(state, session_id, session)
+              cond do
+                resumed == :residency_cleanup ->
+                  # Retired physical identity only. A newer session process and
+                  # lifecycle must remain untouched while this RPC is in flight.
+                  destroy_vm(state, session)
+                is_map(Map.get(session, :stop_intent)) ->
+                  terminate_session_process(state, session_id)
+                  destroy_exact_vm(state, session.stop_intent)
+                true -> stop_session_process(state, session_id, session)
               end
             rescue
               _ -> false
@@ -6428,19 +6443,22 @@ defmodule Embervm.SessionManager do
             destroy_inflight: MapSet.delete(state.destroy_inflight, session_id)
         }
 
-        case SessionStore.get(state.session_store, session_id) do
-          {:ok, %{state: session_state}}
-          when session_state in [:expired, :evicted, :destroyed, :failed] ->
-            clear_session_tracking(state, session_id)
+        if resumed == :residency_cleanup do
+          state
+        else
+          case SessionStore.get(state.session_store, session_id) do
+            {:ok, %{state: session_state}}
+            when session_state in [:expired, :evicted, :destroyed, :failed] ->
+              clear_session_tracking(state, session_id)
 
-          {:ok, %{state: :destroying} = session} ->
-            finish_destroying_session(state, session, confirmed, resumed)
+            {:ok, %{state: :destroying} = session} ->
+              finish_destroying_session(state, session, confirmed, resumed)
 
-          {:ok, %{state: :parking} = session} ->
-            finish_parking_session(state, session, confirmed)
+            {:ok, %{state: :parking} = session} ->
+              finish_parking_session(state, session, confirmed)
 
-          _ ->
-            state
+            _ -> state
+          end
         end
     end
   end
@@ -7453,12 +7471,17 @@ defmodule Embervm.SessionManager do
     else
       # Teardown may have succeeded just before an acknowledgement failed or
       # the CP crashed. Re-drive the existing idempotent Destroy for that exact
-      # terminal session/VM/brick; absence alone never releases its claim.
+      # retired VM/brick; absence alone never releases its claim. The bank/park
+      # commit may already have removed its identity from the current session,
+      # or a newer generation may have resumed before this acknowledgement.
       with {:ok, session} <- SessionStore.get(state.session_store, intent["session_id"]),
-           true <- SessionState.terminal?(session.state),
-           true <- is_binary(restore["vm_id"]) and session.vm_id == restore["vm_id"] and
-             session.node_id == restore["node_id"] and session.generation == intent["generation"] do
-        spawn_destroy_worker(state, Map.put(session, :dial_id, restore["dial_id"]), true)
+           true <- is_binary(restore["vm_id"]),
+           true <- (SessionState.terminal?(session.state) and session.vm_id == restore["vm_id"] and
+             session.node_id == restore["node_id"] and session.generation == intent["generation"]) or
+             (session.vm_id != restore["vm_id"] and
+               (is_binary(session.vm_id) or session.state in [:banked, :parked] or session.generation > intent["generation"])) do
+        target = Map.merge(session, %{node_id: restore["node_id"], vm_id: restore["vm_id"], dial_id: restore["dial_id"]})
+        spawn_destroy_worker(state, target, :residency_cleanup)
       else
         _ -> state
       end
@@ -7472,9 +7495,15 @@ defmodule Embervm.SessionManager do
     if match?({:ok, _}, result) do
       # Keep one claim until all interests sharing it carry the proof. A crash
       # between these commits reconstructs the still-unacknowledged reference.
-      case residency_rows(state) do
-        {:ok, rows} -> cleanup_residency_claims(state, rows)
-        _ -> :ok
+      if self() == state.residency_owner do
+        case residency_rows(state) do
+          {:ok, rows} -> cleanup_residency_claims(state, rows)
+          _ -> :ok
+        end
+      else
+        # A worker cannot sweep a snapshot of the global ledger: the manager
+        # may be between its tentative placement claim and durable admission.
+        send(state.residency_owner, :residency_claim_cleanup)
       end
     end
   end

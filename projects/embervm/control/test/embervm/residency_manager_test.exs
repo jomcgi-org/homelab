@@ -327,4 +327,105 @@ defmodule Embervm.ResidencyManagerTest do
     assert {:ok, %{volume_node_id: "target", node_id: "target", turn_seq: 0}} = SessionStore.get(ctx.store, session.session_id)
     refute_receive :unexpected_invoke
   end
+  defp retired_restore(ctx, kind) do
+    intent = enqueue(ctx, "retire-before-ack")
+    tick(ctx)
+    assert_receive {:prime, worker, _}
+    send(worker, {:finish, {:ok, %PrimeResponse{vm_id: "retired-vm"}}})
+    await(fn -> Enum.any?(intents(ctx), &(&1["state"] == "ready")) end)
+    GenServer.stop(ctx.mgr)
+    [{pid, _}] = Registry.lookup(ctx.registry, intent["session_id"])
+    DynamicSupervisor.terminate_child(ctx.sup, pid)
+    {:ok, _} = SessionStore.residency_intent(ctx.store, {:cancel, intent["session_id"], intent["id"]})
+    # Crash after the durable lifecycle commit, before its claim acknowledgement.
+    if kind == :banked do
+      {:ok, _} = SessionStore.mark(ctx.store, intent["session_id"], :bank)
+      {:ok, _} = SessionStore.transition(ctx.store, intent["session_id"], :bank_ready, :session_banked,
+        %{snapshot_ref: "checkpoint", generation: 1}, %{snapshot_ref: "checkpoint", generation: 1, vm_id: nil})
+    else
+      {:ok, _} = SessionStore.mark(ctx.store, intent["session_id"], :park)
+      {:ok, _} = SessionStore.transition(ctx.store, intent["session_id"], :park_complete, :session_parked,
+        %{volume_node_id: "node"}, %{volume_node_id: "node", node_id: nil, vm_id: nil})
+    end
+    GenServer.stop(ctx.store)
+    :ets.delete_all_objects(ctx.inflight)
+    report(ctx, [])
+    {:ok, store} = SessionStore.start_link(ctx.store_opts)
+    {%{ctx | store: store}, intent}
+  end
+
+  defp cleanup_stack do
+    parent = self()
+    stack(channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+      session_opts: [channel_fun: fn _ -> {:ok, :channel} end,
+        assign_fun: fn _, _ -> send(parent, :unexpected_invoke); {:error, :unexpected} end,
+        destroy_fun: fn channel, vm_id ->
+          send(parent, {:retired_destroy, self(), channel, vm_id})
+          receive do :confirm -> {:ok, %{teardown_confirmed: true}} end
+        end])
+  end
+
+  for kind <- [:banked, :parked], resumed <- [false, true] do
+    @retired_kind kind
+    @successor_resumed resumed
+    test "retired #{@retired_kind} VM cleanup survives restart without touching successor #{@successor_resumed}" do
+      {ctx, intent} = retired_restore(cleanup_stack(), @retired_kind)
+      successor = if @successor_resumed do
+        :ok = SessionStore.adopt_state(ctx.store, intent["session_id"], :running)
+        :ok = SessionStore.adopt_residency(ctx.store, intent["session_id"], "node", "successor-vm")
+        child = %{id: :successor, start: {Agent, :start_link,
+          [fn -> :successor end, [name: {:via, Registry, {ctx.registry, intent["session_id"]}}]]}}
+        {:ok, pid} = DynamicSupervisor.start_child(ctx.sup, child)
+        pid
+      end
+      {:ok, mgr} = SessionManager.start_link(Keyword.put(ctx.mgr_opts, :session_store, ctx.store))
+      ctx = %{ctx | mgr: mgr}
+      tick(ctx)
+      assert_receive {:retired_destroy, worker, {:channel, "node/pod"}, "retired-vm"}
+      assert Inflight.pending_mib("node/pod", table: ctx.inflight) == 576
+      if successor do
+        # A newer lifecycle can change while the old cleanup RPC is in flight.
+        {:ok, _} = SessionStore.mark(ctx.store, intent["session_id"], :begin_destroy)
+      end
+      send(worker, :confirm)
+      await(fn -> Enum.any?(intents(ctx), &(&1["claim_reconciled"] == true)) end)
+      :sys.get_state(mgr)
+      assert Inflight.pending_mib("node/pod", table: ctx.inflight) == 0
+      {:ok, session} = SessionStore.get(ctx.store, intent["session_id"])
+      if successor do
+        assert Process.alive?(successor)
+        assert session.vm_id == "successor-vm" and session.state == :destroying
+      else
+        assert session.state == @retired_kind and is_nil(session.vm_id)
+      end
+      refute_receive {:prime, _, _}
+      refute_receive :unexpected_invoke
+    end
+  end
+
+  test "a teardown worker cannot sweep a concurrent tentative restore claim" do
+    {ctx, intent} = retired_restore(cleanup_stack(), :banked)
+    {:ok, mgr} = SessionManager.start_link(Keyword.put(ctx.mgr_opts, :session_store, ctx.store))
+    ctx = %{ctx | mgr: mgr}
+    tick(ctx)
+    assert_receive {:retired_destroy, worker, {:channel, "node/pod"}, "retired-vm"}
+    next = enqueue(ctx, "next-placement")
+    :sys.suspend(mgr)
+    # Reproduce the manager's synchronous admission window: ETS charge first,
+    # durable admitting decision next. Worker completion occurs in between.
+    claim_id = "tentative-next"
+    Inflight.claim("node/pod", {:residency, claim_id}, 576, table: ctx.inflight, ttl_ms: :infinity)
+    send(worker, :confirm)
+    await(fn -> Enum.any?(intents(ctx), &(&1["id"] == intent["id"] and &1["claim_reconciled"] == true)) end)
+    assert Inflight.pending_mib("node/pod", table: ctx.inflight) == 1152
+    restore = %{"node_id" => "node", "dial_id" => "node/pod", "vm_id" => nil,
+      "charge_mib" => 576, "claim_id" => claim_id, "kind" => "rejoin"}
+    {:ok, _} = SessionStore.residency_intent(ctx.store, {:change, next["id"], next["version"],
+      %{"state" => "admitting", "restore" => restore, "attempt_epoch" => 1, "claim_reconciled" => false}})
+    :sys.resume(mgr)
+    :sys.get_state(mgr)
+    assert Inflight.pending_mib("node/pod", table: ctx.inflight) == 576
+    assert [{_, 576, :infinity, _}] = :ets.lookup(ctx.inflight, {"node/pod", {:residency, claim_id}})
+  end
+
 end
