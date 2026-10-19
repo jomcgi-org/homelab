@@ -1755,7 +1755,6 @@ py3_image(
         "PYTHONPATH": "/projects/monolith/stars_grid_job.runfiles/_main:/projects/monolith/stars_grid_job.runfiles/_main/projects/monolith",
     },
     main = "stars/grid_gen/job.py",
-    multi_platform = False,
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/stars-grid",
 )
 
@@ -7779,6 +7778,7 @@ py_test(
         "BUILD",
         "stars/grid_gen/apko.lock.json",
         "stars/grid_gen/apko.yaml",
+        "//bazel/tools/oci:py3_image",
     ],
     imports = ["stars/grid_gen"],
     deps = ["@pip//pytest"],

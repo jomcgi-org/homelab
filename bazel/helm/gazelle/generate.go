@@ -119,9 +119,8 @@ func generateRules(args language.GenerateArgs) language.GenerateResult {
 		return result
 	}
 
-	// Generate argocd_app for local Helm sources. The macro owns the optional
-	// live diff target so hand-written and generated applications share exactly
-	// the same rendering and runfiles contract.
+	// Generate argocd_app for local Helm sources. Hand-written and generated
+	// applications share the macro's template test and optional manifest render.
 	// Note: releaseName is optional in ArgoCD (defaults to app name if not specified)
 	if app.Spec.Source.Path != "" && len(app.Spec.Source.Helm.ValueFiles) > 0 {
 		appRule := generateArgoCDAppRule(app, args.Rel, args.Dir, cfg)
@@ -249,11 +248,6 @@ func generateArgoCDAppRule(app *ArgoCDApplication, currentPackage string, curren
 	// generate_manifests defaults to true in the macro, so only set if false
 	if !cfg.generateManifests {
 		r.SetAttr("generate_manifests", false)
-	}
-
-	if cfg.generateDiff {
-		r.SetAttr("generate_diff", true)
-		r.SetAttr("application_name", app.Metadata.Name)
 	}
 
 	return r
