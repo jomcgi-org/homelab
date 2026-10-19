@@ -12464,6 +12464,49 @@ def test_a_failed_correction_opens_the_next_round_against_the_same_review(
     )
 
 
+@pytest.mark.parametrize("reason", ["guest_cessation_confirmed", "artifact_missing"])
+@pytest.mark.parametrize("rounds", [1, 2])
+def test_failed_rereview_preserves_delivered_correction_and_names_review_failure(
+    feedback_db, monkeypatch, reason, rounds
+):
+    """A lost verdict is no evidence that the delivered correction needs rewriting."""
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_TWO}}
+    )
+    task, policy = reviewed_task(rounds=rounds)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_feedback_node(
+        task,
+        "correct_1",
+        {
+            "status": "complete",
+            "summary": "Delivered the requested correction",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+    run_feedback_node(task, "review_1", {}, status="failed", reason=reason)
+    history = conductor.graph.node_runs(task["id"])
+    assert (
+        conductor._failed_round(
+            task["id"],
+            conductor.graph.load_graph(task["id"]),
+            conductor.graph.node_runs(task["id"]),
+        )
+        is None
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_2" not in nodes and "review_2" not in nodes
+    deviation = node_planner_context(nodes["conductor_1"])["deviation"]
+    assert deviation["code"] == "node_failed"
+    assert deviation["node_key"] == "review_1"
+    assert conductor._review_rounds_used(task["id"]) == 1
+    assert conductor.graph.node_runs(task["id"]) == history
+
+
 def test_a_delivered_reopened_round_does_not_name_the_failed_one(
     feedback_db, monkeypatch
 ):
@@ -13118,33 +13161,6 @@ def test_a_delivering_round_keeps_its_re_review(feedback_db):
     conductor.reconcile_task(task["id"], policy, object())
     keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
     assert {"correct_1", "review_1", "correct_2", "review_2"} <= keys
-
-
-def test_a_re_review_that_settled_without_a_verdict_opens_the_next_round(
-    feedback_db, monkeypatch
-):
-    monkeypatch.setattr(
-        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_TWO}}
-    )
-    task, policy = reviewed_task(rounds=2)
-    conductor.reconcile_task(task["id"], policy, object())
-    run_feedback_node(
-        task,
-        "correct_1",
-        {
-            "status": "complete",
-            "summary": "Applied round 1",
-            "pr_number": 21,
-            "head_sha": HEAD_TWO,
-        },
-        head=HEAD_TWO,
-    )
-    fail_round_node(task, "review_1")
-
-    conductor.reconcile_task(task["id"], policy, object())
-    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
-    assert {"correct_2", "review_2"} <= keys
-    assert not any(key.startswith("conductor_") for key in keys)
 
 
 def test_a_failed_final_round_reaches_the_planner_as_exhausted(feedback_db):

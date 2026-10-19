@@ -4531,22 +4531,22 @@ def _failed_round(
 ) -> tuple[dict, dict | None] | None:
     """The review and cause behind the newest round when it cannot finish.
 
-    A correction that settles without delivering, or a re-review that settles
-    without a verdict, leaves the task with nothing runnable and nothing that
-    could make it runnable: ``correct_<n>`` and ``review_<n>`` are refused to a
-    planner, and a node with runs cannot be discarded, so the planner's only
-    honest answer is to pause. The round is server-owned, so reopening it is
-    too. The next round runs against the same reviewed head and the same
-    findings, and the failed one still counts against ``max_review_rounds``, so
-    a round that keeps failing spends the bound rather than looping inside it.
+    A correction that settles without delivering can reopen against the same
+    reviewed head and findings. The failed round still counts against
+    ``max_review_rounds``, so repeated failures consume the existing bound.
+
+    A failed re-review does not show that a delivered correction needs another
+    implementation. Leave that review failure to the planner's deviation path,
+    which can resolve missing review evidence on the existing head within the
+    task's normal limits, instead of rewriting against superseded findings.
 
     Escalation is deliberately not a failure here. A node that escalated asked
     for the planner, and answering it with another round would talk over it.
 
     A merge-conflict round depends on an approving review rather than one that
     requested changes. Its dedicated audit supplies that cause so a failed
-    correction or re-review spends the round and reopens the same conflict in
-    the next round. Only the newest round is considered, which is what makes
+    correction spends the round and reopens the same conflict in the next
+    round. Only the newest round is considered, which is what makes
     this idempotent: once round n+1 exists it is the newest, it has no settled
     run yet, and this returns None until it too fails.
     """
@@ -4571,7 +4571,7 @@ def _failed_round(
             and not any(run["status"] in ("succeeded", "escalated") for run in attempts)
         )
 
-    if not any(stalled(f"{role}_{newest}") for role in ("correct", "review")):
+    if not stalled(f"correct_{newest}"):
         return None
     correction = by_key.get(f"correct_{newest}")
     if correction is None:
