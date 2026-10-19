@@ -26,6 +26,8 @@ argocd_app(
 py_test(
     name = "policy_cleanup_test",
     srcs = ["policy_cleanup_test.py"],
+    # Chart filegroups also contain other suites with their own runfiles/env.
+    args = ["$(rootpath policy_cleanup_test.py)"],
     data = [
         ":chart",
         "//projects/monolith/chart:chart",
