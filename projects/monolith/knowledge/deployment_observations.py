@@ -16,6 +16,7 @@ import hashlib
 import json
 from typing import Any
 
+from core.clock import as_utc
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 import yaml
@@ -65,12 +66,6 @@ class ObservationWriteResult:
     note_id: str
 
 
-def _utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 def _validate_observation(observation: dict[str, Any]) -> None:
     fields = frozenset(observation)
     missing = _REQUIRED_FIELDS - fields
@@ -106,7 +101,7 @@ def build_deployment_observation(
     error_stage: str | None = None,
 ) -> dict[str, Any]:
     """Build the strict deployment-only payload persisted by the poller."""
-    observed_at = _utc(poll_time)
+    observed_at = as_utc(poll_time)
     valid_until = observed_at.timestamp() + probe_interval_s * VALIDITY_MULTIPLIER
     payload: dict[str, Any] = {
         "event_type": DEPLOYMENT_OBSERVATION_SOURCE,
