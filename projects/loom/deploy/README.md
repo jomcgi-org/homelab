@@ -6,10 +6,11 @@ CNPG cluster, daily backup, 1Password references and metrics Service.
 Loom runs its own sqlx migrations and needs no Postgres extensions. CNPG creates
 the `loom-pg-app` Secret for application access.
 
-This configuration is default-off. The Application at `projects/gke-apps/loom`
-is absent from `projects/gke-apps/kustomization.yaml`. #6605 enables it after
-the operator checks below. Its three sources combine the upstream chart, this
-repo's values and this directory's kustomize manifests. The manifest guard
+The Application at `projects/gke-apps/loom` is registered in
+`projects/gke-apps/kustomization.yaml`. Activation requires the package,
+1Password item and R2 bucket checks below to be recorded on #6605. Registration
+alone does not verify a rollout. Its three sources combine the upstream chart,
+this repo's values and this directory's kustomize manifests. The manifest guard
 checks that resource set, and Linux CI renders the pinned chart and validates
 every resource against the pinned Kubernetes and operator schemas. The ArgoCD
 OCI repository credential lives in `projects/gke-apps/loom`, not here, so the
@@ -46,19 +47,23 @@ path to its trailing slash. Both carry `ingress-tier: trusted`.
 `loom-private-cf-access` targets the backend-serving `loom-private` route in
 the `loom` namespace, validates `Cf-Access-Jwt-Assertion` with the shared
 Cloudflare issuer and JWKS settings, and projects `email` to `X-Auth-Email`.
-The slash route only redirects and has no backend. Runtime enforcement is
-unverified while the Application remains off.
+The slash route only redirects and has no backend. Runtime enforcement must be
+verified after the Application rolls out.
 
 ## Operator checks (#6605)
 
 - Confirm chart `0.2.0` and all four `sha-e6ca13c` images exist in ghcr. The
   agent token cannot read packages; CI validates source rendering only.
-- Confirm `argocd-repo-weave-hand-charts` and `r2-s3-credentials` exist and sync
-  into `repo-weave-hand-charts` in `argocd` and `loom-s3-credentials` in `loom`.
-  Confirm the existing pull item syncs `ghcr-imagepull-secret` in `loom`.
+- Before merging activation, confirm `argocd-repo-weave-hand-charts`,
+  `r2-s3-credentials` and the existing image-pull item exist in 1Password.
+  After ArgoCD creates their references, verify sync into
+  `repo-weave-hand-charts` in `argocd`, `loom-s3-credentials` in `loom` and
+  `ghcr-imagepull-secret` in `loom`. Check metadata without printing credentials.
 - Confirm the R2 bucket `loom` exists before enabling the Application.
-- Enable the Application through Git, enable the worker after its image check,
-  then verify rollout, migrations, queue draining and the private UI/API.
+- Merge the Application registration through Git after those checks. Keep
+  `worker.replicas: 0` until its image check is recorded, then enable it in a
+  separate PR. Verify rollout, migrations, queue draining and the private UI/API.
+  #6605 stays open for bootstrap, backup, restore and soak acceptance.
 
 ## Backup credential
 
@@ -110,20 +115,21 @@ checker-absence notification. This does not provide a Loom probe alert.
 
 Enable telemetry in this order, through separate PRs:
 
-1. Finish #6605 and verify the Loom Application is Synced and Healthy.
+1. Verify the Loom Application is Synced and Healthy during #6605. Monitoring
+   is a follow-up acceptance step, so #6605 need not be closed first.
 2. Flip `loom.enabled` in the GKE overlay through a PR and verify the collector
    rollout, the Loom probe and the backup CronJob's API access and export.
 3. Confirm successful probe datapoints and the age gauge, including the
    cluster, namespace, environment and fallback attributes, in Honeycomb.
 
 Monitoring acceptance remains in #6604, application activation in #6605 and
-shared backup advisory acceptance in #7002. This configuration enables none
-of them and creates no Honeycomb alerts.
+shared backup advisory acceptance in #7002. Application registration leaves
+monitoring disabled and creates no Honeycomb alerts.
 
 ## Restore into a new cluster
 
-Make every change through a PR. ArgoCD applies the configuration after it is
-enabled. Never use `kubectl apply`.
+Make every change through a PR. ArgoCD applies the configuration after the
+activation PR merges. Never use `kubectl apply`.
 
 Create a new Cluster, for example `loom-pg-r1`. Reusing the old name requires
 deleting the old Cluster through Git first; keep its backups. Preserve the

@@ -1,4 +1,4 @@
-"""Guard the default-off loom raw manifest set without cluster access."""
+"""Guard the loom raw manifest set without cluster access."""
 
 import copy
 import re
@@ -273,7 +273,7 @@ def test_metrics_service_selects_cluster_and_exposes_metrics(documents, cluster)
     ]
 
 
-def test_default_off_has_no_application(documents):
+def test_deploy_source_has_no_nested_application(documents):
     for parsed in documents.values():
         for document in parsed:
             assert document["kind"] != "Application"
