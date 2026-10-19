@@ -1232,12 +1232,7 @@ func TestLoadSecretsRejectsBothBasicUserAndValuePrefix(t *testing.T) {
 func grantView(observed, exhausted bool, provider string, used float64, resetsAt string) grantQuotaView {
 	view := grantQuotaView{Observed: observed, Exhausted: exhausted, Provider: provider}
 	if observed && !exhausted {
-		view.Windows = append(view.Windows, struct {
-			Name        string  `json:"name"`
-			UsedPercent float64 `json:"used_percent"`
-			ResetsAt    string  `json:"resets_at"`
-			Expired     bool    `json:"expired"`
-		}{Name: "primary", UsedPercent: used, ResetsAt: resetsAt})
+		view.Windows = append(view.Windows, grantQuotaWindow{Name: "primary", UsedPercent: used, ResetsAt: resetsAt})
 	}
 	return view
 }
@@ -1385,12 +1380,7 @@ func TestRankGrantsPrioritizesPerishableQuota(t *testing.T) {
 func TestBandForUsesTheWorstWindowAndExpiresExhaustion(t *testing.T) {
 	now := time.Date(2026, 9, 9, 16, 0, 0, 0, time.UTC)
 	weekly := grantView(true, false, "codex", 10, "2026-09-09T20:00:00Z")
-	weekly.Windows = append(weekly.Windows, struct {
-		Name        string  `json:"name"`
-		UsedPercent float64 `json:"used_percent"`
-		ResetsAt    string  `json:"resets_at"`
-		Expired     bool    `json:"expired"`
-	}{Name: "secondary", UsedPercent: 96, ResetsAt: "2026-09-15T01:25:04Z"})
+	weekly.Windows = append(weekly.Windows, grantQuotaWindow{Name: "secondary", UsedPercent: 96, ResetsAt: "2026-09-15T01:25:04Z"})
 	if got := bandFor(weekly, true, now); got.band != 0 || !got.resetsAt.Equal(time.Date(2026, 9, 15, 1, 25, 4, 0, time.UTC)) {
 		t.Fatalf("band must follow the spent weekly window and its reset, got %+v", got)
 	}
@@ -1681,6 +1671,127 @@ func TestLoadSecretsRejectsMixedGrantSources(t *testing.T) {
 		loadSecretsWithBroker(logger, "")
 		if !exited {
 			t.Errorf("catalog %s must refuse to start", catalog)
+		}
+	}
+}
+
+func TestPreferFirstGrants(t *testing.T) {
+	now := time.Date(2026, 10, 19, 9, 13, 0, 0, time.UTC)
+	pool := []string{"codex-b", "codex-cluster"}
+	view := func(used float64, reset time.Duration) grantQuotaView {
+		v := grantView(true, false, "codex", used, now.Add(reset).Format(time.RFC3339))
+		v.Windows[0].WindowMinutes = 7 * 24 * 60
+		return v
+	}
+	for _, tc := range []struct {
+		name string
+		b, a grantQuotaView
+		dead string
+		want string
+	}{
+		{"B wins despite less room", view(90, 5*24*time.Hour), view(1, 7*24*time.Hour), "", "codex-b"},
+		{"B exhausted", view(100, 5*24*time.Hour), view(1, 7*24*time.Hour), "", "codex-cluster"},
+		{"97 percent ceiling", view(97, 5*24*time.Hour), view(1, 7*24*time.Hour), "", "codex-cluster"},
+		{"B token unavailable", view(20, 5*24*time.Hour), view(1, 7*24*time.Hour), "codex-b", "codex-cluster"},
+		{"A expiry override", view(20, 5*24*time.Hour), view(40, 12*time.Hour), "", "codex-cluster"},
+		{"outside 12h horizon", view(20, 5*24*time.Hour), view(1, 12*time.Hour+time.Second), "", "codex-b"},
+		{"low headroom narrows horizon", view(20, 5*24*time.Hour), view(96, 8*time.Hour), "", "codex-b"},
+		{"low headroom inside horizon", view(20, 5*24*time.Hour), view(96, 6*time.Hour), "", "codex-cluster"},
+		{"B expires first", view(20, time.Hour), view(20, 2*time.Hour), "", "codex-b"},
+		{"A exhausted near reset", view(20, 5*24*time.Hour), view(100, time.Hour), "", "codex-b"},
+		{"unknown B does not spend A", grantQuotaView{}, view(20, 5*24*time.Hour), "", ""},
+		{"both exhausted", view(100, 5*24*time.Hour), view(100, time.Hour), "", ""},
+		{"passed B reset needs observation", view(100, -time.Second), view(20, 5*24*time.Hour), "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := preferFirstGrants(pool, map[string]grantQuotaView{pool[0]: tc.b, pool[1]: tc.a}, now, func(g string, _ time.Time) bool { return g == tc.dead })
+			first := ""
+			if len(got) > 0 {
+				first = got[0]
+			}
+			if first != tc.want {
+				t.Fatalf("got %v, want first %q", got, tc.want)
+			}
+		})
+	}
+	for _, age := range []float64{901, -1, math.NaN(), math.Inf(1)} {
+		b := view(20, 5*24*time.Hour)
+		b.AgeSeconds = age
+		if got := preferFirstGrants(pool, map[string]grantQuotaView{pool[0]: b, pool[1]: view(20, time.Hour)}, now, nil); len(got) != 0 {
+			t.Fatalf("unknown B age %v spent A: %v", age, got)
+		}
+	}
+	b, a := view(20, 5*24*time.Hour), view(20, 6*24*time.Hour)
+	a.Windows = append(a.Windows, grantQuotaWindow{Name: "short", WindowMinutes: 300, UsedPercent: 20, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)})
+	if got := preferFirstGrants(pool, map[string]grantQuotaView{pool[0]: b, pool[1]: a}, now, nil); got[0] != pool[0] {
+		t.Fatal("short reset displaced weekly budget")
+	}
+	a.Windows[0].ResetsAt = now.Add(time.Hour).Format(time.RFC3339)
+	a.Windows[0].WindowMinutes = 0
+	if got := preferFirstGrants(pool, map[string]grantQuotaView{pool[0]: b, pool[1]: a}, now, nil); got[0] != pool[0] {
+		t.Fatal("unknown duration enabled expiry override")
+	}
+}
+
+func TestResolveDoesNotFallBackToExhaustedOrStaleGrant(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		var requested []string
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requested = append(requested, r.URL.Path)
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		b := newTokenBrokerWithClient(upstream.URL, upstream.Client())
+		now := time.Now()
+		other := grantView(true, false, "codex", 100, now.Add(time.Hour).Format(time.RFC3339))
+		if stale {
+			other.Windows[0].UsedPercent = 10
+			other.AgeSeconds = 901
+		}
+		b.views = map[string]grantQuotaView{"a": grantView(true, false, "codex", 10, now.Add(time.Hour).Format(time.RFC3339)), "b": other}
+		b.viewsFetched = now
+		e := secretEntry{BrokerGrants: []string{"a", "b"}, BrokerGrant: "a", broker: b, mu: &sync.RWMutex{}}
+		if err := e.resolve(); err == nil || e.live() {
+			t.Fatal("failed usable grant did not deny")
+		}
+		if len(requested) != 1 || requested[0] != "/grants/a/token" {
+			t.Fatalf("ineligible fallback requested: %v", requested)
+		}
+		upstream.Close()
+	}
+}
+
+func TestGrantViewsAgeAcrossBrokerFailures(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+	defer upstream.Close()
+	b := newTokenBrokerWithClient(upstream.URL, upstream.Client())
+	now := time.Now()
+	b.views = map[string]grantQuotaView{"b": grantView(true, false, "codex", 20, now.Add(time.Hour).Format(time.RFC3339))}
+	b.viewsObservedAt, b.viewsFetched = now, now
+	if got := b.grantViews(now.Add(16 * time.Minute))["b"]; !grantStale(got, true) {
+		t.Fatalf("outage froze age: %+v", got)
+	}
+	if b.views["b"].AgeSeconds != 0 {
+		t.Fatal("aging mutated cached snapshot")
+	}
+}
+
+func TestLoadSecretsRejectsInvalidGrantPolicy(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	prev := exitFn
+	defer func() { exitFn = prev }()
+	for _, entry := range []string{
+		`{"brokerGrants":["a","b"],"grantPolicy":"typo","quotaProvider":"codex"}`,
+		`{"brokerGrants":["a"],"grantPolicy":"prefer-first","quotaProvider":"codex"}`,
+		`{"brokerGrants":["a","a"],"grantPolicy":"prefer-first","quotaProvider":"codex"}`,
+		`{"brokerGrants":["a","b"],"grantPolicy":"prefer-first","quotaProvider":"claude"}`,
+	} {
+		called := false
+		exitFn = func(int) { called = true }
+		entry = strings.TrimSuffix(entry, "}") + `,"header":"Authorization","egressTo":["chatgpt.com"]}`
+		t.Setenv("EGRESS_SECRETS", "["+entry+"]")
+		loadSecrets(logger)
+		if !called {
+			t.Fatal("invalid grant policy accepted")
 		}
 	}
 }
