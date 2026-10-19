@@ -1,7 +1,7 @@
 <script>
   import { colorFor, labelFor } from "./clusters.js";
 
-  let { nodes, activeClusters, onToggle } = $props();
+  let { nodes, activeClusters, onToggle, sheet = false } = $props();
 
   let counts = $derived(
     nodes.reduce((acc, n) => {
@@ -21,13 +21,17 @@
       class:off={!activeClusters.has(type)}
       onclick={() => onToggle(type)}
       onkeydown={(e) => {
-        if (e.key === "Enter" || e.key === " ") onToggle(type);
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle(type);
+        }
       }}
       role="button"
+      aria-pressed={activeClusters.has(type)}
       tabindex="0"
     >
       <span class="left">
-        <span class="swatch" style:background={colorFor(type)}></span>
+        <span class="swatch" style:background={colorFor(type, sheet)}></span>
         <span class="name">{labelFor(type)}</span>
       </span>
       <span class="count">{count.toLocaleString()}</span>
@@ -40,14 +44,14 @@
     position: absolute;
     left: 20px;
     bottom: 20px;
-    background: #ffffff;
-    border: 1.5px solid #141414;
-    box-shadow: 4px 4px 0 #141414;
+    background: var(--notes-sheet, #ffffff);
+    border: var(--notes-rule-width, 1.5px) solid var(--notes-ink, #141414);
+    box-shadow: var(--notes-shadow, 4px 4px 0 #141414);
     padding: 12px 14px;
     min-width: 200px;
     z-index: 5;
     font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
-    color: #141414;
+    color: var(--notes-ink, #141414);
   }
   h4 {
     margin: 0 0 8px;
@@ -66,7 +70,7 @@
     user-select: none;
   }
   .legend-row:hover {
-    color: #ff6b5b;
+    color: var(--notes-accent, #ff6b5b);
   }
   .legend-row.off {
     opacity: 0.35;
@@ -75,7 +79,7 @@
   .legend-row .swatch {
     width: 12px;
     height: 12px;
-    border: 1.5px solid #141414;
+    border: var(--notes-rule-width, 1.5px) solid var(--notes-ink, #141414);
     flex-shrink: 0;
   }
   .legend-row .name {
@@ -83,7 +87,7 @@
   }
   .legend-row .count {
     font-size: 10px;
-    color: #8a857a;
+    color: var(--notes-muted, #8a857a);
   }
   .legend-row .left {
     display: flex;

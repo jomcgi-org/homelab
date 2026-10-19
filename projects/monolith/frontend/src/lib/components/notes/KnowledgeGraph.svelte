@@ -11,7 +11,7 @@
   import { select } from "d3-selection";
   import { zoom as d3Zoom, zoomIdentity } from "d3-zoom";
   import { quadtree as d3Quadtree } from "d3-quadtree";
-  import { colorFor, CLUSTER_COLORS } from "./clusters.js";
+  import { resolveGraphPalette, watchGraphPalette } from "./canvas-palette.js";
   import { radiusFor, projectXY } from "./knowledge-graph-layout.js";
 
   /**
@@ -26,6 +26,7 @@
    *   searchTerm?: string,
    *   activeClusters?: Set<string>,
    *   touchedIds?: Set<string>,
+   *   sheet?: boolean,
    * }} */
   let {
     nodes = [],
@@ -33,6 +34,7 @@
     selectedId = null,
     searchTerm = "",
     activeClusters = new Set(),
+    sheet = false,
     // The set of node ids a public-chat turn grounded on (ADR 005). When
     // supplied (the /app/notes graph view), these nodes get a distinct accent
     // halo + always-on label so "the nodes your chat touched" read at a glance.
@@ -89,11 +91,9 @@
   let byId = new Map();
   let neighborsOf = new Map();
 
-  // Resolved cluster colours — concrete hex/rgb strings looked up from
-  // CSS custom properties at mount time. Canvas can't consume var(...),
-  // so we resolve once and hand it to the renderer.
-  /** @type {Record<string, string>} */
-  let resolved = {};
+  // Paint is mutable independently of the graph and viewport. A scheme
+  // change must not rebuild coordinates, the quadtree or the selection.
+  let palette;
 
   // Hovered node (transient, internal). Selection is a prop.
   let hovered = $state(null);
@@ -110,16 +110,8 @@
 
   // ───────────────────────── helpers ─────────────────────────
 
-  function resolveColors() {
-    // CLUSTER_COLORS now ships concrete hex values, so this is just a
-    // shallow copy plus the fallback for unknown types. Kept as a fn
-    // so the call sites don't need to change.
-    return { ...CLUSTER_COLORS, __other: "#FFFFFF" };
-  }
-
   function colorForResolved(type) {
-    if (resolved[type]) return resolved[type];
-    return resolved.__other ?? "#888";
+    return palette.clusters[type] ?? palette.clusters.__other;
   }
 
   // Server coords arrive normalised to ~[-1, +1] (see compute_layout in
@@ -265,7 +257,8 @@
 
     // Edges (faint).
     ctx.lineWidth = Math.max(0.4, 0.7 / transform.k);
-    ctx.strokeStyle = `rgba(20,20,20,${CFG.edgeOpacity})`;
+    ctx.strokeStyle = palette.ink;
+    ctx.globalAlpha = CFG.edgeOpacity;
     ctx.beginPath();
     for (const l of simEdges) {
       const s = typeof l.source === "object" ? l.source : byId.get(l.source);
@@ -278,6 +271,7 @@
       ctx.lineTo(t.x, t.y);
     }
     ctx.stroke();
+    ctx.globalAlpha = 1;
 
     // Highlighted edges around the selected node. Same visibility
     // gates as the faint-edge pass: cluster filter + matchSet, so a
@@ -286,7 +280,8 @@
     // empty space where the node used to be drawn).
     if (selectedNode) {
       ctx.lineWidth = Math.max(1.2, 1.6 / transform.k);
-      ctx.strokeStyle = `rgba(20,20,20,${CFG.edgeOpacityActive})`;
+      ctx.strokeStyle = palette.ink;
+      ctx.globalAlpha = CFG.edgeOpacityActive;
       ctx.beginPath();
       for (const l of simEdges) {
         const s = typeof l.source === "object" ? l.source : byId.get(l.source);
@@ -301,6 +296,7 @@
         }
       }
       ctx.stroke();
+      ctx.globalAlpha = 1;
     }
 
     // Touched-node halo (chat overlay). Drawn BEFORE the node fill so the
@@ -313,11 +309,11 @@
         if (!activeClusters.has(n.cluster)) continue;
         if (filtering && !matchSet.has(n.id)) continue;
         const hr = n.r + 5 / transform.k;
-        ctx.fillStyle = "#FFDE01";
+        ctx.fillStyle = palette.touched;
         ctx.beginPath();
         ctx.arc(n.x, n.y, hr, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = "#141414";
+        ctx.strokeStyle = palette.ink;
         ctx.lineWidth = Math.max(1, 1.4 / transform.k);
         ctx.beginPath();
         ctx.arc(n.x, n.y, hr, 0, Math.PI * 2);
@@ -337,7 +333,7 @@
       if (!activeClusters.has(n.cluster)) continue;
       if (filtering && !matchSet.has(n.id)) continue;
       ctx.fillStyle = n.color;
-      ctx.strokeStyle = "#141414";
+      ctx.strokeStyle = palette.ink;
       ctx.beginPath();
       ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
       ctx.fill();
@@ -346,7 +342,7 @@
 
     // Hover ring.
     if (hovered) {
-      ctx.strokeStyle = "#141414";
+      ctx.strokeStyle = palette.ink;
       ctx.lineWidth = Math.max(1, 1.6 / transform.k);
       ctx.beginPath();
       ctx.arc(
@@ -359,10 +355,10 @@
       ctx.stroke();
     }
 
-    // Selected box — coral red per the prototype's aesthetic.
+    // Selected box, painted in the current palette's accent.
     if (selectedNode) {
       const s = selectedNode.r + 6 / transform.k;
-      ctx.strokeStyle = "#FF6B5B";
+      ctx.strokeStyle = palette.selected;
       ctx.lineWidth = Math.max(1.5, 2 / transform.k);
       ctx.strokeRect(selectedNode.x - s, selectedNode.y - s, s * 2, s * 2);
     }
@@ -473,12 +469,12 @@
       if (overlap && n !== selectedNode) continue;
       placed.push({ bx, by, bw, bh, node: n });
 
-      ctx.fillStyle = "#FFFFFF";
+      ctx.fillStyle = palette.sheet;
       ctx.fillRect(bx, by, bw, bh);
       ctx.lineWidth = 1;
-      ctx.strokeStyle = "#141414";
+      ctx.strokeStyle = palette.ink;
       ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
-      ctx.fillStyle = "#141414";
+      ctx.fillStyle = palette.ink;
       ctx.fillText(t, bx + padX, by + padY);
       drawn++;
     }
@@ -504,12 +500,12 @@
       const bx = sx + hovered.r * transform.k + 5;
       const by = sy - bh / 2;
       if (!(bx + bw < 0 || bx > w || by + bh < 0 || by > h)) {
-        ctx.fillStyle = "#FFFFFF";
+        ctx.fillStyle = palette.sheet;
         ctx.fillRect(bx, by, bw, bh);
         ctx.lineWidth = 1;
-        ctx.strokeStyle = "#141414";
+        ctx.strokeStyle = palette.ink;
         ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
-        ctx.fillStyle = "#141414";
+        ctx.fillStyle = palette.ink;
         ctx.fillText(hovered.title, bx + padX, by + padY);
         // findNode() iterates placedLabels in order; prepending gives
         // the hovered label priority for click hit-tests when it
@@ -712,7 +708,15 @@
   onMount(() => {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
     ctx = canvas.getContext("2d");
-    resolved = resolveColors();
+    palette = resolveGraphPalette(stage, sheet);
+    const stopWatching = sheet
+      ? watchGraphPalette(stage, (next) => {
+          palette = next;
+          for (const node of simNodes)
+            node.color = colorForResolved(node.cluster);
+          scheduleRender();
+        })
+      : () => {};
 
     // resize() before rebuildGraph() so the projection picks up the real
     // stage size — server x/y are normalised to ~[-1, +1] and we scale
@@ -773,6 +777,7 @@
     // to the SSR export and crashes on client (svelte/package.json
     // exports map's `default` is the server bundle).
     return () => {
+      stopWatching();
       if (rafId) cancelAnimationFrame(rafId);
       if (resizeObserver) resizeObserver.disconnect();
       if (canvas) {
