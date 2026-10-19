@@ -81,7 +81,7 @@ class TestSchemeGuard:
 
         with patch(
             "boto3.client", return_value=s3
-        ) as mock_factory:  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ) as mock_factory:
             put_image("img_k.jpg", b"data", "image/jpeg")
 
         _, kwargs = mock_factory.call_args
@@ -93,7 +93,7 @@ class TestSchemeGuard:
 
         with patch(
             "boto3.client", return_value=s3
-        ) as mock_factory:  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ) as mock_factory:
             put_image("img_k.jpg", b"data", "image/jpeg")
 
         _, kwargs = mock_factory.call_args
@@ -105,7 +105,7 @@ class TestSchemeGuard:
 
         with patch(
             "boto3.client", return_value=s3
-        ) as mock_factory:  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ) as mock_factory:
             put_image("img_k.jpg", b"data", "image/jpeg")
 
         _, kwargs = mock_factory.call_args
@@ -125,7 +125,7 @@ class TestHeadObjectHit:
 
         with patch(
             "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ):
             put_image("img_existing.jpg", b"bytes", "image/jpeg")
 
         s3.put_object.assert_not_called()
@@ -143,7 +143,7 @@ class TestHeadObjectMiss:
 
         with patch(
             "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ):
             put_image("img_new.jpg", b"newbytes", "image/jpeg")
 
         s3.put_object.assert_called_once()
@@ -158,7 +158,7 @@ class TestHeadObjectMiss:
 
         with patch(
             "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ):
             put_image("img_new.jpg", b"data", "image/jpeg")
 
         s3.put_object.assert_called_once()
@@ -169,7 +169,7 @@ class TestHeadObjectMiss:
 
         with patch(
             "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ):
             put_image("img_new.jpg", b"data", "image/jpeg")
 
         s3.put_object.assert_called_once()
@@ -189,7 +189,7 @@ class TestAutoCreateBucket:
 
         with patch(
             "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ):
             put_image("img_nob.jpg", b"data", "image/jpeg")
 
         s3.create_bucket.assert_called_once()
@@ -203,7 +203,7 @@ class TestAutoCreateBucket:
 
         with patch(
             "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ):
             put_image("img_404b.jpg", b"data", "image/jpeg")
 
         s3.create_bucket.assert_called_once()
@@ -221,7 +221,7 @@ class TestErrorPropagation:
 
         with patch(
             "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ):
             with pytest.raises(ClientError):
                 put_image("img_denied.jpg", b"data", "image/jpeg")
 
@@ -233,7 +233,7 @@ class TestErrorPropagation:
 
         with patch(
             "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ):
             with pytest.raises(ClientError):
                 put_image("img_ierr.jpg", b"data", "image/jpeg")
 
@@ -251,7 +251,7 @@ class TestBucketNameEnvVar:
 
         with patch(
             "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ):
             put_image("img_k.jpg", b"data", "image/jpeg")
 
         kw = s3.head_object.call_args.kwargs
@@ -264,7 +264,7 @@ class TestBucketNameEnvVar:
 
         with patch(
             "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        ):
             put_image("img_k.jpg", b"data", "image/jpeg")
 
         kw = s3.head_object.call_args.kwargs

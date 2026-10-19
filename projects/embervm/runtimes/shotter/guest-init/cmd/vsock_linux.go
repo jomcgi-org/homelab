@@ -118,7 +118,7 @@ func (l *vsockListener) Accept() (net.Conn, error) {
 	return &vsockConn{File: file}, nil
 }
 
-func (l *vsockListener) Close() error   { return unix.Close(l.fd) } // nosemgrep: no-bare-error-return
+func (l *vsockListener) Close() error   { return unix.Close(l.fd) }
 func (l *vsockListener) Addr() net.Addr { return vsockAddr{port: l.port} }
 
 type vsockConn struct {

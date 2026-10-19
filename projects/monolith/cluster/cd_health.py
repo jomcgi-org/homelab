@@ -566,7 +566,7 @@ async def run_deployment_observation_cycle(poll_time: datetime) -> None:
     if not _env_enabled("DEPLOYMENT_OBSERVATIONS_ENABLED"):
         return
     timeout_s = _observation_timeout_s()
-    try:  # nosemgrep: no-broad-except-swallow - isolated observation lane
+    try:  # isolated observation lane
         await asyncio.wait_for(
             _record_deployment_observations(poll_time), timeout=timeout_s
         )
@@ -601,7 +601,7 @@ async def cd_health_cycle() -> tuple[dict, datetime | None]:
     details: list[str] = []
     ok = True
 
-    try:  # nosemgrep: no-broad-except-swallow - reported in-band, logged below
+    try:  # reported in-band, logged below
         lag_ok, lag_details = await _chart_lag_fault(lag_s)
     except Exception as exc:  # noqa: BLE001
         # Includes the Forbidden an RBAC gap would produce. Report it rather
@@ -616,7 +616,7 @@ async def cd_health_cycle() -> tuple[dict, datetime | None]:
     if not os.environ.get("GITHUB_API_TOKEN", ""):
         details.append("ci check disabled: no GITHUB_API_TOKEN")
     else:
-        try:  # nosemgrep: no-broad-except-swallow - reported in-band, logged below
+        try:  # reported in-band, logged below
             ci = await _ci_fault(red_window_s)
         except Exception as exc:  # noqa: BLE001
             logger.warning("cd health: ci check failed: %s", exc)

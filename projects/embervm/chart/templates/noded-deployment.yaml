@@ -27,9 +27,8 @@ spec:
       maxUnavailable: 1
   selector:
     # embervm.noded.selectorLabels renders app.kubernetes.io/component: noded
-    # inside the include (the rule's regex cannot see through it); the DaemonSet's
-    # selector is disjoint from the control plane's and every brick class's.
-    # nosemgrep: require-component-label-in-selector
+    # inside the include; the DaemonSet's selector is disjoint from the control
+    # plane's and every brick class's.
     matchLabels:
       {{- include "embervm.noded.selectorLabels" . | nindent 6 }}
   template:

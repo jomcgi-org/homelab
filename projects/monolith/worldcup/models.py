@@ -12,7 +12,7 @@ from sqlmodel import Field, SQLModel
 _SCHEMA = {"schema": "worldcup", "extend_existing": True}
 
 
-class Standing(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Standing(SQLModel, table=True):
     __tablename__ = "standings"
     __table_args__ = _SCHEMA
     team_id: str = Field(primary_key=True)
@@ -31,7 +31,7 @@ class Standing(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fa
     updated_at: datetime | None = None
 
 
-class Fixture(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Fixture(SQLModel, table=True):
     __tablename__ = "fixtures"
     __table_args__ = _SCHEMA
     match_id: str = Field(primary_key=True)
@@ -52,7 +52,7 @@ class Fixture(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
 
 class Qualification(
     SQLModel, table=True
-):  # nosemgrep: sqlmodel-datetime-without-factory
+):
     __tablename__ = "qualification"
     __table_args__ = _SCHEMA
     team_id: str = Field(primary_key=True)
@@ -65,7 +65,7 @@ class Qualification(
     computed_at: datetime | None = None
 
 
-class SwingMatch(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class SwingMatch(SQLModel, table=True):
     __tablename__ = "swing_matches"
     __table_args__ = _SCHEMA
     # Composite key: one swing row per (remaining match, country whose qualify

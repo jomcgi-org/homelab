@@ -5,7 +5,6 @@ import {
   versionedEtag,
 } from "../../../../../../../lib/cache-headers.js";
 
-// nosemgrep: sveltekit-server-hardcoded-api-base-fallback
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 const WORK_ITEM_ID = /^[1-9][0-9]{5,18}$/;
 
