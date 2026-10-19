@@ -61,19 +61,46 @@ def main():
             path, text = ROUTES[name]
             if state != "normal":
                 path += ("&" if "?" in path else "?") + f"state={state}"
-            context = browser.new_context(viewport={"width": width, "height": 1000}, color_scheme=scheme, reduced_motion=motion)
+            context = browser.new_context(
+                viewport={"width": width, "height": 1000},
+                color_scheme=scheme,
+                reduced_motion=motion,
+            )
             # Assets come from this fixture build. External fonts and analytics
             # are denied, with no backend or challenge-provider traffic.
-            context.route("**/*", lambda route: route.continue_() if route.request.url.startswith(origin + "/") else route.fulfill(status=200, body="", content_type="text/css"))
+            context.route(
+                "**/*",
+                lambda route: (
+                    route.continue_()
+                    if route.request.url.startswith(origin + "/")
+                    else route.fulfill(status=200, body="", content_type="text/css")
+                ),
+            )
             page = context.new_page()
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
-            filename = f"{name}-{width}-{scheme}-{state}-{motion}" + (f"-{extra}" if extra else "") + ".png"
-            record = {"source_head": head, "route": path, "width": width, "scheme": scheme, "state": state, "motion": motion, "screenshot": filename, "assertions": {}, "overflow_px": None}
+            filename = (
+                f"{name}-{width}-{scheme}-{state}-{motion}"
+                + (f"-{extra}" if extra else "")
+                + ".png"
+            )
+            record = {
+                "source_head": head,
+                "route": path,
+                "width": width,
+                "scheme": scheme,
+                "state": state,
+                "motion": motion,
+                "screenshot": filename,
+                "assertions": {},
+                "overflow_px": None,
+            }
             try:
                 page.goto(origin + path, wait_until="networkidle")
                 if name in GATED:
-                    assert page.evaluate("window.fixtureRequests.length") == 0, "corpus request before admission"
+                    assert page.evaluate("window.fixtureRequests.length") == 0, (
+                        "corpus request before admission"
+                    )
                     record["assertions"]["no_pre_admission_fetch"] = True
                     page.get_by_role("button", name="Solve fixture challenge").click()
                 if state == "normal":
@@ -81,7 +108,9 @@ def main():
                 elif state == "locked":
                     page.get_by_text("Not available to read here").wait_for()
                 page.wait_for_timeout(350)
-                assert page.locator(".chrome .scheme").count() == 1, "one scheme control required"
+                assert page.locator(".chrome .scheme").count() == 1, (
+                    "one scheme control required"
+                )
                 assert page.locator("main.td.sheet").count() == 1, "one sheet required"
                 assert page.locator("h1, h2").count() > 0, "heading missing"
                 record["assertions"]["sheet_chrome_heading"] = True
@@ -89,7 +118,9 @@ def main():
                     page.locator("button.touched-chip").first.click()
                     page.get_by_role("dialog").wait_for()
                 elif extra == "chapters":
-                    page.get_by_role("button", name="Chapters", exact=False).first.click()
+                    page.get_by_role(
+                        "button", name="Chapters", exact=False
+                    ).first.click()
                     page.get_by_text("Harbour", exact=False).first.wait_for()
                 elif extra == "fork":
                     page.get_by_role("button", name="CONTINUE THIS CHAT").click()
@@ -98,29 +129,52 @@ def main():
                     record["assertions"]["read_only_before_fork"] = True
                 elif extra and extra.startswith("scene-"):
                     progress = float(extra.split("-")[1])
-                    page.evaluate("p => { const s=document.querySelector('.scrollstory'); scrollTo(0,s.offsetTop+(s.offsetHeight-innerHeight)*p); }", progress)
+                    page.evaluate(
+                        "p => { const s=document.querySelector('.scrollstory'); scrollTo(0,s.offsetTop+(s.offsetHeight-innerHeight)*p); }",
+                        progress,
+                    )
                     page.wait_for_timeout(600)
                 if name == "share":
                     assert page.locator("textarea").count() == 0
                     record["assertions"]["share_read_only"] = True
-                overflow = page.evaluate("Math.max(0,document.documentElement.scrollWidth-innerWidth)")
+                overflow = page.evaluate(
+                    "Math.max(0,document.documentElement.scrollWidth-innerWidth)"
+                )
                 record["overflow_px"] = overflow
                 assert overflow == 0, f"horizontal document overflow: {overflow}px"
                 record["assertions"]["no_horizontal_overflow"] = True
                 assert not errors, errors
                 record["assertions"]["no_page_errors"] = True
-                page.screenshot(path=str(args.output / filename), full_page=motion == "reduce")
+                page.screenshot(
+                    path=str(args.output / filename), full_page=motion == "reduce"
+                )
                 if extra is None and state == "normal":
-                    before = page.locator(".grimoire-sheet").evaluate("e=>getComputedStyle(e).backgroundColor")
-                    canvas_before = page.locator("canvas").first.evaluate("e=>e.toDataURL()") if page.locator("canvas").count() and name == "world" else None
+                    before = page.locator(".grimoire-sheet").evaluate(
+                        "e=>getComputedStyle(e).backgroundColor"
+                    )
+                    canvas_before = (
+                        page.locator("canvas").first.evaluate("e=>e.toDataURL()")
+                        if page.locator("canvas").count() and name == "world"
+                        else None
+                    )
                     toggle = page.locator(".scheme")
                     toggle.focus()
-                    assert toggle.evaluate("e=>getComputedStyle(e).outlineStyle") != "none", "focus is not visible"
+                    assert (
+                        toggle.evaluate("e=>getComputedStyle(e).outlineStyle") != "none"
+                    ), "focus is not visible"
                     page.keyboard.press("Enter")
                     page.wait_for_timeout(150)
-                    assert page.locator(".grimoire-sheet").evaluate("e=>getComputedStyle(e).backgroundColor") != before
+                    assert (
+                        page.locator(".grimoire-sheet").evaluate(
+                            "e=>getComputedStyle(e).backgroundColor"
+                        )
+                        != before
+                    )
                     if canvas_before:
-                        assert page.locator("canvas").first.evaluate("e=>e.toDataURL()") != canvas_before, "graph did not repaint"
+                        assert (
+                            page.locator("canvas").first.evaluate("e=>e.toDataURL()")
+                            != canvas_before
+                        ), "graph did not repaint"
                         record["assertions"]["canvas_scheme_repaint"] = True
                     stored = page.evaluate("localStorage.getItem('td-theme')")
                     page.reload(wait_until="networkidle")
@@ -132,7 +186,18 @@ def main():
                 page.screenshot(path=str(args.output / filename), full_page=False)
             finally:
                 checks.append(record)
-                (args.output / "checks.json").write_text(json.dumps({"source_head": head, "fixture_only": True, "checks": checks, "failures": failures}, indent=2) + "\n")
+                (args.output / "checks.json").write_text(
+                    json.dumps(
+                        {
+                            "source_head": head,
+                            "fixture_only": True,
+                            "checks": checks,
+                            "failures": failures,
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
                 context.close()
 
         for name in ROUTES:
@@ -142,7 +207,13 @@ def main():
         for scheme in ("light", "dark"):
             for width in (390, 1440):
                 for progress in (0.1, 0.4, 0.65, 0.9):
-                    visit("home", width, scheme, motion="no-preference", extra=f"scene-{progress}")
+                    visit(
+                        "home",
+                        width,
+                        scheme,
+                        motion="no-preference",
+                        extra=f"scene-{progress}",
+                    )
             visit("book", 390, scheme, extra="chapters")
             visit("book", 390, scheme, state="locked")
             visit("chat", 390, scheme, extra="source")

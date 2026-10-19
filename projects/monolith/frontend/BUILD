@@ -329,8 +329,8 @@ js_library(
         "test/app-environment-stub.js",
     ],
     deps = [
-        ":src",
         ":node_modules/vitest",
+        ":src",
         "//:node_modules/happy-dom",
         "//projects/design-system:pkg",
     ],
@@ -338,7 +338,11 @@ js_library(
 
 vitest_bin.vitest_test(
     name = "grimoire_fixture_contract_test",
-    args = ["run", "--config", "grimoire-preview/vitest.config.js"],
+    args = [
+        "run",
+        "--config",
+        "grimoire-preview/vitest.config.js",
+    ],
     chdir = package_name(),
     data = [":grimoire_fixture_src"],
 )
@@ -346,7 +350,11 @@ vitest_bin.vitest_test(
 js_run_binary(
     name = "grimoire_fixture_preview",
     srcs = [":grimoire_fixture_src"],
-    args = ["build", "--config", "grimoire-preview/vite.config.js"],
+    args = [
+        "build",
+        "--config",
+        "grimoire-preview/vite.config.js",
+    ],
     chdir = package_name(),
     out_dirs = ["grimoire-fixture-preview"],
     tool = ":vite",
