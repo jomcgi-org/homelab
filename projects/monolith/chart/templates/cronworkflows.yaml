@@ -66,6 +66,11 @@ spec:
     synchronization:
       mutexes:
         - name: knowledge-review-pilot
+    {{- else if .grimoireVerify }}
+    # Cron concurrency does not serialize separate manual submissions.
+    synchronization:
+      mutexes:
+        - name: grimoire-verify-entities
     {{- end }}
     {{- with .parameters }}
     # Optional Argo parameters (an entry's `parameters` list of name/value). They
@@ -288,6 +293,14 @@ spec:
               value: {{ $.Values.grimoire.s3Bucket | quote }}
             - name: GRIMOIRE_EXTRACT_MODEL
               value: {{ $.Values.grimoire.extractModel | quote }}
+            {{- if .grimoireVerify }}
+            # Verification uses the existing extraction endpoint and model.
+            # Its key and per-run bounds are explicit on the manual job entry.
+            - name: GRIMOIRE_VERIFY_MODEL
+              value: {{ $.Values.grimoire.extractModel | quote }}
+            - name: GRIMOIRE_VERIFY_BASE_URL
+              value: {{ $.Values.grimoire.extractBaseUrl | quote }}
+            {{- end }}
             {{- if $.Values.grimoire.extractBaseUrl }}
             # Points extraction at an OpenAI-compatible chat/completions
             # endpoint. Set to the in-cluster Qwen vLLM (free, no API key) so
