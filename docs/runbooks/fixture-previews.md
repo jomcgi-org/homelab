@@ -175,41 +175,39 @@ synthetic response fixtures before it joins this preview. Broad `dict[Any]`
 responses need narrower types at that boundary; this change does not overhaul
 Grimoire models.
 
-## Enable publication separately
+## Publication on the dedicated Pages site
 
-This PR adds implementation only. No Pages site, branch protection, environment,
-credential, OAuth grant, token or repository variable is created by the author.
-The publisher is disabled unless `FIXTURE_PREVIEWS_ENABLED` is `true`.
+The repository owner confirmed on 2026-10-19 that this Pages site is unused and
+is dedicated to public synthetic fixture previews. Once this publisher version
+is on `main`, successful fixture builds publish automatically. No activation or
+ownership variables are required. If `fixture-preview-state` is absent, the
+trusted publisher creates its marked state branch. An existing unmarked state
+branch is still rejected rather than replaced.
 
-A repository administrator must first inspect the existing Pages configuration
-and confirm this repository's Pages site is dedicated to public fixture previews.
-On 2026-10-19 the current integration received 404 from the Pages settings
-endpoint, 403 from repository variables, and 404 for `fixture-preview-state`.
-The five latest publisher runs were skipped. Those reads do not establish
-Pages ownership or prove that no site exists.
-Do not replace an unrelated Pages deployment.
+The Pages API now confirms GitHub Actions as the publishing source, the
+`https://jomcgi-org.github.io/homelab/` origin and no custom domain. The
+`github-pages` environment admits only the selected `main` branch. The
+publisher continues to verify the configured origin, path and publishing source
+on every run. No Pages setting, deployment policy, credential, OAuth grant,
+token or repository variable is changed by this implementation.
 
-After authorization, use GitHub Pages' Actions publishing source, retain the
-`github.io` hostname with no custom domain, configure the `github-pages`
-environment to admit only the default branch, and review the publisher's bounded
-job permissions. The publisher needs repository contents write for its dedicated
-aggregate state branch, Pages write and OIDC for deployment, Actions read to
-retrieve artifacts, and pull-request write for its one status comment. No PAT or
-cloud credential is required. Bootstrapping the dedicated state branch and
-setting the enable/ownership variables are explicit activation steps. Set
-`FIXTURE_PREVIEWS_OWN_PAGES_SITE=true` only after confirming the entire existing
-site may be managed by this publisher, then set `FIXTURE_PREVIEWS_ENABLED=true`.
-The first run creates `fixture-preview-state`; remove the ownership/bootstrap
-variable after that run. Activation requires separate approval of these exact
-settings. The reusable-suite change leaves all activation controls disabled.
+The publisher uses bounded job permissions: contents write for its dedicated
+state branch, Pages write and OIDC for deployment, Actions read to retrieve
+artifacts, and pull-request write for its one status comment. No PAT or cloud
+credential is required. Removing the variables removes their manual pause and
+bootstrap acknowledgement; the site's dedicated purpose is now an explicit
+repository-owned decision. All artifact, state-marker, stale-head and cleanup
+checks remain in force.
 
-The trusted publisher is already on `main`. After approved activation, a
-successful exact-head build on an open PR can receive a working link while
-that PR stays unmerged. The publisher uses the Pages API URL returned for the
-real site. There is no preview URL before the first successful deployment.
-Merging the reusable suite is a separate approval step. After activation,
-complete a fresh successful build of the current open PR; a manual publisher
-cleanup run does not import a previously skipped build.
+The privileged publisher runs only default-branch-owned code. The updated
+publisher must therefore land on `main` before this automatic behavior takes
+effect. After that, a fresh successful build of an open UI PR containing the
+reusable tooling can receive a working link while that UI PR stays unmerged.
+The publisher uses the URL returned by the real Pages API. There is no preview
+URL before a successful deployment. A manual cleanup dispatch does not import
+previously skipped builds; an original successful `workflow_run` event can be
+rerun while its exact-head artifact remains available and the PR is still open
+at that head.
 
 ## Publication boundary
 
