@@ -6,6 +6,7 @@ export const session = {
   title: "Synthetic running session",
   status: "running",
   model: "luna",
+  repo: "fixture/synthetic",
   workflow_id: "fixture-running",
   local_session_id: "synthetic-session",
   ember_session_id: "synthetic-vm",
@@ -131,24 +132,22 @@ export function createExecutionFixture() {
         ephemeral: false,
         summary: {
           status: "available",
-          files_changed: 1,
-          insertions: 1,
+          files_changed: 2,
+          insertions: 2,
           deletions: 0,
-          accounted_files: 1,
+          accounted_files: 2,
         },
-        steps: [
-          {
-            type: "authored",
-            register: "testimony",
-            file_path: "synthetic.js",
-            file_change: { additions: 1, deletions: 0, status: "modified" },
-            testimony: {
-              turn: 1,
-              attempt: 1,
-              points: [{ path: "synthetic.js", why: "Fixture walkthrough" }],
-            },
+        steps: ["synthetic.js", "selection.js"].map((path) => ({
+          type: "authored",
+          register: "testimony",
+          file_path: path,
+          file_change: { additions: 1, deletions: 0, status: "modified" },
+          testimony: {
+            turn: 1,
+            attempt: 1,
+            points: [{ path, why: `Fixture walkthrough for ${path}` }],
           },
-        ],
+        })),
       });
     if (path === "/api/swarm/compare/901/1/patch")
       return response({ patch: "@@ -1 +1 @@\n-before\n+after" });

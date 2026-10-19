@@ -13,7 +13,10 @@
   --code-bg: var(--paper);
   --dot-idle: var(--ink-2);
   --ok: var(--tone-ram);
-  --ok-soft: color-mix(in srgb, var(--ok) 12%, var(--sheet));
+  /* 12% gave small success text 4.30:1 by day. At 6% it clears AA:
+     4.68:1 by day and 7.14:1 with the shared night --ok override,
+     including diff gutter marks. */
+  --ok-soft: color-mix(in srgb, var(--ok) 6%, var(--sheet));
   --attn: var(--warn);
   --attn-text: var(--warn);
   --attn-soft: color-mix(in srgb, var(--warn) 12%, var(--sheet));
@@ -44,10 +47,13 @@
 @media (prefers-color-scheme: dark) {
   html:not([data-theme="light"]) .td.console {
     color-scheme: dark;
+    /* Night ink is light. Use the darker paper ground to dim the sheet. */
+    --scrim-bg: color-mix(in srgb, var(--paper) 65%, transparent);
   }
 }
 html[data-theme="dark"] .td.console {
   color-scheme: dark;
+  --scrim-bg: color-mix(in srgb, var(--paper) 65%, transparent);
 }
 
 /* The drain spine has a narrower measure than its three-link trail. Keep
@@ -95,24 +101,6 @@ body:has(main.drain-page) .back-to-dashboard {
 .execution-sheet .chrome .trail-slot {
   display: block;
 }
-.execution-sheet .execution-site-index {
-  padding: 8px 20px;
-  border-bottom: 1px solid var(--stroke);
-  color: var(--ink-2);
-  font: var(--size-meta) var(--font-code);
-  max-height: 35vh;
-  overflow: auto;
-  flex-shrink: 0;
-}
-.execution-sheet .execution-site-index > summary {
-  cursor: pointer;
-}
-.execution-sheet .execution-site-index .site-index {
-  padding: 12px 4px;
-}
-.execution-sheet .execution-site-index .sec-label {
-  display: none;
-}
 
 /* The inherited legacy .btn has an offset shadow and a hover transform.
    Existing run actions keep their event handlers and get sheet controls. */
@@ -127,9 +115,6 @@ body:has(main.drain-page) .back-to-dashboard {
     min-width: 44px;
     min-height: 44px;
   }
-  .execution-sheet .execution-site-index {
-    display: none;
-  }
   .drain-page .top button {
     min-height: 44px;
   }
@@ -138,1019 +123,1176 @@ body:has(main.drain-page) .back-to-dashboard {
 /* Run detail geometry belongs to this surface. Keep DAG overflow, detail
    columns, mobile navigation and focus contracts while using sheet roles. */
 
-.execution-sheet {
-  .runview {
-    container-type: inline-size;
-    padding: clamp(12px, 2.5cqi, 20px) clamp(12px, 3cqi, 22px) 12px;
-    background: var(--panel-bg);
-    border: 1px solid var(--line);
-    border-radius: 0;
-    color: var(--text);
-    font-family: var(--font-ui);
-    font-size: var(--size-body);
-    line-height: 1.45;
-    overflow-wrap: anywhere;
+.execution-sheet .runview {
+  container-type: inline-size;
+  padding: clamp(12px, 2.5cqi, 20px) clamp(12px, 3cqi, 22px) 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--size-body);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.execution-sheet .runview.compact {
+  padding: 0;
+}
+
+.execution-sheet .runview.compact .dag {
+  padding: 16px;
+}
+
+.execution-sheet .crumbs {
+  margin-bottom: 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.execution-sheet .crumb-link {
+  padding: 0;
+  border: 0;
+  color: var(--info);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.execution-sheet .crumb-link:hover {
+  text-decoration: underline;
+}
+
+.execution-sheet .crumb-sep {
+  margin: 0 8px;
+}
+
+.execution-sheet .kind-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.execution-sheet .kind {
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.execution-sheet .kind-row .push {
+  margin-left: auto;
+}
+
+.execution-sheet .rv-id,
+.execution-sheet .entry-meta,
+.execution-sheet .rv-foot {
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+}
+
+.execution-sheet .rv-task-details {
+  margin-top: 8px;
+  color: var(--text-soft);
+  font-size: var(--size-detail);
+}
+
+.execution-sheet .rv-task-details pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font: inherit;
+}
+
+.execution-sheet .commit-link {
+  color: var(--info);
+  font: var(--size-body-mono) var(--font-mono);
+  text-decoration: none;
+}
+
+.execution-sheet .state-chip {
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  color: var(--text-soft);
+  background: var(--panel-bg);
+  padding: 4px 8px;
+  font: var(--size-meta) var(--font-mono);
+}
+
+.execution-sheet .state-chip.unconfirmed {
+  border-style: dashed;
+  background: transparent;
+}
+
+.execution-sheet .ic {
+  display: inline-flex;
+  width: 1.05em;
+  height: 1.05em;
+  vertical-align: -0.14em;
+  flex: none;
+}
+
+.execution-sheet .ic svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.execution-sheet .ic-strip {
+  width: 12px;
+  height: 12px;
+}
+
+.execution-sheet .runview .dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 0;
+  background: var(--dot-idle);
+}
+
+.execution-sheet .runview .dot.running {
+  background: var(--ok);
+}
+
+.execution-sheet .runview .dot.warn {
+  background: var(--err);
+}
+
+.execution-sheet .g-done,
+.execution-sheet .g-completed,
+.execution-sheet .g-passed {
+  color: var(--dot-idle);
+}
+
+.execution-sheet .g-running {
+  color: var(--ok);
+}
+
+.execution-sheet .g-working,
+.execution-sheet .g-reviewing {
+  color: var(--ok);
+}
+
+.execution-sheet .g-queued {
+  color: var(--line);
+}
+
+.execution-sheet .g-future {
+  color: var(--line);
+}
+
+.execution-sheet .g-escalated,
+.execution-sheet .g-needs_input,
+.execution-sheet .g-stranded,
+.execution-sheet .g-changes_requested,
+.execution-sheet .g-blocked-h {
+  color: var(--attn);
+}
+
+.execution-sheet .g-failed,
+.execution-sheet .g-warn,
+.execution-sheet .g-refused {
+  color: var(--err);
+}
+
+.execution-sheet .g-cancelled {
+  color: var(--dot-idle);
+}
+
+.execution-sheet .g-waiting,
+.execution-sheet .g-blocked-d {
+  color: var(--line);
+}
+
+.execution-sheet .pulse {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
   }
-  .runview.compact {
-    padding: 0;
+  50% {
+    opacity: 0.35;
   }
-  .runview.compact .dag {
-    padding: 16px;
-  }
-  .crumbs {
-    margin-bottom: 8px;
-    overflow: hidden;
-    color: var(--muted);
-    font: var(--size-meta) var(--font-mono);
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-  .crumb-link {
-    padding: 0;
-    border: 0;
-    color: var(--info);
-    background: transparent;
-    font: inherit;
-    cursor: pointer;
-  }
-  .crumb-link:hover {
-    text-decoration: underline;
-  }
-  .crumb-sep {
-    margin: 0 8px;
-  }
-  .kind-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .kind {
-    color: var(--muted);
-    font: var(--size-meta) var(--font-mono);
-    letter-spacing: 0.13em;
-    text-transform: uppercase;
-  }
-  .kind-row .push {
-    margin-left: auto;
-  }
-  .rv-id,
-  .entry-meta,
-  .rv-foot {
-    color: var(--muted);
-    font: var(--size-meta) var(--font-mono);
-  }
-  .rv-task-details {
-    margin-top: 8px;
-    color: var(--text-soft);
-    font-size: var(--size-detail);
-  }
-  .rv-task-details pre {
-    margin: 8px 0 0;
-    white-space: pre-wrap;
-    font: inherit;
-  }
-  .commit-link {
-    color: var(--info);
-    font: var(--size-body-mono) var(--font-mono);
-    text-decoration: none;
-  }
-  .state-chip {
-    border: 1px solid var(--line-strong);
-    border-radius: 0;
-    color: var(--text-soft);
-    background: var(--panel-bg);
-    padding: 4px 8px;
-    font: var(--size-meta) var(--font-mono);
-  }
-  .state-chip.unconfirmed {
-    border-style: dashed;
-    background: transparent;
-  }
-  .ic {
-    display: inline-flex;
-    width: 1.05em;
-    height: 1.05em;
-    vertical-align: -0.14em;
-    flex: none;
-  }
-  .ic svg {
-    width: 100%;
-    height: 100%;
-    display: block;
-  }
-  .ic-strip {
-    width: 12px;
-    height: 12px;
-  }
-  .runview .dot {
-    width: 8px;
-    height: 8px;
-    flex: none;
-    border-radius: 0;
-    background: var(--dot-idle);
-  }
-  .runview .dot.running {
-    background: var(--ok);
-  }
-  .runview .dot.warn {
-    background: var(--err);
-  }
-  .g-done,
-  .g-completed,
-  .g-passed {
-    color: var(--dot-idle);
-  }
-  .g-running {
-    color: var(--ok);
-  }
-  .g-working,
-  .g-reviewing {
-    color: var(--ok);
-  }
-  .g-queued {
-    color: var(--line);
-  }
-  .g-future {
-    color: var(--line);
-  }
-  .g-escalated,
-  .g-needs_input,
-  .g-stranded,
-  .g-changes_requested,
-  .g-blocked-h {
-    color: var(--attn);
-  }
-  .g-failed,
-  .g-warn,
-  .g-refused {
-    color: var(--err);
-  }
-  .g-cancelled {
-    color: var(--dot-idle);
-  }
-  .g-waiting,
-  .g-blocked-d {
-    color: var(--line);
-  }
-  .pulse {
-    animation: pulse 1.6s ease-in-out infinite;
-  }
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.35;
-    }
-  }
-  .banner {
-    margin-top: 12px;
-    border: 1px solid var(--attn);
-    background: var(--attn-soft);
-    color: var(--attn-text);
-    border-radius: 0;
-    padding: 8px 12px;
-    font-size: var(--size-detail);
-  }
-  .staged {
-    display: flex;
-    flex-direction: column;
-    margin-top: 16px;
-    border-top: 1px solid var(--line);
-    padding-top: 12px;
-  }
-  .disposition {
-    margin-top: 14px;
-    border: 1px solid var(--line);
-    border-left: 1px solid var(--line-strong);
-    border-radius: 0;
-    padding: 12px;
-    color: var(--text-soft);
-    font-size: var(--size-body);
-  }
-  .disposition.human-attention {
-    border-color: var(--attn);
-    background: var(--attn-soft);
-  }
-  .disposition-state {
-    color: var(--text);
-    font-size: var(--size-title);
-    font-weight: 650;
-    line-height: 1.3;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  .disposition-label {
-    color: var(--muted);
-    font: var(--size-meta) var(--font-mono);
-    text-transform: uppercase;
-  }
-  .disposition-reason {
-    margin-top: 4px;
-  }
-  .disposition-next {
-    color: var(--text-soft);
-    margin-top: 4px;
-  }
-  .verdict-text {
-    color: var(--text-soft);
-    font: var(--size-meta)/1.45 var(--font-mono);
-    margin: 6px 0 0;
-    white-space: pre-wrap;
-  }
-  .node-deviations {
-    margin-top: 8px;
-    border-left: 1px solid var(--line-strong);
-    padding-left: 12px;
-  }
-  .fact-deviation {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    margin-top: 4px;
-    color: var(--text-soft);
-    font-size: var(--size-detail);
-  }
-  .stage-head,
-  .col-label {
-    color: var(--muted);
-    font: var(--size-meta) var(--font-mono);
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
-    margin-bottom: 8px;
-  }
-  .pips {
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
-  }
-  .pip {
-    width: 7px;
-    height: 7px;
-    border-radius: 0;
-    background: var(--dot-idle);
-  }
-  .pip.bad {
-    background: var(--err);
-  }
-  .pip.run {
-    background: var(--ok);
-  }
-  .pip.free {
-    background: var(--line);
-  }
-  .log-entry {
-    margin-top: 4px;
-    font-size: var(--size-detail);
-    color: var(--text-soft);
-  }
-  .verdict-excerpt {
-    display: block;
-    margin-top: 4px;
-  }
-  .live-line {
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    margin-top: 4px;
-  }
-  .live-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 0;
-    background: var(--ok);
-    flex: none;
-  }
-  .act-cmd {
-    min-width: 0;
-    overflow-x: auto;
-    white-space: nowrap;
-    font: var(--size-body-mono) var(--font-mono);
-  }
-  /* The observation time is its own element, never text trailing the command.
+}
+
+.execution-sheet .banner {
+  margin-top: 12px;
+  border: 1px solid var(--attn);
+  background: var(--attn-soft);
+  color: var(--attn-text);
+  border-radius: 0;
+  padding: 8px 12px;
+  font-size: var(--size-detail);
+}
+
+.execution-sheet .staged {
+  display: flex;
+  flex-direction: column;
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.execution-sheet .disposition {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-left: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 12px;
+  color: var(--text-soft);
+  font-size: var(--size-body);
+}
+
+.execution-sheet .disposition.human-attention {
+  border-color: var(--attn);
+  background: var(--attn-soft);
+}
+
+.execution-sheet .disposition-state {
+  color: var(--text);
+  font-size: var(--size-title);
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.execution-sheet .disposition-label {
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+  text-transform: uppercase;
+}
+
+.execution-sheet .disposition-reason {
+  margin-top: 4px;
+}
+
+.execution-sheet .disposition-next {
+  color: var(--text-soft);
+  margin-top: 4px;
+}
+
+.execution-sheet .verdict-text {
+  color: var(--text-soft);
+  font: var(--size-meta)/1.45 var(--font-mono);
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
+.execution-sheet .node-deviations {
+  margin-top: 8px;
+  border-left: 1px solid var(--line-strong);
+  padding-left: 12px;
+}
+
+.execution-sheet .fact-deviation {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--text-soft);
+  font-size: var(--size-detail);
+}
+
+.execution-sheet .stage-head,
+.execution-sheet .col-label {
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.execution-sheet .pips {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.execution-sheet .pip {
+  width: 7px;
+  height: 7px;
+  border-radius: 0;
+  background: var(--dot-idle);
+}
+
+.execution-sheet .pip.bad {
+  background: var(--err);
+}
+
+.execution-sheet .pip.run {
+  background: var(--ok);
+}
+
+.execution-sheet .pip.free {
+  background: var(--line);
+}
+
+.execution-sheet .log-entry {
+  margin-top: 4px;
+  font-size: var(--size-detail);
+  color: var(--text-soft);
+}
+
+.execution-sheet .verdict-excerpt {
+  display: block;
+  margin-top: 4px;
+}
+
+.execution-sheet .live-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 4px;
+}
+
+.execution-sheet .live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 0;
+  background: var(--ok);
+  flex: none;
+}
+
+.execution-sheet .act-cmd {
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  font: var(--size-body-mono) var(--font-mono);
+}
+
+/* The observation time is its own element, never text trailing the command.
    Written as an adjacent text node it produced "... | head -405s ago". */
-  .act-when {
-    margin-left: auto;
-    flex: none;
-    color: var(--muted);
-    font: var(--size-meta) var(--font-mono);
-  }
-  .evidence {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    margin-top: 4px;
-  }
-  /* Labels that introduce a sentence, so the gap is CSS on a flex parent and no
+
+.execution-sheet .act-when {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+}
+
+.execution-sheet .evidence {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Labels that introduce a sentence, so the gap is CSS on a flex parent and no
    template whitespace can be trimmed away and glue them to the text. Rendered
    as a bare word before its sentence, the deviation label produced "deviation
    Vite runtime validation was ...", where it read as the first word. */
-  .ev-tag,
-  .sha,
-  .dev-chip {
-    padding: 0 4px;
-    border: 1px solid var(--line-strong);
-    border-radius: 0;
-    color: var(--muted);
-    font: var(--size-meta) var(--font-mono);
-    white-space: nowrap;
-  }
-  .sha {
-    color: var(--text-soft);
-  }
-  .obs-line {
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    margin-top: 8px;
-  }
-  .lbl {
-    color: var(--muted);
-    font: var(--size-meta) var(--font-mono);
-  }
-  .conflict {
-    margin-top: 4px;
-    color: var(--attn-text);
-    font-size: var(--size-detail);
-  }
-  .register-tag {
-    display: inline-block;
-    margin-right: 8px;
-    padding: 0 4px;
-    border: 1px solid var(--attn);
-    border-radius: 0;
-    font: var(--size-meta) var(--font-mono);
-  }
-  .decision {
-    margin-top: 4px;
-  }
-  .decision table {
-    border-collapse: collapse;
-  }
-  .decision td {
-    padding: 4px 8px 4px 0;
-    font: var(--size-body-mono) var(--font-mono);
-  }
-  .verdict-word {
-    font: 700 var(--size-body-mono) var(--font-mono);
-    text-transform: uppercase;
-  }
-  .node-note {
-    margin-top: 4px;
-    color: var(--attn-text);
-    font: var(--size-body-mono) var(--font-mono);
-  }
-  .testimony {
-    margin-top: 8px;
-    border-left: 1px solid var(--line-strong);
-    padding: 4px 0 4px 16px;
-    font-family: var(--font-ui);
-  }
-  .testimony-attribution {
-    color: var(--muted);
-    font: var(--size-meta) var(--font-mono);
-  }
-  .testimony-line {
-    margin-top: 4px;
-  }
-  .testimony-raw {
-    margin: 8px 0 0;
-    white-space: pre-wrap;
-    font: inherit;
-  }
-  .rv-foot {
-    margin-top: 16px;
-    border-top: 1px solid var(--line);
-    padding-top: 8px;
-  }
-  .rv-foot.stale {
-    color: var(--attn-text);
-  }
-  .rv-foot.absent {
-    color: var(--err);
-  }
-  .tier-stale .staged,
-  .tier-stale .run-title,
-  .tier-stale .facts {
-    filter: grayscale(0.6);
-  }
-  .tier-stale [data-register="belief"] {
-    display: none;
-  }
-  .absent-note {
-    color: var(--err);
-    font-size: var(--size-detail);
-    margin: 8px 0 12px;
-  }
-  .sess-list {
-    display: flex;
-    flex-direction: column;
-    border-top: 1px solid var(--line);
-  }
-  .sess-row {
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    padding: 8px 4px;
-    border-bottom: 1px solid var(--line);
-    width: 100%;
-    color: inherit;
-    background: transparent;
-    border-left: 0;
-    border-right: 0;
-    border-top: 0;
-    text-align: left;
-    font: inherit;
-  }
-  .sess-row:hover {
-    background: var(--hover);
-  }
-  /* Neutral by default. ADR 054 decision 6 reserves amber for blocked-on-human,
+
+.execution-sheet .ev-tag,
+.execution-sheet .sha,
+.execution-sheet .dev-chip {
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+  white-space: nowrap;
+}
+
+.execution-sheet .sha {
+  color: var(--text-soft);
+}
+
+.execution-sheet .obs-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 8px;
+}
+
+.execution-sheet .lbl {
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+}
+
+.execution-sheet .conflict {
+  margin-top: 4px;
+  color: var(--attn-text);
+  font-size: var(--size-detail);
+}
+
+.execution-sheet .register-tag {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 0 4px;
+  border: 1px solid var(--attn);
+  border-radius: 0;
+  font: var(--size-meta) var(--font-mono);
+}
+
+.execution-sheet .decision {
+  margin-top: 4px;
+}
+
+.execution-sheet .decision table {
+  border-collapse: collapse;
+}
+
+.execution-sheet .decision td {
+  padding: 4px 8px 4px 0;
+  font: var(--size-body-mono) var(--font-mono);
+}
+
+.execution-sheet .verdict-word {
+  font: 700 var(--size-body-mono) var(--font-mono);
+  text-transform: uppercase;
+}
+
+.execution-sheet .node-note {
+  margin-top: 4px;
+  color: var(--attn-text);
+  font: var(--size-body-mono) var(--font-mono);
+}
+
+.execution-sheet .testimony {
+  margin-top: 8px;
+  border-left: 1px solid var(--line-strong);
+  padding: 4px 0 4px 16px;
+  font-family: var(--font-ui);
+}
+
+.execution-sheet .testimony-attribution {
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+}
+
+.execution-sheet .testimony-line {
+  margin-top: 4px;
+}
+
+.execution-sheet .testimony-raw {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font: inherit;
+}
+
+.execution-sheet .rv-foot {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.execution-sheet .rv-foot.stale {
+  color: var(--attn-text);
+}
+
+.execution-sheet .rv-foot.absent {
+  color: var(--err);
+}
+
+.execution-sheet .tier-stale .staged,
+.execution-sheet .tier-stale .run-title,
+.execution-sheet .tier-stale .facts {
+  filter: grayscale(0.6);
+}
+
+.execution-sheet .tier-stale [data-register="belief"] {
+  display: none;
+}
+
+.execution-sheet .absent-note {
+  color: var(--err);
+  font-size: var(--size-detail);
+  margin: 8px 0 12px;
+}
+
+.execution-sheet .sess-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+}
+
+.execution-sheet .sess-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--line);
+  width: 100%;
+  color: inherit;
+  background: transparent;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  text-align: left;
+  font: inherit;
+}
+
+.execution-sheet .sess-row:hover {
+  background: var(--hover);
+}
+
+/* Neutral by default. ADR 054 decision 6 reserves amber for blocked-on-human,
    and this box wraps every verdict including approve, so tinting it amber
    unconditionally would spend the one colour that means "act" on the outcome
    that needs nothing. The amber variant below is applied only when the
    verdict actually wants a human. */
-  .verdict-box {
-    margin-top: 8px;
-    padding: 8px 12px;
-    border: 1px solid var(--line);
-    border-left: 1px solid var(--line-strong);
-    border-radius: 0;
-    background: var(--panel-bg);
-    color: var(--text-soft);
-  }
-  .verdict-box.wants-human {
-    border-left-color: var(--attn);
-    background: var(--attn-soft);
-  }
-  .sess-title {
-    font-size: var(--size-detail);
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .sess-meta {
-    margin-left: auto;
-    color: var(--text-soft);
-    font: var(--size-meta) var(--font-mono);
-    flex: none;
-  }
-  [data-register="belief"] {
-    color: var(--muted);
-  }
 
-  /* Shared session and run header controls. */
-  .pill {
-    height: 24px;
-    display: inline-flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: 6px;
-    padding: 0 9px;
-    border-radius: 0;
-    color: var(--text-soft);
-    background: var(--page-bg);
-    font: 11.5px var(--font-mono);
-    white-space: nowrap;
-  }
-  .pill-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 0;
-    background: var(--ok);
-  }
-  .seg {
-    height: 28px;
-    display: inline-flex;
-    flex: 0 0 auto;
-    margin-left: auto;
-    overflow: hidden;
-    border: 1px solid var(--line);
-    border-radius: 0;
-    background: var(--panel-bg);
-  }
-  .seg button {
-    height: 26px;
-    padding: 0 9px;
-    border: 0;
-    border-radius: 0;
-    color: var(--text-soft);
-    background: transparent;
-    font-size: 12.5px;
-  }
-  .seg button + button {
-    border-left: 1px solid var(--line);
-  }
-  .seg button:hover {
-    background: var(--hover);
-  }
-  .seg button.selected {
-    color: var(--ink-text);
-    background: var(--ink);
-  }
-  .icon-btn {
-    width: 36px;
-    height: 36px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
+.execution-sheet .verdict-box {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-left: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--panel-bg);
+  color: var(--text-soft);
+}
 
-  /* Run detail occupies the full pane. */
-  .runview {
-    min-width: 0;
-    padding: 0 0 12px;
-    border: 0;
-    border-radius: 0;
-    overflow-x: hidden;
-  }
-  .run-head {
-    height: 52px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 0 20px 0 24px;
-    border-bottom: 1px solid var(--line);
-  }
-  .run-title {
-    min-width: 0;
-    flex: 1;
-    margin: 0;
-    overflow: hidden;
-    font-size: 15px;
-    font-weight: 600;
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .facts {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 20px 32px 0;
-    color: var(--muted);
-    font-size: 12.5px;
-    white-space: nowrap;
-  }
-  .fact-state {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-soft);
-  }
-  .fact-state .ic {
-    width: 16px;
-    height: 16px;
-  }
-  .fact-state.attention {
-    color: var(--attn-text);
-    font-weight: 600;
-  }
-  .branch-fact {
-    min-width: 0;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    overflow: hidden;
-    color: var(--muted);
-    font: 12.5px var(--font-mono);
-    text-decoration: none;
-    text-overflow: ellipsis;
-  }
-  .branch-fact:hover {
-    color: var(--text);
-  }
-  .branch-fact svg {
-    width: 12px;
-    height: 12px;
-    flex: 0 0 auto;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.5;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-  .mono-fact {
-    font-family: var(--font-mono);
-  }
-  .fact-stale {
-    margin-left: auto;
-  }
-  .runview > .conflict,
-  .runview > .banner,
-  .runview > .obs-line,
-  .runview > .rv-task-details {
-    margin-right: 32px;
-    margin-left: 32px;
-  }
-  .runview > .conflict {
-    margin-top: 6px;
-    color: var(--attn-text);
-    font-size: 12.5px;
-  }
-  .runview > .disposition {
-    margin: 14px 32px 0;
-    padding: 12px 14px;
-    border: 1px solid var(--line);
-    border-radius: 0;
-    font-size: 13px;
-  }
-  .runview > .disposition.human-attention {
-    border-color: var(--line);
-    background: var(--attn-soft);
-  }
-  .dag {
-    display: flex;
-    /* .staged (shared with the mobile fallback) sets column; the desktop
+.execution-sheet .verdict-box.wants-human {
+  border-left-color: var(--attn);
+  background: var(--attn-soft);
+}
+
+.execution-sheet .sess-title {
+  font-size: var(--size-detail);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.execution-sheet .sess-meta {
+  margin-left: auto;
+  color: var(--text-soft);
+  font: var(--size-meta) var(--font-mono);
+  flex: none;
+}
+
+.execution-sheet [data-register="belief"] {
+  color: var(--muted);
+}
+
+/* Shared session and run header controls. */
+
+.execution-sheet .pill {
+  height: 24px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border-radius: 0;
+  color: var(--text-soft);
+  background: var(--page-bg);
+  font: 11.5px var(--font-mono);
+  white-space: nowrap;
+}
+
+.execution-sheet .pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  background: var(--ok);
+}
+
+.execution-sheet .seg {
+  height: 28px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--panel-bg);
+}
+
+.execution-sheet .seg button {
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-soft);
+  background: transparent;
+  font-size: 12.5px;
+}
+
+.execution-sheet .seg button + button {
+  border-left: 1px solid var(--line);
+}
+
+.execution-sheet .seg button:hover {
+  background: var(--hover);
+}
+
+.execution-sheet .seg button.selected {
+  color: var(--ink-text);
+  background: var(--ink);
+}
+
+.execution-sheet .icon-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Run detail occupies the full pane. */
+
+.execution-sheet .runview {
+  min-width: 0;
+  padding: 0 0 12px;
+  border: 0;
+  border-radius: 0;
+  overflow-x: hidden;
+}
+
+.execution-sheet .run-head {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px 0 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.execution-sheet .run-title {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.execution-sheet .facts {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 32px 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.execution-sheet .fact-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-soft);
+}
+
+.execution-sheet .fact-state .ic {
+  width: 16px;
+  height: 16px;
+}
+
+.execution-sheet .fact-state.attention {
+  color: var(--attn-text);
+  font-weight: 600;
+}
+
+.execution-sheet .branch-fact {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--muted);
+  font: 12.5px var(--font-mono);
+  text-decoration: none;
+  text-overflow: ellipsis;
+}
+
+.execution-sheet .branch-fact:hover {
+  color: var(--text);
+}
+
+.execution-sheet .branch-fact svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.execution-sheet .mono-fact {
+  font-family: var(--font-mono);
+}
+
+.execution-sheet .fact-stale {
+  margin-left: auto;
+}
+
+.execution-sheet .runview > .conflict,
+.execution-sheet .runview > .banner,
+.execution-sheet .runview > .obs-line,
+.execution-sheet .runview > .rv-task-details {
+  margin-right: 32px;
+  margin-left: 32px;
+}
+
+.execution-sheet .runview > .conflict {
+  margin-top: 6px;
+  color: var(--attn-text);
+  font-size: 12.5px;
+}
+
+.execution-sheet .runview > .disposition {
+  margin: 14px 32px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  font-size: 13px;
+}
+
+.execution-sheet .runview > .disposition.human-attention {
+  border-color: var(--line);
+  background: var(--attn-soft);
+}
+
+.execution-sheet .dag {
+  display: flex;
+  /* .staged (shared with the mobile fallback) sets column; the desktop
      strip is the horizontal one. */
+  flex-direction: row;
+  align-items: stretch;
+  margin: 0;
+  padding: 28px 32px 24px;
+  border: 0;
+  overflow-x: auto;
+}
+
+.execution-sheet .rank {
+  width: 186px;
+  display: flex;
+  flex: 0 0 186px;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.execution-sheet .rank .stage-head {
+  margin: -19px 0 -4px;
+  font-size: 10.5px;
+}
+
+.execution-sheet .edge {
+  height: auto;
+  display: flex;
+  flex: 0 0 28px;
+  align-items: center;
+  margin: 0;
+  border: 0;
+  color: var(--line-strong);
+}
+
+.execution-sheet .edge::before {
+  height: 1px;
+  flex: 1;
+  background: currentColor;
+  content: "";
+}
+
+.execution-sheet .edge::after {
+  width: 5px;
+  height: 5px;
+  margin-left: -5px;
+  transform: rotate(45deg);
+  border-top: 1px solid currentColor;
+  border-right: 1px solid currentColor;
+  content: "";
+}
+
+.execution-sheet .edge.dim {
+  color: var(--line);
+}
+
+.execution-sheet .edge.strong {
+  color: var(--line-strong);
+}
+
+.execution-sheet .node {
+  width: 186px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--text);
+  background: var(--panel-bg);
+  text-align: left;
+}
+
+.execution-sheet .node:hover {
+  border-color: var(--line-strong);
+}
+
+.execution-sheet .node:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.execution-sheet .node.sel {
+  border-color: var(--text);
+  box-shadow: none;
+}
+
+.execution-sheet .node.attn {
+  background: var(--attn-soft);
+}
+
+.execution-sheet .nh {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.execution-sheet .nh .ic {
+  width: 16px;
+  height: 16px;
+}
+
+.execution-sheet .nm {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font: 11.5px var(--font-mono);
+}
+
+.execution-sheet .nm > :last-child {
+  text-align: right;
+}
+
+.execution-sheet .node .pips {
+  min-height: 4px;
+  display: flex;
+  gap: 4px;
+}
+
+.execution-sheet .node .pip {
+  width: 14px;
+  height: 4px;
+  border-radius: 0;
+}
+
+.execution-sheet .detail-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 32px;
+  margin: 0 32px;
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+
+.execution-sheet .detail-block.without-aside {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.execution-sheet .node-detail {
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.execution-sheet .node-detail h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.execution-sheet .node-detail pre,
+.execution-sheet .run-log pre {
+  padding: 10px 12px;
+  border-radius: 0;
+  background: var(--code-bg);
+}
+
+.execution-sheet .node-detail .log-entry,
+.execution-sheet .node-detail .decision,
+.execution-sheet .node-detail .verdict-box,
+.execution-sheet .node-detail .evidence,
+.execution-sheet .node-detail .node-note,
+.execution-sheet .node-detail .testimony,
+.execution-sheet .node-detail .node-deviations {
+  margin-top: 10px;
+}
+
+.execution-sheet .attempts,
+.execution-sheet .decide {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.execution-sheet .decide p {
+  margin: 0 0 4px;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.execution-sheet .runview .btn {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  color: var(--text-soft);
+  background: transparent;
+  font-size: 13px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.execution-sheet .runview .btn.primary {
+  border-color: var(--ink);
+  color: var(--ink-text);
+  background: var(--ink);
+}
+
+.execution-sheet .runview .btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.execution-sheet .decide .note {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--text);
+  background: var(--panel-bg);
+  font: 13px/1.45 var(--font-ui);
+}
+
+.execution-sheet .decide .note:focus {
+  border-color: var(--info);
+  outline: 1px solid var(--info);
+}
+
+.execution-sheet .decision-waiting,
+.execution-sheet .decision-submitted,
+.execution-sheet .decision-record {
+  color: var(--muted);
+  font: 11.5px var(--font-mono);
+}
+
+.execution-sheet .decision-record {
+  margin-top: 10px;
+}
+
+.execution-sheet .decision-record-note {
+  margin-top: 4px;
+  color: var(--text-soft);
+  white-space: pre-wrap;
+}
+
+.execution-sheet .srow {
+  width: 100%;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-soft);
+  background: transparent;
+  text-align: left;
+  font-size: 12.5px;
+}
+
+.execution-sheet .srow:hover:not([aria-disabled="true"]) {
+  background: var(--hover);
+}
+
+.execution-sheet .srow[aria-disabled="true"] {
+  cursor: default;
+}
+
+.execution-sheet .srow-meta {
+  margin-left: auto;
+  color: var(--muted);
+  font: 11.5px var(--font-mono);
+}
+
+.execution-sheet .sessions,
+.execution-sheet .run-deviations {
+  margin: 0 32px;
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+
+.execution-sheet .sessions h2,
+.execution-sheet .run-deviations h2 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font: 11.5px var(--font-mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.execution-sheet .run-deviations .node-deviations {
+  margin-top: 0;
+}
+
+.execution-sheet .log-detail {
+  display: block;
+}
+
+.execution-sheet .flat-log-entry {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.execution-sheet .flat-log-entry:last-child {
+  border-bottom: 0;
+}
+
+.execution-sheet .flat-log-meta {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font: 11.5px var(--font-mono);
+}
+
+.execution-sheet .runview > .rv-foot {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 32px;
+  padding: 12px 0 0;
+}
+
+@media (max-width: 760px) {
+  /* Header icon buttons keep the page's 44px touch floor on phones. */
+  .execution-sheet .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+  .execution-sheet .run-head {
+    height: 52px;
+    padding: 0 8px 0 12px;
+  }
+  .execution-sheet .facts {
+    padding: 16px 16px 0;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    white-space: normal;
+  }
+  .execution-sheet .fact-stale {
+    width: 100%;
+    margin-left: 0;
+  }
+  .execution-sheet .runview > .conflict,
+  .execution-sheet .runview > .banner,
+  .execution-sheet .runview > .obs-line,
+  .execution-sheet .runview > .rv-task-details,
+  .execution-sheet .runview > .disposition {
+    margin-right: 16px;
+    margin-left: 16px;
+  }
+  .execution-sheet .dag.staged {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 24px 16px;
+    overflow: visible;
+  }
+  .execution-sheet .rank {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+  .execution-sheet .rank .stage-head {
+    margin: 0 0 4px;
+  }
+  .execution-sheet .node {
+    width: 100%;
+  }
+  .execution-sheet .edge {
+    width: 1px;
+    height: 16px;
+    flex: 0 0 16px;
+    margin-left: 16px;
+  }
+  .execution-sheet .edge::before {
+    width: 1px;
+    height: auto;
+    align-self: stretch;
+    flex: 0 0 1px;
+  }
+  .execution-sheet .edge::after {
+    display: none;
+  }
+  .execution-sheet .detail-block {
+    grid-template-columns: 1fr;
+    gap: 20px;
+    margin: 0 16px;
+  }
+  .execution-sheet .sessions,
+  .execution-sheet .run-deviations,
+  .execution-sheet .runview > .rv-foot {
+    margin-right: 16px;
+    margin-left: 16px;
+  }
+  .execution-sheet .srow-meta {
+    max-width: 48%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Voice cards keep the run's compact DAG as a horizontal strip. */
+  .execution-sheet .runview.compact .dag.staged {
     flex-direction: row;
-    align-items: stretch;
-    margin: 0;
-    padding: 28px 32px 24px;
-    border: 0;
+    gap: 0;
+    padding: 16px;
     overflow-x: auto;
   }
-  .rank {
+  .execution-sheet .runview.compact .rank {
     width: 186px;
-    display: flex;
     flex: 0 0 186px;
-    flex-direction: column;
-    gap: 12px;
   }
-  .rank .stage-head {
-    margin: -19px 0 -4px;
-    font-size: 10.5px;
+  .execution-sheet .runview.compact .rank .stage-head {
+    margin: -11px 0 -4px;
   }
-  .edge {
-    height: auto;
-    display: flex;
-    flex: 0 0 28px;
-    align-items: center;
-    margin: 0;
-    border: 0;
-    color: var(--line-strong);
-  }
-  .edge::before {
-    height: 1px;
-    flex: 1;
-    background: currentColor;
-    content: "";
-  }
-  .edge::after {
-    width: 5px;
-    height: 5px;
-    margin-left: -5px;
-    transform: rotate(45deg);
-    border-top: 1px solid currentColor;
-    border-right: 1px solid currentColor;
-    content: "";
-  }
-  .edge.dim {
-    color: var(--line);
-  }
-  .edge.strong {
-    color: var(--line-strong);
-  }
-  .node {
+  .execution-sheet .runview.compact .node {
     width: 186px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 12px 14px;
-    border: 1px solid var(--line);
-    border-radius: 0;
-    color: var(--text);
-    background: var(--panel-bg);
-    text-align: left;
   }
-  .node:hover {
-    border-color: var(--line-strong);
+  .execution-sheet .runview.compact .edge {
+    width: auto;
+    height: auto;
+    flex: 0 0 28px;
+    margin-left: 0;
   }
-  .node:focus-visible {
-    outline: 2px solid var(--info);
-    outline-offset: 2px;
+  .execution-sheet .runview.compact .edge::before {
+    width: auto;
+    height: 1px;
+    align-self: auto;
+    flex: 1;
   }
-  .node.sel {
-    border-color: var(--text);
-    box-shadow: none;
-  }
-  .node.attn {
-    background: var(--attn-soft);
-  }
-  .nh {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 13.5px;
-    font-weight: 600;
-  }
-  .nh .ic {
-    width: 16px;
-    height: 16px;
-  }
-  .nm {
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-    color: var(--muted);
-    font: 11.5px var(--font-mono);
-  }
-  .nm > :last-child {
-    text-align: right;
-  }
-  .node .pips {
-    min-height: 4px;
-    display: flex;
-    gap: 4px;
-  }
-  .node .pip {
-    width: 14px;
-    height: 4px;
-    border-radius: 0;
-  }
-  .detail-block {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 280px;
-    gap: 32px;
-    margin: 0 32px;
-    padding: 20px 0;
-    border-top: 1px solid var(--line);
-  }
-  .detail-block.without-aside {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .node-detail {
-    min-width: 0;
-    color: var(--text-soft);
-    font-size: 13px;
-    line-height: 1.55;
-  }
-  .node-detail h2 {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0 0 12px;
-    color: var(--text);
-    font-size: 13px;
-    font-weight: 600;
-  }
-  .node-detail pre,
-  .run-log pre {
-    padding: 10px 12px;
-    border-radius: 0;
-    background: var(--code-bg);
-  }
-  .node-detail .log-entry,
-  .node-detail .decision,
-  .node-detail .verdict-box,
-  .node-detail .evidence,
-  .node-detail .node-note,
-  .node-detail .testimony,
-  .node-detail .node-deviations {
-    margin-top: 10px;
-  }
-  .attempts,
-  .decide {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .decide p {
-    margin: 0 0 4px;
-    color: var(--text-soft);
-    font-size: 13px;
-    line-height: 1.5;
-  }
-  .runview .btn {
-    height: 32px;
-    padding: 0 12px;
-    border: 1px solid var(--line-strong);
-    border-radius: 0;
-    color: var(--text-soft);
-    background: transparent;
-    font-size: 13px;
-    text-align: center;
-    cursor: pointer;
-  }
-  .runview .btn.primary {
-    border-color: var(--ink);
-    color: var(--ink-text);
-    background: var(--ink);
-  }
-  .runview .btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.6;
-  }
-  .decide .note {
-    width: 100%;
-    min-height: 72px;
-    resize: vertical;
-    padding: 8px 10px;
-    border: 1px solid var(--line);
-    border-radius: 0;
-    color: var(--text);
-    background: var(--panel-bg);
-    font: 13px/1.45 var(--font-ui);
-  }
-  .decide .note:focus {
-    border-color: var(--info);
-    outline: 1px solid var(--info);
-  }
-  .decision-waiting,
-  .decision-submitted,
-  .decision-record {
-    color: var(--muted);
-    font: 11.5px var(--font-mono);
-  }
-  .decision-record {
-    margin-top: 10px;
-  }
-  .decision-record-note {
-    margin-top: 4px;
-    color: var(--text-soft);
-    white-space: pre-wrap;
-  }
-  .srow {
-    width: 100%;
-    height: 36px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 8px;
-    border: 0;
-    border-bottom: 1px solid var(--line);
-    color: var(--text-soft);
-    background: transparent;
-    text-align: left;
-    font-size: 12.5px;
-  }
-  .srow:hover:not([aria-disabled="true"]) {
-    background: var(--hover);
-  }
-  .srow[aria-disabled="true"] {
-    cursor: default;
-  }
-  .srow-meta {
-    margin-left: auto;
-    color: var(--muted);
-    font: 11.5px var(--font-mono);
-  }
-  .sessions,
-  .run-deviations {
-    margin: 0 32px;
-    padding: 20px 0;
-    border-top: 1px solid var(--line);
-  }
-  .sessions h2,
-  .run-deviations h2 {
-    margin: 0 0 8px;
-    color: var(--muted);
-    font: 11.5px var(--font-mono);
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
-  }
-  .run-deviations .node-deviations {
-    margin-top: 0;
-  }
-  .log-detail {
+  .execution-sheet .runview.compact .edge::after {
     display: block;
-  }
-  .flat-log-entry {
-    padding: 10px 0;
-    border-bottom: 1px solid var(--line);
-    color: var(--text-soft);
-    font-size: 13px;
-    line-height: 1.55;
-  }
-  .flat-log-entry:last-child {
-    border-bottom: 0;
-  }
-  .flat-log-meta {
-    display: flex;
-    justify-content: space-between;
-    color: var(--muted);
-    font: 11.5px var(--font-mono);
-  }
-  .runview > .rv-foot {
-    display: flex;
-    justify-content: space-between;
-    margin: 0 32px;
-    padding: 12px 0 0;
-  }
-
-  @media (max-width: 760px) {
-    /* Header icon buttons keep the page's 44px touch floor on phones. */
-    .icon-btn {
-      width: 44px;
-      height: 44px;
-    }
-    .run-head {
-      height: 52px;
-      padding: 0 8px 0 12px;
-    }
-    .facts {
-      padding: 16px 16px 0;
-      flex-wrap: wrap;
-      gap: 8px 12px;
-      white-space: normal;
-    }
-    .fact-stale {
-      width: 100%;
-      margin-left: 0;
-    }
-    .runview > .conflict,
-    .runview > .banner,
-    .runview > .obs-line,
-    .runview > .rv-task-details,
-    .runview > .disposition {
-      margin-right: 16px;
-      margin-left: 16px;
-    }
-    .dag.staged {
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-      padding: 24px 16px;
-      overflow: visible;
-    }
-    .rank {
-      width: 100%;
-      flex: 0 0 auto;
-    }
-    .rank .stage-head {
-      margin: 0 0 4px;
-    }
-    .node {
-      width: 100%;
-    }
-    .edge {
-      width: 1px;
-      height: 16px;
-      flex: 0 0 16px;
-      margin-left: 16px;
-    }
-    .edge::before {
-      width: 1px;
-      height: auto;
-      align-self: stretch;
-      flex: 0 0 1px;
-    }
-    .edge::after {
-      display: none;
-    }
-    .detail-block {
-      grid-template-columns: 1fr;
-      gap: 20px;
-      margin: 0 16px;
-    }
-    .sessions,
-    .run-deviations,
-    .runview > .rv-foot {
-      margin-right: 16px;
-      margin-left: 16px;
-    }
-    .srow-meta {
-      max-width: 48%;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    /* Voice cards keep the run's compact DAG as a horizontal strip. */
-    .runview.compact .dag.staged {
-      flex-direction: row;
-      gap: 0;
-      padding: 16px;
-      overflow-x: auto;
-    }
-    .runview.compact .rank {
-      width: 186px;
-      flex: 0 0 186px;
-    }
-    .runview.compact .rank .stage-head {
-      margin: -11px 0 -4px;
-    }
-    .runview.compact .node {
-      width: 186px;
-    }
-    .runview.compact .edge {
-      width: auto;
-      height: auto;
-      flex: 0 0 28px;
-      margin-left: 0;
-    }
-    .runview.compact .edge::before {
-      width: auto;
-      height: 1px;
-      align-self: auto;
-      flex: 1;
-    }
-    .runview.compact .edge::after {
-      display: block;
-    }
   }
 }

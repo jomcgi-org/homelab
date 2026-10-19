@@ -19,7 +19,6 @@
   import "./execution-sheet.css";
   import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
   import Trail from "$lib/public/components/Trail.svelte";
-  import SiteIndex from "$lib/public/components/SiteIndex.svelte";
   import RunView from "./RunView.svelte";
   import Launcher from "./Launcher.svelte";
   import { shapeStateClass } from "./dag.js";
@@ -2014,10 +2013,6 @@
         </div>
 
         <div class="inbox-expanded">
-          <details class="execution-site-index">
-            <summary>/ Site</summary>
-            <SiteIndex />
-          </details>
           <div class="inbox-head">
             <h1>{P.labels.inbox}</h1>
             <button
@@ -2109,7 +2104,9 @@
                 <div class="group attention-group">
                   <div class="group-title">
                     <span>{P.labels.needsYou}</span>
-                    <span class="group-count">{inbox.needsYou.length}</span>
+                    <span class="inbox-group-count"
+                      >{inbox.needsYou.length}</span
+                    >
                   </div>
                   <div class="row-list">
                     {#each inbox.needsYou as item (`${item.kind}:${item.id}`)}
@@ -2122,7 +2119,8 @@
                 <div class="group">
                   <div class="group-title">
                     <span>{P.labels.runningGroup}</span>
-                    <span class="group-count">{inbox.running.length}</span>
+                    <span class="inbox-group-count">{inbox.running.length}</span
+                    >
                   </div>
                   <div class="row-list">
                     {#each inbox.running as item (`${item.kind}:${item.id}`)}
@@ -3118,7 +3116,7 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
-  .group-count {
+  .inbox-group-count {
     font-family: var(--font-mono);
     font-weight: 600;
   }

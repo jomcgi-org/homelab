@@ -4,7 +4,6 @@
   import "../execution-sheet.css";
   import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
   import Trail from "$lib/public/components/Trail.svelte";
-  import SiteIndex from "$lib/public/components/SiteIndex.svelte";
   import { renderAgentMarkdown } from "../markdown.js";
   import { fmtCost } from "../run-format.js";
   import { relativeTime } from "../run-history.js";
@@ -227,7 +226,6 @@
     <div class="journal">
       <aside class="spine">
         <div class="trail-dock">{@render trail()}</div>
-        <SiteIndex />
       </aside>
       <div class="content editions">
         <header class="top ed-head">

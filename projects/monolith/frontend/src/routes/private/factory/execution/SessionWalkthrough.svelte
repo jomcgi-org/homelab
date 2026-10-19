@@ -475,8 +475,9 @@
     display: grid;
     gap: 3px;
     width: 100%;
-    padding: 8px 12px;
+    padding: 8px 12px 8px 10px;
     border: 0;
+    border-left: 2px solid transparent;
     border-bottom: 1px solid var(--line);
     background: transparent;
     text-align: left;
@@ -486,11 +487,12 @@
   .point:hover {
     background: var(--hover);
   }
-  /* Selection is an inset ink edge, not a background swap, so the
-     unexplained red ground survives selection. */
+  /* The sheet's accent edge marks selection even when both grounds match.
+     Unexplained and contradicted files retain their error ground. */
   .point.on {
     background: var(--panel-bg);
-    box-shadow: none;
+    border-left-color: var(--accent-ink);
+    color: var(--accent-ink);
   }
   .point-top {
     display: flex;

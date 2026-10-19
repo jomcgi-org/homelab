@@ -23,6 +23,10 @@ def geometry(page):
         chromePosition: getComputedStyle(document.querySelector('.chrome')).position,
         legacyLoaded: getComputedStyle(document.documentElement).getPropertyValue('--cream').trim(),
         inbox: box('.inbox-body'), transcript: box('.turns'),
+        publicSiteLinks: document.querySelectorAll('.site-index, a[href="/engineering"], a[href="/docs"], a[href="/cv"], a[href^="/app/"], a[href="/ember/firecracker"]').length,
+        inboxCounts: [...document.querySelectorAll('.inbox-group-count')].map(e => ({
+          size: parseFloat(getComputedStyle(e).fontSize),
+          after: getComputedStyle(e, '::after').content})),
         clippedCrumbs: [...document.querySelectorAll('.trail')].filter(e => e.checkVisibility()).flatMap(trail => {
           const bounds = trail.getBoundingClientRect();
           return [...trail.querySelectorAll('.crumb')].filter(crumb => {
@@ -44,6 +48,9 @@ def assert_geometry(page, view):
         "private route inherited public maintenance chrome"
     )
     assert measured["legacyLoaded"], "production legacy stylesheet was not loaded"
+    assert measured["publicSiteLinks"] == 0, "public-tier links cannot resolve on the private host"
+    for count in measured["inboxCounts"]:
+        assert count["size"] >= 11.5 and count["after"] in ("none", "normal"), count
     if view == "execution":
         assert measured["bodyOverflow"] == "hidden", (
             f"sheet stole viewport scrolling: {measured}"
@@ -60,6 +67,38 @@ def assert_geometry(page, view):
         assert measured["bodyOverflow"] == "auto", (
             "drain must retain document scrolling"
         )
+    return measured
+
+
+def assert_color_roles(page):
+    measured = page.evaluate("""() => {
+      const main = document.querySelector('main');
+      const probe = document.createElement('span');
+      main.append(probe);
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d');
+      const rgba = role => {
+        probe.style.backgroundColor = `var(${role})`;
+        ctx.clearRect(0, 0, 1, 1);
+        ctx.fillStyle = getComputedStyle(probe).backgroundColor;
+        ctx.fillRect(0, 0, 1, 1);
+        return [...ctx.getImageData(0, 0, 1, 1).data];
+      };
+      const luminance = rgb => rgb.slice(0, 3).map(c => c / 255)
+        .map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
+        .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
+      const fg = luminance(rgba('--ok')), bg = luminance(rgba('--ok-soft'));
+      const sheet = rgba('--sheet'), scrim = rgba('--scrim-bg');
+      const alpha = scrim[3] / 255;
+      const blended = sheet.slice(0, 3).map((c, i) => scrim[i] * alpha + c * (1 - alpha));
+      probe.remove();
+      return {scheme: getComputedStyle(main).colorScheme, scrim,
+        successContrast: (Math.max(fg, bg) + .05) / (Math.min(fg, bg) + .05),
+        sheetLuminance: luminance(sheet), dimmedLuminance: luminance(blended)};
+    }""")
+    assert measured["successContrast"] >= 4.5, measured
+    assert measured["dimmedLuminance"] < measured["sheetLuminance"], measured
     return measured
 
 
@@ -114,6 +153,14 @@ def check_execution(browser, base, output, evidence):
                     )
                     page.wait_for_function("window.__factoryFixtureReady")
                     page.evaluate("document.fonts.ready")
+                    record["colors"] = {"system": assert_color_roles(page)}
+                    assert record["colors"]["system"]["scheme"] == scheme
+                    # An explicit toggle must win even against the other OS scheme.
+                    for override in ("light", "dark"):
+                        page.evaluate("theme => document.documentElement.dataset.theme = theme", override)
+                        record["colors"][override] = assert_color_roles(page)
+                        assert record["colors"][override]["scheme"] == override
+                    page.evaluate("document.documentElement.removeAttribute('data-theme')")
                     if view == "drain":
                         page.get_by_text(
                             "Synthetic checkpoint 0", exact=False
@@ -191,6 +238,27 @@ def check_execution(browser, base, output, evidence):
                             "transcript scrolled the document"
                         )
                         shot("updated-transcript")
+                        # The repo-bearing session mounts SessionWalkthrough inside
+                        # Turns, distinct from the full Walkthrough tab below.
+                        page.locator(".turns .walk-summary").click()
+                        points = page.locator(".turns .walk .point")
+                        points.nth(1).wait_for()
+                        assert points.count() == 2
+                        points.nth(1).click()
+                        selected = page.locator('.turns .walk .point[aria-current="true"]')
+                        assert "selection.js" in selected.inner_text()
+                        marker = selected.evaluate("""e => {
+                          const s = getComputedStyle(e);
+                          return {width: s.borderLeftWidth, style: s.borderLeftStyle,
+                            edge: s.borderLeftColor, text: s.color};
+                        }""")
+                        assert marker["width"] == "2px" and marker["style"] == "solid", marker
+                        assert marker["edge"] == marker["text"], marker
+                        assert points.first.get_attribute("aria-current") == "false"
+                        record["selectionMarker"] = marker
+                        if width == 390:
+                            page.locator(".turns .walk-back").click()
+                        shot("walkthrough-selection")
                         if width == 390:
                             page.get_by_role(
                                 "button", name="Session actions", exact=True
@@ -202,7 +270,7 @@ def check_execution(browser, base, output, evidence):
                             page.get_by_role(
                                 "button", name="Walkthrough", exact=True
                             ).click()
-                        page.get_by_text("Fixture walkthrough", exact=False).wait_for()
+                        page.get_by_text("Fixture walkthrough for synthetic.js", exact=True).wait_for()
                         shot("walkthrough")
                         if width == 390:
                             page.get_by_role(
@@ -314,6 +382,7 @@ def check_execution(browser, base, output, evidence):
                             "transcript polling",
                             "VM stream update",
                             "walkthrough",
+                            "repo-bearing session selection marker",
                             "fallback reconnect",
                             "keyboard overlays",
                             "viewport resize",
