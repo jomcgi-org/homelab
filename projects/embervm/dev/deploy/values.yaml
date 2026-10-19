@@ -163,8 +163,8 @@ bazelQueryWorkload:
   enabled: false
 
 # The website snapshotter (ADR embervm/035), off in dev. It also has no egress
-# lane here: dev inherits egress.enabled false, so even enabled it could not
-# reach a frontend.
+# lane here: the base leaves egress off and the staged hub overlay grants
+# only sandbox-python, so even enabled it could not reach a frontend.
 shotterWorkload:
   enabled: false
 
@@ -180,9 +180,9 @@ claudeRuntimeWorkload:
 # and its base is the ~100 MB pi image rather than the 300 MB claude one that
 # cost the first dev brick three of its four minutes.
 #
-# WHAT DEV CAN AND CANNOT PROVE HERE. Dev does not enable the egress lane
-# (egress.enabled defaults false and dev is silent on it), and a pi turn reaches
-# the in-cluster vLLM endpoint through that lane, so dev proves base build, cold
+# WHAT DEV CAN AND CANNOT PROVE HERE. Pi has no egress lane in either this base
+# or the staged hub overlay. A pi turn reaches the in-cluster vLLM endpoint
+# through that lane, so dev proves base build, cold
 # boot, readiness and session create/destroy at 256 MiB. It does NOT prove a
 # turn. That is production's to prove, which is why the CR ships enabled there
 # with nothing routed to it yet.
@@ -283,9 +283,8 @@ auth:
 # above so the runner can exercise the management API with its projected token.
 conformance:
   enabled: true
-  # S6 TLC trace validation (#6415), staged default-off even in dev. Narrower
-  # than and independent of conformance.enabled above: an operator flips this
-  # only after the embervm-dev lane is confirmed stable.
+  # Keep S6 off in this shared base, including the store-validation preset.
+  # The staged hub overlay enables it with S7/S8 for #6965's S1-S8 acceptance.
   s6:
     enabled: false
   # RAISED from the chart's 15m for the 0.41.7 to 0.47.x jump (#5224).
@@ -301,9 +300,11 @@ conformance:
   #
   # Must stay strictly BELOW the dev stage's verdictTimeout in
   # projects/platform/kargo/values.yaml (1h15m0s), which also has to cover the
-  # 6m10s suite after this wait ends (s1 60s + s2 180s + s3 60s + s4 10s +
-  # s5 60s, summed as totalBudget in conformance/main.go) and, when the first
-  # cycle is red, one more runInterval plus suite. It is a bound on waiting for bricks,
+  # suite after this wait ends and, when the first cycle is red, one more
+  # runInterval plus suite. The base S1-S5 budget is 6m40s; the staged hub's
+  # S1-S8 budget is 8m15s, with runInterval 25m in values-gke.yaml. Two suites
+  # fit only if repeat readiness and polling use the remaining 3m30s. The runner
+  # repeats readiness on each cycle. It is a bound on waiting for bricks,
   # not a budget for the suite, so a fast roll is unaffected: readiness is
   # polled, not slept.
   readyWait: 30m0s
