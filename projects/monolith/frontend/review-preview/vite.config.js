@@ -12,7 +12,8 @@ export default defineConfig({
     {
       name: "synthetic-private-review-boundary",
       generateBundle() {
-        for (const id of this.getModuleIds()) {
+        for (const moduleId of this.getModuleIds()) {
+          const id = moduleId.split("?")[0];
           if (
             /src\/routes\/|src\/lib\/server\/|\$env\//.test(id) ||
             (/src\/lib\/private\//.test(id) &&
@@ -32,6 +33,7 @@ export default defineConfig({
       },
     },
   ],
+  resolve: { conditions: ["browser"] },
   build: {
     target: "es2022",
     outDir: here("../review-fixture-preview"),
