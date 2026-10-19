@@ -27,6 +27,13 @@ def _policy():
             "max_attempts": 2,
             "max_parallel_nodes": 1,
             "max_task_turns_hard": 9,
+            "allowed_models": ["astra", "opus", "sol", "sonnet", "spark"],
+            "conductor_model": "astra",
+            "worker_model": "astra",
+            "reviewer_model": "opus",
+            "base_branch": "main",
+            "turn_timeout_seconds": 14400,
+            "task_timeout_seconds": 43200,
             "intake": {
                 "enabled": True,
                 "refine_enabled": True,
