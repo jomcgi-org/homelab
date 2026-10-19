@@ -449,3 +449,22 @@ def test_unclaimed_capacity_demand_never_becomes_a_zombie(database, capacity_sta
         assert db.get(AgentSession, sid).status == "running"
         assert not db.exec(select(AgentTurn)).all()
         assert row.claimed_by_replica is None and row.dispatch_count == 0
+
+
+def test_unconfirmed_legacy_attempt_does_not_become_a_capacity_wait(database):
+    engine, sid, deadline = database
+    assert store.claim_pending_message_for_session_sync(sid, "lost-observer") == 1
+    with Session(engine) as db:
+        row = db.exec(select(PendingMessage)).one()
+        row.claimed_by_replica = None
+        row.claimed_at = None
+        db.add(row)
+        db.commit()
+    ember = FakeEmber(engine, deadline)
+    assert asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
+    assert ember.calls == []
+    assert pending(engine).capacity_intent_json is None
+    assert store.claim_pending_message_for_session_sync(sid, "new-observer") is None
+    with Session(engine) as db:
+        turn = store.get_turn(db, sid, 1)
+        assert turn.stop_reason == "unknown_invocation"

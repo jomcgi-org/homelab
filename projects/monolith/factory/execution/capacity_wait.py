@@ -65,25 +65,24 @@ def _read(session_id: int, *, include_claimed: bool = False) -> dict | None:
         )
         from factory.execution import store
 
+        retry_allowed = store._retry_permission(
+            store.get_turn(db, session_id, pending.seq), pending
+        )
         continuation = bool(
             context
             and context.get("claimed_dispatch_count") == pending.dispatch_count
-            and store._retry_permission(
-                store.get_turn(db, session_id, pending.seq), pending
-            )
+            and retry_allowed
         )
         legacy_started_at = (
-            pending.last_dispatch_at
-            if context is None
-            and store._retry_permission(
-                store.get_turn(db, session_id, pending.seq), pending
-            )
-            else None
+            pending.last_dispatch_at if context is None and retry_allowed else None
         )
         return {
             "continuation": continuation,
             "started_at": pending.capacity_started_at,
             "legacy_started_at": legacy_started_at,
+            "legacy_recovery": context is None
+            and store._attempted(pending)
+            and not retry_allowed,
             "session_id": session_id,
             "seq": pending.seq,
             "local_session_id": agent.local_session_id,
@@ -157,6 +156,10 @@ async def poll(session_id: int, transport, *, allowed: bool) -> bool:
     """One short poll; False leaves the pending turn unclaimed and unchanged."""
     snapshot = await asyncio.to_thread(_read, session_id)
     if snapshot is None:
+        return allowed
+    if snapshot["legacy_recovery"]:
+        # No asynchronous operation exists. Leave an unconfirmed prior attempt
+        # to the existing claim/receipt recovery instead of hiding it as waiting.
         return allowed
     context = snapshot["context"]
     if context is None and not enabled():
