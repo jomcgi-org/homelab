@@ -49,7 +49,6 @@ multitool_tar(
 go_tools_tar(
     name = "source_tools_tar",
     tools = {
-        "agent-run": "//bazel/tools/agent-run:agent-run_lib",
         "hf2oci": "//bazel/tools/hf2oci/cmd/hf2oci:hf2oci_lib",
     },
 )

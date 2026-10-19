@@ -4,7 +4,6 @@ Shared Bazel build tooling: rules, wrappers, and helper binaries used across the
 
 | Subdir | What it provides | Load path / notes |
 | --- | --- | --- |
-| [agent-run](agent-run/) | Go CLI binary that creates `SandboxClaim` resources and exec's into Goose sandbox pods to run agent tasks against a given task description or GitHub issue | Go binary; no `.bzl` files |
 | [cluster](cluster/) | Read-only `sh_binary` wrappers around kubectl for cluster inspection: `pods`, `events`, `status`, `argocd` | Script helpers; no `.bzl` files |
 | [ci](ci/) | Unified local feedback loop: selective lint/regen + `bb remote` Linux test (matches Workflows Test flags) | `ci` on PATH via direnv; `bazel/tools/ci/ci` |
 | [embervm](embervm/) | Read-only Firecracker guest RSS and PSS overhead measurement for running EmberVM brick pods | Shell script + `sh_test` |

@@ -15,7 +15,6 @@ import pytest
 
 
 REQUIRED_COMMANDS = {
-    "agent-run",
     "bb",
     "buildifier",
     "claude",
@@ -157,6 +156,12 @@ def _caret_dependency_match(
 
 
 @pytest.mark.parametrize("platform", TEST_PLATFORMS)
+def test_source_tools_exclude_retired_agent_run(platform: str) -> None:
+    layer = _runfile(f"source_tools_tar_{platform}.tar")
+    assert "usr/bin/agent-run" not in _members(layer)
+
+
+@pytest.mark.parametrize("platform", TEST_PLATFORMS)
 def test_every_platform_contains_executable_commands(platform: str) -> None:
     layers = _layers(platform)
     commands = _command_layers(layers)
@@ -249,7 +254,6 @@ def test_commands_execute_from_relocated_root() -> None:
             "DISABLE_AUTOUPDATER": "1",
         }
         invocations = {
-            "agent-run": ["--help"],
             # --cli keeps version reporting inside bb instead of starting its
             # embedded Bazelisk and downloading the repository's Bazel.
             "bb": ["version", "--cli"],
