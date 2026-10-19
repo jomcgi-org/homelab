@@ -1463,6 +1463,15 @@ async def prewarm_session(session_id: int) -> Response:
         if row is None or not row.ember_session_id or not row.ember_session_token:
             return Response(status_code=204)
 
+        from factory.execution import capacity_wait
+
+        if row.local_session_id.startswith("factory:"):
+            snapshot = await asyncio.to_thread(capacity_wait._read, session_id)
+            if capacity_wait.enabled() or (snapshot and snapshot["context"]):
+                # Durable pending work owns this admission. Composer warming
+                # must not dispatch the health-endpoint workaround beside it.
+                return Response(status_code=204)
+
         now = time.monotonic()
         last = _prewarm_timestamps.get(session_id)
         if last is not None and now - last < _PREWARM_TTL:

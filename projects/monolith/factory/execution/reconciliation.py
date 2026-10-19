@@ -2272,6 +2272,17 @@ def read_factory_dispatch(db: Session, pin: dict, session_id: int) -> dict:
     if len(pending) != 1 or pending[0].seq != 1:
         return unknown
     row = pending[0]
+    if row.capacity_intent_json and row.capacity_state != "legacy_unsupported":
+        context = json.loads(row.capacity_intent_json)
+        return {
+            "state": "dispatched" if row.capacity_started_at else "waiting_capacity",
+            "started_at": row.capacity_started_at.isoformat()
+            if row.capacity_started_at
+            else None,
+            "operation_id": context.get("operation_id"),
+            "reason": context.get("reason"),
+            "deadline": context.get("deadline"),
+        }
     if row.last_dispatch_at is not None and row.dispatch_count == 1:
         return {"state": "dispatched", "started_at": row.last_dispatch_at.isoformat()}
     if owner is not None and _relay_continuation(db, session_id, row):

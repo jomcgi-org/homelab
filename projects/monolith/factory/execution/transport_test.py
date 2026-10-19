@@ -3372,3 +3372,68 @@ def test_metered_synchronous_result_cannot_bypass_terminal_validation(monkeypatc
         )
     assert seen[0][0] == "a" * 32
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize("origin", ["not_dispatched", "guest_response", None])
+def test_residency_negative_proof_requires_control_plane_origin(monkeypatch, origin):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            409,
+            request=request,
+            headers={transport.INVOKE_OUTCOME_HEADER: origin} if origin else {},
+            json={
+                "outcome": "not_dispatched",
+                "operation_id": "intent",
+                "session_id": "s1",
+                "dispatch_id": request.headers["X-Ember-Dispatch-Id"],
+                "reason": "residency_changed",
+            },
+        )
+
+    _client(monkeypatch, handler)
+    expected = (
+        transport.EmberResidencyNotDispatched
+        if origin == "not_dispatched"
+        else EmberVMTransportError
+    )
+    with pytest.raises(expected):
+        asyncio.run(
+            transport.EmberVmShimTransport().deliver(
+                transport.EmberSession("s1", "t1", None),
+                "cli-1",
+                "work",
+                agent_session_id=1,
+                turn_seq=1,
+                claim_owner="owner",
+                dispatch_count=1,
+                residency={"operation_id": "intent", "residency_epoch": "epoch"},
+            )
+        )
+    assert len(requests) == 1
+    assert requests[0].headers["X-Ember-Residency-Epoch"] == "epoch"
+
+
+def test_residency_lost_invoke_is_never_reposted_or_replaced(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        raise httpx.ReadTimeout("lost response", request=request)
+
+    _client(monkeypatch, handler)
+    invocation = {}
+    with pytest.raises(transport.EmberVMTimeout):
+        asyncio.run(
+            transport.EmberVmShimTransport().deliver(
+                transport.EmberSession("s1", "t1", None),
+                "cli-1",
+                "work",
+                residency={"operation_id": "intent", "residency_epoch": "epoch"},
+                invocation_record=invocation,
+            )
+        )
+    assert len(requests) == 1
+    assert invocation["attempted"] is True

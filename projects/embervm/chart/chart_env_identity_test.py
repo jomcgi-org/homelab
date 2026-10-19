@@ -3224,3 +3224,39 @@ def test_jailer_uid_block_base_renders_on_every_noded() -> None:
     bases = _rendered_noded_env_values(rendered, "EMBERVM_NODED_JAILER_UID_BLOCK_BASE")
     assert bases
     assert set(bases) == {"20"}
+
+
+@pytest.mark.parametrize(
+    "value_keys",
+    [
+        [],
+        ["PROD_VALUES", "GKE_VALUES"],
+        ["DEV_VALUES", "DEV_GKE_VALUES"],
+        ["RECOVERY_VALUES"],
+        ["STORE_VALIDATION_VALUES"],
+    ],
+)
+@pytest.mark.parametrize("enabled", [None, True, False])
+def test_async_residency_defaults_off_and_renders_finite_limits(value_keys, enabled):
+    settings = (
+        []
+        if enabled is None
+        else [f"session.asyncResidency.enabled={str(enabled).lower()}"]
+    )
+    rendered = _render(
+        "residency", [Path(os.environ[key]) for key in value_keys], settings
+    )
+    envs = [
+        _plain_env(container)
+        for _, container in _containers(
+            [doc for doc in yaml.safe_load_all(rendered) if doc]
+        )
+    ]
+    env = next(value for value in envs if "EMBERVM_ASYNC_RESIDENCY_ENABLED" in value)
+    assert env["EMBERVM_ASYNC_RESIDENCY_ENABLED"] == ("true" if enabled else "false")
+    for key in (
+        "EMBERVM_RESIDENCY_QUEUE_LIMIT",
+        "EMBERVM_RESIDENCY_PRINCIPAL_LIMIT",
+        "EMBERVM_RESIDENCY_RESTORE_LIMIT",
+    ):
+        assert int(env[key]) > 0
