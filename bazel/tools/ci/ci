@@ -55,15 +55,16 @@ usage() {
 # Changed paths vs merge-base with BASE_REF, plus unstaged and staged worktree edits.
 changed_files() {
 	local base
+	local diff_filter="${1:-ACMR}"
 	if git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
 		base="$(git merge-base HEAD "$BASE_REF" 2>/dev/null || echo "$BASE_REF")"
 	else
 		base="HEAD"
 	fi
 	{
-		git diff --name-only --diff-filter=ACMR "$base" 2>/dev/null || true
-		git diff --name-only --diff-filter=ACMR 2>/dev/null || true
-		git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true
+		git diff --name-only --diff-filter="$diff_filter" "$base" 2>/dev/null || true
+		git diff --name-only --diff-filter="$diff_filter" 2>/dev/null || true
+		git diff --cached --name-only --diff-filter="$diff_filter" 2>/dev/null || true
 		git ls-files --others --exclude-standard 2>/dev/null || true
 	} | sed '/^$/d' | sort -u
 }
@@ -194,7 +195,7 @@ need_helm_deps() {
 			return 0
 			;;
 		esac
-	done < <(changed_files)
+	done < <(changed_files ACMRD)
 	return 1
 }
 

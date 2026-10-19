@@ -284,6 +284,11 @@ elif [[ "$1" == "merge-base" ]]; then
 	echo resolved-merge-base
 elif [[ "$1" == "diff" ]]; then
 	printf '%s\n' "${CI_CHANGED_FILE:-}"
+	for arg in "$@"; do
+		if [[ "$arg" == --diff-filter=*D* ]]; then
+			printf '%s\n' "${CI_DELETED_FILE:-}"
+		fi
+	done
 fi
 exit 0
 EOF
@@ -328,10 +333,11 @@ chmod +x "$HELM_BIN/helm" "$FAKE_ROOT/bazel/tools/format/sync-helm-deps.sh"
 
 run_regen_case() {
 	local name="$1" changed="$2" helm="$3" sync_status="$4" expected_status="$5" expected_runs="$6"
+	local deleted="${7:-}"
 	local regen_path="$REGEN_BIN" actual_status=0 actual_runs=0
 	[[ "$helm" != available ]] || regen_path="$HELM_BIN:$regen_path"
 	if (cd "$FAKE_ROOT" && XDG_CACHE_HOME="$TMP/regen-cache" \
-		PATH="$regen_path" CI_FAKE_ROOT="$FAKE_ROOT" CI_CHANGED_FILE="$changed" \
+		PATH="$regen_path" CI_FAKE_ROOT="$FAKE_ROOT" CI_CHANGED_FILE="$changed" CI_DELETED_FILE="$deleted" \
 		SYNC_LOG="$TMP/$name.sync" SYNC_STATUS="$sync_status" \
 		"$CI" regen >"$TMP/$name.out" 2>&1); then
 		actual_status=0
@@ -355,6 +361,9 @@ run_regen_case helm_root_yaml Chart.yaml available 0 0 1
 run_regen_case helm_root_lock Chart.lock available 0 0 1
 run_regen_case helm_root_tarball charts/library-1.0.0.tgz available 0 0 1
 run_regen_case helm_shallow_lock example/Chart.lock available 0 0 1
+run_regen_case helm_deleted_lock "" available 0 0 1 projects/example/chart/Chart.lock
+run_regen_case helm_deleted_tarball "" available 0 0 1 projects/example/chart/charts/library-1.0.0.tgz
+run_regen_case helm_deleted_unrelated "" missing 0 0 0 tools/example.txt
 run_regen_case helm_unrelated tools/example.txt missing 0 0 0
 run_regen_case helm_missing projects/example/chart/Chart.lock missing 0 1 0
 run_regen_case helm_sync_failure projects/example/chart/Chart.lock available 7 7 1
