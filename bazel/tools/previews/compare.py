@@ -94,7 +94,7 @@ def case_details(name, filename):
         return f"{match[1]}-{match[2]}", int(match[3]), match[4]
     if name == "trips":
         match = re.fullmatch(
-            r"(index|trip|day|timeline)-(\d+)-(light|dark)(?:-(viewer|map))?\.png",
+            r"(index|trip|day|timeline)-(\d+)-(light|dark)(?:-(viewer|map|map-controls|fullscreen))?\.png",
             filename,
         )
         return match[1] + (f"-{match[4]}" if match[4] else ""), int(match[2]), match[3]
