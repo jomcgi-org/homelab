@@ -15,8 +15,10 @@ import factory.orchestration.work_item_links as work_item_links
 import factory.orchestration.work_items as work_items
 from factory.orchestration.factory_models import (
     FactoryAudit,
+    FactoryClassTier,
     FactoryControl,
     FactoryReceipt,
+    FactoryReviewVerdict,
     FactoryStart,
     WorkItem,
     WorkItemEdge,
@@ -45,8 +47,10 @@ def db(tmp_path, monkeypatch):
             m.__table__
             for m in (
                 SwarmTask,
+                FactoryClassTier,
                 FactoryControl,
                 FactoryReceipt,
+                FactoryReviewVerdict,
                 FactoryStart,
                 FactoryAudit,
                 WorkItem,
@@ -2597,6 +2601,11 @@ def test_intake_capacity_matches_admission_across_generations(
     db, monkeypatch, state, old, paused, held, start_state, expected
 ):
     fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    configured = multi_repo_policy(
+        generation=3, max_tasks={"delivery": 1, "advisory": 1}, repos={"owner/repo": {}}
+    )
+    assert controls.set_control("configure", "operator", policy=configured)["ok"]
+    assert controls.set_control("enable", "operator")["ok"]
     with Session(db) as session:
         if state != "queued":
             session.add(
@@ -2635,4 +2644,11 @@ def test_intake_capacity_matches_admission_across_generations(
             )
         )
         session.commit()
-    assert len(intake_loop.intake_tick(policy(), generation=3)) == expected
+    assert len(intake_loop.intake_tick(configured, generation=3)) == expected
+    if expected:
+        from factory.orchestration.factory_intake import admit_next
+
+        result = admit_next("scheduler")
+        assert result["ok"], result
+        with Session(db) as session:
+            assert session.get(FactoryReceipt, result["receipt_id"]).issue_number == 1

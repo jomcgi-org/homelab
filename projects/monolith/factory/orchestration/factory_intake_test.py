@@ -124,7 +124,7 @@ def enable(policy):
 
 
 @pytest.mark.parametrize("held", [False, True])
-def test_waiting_receipt_retains_issue_branch_and_repo_ownership(
+def test_waiting_receipt_retains_issue_and_branch_but_releases_repo_capacity(
     db, policy, monkeypatch, held
 ):
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
@@ -139,16 +139,20 @@ def test_waiting_receipt_retains_issue_branch_and_repo_ownership(
     assert controls.set_control(
         "configure", "operator", policy={**policy, "generation": 1}
     )["ok"]
-    # Same-issue cross-generation and distinct-issue same-repository receipts
-    # remain excluded. Another repository can use the released execution slot.
+    # Cross-generation ownership excludes the same issue while distinct work
+    # in the same repository can use the released execution slot.
     duplicate = issue(1, generation=1)
     same_repo = issue(2, generation=1)
     other_repo = issue(1, repo="owner/other", generation=1)
     result = admit_next("scheduler")
+    assert result["ok"] and result["receipt_id"] == same_repo["receipt"]["id"]
+    result = admit_next("scheduler")
     assert result["ok"] and result["receipt_id"] == other_repo["receipt"]["id"]
     with Session(db) as session:
         assert session.get(FactoryReceipt, duplicate["receipt"]["id"]).state == "queued"
-        assert session.get(FactoryReceipt, same_repo["receipt"]["id"]).state == "queued"
+        assert (
+            session.get(FactoryReceipt, same_repo["receipt"]["id"]).state == "admitted"
+        )
         assert (
             controls.delivery_branch_owner(session, "owner/repo", f"factory/{task}")
             == task

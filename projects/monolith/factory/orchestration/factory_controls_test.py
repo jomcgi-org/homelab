@@ -673,6 +673,74 @@ def test_pending_resume_does_not_override_new_fences(db, policy, monkeypatch, fe
     assert not controls.can_start(first)["ok"]
 
 
+def test_hold_only_release_on_paused_receipt_needs_no_capacity(db, policy, monkeypatch):
+    first, _second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
+    controls.set_control("pause_task", "operator", task_id=first)
+    with controls._locked_session() as (session, control):
+        row = controls._receipt(session, first)
+        result = controls.request_capacity_release(
+            session, control, row, "operator", release_hold=True
+        )
+        assert result == {"ok": True, "pending": False, "reason": None}
+        assert row.task_paused and not controls.landing_held(row)
+    assert controls.status()["lanes"]["delivery"]["active"] == 1
+    assert controls.set_control("resume_task", "operator", task_id=first)["pending"]
+
+
+@pytest.mark.parametrize(
+    "fence,reason",
+    [
+        ("cancel", "cancellation_pending"),
+        ("human", "human_owned"),
+        ("hold", "landing_hold_changed"),
+        ("task", "task_changed"),
+    ],
+)
+def test_revoked_release_intent_is_audited_once(db, policy, monkeypatch, fence, reason):
+    first, _second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
+    with controls._locked_session() as (session, control):
+        row = controls._receipt(session, first)
+        assert controls.request_capacity_release(
+            session, control, row, "operator", release_hold=True
+        )["pending"]
+        intent = json.loads(row.direction_json)["pending_capacity_release"]
+        if fence == "cancel":
+            row.cancellation_requested = True
+        elif fence == "human":
+            item = WorkItem(
+                github_repo=row.repo,
+                github_issue_number=row.issue_number,
+                title="owned",
+                state="open",
+                labels=["human"],
+                source_kind="github",
+                trust="untrusted",
+            )
+            session.add(item)
+            session.flush()
+            row.work_item_id = item.id
+        elif fence == "hold":
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"] = {"actor": "new-owner"}
+            row.direction_json = json.dumps(direction)
+        else:
+            intent["task_id"] = "previous-task"
+            direction = json.loads(row.direction_json)
+            direction["pending_capacity_release"] = intent
+            row.direction_json = json.dumps(direction)
+        assert not controls._apply_capacity_release(session, control, row)
+        assert not controls._apply_capacity_release(session, control, row)
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+        events = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "execution_capacity_release_revoked"
+            )
+        ).all()
+        assert len(events) == 1
+        assert events[0].task_id == first
+        assert json.loads(events[0].detail_json) == {"reason": reason, "intent": intent}
+
+
 def test_pending_resumes_and_admission_contend_for_one_slot(db, policy, monkeypatch):
     first, second = _capacity_pair(db, policy, monkeypatch, "chart")
     controls.set_control("pause_task", "operator", task_id=second)

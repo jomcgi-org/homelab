@@ -630,7 +630,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             repo_limits = repo_lane_limits(policy, candidate.repo)
             held = sum(
                 1
-                for item in active
+                for item in occupying
                 if item.repo == candidate.repo and lane_of(item) == tier
             )
             if held >= repo_limits[tier]:
@@ -647,7 +647,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     "ok": False,
                     "reason": "wip_limit",
                     "repos": full,
-                    "active": len(active),
+                    "active": len(occupying),
                     "limit": sum(limits[lane] for lane in lanes),
                 }
             if blocked_head is not None:

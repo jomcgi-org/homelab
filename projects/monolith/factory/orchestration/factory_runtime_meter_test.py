@@ -470,6 +470,58 @@ def expired_recovery(database, monkeypatch):
     )
 
 
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("start_state", [None, "succeeded", "reserved", "uncertain"])
+def test_expired_recovery_uses_released_same_repo_capacity(
+    database, expired_recovery, held, start_state
+):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    args, _issue, _now = expired_recovery
+    with Session(database) as db, db.begin():
+        db.add_all(
+            [
+                SwarmTask(
+                    id="other",
+                    task_text="other",
+                    conductor_model="astra",
+                    budget_usd=50,
+                ),
+                FactoryReceipt(
+                    task_id="other",
+                    repo="org/repo",
+                    issue_number=7002,
+                    generation=0,
+                    title="other",
+                    body="",
+                    url="",
+                    actor="operator",
+                    state="admitted",
+                    task_paused=not held,
+                    direction_json=json.dumps({"landing_hold": None} if held else {}),
+                ),
+            ]
+        )
+        db.flush()
+        if start_state:
+            db.add(
+                FactoryStart(
+                    task_id="other",
+                    start_key="other",
+                    actor="test",
+                    model="astra",
+                    max_cost_usd=1,
+                    status=start_state,
+                )
+            )
+    if start_state in ("reserved", "uncertain"):
+        with pytest.raises(ValueError, match="recovery_capacity_unavailable"):
+            recovery.preview(**args)
+    else:
+        proposal = recovery.preview(**args)
+        assert proposal["receipt_id"] == 838
+
+
 def test_expired_recovery_preserves_identity_policy_history_and_stays_paused(
     database, expired_recovery, monkeypatch
 ):
@@ -1423,6 +1475,39 @@ def test_old_session_trip_cannot_pause_replacement_but_objective_limit_can(
             meter.objective_totals(db, db.get(FactoryReceipt, 838))["known_list_usd"]
             == output * 50 / 1000000
         )
+
+
+def test_objective_backstop_revokes_pending_resume(database):
+    receipt = prepare()
+    update(receipt, 0)
+    with Session(database) as db, db.begin():
+        owner = db.get(FactoryReceipt, 838)
+        owner.task_paused = True
+        owner.direction_json = json.dumps(
+            {
+                "landing_hold": {"actor": "operator"},
+                "pending_capacity_release": {
+                    "task_id": "task",
+                    "actor": "operator",
+                    "resume": True,
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                },
+            }
+        )
+    assert update(receipt, 1, 20000000)["stop"]
+    assert controls.retry_capacity_releases() == 0
+    with Session(database) as db:
+        owner = db.get(FactoryReceipt, 838)
+        assert owner.task_paused
+        assert json.loads(owner.direction_json) == {
+            "landing_hold": {"actor": "operator"}
+        }
+        event = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "execution_capacity_release_revoked"
+            )
+        ).one()
+        assert json.loads(event.detail_json)["reason"] == "runtime_meter_pause"
 
 
 @pytest.mark.parametrize("sample", ["none", "zero", "early", "duplicates"])

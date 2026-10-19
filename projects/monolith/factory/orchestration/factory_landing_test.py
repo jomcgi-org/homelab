@@ -678,7 +678,10 @@ def test_recovery_is_bounded_across_new_settlements(db, monkeypatch):
 
 
 @pytest.mark.parametrize("constraint", ["lane", "chart"])
-def test_recovery_respects_delivery_capacity(db, monkeypatch, constraint):
+@pytest.mark.parametrize(
+    "wait_seconds", [0, controls.LANDING_RECOVERY_TIMEOUT_SECONDS + 60]
+)
+def test_recovery_respects_delivery_capacity(db, monkeypatch, constraint, wait_seconds):
     monkeypatch.setenv(
         "FACTORY_MAX_CONCURRENT_TASKS", "1" if constraint == "chart" else "2"
     )
@@ -699,17 +702,36 @@ def test_recovery_respects_delivery_capacity(db, monkeypatch, constraint):
     assert receipt_state(db, "t-1") == "succeeded"
     requests = audits(db, "landing_recovery_requested", "t-1")
     assert len(requests) == 1
+    with Session(db) as session:
+        assert controls._landing_recovery_deadline(session, "t-1") is None
     assert calls["graphql"] == []
     landing.landing_tick(POLICY)
     assert receipt_state(db, "t-1") == "succeeded"
     assert audits(db, "landing_recovery_requested", "t-1") == requests
+    resumed_at = NOW + timedelta(seconds=wait_seconds)
+    monkeypatch.setattr(controls, "_now", lambda: resumed_at)
+    for _ in range(3):
+        landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "succeeded"
+    assert audits(db, "landing_recovery_started", "t-1") == []
     with Session(db) as session, session.begin():
         controls._receipt(session, "t-2").task_paused = True
-    # The existing landing retry uses the same request and deadline once the
-    # other receipt is quiescent, even though that receipt still owns its work.
+    # Capacity waiting retains intent without consuming the recovery window.
     landing.landing_tick(POLICY)
     assert receipt_state(db, "t-1") == "admitted"
     assert audits(db, "landing_recovery_requested", "t-1") == requests
+    deadline = resumed_at + timedelta(seconds=controls.LANDING_RECOVERY_TIMEOUT_SECONDS)
+    with Session(db) as session:
+        assert controls._landing_recovery_deadline(session, "t-1") == deadline
+    assert len(audits(db, "landing_recovery_started", "t-1")) == 1
+    assert controls.request_landing_recovery("t-1", 3, HEAD, "delivered_pr", "test")[
+        "ok"
+    ]
+    with Session(db) as session:
+        assert controls._landing_recovery_deadline(session, "t-1") == deadline
+    monkeypatch.setattr(controls, "_now", lambda: deadline)
+    with Session(db) as session:
+        assert controls._landing_recovery_expired(session, "t-1")
 
 
 def test_conflict_disarms_holder_and_advances_next_delivery(db, monkeypatch):

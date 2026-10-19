@@ -564,17 +564,19 @@ Execution capacity uses one projection: admitted and uncertain receipts count
 across generations, except paused or landing-held receipts with no reserved or
 uncertain starts. Each database caller supplies that accounting evidence in one
 batch; missing evidence retains the slot. Current admission-eligible queues
-reserve intake room. Waiting and landing receipts retain issue, branch and
-per-repository ownership independently of execution capacity.
+reserve intake room. Per-repository lane caps count the same execution-slot
+holders. Waiting and landing receipts retain issue and branch ownership.
 
 Authorized resumes and landing-hold releases retain their fences and a durable
 release request while their lane or the chart-wide ceiling is full. The regular
 reconciler and admission retry those requests under the singleton control lock.
-A new pause, cancellation or human handoff revokes pending resume intent. No
-request means no automatic resume. Held repository work reacquires capacity at
-its next start reservation. Continuations and landing recovery use the same
-capacity projection; landing recovery retains its existing request and deadline
-while waiting.
+A new pause, including a runtime-meter fence, cancellation or human handoff
+revokes pending resume intent. Revocations record the request and reason in the
+audit. A hold-only release on a paused receipt preserves the pause and needs no
+free slot. No request means no automatic resume. Held repository work reacquires
+capacity at its next start reservation. Continuations and landing recovery use
+the same capacity projection. Landing recovery retains its request while waiting; its
+fixed deadline starts when execution reopens and cannot be extended by retries.
 
 **Why.** Joe reversed pause-slot retention in #7163 after quiescent tasks waiting
 on a person filled the delivery lane. Execution capacity follows unresolved

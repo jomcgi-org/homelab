@@ -1115,7 +1115,8 @@ def repo_lane_limits(policy: dict, repo: str) -> dict:
     each lane independently. One lane's share is never subtracted from the
     other: the global ceiling and its contended split stay owned by
     open_lanes and the available lanes at the admission gate, so this check
-    is a no-op beyond that gate for a single-entry primary policy.
+    counts the same execution-slot holders as that gate, including across
+    generations. Quiescent waiting receipts retain issue and branch ownership.
     """
     ceiling = factory_max_concurrent_tasks()
     wanted = repo_lane_max_tasks(policy, repo)
@@ -1384,7 +1385,7 @@ def execution_slot_holders(
     batch evidence retains capacity. Ordinary active work counts across policy
     generations. Landing retains ownership without an execution slot; only
     admissible current queues reserve future intake room. Never use this list
-    for issue, branch or per-repository ownership.
+    for issue or branch ownership. Per-repository lane caps use this projection.
     """
 
     def holds(row):
@@ -1481,18 +1482,22 @@ def _apply_capacity_release(db, control, row, *, active=None, unresolved=None):
         return False
     refusal = _capacity_release_refusal(db, control, row)
     if intent["task_id"] != row.task_id or refusal:
-        # Cancellation, ownership handoff and a new pause revoke old intent.
-        direction.pop("pending_capacity_release")
-        row.direction_json = _json(direction)
+        revoke_capacity_release(
+            db,
+            row,
+            intent["actor"],
+            "task_changed" if intent["task_id"] != row.task_id else refusal,
+        )
         return False
     if (
         "landing_hold" in intent
         and direction.get("landing_hold") != intent["landing_hold"]
     ):
-        direction.pop("pending_capacity_release")
-        row.direction_json = _json(direction)
+        revoke_capacity_release(db, row, intent["actor"], "landing_hold_changed")
         return False
-    if not execution_capacity_available(
+    # Removing only a hold preserves the pause and cannot acquire a new slot.
+    remains_paused = row.task_paused and not intent.get("resume")
+    if not remains_paused and not execution_capacity_available(
         db, control, row, active=active, unresolved=unresolved
     ):
         return False
@@ -1511,6 +1516,23 @@ def _apply_capacity_release(db, control, row, *, active=None, unresolved=None):
         intent=intent,
     )
     return True
+
+
+def revoke_capacity_release(db, row, actor, reason):
+    """Remove superseded intent with its identity and refusal in the audit."""
+    direction = json.loads(row.direction_json or "{}")
+    intent = direction.pop("pending_capacity_release", None)
+    if intent is None:
+        return
+    row.direction_json = _json(direction)
+    _audit(
+        db,
+        actor,
+        "execution_capacity_release_revoked",
+        task_id=row.task_id,
+        reason=reason,
+        intent=intent,
+    )
 
 
 def request_capacity_release(
@@ -2083,6 +2105,20 @@ def _landing_recovery_deadline(db: Session, task_id: str) -> datetime | None:
         .limit(1)
     ).first()
     value = json.loads(event.detail_json).get("deadline_at") if event else None
+    if event and not value:
+        started = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "landing_recovery_started",
+                FactoryAudit.id > event.id,
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        detail = json.loads(started.detail_json) if started else {}
+        if detail.get("request_id") == event.id:
+            value = detail["deadline_at"]
     return datetime.fromisoformat(value) if value else None
 
 
@@ -3174,10 +3210,7 @@ def set_control(
             else:
                 if action == "pause_task":
                     row.task_paused = True
-                    direction = json.loads(row.direction_json or "{}")
-                    if "pending_capacity_release" in direction:
-                        direction.pop("pending_capacity_release")
-                        row.direction_json = _json(direction)
+                    revoke_capacity_release(db, row, actor, "pause_task")
                 else:
                     release_result = request_capacity_release(
                         db, control, row, actor, resume=True
@@ -4158,10 +4191,7 @@ def finish_task(
             action = "delivery_ready"
         row.state = outcome
         if outcome not in _ACTIVE:
-            direction = json.loads(row.direction_json or "{}")
-            if "pending_capacity_release" in direction:
-                direction.pop("pending_capacity_release")
-                row.direction_json = _json(direction)
+            revoke_capacity_release(db, row, actor, "task_settled")
         row.updated_at = _now()
         db.add(row)
         if outcome == "landing":
@@ -4204,7 +4234,8 @@ def request_landing_recovery(
 
     One durable request is allowed per settlement, including unchanged-head
     retries. The conductor can also request recovery before first settlement.
-    A request keeps its identity across retries and cannot extend its deadline.
+    Capacity waiting retains request identity. The fixed deadline starts when
+    recovery acquires execution capacity and is never extended by a replay.
     """
     actor = _text(actor, "actor")
     if type(pr_number) is not int or pr_number <= 0:
@@ -4276,6 +4307,9 @@ def request_landing_recovery(
 
             if any(same_work(r, row) and r.task_id != task_id for r in active):
                 return {"ok": False, "reason": "issue_already_active"}
+        capacity_available = row.state == "admitted" or execution_capacity_available(
+            db, _control, row
+        )
         if not replaying:
             run_floor = (
                 db.exec(
@@ -4287,7 +4321,7 @@ def request_landing_recovery(
                 or 0
             )
             # The landing loop retries this existing durable request when room
-            # opens. Waiting never renews its identity, allowance or deadline.
+            # opens. Its deadline starts only when execution can reopen.
             _audit(
                 db,
                 actor,
@@ -4299,12 +4333,27 @@ def request_landing_recovery(
                 source=source,
                 reason=reason,
                 deadline_at=(
-                    _now() + timedelta(seconds=LANDING_RECOVERY_TIMEOUT_SECONDS)
-                ).isoformat(),
+                    (
+                        _now() + timedelta(seconds=LANDING_RECOVERY_TIMEOUT_SECONDS)
+                    ).isoformat()
+                    if capacity_available
+                    else None
+                ),
             )
         if row.state in ("succeeded", "landing"):
-            if not execution_capacity_available(db, _control, row):
+            if not capacity_available:
                 return {"ok": False, "reason": "delivery_capacity", "pending": True}
+            if replaying and _landing_recovery_deadline(db, task_id) is None:
+                _audit(
+                    db,
+                    actor,
+                    "landing_recovery_started",
+                    task_id=task_id,
+                    request_id=previous[-1].id,
+                    deadline_at=(
+                        _now() + timedelta(seconds=LANDING_RECOVERY_TIMEOUT_SECONDS)
+                    ).isoformat(),
+                )
             row.state = "admitted"
             row.updated_at = _now()
             db.add(row)
