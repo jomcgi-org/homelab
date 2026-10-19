@@ -330,7 +330,7 @@ def ingest(receipt_id, token, value):
                 else []
             )
         for current_owner in current_owners:
-factory_pause.pause_locked(
+            factory_pause.pause_locked(
                 db,
                 current_owner,
                 "factory:runtime-meter",

@@ -575,9 +575,12 @@ A new pause, including a runtime-meter fence, cancellation or human handoff
 revokes pending resume intent. Revocations record the request and reason in the
 audit. A hold-only release on a paused receipt preserves the pause and needs no
 free slot. No request means no automatic resume. Held repository work reacquires
-capacity at its next start reservation. Continuations and landing recovery use
-the same capacity projection. Landing recovery retains its request while waiting; its
-fixed deadline starts when execution reopens and cannot be extended by retries.
+capacity at its next start reservation. Completed decisions and settlement need
+no execution slot and still reconcile while capacity is full. A capacity-refused
+start stays ready for retry without pausing the receipt or requesting funding.
+Continuations and landing recovery use the same capacity projection. Landing
+recovery retains its request while waiting; its fixed deadline starts when
+execution reopens and cannot be extended by retries.
 
 **Why.** Joe reversed pause-slot retention in #7163 after quiescent tasks waiting
 on a person filled the delivery lane. Execution capacity follows unresolved
