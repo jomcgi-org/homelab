@@ -155,17 +155,12 @@ private chart repositories opt into credentialItemPath. ADR 009 called the git
 write credential "the
 main new surface"; this design removes it.
 
-THE COST, stated plainly: targetRevision stops being git truth. It lives in the
-live Application, and the `canada` root app must be told to ignore that one
-field per Application or it will revert every promotion. Those patches are
-manual and documented in this chart's README, because `canada` is a bootstrap
-resource and is not in this repo.
-
-That is also the REVERT LEVER, and the reason the CI write-back is being left
-in place for now rather than deleted alongside this. It keeps writing a correct
-value into production's application.yaml, so removing canada's
-ignoreDifferences entry hands production straight back to git with no
-scramble.
+Kargo owns targetRevision on the live Application. The hub root preserves it
+with ignoreDifferences and RespectIgnoreDifferences=true, configured in
+projects/gke-cluster/root/root-application.yaml and reconciled by hub-root.
+Land and reconcile that ownership configuration before arming a new pipeline.
+Git pins remain bootstrap/revert floors; see the README for the source-array
+drift caveat and Git-based ownership changes.
 */}}
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Stage

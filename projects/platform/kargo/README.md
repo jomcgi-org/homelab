@@ -1,248 +1,171 @@
 # Kargo
 
-Owns **one thing**: the monolith's chart version, in dev and then in production.
+Kargo owns the live chart revision of five Applications on the GKE hub.
+The UI is at `private.jomcgi.dev/app/kargo`, behind Cloudflare Access and
+Authentik. The `homelab-admin` group has promotion rights.
 
-The pipeline is `dev` then `prod`. Both run the same chart, so production can
-only receive Freight that dev has already taken. That ordering is joined by two
-assertions, both promotion steps rather than a Kargo `verification` block: an
-`argocd-wait` that holds each Promotion until its Application is Synced and
-Healthy, and a 2 minute `requiredSoakTime` before prod may take dev's Freight.
-A Promotion that fails never marks its Freight verified, which is the mechanism
-that stops a bad chart at dev. See "What the gate does and does not assert".
+## Hub pipelines
 
-`projects/monolith/dev/deploy/application.yaml` pinned an OCI chart version that
-nothing moved. `bazel/helm/write-back-versions.sh` resolves exactly one
-`deploy/application.yaml` per chart and that is production's, so dev was
-invisible to it. The stale pin failed twice in one night (#4728): once leaving a
-safety gate inert, once withholding a feature.
+The hub's `kargo` Application in `projects/platform-gke/kargo/application.yaml`
+loads this chart with `values.yaml` only. There is no additional values overlay
+in that Application. `promotion.enabled` and every Stage's `autoPromotion`
+are true in this configuration.
 
-## Why promotion patches the Application instead of committing to git
+| Pipeline | Project / namespace | Warehouse | Stage: Application |
+| --- | --- | --- | --- |
+| monolith | kargo-monolith | monolith-chart | prod: monolith |
+| monolith-agents | kargo-monolith-agents | monolith-agents-chart | prod: monolith-agents |
+| monolith-public | kargo-monolith-public | monolith-public-chart | prod: monolith-public |
+| embervm | kargo-embervm | embervm-chart | dev: embervm-dev; prod: embervm |
 
-ADR platform/009 decision 3 specified a git-writing promotion. That path is
-blocked, not merely inconvenient.
+All five Applications live in `argocd` and are registered through
+`projects/gke-apps/kustomization.yaml`. The three monolith pipelines subscribe
+directly to their Warehouses and have no upstream Stage or soak. There is no
+registered monolith dev Application. This configuration makes no decision
+about adding one.
 
-Ruleset `9180009` on the default branch carries `required_status_checks`, and
-its only bypass actor is `RepositoryRole 5` (admin). A push to main from a
-non-admin identity is refused, so the git path needs an **admin-scoped token
-living in the cluster**. This repo's own guidance is never to make CI a ruleset
-bypass actor, and an admin PAT for a dev-only promotion is a far larger surface
-than the problem it solves.
+Each Warehouse polls its OCI chart under `ghcr.io/jomcgi/homelab/charts` every
+five minutes, subject to its configured semver constraint and discovery limit.
+The chart name matches the pipeline name. Discovered versions become Freight.
+`ProjectConfig` enables auto-promotion separately for each Stage.
 
-`argocd-update` needs no credential: it is a Kubernetes RBAC permission the
-controller already holds. The charts are public, so the Warehouse needs no
-registry credential either. ADR 009 called the git write credential "the main
-new surface"; this design removes it.
+Registry access is configured per pipeline. `monolith-agents` sets
+`credentialItemPath` to the managed 1Password item
+`vaults/k8s-homelab/items/argocd-ghcr-repo-creds`. The template creates
+`OnePasswordItem/monolith-agents-chart-creds` in `kargo-monolith-agents` with
+`kargo.akuity.io/cred-type: helm`. The operator supplies the Secret; Kargo
+matches its `repoURL`, `username` and `password` fields to the chart repository.
+The other pipelines do not configure this item. No credential needs to be read
+or changed to maintain these docs.
 
-**The cost, stated plainly:** `targetRevision` stops being git truth for both
-environments. It lives in the live Application. Dev's file has read `0.293.0`
-since the first promotion while dev ran `0.295.1`, and production's will drift
-the same way once the write-back is eventually retired. "What version is
-production on" becomes a `kubectl` question, which matters more for production
-than for dev because it gets asked during incidents.
+## What promotion verifies
 
-## Required manual step
+Every Stage runs `argocd-update`, then `argocd-wait`. The first updates the
+matching chart source's `targetRevision` and waits for its sync operation.
+The second waits for sync, operation and health together: Synced, no sync in
+flight, and Healthy. The per-pipeline timeout is ten minutes for the monolith
+pipelines and ninety minutes for EmberVM.
 
-The `canada` root Application owns every promoted Application from git with
-`selfHeal`, so it will revert every promotion unless told both to ignore that
-field and to leave it alone when applying. `canada` is a bootstrap resource and
-is **not in this repo**, so this is a manual patch.
+These checks establish point-in-time Kubernetes readiness. They do not prove
+functional correctness or HTTP reachability from the controller to a workload.
+`argocd-wait` also has no `desiredRevision`: an ArgoCD status refresh can briefly
+report pre-apply health. A successful Promotion alone is insufficient evidence
+of complete deployment verification.
 
-**This patch is `--type=merge`, and a merge patch REPLACES the whole
-`ignoreDifferences` array.** So it must always carry an entry for EVERY
-Application any pipeline promotes, all at once. Re-applying an older copy of
-this block that lists fewer Applications silently drops the rest, and the
-symptom is the one described below: promotions that hold for hours and then
-revert on an unrelated merge, with nothing reporting an error. When a pipeline
-is added to `promotion.pipelines` in `values.yaml`, its Applications must be
-added here in the same change.
+EmberVM dev adds a functional check after `argocd-wait`. The `conformance` HTTP
+step polls the dev runner's verdict endpoint and accepts a pass only when
+`chart_version` matches the Freight being promoted. Missing or stale verdicts
+keep polling. Two consecutive failed cycles for that chart fail the step;
+the configured verdict timeout is seventy-five minutes. This gate is separate
+from `promotion.revisionGate`.
 
-```sh
-kubectl patch application canada -n argocd --type=merge -p '{
-  "spec": {
-    "syncPolicy": {
-      "syncOptions": ["RespectIgnoreDifferences=true"]
-    },
-    "ignoreDifferences": [
-      {
-        "group": "argoproj.io",
-        "kind": "Application",
-        "name": "monolith-dev",
-        "jsonPointers": ["/spec/sources/0/targetRevision"]
-      },
-      {
-        "group": "argoproj.io",
-        "kind": "Application",
-        "name": "monolith",
-        "jsonPointers": ["/spec/sources/0/targetRevision"]
-      },
-      {
-        "group": "argoproj.io",
-        "kind": "Application",
-        "name": "embervm-dev",
-        "jsonPointers": ["/spec/sources/0/targetRevision"]
-      },
-      {
-        "group": "argoproj.io",
-        "kind": "Application",
-        "name": "embervm",
-        "jsonPointers": ["/spec/sources/0/targetRevision"]
-      }
-    ]
-  }
-}'
-```
+EmberVM prod requests Freight from `dev`, with `requiredSoakTime: 5m0s`.
+Normally, Freight must be verified in dev and held there for five minutes
+before prod can take it. The soak provides upstream exposure time; it does
+not replace the conformance verdict or guarantee the absence of later faults.
+Argo Rollouts integration and Kargo's separate `verification` block are unused.
+The assertions live in promotion steps, and a Stage without a `verification`
+block marks Freight verified when its Promotion succeeds.
 
-**`RespectIgnoreDifferences=true` is not optional, and leaving it out fails in
-a way that looks like success for hours.** `ignoreDifferences` governs
-DIFFING: it stops ArgoCD reporting the app OutOfSync over that field, so
-`selfHeal` is never triggered *by* it. It does nothing about APPLYING. When a
-sync runs for any other reason, ArgoCD applies the whole rendered manifest and
-stamps the git value straight back.
+### Revision gate remains disabled
 
-That is exactly what happened to dev. The promotion held for nine hours and
-several verifications, because nothing had triggered a `canada` sync yet. The
-next merge that touched a file `canada` renders caused one, and dev went from
-`0.295.1` back to `0.293.0` in a single reconcile with nothing reporting an
-error.
+`promotion.revisionGate.enabled` is false in the effective hub configuration.
+Only monolith's prod Stage carries `revisionURL`; no `rollout-version` step is
+rendered while the flag is false. `promotion_gate_test.py` checks that this
+wiring is inert and that enabling it leaves EmberVM's conformance steps intact.
 
-So "the promotion stuck, and was still stuck a few minutes later" is NOT
-sufficient evidence. The check that matters is that it survives a `canada`
-sync, which you can force by merging anything it renders, or observe via
-`.status.operationState.finishedAt` moving on `canada`.
+When enabled, a Stage with `revisionURL` polls `/healthz` for a `chart_version`
+equal to the Freight's version. Stale or missing fields keep polling until the
+timeout. Before enabling it through Git, the workload must ship the field and
+an operator must confirm the running endpoint reports the expected version.
+The flag does not add functional tests. This README correction does not enable
+it or claim that operational prerequisite has been verified (#4745).
 
-The home cluster's coredns and kyverno Applications (retired in #6914) used
-this option for the same reason: ArgoCD owns the resource, another controller
-owns one field.
+## Keep promotions across root syncs
 
-**Send the whole list every time.** A `--type=merge` patch REPLACES an array
-rather than appending to it, so patching in the production entry alone deletes
-the dev one, and the only symptom is dev quietly going back to reverting its
-own promotions. There is no error.
+`hub` is the root Application, defined in
+`projects/gke-cluster/root/root-application.yaml`. Its parent, `hub-root`, syncs
+that directory; the parent definition is
+`projects/gke-cluster/hub-root-application.yaml`. Root ownership changes belong
+in Git and deploy through that parent.
 
-**This patch IS the production cutover**, not the paperwork around it. The
-moment `monolith`'s `targetRevision` is ignored, production's deploys depend
-entirely on Kargo: ArgoCD stops acting on the value the CI write-back
-maintains. Removing the `monolith` entry is therefore the revert, and it is
-immediate, because the write-back has kept that value correct all along.
+The root's `ignoreDifferences` list covers `monolith`, `monolith-agents`,
+`monolith-public`, `embervm` and `embervm-dev`, each at
+`/spec/sources/0/targetRevision`. It is paired with
+`RespectIgnoreDifferences=true`. Diff suppression alone hides drift; the sync
+option also prevents a later apply from stamping the Git pin over a promotion.
 
-**Not** the same as the HPA case, despite looking like it, and the difference
-is what makes this easy to get wrong. The monolith Application ignores
-`/spec/replicas` so the HPA can own it, and that works with no sync option
-because the chart's Deployment **omits** `spec.replicas` entirely when
-autoscaling is on. There is no value in the rendered manifest, so a sync has
-nothing to stamp back. `targetRevision` is always present, so it always is.
+Kargo uses the controller's Kubernetes RBAC to update Applications, without a
+Git write credential. Live `targetRevision` is Kargo-owned. Pins under
+`projects/gke-apps/` are bootstrap/revert floors, so a Git pin is not evidence
+of the deployed version. Returning revision ownership to Git requires an
+explicit Git-based handoff with the intended pin and promotion policy reviewed
+together.
 
-**Without the entry for an Application, Kargo appears to work and nothing
-changes**: the promotion succeeds, `canada` reverts the field on its next sync,
-and the only symptom is that environment staying on its old chart.
+There is a source-array caveat: the root manifest records that these JSON
+pointers combined with `RespectIgnoreDifferences` can leave other
+`spec.sources` fields unchanged, including `repoURL`, chart names and value-file
+paths, while ArgoCD reports success. After source changes, an operator should
+compare live Applications with the rendered Git definitions using
+`bazel/tools/ci/check-application-drift.sh` against the hub. See
+`docs/runbooks/argocd-outofsync.md` for related root and sync diagnostics.
 
-## What is deliberately off
+When arming another pipeline through Git:
 
-| Setting | Why |
-| --- | --- |
-| `controller.rollouts.integrationEnabled: false` | Rollouts is only for Kargo's `verification` block, which is why the gate is built from promotion steps instead. Turning it on is still the path to revision-aware analysis (ADR platform/009 option A) |
-| `controller.argocd.integrationEnabled: true` | **Required.** Without it the controller does not watch Applications, and both argocd-update and argocd-wait fail |
-| `api.oidc.dex.enabled: false` | authentik does PKCE, so Kargo talks to it directly. Dex would be a second identity hop and a second thing to upgrade |
-| `api.adminAccount.enabled: false` | authentik is the identity provider; a local password would be one more credential to hold and rotate |
+1. Register its Application with the correct chart source and
+   `kargo.akuity.io/authorized-stage` annotation. Each Stage must match that
+   source exactly.
+2. Add the root's revision ignore entry and retain
+   `RespectIgnoreDifferences=true`. Let `hub-root` reconcile this change before
+   arming promotion, and confirm the live root has it.
+3. Enable the pipeline only after its Application, ownership rules and any
+   upstream or functional prerequisites are in place. Check source drift and
+   confirm the promoted revision survives subsequent root reconciliation.
 
-No `verification` block on either Stage, therefore. That matters for how you
-read the UI: a Stage with nothing to verify reports `Freight has been verified`
-the moment its Promotion succeeds, so that status reflects the Promotion, not
-the gate. Read the Promotion's step results instead.
+The Warehouse explicitly renders `interval`, `freightCreationPolicy` and
+`discoveryLimit` to match CRD defaults. Omitting server-defaulted fields can
+leave permanent drift and repeated targeted syncs that starve other resources.
 
-## What the gate does and does not assert
+## Approval, retry and deployment are separate
 
-**Asserts.** The promoted chart reached the environment, the sync operation
-finished, and the workload came back Healthy. For a Deployment, ArgoCD reports
-Healthy only once `observedGeneration` has caught up and the new pods pass their
-probes, and the monolith's readiness probe is `/healthz`. So waiting for Healthy
-is the assertion that the promoted chart's health check went green. Production
-additionally requires dev to have held the Freight for 2 minutes, which catches
-a rollout that comes up Healthy and then crashloops but is explicitly not long
-enough to catch a slower-onset regression.
+Freight approval in the Kargo UI is the operator lever for a hotfix or blocked
+upstream. Approval for a target Stage bypasses upstream verification and its
+soak requirement. It authorizes that Freight for promotion; it does not prove
+the chart passed those checks or that deployment succeeded.
 
-**Does not assert.** Anything functional beyond the readiness probe, including
-end-to-end HTTP reachability from the Kargo controller to the workload. Waiting
-for Healthy verifies Kubernetes readiness through the Kubernetes API, not a
-separate HTTP path. The removed Cilium allowlist provides no justification for
-omitting that separate check, and its removal does not establish reachability.
+Kargo does not automatically retry failed or errored Promotions. An operator
+can request a new promotion after resolving the cause, using Freight already
+eligible for that Stage. The `kargo_promote` tool checks eligibility and refuses
+to override gates or overlap a running/queued Promotion. It does not approve
+Freight. Inspect the failure before retrying, then verify the resulting rollout.
 
-An `http` step against dev's deep `/api/health` also needs to account for the
-endpoint's data requirements: the `stars` component fails closed on an empty
-`stars.sites` table, so dev without stars data returns 503. The ember components
-fail *open* ("no probe recorded yet"), so they are not the problem. Gating on
-that endpoint without the required data would block production promotion.
+## Read-only verification
 
-There is also a residual race: `argocd-wait` has no `desiredRevision` field, so
-it asserts against whatever target is current. `argocd-update` waits for its
-sync operation first, so the applied manifests are the promoted chart's, but
-ArgoCD's status refresh can still briefly report the pre-apply Healthy.
-
-**The revision-aware gate, staged and off (#4745).** The close for that race is
-wired but not yet required: `promotion.revisionGate.enabled` in `values.yaml`
-defaults to `false`, and while it is false the render is identical to a chart
-with no gate at all (`promotion_gate_test.py` pins this). When it is true, a
-Stage carrying `revisionURL` gains an `http` step after `argocd-wait`, the same
-construction as the EmberVM conformance step minus the verdict: it polls the
-workload's own `/healthz` until the body reports `chart_version` equal to the
-Freight's chart version (pre-evaluated by Kargo from the same expression
-`argocd-update` used), and nothing short of the retry timeout fails it. The
-monolith prod Stage carries the URL today. What is missing is the field: the
-monolith's `/healthz` does not return `chart_version` yet, so flipping the flag
-before that ships would poll every promotion to timeout. Sequence is chart
-first (expose the field, publish, confirm the live body carries it), then flip
-the flag. Functional assertions beyond that stay out of scope; see the issue.
-
-**If a Promotion wedges.** A failed Promotion never verifies its Freight, so the
-chart is stranded upstream. The lever is Freight approval in the UI, which
-supersedes both upstream verification and the soak time.
-
-## Why the Warehouse spells out its defaults
-
-`interval`, `freightCreationPolicy` and `discoveryLimit` are CRD server-side
-defaults, and the chart writes them anyway. A field the chart omits and the API
-server sets is a diff ArgoCD can never close, so the Warehouse was permanently
-OutOfSync from the first install.
-
-That is not cosmetic. `selfHeal` syncs only the **drifted** resources, so an
-unconvergeable resource emits a continuous stream of targeted single-resource
-syncs, and each one preempts the full sync:
-
-```
-syncId=14233  Sync/1 kargo.akuity.io/Stage:kargo-monolith/prod  nil->obj   <- planned
-syncId=14241  (7s later) sync resources filter: [Warehouse/monolith-chart] <- replaced it
-```
-
-`Stage/prod` was planned and never applied, and the Application reported
-`Succeeded` throughout, because the Warehouse-only sync genuinely did succeed.
-One resource that cannot converge starves every other resource in the same
-Application behind a green status.
-
-Worth generalising when adding any CRD to a chart: check the live object for
-fields the API server added, and either write them or accept a permanent diff.
-`kubectl get <kind> <name> -o jsonpath='{.spec}'` against a freshly applied
-object is the whole check.
-
-## Verifying it works
-
-Do not trust "the Promotion succeeded", and do not trust the Stage's verified
-message either. Check the field, in both environments:
+Set `HUB_CONTEXT` to your kubeconfig context for `homelab-hub`. These examples
+inspect hub objects and do not approve Freight, promote, sync or patch anything:
 
 ```sh
-for app in monolith-dev monolith; do
-  printf '%-14s ' "$app"
-  kubectl get application "$app" -n argocd \
-    -o jsonpath='{.spec.sources[0].targetRevision}{"\n"}'
+kubectl --context "${HUB_CONTEXT:?Set the homelab-hub context}" -n argocd get application hub -o yaml
+for project in kargo-monolith kargo-monolith-agents kargo-monolith-public kargo-embervm; do
+  kubectl --context "$HUB_CONTEXT" -n "$project" get warehouses,stages,promotions,freights
 done
-kubectl get stage -n kargo-monolith
-kubectl get promotion -n kargo-monolith
+for app in monolith monolith-agents monolith-public embervm-dev embervm; do
+  kubectl --context "$HUB_CONTEXT" -n argocd get application "$app" \
+    -o jsonpath='{.metadata.name}{" "}{.spec.sources[0].targetRevision}{" "}{.status.sync.status}{" "}{.status.health.status}{"\n"}'
+done
 ```
 
-Each `targetRevision` must match the newest published chart, and must still
-match it a few minutes later. If it reverts, that Application's `canada` entry
-is missing, or `RespectIgnoreDifferences=true` is not set.
+Compare the live revision with the intended eligible Freight and inspect its
+Promotion and Stage status. EmberVM dev must satisfy its chart-aware verdict
+before normal prod eligibility and the soak; explicit approval is a separate
+bypass to record. Do not require every Application to equal the newest
+published chart while discovery, upstream checks or rollout are in progress.
 
-The end-to-end assertion is stronger than either number: after a chart
-publishes, `dev` should move first and `prod` second, and the production pod
-should restart onto it. A version that moves while no pod restarts means the
-render was identical, which is a real outcome and not a failure.
+Use `verify_deployment` with the Application name and intended chart version
+as `expected_revision` for the rollout verdict. It checks sync, health,
+operation, errors, live revision and Kargo state. Poll an `in_progress` verdict.
+If checking manually, require Synced and Healthy, verify the workload's expected
+image and rollout, and confirm the service answers. A chart change that renders
+identical pod templates need not restart pods. Confirm revision ownership
+survives root reconciliation before concluding that a reverting promotion is
+resolved.
