@@ -122,7 +122,6 @@ sh_test(
 # hermetic inputs.
 EXTERNAL_CRD_SOURCES = [
     "@atlasmigration_crd_0_7_28//file",
-    "@cilium_network_policy_crd_1_20_0//file",
     "@cloudnative_pg_cluster_crd_1_30_0//file",
     "@cloudnative_pg_database_crd_1_30_0//file",
     "@cloudnative_pg_scheduled_backup_crd_1_30_0//file",
