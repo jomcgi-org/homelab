@@ -273,6 +273,53 @@ mkdir -p "$FAKE_ROOT" "$STUB_BIN"
 mkdir -p "$FAKE_ROOT/bazel/tools/ci"
 cp "$LOCAL_AFFECTED_TEST" "$FAKE_ROOT/bazel/tools/ci/local-affected-test.sh"
 
+# Execute the workflow's pre-query image-index preparation against a fake
+# generator. The read-only heads must never regenerate indexes, and a normal
+# PR must reach it before the first Bazel graph query.
+index_prepare="$(awk '
+    $0 == "          # Regenerate image indexes before any Bazel query analyzes them. A" { in_prepare = 1 }
+    in_prepare && $0 ~ /# ---- 1b\. tracked Python test reachability/ { exit }
+    in_prepare { sub(/^          /, ""); print }
+' "$BUILD_BUDDY")"
+index_prepare_ln=$(grep -nF './bazel/images/generate-push-all.sh' "$BUILD_BUDDY" | head -1 | cut -d: -f1 || true)
+if [[ -n "$index_prepare" && -n "$index_prepare_ln" && "$index_prepare_ln" -lt "$reachability_ln" ]]; then
+	pass "image_indexes_before_graph_queries"
+else
+	fail "image_indexes_before_graph_queries" "preparation must precede tracked test reachability"
+fi
+index_root="$TMP/index-preparation"
+mkdir -p "$index_root/bazel/images"
+printf '%s\n' '#!/usr/bin/env bash' 'touch generated' >"$index_root/bazel/images/generate-push-all.sh"
+chmod +x "$index_root/bazel/images/generate-push-all.sh"
+for scenario in pr main queue bot push unnamed; do
+	(
+		cd "$index_root"
+		rm -f generated
+		ON_MAIN=false
+		GIT_PR_NUMBER=7188
+		GIT_BRANCH=codex/retire-demo
+		TEST_INDEX_AUTHOR=author
+		case "$scenario" in
+		main)
+			ON_MAIN=true
+			GIT_PR_NUMBER=0
+			GIT_BRANCH=main
+			;;
+		queue) GIT_BRANCH=gh-readonly-queue/main/pr-7188 ;;
+		bot) TEST_INDEX_AUTHOR=ci-format-bot ;;
+		push) GIT_PR_NUMBER=0 ;;
+		unnamed) GIT_BRANCH= ;;
+		esac
+		git() { printf '%s\n' "$TEST_INDEX_AUTHOR"; }
+		eval "$index_prepare"
+		if [[ "$scenario" == pr ]]; then
+			[[ -f generated ]]
+		else
+			[[ ! -f generated ]]
+		fi
+	) && pass "image_index_prepare_$scenario" || fail "image_index_prepare_$scenario" "unexpected generation decision"
+done
+
 cat >"$STUB_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1 ${2:-}" == "rev-parse --show-toplevel" ]]; then

@@ -129,8 +129,6 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/runtime-pi/rootfs.ext4
   scratchPostgres:
     rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/scratch-postgres/rootfs.ext4
-  bazelQuery:
-    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/bazel-query/rootfs.ext4
   shotter:
     rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/shotter/rootfs.ext4
   pingWorkload:
@@ -160,8 +158,6 @@ sandboxWorkloads:
     enabled: false
   sandboxJavascript:
     enabled: false
-bazelQueryWorkload:
-  enabled: false
 shotterWorkload:
   enabled: false
 piRuntimeWorkload:
@@ -180,9 +176,6 @@ runtimePython:
   guestImage:
     repository: ''
 runtimePi:
-  guestImage:
-    repository: ''
-bazelQuery:
   guestImage:
     repository: ''
 shotter:
