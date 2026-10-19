@@ -174,6 +174,10 @@ def review(root, output):
                     paint = page.locator("article.card").evaluate(
                         "e=>({background:getComputedStyle(e).backgroundColor,ink:getComputedStyle(e).color})"
                     )
+                    scaffold = page.locator("main").evaluate(
+                        "e=>getComputedStyle(e).color"
+                    )
+                    assert scaffold == paint["ink"], "private scaffold scheme mismatch"
                     assert paint["background"] == (
                         "rgb(0, 0, 0)" if scheme == "dark" else "rgb(255, 255, 255)"
                     ), paint

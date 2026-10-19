@@ -76,6 +76,8 @@
 
 <style>
   main {
+    color: var(--fg);
+    background: var(--bg);
     max-width: 54rem;
     margin: auto;
     padding: 1rem;
