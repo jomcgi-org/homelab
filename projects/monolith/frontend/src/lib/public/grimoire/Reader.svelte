@@ -493,6 +493,7 @@
 
 <style>
   .pub-reader {
+    container-type: inline-size;
     min-height: 60vh;
     background: var(--sheet);
     color: var(--ink);
@@ -533,9 +534,8 @@
     }
   }
 
-  /* Floating mobile-only Chapters affordance. The sidebar below is hidden
-     under 900px, so this is the only way to jump sections on a phone (the
-     old sticky sub-nav bar that used to host it is gone). */
+  /* Collapse chapters against the reader's available width, including the
+     outer sheet spine, rather than the viewport width. */
   .pub-mobile-chapters {
     display: none;
   }
@@ -760,7 +760,7 @@
     border-color: var(--accent-ink);
   }
 
-  @media (max-width: 900px) {
+  @container (max-width: 58rem) {
     .pub-layout {
       grid-template-columns: minmax(0, 72ch);
       padding-top: 20px;

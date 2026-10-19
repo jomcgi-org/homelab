@@ -44,6 +44,11 @@ def main():
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if head != args.expected_sha:
         raise SystemExit(f"Expected {args.expected_sha}, checkout is {head}")
+    subprocess.run(
+        ["git", "diff", "--exit-code", "HEAD", "--", "projects/monolith/frontend"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
     args.output.mkdir(parents=True, exist_ok=True)
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0),
@@ -77,6 +82,7 @@ def main():
                 ),
             )
             page = context.new_page()
+            page.set_default_timeout(5000)
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             filename = (
@@ -96,7 +102,13 @@ def main():
                 "overflow_px": None,
             }
             try:
-                page.goto(origin + path, wait_until="networkidle")
+                if extra == "from-engineering":
+                    page.goto(origin + "/engineering", wait_until="networkidle")
+                    page.locator(".site-index summary").click()
+                    page.locator('.site-index a[href="/app/grimoire"]').click()
+                    record["assertions"]["navigation_from_public_sheet"] = True
+                else:
+                    page.goto(origin + path, wait_until="networkidle")
                 if name in GATED:
                     assert page.evaluate("window.fixtureRequests.length") == 0, (
                         "corpus request before admission"
@@ -104,7 +116,10 @@ def main():
                     record["assertions"]["no_pre_admission_fetch"] = True
                     page.get_by_role("button", name="Solve fixture challenge").click()
                 if state == "normal":
-                    page.get_by_text(text, exact=False).first.wait_for()
+                    if name == "home":
+                        page.locator(".scrollstory h1:visible").wait_for()
+                    else:
+                        page.get_by_text(text, exact=False).first.wait_for()
                 elif state == "locked":
                     page.get_by_text("Not available to read here").wait_for()
                 page.wait_for_timeout(350)
@@ -114,6 +129,31 @@ def main():
                 assert page.locator("main.td.sheet").count() == 1, "one sheet required"
                 assert page.locator("h1, h2").count() > 0, "heading missing"
                 record["assertions"]["sheet_chrome_heading"] = True
+                if name == "book" and state == "normal":
+                    passage_width = page.locator(".pub-panel").evaluate(
+                        "e=>e.getBoundingClientRect().width"
+                    )
+                    record["passage_width_px"] = passage_width
+                    assert passage_width >= 230, f"reader compressed: {passage_width}px"
+                    record["assertions"]["readable_passage_width"] = True
+                if name == "library" and state == "normal":
+                    contrasts = page.locator(".cover-generated, .locked-badge").evaluate_all(
+                        """elements => elements.map(e => {
+                          const ctx=document.createElement('canvas').getContext('2d');
+                          const luminance=color=>{
+                            ctx.fillStyle=color; ctx.fillRect(0,0,1,1);
+                            const rgb=[...ctx.getImageData(0,0,1,1).data].slice(0,3).map(x=>{
+                              x/=255; return x<=0.04045?x/12.92:((x+0.055)/1.055)**2.4;
+                            });
+                            return rgb[0]*0.2126+rgb[1]*0.7152+rgb[2]*0.0722;
+                          };
+                          const s=getComputedStyle(e), fg=luminance(s.color), bg=luminance(s.backgroundColor);
+                          return (Math.max(fg,bg)+0.05)/(Math.min(fg,bg)+0.05);
+                        })"""
+                    )
+                    record["cover_contrast_ratios"] = contrasts
+                    assert contrasts and min(contrasts) >= 4.5, contrasts
+                    record["assertions"]["cover_labels_contrast"] = True
                 if extra == "source":
                     page.locator("button.touched-chip").first.click()
                     page.get_by_role("dialog").wait_for()
@@ -221,6 +261,8 @@ def main():
             visit("share", 390, scheme, state="empty")
             visit("library", 390, scheme, state="empty")
             visit("library", 390, scheme, state="error")
+            visit("book", 901, scheme)
+            visit("home", 1440, scheme, extra="from-engineering")
         browser.close()
     server.shutdown()
     print(f"Grimoire captures: {len(checks)}, failures: {len(failures)}, head: {head}")

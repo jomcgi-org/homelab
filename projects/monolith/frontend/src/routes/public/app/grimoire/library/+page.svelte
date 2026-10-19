@@ -464,7 +464,7 @@
     font-size: clamp(22px, 5vw, 30px);
     font-weight: 700;
     letter-spacing: 0.04em;
-    color: var(--sheet);
+    color: var(--ink);
   }
 
   .cover.muted .cover-generated {
@@ -498,7 +498,7 @@
     top: 6px;
     left: 6px;
     color: var(--ink);
-    background: rgba(255, 255, 255, 0.88);
+    background: var(--sheet);
     border: 1px solid var(--stroke);
   }
 

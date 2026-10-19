@@ -31,16 +31,18 @@ python projects/monolith/frontend/grimoire-preview/browser_check.py \
 Its `checks.json` records the exact checkout head, route, width, scheme,
 assertions, numeric document overflow and PNG filename for every capture.
 Browser failure preserves the screenshots and partial manifest locally.
-The existing hosted preview workflows do not run this browser check yet.
-Their green checks are not Grimoire screenshot evidence. Hosted integration
-and actual captures remain required before repository acceptance.
+The existing BuildBuddy Grimoire browser runner builds and captures this
+fixture after its friends scenarios, reusing its pinned Playwright environment.
+The `grimoire/public-sheet` artifacts contain this surface's PNGs and manifest.
+The unrelated Actions preview workflows are not Grimoire screenshot evidence.
 
 The matrix is landing, library, world, entity, adventure, reader, chat and
 standalone share, each at 390 and 1440 pixels in light and dark. Additional
 captures cover the scroll story with motion enabled, chapters, locked reader,
 source drawer, fork challenge, empty share and empty/error library. Reduced
-motion is exercised by the full baseline matrix. Keyboard focus, scheme
-switching and persistence are asserted for each baseline page. PNGs and build
+motion is exercised by the full baseline matrix. Intermediate-width reader
+reflow, generated-cover contrast and navigation from Engineering have separate
+checks. Keyboard focus, scheme switching and persistence are asserted for each baseline page. PNGs and build
 output are generated outside tracked source and must not be committed.
 
 This is repository evidence. It does not establish production routing, access,
