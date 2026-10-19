@@ -375,8 +375,8 @@ js_library(
     ) + [
         "package.json",
         "src/lib/cache-headers.js",
-        "src/lib/global.css",
         "src/lib/components/notes/markdown.js",
+        "src/lib/global.css",
         "src/lib/private/dashboard-theme.css",
         "src/lib/public/apps.js",
         "src/lib/public/components/Nav.svelte",
