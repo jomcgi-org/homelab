@@ -334,7 +334,11 @@ js_library(
 js_run_binary(
     name = "campsites_fixture_preview",
     srcs = [":campsites_fixture_src"],
-    args = ["build", "--config", "campsites-preview/vite.config.js"],
+    args = [
+        "build",
+        "--config",
+        "campsites-preview/vite.config.js",
+    ],
     chdir = package_name(),
     out_dirs = ["campsites-fixture-dist"],
     tool = ":vite",
