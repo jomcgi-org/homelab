@@ -9,6 +9,47 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 npm_link_all_packages(name = "node_modules")
 
+js_library(
+    name = "review_fixture_src",
+    srcs = [
+        "package.json",
+        "preview/fonts.css",
+        "preview/fonts/OFL.txt",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "review-preview/App.svelte",
+        "review-preview/fixtures.js",
+        "review-preview/index.html",
+        "review-preview/main.js",
+        "review-preview/vite.config.js",
+        "src/lib/global.css",
+        "src/lib/private/components/ModeToggle.svelte",
+        "src/lib/private/components/ReviewCard.svelte",
+        "src/lib/private/components/UndoToast.svelte",
+        "src/lib/public/styles/design-system.css",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+    ],
+)
+
+js_run_binary(
+    name = "review_fixture_preview",
+    srcs = [":review_fixture_src"],
+    args = ["build", "--config", "review-preview/vite.config.js"],
+    chdir = package_name(),
+    out_dirs = ["review-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "review_fixture_preview_build_test",
+    targets = [":review_fixture_preview"],
+)
+
 vite_bin.vite_binary(name = "vite")
 
 # The frontend package now owns a fixture-harness README. Keep it in the
