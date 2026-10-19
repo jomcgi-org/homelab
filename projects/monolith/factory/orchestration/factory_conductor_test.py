@@ -3646,7 +3646,10 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # Review floors and the correction/re-review reserve add about 430
     # characters: a planner must include those server costs even when its
     # requested review budget is smaller. Allow 500 for that funding contract.
-    assert len(prompt) < 23_000
+    # #6992 follow-up makes the Sol-first override exception actionable and
+    # distinguishes schema/state/protocol migrations from routine UI work.
+    # Allow 800 characters for this admission contract.
+    assert len(prompt) < 23_800
     assert (task, nodes, runs) == before
 
 
@@ -10878,11 +10881,157 @@ def test_machine_verified_task_still_uses_pool_selection(feedback_db, monkeypatc
     assert calls[1] == ("worker", policy)
 
 
+def implementation_exception():
+    return {
+        "category": "migration",
+        "risk": "Concurrent readers can observe partially migrated durable schema state",
+        "why_default_insufficient": "Requires reasoning across protocol versions and rollback invariants together",
+    }
+
+
+def sol_first_task(**overrides):
+    return feedback_task(
+        allowed_models=["astra", "sol", "spark", "sonnet", "opus"],
+        conductor_model="astra",
+        worker_model="astra",
+        reviewer_model="opus",
+        model_pools={"implement": ["sol", "astra", "spark", "sonnet"]},
+        role_effort={"implement": "medium"},
+        **overrides,
+    )
+
+
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"model": "astra", "effort": "xhigh"},
+        {"model": "astra"},
+        {"effort": "xhigh"},
+        {
+            "model": "astra",
+            "implementation_exception": {
+                "category": "migration",
+                "risk": "UI page renames",
+                "why_default_insufficient": "Many files",
+            },
+        },
+    ],
+)
+def test_sol_first_routine_override_refused_without_changing_graph(
+    feedback_db, monkeypatch, action, overrides
+):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    task, policy = sol_first_task()
+    source = plan_edit("pages", "implement", **overrides)
+    decision = (
+        source
+        if action == "add_node"
+        else {
+            "action": "plan",
+            "reason": "UI page migration",
+            "edits": [source],
+        }
+    )
+    before = conductor.graph.load_graph(task["id"])
+    revision = conductor.graph.current_version(task["id"])
+    preview = conductor.preview_decision(
+        task["id"], decision, expected_revision=revision
+    )
+    assert not preview["ok"]
+    conductor._apply_decision(task, policy, decision, "test:sol-override", [])
+    assert conductor.graph.load_graph(task["id"]) == before
+    assert conductor.graph.current_version(task["id"]) == revision
+
+
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+@pytest.mark.parametrize("model", [None, "sol", "astra", "opus"])
+def test_sol_first_admission_routes_or_preserves_justified_exception(
+    feedback_db, monkeypatch, action, model
+):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    task, policy = sol_first_task()
+    overrides = {} if model is None else {"model": model}
+    if model in ("astra", "opus"):
+        overrides.update(
+            effort="xhigh", implementation_exception=implementation_exception()
+        )
+    source = plan_edit("work", "implement", **overrides)
+    decision = (
+        source
+        if action == "add_node"
+        else {
+            "action": "plan",
+            "reason": "deliver",
+            "edits": [source],
+        }
+    )
+    revision = conductor.graph.current_version(task["id"])
+    preview = conductor.preview_decision(
+        task["id"], decision, expected_revision=revision
+    )
+    assert preview["ok"], preview
+    conductor._apply_decision(task, policy, decision, "test:sol-admission", [])
+    node = conductor.graph.load_graph(task["id"])[0]
+    assert node["model"] == (model or "sol")
+    assert model_pool.effort_for(node["node_key"], policy, node.get("effort")) == (
+        "xhigh" if model in ("astra", "opus") else "medium"
+    )
+    if model in ("astra", "opus"):
+        assert (
+            "Concurrent readers" in preview["projection"]["edits"][0]["stated_reason"]
+        )
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_: "main")
+    dispatched = dispatch_next(task, policy, "implement_work")
+    assert dispatched["pin"]["model"] == (model or "sol")
+    assert dispatched["pin"]["effort"] == (
+        "xhigh" if model in ("astra", "opus") else "medium"
+    )
+
+
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+def test_sol_first_explicit_sol_uses_snapshot_quota_fallback(
+    feedback_db, monkeypatch, action
+):
+    from factory.orchestration import model_pool
+
+    task, policy = sol_first_task()
+    # Use the real selector with all Codex models walled, as in production.
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: {"codex": {"headline_used_percent": 100, "age_seconds": 0}},
+    )
+    source = plan_edit("work", "implement", model="sol")
+    decision = (
+        source
+        if action == "add_node"
+        else {
+            "action": "plan",
+            "reason": "deliver",
+            "edits": [source],
+        }
+    )
+    snapshot = conductor._decision_snapshot(task["id"], policy, decision=decision)
+    assert "implement" in snapshot.model_choices
+    assert snapshot.model_choices["implement"]["model"] != "sol"
+    projection = conductor.project_decision(task, policy, decision, snapshot)
+    assert projection.refusal is None
+    assert (
+        projection.prepared[0]["model"] == snapshot.model_choices["implement"]["model"]
+    )
+
+
 @pytest.mark.parametrize(
     "overrides, expected_model, expected_effort",
     [({}, "sol", "medium"), ({"model": "astra", "effort": "xhigh"}, "astra", "xhigh")],
 )
-def test_sol_first_implementation_pool_preserves_explicit_planner_pins(
+def test_sol_first_implementation_pool_accepts_accountable_exceptions(
     feedback_db, monkeypatch, overrides, expected_model, expected_effort
 ):
     from factory.orchestration import model_pool
@@ -10899,6 +11048,8 @@ def test_sol_first_implementation_pool_preserves_explicit_planner_pins(
         },
         role_effort={"implement": "medium"},
     )
+    if overrides:
+        overrides["implementation_exception"] = implementation_exception()
     edit = plan_edit("work", "implement", **overrides)
     prepared = conductor._prepare_add(task, policy, edit)
     assert prepared["model"] == expected_model
@@ -10908,6 +11059,71 @@ def test_sol_first_implementation_pool_preserves_explicit_planner_pins(
     )
     investigate = conductor._prepare_add(task, policy, plan_edit("look", "investigate"))
     assert investigate["model"] == "astra"
+
+
+@pytest.mark.parametrize("role", ["investigate", "integrate", "review"])
+def test_sol_first_exception_rule_does_not_change_other_roles(feedback_db, role):
+    task, policy = sol_first_task()
+    model = "opus" if role == "review" else "astra"
+    prepared = conductor._prepare_add(
+        task, policy, plan_edit("other", role, model=model, effort="xhigh")
+    )
+    assert prepared["model"] == model and prepared["effort"] == "xhigh"
+
+
+def test_sol_first_exception_rule_preserves_judgment_floor(feedback_db):
+    task, policy = sol_first_task(task_class="judgment-analysis")
+    policy = {**policy, "model_pools": {**policy["model_pools"], "conductor": ["opus"]}}
+    prepared = conductor._prepare_add(task, policy, plan_edit("work", "implement"))
+    assert prepared["model"] == "opus"
+    with pytest.raises(conductor._EditRefused) as exc:
+        conductor._prepare_add(
+            task,
+            policy,
+            plan_edit(
+                "cheap",
+                "implement",
+                model="sol",
+                implementation_exception=implementation_exception(),
+            ),
+        )
+    assert exc.value.code == "below_judgment_floor"
+
+
+def test_sol_first_historical_astra_node_and_running_pin_are_unchanged(
+    feedback_db, monkeypatch
+):
+    task, policy = sol_first_task()
+    # An old graph pin remains runnable after admission policy changes.
+    assert conductor._add(
+        task,
+        policy,
+        "implement_historical",
+        "Existing UI page migration",
+        [],
+        "astra",
+        "test:historical",
+        "Historical planner choice",
+        effort="xhigh",
+    ).ok
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_: "main")
+    first = dispatch_next(task, policy, "implement_historical")
+    assert first["pin"]["model"] == "astra"
+    assert first["pin"]["effort"] == "xhigh"
+    before = conductor.graph.node_runs(task["id"])
+    source = plan_edit("routine", "implement")
+    conductor._apply_decision(task, policy, source, "test:new-routine", before)
+    after = conductor.graph.node_runs(task["id"])
+    assert after == before
+    assert (
+        next(
+            n
+            for n in conductor.graph.load_graph(task["id"])
+            if n["node_key"] == "implement_historical"
+        )["model"]
+        == "astra"
+    )
 
 
 def test_planner_prompt_names_only_the_judgment_floor(feedback_db):
@@ -21054,10 +21270,19 @@ def test_an_escalated_attempt_stays_on_its_rung_when_the_pool_is_spent(
     assert third["pin"]["escalated_from"] == "spark"
 
 
-def test_a_correction_escalates_after_changes_requested(feedback_db, monkeypatch):
+@pytest.mark.parametrize(
+    "pool, initial, escalated",
+    [
+        (["spark", "sol", "astra"], "spark", "sol"),
+        (["sol", "astra", "spark"], "sol", "astra"),
+    ],
+)
+def test_a_correction_escalates_after_changes_requested(
+    feedback_db, monkeypatch, pool, initial, escalated
+):
     head = "a" * 40
-    task, policy = escalation_task(monkeypatch, pool=["spark", "sol", "astra"])
-    complete_feedback_node(task, policy, "implement_work", {}, model="spark", head=head)
+    task, policy = escalation_task(monkeypatch, pool=pool)
+    complete_feedback_node(task, policy, "implement_work", {}, model=initial, head=head)
     complete_feedback_node(
         task,
         policy,
@@ -21074,7 +21299,7 @@ def test_a_correction_escalates_after_changes_requested(feedback_db, monkeypatch
     nodes, runs = graph_state(task["id"])
     review_run = next(run for run in runs if run["node_key"] == "review_work")
     model, _ = conductor._correction_model(nodes, runs, review_run, policy)
-    assert model == "spark"
+    assert model == initial
     assert conductor._add(
         task,
         policy,
@@ -21087,10 +21312,10 @@ def test_a_correction_escalates_after_changes_requested(feedback_db, monkeypatch
         max_attempts=1,
     ).ok
     run = dispatch_next(task, policy, "correct_1")
-    assert run["pin"]["model"] == "sol"
-    assert run["pin"]["escalated_from"] == "spark"
+    assert run["pin"]["model"] == escalated
+    assert run["pin"]["escalated_from"] == initial
     assert run["pin"]["escalation_reason"] == "changes_requested"
-    assert stored_model(feedback_db, run["id"]) == "sol"
+    assert stored_model(feedback_db, run["id"]) == escalated
 
 
 def test_the_correction_model_reads_the_escalated_pin():
@@ -22563,7 +22788,8 @@ def test_planner_defaults_to_one_implementation_and_atomic_repair():
         "Initial investigation must name its uncertainty and the decision enabled"
         in charter
     )
-    assert "Set effort to xhigh before dispatch for non-trivial work" in charter
+    assert "implementation_exception object" in charter
+    assert "UI/design migrations" in charter
     assert "Do not spend a planner session per cleanup edit" in charter
     assert "retained history and server correction/re-review reserves" in charter
     assert "Review must run in a separate session from every implementer" in charter
