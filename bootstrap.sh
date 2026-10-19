@@ -12,7 +12,7 @@ if [[ ! -f "$VERSION_FILE" ]]; then
 fi
 TOOLS_IMAGE="$(head -1 "$VERSION_FILE" | tr -d '[:space:]')"
 TOOLS_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools"
-REQUIRED_TOOLS=(agent-run hf2oci bb claude buildifier shellcheck eslint)
+REQUIRED_TOOLS=(hf2oci bb claude buildifier shellcheck eslint)
 
 tools_are_complete() {
 	local tool

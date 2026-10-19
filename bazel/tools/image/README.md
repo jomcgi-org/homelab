@@ -14,7 +14,7 @@ Python services, nginx frontends), those live in [`//bazel/tools/oci`](../oci/RE
 | Tool / group                           | Source                                                     |
 | -------------------------------------- | ---------------------------------------------------------- |
 | `argocd`, `bb`, `buildifier`, `buildozer`, `claude`, `crane`, `gh`, `gofumpt`, `helm`, `kind`, `op`, `ruff`, `shellcheck`, `shfmt` | multitool lockfile (per-platform binary repos) |
-| `agent-run`, `hf2oci`                  | Repository `go_binary` targets, cross-built per platform |
+| `hf2oci`                              | Repository `go_binary` target, cross-built per platform |
 | `node`                                 | `@nodejs_{platform}//:node_bin` from rules_nodejs          |
 | `eslint`                               | `//:node_modules/eslint` dependency closure and root-relative wrapper |
 | Python runtime + stdlib + pip packages | `py_image_layer` from `@aspect_rules_py`, with platform transitions |
@@ -87,7 +87,7 @@ crane export ghcr.io/jomcgi/homelab/bazel/tools/image:main - | tar -xf - -C ~/.c
 is intentional: Python and other tools depend on their stdlib being at a
 relative path inside the same root.
 
-Bootstrap validates that `agent-run`, `hf2oci`, `bb`, `claude`, `buildifier`,
+Bootstrap validates that `hf2oci`, `bb`, `claude`, `buildifier`,
 `shellcheck`, and `eslint` are executable before recording the image digest.
 An incomplete cache is re-extracted even when its digest matches.
 
@@ -105,7 +105,7 @@ load them elsewhere.
 
 `go_tools_tar` creates pure-Go binaries from repository `go_library` targets
 with rules_go's `goos` and `goarch` attributes, then places them under
-`/usr/bin` in per-platform tar layers. This keeps `agent-run` and `hf2oci`
+`/usr/bin` in per-platform tar layers. This keeps `hf2oci`
 source-built while analysis tools stay on their native executor, and covers
 the same linux/amd64, linux/arm64, and darwin/arm64 matrix as downloaded tools.
 
