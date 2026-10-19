@@ -1935,6 +1935,12 @@ swarm:
   # Concurrent Codex dispatches. Three concurrent dispatches have been killed
   # before, so this stays at 2 until there is evidence it can go higher.
   codexConcurrency: 2
+  # Enable only after every EmberVM sidecar excludes exhausted/stale fallback.
+  # Independent chart promotion keeps the compatibility gate off initially.
+  codexExhaustedGrantExclusion: false
+  # Set codex-b before activating the sidecar's shared prefer-first policy,
+  # after accepting its scope for interactive guests. Empty retains the gate.
+  codexPreferredGrant: ""
   # Per-class, per-role floors on REMAINING quota percent (#5974). A role
   # below its floor is walled for that class and spills through its model
   # pool while a role with a lower floor keeps drawing, so the last slice of

@@ -293,3 +293,21 @@ def test_quota_job_preserves_spiffe_transport_without_granting_job_identity() ->
             name.startswith("EMBER_TOKENBROKER_")
             for name in _env(_job_container(other))
         ), other["metadata"]["name"]
+
+
+def test_codex_account_admission_activation_is_explicit_and_reachable() -> None:
+    for settings, enabled, preferred in [
+        ([], "false", ""),
+        (
+            [
+                "swarm.codexExhaustedGrantExclusion=true",
+                "swarm.codexPreferredGrant=codex-b",
+            ],
+            "true",
+            "codex-b",
+        ),
+    ]:
+        objects = _render("monolith", ["swarm.enabled=true", *settings])
+        env = _env(_container(_object(objects, "Deployment", "monolith"), "backend"))
+        assert env["SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION"] == enabled
+        assert env["SWARM_CODEX_PREFERRED_GRANT"] == preferred

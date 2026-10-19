@@ -991,6 +991,7 @@ def test_fresh_windowless_rejection_does_not_veto_usable_codex(monkeypatch):
 def test_gate_does_not_skip_accounts_which_sidecar_can_still_select(
     monkeypatch, configured
 ):
+    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
     if configured == "threshold":
         monkeypatch.setenv("SWARM_MODEL_POOL_EXHAUSTED_PERCENT", "90")
     else:

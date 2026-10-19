@@ -1990,7 +1990,7 @@ and no fresh permitting account still defer. Cached sidecar observations age
 even while the broker is unavailable. The gate's compatibility setting defaults
 to false because monolith and EmberVM promote independently. First deploy and
 verify every sidecar's exclusion, then enable the setting through a separate
-monolith values change. Until that activation, reobserved exhaustion still
+monolith values change (`swarm.codexExhaustedGrantExclusion: true`). Until that activation, reobserved exhaustion still
 vetoes KG admission, preserving the old conservative contract. Opposite version
 skew could let an old sidecar select an account the new gate excludes.
 
@@ -2001,7 +2001,8 @@ codex-cluster]`. A fresh exhaustion report or the existing 60-second token-failu
 cooldown permits fallback to A. Stale, missing or invalid B telemetry pauses
 selection until another usage observation; it does not prove B exhausted.
 Before enabling that catalog policy, set `SWARM_CODEX_PREFERRED_GRANT=codex-b`
-on monolith together with the verified-sidecar compatibility setting. Preferred
+on monolith using `swarm.codexPreferredGrant: codex-b`, together with the
+verified-sidecar compatibility setting. Preferred
 account admission requires current future-reset windows and refuses stale B,
 so it defers jobs before egress would deny them. If B's cached token has expired,
 quota observation needs ordinary token serving or operator recovery first;
