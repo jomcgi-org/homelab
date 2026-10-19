@@ -3,6 +3,12 @@
   import { invalidateAll } from "$app/navigation";
   import { browser } from "$app/environment";
   import CampsitesMap from "$lib/public/components/campsites/CampsitesMap.svelte";
+  import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
+  import Trail from "$lib/public/components/Trail.svelte";
+  import SiteIndex from "$lib/public/components/SiteIndex.svelte";
+  import { Button } from "@homelab/design-system/components";
+  import "$lib/public/styles/technical-drawing.css";
+  import "$lib/public/components/campsites/campsites.css";
 
   let { data } = $props();
 
@@ -18,8 +24,7 @@
   // Starts closed so the map is unobstructed on load.
   let listOpen = $state(false);
 
-  // Night selector collapse (map-first: starts collapsed to a summary pill so it
-  // is not permanently over the map; expands on click, like the list panel).
+  // Night and list controls start collapsed in the sheet's control column.
   let nightsOpen = $state(false);
 
   // Sort and filter state.
@@ -31,8 +36,7 @@
   // weekend, scattered weekdays). A park matches if it is open on AT LEAST one
   // selected night, re-scored over just those nights. Selection lives in the URL
   // (?nights=YYYY-MM-DD,...) so it is shareable. `null` means "all live nights",
-  // which is the default and what SSR renders before hydration, so there is no
-  // flash and the no-JS view stays the full list.
+  // which is the default SSR state. URL selections are applied on mount.
   let selectedDates = $state(null); // null => all live nights; Set otherwise
 
   // The window: sorted unique dates present across all parks.
@@ -64,7 +68,7 @@
   // the list still shows every park, matching the pre-filter behaviour.
   let narrowed = $derived(activeDates.size < liveDates.length);
 
-  // Collapsed-pill summary of the current pick.
+  // Collapsed control summary of the current pick.
   let nightsSummary = $derived.by(() => {
     if (selectedDates === null) return "All nights";
     const n = activeDates.size;
@@ -156,22 +160,17 @@
     return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${hh}:${mm} UTC`;
   }
 
-  // Color helpers. Data-viz ramp hexes live in plain JS constants so they never
-  // appear as `:` + `#hex` inside a style attribute (the pattern the
-  // svelte-hardcoded-color-in-style rule matches). Template usage is
-  // `style="background: {colVar}"`.
-  const VIZ_GREEN = "#22c55e";
-  const VIZ_LIME = "#84cc16";
-  const VIZ_YELLOW = "#fbbf24";
-  const VIZ_AMBER = "#f59e0b";
-  const VIZ_GREY = "#9ca3af";
-  // Rain accent for the always-visible per-day precip figure (a wet day reads
-  // blue). Kept as a JS constant like the others so no literal hex lands in a
-  // style attribute (the hardcoded-color semgrep rule).
-  const VIZ_RAIN = "#2563eb";
+  // Semantic weather fills follow the sheet in both schemes. The map uses
+  // the same roles as solid pin colors; forecast text stays on tinted paper.
+  const VIZ_GREEN = "var(--camp-clear-fill)";
+  const VIZ_LIME = "var(--camp-fair-fill)";
+  const VIZ_YELLOW = "var(--camp-mixed-fill)";
+  const VIZ_AMBER = "var(--camp-poor-fill)";
+  const VIZ_GREY = "var(--band)";
+  const VIZ_RAIN = "var(--tone-gpu)";
 
   function dayCellBg(day) {
-    if (!day.available) return "var(--rule)";
+    if (!day.available) return "var(--band)";
     const s = day.sunny_score ?? 0;
     if (s >= 80) return VIZ_GREEN;
     if (s >= 60) return VIZ_LIME;
@@ -285,1032 +284,272 @@
   />
 </svelte:head>
 
-<div
-  class="campsites-page"
+{#snippet trail()}
+  <Trail crumbs={[{ label: "campsites" }]} label="Breadcrumb" />
+{/snippet}
+
+<TechnicalDrawingChrome {trail} />
+
+<main
+  class="td sheet campsites-page"
   class:has-selection={!!selectedPark}
   class:list-open={listOpen}
 >
-  <!-- The visible heading is the breadcrumb chip; keep a real (hidden) h1 for
-       SEO + a11y. -->
   <h1 class="sr-only">BC Parks campsites, open sites and clear-sky weather</h1>
+  <div class="frame">
+    <div class="journal">
+      <aside class="spine">
+        <div class="trail-dock">{@render trail()}</div>
+        <section class="edition crumb-card">
+          <div class="ed-head">
+            <span class="crumb-count"
+              ><strong>{visibleParks.length}</strong>{narrowed || clearOnly
+                ? " matching parks"
+                : " parks"}</span
+            >
+          </div>
+          <p class="ed-body crumb-note">
+            {#if generatedAt}As of {fmtGeneratedAt(generatedAt)}.{" "}
+            {/if}Green means the site is open and the sky is forecast clear.
+          </p>
+        </section>
 
-  <CampsitesMap parks={visibleParks} bind:selectedId />
-
-  <!-- Top-left crumb / title card. -->
-  <div class="crumb-card">
-    <nav class="crumb" aria-label="Breadcrumb">
-      <a class="crumb-home" href="/"
-        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
-        ></a
-      >
-      <span class="crumb-sep">/</span>
-      <span class="crumb-name">campsites</span>
-      <span class="crumb-count"
-        ><strong>{visibleParks.length}</strong>{narrowed || clearOnly
-          ? " matching parks"
-          : " parks"}</span
-      >
-    </nav>
-    <p class="crumb-note">
-      {#if generatedAt}As of {fmtGeneratedAt(generatedAt)}.
-      {/if}Green means the site is open and the sky is forecast clear.
-    </p>
-  </div>
-
-  <!-- Night selector: pick the nights you are free. Dead nights (no park open)
+        <!-- Night selector: pick the nights you are free. Dead nights (no park open)
        are greyed and disabled. Filters the map, list and per-park scores. -->
-  <div class="nights-card" class:collapsed={!nightsOpen}>
-    <button
-      type="button"
-      class="nights-toggle"
-      aria-expanded={nightsOpen}
-      onclick={() => (nightsOpen = !nightsOpen)}
-    >
-      <span class="nights-toggle-label">Nights you're free</span>
-      <span class="nights-toggle-summary">{nightsSummary}</span>
-      <span class="nights-toggle-chevron" aria-hidden="true"
-        >{nightsOpen ? "▾" : "▸"}</span
-      >
-    </button>
+        <div class="edition nights-card" class:collapsed={!nightsOpen}>
+          <button
+            type="button"
+            class="nights-toggle"
+            aria-expanded={nightsOpen}
+            aria-controls="campsites-nights"
+            onclick={() => (nightsOpen = !nightsOpen)}
+          >
+            <span class="nights-toggle-label">Nights you're free</span>
+            <span class="nights-toggle-summary">{nightsSummary}</span>
+            <span class="nights-toggle-chevron" aria-hidden="true"
+              >{nightsOpen ? "▾" : "▸"}</span
+            >
+          </button>
 
-    {#if nightsOpen}
-      <div class="nights-body">
-        <div class="nights-actions">
-          <button type="button" class="nights-act" onclick={selectAllNights}
-            >All</button
-          >
-          <button type="button" class="nights-act" onclick={selectWeekends}
-            >Weekends</button
-          >
-          <button type="button" class="nights-act" onclick={clearNights}
-            >Clear</button
-          >
+          {#if nightsOpen}
+            <div class="nights-body" id="campsites-nights">
+              <div class="nights-actions">
+                <Button
+                  variant="secondary"
+                  class="nights-act"
+                  onclick={selectAllNights}>All</Button
+                >
+                <Button
+                  variant="secondary"
+                  class="nights-act"
+                  onclick={selectWeekends}>Weekends</Button
+                >
+                <Button
+                  variant="secondary"
+                  class="nights-act"
+                  onclick={clearNights}>Clear</Button
+                >
+              </div>
+              <div
+                class="nights-strip"
+                role="group"
+                aria-label="Select the nights you are free"
+              >
+                {#each windowDates as iso (iso)}
+                  <button
+                    type="button"
+                    class="night-btn"
+                    class:on={activeDates.has(iso)}
+                    class:dead={deadDates.has(iso)}
+                    disabled={deadDates.has(iso)}
+                    aria-pressed={activeDates.has(iso)}
+                    title={deadDates.has(iso)
+                      ? "No sites open this night"
+                      : fmtDayCell(iso)}
+                    onclick={() => toggleNight(iso)}
+                  >
+                    {fmtDayCell(iso)}
+                  </button>
+                {/each}
+              </div>
+              {#if activeDates.size === 0}
+                <p class="nights-hint">
+                  Pick the nights you are free, and matching parks will appear.
+                </p>
+              {/if}
+            </div>
+          {/if}
         </div>
-        <div
-          class="nights-strip"
-          role="group"
-          aria-label="Select the nights you are free"
-        >
-          {#each windowDates as iso (iso)}
+
+        <!-- Ranked list stays in the control column; it never covers the map. -->
+        <section class="edition list-panel" class:collapsed={!listOpen}>
+          <header class="list-head">
+            <div class="ed-head list-head-top">
+              <p class="list-title">Ranked parks</p>
+              <Button
+                variant="secondary"
+                class="collapse-btn"
+                aria-expanded={listOpen}
+                onclick={() => (listOpen = !listOpen)}
+              >
+                {listOpen ? "Hide" : "Show"}
+              </Button>
+            </div>
+
+            {#if listOpen}
+              <div class="controls">
+                <div class="sort-row">
+                  <span class="control-label">Sort</span>
+                  <div class="toggle" role="group" aria-label="Sort parks by">
+                    {#each [["best_score", "Sky score"], ["good_days", "Nights"], ["name", "Name"]] as [key, label] (key)}
+                      <button
+                        type="button"
+                        class="seg"
+                        class:active={sortKey === key}
+                        aria-pressed={sortKey === key}
+                        onclick={() => (sortKey = key)}>{label}</button
+                      >
+                    {/each}
+                  </div>
+                </div>
+
+                <div class="filter-row">
+                  <label class="check-label">
+                    <input
+                      type="checkbox"
+                      class="check-input"
+                      bind:checked={clearOnly}
+                      aria-label="show only sites with at least one clear night"
+                    />
+                    Clear nights only
+                  </label>
+                </div>
+              </div>
+            {/if}
+          </header>
+
+          {#if listOpen}
+            {#if visibleParks.length === 0}
+              <p class="empty">No parks match the current filters.</p>
+            {:else}
+              <ul class="rows" aria-label="Ranked park list">
+                {#each visibleParks as park (park.id)}
+                  <li>
+                    <button
+                      type="button"
+                      class="row"
+                      class:selected={selectedId === park.id}
+                      aria-pressed={selectedId === park.id}
+                      onclick={() => selectPark(park.id)}
+                    >
+                      <span class="r-body">
+                        <span class="r-name">{park.name}</span>
+                        <span class="r-region">{park.region}</span>
+                      </span>
+                      <span class="r-right">
+                        <span
+                          class="score-badge"
+                          class:score-zero={park.best_score === 0}
+                          style={badgeColor(park.best_score)
+                            ? `background: ${badgeColor(park.best_score)}`
+                            : undefined}>{park.best_score}</span
+                        >
+                        <span class="r-days">{daysLabel(park.good_days)}</span>
+                      </span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          {/if}
+        </section>
+        <SiteIndex here="campsites" />
+      </aside>
+      <div class="content">
+        <div class="edition map-stage">
+          <CampsitesMap parks={visibleParks} bind:selectedId />
+        </div>
+
+        <!-- Forecast remains beside the controls and below the map in document flow. -->
+        {#if selectedPark}
+          <section
+            class="edition detail"
+            aria-label="{selectedPark.name} 14-day forecast"
+          >
             <button
               type="button"
-              class="night-btn"
-              class:on={activeDates.has(iso)}
-              class:dead={deadDates.has(iso)}
-              disabled={deadDates.has(iso)}
-              aria-pressed={activeDates.has(iso)}
-              title={deadDates.has(iso)
-                ? "No sites open this night"
-                : fmtDayCell(iso)}
-              onclick={() => toggleNight(iso)}
+              class="detail-close"
+              onclick={() => (selectedId = null)}
+              aria-label="Close park detail">&times;</button
             >
-              {fmtDayCell(iso)}
-            </button>
-          {/each}
-        </div>
-        {#if activeDates.size === 0}
-          <p class="nights-hint">
-            Pick the nights you are free, and matching parks will appear.
-          </p>
-        {/if}
-      </div>
-    {/if}
-  </div>
-
-  <!-- Right-side list panel (collapsible). -->
-  <aside class="list-panel" class:collapsed={!listOpen}>
-    <header class="list-head">
-      <div class="list-head-top">
-        <p class="list-title">Ranked parks</p>
-        <button
-          type="button"
-          class="collapse-btn"
-          aria-expanded={listOpen}
-          onclick={() => (listOpen = !listOpen)}
-        >
-          {listOpen ? "Hide" : "Show"}
-        </button>
-      </div>
-
-      {#if listOpen}
-        <div class="controls">
-          <div class="sort-row">
-            <span class="control-label">Sort</span>
-            <div class="toggle" role="group" aria-label="Sort parks by">
-              {#each [["best_score", "Sky score"], ["good_days", "Nights"], ["name", "Name"]] as [key, label] (key)}
-                <button
-                  type="button"
-                  class="seg"
-                  class:active={sortKey === key}
-                  aria-pressed={sortKey === key}
-                  onclick={() => (sortKey = key)}>{label}</button
+            <div class="ed-head detail-head">
+              <div class="detail-names">
+                <h2 class="detail-park">{selectedPark.name}</h2>
+                <p class="detail-region">
+                  {selectedPark.region} &middot; {daysLabel(
+                    selectedPark.good_days,
+                  )}
+                </p>
+              </div>
+              {#if selectedPark.booking_url}
+                <a
+                  href={selectedPark.booking_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="book-link">Book on BC Parks &nearr;</a
                 >
-              {/each}
-            </div>
-          </div>
-
-          <div class="filter-row">
-            <label class="check-label">
-              <input
-                type="checkbox"
-                class="check-input"
-                bind:checked={clearOnly}
-                aria-label="show only sites with at least one clear night"
-              />
-              Clear nights only
-            </label>
-          </div>
-        </div>
-      {/if}
-    </header>
-
-    {#if listOpen}
-      {#if visibleParks.length === 0}
-        <p class="empty">No parks match the current filters.</p>
-      {:else}
-        <ul class="rows" aria-label="Ranked park list">
-          {#each visibleParks as park (park.id)}
-            <li>
-              <button
-                type="button"
-                class="row"
-                class:selected={selectedId === park.id}
-                aria-pressed={selectedId === park.id}
-                onclick={() => selectPark(park.id)}
-              >
-                <span class="r-body">
-                  <span class="r-name">{park.name}</span>
-                  <span class="r-region">{park.region}</span>
-                </span>
-                <span class="r-right">
-                  <span
-                    class="score-badge"
-                    class:score-zero={park.best_score === 0}
-                    style={badgeColor(park.best_score)
-                      ? `background: ${badgeColor(park.best_score)}`
-                      : undefined}>{park.best_score}</span
-                  >
-                  <span class="r-days">{daysLabel(park.good_days)}</span>
-                </span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    {/if}
-  </aside>
-
-  <!-- Detail panel: bottom sheet for the selected park's 14-day forecast. -->
-  {#if selectedPark}
-    <section class="detail" aria-label="{selectedPark.name} 14-day forecast">
-      <button
-        type="button"
-        class="detail-close"
-        onclick={() => (selectedId = null)}
-        aria-label="Close park detail">&times;</button
-      >
-      <div class="detail-head">
-        <div class="detail-names">
-          <h2 class="detail-park">{selectedPark.name}</h2>
-          <p class="detail-region">
-            {selectedPark.region} &middot; {daysLabel(selectedPark.good_days)}
-          </p>
-        </div>
-        {#if selectedPark.booking_url}
-          <a
-            href={selectedPark.booking_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            class="book-link">Book on BC Parks &nearr;</a
-          >
-        {/if}
-      </div>
-
-      <div class="days-scroll">
-        <ul class="days-strip" aria-label="14-day forecast strip">
-          {#each selectedPark.days as day (day.date)}
-            <li
-              class="day-cell"
-              class:day-open={day.available}
-              class:day-good={day.is_good}
-              class:day-inactive={!activeDates.has(day.date)}
-              style="background: {dayCellBg(day)}"
-              title={dayTitle(day)}
-            >
-              <span class="day-date">{fmtDayCell(day.date)}</span>
-              <span class="day-icon" aria-hidden="true"
-                >{day.available ? "✓" : "×"}</span
-              >
-              {#if day.temp_max != null}
-                <span class="day-temp">{Math.round(day.temp_max)}&deg;</span>
               {/if}
-              {#if day.precip != null}
-                <!-- Rain promoted out of the hover title so touch users (no
+            </div>
+
+            <div class="days-scroll">
+              <ul class="days-strip" aria-label="14-day forecast strip">
+                {#each selectedPark.days as day (day.date)}
+                  <li
+                    class="day-cell"
+                    class:day-open={day.available}
+                    class:day-good={day.is_good}
+                    class:day-inactive={!activeDates.has(day.date)}
+                    style="background: {dayCellBg(day)}"
+                    title={dayTitle(day)}
+                  >
+                    <span class="day-date">{fmtDayCell(day.date)}</span>
+                    <span class="day-icon" aria-hidden="true"
+                      >{day.available ? "✓" : "×"}</span
+                    >
+                    {#if day.temp_max != null}
+                      <span class="day-temp"
+                        >{Math.round(day.temp_max)}&deg;</span
+                      >
+                    {/if}
+                    {#if day.precip != null}
+                      <!-- Rain promoted out of the hover title so touch users (no
                      hover) can see it. Blue + mm on a wet day; a faint dot when
                      dry keeps the row rhythm without shouting "0.0". -->
-                <span
-                  class="day-rain"
-                  class:day-rain-wet={day.precip > 0}
-                  style={day.precip > 0 ? `color: ${VIZ_RAIN}` : undefined}
-                  >{day.precip > 0 ? `${day.precip.toFixed(1)}mm` : "·"}</span
-                >
-              {/if}
-            </li>
-          {/each}
-        </ul>
+                      <span
+                        class="day-rain"
+                        class:day-rain-wet={day.precip > 0}
+                        style={day.precip > 0
+                          ? `color: ${VIZ_RAIN}`
+                          : undefined}
+                        >{day.precip > 0
+                          ? `${day.precip.toFixed(1)}mm`
+                          : "·"}</span
+                      >
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+
+            <p class="detail-legend">
+              A check means the site is bookable. Green fades to grey as the
+              forecast worsens, and closed sites are grey. The clear-sky score
+              runs 0 to 100, higher is clearer. Each cell shows max temp (&deg;)
+              and rain (mm, blue when wet).
+            </p>
+          </section>
+        {/if}
       </div>
-
-      <p class="detail-legend">
-        A check means the site is bookable. Green fades to grey as the forecast
-        worsens, and closed sites are grey. The clear-sky score runs 0 to 100,
-        higher is clearer. Each cell shows max temp (&deg;) and rain (mm, blue
-        when wet).
-      </p>
-    </section>
-  {/if}
-</div>
-
-<style>
-  /* Full-bleed shell: the map fills the whole viewport under the global nav
-     (no site nav on /app/* routes), and every panel is an absolutely-positioned
-     overlay on top of it. Mirrors the ships/stars page shells. */
-  .campsites-page {
-    position: relative;
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-    background: var(--cream);
-    color: var(--ink);
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  /* Top-left crumb / title card. */
-  .crumb-card {
-    position: absolute;
-    top: 16px;
-    left: 16px;
-    max-width: calc(100% - 32px);
-    min-height: 52px;
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    padding: 8px 12px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-  }
-
-  .crumb {
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 8px;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .crumb-home {
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-decoration-skip-ink: none;
-    text-underline-offset: 2px;
-    padding: 0 2px;
-    transition: background 140ms ease;
-  }
-
-  .crumb-home:hover,
-  .crumb-home:focus-visible {
-    background: linear-gradient(transparent 56%, var(--accent) 56%);
-    text-decoration-color: var(--ink);
-  }
-
-  .crumb-arrow {
-    display: inline-block;
-    margin-left: 2px;
-    font-size: 0.85em;
-  }
-
-  .crumb-sep {
-    color: var(--ink-3);
-  }
-
-  .crumb-count {
-    font-size: 11px;
-    color: var(--ink-3);
-    letter-spacing: 0.04em;
-  }
-
-  .crumb-count strong {
-    color: var(--ink);
-  }
-
-  .crumb-note {
-    margin: 6px 0 0;
-    font-family: var(--mono);
-    font-size: 10px;
-    line-height: 1.4;
-    letter-spacing: 0.02em;
-    color: var(--ink-3);
-  }
-
-  /* Top-center night selector. z-index 20 to sit above the MapLibre controls,
-     like the list panel. Centered on wide screens; drops below the crumb card
-     on narrow ones so the three top overlays never overlap. */
-  .nights-card {
-    position: absolute;
-    top: 16px;
-    left: 50%;
-    transform: translateX(-50%);
-    max-width: min(560px, calc(100% - 32px));
-    box-sizing: border-box;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    z-index: 20;
-  }
-
-  /* Header doubles as the collapse toggle: a full-width button showing the
-     title, a summary of the current pick, and a chevron. Collapsed, this is the
-     entire card (a compact pill); expanded, the body sits below it. */
-  .nights-toggle {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    padding: 8px 12px;
-    background: var(--paper);
-    border: none;
-    cursor: pointer;
-    text-align: left;
-    transition: background 110ms ease;
-  }
-
-  .nights-toggle:hover,
-  .nights-toggle:focus-visible {
-    background: var(--rule);
-    outline: none;
-  }
-
-  .nights-toggle-label {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-  }
-
-  .nights-toggle-summary {
-    margin-left: auto;
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: var(--ink);
-  }
-
-  .nights-toggle-chevron {
-    font-size: 10px;
-    color: var(--ink-3);
-  }
-
-  .nights-body {
-    padding: 10px 12px;
-    border-top: 2px solid var(--ink);
-  }
-
-  .nights-actions {
-    display: inline-flex;
-    gap: 6px;
-    margin-bottom: 8px;
-  }
-
-  .nights-act {
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 4px 8px;
-    background: var(--paper);
-    color: var(--ink);
-    border: 2px solid var(--ink);
-    cursor: pointer;
-    transition: transform 110ms ease;
-  }
-
-  .nights-act:hover,
-  .nights-act:focus-visible {
-    transform: translate(-2px, -2px);
-    outline: none;
-  }
-
-  .nights-strip {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-
-  .night-btn {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    min-width: 40px;
-    padding: 5px 6px;
-    background: var(--paper);
-    color: var(--ink);
-    border: 2px solid var(--ink);
-    cursor: pointer;
-    transition:
-      transform 110ms ease,
-      background 110ms ease;
-  }
-
-  .night-btn:hover:not(:disabled),
-  .night-btn:focus-visible:not(:disabled) {
-    transform: translate(-2px, -2px);
-    outline: none;
-  }
-
-  .night-btn.on {
-    background: var(--accent);
-  }
-
-  .night-btn.dead {
-    color: var(--ink-3);
-    background: var(--rule);
-    border-color: var(--ink-3);
-    cursor: not-allowed;
-    text-decoration: line-through;
-    opacity: 0.6;
-  }
-
-  .nights-hint {
-    margin: 8px 0 0;
-    font-family: var(--mono);
-    font-size: 10px;
-    line-height: 1.4;
-    color: var(--ink-3);
-  }
-
-  /* Nights not in the current selection are dimmed in the detail strip so the
-     chosen nights read clearly against the full 14-day context. */
-  .day-inactive {
-    opacity: 0.35;
-  }
-
-  @media (max-width: 860px) {
-    .nights-card {
-      left: 16px;
-      right: 16px;
-      top: 84px;
-      transform: none;
-      max-width: none;
-    }
-  }
-
-  /* Right-side ranked-list panel. Narrow by default so the page reads map-first;
-     collapse button shrinks it to just the header handle. z-index 20 ensures the
-     panel and its toggle sit above the MapLibre control group (z-index ~2) so the
-     open panel covers the zoom/attribution buttons cleanly. */
-  .list-panel {
-    position: absolute;
-    top: 16px;
-    right: 16px;
-    bottom: 16px;
-    width: 340px;
-    max-width: calc(100% - 32px);
-    display: flex;
-    flex-direction: column;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    overflow: hidden;
-    z-index: 20;
-  }
-
-  .list-panel.collapsed {
-    bottom: auto;
-    min-height: 52px;
-    box-sizing: border-box;
-  }
-
-  .list-head {
-    border-bottom: 2px solid var(--ink);
-  }
-
-  .list-panel.collapsed .list-head {
-    border-bottom: none;
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-  }
-
-  .list-head-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 8px 12px;
-  }
-
-  .list-title {
-    margin: 0;
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-  }
-
-  .collapse-btn {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 4px 10px;
-    background: var(--paper);
-    color: var(--ink);
-    border: 2px solid var(--ink);
-    cursor: pointer;
-    transition: transform 110ms ease;
-  }
-
-  .collapse-btn:hover,
-  .collapse-btn:focus-visible {
-    transform: translate(-2px, -2px);
-    outline: none;
-  }
-
-  .controls {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 0 12px 10px;
-  }
-
-  .sort-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .control-label {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-    white-space: nowrap;
-  }
-
-  .toggle {
-    display: inline-flex;
-  }
-
-  .seg {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 5px 9px;
-    background: var(--paper);
-    color: var(--ink);
-    border: 2px solid var(--ink);
-    cursor: pointer;
-    transition:
-      transform 120ms ease,
-      background 120ms ease;
-  }
-
-  .seg + .seg {
-    margin-left: -2px;
-  }
-
-  .seg.active {
-    background: var(--accent);
-    z-index: 1;
-  }
-
-  .seg:hover {
-    transform: translate(-2px, -2px);
-    z-index: 2;
-  }
-
-  .filter-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-
-  .check-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    user-select: none;
-  }
-
-  .check-input {
-    accent-color: var(--ink);
-    width: 14px;
-    height: 14px;
-    cursor: pointer;
-  }
-
-  .rows {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    flex: 1;
-    overflow-y: auto;
-  }
-
-  .rows li + li {
-    border-top: 2px solid var(--ink);
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 9px 12px;
-    width: 100%;
-    background: var(--paper);
-    border: none;
-    color: var(--ink);
-    text-align: left;
-    cursor: pointer;
-    transition: background 100ms ease;
-  }
-
-  .row:hover,
-  .row:focus-visible {
-    background: var(--cream);
-    outline: none;
-  }
-
-  .row.selected {
-    background: var(--accent);
-  }
-
-  .row.selected:hover,
-  .row.selected:focus-visible {
-    background: color-mix(in srgb, var(--accent) 85%, var(--ink) 15%);
-  }
-
-  .r-body {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-
-  .r-name {
-    font-size: 14px;
-    font-weight: 700;
-    line-height: 1.2;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .r-region {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink-3);
-    letter-spacing: 0.02em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .row.selected .r-region {
-    color: var(--ink);
-  }
-
-  .r-right {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 3px;
-    flex-shrink: 0;
-  }
-
-  .score-badge {
-    display: inline-block;
-    font-family: var(--mono);
-    font-size: 13px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    padding: 2px 7px;
-    border: 1.5px solid var(--ink);
-    min-width: 34px;
-    text-align: center;
-  }
-
-  .score-badge.score-zero {
-    background: var(--rule);
-    color: var(--ink-3);
-  }
-
-  .r-days {
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    color: var(--ink-3);
-    white-space: nowrap;
-  }
-
-  .row.selected .r-days {
-    color: var(--ink);
-  }
-
-  .empty {
-    margin: 0;
-    padding: 14px 12px;
-    font-size: 13px;
-    color: var(--ink-3);
-  }
-
-  /* Detail panel: bottom strip anchored bottom, between the legend (left) and
-     the zoom controls (right, collapsed) or the list panel (right, expanded). */
-  .detail {
-    position: absolute;
-    bottom: 16px;
-    left: 232px;
-    right: 64px;
-    height: 168px;
-    box-sizing: border-box;
-    overflow-y: auto;
-    padding: 12px 14px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-  }
-
-  /* When the list panel is open it occupies right:16px width:340px, so the
-     detail must clear it (340 + 16 + 16 gap = 372px). */
-  .campsites-page.list-open .detail {
-    right: 372px;
-  }
-
-  .detail-close {
-    position: absolute;
-    top: 6px;
-    right: 10px;
-    background: none;
-    border: none;
-    font-family: var(--mono);
-    font-size: 22px;
-    line-height: 1;
-    cursor: pointer;
-    color: var(--ink);
-  }
-
-  .detail-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 10px;
-    margin: 0 24px 8px 0;
-    flex-wrap: wrap;
-  }
-
-  .detail-names {
-    min-width: 0;
-  }
-
-  .detail-park {
-    margin: 0;
-    font-family: var(--serif);
-    font-size: 20px;
-    font-weight: 400;
-    line-height: 1.15;
-  }
-
-  .detail-region {
-    margin: 2px 0 0;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink-3);
-    letter-spacing: 0.02em;
-  }
-
-  .book-link {
-    display: inline-flex;
-    align-items: center;
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    text-decoration: none;
-    padding: 6px 10px;
-    background: var(--ink);
-    color: var(--paper);
-    border: 2px solid var(--ink);
-    white-space: nowrap;
-    transition: transform 110ms ease;
-  }
-
-  .book-link:hover,
-  .book-link:focus-visible {
-    transform: translate(-2px, -2px);
-    outline: none;
-  }
-
-  .days-scroll {
-    overflow-x: auto;
-    margin-bottom: 8px;
-  }
-
-  .days-strip {
-    display: flex;
-    gap: 4px;
-    list-style: none;
-    margin: 0;
-    padding: 2px 0 6px;
-    width: max-content;
-  }
-
-  .day-cell {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-    flex: 0 0 40px;
-    width: 40px;
-    height: 64px;
-    padding: 5px 3px;
-    border: 1.5px solid var(--ink);
-    cursor: default;
-    transition: background 300ms ease;
-  }
-
-  .day-date {
-    font-family: var(--mono);
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    color: var(--ink);
-    white-space: nowrap;
-  }
-
-  .day-icon {
-    font-size: 13px;
-    line-height: 1;
-    color: var(--ink);
-  }
-
-  .day-temp {
-    font-family: var(--mono);
-    font-size: 9px;
-    font-weight: 600;
-    color: var(--ink);
-    letter-spacing: 0.01em;
-  }
-
-  /* Always-visible rain figure (mm). Dry days show a faint dot; wet days get
-     the blue accent via an inline color so they stand out when scanning on a
-     phone, where the old hover-only title was invisible. */
-  .day-rain {
-    font-family: var(--mono);
-    font-size: 8px;
-    font-weight: 700;
-    line-height: 1;
-    letter-spacing: 0;
-    color: var(--ink-3);
-    white-space: nowrap;
-  }
-
-  .day-cell:not(.day-open) .day-date,
-  .day-cell:not(.day-open) .day-icon,
-  .day-cell:not(.day-open) .day-temp {
-    color: var(--ink-3);
-  }
-
-  .detail-legend {
-    margin: 0;
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--ink-3);
-    letter-spacing: 0.02em;
-    line-height: 1.4;
-  }
-
-  /* Mobile: slim top bar, full-width bottom list bar that is always visible,
-     legend behind a pop-out chip, detail sheet clearing the bar from above. */
-  @media (max-width: 768px) {
-    /* Slim single-line top bar: drop the verbose crumb-note, compact padding,
-       switch to row layout so only one line of breadcrumb is shown. */
-    .crumb-card {
-      top: 12px;
-      left: 12px;
-      min-height: auto;
-      padding: 6px 10px;
-      flex-direction: row;
-      align-items: center;
-    }
-
-    .crumb {
-      flex-wrap: nowrap;
-      font-size: 11px;
-      overflow: hidden;
-    }
-
-    /* Hide the generated status note on mobile.
-       The same context is available in the legend pop-out and on desktop. */
-    .crumb-note {
-      display: none;
-    }
-
-    /* Full-width bottom sheet. z-index 30 means the bar always wins over the
-       legend pop-out (z-index 10 inside map-wrap) and the detail (z-index 20). */
-    .list-panel {
-      top: auto;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      width: auto;
-      max-width: none;
-      max-height: 46vh;
-      border-width: 2px 0 0;
-      z-index: 30;
-    }
-
-    /* Collapsed bar: exactly 48px so legend chip, legend panel, and detail sheet
-       can use a known offset to clear it (bottom: 56px for chip, bottom: 96px
-       for legend, bottom: 48px for detail). */
-    .list-panel.collapsed {
-      bottom: 0;
-      height: 48px;
-      min-height: 48px;
-      max-height: 48px;
-      box-sizing: border-box;
-      overflow: hidden;
-    }
-
-    /* When a park is selected: keep the 48px collapsed bar visible at the bottom
-       rather than hiding the whole panel. The detail sheet clears it from above
-       (bottom: 48px) so both are simultaneously visible. */
-    .has-selection .list-panel {
-      display: flex;
-      max-height: 48px;
-      overflow: hidden;
-    }
-
-    /* Detail sheet: bottom = 48px so the RANKED PARKS bar is never obscured. */
-    .detail {
-      bottom: 48px;
-      left: 0;
-      right: 0;
-      height: auto;
-      max-height: 60vh;
-      border-width: 2px 0 0;
-      box-shadow: none;
-      padding-bottom: calc(12px + env(safe-area-inset-bottom));
-      z-index: 20;
-    }
-
-    .campsites-page.list-open .detail {
-      right: 0;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .seg,
-    .book-link,
-    .collapse-btn,
-    .row {
-      transition: none;
-    }
-  }
-</style>
+    </div>
+  </div>
+</main>

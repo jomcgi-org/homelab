@@ -258,6 +258,7 @@ js_library(
         "test/app-state-stub.js",
         "test/app-stores-stub.js",
         "test/ProfileRoute.svelte",
+        "campsites-preview/fixtures.js",
         "test/profile-page.svelte.js",
         "test/profile-stores.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
@@ -307,6 +308,41 @@ apko_image(
     contents = "@monolith_frontend_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-frontend",
     tars = [":build_tar_public"],
+)
+
+# Keep synthetic preview fixtures out of the production source/build closure.
+# Campsites preview composes the production route, layouts and real MapLibre.
+js_library(
+    name = "campsites_fixture_src",
+    srcs = [
+        "campsites-preview/App.svelte",
+        "campsites-preview/environment.js",
+        "campsites-preview/fixtures.js",
+        "campsites-preview/index.html",
+        "campsites-preview/main.js",
+        "campsites-preview/maplibre.js",
+        "campsites-preview/navigation.js",
+        "campsites-preview/vite.config.js",
+        "preview/fonts.css",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "test/profile-page.svelte.js",
+        "test/profile-stores.js",
+    ],
+    deps = [":src"],
+)
+
+js_run_binary(
+    name = "campsites_fixture_preview",
+    srcs = [":campsites_fixture_src"],
+    args = ["build", "--config", "campsites-preview/vite.config.js"],
+    chdir = package_name(),
+    out_dirs = ["campsites-fixture-dist"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "campsites_fixture_preview_build_test",
+    targets = [":campsites_fixture_preview"],
 )
 
 # Keep synthetic preview fixtures out of the production source/build closure.

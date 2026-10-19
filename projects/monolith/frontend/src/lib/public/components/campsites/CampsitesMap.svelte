@@ -5,15 +5,24 @@
   // The map itself is lazy-imported inside onMount to avoid window/WebGL refs
   // during SSR. Same pattern as ShipsMap / StarsMap.
   import "maplibre-gl/dist/maplibre-gl.css";
+  // MapLibre 6 computes a sibling worker URL dynamically. Give Vite an
+  // explicit worker asset so both dev and production bundles ship it.
+  import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
+  import {
+    applyPalette,
+    heatPaint,
+    readPalette,
+    scorePaint,
+  } from "./map-theme.js";
 
-  // `parks` is the full snapshot array (one Point per park).
+  // `parks` is the parent's filtered, re-scored snapshot (one Point per park).
   // `selectedId` is bindable so both the map (click) and the parent list can
   // drive selection: clicking a pin sets it here and propagates up, and a list
   // click changes it in the parent and the effect below flies the map to it.
   let { parks = [], selectedId = $bindable(null) } = $props();
 
-  // OpenFreeMap needs no API key (same hosted liberty style as ships/stars so
-  // the pages read as siblings).
+  // OpenFreeMap needs no API key. Its sources and geometry stay intact while
+  // configurable paint follows the sheet's light/dark tokens.
   const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
   const SOURCE_ID = "parks";
   const PIN_LAYER = "parks";
@@ -54,75 +63,17 @@
       });
   });
 
-  // Data-viz ramp colors: outside the design-token system (intentionally, same
-  // pattern as ShipsMap VESSEL_COLORS / HEAT_COLORS). They live in plain JS
-  // constants so the hexes never appear as a `:` + `#hex` pair inside a style
-  // attribute, which is what the hardcoded-color semgrep rule matches.
-  //   COL_NONE = grey (nothing open or no forecast)
-  //   COL_LOW  = yellow (a few clear days)
-  //   COL_MED  = amber (decent)
-  //   COL_GOOD = green (open AND clear-sky)
-  const COL_NONE = "#6b7280";
-  const COL_LOW = "#eab308";
-  const COL_MED = "#f59e0b";
-  const COL_GOOD = "#22c55e";
-  const STROKE = "#111827";
-
-  // Score-to-color ramp for the pin circle fill (grey -> yellow -> amber -> green).
-  const SCORE_COLOR = [
-    "interpolate",
-    ["linear"],
-    ["get", "best_score"],
-    0,
-    COL_NONE,
-    40,
-    COL_LOW,
-    70,
-    COL_MED,
-    90,
-    COL_GOOD,
-  ];
-
-  // Warm "sunshine" field for the weather heatmap: transparent at low density
-  // (so a single park does not glow), warming through gold to a hot orange for
-  // clusters of open-and-clear parks. Warm contrasts with the green terrain and
-  // makes the green pins pop. Kept as named constants (not inline literals) for
-  // the same semgrep-safety reason as the pin colors.
-  const HEAT_C0 = "rgba(0, 0, 0, 0)";
-  const HEAT_C1 = "rgba(254, 243, 199, 0.35)"; // amber-100, very soft
-  const HEAT_C2 = "rgba(253, 224, 71, 0.6)"; // yellow-300
-  const HEAT_C3 = "rgba(251, 146, 60, 0.8)"; // orange-400
-  const HEAT_C4 = "#f97316"; // orange-500
-  const HEAT_C5 = "#ea580c"; // orange-600, hot
-
-  const HEAT_COLOR = [
-    "interpolate",
-    ["linear"],
-    ["heatmap-density"],
-    0,
-    HEAT_C0,
-    0.3,
-    HEAT_C1,
-    0.55,
-    HEAT_C2,
-    0.75,
-    HEAT_C3,
-    0.9,
-    HEAT_C4,
-    1,
-    HEAT_C5,
-  ];
-
-  // Legend rows: color is a JS variable reference, so the template writes
-  // `style="background: {item.color}"` with no literal hex in the style attribute
-  // (matching the ShipsMap LEGEND pattern).
+  // Legend swatches share the map's semantic sheet roles.
   const LEGEND_ITEMS = [
-    { label: "Open + clear", color: COL_GOOD },
-    { label: "Some clear days", color: COL_LOW },
-    { label: "Nothing open", color: COL_NONE },
+    { label: "Open + clear", color: "var(--camp-clear)" },
+    { label: "Some clear days", color: "var(--camp-mixed)" },
+    { label: "Nothing open", color: "var(--camp-none)" },
   ];
-  // Swatches for the heat gradient chip in the legend.
-  const HEAT_SWATCHES = [HEAT_C1, HEAT_C3, HEAT_C5];
+  const HEAT_SWATCHES = [
+    "var(--camp-mixed)",
+    "var(--camp-poor)",
+    "var(--tone-disk)",
+  ];
 
   // Build the GeoJSON FeatureCollection from the current parks + selectedId. A
   // `sel` property (0/1) drives the pin radius and stroke expressions so the
@@ -196,6 +147,7 @@
     (async () => {
       maplibregl = await import("maplibre-gl");
       if (destroyed) return;
+      maplibregl.setWorkerUrl(workerUrl);
 
       map = new maplibregl.Map({
         container: mapContainer,
@@ -227,16 +179,18 @@
         el?.removeAttribute("open");
         el?.classList.remove("maplibregl-compact-show");
       };
-      mapContainer.addEventListener("click", (e) => {
+      const openAttribution = (e) => {
         if (e.target.closest(".maplibregl-ctrl-attrib-button")) {
           userOpenedAttrib = true;
         }
-      });
+      };
+      mapContainer.addEventListener("click", openAttribution);
       map.on("styledata", collapseAttrib);
       map.on("sourcedata", collapseAttrib);
       collapseAttrib();
 
       map.on("load", () => {
+        const palette = readPalette(mapContainer);
         map.addSource(SOURCE_ID, { type: "geojson", data: buildFC() });
 
         // Layer A: weather heatmap, added FIRST so it sits UNDER the pins. Weight
@@ -292,7 +246,7 @@
               10,
               0,
             ],
-            "heatmap-color": HEAT_COLOR,
+            "heatmap-color": heatPaint(palette),
           },
         });
 
@@ -302,7 +256,7 @@
           type: "circle",
           source: SOURCE_ID,
           paint: {
-            "circle-color": SCORE_COLOR,
+            "circle-color": scorePaint(palette),
             // Radius grows with good_days (more clear days = bigger pin), with
             // the selected pin larger still, and the outer ["zoom"] interpolate
             // makes pins also grow as you zoom in. Zoom-and-property form: the
@@ -349,12 +303,13 @@
               ],
             ],
             "circle-stroke-width": ["case", ["==", ["get", "sel"], 1], 3, 1.5],
-            "circle-stroke-color": STROKE,
+            "circle-stroke-color": palette.ink,
             "circle-opacity": ["case", ["==", ["get", "sel"], 1], 1, 0.85],
           },
         });
 
         layerReady = true;
+        applyPalette(map, palette);
         fitParks();
         // Belt-and-suspenders against a container that was still zero-sized when
         // the map initialised (the split-layout race that rendered blank before).
@@ -416,7 +371,25 @@
       resizeObs = new ResizeObserver(() => map?.resize());
       resizeObs.observe(mapContainer);
 
+      // SchemeToggle stamps data-theme. Also follow OS changes when there is
+      // no explicit choice. Never replace the style or re-register map events.
+      const repaint = () => {
+        if (map && layerReady) applyPalette(map, readPalette(mapContainer));
+      };
+      const schemeObserver = new MutationObserver(repaint);
+      schemeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+      const media = matchMedia("(prefers-color-scheme: dark)");
+      media.addEventListener("change", repaint);
+
       cleanup = () => {
+        schemeObserver.disconnect();
+        media.removeEventListener("change", repaint);
+        mapContainer.removeEventListener("click", openAttribution);
+        map?.off("styledata", collapseAttrib);
+        map?.off("sourcedata", collapseAttrib);
         resizeObs?.disconnect();
         resizeObs = null;
         popup?.remove();
@@ -474,252 +447,3 @@
     bind:this={toggleEl}>{legendOpen ? "Close" : "Legend"}</button
   >
 </div>
-
-<style>
-  /* Full-bleed: the map fills the whole page (its .campsites-page ancestor is
-     the positioned containing block). Matches ShipsMap. */
-  .map-wrap {
-    position: absolute;
-    inset: 0;
-    overflow: hidden;
-    background: var(--cream);
-  }
-
-  .map {
-    position: absolute;
-    inset: 0;
-  }
-
-  /* Push zoom controls clear of device safe areas (same as ShipsMap). */
-  .map :global(.maplibregl-ctrl-bottom-right) {
-    bottom: env(safe-area-inset-bottom, 0);
-    right: env(safe-area-inset-right, 0);
-  }
-
-  /* Hard-rectangle zoom buttons that lift off on hover (matches ShipsMap). */
-  .map :global(.maplibregl-ctrl-group) {
-    border: none;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-    overflow: visible;
-  }
-
-  .map :global(.maplibregl-ctrl-group button) {
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease;
-  }
-
-  .map :global(.maplibregl-ctrl-group button + button) {
-    margin-top: 6px;
-  }
-
-  .map :global(.maplibregl-ctrl-group button:hover),
-  .map :global(.maplibregl-ctrl-group button:focus-visible) {
-    transform: translate(-2px, -2px);
-    background: var(--paper);
-    position: relative;
-    z-index: 1;
-  }
-
-  /* Compact attribution "i" button (matches ShipsMap). */
-  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact) {
-    min-height: 24px;
-    padding-block: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-
-  .map :global(.maplibregl-ctrl-attrib-button) {
-    width: 24px;
-    height: 24px;
-    border: 2px solid var(--ink);
-    border-radius: 0;
-    background-color: var(--paper);
-  }
-
-  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact-show) {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: 0;
-  }
-
-  .map :global(.maplibregl-ctrl-attrib-inner) {
-    font-family: var(--mono);
-    font-size: 10px;
-  }
-
-  /* Popup: hard-edge brutalist box, no round tip. */
-  .map :global(.maplibregl-popup-content) {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: 0;
-    padding: 8px 10px;
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--ink);
-  }
-
-  .map :global(.maplibregl-popup-tip) {
-    display: none;
-  }
-
-  /* Legend: bottom-left, same hard-edge style as the ShipsMap legend. Fixed
-     width + height so the bottom row (legend left, detail right) share the
-     same bottom edge AND top edge. */
-  .legend {
-    position: absolute;
-    bottom: 16px;
-    left: 16px;
-    width: 200px;
-    height: 168px;
-    box-sizing: border-box;
-    overflow-y: auto;
-    padding: 10px 12px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-  }
-
-  .legend-title {
-    margin: 0 0 8px;
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-  }
-
-  .legend-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .legend-list li {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-
-  /* Circular swatch to echo the circle pins on the map. */
-  .sw {
-    width: 12px;
-    height: 12px;
-    border: 1.5px solid var(--ink);
-    border-radius: 50%;
-    flex: none;
-  }
-
-  .legend-heat {
-    margin-top: 9px;
-    padding-top: 8px;
-    border-top: 1.5px dashed var(--rule-2);
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .legend-heat-label {
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    color: var(--ink-3);
-  }
-
-  .legend-heat-bar {
-    display: inline-flex;
-    height: 10px;
-    border: 1.5px solid var(--ink);
-  }
-
-  .legend-heat-cell {
-    flex: 1;
-    min-width: 22px;
-  }
-
-  .legend-note {
-    margin: 8px 0 0;
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--ink-3);
-    letter-spacing: 0.02em;
-  }
-
-  /* Legend toggle chip: hidden on desktop, revealed on mobile only. */
-  .legend-toggle {
-    display: none;
-    position: absolute;
-    bottom: 56px;
-    left: 12px;
-    z-index: 10;
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 6px 10px;
-    background: var(--paper);
-    color: var(--ink);
-    border: 2px solid var(--ink);
-    cursor: pointer;
-    transition: transform 110ms ease;
-  }
-
-  .legend-toggle:hover,
-  .legend-toggle:focus-visible {
-    transform: translate(-2px, -2px);
-    outline: none;
-  }
-
-  /* Mobile (<=768px): legend becomes a pop-out, toggle chip is visible.
-     The list bar is 48px tall at bottom:0. The toggle chip sits at
-     bottom:56px (8px clear). The legend pops above the chip at bottom:96px
-     (56px base + ~36px chip + 4px gap). */
-  @media (max-width: 768px) {
-    /* Hidden by default; display:block added via .legend-open when toggled. */
-    .legend {
-      display: none;
-      bottom: 96px;
-      left: 12px;
-      width: auto;
-      height: auto;
-      max-width: 200px;
-      padding: 9px 11px;
-      z-index: 10;
-    }
-
-    .legend.legend-open {
-      display: block;
-    }
-
-    /* Show the toggle chip above the list bar. */
-    .legend-toggle {
-      display: flex;
-      align-items: center;
-    }
-
-    /* Zoom controls: nudge above the 48px list bar so they never overlap it. */
-    .map :global(.maplibregl-ctrl-bottom-right) {
-      bottom: calc(56px + env(safe-area-inset-bottom, 0));
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .map :global(.maplibregl-ctrl-group button),
-    .legend-toggle {
-      transition: none;
-    }
-  }
-</style>

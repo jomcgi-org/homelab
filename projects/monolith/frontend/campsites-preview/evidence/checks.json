@@ -1,0 +1,134 @@
+[
+  {
+    "width": 390,
+    "scheme": "light",
+    "screenshot": "campsites-light-390.png",
+    "checks": [
+      {
+        "state": "closed",
+        "viewport": 390,
+        "scrollWidth": 390
+      },
+      {
+        "state": "panels-open",
+        "viewport": 390,
+        "scrollWidth": 390
+      },
+      {
+        "state": "selection-and-legend",
+        "viewport": 390,
+        "scrollWidth": 390
+      },
+      {
+        "state": "return-to-campsites",
+        "viewport": 390,
+        "scrollWidth": 390
+      }
+    ],
+    "painted": {
+      "sheet": "rgb(255, 255, 255)",
+      "ink": "rgb(38, 35, 28)"
+    },
+    "errors": [],
+    "map": "Real MapLibre with OpenFreeMap liberty sources and synthetic park data"
+  },
+  {
+    "width": 390,
+    "scheme": "dark",
+    "screenshot": "campsites-dark-390.png",
+    "checks": [
+      {
+        "state": "closed",
+        "viewport": 390,
+        "scrollWidth": 390
+      },
+      {
+        "state": "panels-open",
+        "viewport": 390,
+        "scrollWidth": 390
+      },
+      {
+        "state": "selection-and-legend",
+        "viewport": 390,
+        "scrollWidth": 390
+      },
+      {
+        "state": "return-to-campsites",
+        "viewport": 390,
+        "scrollWidth": 390
+      }
+    ],
+    "painted": {
+      "sheet": "rgb(24, 26, 32)",
+      "ink": "rgb(232, 229, 220)"
+    },
+    "errors": [],
+    "map": "Real MapLibre with OpenFreeMap liberty sources and synthetic park data"
+  },
+  {
+    "width": 1440,
+    "scheme": "light",
+    "screenshot": "campsites-light-1440.png",
+    "checks": [
+      {
+        "state": "closed",
+        "viewport": 1440,
+        "scrollWidth": 1440
+      },
+      {
+        "state": "panels-open",
+        "viewport": 1440,
+        "scrollWidth": 1440
+      },
+      {
+        "state": "selection-and-legend",
+        "viewport": 1440,
+        "scrollWidth": 1440
+      },
+      {
+        "state": "return-to-campsites",
+        "viewport": 1440,
+        "scrollWidth": 1440
+      }
+    ],
+    "painted": {
+      "sheet": "rgb(255, 255, 255)",
+      "ink": "rgb(38, 35, 28)"
+    },
+    "errors": [],
+    "map": "Real MapLibre with OpenFreeMap liberty sources and synthetic park data"
+  },
+  {
+    "width": 1440,
+    "scheme": "dark",
+    "screenshot": "campsites-dark-1440.png",
+    "checks": [
+      {
+        "state": "closed",
+        "viewport": 1440,
+        "scrollWidth": 1440
+      },
+      {
+        "state": "panels-open",
+        "viewport": 1440,
+        "scrollWidth": 1440
+      },
+      {
+        "state": "selection-and-legend",
+        "viewport": 1440,
+        "scrollWidth": 1440
+      },
+      {
+        "state": "return-to-campsites",
+        "viewport": 1440,
+        "scrollWidth": 1440
+      }
+    ],
+    "painted": {
+      "sheet": "rgb(24, 26, 32)",
+      "ink": "rgb(232, 229, 220)"
+    },
+    "errors": [],
+    "map": "Real MapLibre with OpenFreeMap liberty sources and synthetic park data"
+  }
+]
