@@ -1994,9 +1994,9 @@ monolith values change (`swarm.codexExhaustedGrantExclusion: true`). Until that 
 vetoes KG admission, preserving the old conservative contract. Opposite version
 skew could let an old sidecar select an account the new gate excludes.
 
-**Account preference** (implemented, activation held): `grantPolicy: prefer-first`
+**Account preference** (enabled on the hub for factory and interactive guests): `grantPolicy: prefer-first`
 on a two-member Codex catalog pool chooses its first member whenever fresh usage
-proves every reported window usable. The intended order is `[codex-b,
+proves every reported window usable. The hub order is `[codex-b,
 codex-cluster]`. A fresh exhaustion report or the existing 60-second token-failure
 cooldown permits fallback to A. Stale, missing or invalid B telemetry pauses
 selection until another usage observation; it does not prove B exhausted.
@@ -2020,9 +2020,10 @@ previously selected account. Provider and model routing are separate.
 **Why.** The shared sidecar receives only a destination preamble, and its broker
 SPIFFE identity identifies noded rather than a factory session. Enabling the
 policy in the current deployment would affect every Codex guest on that brick,
-including interactive guests. The deployment leaves the opt-in unset until
-that shared scope is accepted or trusted workload metadata is separately
-implemented. Guest-supplied headers are not an account authorization boundary.
+including interactive guests. Joe accepted that shared scope on 2026-10-19, and the hub enables B-first
+for both factory and interactive guests after compatible sidecars and admission
+settings are verified. Factory-specific selection would require trusted workload
+metadata. Guest-supplied headers are not an account authorization boundary.
 No credentials, access rules or identity plumbing change here.
 
 **Why.** Quota responses include advisory pacing against the longest reported
