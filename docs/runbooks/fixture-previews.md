@@ -1,5 +1,42 @@
 # Fixture previews
 
+## Compare before and after
+
+The public entry page compares screenshots on one page. Native Before/After
+radio controls preserve the screenshot frame's scroll position. Fixture, view,
+phone/desktop width and light/dark selectors choose the same capture state on
+both sides. Full baseline and head SHAs stay visible. Links open each revision's
+interactive fixture or map gallery separately.
+
+The build checks out the exact PR head and computes `git merge-base` against
+the event's base SHA. It captures that real ancestor in a separate disposable
+worktree with its own frozen dependency install. Neither revision receives a
+publication credential. A pair requires matching synthetic inputs, fixture
+harness files, capture code, Playwright and Chromium versions. Identical PNGs
+are labeled identical. Changed harnesses or fixture data are labeled
+unavailable for comparison; the baseline is never replaced with a different
+revision. A missing baseline harness is also shown as unavailable. In
+particular, a new Trips or Stars harness cannot supply historical screenshots
+that were never captured. Their owner must establish a comparable baseline
+before visual before/after acceptance can be claimed.
+
+The comparison uses local PNGs under the existing CSP. It loads no production
+API, external tile, worker or remote image. Browser checks decode every
+referenced PNG, operate the selectors and keyboard radio controls, verify
+preserved scroll offsets at phone/desktop widths in both browser schemes, and
+check that an unavailable side displays no substitute image. Missing captures
+from an available harness fail the build. Head and baseline evidence remain
+separate under `head/` and `before/` in the exact-head evidence artifact.
+
+Run the complete comparison from a clean committed checkout with the pinned
+dependencies and browser installed:
+
+```sh
+python3 bazel/tools/previews/compare.py --expected-sha "$(git rev-parse HEAD)" \
+  --base-sha "$(git rev-parse origin/main)" \
+  --output /tmp/fixture-comparison --evidence /tmp/fixture-comparison-evidence
+```
+
 ## Browse synthetic screens
 
 `bazel/tools/previews/suite.py` builds one navigable artifact from the registered

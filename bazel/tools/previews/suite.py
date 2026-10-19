@@ -190,7 +190,11 @@ def compose(directory, built, evidence, sha):
         )
         + "\n"
     )
-    # Use the publisher's unchanged archive/path/CSP/size validation locally.
+    validate_artifact(directory)
+
+
+def validate_artifact(directory):
+    """Use the publisher's unchanged archive/path/CSP/size validation locally."""
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(directory.rglob("*")):
