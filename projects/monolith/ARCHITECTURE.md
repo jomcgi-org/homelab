@@ -1541,6 +1541,9 @@ files at 128,000 bytes, and per-claim transfer at 512,000 bytes. The existing
 and retained cache each have a 512,000-byte bound. Single prompts are capped at
 96,000 bytes; batch prompts retain their 256,000-byte bound. Fetch deadlines,
 request limits and the 30-minute evidence age still apply.
+Tree sizes preflight aggregate base64 transport, including escaped line breaks,
+before any blob is fetched. Fixed overflow is unsupported with a resolved file
+identity and leaves the shared batch reader available to later members.
 
 Files that do not fit the evidence bound can supply positive literal witnesses.
 Every nonempty title/body line must match the closed grammar
@@ -1559,9 +1562,11 @@ outcome ID, cited-file blob identities and coverage algorithm version. Unchanged
 blocks are excluded in SQL before fact selection. Reconsideration reserves at
 most two metadata probes per fifteen minutes under the shared admission lock,
 with a six-hour per-block cooldown persisted before I/O. A failed probe retains
-the block. Changed cited blobs, claim revision/content or algorithm version
-permit another selection. Neither main's SHA nor the directory tree hash is a
-retry identity. Probes allocate no fact-review receipt, append no review outcome
+the block. Only fully resolved old identities can be released by changed cited
+blobs. Placeholder identities stay blocked until the claim revision/content or
+algorithm version changes. A fresh probe resolving a placeholder is insufficient.
+Neither main's SHA nor the directory tree hash is a retry identity.
+Probes allocate no fact-review receipt, append no review outcome
 and consume no fact-selection allowance. Prepared and unknown-outcome receipts
 retain their existing fences. Network/provider failures keep ordinary backoff.
 

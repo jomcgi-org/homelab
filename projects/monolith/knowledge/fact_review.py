@@ -320,6 +320,8 @@ def _digest(claim: dict) -> str:
 
 
 def _prompt(run: FactReviewRun, progress_signal: bool = False) -> str:
+    from knowledge import review_coverage as coverage
+
     if run.status == "complete" or not run.note_id:
         if progress_signal and run.note_id:
             return NO_MODEL
@@ -345,11 +347,15 @@ def _prompt(run: FactReviewRun, progress_signal: bool = False) -> str:
         "configuration or execution. No source coverage means unsupported. If a source "
         "contradicts the claim, return changed with the exact conflicting clause. If source "
         "coverage is insufficient, return unsupported. Do not rewrite or simplify the claim.\n"
-        "A literal-witness source explicitly omits the rest of its file. It establishes only "
-        "the exact positive literal-presence clause shown, never behavior or absence. "
-        "For such sources, quote EVERY complete witness, including different literals in "
-        "the same file. Missing coverage is unsupported, never changed.\n"
-        "Cite exact, nonempty quotations from supplied sources by id. For holds, cite at least "
+        + (
+            "A literal-witness source explicitly omits the rest of its file. It establishes only "
+            "the exact positive literal-presence clause shown, never behavior or absence. "
+            "For such sources, quote EVERY complete witness, including different literals in "
+            "the same file. Missing coverage is unsupported, never changed.\n"
+            if coverage.enabled()
+            else ""
+        )
+        + "Cite exact, nonempty quotations from supplied sources by id. For holds, cite at least "
         "one source for every source subject supplied, and explain coverage of every claim. "
         "Return exactly one JSON fence with no other text: "
         '{"claim_hash":"copied hash","verdict":"holds|changed|unsupported",'
@@ -493,6 +499,8 @@ class Verdict(BaseModel):
 
 
 def apply(session: Session, invocation_key: str, result_text: str, *, now=None) -> dict:
+    from knowledge import review_coverage as coverage
+
     if not enabled():
         return {"summary": "Source review disabled"}
     now = utc(now or datetime.now(UTC))
@@ -508,7 +516,10 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
         return {**run.result, "replayed": True}
     try:
         blocks = re.findall(r"```json\s*\n(.*?)\n```", result_text, re.DOTALL)
-        if len(result_text.encode("utf-8")) > 32_000 or len(blocks) != 1:
+        result_size = (
+            len(result_text.encode("utf-8")) if coverage.enabled() else len(result_text)
+        )
+        if result_size > 32_000 or len(blocks) != 1:
             raise ValueError("one bounded JSON block required")
         verdict = Verdict.model_validate_json(blocks[0])
         if verdict.claim_hash != _digest(run.claim):

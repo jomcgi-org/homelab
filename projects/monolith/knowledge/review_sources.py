@@ -65,7 +65,7 @@ def collect_sources(
                 nonlocal wire_bytes
                 wire_bytes += size
                 if wire_bytes > coverage.MAX_TRANSFER_BYTES:
-                    raise EvidenceUnavailable("source transport budget exhausted")
+                    raise EvidenceUnsupported("source transport byte bound exceeded")
 
             def read(path):
                 if staged:
@@ -272,8 +272,8 @@ def collect_sources(
                     },
                 ) from exc
             try:
-                contents = {}
-                for path, item in identity["files"].items():
+                projected = transferred
+                for item in identity["files"].values():
                     if item["type"] != "blob" or item["mode"] not in {
                         "100644",
                         "100755",
@@ -281,6 +281,25 @@ def collect_sources(
                         raise EvidenceUnsupported("unsupported source file type")
                     if item["size"] > coverage.MAX_FILE_BYTES:
                         raise EvidenceUnsupported("source decode byte bound exceeded")
+                    encoded = ((item["size"] + 2) // 3) * 4
+                    # GitHub wraps base64 at 60 characters. Each LF occupies
+                    # two JSON bytes. Reject fixed aggregate overflow before
+                    # any blob read can exhaust a shared batch's wire budget.
+                    projected += encoded + 2 * ((encoded + 59) // 60)
+                    projected += coverage.serialized_size(
+                        {
+                            "sha": item["sha"],
+                            "size": item["size"],
+                            "encoding": "base64",
+                            "content": "",
+                        }
+                    )
+                if projected > coverage.MAX_TRANSFER_BYTES:
+                    raise EvidenceUnsupported(
+                        "source aggregate transport byte bound exceeded"
+                    )
+                contents = {}
+                for path, item in identity["files"].items():
                     body = get(f"/repos/{repo}/git/blobs/{item['sha']}")
                     contents[path] = coverage.decode_blob(body, item)
                 complete = [

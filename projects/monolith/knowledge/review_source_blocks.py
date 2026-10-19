@@ -120,6 +120,9 @@ def probe(session, now, *, fetch=None):
             if (
                 block.outcome_id == outcome_id
                 and block.identity == old
+                # A fresh probe's smaller request set can resolve a placeholder
+                # without any source change. Only compare resolved identities.
+                and all(item is not None for item in old["files"].values())
                 and fresh != old
             ):
                 block.released = True
