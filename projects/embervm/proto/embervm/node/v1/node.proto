@@ -359,10 +359,11 @@ service NodeService {
   // verb; set membership is the control plane's fact.
   //
   // Guest control agent contract (Task 3 implements it; stated here as the spec):
-  // a member guest runs a control agent listening on a dedicated vsock port
-  // (GROUP_GUEST_AGENT_VSOCK_PORT below) that speaks the D-R2.6.1 length-prefixed
-  // JSON frame convention (a 4-byte big-endian length prefix, then that many bytes
-  // of JSON). It answers exactly one request:
+  // a member guest runs a control agent listening on dedicated vsock port 1024,
+  // mirrored by guestagent.GroupGuestAgentVsockPort and
+  // vsockproto.GroupClockAgentPort. It speaks the D-R2.6.1 length-prefixed JSON
+  // frame convention (a 4-byte big-endian length prefix, then that many bytes of
+  // JSON). It answers exactly one request:
   //   request  {"cmd":"sync_clock","epoch_ns":<int>}   host wall-clock at resume
   //   response {"clock_realtime_ns":<int>}             guest CLOCK_REALTIME after
   //                                                     it has set its clock
@@ -2125,11 +2126,10 @@ message NodeStatus {
   // planned at all. Unset (false) on a daemon with no store configured.
   bool store_reachable = 23;
 
-  // -- Distribution facts (R7, additive) --------------------------------------
-  // These two fields drive vendor-keyed warmth and the CP-sequenced rollout
-  // controller. Both are optional and wire-compatible with a daemon that never
-  // sets them (empty = the pre-R7 behavior, treated as node-4's vendor by the
-  // one-time reconcile-side alias, standing decision 11).
+  // -- CPU vendor (R7, additive) ----------------------------------------------
+  // cpu_vendor is optional and wire-compatible with a daemon that never sets it.
+  // An empty value preserves the pre-R7 behavior (treated as node-4's vendor by
+  // the one-time reconcile-side alias, standing decision 11).
 
   // cpu_vendor is the CPUID vendor this node reports ("amd", "intel"), detected
   // from /proc/cpuinfo vendor_id. The control plane keys warmth artifacts and
