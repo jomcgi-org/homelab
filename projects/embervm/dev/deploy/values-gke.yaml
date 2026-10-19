@@ -16,7 +16,7 @@
 #
 # SIZE. One unpinned 2gi brick plus at most one demand-opened 4gi canary on the
 # shared ember-bricks Spot pool, three workloads (the ones the conformance
-# suite drives: sandbox-python for S1,
+# suite drives: sandbox-python for S1 and S8,
 # pi-runtime for S2 and S3, sandbox-elixir for S5), SQLite op-log, no object
 # store. The recovery (values-recovery-gke.yaml) and store-validation
 # (values-store-validation-gke.yaml) presets target the same embervm-dev
@@ -83,6 +83,48 @@ bricks:
       4gi: 0
       8gi: 0
       16gi: 0
+  # Memory requests EQUAL limits, as production's hub overlay will when it arms
+  # reserved (#6965; it still requests about 75% today): reserved
+  # admission (values.yaml) fills a brick to its budget, so requests below the
+  # limit would let kube-scheduler pack more brick memory onto a shared
+  # ember-bricks node than it has. CPU requests stay at the chart's. Helm
+  # replaces lists, so this restates the whole chart ladder.
+  classes:
+    - name: 1gi
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          memory: 1Gi
+    - name: 2gi
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          memory: 2Gi
+    - name: 4gi
+      resources:
+        requests:
+          cpu: "1"
+          memory: 4Gi
+        limits:
+          memory: 4Gi
+    - name: 8gi
+      resources:
+        requests:
+          cpu: "1"
+          memory: 8Gi
+        limits:
+          memory: 8Gi
+    - name: 16gi
+      resources:
+        requests:
+          cpu: "2"
+          memory: 16Gi
+        limits:
+          memory: 16Gi
 
 noded:
   # Node-local state only. The empty endpoint is the chart's store-disabled
@@ -171,3 +213,44 @@ warmthS3Gc:
 # Instance-scoped session drain, armed ahead of production so the conformance
 # gate runs it first (see deploy/values-gke.yaml).
 drainInstanceScopedSessions: true
+# The same instance scoping for serving, stateful and group guests, armed in
+# dev first for the same reason. Rollback: false.
+drainInstanceScopedWorkloads: true
+
+# The guest egress lane, opened for one thing: conformance S8 proves a jailed
+# Firecracker can connect to its egress socket inside the jail (a vsock UDS
+# chowned to the jail uid) and that the sidecar answers. The scope is the S8
+# task workload alone, so pi-runtime turns keep failing as model-unreachable,
+# which is what S2 expects. Both zones deny and no 1Password item renders, so
+# the sidecar holds no credential, needs no token broker, and answers nothing
+# but its reserved CA host. The CA is a self-signed Issuer and Certificate in
+# embervm-dev from the hub's cert-manager; S8 asks for its public certificate
+# because only a sidecar with a CA writes anything back. Rollback: delete this
+# block and conformance.egressProbe.
+egress:
+  enabled: true
+  workloads:
+    - sandbox-python
+  external: deny
+  internal:
+    default: deny
+    allowlist: []
+  # The sidecar loads its CA only alongside a non-empty catalog, so dev carries
+  # this one dead entry. Its Secret does not exist (the key is optional), so the
+  # sidecar logs it as unresolved and denies its host, a reserved .invalid name.
+  secrets:
+    - header: Authorization
+      valuePrefix: "Bearer "
+      env: EMBER_EGRESS_PROBE_UNUSED
+      egressTo:
+        - egress-probe.invalid
+      secretRef:
+        name: embervm-dev-egress-probe-unused
+        key: unused
+  ca:
+    enabled: true
+
+conformance:
+  # S8: one sandbox-python task dials vsock 1025 and must get the egress CA
+  # back. Needs the egress block above.
+  egressProbe: true
