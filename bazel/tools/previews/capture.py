@@ -305,7 +305,8 @@ def comparison(root, output, model):
                         row
                         for row in model["rows"]
                         if row["before"]
-                        and row["width"] == 390
+                        and row["width"] == width
+                        and row["scheme"] == scheme
                         and row["case"] in {"full", "overview-full"}
                     ),
                     None,
