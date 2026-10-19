@@ -61,6 +61,7 @@
       .viewport {
         height: 65vh;
         overflow: auto;
+        scrollbar-gutter: stable;
         border: 1px solid currentColor;
       }
       img {
@@ -130,8 +131,10 @@
       aria-label="Screenshot comparison"
       tabindex="0"
     >
-      <img id="capture" hidden alt="" />
-      <p class="unavailable" id="unavailable" hidden></p>
+      <div id="canvas">
+        <img id="capture" hidden alt="" />
+        <p class="unavailable" id="unavailable" hidden></p>
+      </div>
     </div>
     <div class="links">
       <a id="after-link">Open after fixture</a
@@ -190,6 +193,11 @@
           window.scrollY,
         ];
         const source = row?.[version];
+        // Equal scroll extents keep the same position even when one capture
+        // ends earlier. Switching back never inherits a clamped offset.
+        byId("canvas").style.minHeight = row?.before
+          ? `${Math.ceil(Math.max(row.before_dimensions.height, row.after_dimensions.height) * Math.min(1, frame.clientWidth / row.width))}px`
+          : "";
         const reason = !row
           ? "This viewport and scheme were not captured."
           : row.unavailable;

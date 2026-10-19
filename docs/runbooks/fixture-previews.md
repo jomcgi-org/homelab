@@ -7,6 +7,10 @@ radio controls preserve the screenshot frame's scroll position. Fixture, view,
 phone/desktop width and light/dark selectors choose the same capture state on
 both sides. Full baseline and head SHAs stay visible. Links open each revision's
 interactive fixture or map gallery separately.
+Both sides reserve the taller capture's scroll extent, so switching through a
+shorter image cannot lose the original offset. A separate browser regression
+uses clearly labeled UI-only images of unequal heights; those images never
+enter the published artifact.
 
 The build checks out the exact PR head and computes `git merge-base` against
 the event's base SHA. It captures that real ancestor in a separate disposable
@@ -69,6 +73,7 @@ all 16 base page captures plus 8 viewer/map captures; Stars requires all 8
 live/historical captures. Shared instrumentation records browser versions and
 traces, supplies an invented blank Stars basemap, and denies unknown remote
 requests. Trips keeps its owner's synthetic style and terrain responses.
+The capture banner explicitly identifies the offline profile.
 These checks exercise real WebGL controls with invented data and no geographic
 tile acceptance. The public map demos are navigable PNG galleries, containing
 no map JavaScript or workers. `connect-src 'none'` and `worker-src 'none'` stay

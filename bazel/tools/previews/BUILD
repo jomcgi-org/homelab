@@ -29,7 +29,6 @@ py_test(
         "compare_test.py",
         "publish.py",
         "suite.py",
-        "suite_test.py",
     ],
     data = ["comparison.html"],
     imports = ["."],

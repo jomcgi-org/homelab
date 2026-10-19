@@ -42,6 +42,24 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def assert_revision(root, sha):
+    actual = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+    ).strip()
+    require(
+        publish.SHA.fullmatch(sha) and actual == sha,
+        "checkout does not match expected SHA",
+    )
+    require(
+        not subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=root,
+            text=True,
+        ).strip(),
+        "commit source changes before an exact-SHA build",
+    )
+
+
 def digest_tree(root):
     require(root.is_dir(), f"missing artifact directory: {root}")
     result = {}
@@ -245,6 +263,7 @@ def run(output, evidence, sha, requested=None, source=TOOL_ROOT):
     runner_sha = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=TOOL_ROOT, text=True
     ).strip()
+    assert_revision(TOOL_ROOT, runner_sha)
     receipt = {
         "commit": sha,
         "runner_commit": runner_sha,
@@ -337,6 +356,8 @@ def run(output, evidence, sha, requested=None, source=TOOL_ROOT):
                 before == digest_tree(output),
                 "aggregate browser check changed publish bytes",
             )
+            assert_revision(ROOT, sha)
+            assert_revision(TOOL_ROOT, runner_sha)
             receipt["tested_files"] = before
             receipt["status"] = "passed"
     except Exception as error:

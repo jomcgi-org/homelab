@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import struct
 import tempfile
 
 import publish
@@ -19,10 +20,36 @@ import suite
 
 ROOT = Path(__file__).resolve().parents[3]
 EXTRA_FIXTURES = {
-    "trips": ["test/trips-fixtures.js"],
-    "stars": ["test/stars/fixtures.js"],
+    "trips": [
+        "test/trips-fixtures.js",
+        "test/TripsRoute.svelte",
+        "test/profile-page.svelte.js",
+        "test/profile-stores.js",
+        "test/app-environment-stub.js",
+        "preview/fonts.css",
+        "preview/fonts/SchibstedGrotesk.ttf",
+    ],
+    "stars": [
+        "test/stars/fixtures.js",
+        "test/stars/Route.svelte",
+        "test/profile-page.svelte.js",
+        "test/profile-stores.js",
+        "preview/fonts.css",
+        "preview/fonts/SchibstedGrotesk.ttf",
+    ],
+    "review": ["preview/fonts.css", "preview/fonts/SchibstedGrotesk.ttf"],
     "factory": ["factory-preview/.generated/pages.json"],
 }
+
+
+def png_dimensions(path, expected_width):
+    data = path.read_bytes()
+    width, height = struct.unpack("!II", data[16:24])
+    suite.require(
+        width == expected_width and height > 0,
+        "capture dimensions do not match declared viewport",
+    )
+    return {"width": width, "height": height}
 
 
 def fingerprint(source, name):
@@ -145,6 +172,10 @@ def assemble(
                 "before": None,
                 "unavailable": reason,
                 "identical": False,
+                "after_dimensions": png_dimensions(
+                    evidence / "head" / name / filename, width
+                ),
+                "before_dimensions": None,
                 "interactive_after": f"after/suites/{name}/",
                 "interactive_before": f"before/suites/{name}/"
                 if before_record
@@ -155,6 +186,9 @@ def assemble(
             shutil.copyfile(evidence / "head" / name / filename, output / row["after"])
             if reason is None:
                 row["before"] = f"captures/{name}/before-{filename}"
+                row["before_dimensions"] = png_dimensions(
+                    evidence / "before" / name / filename, width
+                )
                 shutil.copyfile(
                     evidence / "before" / name / filename, output / row["before"]
                 )
@@ -259,6 +293,7 @@ def run(output, evidence, head, base_sha):
                     }
                     for name in names
                 }
+                suite.assert_revision(ROOT, head)
                 model = assemble(
                     output,
                     root / "head-artifact",
@@ -277,6 +312,7 @@ def run(output, evidence, head, base_sha):
                     before == suite.digest_tree(output),
                     "comparison checks changed public bytes",
                 )
+                suite.assert_revision(ROOT, head)
                 receipt.update(
                     status="passed",
                     tested_files=before,

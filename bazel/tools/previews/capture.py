@@ -57,6 +57,10 @@ def instrument(output, record, maps=False):
         ordinal = len(contexts)
         contexts.append(context)
         if maps:
+            context.add_init_script("""addEventListener('DOMContentLoaded',()=>{
+              for(const note of document.querySelectorAll('.fixture-note'))
+                note.textContent='Synthetic fixture: invented records and images, blank offline basemap. Real WebGL controls; no geographic or live acceptance.';
+            })""")
             # The map owners do not start traces. Keep every context's trace,
             # including incomplete cases, independently of their screenshots.
             context.tracing.start(screenshots=True, snapshots=True, sources=False)
@@ -395,3 +399,98 @@ def comparison(root, output, model):
         browser.close()
     (output / "checks.json").write_text(json.dumps(results, indent=2) + "\n")
     assert len(results) == 4, "comparison browser matrix incomplete"
+    comparison_height_regression(output)
+
+
+def comparison_height_regression(output):
+    """Exercise unequal-height version switches with labeled UI test inputs."""
+    import tempfile
+    import struct
+    import zlib
+    from pathlib import Path
+
+    def png(width, height):
+        def chunk(kind, data):
+            return (
+                struct.pack("!I", len(data))
+                + kind
+                + data
+                + struct.pack("!I", zlib.crc32(kind + data))
+            )
+
+        pixels = (b"\0" + b"\xff" * (width * 3)) * height
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack("!IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(pixels))
+            + chunk(b"IEND", b"")
+        )
+
+    with tempfile.TemporaryDirectory(prefix="comparison-ui-regression-") as temporary:
+        root = Path(temporary)
+        (root / "after.png").write_bytes(png(390, 4000))
+        (root / "before.png").write_bytes(png(390, 1000))
+        model = {
+            "head": "Synthetic UI regression only",
+            "baseline": "Synthetic UI regression only",
+            "suites": {"test": "Unequal-height UI test (not PR evidence)"},
+            "rows": [
+                {
+                    "suite": "test",
+                    "case": "scroll",
+                    "width": 390,
+                    "scheme": "light",
+                    "after": "after.png",
+                    "before": "before.png",
+                    "after_dimensions": {"width": 390, "height": 4000},
+                    "before_dimensions": {"width": 390, "height": 1000},
+                    "identical": False,
+                    "interactive_after": None,
+                    "interactive_before": None,
+                }
+            ],
+        }
+        (root / "index.html").write_text(
+            Path(__file__)
+            .with_name("comparison.html")
+            .read_text()
+            .replace("FIXTURE_COMPARISON_DATA", json.dumps(model))
+        )
+        with serve(root) as base, sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            with checked_context(
+                browser, output, "unequal-height-ui-regression", 390, "light"
+            ) as page:
+                page.goto(base, wait_until="networkidle")
+                page.wait_for_function("document.body.dataset.ready")
+                page.get_by_role("radio", name="After", exact=True).focus()
+                top = page.locator("#viewport").evaluate(
+                    "e=>{e.scrollTop=1500;return e.scrollTop}"
+                )
+                assert top == 1500
+                for key, version in (("ArrowLeft", "Before"), ("ArrowRight", "After")):
+                    previous = page.locator("body").get_attribute("data-ready")
+                    page.keyboard.press(key)
+                    page.wait_for_function(
+                        "old=>document.body.dataset.ready!==old", arg=previous
+                    )
+                    assert page.get_by_role(
+                        "radio", name=version, exact=True
+                    ).is_checked()
+                    assert (
+                        page.locator("#viewport").evaluate("e=>e.scrollTop") == top
+                    ), "unequal image heights lost viewing position"
+                (output / "unequal-height-ui-regression.json").write_text(
+                    json.dumps(
+                        {
+                            "scope": "UI regression fixture only; not PR before/after evidence",
+                            "after_height": 4000,
+                            "before_height": 1000,
+                            "after_before_after_scroll_top": top,
+                            "status": "passed",
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+            browser.close()

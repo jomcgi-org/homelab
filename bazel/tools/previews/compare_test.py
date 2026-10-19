@@ -4,13 +4,32 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import struct
+import zlib
 
 import compare
-from suite_test import PNG
 import suite
 
 HEAD = "a" * 40
 BASE = "b" * 40
+
+
+def png(width, height=1000):
+    def chunk(kind, data):
+        return (
+            struct.pack("!I", len(data))
+            + kind
+            + data
+            + struct.pack("!I", zlib.crc32(kind + data))
+        )
+
+    pixels = (b"\0" + b"\xff" * (width * 3)) * height
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack("!IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(pixels))
+        + chunk(b"IEND", b"")
+    )
 
 
 class CompareTests(unittest.TestCase):
@@ -26,7 +45,9 @@ class CompareTests(unittest.TestCase):
             evidence = root / "evidence" / side / name
             evidence.mkdir(parents=True)
             for filename in suite.expected_captures(name):
-                (evidence / filename).write_bytes(PNG)
+                (evidence / filename).write_bytes(
+                    png(compare.case_details(name, filename)[1])
+                )
             record = {
                 "suite": name,
                 "playwright": "1.63.0",
@@ -159,6 +180,37 @@ class CompareTests(unittest.TestCase):
                 self.assertTrue(case)
                 self.assertIn(width, (360, 390, 1440))
                 self.assertIn(scheme, ("light", "dark"))
+
+    def test_shared_fixture_wrapper_changes_invalidate_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frontend = root / "projects/monolith/frontend"
+            harness = frontend / "trips-preview"
+            harness.mkdir(parents=True)
+            (harness / "main.js").write_text('import "../test/TripsRoute.svelte";')
+            for relative in compare.EXTRA_FIXTURES["trips"]:
+                path = frontend / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("synthetic test input")
+            before = compare.fingerprint(root, "trips")
+            with (frontend / "test/TripsRoute.svelte").open("a") as handle:
+                handle.write("<h2>Changed fixture composition</h2>")
+            self.assertNotEqual(before, compare.fingerprint(root, "trips"))
+            before = compare.fingerprint(root, "trips")
+            production = frontend / "src/routes/public/app/trips/+page.svelte"
+            production.parent.mkdir(parents=True)
+            production.write_text("<h1>Changed production UI</h1>")
+            self.assertEqual(before, compare.fingerprint(root, "trips"))
+
+    def test_png_width_must_match_capture_viewport(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.png"
+            path.write_bytes(png(390, 4000))
+            self.assertEqual(
+                compare.png_dimensions(path, 390), {"width": 390, "height": 4000}
+            )
+            with self.assertRaisesRegex(ValueError, "dimensions"):
+                compare.png_dimensions(path, 1440)
 
 
 if __name__ == "__main__":
