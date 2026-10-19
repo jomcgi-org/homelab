@@ -744,6 +744,104 @@ func TestSecretFor(t *testing.T) {
 	}
 }
 
+func TestCAMinterSourceRecoversAfterLatePublication(t *testing.T) {
+	certFile, keyFile := writeTestCA(t)
+	certPEM, err := os.ReadFile(certFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherKeyFile := writeTestCA(t)
+	otherKeyPEM, err := os.ReadFile(otherKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, initial := range []struct {
+		name string
+		cert []byte
+		key  []byte
+	}{
+		{name: "absent secret"},
+		{name: "missing key", cert: certPEM},
+		{name: "malformed certificate", cert: []byte("invalid PEM"), key: keyPEM},
+		{name: "mismatched keypair", cert: certPEM, key: otherKeyPEM},
+	} {
+		t.Run(initial.name, func(t *testing.T) {
+			dir := t.TempDir()
+			source := &caMinterSource{certFile: dir + "/tls.crt", keyFile: dir + "/tls.key"}
+			write := func(path string, data []byte) {
+				t.Helper()
+				if err := os.WriteFile(path, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if initial.cert != nil {
+				write(source.certFile, initial.cert)
+			}
+			if initial.key != nil {
+				write(source.keyFile, initial.key)
+			}
+			now := time.Now()
+			if minter, err := source.get(now); minter != nil || err == nil {
+				t.Fatalf("invalid initial material = %v, %v; want no minter and an error", minter, err)
+			}
+			// Model kubelet publishing the complete Secret after process startup.
+			write(source.certFile, certPEM)
+			write(source.keyFile, keyPEM)
+			if minter, err := source.get(now.Add(caLoadRetryInterval - time.Nanosecond)); minter != nil || err != nil {
+				t.Fatalf("retry before cooldown = %v, %v; want no file read", minter, err)
+			}
+			minter, err := source.get(now.Add(caLoadRetryInterval))
+			if minter == nil || err != nil {
+				t.Fatalf("late publication did not recover: %v", err)
+			}
+			if !bytes.Equal(minter.caCertPEM(), certPEM) {
+				t.Fatal("recovered minter does not use the published certificate")
+			}
+			// Recovery is not rotation: preserve the guest's existing trust anchor.
+			write(source.certFile, []byte("subsequent invalid replacement"))
+			if cached, err := source.get(now.Add(time.Hour)); cached != minter || err != nil {
+				t.Fatalf("successful CA changed after recovery: %v", err)
+			}
+		})
+	}
+}
+
+func TestCAMinterSourceConcurrentRecovery(t *testing.T) {
+	certFile, keyFile := writeTestCA(t)
+	source := &caMinterSource{certFile: certFile, keyFile: keyFile}
+	const callers = 16
+	results := make(chan *caMinter, callers)
+	var workers sync.WaitGroup
+	for range callers {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			minter, err := source.get(time.Now())
+			if err != nil {
+				t.Errorf("concurrent CA load: %v", err)
+			}
+			results <- minter
+		}()
+	}
+	workers.Wait()
+	close(results)
+	var first *caMinter
+	for minter := range results {
+		if minter == nil {
+			t.Fatal("concurrent request missed the successfully loaded CA")
+		}
+		if first == nil {
+			first = minter
+		} else if minter != first {
+			t.Fatal("concurrent requests created different minters")
+		}
+	}
+}
+
 func TestMinterMintsSignedLeaf(t *testing.T) {
 	certFile, keyFile := writeTestCA(t)
 	m, err := newCAMinter(certFile, keyFile)

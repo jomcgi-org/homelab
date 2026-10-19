@@ -1927,6 +1927,20 @@ guest-controlled placeholder can be spliced into a URL and reflect the
 credential into a request line. RAM scrubbing before snapshot is rejected
 as a mechanism to rely on; revocation at the validator is the control.
 
+The egress CA mount remains optional so a brick can start while cert-manager
+issues its release-local certificate in the same ArgoCD sync. If the initial
+load fails, CA fetches and permitted credentialed TLS requests retry the fixed
+configured files at most once every five seconds. A successful load keeps that
+keypair for the process lifetime; this does not introduce CA rotation. Missing
+or invalid material yields no CA response, and destination denial still happens
+before credential resolution or a TLS retry.
+
+**Why.** A one-shot startup load left S8 permanently unable to fetch its CA when
+certificate issuance finished after sidecar startup (#7187). Making the mount
+required had already deadlocked brick rollout. Bounded initial-load recovery
+lets the optional Secret arrive normally without a restart or a new egress
+permission, while retaining the trust anchor already fetched by running guests.
+
 Muse 1.0.3-R2198.1 was verified on 2026-09-10 to trust only its bundled
 roots (1.4.1-R4503.1 keeps the same settings surface; re-confirm live).
 A 2026-09-30 capture run of 1.4.1-R4503.1 under the shim's settings showed
