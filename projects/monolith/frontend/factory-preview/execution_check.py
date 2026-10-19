@@ -75,27 +75,32 @@ def assert_geometry(page, view):
 def assert_color_roles(page):
     measured = page.evaluate("""() => {
       const main = document.querySelector('main');
-      const probe = document.createElement('span');
-      main.append(probe);
-      const canvas = document.createElement('canvas');
-      canvas.width = canvas.height = 1;
-      const ctx = canvas.getContext('2d');
+      const resolved = {};
       const rgba = role => {
-        probe.style.backgroundColor = `var(${role})`;
-        ctx.clearRect(0, 0, 1, 1);
-        ctx.fillStyle = getComputedStyle(probe).backgroundColor;
-        ctx.fillRect(0, 0, 1, 1);
-        return [...ctx.getImageData(0, 0, 1, 1).data];
+        // Resolve each longhand independently. Keep the computed CSS in the
+        // evidence instead of relying on a reused canvas pixel as a parser.
+        const probe = document.createElement('span');
+        probe.style.color = `var(${role})`;
+        main.append(probe);
+        const value = getComputedStyle(probe).color;
+        probe.remove();
+        resolved[role] = value;
+        const channels = value.match(/[\\d.]+/g)?.map(Number);
+        if (!channels || channels.length < 3)
+          throw new Error(`Unsupported computed color: ${value}`);
+        const scale = value.startsWith('color(srgb ') ? 255 : 1;
+        if (scale === 1 && !/^rgba?\\(/.test(value))
+          throw new Error(`Unsupported computed color: ${value}`);
+        return [...channels.slice(0, 3).map(c => c * scale), channels[3] ?? 1];
       };
       const luminance = rgb => rgb.slice(0, 3).map(c => c / 255)
         .map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
         .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
       const fg = luminance(rgba('--ok')), bg = luminance(rgba('--ok-soft'));
       const sheet = rgba('--sheet'), scrim = rgba('--scrim-bg');
-      const alpha = scrim[3] / 255;
+      const alpha = scrim[3];
       const blended = sheet.slice(0, 3).map((c, i) => scrim[i] * alpha + c * (1 - alpha));
-      probe.remove();
-      return {scheme: getComputedStyle(main).colorScheme, scrim,
+      return {scheme: getComputedStyle(main).colorScheme, scrim, resolved,
         successContrast: (Math.max(fg, bg) + .05) / (Math.min(fg, bg) + .05),
         sheetLuminance: luminance(sheet), dimmedLuminance: luminance(blended)};
     }""")
