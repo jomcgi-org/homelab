@@ -2029,6 +2029,7 @@ this table when the work ships or the issue closes without it.
 | Remove dormant scheduler registration while retaining rows and Argo run-now compatibility | section 4, batch execution | #7021 | repository removal; later table retirement and CronWorkflow-native listing need separate scope |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Every public, private and friends surface renders in the technical-drawing language; the brutalist, ember and grimoire stylesheets retire with their last consumer | section 8, visual language | #7016 | foundation, `/engineering`, `/docs` and the root error page shipped; home, cv, the apps, the private and friends tiers remain |
+| Sol-first planner implementation follows pool routing and role effort, with structured complex-work overrides | The factory conductor, implementation admission | #6992 | admission fix staged; merge and deployment held for operator confirmation |
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
 | Retire the household gateway and its exclusively owned schema, retaining shared data | section 5, Household gateway retired | #6915 | repository retirement staged; merge, rollout, migration and shared-job acceptance remain |
 | Platform invitations create Authentik-linked platform users; application grants and campaign membership remain separate, with reusable HTTP/MCP management commands | [Platform enrollment and access](auth/architecture.md) | #6858 | design recorded; API, enrollment binding, permissions and MCP implementation remain unbuilt; signup remains disabled |
@@ -2189,6 +2190,17 @@ Astra for more planning and difficult work (#6983). Restore that routing for
 new admissions while preserving Sol's routine implementation role, Opus's
 independent review role, task bounds and pinned receipts. Available quota is
 capacity for useful delivery, not permission to repeat a stalled funding loop.
+
+**Why.** Routine planner implementation follows the pinned implementation pool
+and role effort. For new non-judgment implementation admissions with a Sol-first
+pool, omitted models and explicit `sol` requests use quota-aware selection.
+Another allowed model or effort above the role floor requires a structured
+complex-work exception naming the risk and why the default is insufficient
+(#6992). UI migrations, refactors and renames alone do not justify it. Validation
+checks the declaration's structure and substantive length; its truth remains a
+review responsibility. Other roles and operator pool orders retain their routing.
+Recorded graph and run pins, running sessions, retries and engine-owned correction
+rounds retain their existing behavior.
 
 One logical Conductor per operator sits above every per-task Planner and drain
 lane. It runs in a replaceable fenced EmberVM session, on Astra since policy

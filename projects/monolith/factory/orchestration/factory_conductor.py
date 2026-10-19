@@ -55,6 +55,7 @@ from factory.orchestration.factory_controls import (
 from factory.orchestration.model_pool import (
     JUDGMENT_MODELS,
     effort_for,
+    effort_for_role,
     escalate,
     judgment_floor,
     pool_for,
@@ -178,6 +179,29 @@ REVIEW_SCHEMA = {
         "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     },
 }
+IMPLEMENTATION_EXCEPTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["category", "risk", "why_default_insufficient"],
+    "properties": {
+        "category": {
+            "enum": [
+                "architecture",
+                "concurrency",
+                "migration",
+                "security",
+                "cross_system",
+                "difficult_debugging",
+            ]
+        },
+        "risk": {"type": "string", "minLength": 40, "maxLength": 2000},
+        "why_default_insufficient": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 2000,
+        },
+    },
+}
 EDIT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -188,6 +212,7 @@ EDIT_SCHEMA = {
         "node_key": {"type": "string", "pattern": _KEY},
         "role": {"enum": ["investigate", "implement", "review", "integrate"]},
         "effort": {"enum": list(EFFORT_LEVELS)},
+        "implementation_exception": IMPLEMENTATION_EXCEPTION_SCHEMA,
         "model": {"type": "string", "pattern": r"^[a-z][a-z0-9_.-]{0,63}$"},
         "prompt": {"type": "string", "minLength": 1, "maxLength": 16000},
         "deps": {
@@ -238,6 +263,7 @@ DECISION_SCHEMA = {
         "node_key": {"type": "string", "pattern": _KEY},
         "role": {"enum": ["investigate", "implement", "review", "integrate"]},
         "effort": {"enum": list(EFFORT_LEVELS)},
+        "implementation_exception": IMPLEMENTATION_EXCEPTION_SCHEMA,
         "model": {"type": "string", "pattern": r"^[a-z][a-z0-9_.-]{0,63}$"},
         "prompt": {"type": "string", "minLength": 1, "maxLength": 16000},
         "deps": {
@@ -2018,14 +2044,23 @@ _PLANNER_CHARTER = (
     "Planning and result artifacts are transient output, not repository changes. "
     "The task section below states which graph actions this task may use and "
     "any task-specific model floor. "
-    "Use one capable implementation session, Astra when pinned policy permits, "
+    "Use one capable implementation session from the pinned implement pool, "
     "plus independent exact-head review. Keep coding, debugging and testing "
     "together. Initial investigation must name its uncertainty and the decision "
     "enabled. Never split phases or rename work to reset attempts. "
-    "Leave routine coding on the policy's preferred worker model and effort. "
-    "Set effort to xhigh before dispatch for non-trivial work: architecture, "
-    "concurrency, migrations, security, cross-system changes, or difficult "
-    "debugging. Explain the choice in the node reason. Node effort may raise "
+    "Leave routine coding on the policy's implement pool and effort: omit model "
+    "and effort. For non-judgment work with a Sol-first implement pool, naming "
+    "sol also follows quota-aware pool routing. Request another allowed model "
+    "or raise implementation effort only for justified complex work, with an "
+    "implementation_exception object: category (architecture, concurrency, "
+    "migration, security, cross_system, difficult_debugging), risk naming the "
+    "concrete failure to avoid, and why_default_insufficient explaining why "
+    "the policy model or effort cannot handle it. Both explanations need at "
+    "least 40 non-whitespace characters; a generic node reason is insufficient. "
+    "Migration means substantive schema, state or protocol risk. UI/design "
+    "migrations, routine refactors, file counts and renames alone are routine, "
+    "not architecture, migration or cross_system exceptions. "
+    "Quota fallback requires no exception. Node effort may raise "
     "the role's floor, never lower it; independent review keeps its own floor. "
     "Initially emit a complete plan with deps. Plans apply all edits under one "
     "expected_version or none; decision_feedback identifies any refused edit. "
@@ -3357,6 +3392,22 @@ def _policy_bounds(
     return bounds, cost_clamped
 
 
+def _sol_first_implementation(policy: dict, source: dict, task_class: str) -> bool:
+    """Admission only: existing graph nodes and attempts retain their pins."""
+    return (
+        source.get("role") == "implement"
+        and task_class not in JUDGMENT_CLASSES
+        and pool_for("implement", policy)[0] == "sol"
+    )
+
+
+def _automatic_implementation(policy: dict, source: dict, task_class: str) -> bool:
+    return (
+        _sol_first_implementation(policy, source, task_class)
+        and source.get("model", "sol") == "sol"
+    )
+
+
 def _prepare_add(
     task: dict, policy: dict, source: dict, *, snapshot: DecisionSnapshot | None = None
 ) -> dict:
@@ -3401,7 +3452,35 @@ def _prepare_add(
     # moves between planning a review and running it.
     reviewer_pool = pool_for("reviewer", policy)
     reviewer = reviewer_pool[0]
-    if "model" in source:
+    sol_first = _sol_first_implementation(policy, source, task_class)
+    effort = source.get("effort")
+    if effort is not None and effort not in EFFORT_LEVELS:
+        raise _EditRefused("invalid_effort", "invalid node effort")
+    raised_effort = (
+        sol_first
+        and effort is not None
+        and EFFORT_LEVELS.index(effort)
+        > EFFORT_LEVELS.index(effort_for_role("implement", policy))
+    )
+    exception = source.get("implementation_exception")
+    if sol_first and (source.get("model", "sol") != "sol" or raised_effort):
+        from factory.orchestration.turn_artifact import schema_errors
+
+        if schema_errors(exception, IMPLEMENTATION_EXCEPTION_SCHEMA) or any(
+            len("".join(exception[field].split())) < 40
+            for field in ("risk", "why_default_insufficient")
+        ):
+            raise _EditRefused(
+                "implementation_exception_required",
+                "Sol-first implementation model or effort overrides require "
+                "implementation_exception with a complex-work category, concrete risk "
+                "and why_default_insufficient (40 non-whitespace characters each). "
+                "For routine work omit model and effort, including when quota fallback is desired",
+            )
+        stated_reason += " implementation_exception: " + json.dumps(
+            exception, sort_keys=True
+        )
+    if "model" in source and not _automatic_implementation(policy, source, task_class):
         model = source["model"]
     elif role == "review":
         model = reviewer
@@ -3441,9 +3520,6 @@ def _prepare_add(
         )
     if model not in policy["allowed_models"]:
         raise _EditRefused("model_not_allowed", "model is not allowed")
-    effort = source.get("effort")
-    if effort is not None and effort not in EFFORT_LEVELS:
-        raise _EditRefused("invalid_effort", "invalid node effort")
     review = role == "review"
     review_cost = (
         snapshot.review_costs[model]
@@ -3651,7 +3727,10 @@ def _decision_snapshot(
             if isinstance(source, dict)
             and source.get("action") == "add_node"
             and source.get("role") != "review"
-            and "model" not in source
+            and (
+                "model" not in source
+                or _automatic_implementation(policy, source, task_class)
+            )
             and task_class not in JUDGMENT_CLASSES
         }
         quota = (
