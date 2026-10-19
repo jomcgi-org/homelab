@@ -764,7 +764,13 @@ failure surface.
 **Why.** KG admission stays fail-closed on unconfirmed Codex capacity: the gate
 needs at least one fresh permitting grant observation. Stale and exhausted
 Codex grants cannot be selected beside fresh usable quota, including when token
-fetch fails, so they do not veto a healthy account. Unknown or malformed evidence
+fetch fails. After verifying that sidecar behavior on every brick, enable
+`SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION=true` to stop exhausted accounts vetoing
+a healthy account. It defaults off for safe independent chart promotion.
+Before activating the sidecar's `prefer-first` policy, also set
+`SWARM_CODEX_PREFERRED_GRANT=codex-b`: stale B and passed or unknown window
+resets then defer admission, matching the stricter account selector.
+Unknown or malformed evidence
 and role floors still veto admission. Exhausted grants are reobserved without
 inference to discover early manual resets. That alone still wedges an all-stale pool,
 since the deferral stops the very traffic that would refresh an observation.

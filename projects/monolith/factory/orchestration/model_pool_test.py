@@ -954,7 +954,10 @@ def test_grant_observation_state_shares_one_freshness_reading():
 @pytest.mark.parametrize(
     "used, rejected", [(97.0, False), (100.0, False), (20.0, True)]
 )
-def test_refreshed_exhausted_account_does_not_veto_usable_codex(used, rejected):
+def test_refreshed_exhausted_account_does_not_veto_usable_codex(
+    monkeypatch, used, rejected
+):
+    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
     grants = {
         "codex-b": _codex_grant("codex-b", age=0.0, used=used),
         "codex-cluster": _codex_grant("codex-cluster", age=10.0),
@@ -967,7 +970,8 @@ def test_refreshed_exhausted_account_does_not_veto_usable_codex(used, rejected):
     )
 
 
-def test_fresh_windowless_rejection_does_not_veto_usable_codex():
+def test_fresh_windowless_rejection_does_not_veto_usable_codex(monkeypatch):
+    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
     grants = {
         "codex-b": {
             **_codex_grant("codex-b", age=0.0),
@@ -999,7 +1003,8 @@ def test_gate_does_not_skip_accounts_which_sidecar_can_still_select(
     assert model_pool.confirmed_availability("luna", rolled, role="worker")[0] is False
 
 
-def test_exhaustion_does_not_hide_malformed_telemetry():
+def test_exhaustion_does_not_hide_malformed_telemetry(monkeypatch):
+    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
     grants = {
         "codex-b": {
             **_codex_grant("codex-b", age=10.0),
@@ -1013,3 +1018,81 @@ def test_exhaustion_does_not_hide_malformed_telemetry():
         False,
         "grant codex-b window_unusable",
     )
+
+
+@pytest.mark.parametrize("setting", [None, "false", "typo"])
+def test_exhausted_grant_exclusion_waits_for_sidecar_activation(monkeypatch, setting):
+    if setting is None:
+        monkeypatch.delenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", raising=False)
+    else:
+        monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", setting)
+    grants = {
+        "codex-b": _codex_grant("codex-b", age=0.0, used=100.0),
+        "codex-cluster": _codex_grant("codex-cluster", age=10.0),
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    assert model_pool.confirmed_availability("luna", rolled)[0] is False
+
+
+@pytest.mark.parametrize(
+    "state", ["stale", "reset", "expired", "reset_unknown", "missing"]
+)
+def test_preferred_account_unknown_capacity_defers_before_egress(monkeypatch, state):
+    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
+    monkeypatch.setenv("SWARM_CODEX_PREFERRED_GRANT", "codex-b")
+    now = datetime(2026, 10, 19, 9, 13, tzinfo=timezone.utc)
+    grants = {
+        "codex-b": _codex_grant("codex-b", age=10.0),
+        "codex-cluster": _codex_grant("codex-cluster", age=10.0),
+    }
+    for view in grants.values():
+        view["windows"][0]["resets_at"] = "2026-10-24T09:13:00Z"
+    preferred = grants["codex-b"]
+    if state == "stale":
+        preferred["age_seconds"] = 901
+    elif state == "reset":
+        preferred["windows"][0]["resets_at"] = "2026-10-19T09:12:00Z"
+    elif state == "expired":
+        preferred["windows_expired"] = True
+    elif state == "reset_unknown":
+        preferred["windows"][0]["resets_at"] = None
+    else:
+        grants.pop("codex-b")
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    assert model_pool.confirmed_availability("luna", rolled, now=now)[0] is False
+
+
+def test_preferred_account_reset_recovery_admits_again(monkeypatch):
+    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
+    monkeypatch.setenv("SWARM_CODEX_PREFERRED_GRANT", "codex-b")
+    now = datetime(2026, 10, 19, 9, 13, tzinfo=timezone.utc)
+    grants = {
+        "codex-b": _codex_grant("codex-b", age=10.0, used=100),
+        "codex-cluster": _codex_grant("codex-cluster", age=10.0),
+    }
+    for view in grants.values():
+        view["windows"][0]["resets_at"] = "2026-10-24T09:13:00Z"
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    assert model_pool.confirmed_availability("luna", rolled, now=now)[0] is True
+    grants["codex-b"]["windows"][0]["used_percent"] = 1
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    assert model_pool.confirmed_availability("luna", rolled, now=now)[0] is True
+
+
+def test_summary_retains_expiry_evidence_for_preferred_account_admission():
+    from factory.execution import provider_quota as quota
+
+    summary = quota.summarise(
+        {
+            "codex": {
+                "observed": True,
+                "age_seconds": 10,
+                "windows": [
+                    {"name": "primary", "used_percent": 100, "expired": True},
+                    {"name": "secondary", "used_percent": 10, "expired": False},
+                ],
+            }
+        }
+    )
+    assert summary["codex"]["windows_expired"] is True
+    assert len(summary["codex"]["windows"]) == 1

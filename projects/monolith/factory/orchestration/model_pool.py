@@ -417,6 +417,15 @@ def _grant_stale_note(view: dict) -> str | None:
     return f"stale_observation age {age:g}"
 
 
+def exhausted_grant_exclusion_enabled() -> bool:
+    """Activate only after every sidecar enforces the matching serving rule.
+
+    Monolith and EmberVM promote independently. Default off keeps old sidecars
+    from serving an account the new admission gate has excluded.
+    """
+    return os.environ.get("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "").lower() == "true"
+
+
 def _sidecar_exhausted(view: dict, now: datetime | None) -> bool:
     """Only positive Codex exhaustion which the sidecar excludes from serving.
 
@@ -476,6 +485,18 @@ def confirmed_availability(
         return False, "unobserved"
 
     grant_views = summary.get("grant_views")
+    preferred = (
+        os.environ.get("SWARM_CODEX_PREFERRED_GRANT", "").strip()
+        if provider == "codex"
+        else ""
+    )
+    if preferred and (
+        not isinstance(grant_views, list)
+        or not any(
+            isinstance(v, dict) and v.get("grant") == preferred for v in grant_views
+        )
+    ):
+        return False, "preferred_grant_unobserved"
     if (not isinstance(grant_views, list) or not grant_views) and summary.get(
         "observed"
     ) is not True:
@@ -501,14 +522,36 @@ def confirmed_availability(
                 continue
             note = _grant_stale_note(view)
             if note is not None:
-                skipped.append(f"grant {grant} {note}" if grant else note)
+                notes = reasons if preferred and grant == preferred else skipped
+                notes.append(f"grant {grant} {note}" if grant else note)
                 continue
-            if provider == "codex" and _sidecar_exhausted(view, now):
+            if (
+                provider == "codex"
+                and exhausted_grant_exclusion_enabled()
+                and _sidecar_exhausted(view, now)
+            ):
                 _, reason = _confirmed_view_availability(
                     view, provider=provider, role=role, now=now
                 )
                 exhausted_reasons.append(f"grant {grant} {reason}" if grant else reason)
                 continue
+            if preferred:
+                # prefer-first requires new usage after every reported reset.
+                # Retain expiry evidence stripped by the general quota summary.
+                windows = view.get("windows")
+                if (
+                    view.get("windows_expired")
+                    or not isinstance(windows, list)
+                    or not windows
+                    or any(
+                        not isinstance(w, dict)
+                        or w.get("usable") is not True
+                        or reset_passed(w.get("resets_at"), now) is not False
+                        for w in windows
+                    )
+                ):
+                    reasons.append(f"grant {grant} current_windows_unconfirmed")
+                    continue
             evaluated += 1
             ok, reason = _confirmed_view_availability(
                 view, provider=provider, role=role, now=now
