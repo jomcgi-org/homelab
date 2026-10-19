@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Synthetic artifact</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        margin: 0;
+        background: Canvas;
+        color: CanvasText;
+        font: 16px system-ui;
+      }
+      main {
+        padding: 24px;
+      }
+      h1 {
+        font-size: 24px;
+      }
+      button {
+        padding: 8px;
+        border: 1px solid;
+        background: Canvas;
+        color: CanvasText;
+        font: inherit;
+      }
+      button:focus-visible {
+        outline: 2px solid;
+        outline-offset: 3px;
+      }
+      output {
+        display: block;
+        margin-top: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Synthetic artifact</h1>
+      <p>Harmless local fixture. No live artifact was read or written.</p>
+      <p>
+        This document owns its content and scheme inside the isolated viewport.
+      </p>
+      <button type="button" id="count">Count locally</button>
+      <output aria-live="polite">0 local clicks</output>
+    </main>
+    <script>
+      window.artifactRan = true;
+      try {
+        void parent.document;
+        document.body.dataset.parentAccess = "allowed";
+      } catch {
+        document.body.dataset.parentAccess = "blocked";
+      }
+      let count = 0;
+      document.querySelector("button").onclick = () => {
+        document.querySelector("output").textContent =
+          `${++count} local clicks`;
+      };
+    </script>
+  </body>
+</html>

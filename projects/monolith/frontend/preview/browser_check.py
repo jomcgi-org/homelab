@@ -5,6 +5,8 @@ import functools
 import hashlib
 import http.server
 import json
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -179,3 +181,23 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     check(args.artifact.resolve(), args.output.resolve())
+    # Separate browser-only output: the publishable blog fixture retains its
+    # iframe-forbidding CSP and byte identity. CI uploads this evidence under
+    # the same exact-head artifact without publishing the sheet fixture.
+    frontend = Path(__file__).resolve().parent.parent
+    subprocess.run(
+        ["pnpm", "exec", "vite", "build", "--config", "sheet-preview/vite.config.js"],
+        cwd=frontend,
+        check=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            str(frontend / "sheet-preview/browser_check.py"),
+            "--artifact",
+            str(frontend / "sheet-fixture-preview"),
+            "--output",
+            str(args.output.resolve() / "sheets"),
+        ],
+        check=True,
+    )
