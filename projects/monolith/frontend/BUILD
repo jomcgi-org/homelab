@@ -359,6 +359,16 @@ apko_image(
 
 # Keep synthetic preview fixtures out of the production source/build closure.
 
+py_test(
+    name = "fixture_browser_entrypoint_test",
+    srcs = [
+        "preview/browser_check.py",
+        "preview/browser_check_test.py",
+    ],
+    imports = ["preview"],
+    main = "preview/browser_check_test.py",
+)
+
 # Browser-only production page composition. It is separate from the publishable
 # blog fixture, whose CSP forbids artifact iframes. These inputs are hand-listed.
 js_library(

@@ -202,10 +202,12 @@ def check(root, output, executable=None):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_port}"
     raw = (HERE / "artifact.html").read_text()
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=HERE, text=True
+    ).strip()
     evidence = {
-        "head_sha": subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=HERE, text=True
-        ).strip(),
+        "commit": commit,
+        "head_sha": commit,
         "cases": [],
     }
     try:
