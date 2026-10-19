@@ -8,19 +8,6 @@ helm_chart(
 )
 
 argocd_app(
-    name = "authentik",
-    chart = "projects/platform/authentik",
-    chart_files = ":chart",
-    namespace = "authentik",
-    release_name = "authentik",
-    tags = [
-        "helm",
-        "template",
-    ],
-    values_files = ["values.yaml"],
-)
-
-argocd_app(
     name = "authentik-gke",
     chart = "projects/platform/authentik",
     chart_files = ":chart",

@@ -4,7 +4,6 @@
 # Hierarchy (existing classes shown for context):
 #   system-node-critical     2000001000  (k8s)
 #   system-cluster-critical  2000000000  (k8s)
-#   longhorn-critical        1000000000  (longhorn chart)
 #   homelab-critical              100000  (this file)
 #   <default>                         0  (pods with no class)
 #   homelab-disposable            -1000  (this file)
@@ -17,7 +16,7 @@ globalDefault: false
 preemptionPolicy: PreemptLowerPriority
 description: >-
   Critical homelab workloads that must survive memory pressure (inference, and
-  later the database, ClickHouse, and the monolith API). Ranks above
+  later the database and the monolith API). Ranks above
   default-priority workloads so the kubelet evicts and the scheduler preempts
   cheaper tenants first. See ADR platform/010.
 ---
