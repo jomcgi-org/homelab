@@ -26,6 +26,7 @@ js_library(
         "src/lib/private/components/ReviewCard.svelte",
         "src/lib/private/components/UndoToast.svelte",
         "src/lib/public/styles/design-system.css",
+        "src/lib/styles/shared/tokens.css",
     ],
     deps = [
         ":node_modules/@esbuild/linux-x64",

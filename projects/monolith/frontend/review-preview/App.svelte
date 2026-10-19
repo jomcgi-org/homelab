@@ -44,6 +44,7 @@
     class="frame"
     aria-label="Desktop review controls"
     aria-describedby="frame-help"
+    role="region"
     tabindex="0"
   >
     <div class="desktop">

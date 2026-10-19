@@ -34,6 +34,7 @@ SUITES = {
     "trips": ("trips-preview", "Trips sheets and photo viewer", "gallery"),
     "stars": ("stars-preview", "Stars live and historical map", "gallery"),
 }
+REQUIRED_SUITES = ("blog", "factory", "review")
 
 
 def require(condition, message):
@@ -63,10 +64,8 @@ def owner_module(directory):
 
 
 def selected_suites(requested=None):
-    names = requested or [
-        name
-        for name, (directory, _, _) in SUITES.items()
-        if (FRONTEND / directory).is_dir()
+    names = requested or list(REQUIRED_SUITES) + [
+        name for name in ("trips", "stars") if (FRONTEND / SUITES[name][0]).is_dir()
     ]
     require(len(names) == len(set(names)), "duplicate suite")
     for name in names:
@@ -80,6 +79,7 @@ def selected_suites(requested=None):
 
 
 def expected_captures(name):
+    require(name in SUITES, f"unregistered suite: {name}")
     if name == "blog":
         return {
             f"{size}-{state}.png"

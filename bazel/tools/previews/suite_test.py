@@ -43,7 +43,7 @@ class SuiteTests(unittest.TestCase):
     def test_discovery_requires_registered_existing_harness(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(suite, "FRONTEND", Path(directory)):
-                with self.assertRaisesRegex(ValueError, "zero fixture"):
+                with self.assertRaisesRegex(ValueError, "missing blog"):
                     suite.selected_suites()
                 with self.assertRaisesRegex(ValueError, "unregistered"):
                     suite.selected_suites(["arbitrary-command"])
@@ -52,7 +52,14 @@ class SuiteTests(unittest.TestCase):
                 path = Path(directory) / "trips-preview"
                 path.mkdir()
                 (path / "vite.config.js").touch()
-                self.assertEqual(suite.selected_suites(), ["trips"])
+                self.assertEqual(suite.selected_suites(["trips"]), ["trips"])
+                for name in suite.REQUIRED_SUITES:
+                    path = Path(directory) / suite.SUITES[name][0]
+                    path.mkdir()
+                    (path / "vite.config.js").touch()
+                self.assertEqual(
+                    suite.selected_suites(), ["blog", "factory", "review", "trips"]
+                )
                 with self.assertRaisesRegex(ValueError, "duplicate"):
                     suite.selected_suites(["trips", "trips"])
 
