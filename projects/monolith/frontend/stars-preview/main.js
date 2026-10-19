@@ -8,6 +8,12 @@ import { Map } from "maplibre-gl";
 // geometry is substituted, and this hook is absent from production builds.
 const addControl = Map.prototype.addControl;
 Map.prototype.addControl = function (...args) {
+  if (window.starsFixtureMap !== this) {
+    window.starsFixtureErrors = [];
+    this.on("error", (event) => {
+      window.starsFixtureErrors.push(String(event.error));
+    });
+  }
   window.starsFixtureMap = this;
   return addControl.apply(this, args);
 };

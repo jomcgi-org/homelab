@@ -27,8 +27,8 @@ export const history = {
     name: site.name,
     lat: site.lat,
     lon: site.lon,
-    clear: [120, 94, 78, 48, 12, 0, 0, 34, 65, 110, 130, 140].map(
-      (v) => v + site.id,
+    clear: [120, 94, 78, 48, 12, 0, 0, 34, 65, 110, 130, 140].map((v) =>
+      Math.round((v * site.id) / sites.length),
     ),
     dark: [300, 260, 220, 100, 20, 10, 10, 70, 160, 220, 280, 310],
   })),

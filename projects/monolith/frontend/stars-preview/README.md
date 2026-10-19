@@ -11,7 +11,7 @@ existing fixture preview.
 From `projects/monolith/frontend`:
 
 ```sh
-pnpm exec vite build --config stars-preview/vite.config.js
+STARS_PREVIEW_SHA=$(git rev-parse HEAD) pnpm exec vite build --config stars-preview/vite.config.js
 python stars-preview/browser_check.py --artifact stars-fixture-preview --output /tmp/stars-evidence
 ```
 
@@ -19,6 +19,13 @@ The Python environment needs Playwright 1.63.0 and Chromium with its Linux
 dependencies (`playwright install --with-deps chromium`). The check saves the
 eight live/historical, 390/1440, light/dark captures, each with a selected site
 and expanded filter, plus overflow, keyboard, paint and contrast measurements.
+The preview embeds `STARS_PREVIEW_SHA`; the browser runner rejects an unstamped
+or stale build and records that source SHA and its Chromium version in every
+case. `--expected-sha` can additionally guard the checkout. The contrast check
+waits for rendered color transitions and composites each element's background.
+The runner accepts `--chromium /absolute/path/to/chromium` for a local browser
+when the pinned Playwright download cannot run in the guest. Record that
+browser version as advisory evidence, not a pinned CI run.
 The stars preview is separate from the existing deployable blog artifact.
 Uploading these captures to PR-visible CI artifacts still requires an
 authorized workflow change. This delivery cannot write workflow files.

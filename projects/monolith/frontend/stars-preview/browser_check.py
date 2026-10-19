@@ -4,6 +4,7 @@ import argparse
 import functools
 import http.server
 import json
+import subprocess
 import threading
 from pathlib import Path
 
@@ -15,7 +16,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def check(root, output, chromium_path=None):
+def settle_ui(page):
+    # The shared reduced-motion reset still gives colors a 0.01ms transition.
+    # Wait for rendered frames, including inherited-color transitions, instead
+    # of assuming a wall-clock sleep means software WebGL has painted them.
+    page.evaluate(
+        "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+    )
+    page.wait_for_function(
+        "document.getAnimations().every(animation => animation.playState !== 'running')"
+    )
+
+
+def check(root, output, chromium_path=None, expected_sha=None):
+    source_sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True
+    ).strip()
+    if expected_sha and source_sha != expected_sha:
+        raise ValueError(f"Expected {expected_sha}, checked out {source_sha}")
+    built_sha = json.loads((root / "build.json").read_text())["commit"]
+    if built_sha != source_sha:
+        raise ValueError(
+            f"Preview was built from {built_sha}, checked out {source_sha}"
+        )
     output.mkdir(parents=True, exist_ok=True)
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), functools.partial(Handler, directory=str(root))
@@ -54,6 +77,8 @@ def check(root, output, chromium_path=None):
                             "width": width,
                             "scheme": scheme,
                             "mode": mode,
+                            "source_sha": source_sha,
+                            "browser": browser.version,
                         }
                         evidence.append(record)
                         try:
@@ -71,6 +96,13 @@ def check(root, output, chromium_path=None):
                             assert page.locator(".chrome button.scheme").count() == 1
                             assert page.locator("main.td.sheet").count() == 1
                             assert page.locator(".md-nav").count() == 0
+                            settle_ui(page)
+                            record["collapsed_width"] = page.evaluate(
+                                "document.documentElement.scrollWidth"
+                            )
+                            assert record["collapsed_width"] <= width + 1, (
+                                "collapsed page overflow"
+                            )
                             # Observe identity before any interactions, never substitute the map.
                             page.evaluate("""() => {
                               const m = window.starsFixtureMap;
@@ -80,12 +112,40 @@ def check(root, output, chromium_path=None):
                             }""")
                             canvas = page.locator("canvas.maplibregl-canvas")
                             canvas.focus()
+                            assert (
+                                canvas.evaluate(
+                                    "el => getComputedStyle(el).outlineStyle"
+                                )
+                                != "none"
+                            )
+                            before_pan = page.evaluate(
+                                "window.starsFixtureMap.getCenter().lng"
+                            )
                             canvas.press("ArrowRight")
-                            page.wait_for_timeout(350)
+                            page.wait_for_function("!window.starsFixtureMap.isMoving()")
+                            assert (
+                                page.evaluate("window.starsFixtureMap.getCenter().lng")
+                                != before_pan
+                            ), "keyboard pan failed"
+                            before_zoom = page.evaluate(
+                                "window.starsFixtureMap.getZoom()"
+                            )
+                            page.get_by_role(
+                                "button", name="Zoom in", exact=True
+                            ).focus()
+                            page.get_by_role(
+                                "button", name="Zoom in", exact=True
+                            ).press("Enter")
+                            page.wait_for_function("!window.starsFixtureMap.isMoving()")
+                            assert (
+                                page.evaluate("window.starsFixtureMap.getZoom()")
+                                > before_zoom
+                            ), "keyboard zoom failed"
                             page.evaluate(
                                 "window.starsFixtureMap.jumpTo({center: [-4.633, 56.386], zoom: 10})"
                             )
                             page.wait_for_function("window.starsFixtureMap.loaded()")
+                            canvas.focus()
                             canvas.press("Enter")
                             page.locator(".card").wait_for()
                             assert (
@@ -112,6 +172,8 @@ def check(root, output, chromium_path=None):
                             initial = page.evaluate("""() => {
                               const m = window.starsFixtureMap;
                               return {center: m.getCenter(), zoom: m.getZoom(),
+                                layers: m.getStyle().layers.map(layer => layer.id),
+                                sources: Object.keys(m.getStyle().sources),
                                 paint: m.getPaintProperty('sites-cells', 'fill-color'),
                                 background: m.getPaintProperty('background', 'background-color')};
                             }""")
@@ -127,16 +189,20 @@ def check(root, output, chromium_path=None):
                                     != "none"
                                 )
                                 toggle.press("Enter")
-                                page.wait_for_timeout(100)
+                                settle_ui(page)
                                 current = page.evaluate("""() => {
                                   const m = window.starsFixtureMap;
                                   if (m !== window.originalStarsMap || m.getSource('sites-cells') !== window.originalSource || m.getCanvas() !== window.originalCanvas) throw Error('map identity changed');
                                   return {center: m.getCenter(), zoom: m.getZoom(),
+                                    layers: m.getStyle().layers.map(layer => layer.id),
+                                    sources: Object.keys(m.getStyle().sources),
                                     paint: m.getPaintProperty('sites-cells', 'fill-color'),
                                     background: m.getPaintProperty('background', 'background-color')};
                                 }""")
                                 assert current["center"] == initial["center"]
                                 assert current["zoom"] == initial["zoom"]
+                                assert current["layers"] == initial["layers"]
+                                assert current["sources"] == initial["sources"]
                                 assert page.locator(".card").count() == 1
                                 assert page.url == original_url
                                 paints.append(current)
@@ -180,7 +246,7 @@ def check(root, output, chromium_path=None):
                             page.locator(".card").wait_for()
                             filter_toggle.focus()
                             filter_toggle.press("Enter")
-                            page.wait_for_timeout(150)
+                            settle_ui(page)
                             record["overflow"] = page.evaluate("""() => ({
                               document: document.documentElement.scrollWidth,
                               viewport: innerWidth,
@@ -193,21 +259,40 @@ def check(root, output, chromium_path=None):
                             assert record["overflow"]["expanded"] == "true"
                             record["contrast"] = page.evaluate("""() => {
                               const c = document.createElement('canvas').getContext('2d', {willReadFrequently: true});
-                              const rgb = color => { c.clearRect(0,0,1,1); c.fillStyle=color; c.fillRect(0,0,1,1); return [...c.getImageData(0,0,1,1).data].slice(0,3); };
+                              const rgba = color => { c.clearRect(0,0,1,1); c.fillStyle=color; c.fillRect(0,0,1,1); return [...c.getImageData(0,0,1,1).data]; };
+                              const over = (fg,bg) => fg.slice(0,3).map((v,i) => v*fg[3]/255 + bg[i]*(1-fg[3]/255));
+                              const background = el => {
+                                const color = rgba(getComputedStyle(el).backgroundColor);
+                                if (color[3] === 255) return color.slice(0,3);
+                                if (!el.parentElement) throw Error('No opaque background for contrast check');
+                                return over(color,background(el.parentElement));
+                              };
                               const lum = values => values.map(v => v / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4).reduce((sum,v,i) => sum + v * [.2126,.7152,.0722][i],0);
-                              const bg = lum(rgb(getComputedStyle(document.querySelector('main')).backgroundColor));
-                              return ['.stats','.legend','.card-title','.card-loc','.filter-current','.seg[aria-pressed="true"]'].map(selector => {
-                                const el=document.querySelector(selector), fg=lum(rgb(getComputedStyle(el).color));
-                                return {selector, ratio: (Math.max(fg,bg)+.05)/(Math.min(fg,bg)+.05)};
+                              return ['.stats','.legend','.card-title','.card-loc','.filter-current','.seg[aria-pressed="true"]','.month-chip:not(.is-off),.night-chip:not(.is-off)'].map(selector => {
+                                const el=document.querySelector(selector), color=getComputedStyle(el).color, surface=background(el);
+                                const fg=lum(over(rgba(color),surface)), bg=lum(surface);
+                                return {selector, color, background:surface, ratio: (Math.max(fg,bg)+.05)/(Math.min(fg,bg)+.05)};
                               });
                             }""")
                             assert all(
                                 item["ratio"] >= 4.5 for item in record["contrast"]
                             ), record["contrast"]
                             record["paint"] = initial
+                            record["scheme_paints"] = paints
+                            record["keyboard"] = {
+                                "pan": True,
+                                "zoom": True,
+                                "selection": True,
+                                "filter": True,
+                                "scheme": True,
+                            }
                             record["screenshots"] = [name + ".png"]
                             record["errors"] = errors
+                            record["map_errors"] = page.evaluate(
+                                "window.starsFixtureErrors"
+                            )
                             assert not errors, errors
+                            assert not record["map_errors"], record["map_errors"]
                             page.evaluate("window.scrollTo(0, 0)")
                             page.screenshot(
                                 path=str(output / (name + ".png")), full_page=True
@@ -235,5 +320,10 @@ if __name__ == "__main__":
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--chromium", help="Optional local Chromium executable")
+    parser.add_argument(
+        "--expected-sha", help="Reject evidence from a different checkout"
+    )
     args = parser.parse_args()
-    check(args.artifact.resolve(), args.output.resolve(), args.chromium)
+    check(
+        args.artifact.resolve(), args.output.resolve(), args.chromium, args.expected_sha
+    )
