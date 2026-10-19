@@ -204,6 +204,7 @@ def test_coverage_migration_restart_and_concurrent_probe_reservations(pg, monkey
                         type="fact",
                         scope=scope,
                         verification_state="verified",
+                        observed_at=now - timedelta(days=91),
                         review_after=now - timedelta(days=1),
                         review_policy=STANDARD,
                     )
