@@ -84,7 +84,7 @@ def check_execution(browser, base, output, evidence):
                     if view == "drain":
                         page.get_by_text("Synthetic checkpoint 0", exact=False).wait_for()
                         shot("active")
-                        page.locator(".job-toggle").focus()
+                        page.get_by_role("button", name="synthetic-drain", exact=True).focus()
                         page.keyboard.press("Enter")
                         page.locator(".job-detail").wait_for()
                         page.evaluate("window.__executionFixture.advance()")
@@ -92,11 +92,18 @@ def check_execution(browser, base, output, evidence):
                         page.get_by_text("Synthetic checkpoint 1", exact=False).wait_for()
                         shot("updated-detail")
                         # Operational buttons are inspected, never activated.
-                        for label in ("Kick", "Cancel"):
-                            controls = page.get_by_role("button", name=label, exact=False)
-                            if controls.count():
-                                controls.first.focus()
-                                assert controls.first.evaluate("e => getComputedStyle(e).outlineStyle !== 'none'")
+                        for label in ("run a cycle now", "cancel cycle"):
+                            control = page.get_by_role("button", name=label, exact=True)
+                            assert control.count() == 1, f"missing drain control: {label}"
+                            control.focus()
+                            assert control.evaluate("e => e === document.activeElement && getComputedStyle(e).outlineStyle !== 'none'")
+                        page.get_by_role("button", name="synthetic-completed", exact=True).focus()
+                        page.keyboard.press("Enter")
+                        requeue = page.get_by_role("button", name="requeue", exact=True)
+                        requeue.wait_for()
+                        requeue.focus()
+                        assert requeue.evaluate("e => e === document.activeElement && getComputedStyle(e).outlineStyle !== 'none'")
+                        shot("completed-detail")
                         record["checks"] = ["active item", "keyboard detail", "subsequent polling", "document scrolling", "controls focus"]
                     else:
                         page.wait_for_function("window.__executionFixture.stats.active === 1")

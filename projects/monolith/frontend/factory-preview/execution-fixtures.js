@@ -184,17 +184,31 @@ export function createExecutionFixture() {
           scheduled: 0,
           deferred: 0,
           error: 0,
-          ok: 0,
+          ok: 1,
           parked: 0,
         },
-        jobs: [job()],
+        jobs: [job(), completedJob()],
         recent_cycles: [],
       });
     if (path === "/factory/execution/drain/jobs/synthetic-drain")
       return response({ now: NOW, job: job(), attempts: [] });
+    if (path === "/factory/execution/drain/jobs/synthetic-completed")
+      return response({ now: NOW, job: completedJob(), attempts: [] });
     stats.unexpected.push(String(input));
     throw new Error(`Unexpected execution fixture endpoint: ${input}`);
   };
+  function completedJob() {
+    return {
+      ...job(),
+      name: "synthetic-completed",
+      state: "ok",
+      prompt: "Synthetic completed drain item",
+      prompt_head: "Synthetic completed drain item",
+      locked_at: null,
+      next_run_at: null,
+      session: null,
+    };
+  }
   class EventSource {
     static OPEN = 1;
     static CLOSED = 2;
