@@ -258,6 +258,8 @@ js_library(
         "test/app-state-stub.js",
         "test/app-stores-stub.js",
         "test/ProfileRoute.svelte",
+        "test/SheetRoute.svelte",
+        "test/sheet-fixtures.js",
         "test/profile-page.svelte.js",
         "test/profile-stores.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
@@ -310,6 +312,69 @@ apko_image(
 )
 
 # Keep synthetic preview fixtures out of the production source/build closure.
+
+# Browser-only production page composition. It is separate from the publishable
+# blog fixture, whose CSP forbids artifact iframes. These inputs are hand-listed.
+js_library(
+    name = "sheet_fixture_src",
+    srcs = glob(["sheet-preview/**"], exclude = ["sheet-preview/__pycache__/**"]) + [
+        "package.json",
+        "preview/fonts.css",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "src/lib/global.css",
+        "src/lib/public/apps.js",
+        "src/lib/public/components/Footer.svelte",
+        "src/lib/public/components/Nav.svelte",
+        "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/Seo.svelte",
+        "src/lib/public/components/SiteIndex.svelte",
+        "src/lib/public/components/TechnicalDrawingChrome.svelte",
+        "src/lib/public/components/Trail.svelte",
+        "src/lib/public/components/TurnstileGate.svelte",
+        "src/lib/public/components/index.js",
+        "src/lib/public/llm-leaderboard/BarChart.svelte",
+        "src/lib/public/llm-leaderboard/Scatter.svelte",
+        "src/lib/public/llm-leaderboard/Selector.svelte",
+        "src/lib/public/llm-leaderboard/TaskMatrix.svelte",
+        "src/lib/public/llm-leaderboard/leaderboard.css",
+        "src/lib/public/llm-leaderboard/model.js",
+        "src/lib/public/seo.js",
+        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/technical-drawing.css",
+        "src/routes/+error.svelte",
+        "src/routes/+layout.svelte",
+        "src/routes/public/+layout.svelte",
+        "src/routes/public/app/llm-leaderboard/+page.svelte",
+        "src/routes/public/artifact/[id]/+page.svelte",
+        "test/SheetRoute.svelte",
+        "test/app-environment-stub.js",
+        "test/profile-page.svelte.js",
+        "test/profile-stores.js",
+        "test/sheet-fixtures.js",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        "//projects/design-system:pkg",
+    ],
+)
+
+js_run_binary(
+    name = "sheet_fixture_preview",
+    srcs = [":sheet_fixture_src"],
+    args = ["build", "--config", "sheet-preview/vite.config.js"],
+    chdir = package_name(),
+    out_dirs = ["sheet-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "sheet_fixture_preview_build_test",
+    targets = [":sheet_fixture_preview"],
+)
 # The dedicated Actions job compiles these real route components and runs
 # Chromium. This independent contract target makes fixture edits participate
 # in affected-target CI without making a test output an input to a build.

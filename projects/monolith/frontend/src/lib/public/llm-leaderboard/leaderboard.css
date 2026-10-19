@@ -1,11 +1,6 @@
-/* LLM leaderboard in the technical-drawing language (see .impeccable.md, the
- * private-tier document section, and lib/public/factory/factory.css, whose
- * masthead, stat strip and /-labels this page shares). Layers over the .td
- * tokens in technical-drawing.css and adds one thing: the provider palette.
- *
- * The page used to be the brutalist public tier (2px ink, yellow winner row,
- * pill badges). It moved here because it is a measured record, not a pitch:
- * the factory and the blog already present measured records this way. */
+/* The shared .sheet owns the page, frame, focus and slash-label vocabulary.
+ * This file owns the leaderboard's provider palette, metric layout and chart
+ * controls. Categorical marks keep their fixed meaning across selections. */
 
 .lb-page {
   /* Provider identity, the only categorical colour on the page. Eight fixed
@@ -28,15 +23,6 @@
     var(--ink-3) 0 1px,
     transparent 1px 4px
   );
-
-  box-sizing: border-box;
-  min-height: 100dvh;
-  padding: 1.5rem clamp(1rem, 5vw, 4.5em) 4rem;
-  background: var(--sheet);
-  color: var(--ink);
-  font-family: var(--font-ui);
-  font-size: 1rem;
-  line-height: 1.5;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -63,50 +49,16 @@
   --prov-8: #e66767;
 }
 
-.lb-page *,
-.lb-page *::before,
-.lb-page *::after {
-  box-sizing: border-box;
-}
-
-.lb-page a {
-  color: inherit;
-}
-
-.lb-page button,
-.lb-page input {
-  color: inherit;
-  font: inherit;
-}
-
-.lb-page :focus-visible {
-  outline: 2px solid var(--accent-ink);
-  outline-offset: 2px;
-}
-
-.lb-page .sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
-}
-
-.lb-page .num {
-  font-variant-numeric: tabular-nums;
-}
-
 .lb-page .frame {
   display: flex;
   flex-direction: column;
   gap: 1.6rem;
-  max-width: 72em;
-  margin: 0 auto;
+}
+
+/* The charts use the full sheet width, with no text spine. */
+.lb-page .trail-dock {
+  align-self: flex-start;
+  margin-bottom: 0;
 }
 
 /* Provider swatch: one square, the same shape as the factory's marks. */
@@ -143,50 +95,6 @@
 }
 .lb-page [data-slot="8"] {
   --c: var(--prov-8);
-}
-
-/* ── Masthead: trail on the left, scheme toggle on the right ─────────── */
-
-.lb-page .masthead {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: stretch;
-}
-
-.lb-page .trail {
-  display: flex;
-  border: 1px solid var(--stroke);
-}
-
-.lb-page .crumb {
-  padding: 5px 8px;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.72rem;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.lb-page .crumb + .crumb {
-  border-left: 1px solid var(--stroke);
-}
-
-.lb-page .crumb.current {
-  color: var(--ink);
-}
-
-.lb-page a.crumb:hover {
-  color: var(--accent-ink);
-}
-
-.lb-page .masthead .scheme {
-  margin-left: auto;
-  width: 2.1em;
-  height: auto;
-  border: 1px solid var(--ink);
 }
 
 /* ── Lead: one headline, one paragraph ───────────────────────────────── */
@@ -266,15 +174,6 @@
   flex-wrap: wrap;
   gap: 0.4em 1em;
   align-items: baseline;
-  margin: 0 0 0.8em;
-  padding-bottom: 0.5em;
-  border-bottom: 1px solid var(--stroke);
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.68rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .lb-page .sec-label .aside {
