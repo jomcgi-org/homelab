@@ -317,7 +317,7 @@ class KnowledgeFeedState(SQLModel, table=True):
     )
 
 
-class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Note(SQLModel, table=True):
     __tablename__ = "notes"
     __table_args__ = (
         # Mirrors the CHECK constraint in
@@ -658,7 +658,7 @@ class AtomRawProvenance(SQLModel, table=True):
         super().__init__(**data)
 
 
-class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Dispute(SQLModel, table=True):
     """Dispute writers arrive with ``dispute_fact`` (#5566).
 
     Until then, ``disputed`` derives from unresolved rows plus
@@ -730,7 +730,7 @@ ReviewStatus = Literal["success", "failed", "unavailable", "unsupported"]
 
 class ReviewOutcome(
     SQLModel, table=True
-):  # nosemgrep: sqlmodel-datetime-without-factory
+):
     """Durable record of one evidence review attempt, kept for every outcome.
 
     ``next_attempt_at`` is the admission gate: NULL after ``unsupported`` means
@@ -772,7 +772,7 @@ class ReviewOutcome(
 
 class Intervention(
     SQLModel, table=True
-):  # nosemgrep: sqlmodel-datetime-without-factory
+):
     """Human lifecycle for a retained distress raw."""
 
     __tablename__ = "interventions"
@@ -828,7 +828,7 @@ class Intervention(
     )
 
 
-class Gap(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Gap(SQLModel, table=True):
     """A knowledge gap: an unresolved [[wikilink]] promoted to a trackable work item.
 
     Gaps are surfaced when a wikilink's target is missing from the notes graph.

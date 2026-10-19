@@ -349,7 +349,6 @@ initContainers:
 containers:
   {{- if and $inPodBake $ctx.Values.workloads }}
   # Background bakes do not gate daemon readiness; pending roots return ABORTED.
-  # nosemgrep: require-readiness-probe, require-resource-limits
   - name: rootfs-baker
     image: "{{ $ctx.Values.rootfsBuilder.image.repository }}@{{ $ctx.Values.rootfsBuilder.image.digest }}"
     command: ["/bin/bash", "/scripts/rootfs-baker.sh"]
@@ -411,12 +410,9 @@ containers:
     resources:
       {{- toYaml $ctx.Values.rootfsBuilder.inPodBake.resources | nindent 6 }}
   {{- end }}
-  # This is a defined template PARTIAL, not a standalone manifest, so the
-  # manifest-shape k8s rules mis-parse the fragment: the noded container DOES have
-  # a readinessProbe (below) and resources (rendered from .resources via toYaml,
-  # which the rule cannot see as literal limits). The rendered pod is linted for
-  # real at the two call sites (noded-deployment.yaml, brick-deployment.yaml).
-  # nosemgrep: require-readiness-probe, require-resource-limits
+  # This template partial supplies a readinessProbe below and renders resources
+  # from .resources via toYaml. Its call sites are noded-deployment.yaml and
+  # brick-deployment.yaml.
   - name: noded
     image: "{{ $ctx.Values.noded.image.repository }}@{{ $ctx.Values.noded.image.digest }}"
     imagePullPolicy: {{ $ctx.Values.noded.image.pullPolicy }}
@@ -809,7 +805,6 @@ containers:
   # network on a guest's behalf. Keeping it a separate container is the point: the
   # daemon parses guest control frames but never egress bytes and holds no
   # credential, so a daemon compromise does not hand over the secrets.
-  # nosemgrep: require-readiness-probe
   - name: egress-proxy
     image: "{{ $ctx.Values.egress.image.repository }}@{{ $ctx.Values.egress.image.digest }}"
     imagePullPolicy: {{ $ctx.Values.noded.image.pullPolicy | default "IfNotPresent" }}

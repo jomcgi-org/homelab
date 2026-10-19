@@ -119,7 +119,6 @@ def reading(*, force: bool = False) -> dict | None:
         from factory.execution.provider_quota import fetch_provider_quota_sync
 
         observed = _window(fetch_provider_quota_sync())
-    # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
         logger.warning("factory quota guard could not read provider quota: %s", exc)
         observed = None

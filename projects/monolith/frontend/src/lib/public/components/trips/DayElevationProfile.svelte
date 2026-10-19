@@ -106,7 +106,7 @@
     font-family: monospace;
     font-size: 9px;
     font-weight: 600;
-    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #9ca3af;
   }
   .svgbox {
     flex-grow: 1;

@@ -48,7 +48,7 @@ async def _cycle() -> None:
 async def _loop() -> None:
     interval = _interval_s()
     while True:
-        try:  # nosemgrep: no-broad-except-swallow - a dead loop is worse, logged here
+        try:  # a dead loop is worse, logged here
             await _cycle()
         except asyncio.CancelledError:
             raise

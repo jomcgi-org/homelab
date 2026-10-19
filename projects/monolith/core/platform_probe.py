@@ -58,7 +58,7 @@ def _read_sync(name: str) -> PlatformProbe | None:
 
 async def read_probe(name: str) -> PlatformProbe | None:
     """Read one latch row. Any failure is reported as "no row", see module doc."""
-    try:  # nosemgrep: no-broad-except-swallow - fail-open is the design, logged here
+    try:  # fail-open is the design, logged here
         return await asyncio.to_thread(_read_sync, name)
     except Exception as exc:  # noqa: BLE001 - missing pre-migration table is expected
         logger.warning("platform probe read failed for %s: %s", name, exc)

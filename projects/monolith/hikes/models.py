@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from sqlmodel import Field, SQLModel
 
 
-class Walk(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Walk(SQLModel, table=True):
     __tablename__ = "walks"
     __table_args__ = {"schema": "hikes", "extend_existing": True}
 
@@ -33,7 +33,7 @@ class Walk(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class WalkHour(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class WalkHour(SQLModel, table=True):
     __tablename__ = "walk_hours"
     __table_args__ = {"schema": "hikes", "extend_existing": True}
 

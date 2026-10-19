@@ -139,7 +139,7 @@ def _get_note_row(engine, note_id: str) -> Note:
         # test helper: intentionally reads any row (including soft-deleted).
         stmt = select(Note).where(
             Note.note_id == note_id
-        )  # nosemgrep: sqlmodel-select-missing-deleted-at-filter
+        )
         return session.exec(stmt).one()
 
 

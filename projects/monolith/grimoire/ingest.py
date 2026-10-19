@@ -114,7 +114,7 @@ def build_s3_client():
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
     # Scheme guaranteed above; see artifact.s3._client for the same guard.
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+    return boto3.client(
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),

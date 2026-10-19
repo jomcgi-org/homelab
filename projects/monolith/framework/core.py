@@ -397,7 +397,7 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
         advisory_names.discard("leader_singletons")
 
     async def _run_component(name: str, check: HealthCheck) -> dict:
-        try:  # nosemgrep: no-broad-except-swallow - logged via health_logger below
+        try:  # logged via health_logger below
             return await check()
         except Exception as exc:  # noqa: BLE001 - a crashing check is itself a finding
             health_logger.exception("health component %s raised", name)
@@ -422,7 +422,7 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
         from core.db import get_engine
 
         db_ok = True
-        try:  # nosemgrep: no-broad-except-swallow - logged via health_logger below
+        try:  # logged via health_logger below
             with Session(get_engine()) as session:
                 session.execute(text("SELECT 1"))
         except Exception:

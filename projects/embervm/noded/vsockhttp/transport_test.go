@@ -247,7 +247,7 @@ type hangFirstListener struct {
 func (l *hangFirstListener) Accept() (net.Conn, error) {
 	c, err := l.Listener.Accept()
 	if err != nil {
-		return nil, err // nosemgrep: no-bare-error-return
+		return nil, err
 	}
 	if l.tripped.CompareAndSwap(false, true) {
 		return &hangConn{Conn: c, stop: l.stop}, nil

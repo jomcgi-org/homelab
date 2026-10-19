@@ -202,7 +202,7 @@ func (t *Transport) primeProbe(ctx context.Context, udsPath string) error {
 	}
 	resp, err := t.RoundTrip(attemptCtx, udsPath, req)
 	if err != nil {
-		return err // nosemgrep: no-bare-error-return
+		return err
 	}
 	_ = resp.Body.Close()
 	return nil
@@ -219,7 +219,7 @@ func (t *Transport) readyAttempt(ctx context.Context, udsPath, readyPath string)
 	}
 	resp, err := t.RoundTrip(attemptCtx, udsPath, req)
 	if err != nil {
-		return err // nosemgrep: no-bare-error-return
+		return err
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -318,7 +318,7 @@ func (t *Transport) setClockAttempt(ctx context.Context, udsPath string, epochMs
 
 	resp, err := t.RoundTrip(attemptCtx, udsPath, req)
 	if err != nil {
-		return err // nosemgrep: no-bare-error-return
+		return err
 	}
 	defer resp.Body.Close()
 	_, _ = io.ReadAll(io.LimitReader(resp.Body, 4<<10))

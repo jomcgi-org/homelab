@@ -163,7 +163,7 @@ async def run_cycle(checks=None, *, now: datetime | None = None) -> list[str]:
     previous = await asyncio.to_thread(_read_sync, list(checks))
     sent = []
     for name, check in checks.items():
-        try:  # nosemgrep: no-broad-except-swallow - one component must not block the rest
+        try:  # one component must not block the rest
             text = await _one(name, check, previous.get(name), now, renotify, channel)
         except Exception:
             logger.exception("health alert for %s failed; retrying next cycle", name)
@@ -176,7 +176,7 @@ async def run_cycle(checks=None, *, now: datetime | None = None) -> list[str]:
 async def _loop() -> None:
     interval = _float_env(INTERVAL_ENV, DEFAULT_INTERVAL_S)
     while True:
-        try:  # nosemgrep: no-broad-except-swallow - a dead loop is worse, logged here
+        try:  # a dead loop is worse, logged here
             await run_cycle()
         except asyncio.CancelledError:
             raise

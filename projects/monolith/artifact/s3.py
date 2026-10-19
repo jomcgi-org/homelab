@@ -44,10 +44,8 @@ def _client():
     # scheme-less legacy/test endpoints; explicit schemes pass through.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
-    # Scheme guaranteed above; the inline nosemgrep clears the pre-commit
-    # boto3-endpoint-url-missing-scheme hook (the Bazel semgrep test ignores
-    # nosemgrep and is covered by exclude_rules in projects/monolith/BUILD).
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+    # Scheme guaranteed by the guard above.
+    return boto3.client(
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),

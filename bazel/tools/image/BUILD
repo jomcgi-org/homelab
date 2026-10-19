@@ -89,7 +89,7 @@ WRAPPER
 # pnpm is a JS script (cross-platform) that runs on Node.js.
 # Places the package at /usr/local/lib/node_modules/pnpm/
 # with a symlink at /usr/bin/pnpm for PATH discovery.
-# nosemgrep: single-npm-package-in-apko-genrule -- pnpm is self-contained, not a single JS module
+# pnpm is self-contained, not a single JS module
 genrule(
     name = "pnpm_tar",
     srcs = ["@pnpm//:pkg"],
@@ -116,7 +116,7 @@ genrule(
 # without a full workspace node_modules tree (bootstrap / ci lint path). Like
 # the eslint wrapper, it derives the extraction root from argv[0], so it works
 # from ~/.cache/homelab-tools rather than assuming installation at /.
-# nosemgrep: single-npm-package-in-apko-genrule -- intentional multi-package node_modules for PATH prettier plugins
+# intentional multi-package node_modules for PATH prettier plugins
 genrule(
     name = "prettier_tar",
     srcs = [

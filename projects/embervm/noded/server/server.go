@@ -2485,7 +2485,7 @@ func (s *Server) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerStrea
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err() // nosemgrep: no-bare-error-return
+			return ctx.Err()
 		case <-ticker.C:
 			if err := send(); err != nil {
 				return err

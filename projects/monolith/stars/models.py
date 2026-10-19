@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from sqlmodel import Field, SQLModel
 
 
-class Site(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Site(SQLModel, table=True):
     __tablename__ = "sites"
     __table_args__ = {"schema": "stars", "extend_existing": True}
 
@@ -27,7 +27,7 @@ class Site(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class SiteHour(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class SiteHour(SQLModel, table=True):
     __tablename__ = "site_hours"
     __table_args__ = {"schema": "stars", "extend_existing": True}
 
@@ -49,7 +49,7 @@ class SiteHour(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fa
 
 class SiteMonthClimatology(
     SQLModel, table=True
-):  # nosemgrep: sqlmodel-datetime-without-factory
+):
     """Per-site, per-month-of-year ERA5/CERRA reanalysis backfill (v2).
 
     A long-run seasonal baseline computed offline from the ERA5/CERRA reanalysis

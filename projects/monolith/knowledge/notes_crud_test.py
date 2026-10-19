@@ -212,7 +212,7 @@ def _reload_note(session: Session, note_id: str) -> Note | None:
     # test helper: intentionally reads any row (including soft-deleted).
     stmt = select(Note).where(
         Note.note_id == note_id
-    )  # nosemgrep: sqlmodel-select-missing-deleted-at-filter
+    )
     return session.exec(stmt).one_or_none()
 
 

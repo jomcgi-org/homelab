@@ -144,7 +144,7 @@ Git hooks (`bazel/tools/git/`, installed by pre-commit): `protect-main.sh` refus
 
 ## 8. Semgrep
 
-Nothing in this repo runs Semgrep. PR scanning is Semgrep Managed Scans, configured on the Semgrep side, with registry rules only; `.semgrepignore` at the root is the one file it reads from here. Some `# nosemgrep` markers target registry rules; those naming the removed custom rules are inert.
+Nothing in this repo runs Semgrep. PR scanning is Semgrep Managed Scans, configured on the Semgrep side, with registry rules only; `.semgrepignore` at the root is the one file it reads from here. The retired custom-rule annotations were removed in #7091; registry suppressions and migration-convention markers remain.
 
 The repo used to carry its own layer: `semgrep_test` / `semgrep_target_test` / `semgrep_manifest_test` Bazel macros with a Gazelle language, about 93 custom rules under `bazel/semgrep/rules/`, digest-pinned OCaml engines and Pro packs refreshed by a weekly workflow, and a Firecracker semgrep guest serving the monolith's semgrep-scan MCP tool and the public `/ember/semgrep` exhibit. All of it was removed in #4777. The `semgrep_scan_perf` and `demo_sg_savings` tables are retained in Postgres with no writer. The `bazel/ocaml` ruleset whose one purpose was building that engine from source (ADR tooling/004) outlived it, running a native arm64 example shard on every PR that gated main's publish; it was removed in #6913 once #4777 had left it purposeless.
 

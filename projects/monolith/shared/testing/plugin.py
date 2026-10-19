@@ -268,7 +268,7 @@ def pg(tmp_path_factory):
         # Make PG runfiles readable+traversable by nobody
         subprocess.run(["chmod", "-R", "a+rX", str(pg_root)], check=True, timeout=30)
 
-    initdb_result = subprocess.run(  # nosemgrep: subprocess-run-no-timeout
+    initdb_result = subprocess.run(
         [
             str(pg_bin / "initdb"),
             "-D",
@@ -311,7 +311,7 @@ def pg(tmp_path_factory):
         deadline = time.monotonic() + 6.0
         ready = False
         while time.monotonic() < deadline:
-            result = subprocess.run(  # nosemgrep: subprocess-run-no-timeout
+            result = subprocess.run(
                 [str(pg_isready), "-h", "127.0.0.1", "-p", str(port), "-U", "test"],
                 env=env,
                 capture_output=True,

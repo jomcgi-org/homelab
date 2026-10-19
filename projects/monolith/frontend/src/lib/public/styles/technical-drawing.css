@@ -97,7 +97,7 @@
  * and the type grow together. Pinning the root here also keeps the
  * overscroll ground on the sheet colour in both schemes. */
 html:has(.td) {
-  background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
+  background: #ffffff;
   font-size: clamp(16px, 0.5vw + 11px, 19px);
   /* The public design system smooths every scroll, which turns a reload
    * on a #fragment into an animated jump and a second animated jump when
@@ -109,12 +109,12 @@ html:has(.td) {
 
 @media (prefers-color-scheme: dark) {
   html:not([data-theme="light"]):has(.td) {
-    background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #181a20;
   }
 }
 
 html[data-theme="dark"]:has(.td) {
-  background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
+  background: #181a20;
 }
 
 body:has(.td) {

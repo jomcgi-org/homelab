@@ -37,9 +37,8 @@ def put_image(image_key: str, data: bytes, content_type: str) -> None:
     # legacy/test endpoints, preserving the deployed scheme and region.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
-    # Scheme guaranteed by the guard above; the inline nosemgrep
-    # suppresses boto3-endpoint-url-missing-scheme for Semgrep scans.
-    client = boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+    # Scheme guaranteed by the guard above.
+    client = boto3.client(
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),

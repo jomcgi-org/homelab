@@ -591,7 +591,6 @@ def quota_summary() -> dict:
             grants_complete=fetched.get("grants_complete") is True,
             grant_inventory_validity=grant_validity,
         )
-    # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
         logger.warning("provider quota unavailable for model selection: %s", exc)
         return {}

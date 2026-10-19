@@ -389,7 +389,7 @@ func (f *fakeTransport) WaitReady(ctx context.Context, udsPath, _ string) error 
 			return ctx.Err()
 		}
 	}
-	return waitErr // nosemgrep: no-bare-error-return
+	return waitErr
 }
 func (f *fakeTransport) Prime(_ context.Context, _ string) error { return nil }
 
@@ -408,7 +408,7 @@ func (f *fakeTransport) Hydrate(_ context.Context, _ string, archive []byte) err
 	defer f.mu.Unlock()
 	f.hydrates++
 	if f.hydrateErr != nil {
-		return f.hydrateErr // nosemgrep: no-bare-error-return
+		return f.hydrateErr
 	}
 	// Copy: the caller's slice is a bytes.Reader source that outlives this call, but
 	// copy so a later mutation cannot alias the captured bytes.
