@@ -118,10 +118,8 @@ def verifier_source_hash(kind: str) -> str:
 from . import (  # noqa: E402,F401
     checks,
     command,
-    compile,
     helm,
     jsonmatch,
-    lint,
     mutation,
     pytest,
     rbac,

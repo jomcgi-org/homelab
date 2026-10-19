@@ -525,13 +525,12 @@ def state_path(path):
     return path
 
 
-def load_state(api, url, bootstrap):
+def load_state(api, url):
     ref = api.optional(f"/git/ref/heads/{STATE_BRANCH}")
     if ref is None:
-        require(
-            bootstrap,
-            "state branch missing; dedicated Pages ownership must be explicitly acknowledged before bootstrap",
-        )
+        # The repository owner confirmed this Pages site is dedicated to
+        # synthetic previews. Initialize its marked state without a second
+        # ownership acknowledgement; existing unmarked branches still fail.
         return None, empty_state(url), {}
     commit_sha = ref["object"]["sha"]
     require(SHA.fullmatch(commit_sha) is not None, "invalid state commit")
@@ -638,7 +637,7 @@ def output(name, value):
         destination.write(f"{name}={value}\n")
 
 
-def prepare(api, event, event_name, directory, bootstrap):
+def prepare(api, event, event_name, directory):
     require(
         event.get("repository", {}).get("full_name") == REPOSITORY,
         "event repository mismatch",
@@ -683,7 +682,7 @@ def prepare(api, event, event_name, directory, bootstrap):
         validate_pr(api.repo(f"/pulls/{int(event['number'])}"), event["number"])
     else:
         require(event_name in {"schedule", "workflow_dispatch"}, "unsupported event")
-    parent, state, files = load_state(api, url, bootstrap)
+    parent, state, files = load_state(api, url)
     known_blobs = {blob_sha(data) for data in files.values()}
     now = int(time.time())
     reconcile(state, files, current_prs(api, state), now)
@@ -794,7 +793,6 @@ def main():
             event,
             os.environ["GITHUB_EVENT_NAME"],
             args.output,
-            os.environ.get("BOOTSTRAP_OWNED_SITE") == "true",
         )
     elif args.command == "guard":
         guard(

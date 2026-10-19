@@ -5759,6 +5759,18 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_capacity_wait_test",
+    srcs = ["factory/execution/capacity_wait_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "agent_sessions_admission_test",
     srcs = ["factory/execution/admission_test.py"],
     imports = ["."],

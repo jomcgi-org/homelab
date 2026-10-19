@@ -37,6 +37,9 @@ defmodule Embervm.Application do
     # Quota + usage-admin config into app-env BEFORE the supervisor starts, so the
     # Dispatcher (reads the quota budgets at init) and the Router (reads them and
     # the usage-admin list per request) see them. Empty budgets = quota off.
+    Application.put_env(:embervm, :async_residency_enabled, trimmed_env("EMBERVM_ASYNC_RESIDENCY_ENABLED") in ["1", "true"])
+    Application.put_env(:embervm, :residency_queue_limit, residency_positive_limit("EMBERVM_RESIDENCY_QUEUE_LIMIT", 1024))
+    Application.put_env(:embervm, :residency_principal_limit, residency_positive_limit("EMBERVM_RESIDENCY_PRINCIPAL_LIMIT", 128))
     Application.put_env(:embervm, :quota, quota_config())
     Application.put_env(:embervm, :usage_admins, usage_admins())
     Embervm.SpecTrace.configure()
@@ -1164,6 +1167,7 @@ defmodule Embervm.Application do
       # #4355 pressure-parked wake retry cadence and bound.
       pressure_retry_interval_ms: session_pressure_retry_interval_ms(),
       pressure_wait_bound_ms: session_pressure_wait_bound_ms(),
+      residency_restore_limit: residency_positive_limit("EMBERVM_RESIDENCY_RESTORE_LIMIT", 2),
       # The Direction-2 adopt-and-backfill discriminator asks AsyncWriter whether a
       # rowless reported VM has a write in flight (ADR embervm/014 decision 2), so it
       # needs both the gate and the writer reference.
@@ -1171,6 +1175,17 @@ defmodule Embervm.Application do
       restart_flush_inflight_invokes: restart_flush_inflight_invokes_enabled(),
       async_writer: Embervm.AsyncWriter
     ] ++ wake_opts()
+  end
+
+  defp residency_positive_limit(name, default) do
+    case trimmed_env(name) do
+      "" -> default
+      raw ->
+        case Integer.parse(raw) do
+          {value, ""} when value > 0 -> value
+          _ -> raise ArgumentError, "#{name} must be a finite positive integer"
+        end
+    end
   end
 
   defp session_create_concurrency do

@@ -26,9 +26,20 @@ waits for rendered color transitions and composites each element's background.
 The runner accepts `--chromium /absolute/path/to/chromium` for a local browser
 when the pinned Playwright download cannot run in the guest. Record that
 browser version as advisory evidence, not a pinned CI run.
-The stars preview is separate from the existing deployable blog artifact.
-Uploading these captures to PR-visible CI artifacts still requires an
-authorized workflow change. This delivery cannot write workflow files.
+The shared `Fixture preview build` workflow from #7220 now invokes this
+same checker and requires all eight PNGs. Its CI/public capture uses an
+offline profile with an invented blank basemap and an explicit capture caption;
+it does not request OpenFreeMap tiles or certify real geography. The manual
+commands above retain the owner's real-tile profile for separate local checks.
+
+Shared evidence records source/runner SHA, browser versions, PNG hashes,
+measurements and traces in `fixture-preview-evidence-<full-head-sha>`, with
+requested 90-day retention bounded by repository policy. The public aggregate
+contains a PNG-only gallery under the unchanged CSP, with no map JavaScript,
+worker or backend connection. Its comparison displays actual source and merge
+base SHAs; an absent or changed historical harness is explicitly unavailable.
+This tooling integration leaves the owner's implementation and landing hold
+unchanged. Generated output remains outside Git.
 
 The DOM tests mock the MapLibre boundary and color rasterizer for deterministic
 lifecycle assertions. They do not supply screenshot evidence. The browser

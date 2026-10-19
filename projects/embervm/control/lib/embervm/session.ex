@@ -321,8 +321,8 @@ defmodule Embervm.Session do
     end
   end
 
-  def handle_call({:invoke, _req}, _from, %{draining: true} = state) do
-    {:reply, {:error, :brick_draining}, state}
+  def handle_call({:invoke, req}, _from, %{draining: true} = state) do
+    {:reply, refuse_residency_handoff(state, req, :brick_draining), state}
   end
 
   def handle_call({:invoke, req}, from, state) do
@@ -330,7 +330,7 @@ defmodule Embervm.Session do
     # cap (it already left the queue), so `invoke_queue_cap` bounds how many callers
     # may PILE UP behind the running one. A cap of 4 admits 4 waiters + 1 in flight.
     if :queue.len(state.queue) >= state.queue_cap do
-      {:reply, {:error, :queue_full}, state}
+      {:reply, refuse_residency_handoff(state, req, :queue_full), state}
     else
       # Work arrived: disarm the idle timer so a bank cannot start while a caller is
       # queued or in flight (the bank re-arms once the session goes quiescent again).
@@ -771,7 +771,7 @@ defmodule Embervm.Session do
         # This synchronous durable stamp deliberately precedes the channel dial
         # and assign wait inside the worker. Its cost is accepted because the
         # value authorizes another service to destroy this live guest.
-        case record_invoke_started(state, Map.get(req, :dispatch_id)) do
+        case record_invoke_started(state, req) do
           {:ok, session} ->
             session = %{session | interrupted_turn: state.interrupted_turn || session.interrupted_turn}
             req = prepare_turn(req, session)
@@ -782,7 +782,7 @@ defmodule Embervm.Session do
             %{state | queue: rest, worker: {pid, ref, from, timer}, dispatch_id: Map.get(req, :dispatch_id), last_interrupt: nil, interrupted_turn: nil, turn_seq: session.turn_seq}
 
           {:error, reason} ->
-            GenServer.reply(from, {:error, {:invoke_start_not_recorded, reason}})
+            GenServer.reply(from, if(match?({:not_dispatched, _, _, _}, reason), do: {:error, reason}, else: {:error, {:invoke_start_not_recorded, reason}}))
             maybe_start_next(%{state | queue: rest})
         end
 
@@ -1164,8 +1164,21 @@ defmodule Embervm.Session do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  defp record_invoke_started(state, dispatch_id) do
-    Embervm.SessionStore.record_invoke_started(state.session_store, state.session_id, dispatch_id)
+  defp refuse_residency_handoff(state, req, reason) do
+    case Map.get(req, :residency) do
+      nil -> {:error, reason}
+      request -> Embervm.SessionStore.record_residency_handoff(state.session_store, state.session_id, Map.get(req, :dispatch_id), request, nil)
+    end
+  end
+
+  defp record_invoke_started(state, req) do
+    case Map.get(req, :residency) do
+      nil -> Embervm.SessionStore.record_invoke_started(state.session_store, state.session_id, Map.get(req, :dispatch_id))
+      request ->
+        {:ok, session} = Embervm.SessionStore.get(state.session_store, state.session_id)
+        identity = Embervm.ResidencyIntent.identity(%{session | node_id: session.node_id, vm_id: state.vm_id}, state.dial_id)
+        Embervm.SessionStore.record_residency_handoff(state.session_store, state.session_id, Map.get(req, :dispatch_id), request, identity)
+    end
   end
 
   # Fail the session: append session_failed, reply {:error, reason} to the in-flight

@@ -227,6 +227,14 @@ class PendingMessage(SQLModel, table=True):
     last_dispatch_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)
     )
+    capacity_started_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    capacity_state: str | None = Field(default=None)
+    capacity_intent_json: str | None = Field(default=None)
+    capacity_next_poll_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

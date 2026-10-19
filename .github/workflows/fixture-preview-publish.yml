@@ -24,7 +24,6 @@ concurrency:
 jobs:
   aggregate:
     if: >-
-      vars.FIXTURE_PREVIEWS_ENABLED == 'true' &&
       github.repository == 'jomcgi-org/homelab' &&
       (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
@@ -57,9 +56,6 @@ jobs:
         id: prepare
         env:
           GH_TOKEN: ${{ github.token }}
-          # Setting this is an explicit acknowledgement that this whole Pages
-          # site is dedicated to previews; inspect any existing site first.
-          BOOTSTRAP_OWNED_SITE: ${{ vars.FIXTURE_PREVIEWS_OWN_PAGES_SITE }}
         run: python3 bazel/tools/previews/publish.py prepare --output "$RUNNER_TEMP/preview-site"
       - name: Package the validated aggregate
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3

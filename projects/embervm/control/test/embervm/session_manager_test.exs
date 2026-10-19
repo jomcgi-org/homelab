@@ -67,6 +67,7 @@ defmodule Embervm.SessionManagerTest do
   end
 
   defmodule UnavailableInvokeOpLog do
+    def load_residency_intents(server), do: Embervm.OpLog.SQLite.load_residency_intents(server)
     def load_sessions(server), do: Embervm.OpLog.SQLite.load_sessions(server)
 
     def append(_server, %Embervm.OpLog.Op{kind: :session_invoke_started}),
@@ -76,30 +77,35 @@ defmodule Embervm.SessionManagerTest do
   end
 
   defmodule UnavailableInvokeCompletionOpLog do
+    def load_residency_intents(server), do: SQLite.load_residency_intents(server)
     def load_sessions(server), do: SQLite.load_sessions(server)
     def append(_server, %Embervm.OpLog.Op{kind: :session_invoked}), do: {:error, :unavailable}
     def append(server, op), do: SQLite.append(server, op)
   end
 
   defmodule UnavailableCreateOpLog do
+    def load_residency_intents(server), do: SQLite.load_residency_intents(server)
     def load_sessions(server), do: SQLite.load_sessions(server)
     def append(_server, %Embervm.OpLog.Op{kind: :session_created}), do: {:error, :unavailable}
     def append(server, op), do: SQLite.append(server, op)
   end
 
   defmodule UnavailableParkingOpLog do
+    def load_residency_intents(server), do: SQLite.load_residency_intents(server)
     def load_sessions(server), do: SQLite.load_sessions(server)
     def append(_server, %Embervm.OpLog.Op{kind: :session_parking}), do: {:error, :unavailable}
     def append(server, op), do: SQLite.append(server, op)
   end
 
   defmodule UnavailableStopIntentOpLog do
+    def load_residency_intents(server), do: SQLite.load_residency_intents(server)
     def load_sessions(server), do: SQLite.load_sessions(server)
     def append(_server, %Embervm.OpLog.Op{kind: :session_destroying}), do: {:error, :unavailable}
     def append(server, op), do: SQLite.append(server, op)
   end
 
   defmodule UnavailableStopCompletionOpLog do
+    def load_residency_intents(server), do: SQLite.load_residency_intents(server)
     def load_sessions(server), do: SQLite.load_sessions(server)
     def append(_server, %Embervm.OpLog.Op{kind: :session_destroyed}), do: {:error, :unavailable}
     def append(server, op), do: SQLite.append(server, op)
@@ -117,6 +123,7 @@ defmodule Embervm.SessionManagerTest do
       :ok
     end
 
+    def load_residency_intents(server), do: SQLite.load_residency_intents(server)
     def load_sessions(server), do: SQLite.load_sessions(server)
 
     def append(server, %Embervm.OpLog.Op{kind: :session_evicted} = op) do
@@ -2087,6 +2094,7 @@ defmodule Embervm.SessionManagerTest do
   # -- a primed VM with no session row is destroyed (S9) ---------------------
 
   defmodule DuplicateKeyCreateOpLog do
+    def load_residency_intents(server), do: SQLite.load_residency_intents(server)
     def load_sessions(server), do: SQLite.load_sessions(server)
 
     def append(_server, %Embervm.OpLog.Op{kind: :session_created}),

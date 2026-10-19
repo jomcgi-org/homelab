@@ -20,6 +20,8 @@ defmodule Embervm.LogFormatter do
     # Added by TraceContextFilter in the process emitting the log event.
     :trace_id,
     :task_id,
+    :operation_id,
+    :residency_state,
     :session_id,
     :adoption_dispatch_id,
     :adoption_flush_result,

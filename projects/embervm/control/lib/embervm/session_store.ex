@@ -36,6 +36,7 @@ defmodule Embervm.SessionStore do
   terminal session rejects every token (the capability dies with the session).
   """
 
+  require Logger
   use GenServer
 
   alias Embervm.OpLog.Op
@@ -338,6 +339,15 @@ defmodule Embervm.SessionStore do
     GenServer.call(store, {:list, workload, opts})
   end
 
+  @doc "Durable residency demand, serialized with session invoke and bank decisions."
+  def residency_intent(store, command) do
+    GenServer.call(store, {:residency_intent, command}, @record_invoke_started_timeout_ms)
+  end
+
+  def record_residency_handoff(store, session_id, dispatch_id, request, identity) do
+    GenServer.call(store, {:residency_handoff, session_id, dispatch_id, request, identity}, @record_invoke_started_timeout_ms)
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -375,12 +385,18 @@ defmodule Embervm.SessionStore do
       sessions: sessions,
       residency: residency,
       idem: idem,
+      residency_intents: %{},
+      residency_work: %{},
+      residency_keys: %{},
+      residency_order: 0,
+      residency_totals: %{restore_attempts: 0, invocation_starts: 0},
+      residency_uncertain: false,
       # workload -> %{live, banked}, kept in step with the hot set on every write.
       counts: %{}
     }
 
     case rebuild(state) do
-      {:ok, state} -> {:ok, state}
+      {:ok, state} -> rebuild_residency(state)
       {:error, reason} -> {:stop, {:rebuild_failed, reason}}
     end
   end
@@ -406,6 +422,16 @@ defmodule Embervm.SessionStore do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp rebuild_residency(state) do
+    case state.op_log_mod.load_residency_intents(state.op_log) do
+      {:ok, rows} ->
+        empty = %{state | residency_intents: %{}, residency_work: %{}, residency_keys: %{},
+          residency_order: 0, residency_totals: %{restore_attempts: 0, invocation_starts: 0}, residency_uncertain: false}
+        {:ok, Enum.reduce(rows, empty, &index_residency(&2, &1))}
+      {:error, reason} -> {:stop, {:residency_rebuild_failed, reason}}
     end
   end
 
@@ -479,6 +505,27 @@ defmodule Embervm.SessionStore do
   @impl true
   def handle_call({:create, attrs}, _from, state) do
     do_create(attrs, state)
+  end
+
+  def handle_call({:residency_intent, command}, _from, state) do
+    case refresh_residency(state) do
+      {:ok, state} -> residency_command(command, state)
+      _ -> {:reply, {:error, :unavailable}, state}
+    end
+  end
+
+  def handle_call({:residency_handoff, session_id, dispatch_id, request, identity}, _from, state) do
+    with {:ok, state} <- refresh_residency(state),
+         {:ok, session} <- fetch(state, session_id),
+         {:ok, intent} <- scoped_intent(state, session, request.operation_id) do
+      case Embervm.ResidencyIntent.handoff(intent, session, request.epoch, dispatch_id, identity, state.clock.()) do
+        {:ok, consumed} -> do_record_invoke_started(state, session_id, dispatch_id, consumed)
+        {:not_dispatched, reason} -> reject_residency_dispatch(state, session, intent, dispatch_id, reason)
+        {:error, reason} -> {:reply, {:error, reason}, state}
+      end
+    else
+      _ -> {:reply, {:error, :unavailable}, state}
+    end
   end
 
   def handle_call({:begin_exact_destroy, session_id, intent}, _from, state) do
@@ -971,7 +1018,7 @@ defmodule Embervm.SessionStore do
   # worker. An ETS-only stamp could disappear on a control plane restart while
   # the monolith claim keeps heartbeating, causing the recovery oracle to destroy
   # a healthy live guest. The timestamp is monotonic and is never cleared.
-  defp do_record_invoke_started(state, session_id, requested_dispatch_id) do
+  defp do_record_invoke_started(state, session_id, requested_dispatch_id, residency_intent \\ nil) do
     case fetch(state, session_id) do
       {:ok, %{state: :running} = session} ->
         # The timestamp also fences an exact conditional stop. Even two invokes
@@ -986,7 +1033,7 @@ defmodule Embervm.SessionStore do
           workload: session.workload,
           session_id: session_id,
           ts: ts,
-          payload: %{turn_seq: session.turn_seq + 1, dispatch_id: dispatch_id}
+          payload: Map.merge(%{turn_seq: session.turn_seq + 1, dispatch_id: dispatch_id}, if(residency_intent, do: %{residency_intent: residency_intent}, else: %{}))
         }
 
         case state.op_log_mod.append(state.op_log, op) do
@@ -995,10 +1042,11 @@ defmodule Embervm.SessionStore do
             :ets.insert(state.sessions, {session_id, updated})
             # Return the consumed marker to prepare_turn, while clearing it durably
             # at dispatch so a denied turn cannot replay it on unrelated input.
+            state = if residency_intent, do: put_residency_intent(state, residency_intent), else: state
             {:reply, {:ok, %{updated | interrupted_turn: session.interrupted_turn}}, state}
 
           {:error, _reason} = error ->
-            {:reply, error, state}
+            {:reply, error, %{state | residency_uncertain: not is_nil(residency_intent)}}
         end
 
       {:ok, _session} ->
@@ -1006,6 +1054,172 @@ defmodule Embervm.SessionStore do
 
       {:error, _reason} = error ->
         {:reply, error, state}
+    end
+  end
+
+  # A timed-out append may have committed. Read the serialized projection before
+  # making another decision; never treat a lost acknowledgement as non-dispatch.
+  defp refresh_residency(%{residency_uncertain: false} = state), do: {:ok, state}
+  defp refresh_residency(state) do
+    with {:ok, rows} <- state.op_log_mod.load_sessions(state.op_log),
+         {:ok, state} <- rebuild_residency(state) do
+      # Only invoke-start can atomically change both projections. Preserve the
+      # manager's transient lifecycle and residency while refreshing its durable
+      # dispatch fields after an ambiguous append acknowledgement.
+      for row <- rows do
+        case fetch(state, row.session_id) do
+          {:ok, current} ->
+            durable = row_to_session(row)
+            updated = Map.merge(current, Map.take(durable, [:invoke_started_at, :inflight_dispatch_id, :turn_seq, :interrupted_turn]))
+            :ets.insert(state.sessions, {row.session_id, updated})
+          _ -> :ok
+        end
+      end
+      {:ok, state}
+    end
+  end
+
+  defp residency_command({:submit, session_id, attrs, limits}, state) do
+    with {:ok, session} <- fetch(state, session_id) do
+      existing = Map.get(state.residency_intents, Map.get(state.residency_keys, {session.principal, attrs["key"]}))
+      cond do
+        existing && Embervm.ResidencyIntent.replay?(existing, session, attrs) -> {:reply, {:ok, existing}, state}
+        existing -> {:reply, {:error, :idempotency_conflict}, state}
+        not Map.get(limits, :enabled, true) -> {:reply, {:error, :async_residency_unsupported}, state}
+        SessionState.terminal?(session.state) -> {:reply, {:error, :not_found}, state}
+        true ->
+          case Embervm.ResidencyIntent.new(session, attrs, state.clock.()) do
+            {:ok, proposed} ->
+              proposed = Map.put(proposed, "queue_order", state.residency_order + 1)
+              active = Enum.filter(Map.values(state.residency_work), &Embervm.ResidencyIntent.active?/1)
+              if length(active) >= limits.global or Enum.count(active, &(&1["principal"] == session.principal)) >= limits.principal,
+                do: {:reply, {:error, :residency_queue_full}, state},
+                else: persist_residency(state, session, proposed)
+            error -> {:reply, error, state}
+          end
+      end
+    else
+      _ -> {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  # Internal hot working set. Terminal status/dedupe records remain addressable,
+  # but completed traffic never increases the periodic manager's scan workload.
+  defp residency_command(:working, state), do: {:reply, {:ok, Map.values(state.residency_work)}, state}
+  defp residency_command(:totals, state), do: {:reply, {:ok, state.residency_totals}, state}
+
+  defp residency_command({:list, session_id, limit, offset}, state) do
+    items = Map.values(state.residency_intents)
+      |> Enum.filter(&(is_nil(session_id) or &1["session_id"] == session_id))
+      |> Enum.sort_by(&{&1["first_wait_at"], &1["id"]})
+    {:reply, {:ok, %{items: Enum.slice(items, max(offset, 0), min(max(limit, 1), 100)), total: length(items)}}, state}
+  end
+
+  defp residency_command({:lookup, session_id, key}, state) do
+    result = with {:ok, session} <- fetch(state, session_id),
+      id when is_binary(id) <- Map.get(state.residency_keys, {session.principal, key}),
+      do: scoped_intent(state, session, id)
+    {:reply, if(is_nil(result), do: {:error, :not_found}, else: result), state}
+  end
+
+  defp residency_command({:get, session_id, id}, state) do
+    result = with {:ok, session} <- fetch(state, session_id), do: scoped_intent(state, session, id)
+    {:reply, result, state}
+  end
+
+  defp residency_command({:cancel, session_id, id}, state) do
+    with {:ok, session} <- fetch(state, session_id),
+         {:ok, intent} <- scoped_intent(state, session, id),
+         {:ok, updated} <- Embervm.ResidencyIntent.cancel(intent, state.clock.()) do
+      if updated == intent, do: {:reply, {:ok, intent}, state}, else: persist_residency(state, session, updated)
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  defp residency_command({:claim_reconciled, id, version, claim_id}, state) do
+    with {:ok, intent} <- Map.fetch(state.residency_intents, id),
+         true <- intent["version"] == version and get_in(intent, ["restore", "claim_id"]) == claim_id,
+         {:ok, session} <- fetch(state, intent["session_id"]) do
+      # Internal physical-accounting acknowledgement, including terminal demand.
+      # It does not change the handoff outcome or its invocation timestamp.
+      updated = intent |> Map.put("claim_reconciled", true) |> Map.put("version", version + 1)
+      persist_residency(state, session, updated)
+    else
+      _ -> {:reply, {:error, :stale_residency_observation}, state}
+    end
+  end
+
+  defp residency_command({:change, id, version, updates}, state) do
+    with {:ok, intent} <- Map.fetch(state.residency_intents, id),
+         {:ok, session} <- fetch(state, intent["session_id"]),
+         {:ok, updated} <- Embervm.ResidencyIntent.change(intent, version, updates, state.clock.()) do
+      persist_residency(state, session, updated)
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  defp scoped_intent(state, session, id) do
+    case Map.get(state.residency_intents, id) do
+      %{"session_id" => sid, "principal" => principal} = intent
+          when sid == session.session_id and principal == session.principal -> {:ok, intent}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp put_residency_intent(state, intent) do
+    Logger.info("embervm residency decision", operation_id: intent["id"], session_id: intent["session_id"],
+      residency_state: intent["state"], reason: intent["reason"], attempt: intent["attempt_epoch"],
+      elapsed_ms: max(intent["updated_at"] - intent["first_wait_at"], 0))
+    :telemetry.execute([:embervm, :residency, :decision],
+      %{count: 1, wait_ms: max(intent["updated_at"] - intent["first_wait_at"], 0),
+        restore_ms: if(intent["ready_at"] && intent["admitted_at"], do: max(intent["ready_at"] - intent["admitted_at"], 0), else: 0)},
+      %{state: intent["state"], reason: intent["reason"]})
+    index_residency(state, intent)
+  end
+
+  defp index_residency(state, intent) do
+    previous = Map.get(state.residency_intents, intent["id"], %{})
+    work = if Embervm.ResidencyIntent.active?(intent) or
+        (intent["restore"] != nil and intent["claim_reconciled"] != true),
+      do: Map.put(state.residency_work, intent["id"], intent),
+      else: Map.delete(state.residency_work, intent["id"])
+    totals = %{restore_attempts: state.residency_totals.restore_attempts +
+        intent["attempt_epoch"] - (previous["attempt_epoch"] || 0),
+      invocation_starts: state.residency_totals.invocation_starts +
+        (if intent["state"] == "consumed", do: 1, else: 0) -
+        (if previous["state"] == "consumed", do: 1, else: 0)}
+    %{state | residency_intents: Map.put(state.residency_intents, intent["id"], intent),
+      residency_work: work, residency_keys: Map.put(state.residency_keys, {intent["principal"], intent["key"]}, intent["id"]),
+      residency_order: max(state.residency_order, intent["queue_order"] || 0), residency_totals: totals}
+  end
+
+  defp persist_residency(state, session, intent) do
+    op = %Op{kind: :residency_changed, tenant: session.tenant, principal: session.principal,
+      workload: session.workload, session_id: session.session_id, ts: state.clock.(),
+      payload: %{residency_intent: intent}}
+    case state.op_log_mod.append(state.op_log, op) do
+      {:ok, _seq} -> {:reply, {:ok, intent}, put_residency_intent(state, intent)}
+      {:error, _} = error -> {:reply, error, %{state | residency_uncertain: true}}
+    end
+  end
+
+  defp reject_residency_dispatch(state, session, intent, dispatch_id, reason) do
+    # Record exact negative evidence before returning it. A timeout here remains
+    # unknown to factory, even though no guest was called by this process.
+    updates = %{"rejected_dispatch_id" => dispatch_id, "rejection_reason" => reason}
+    updates = cond do
+      reason == "stale_generation" -> Map.merge(updates, %{"state" => "failed", "reason" => reason})
+      reason == "expired" -> Map.merge(updates, %{"state" => "expired", "reason" => reason})
+      intent["state"] == "ready" -> Map.merge(updates, %{"state" => "queued", "reason" => reason})
+      true -> updates
+    end
+    # Terminal cancellation still records exact negative dispatch evidence.
+    updated = intent |> Map.merge(updates) |> Map.put("version", intent["version"] + 1) |> Map.put("updated_at", state.clock.())
+    case persist_residency(state, session, updated) do
+      {:reply, {:ok, _}, state} -> {:reply, {:error, {:not_dispatched, intent["id"], dispatch_id, reason}}, state}
+      other -> other
     end
   end
 
