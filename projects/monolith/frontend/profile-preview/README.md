@@ -39,3 +39,27 @@ production surface is checked for horizontal page overflow.
 
 Keep generated output outside the worktree. These captures are repository
 evidence only. Actual-host navigation and rollout acceptance remain separate.
+
+## Ships
+
+`/app/ships` mounts the production route, ShipsApp, ShipsMap and both layouts,
+including the root error node's retained legacy CSS. The preview navigation
+adapter updates the URL without remounting the map. Its browser environment
+stub is explicitly true, so this exercises the client guard as well as chrome.
+`test/ships-fixtures.js` supplies invented AIS positions, heat cells and tracks.
+The renderer, provider tiles, sprites, glyphs and attribution are real.
+
+```sh
+node profile-preview/ships-browser-check.mjs /absolute/path/to/playwright/index.mjs /absolute/path/to/evidence
+```
+
+The check fixes the clock at October 19, 2026, 12:00 UTC. It captures vessels,
+a selected vessel and heat at 390 and 1440 pixels in both schemes. Assertions
+require loaded map content, no overflow, one chrome/control, keyboard scheme
+changes without camera/filter/track loss, URL restoration, pan, zoom and
+attribution. Provider bytes can be relayed through the guest's curl egress;
+they are not replaced with a mock map. This requires public provider access
+and does not test real-host data or post-merge rollout. Selected reviewed
+captures are archived under `projects/monolith/dev/ships/evidence/`, following
+the existing `dev/grimoire/evidence/` convention. Other generated output stays
+outside tracked source. The PR links the archived files directly.

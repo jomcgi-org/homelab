@@ -21,18 +21,12 @@
 </div>
 
 <style>
-  /* Full-bleed: the map fills everything under the global nav, edge to edge.
-     ShipsMap's .map-wrap is absolutely positioned, so this is its containing
-     block. */
+  /* The sheet reserves its chrome row; the existing map owns the remainder. */
   .ships-page {
     position: relative;
-    /* No site nav on /app/* routes, so the map owns the whole viewport.
-       100dvh tracks the dynamic viewport (mobile browser chrome) so the
-       bottom-anchored legend never falls off-screen. 100vh is the fallback. */
-    height: 100vh;
-    height: 100dvh;
+    min-height: 0;
     overflow: hidden;
-    background: var(--cream);
+    background: var(--sheet);
     color: var(--ink);
   }
 </style>
