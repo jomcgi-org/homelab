@@ -257,6 +257,10 @@ def check_execution(browser, base, output, evidence):
                         points.nth(1).wait_for()
                         assert points.count() == 2
                         points.nth(1).click()
+                        # Legacy reduced-motion CSS sets every element's
+                        # transition-duration to 0.01ms, including this border.
+                        # Advance the controlled clock through its next frame.
+                        page.clock.run_for(32)
                         selected = page.locator(
                             '.turns .walk .point[aria-current="true"]'
                         )
