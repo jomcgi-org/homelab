@@ -1,26 +1,6 @@
 # Default values for Kyverno
 # These are sensible defaults that can be overridden per environment
 
-# OpenTelemetry injection configuration
-otelInjection:
-  # This policy injects OTEL_EXPORTER_OTLP_ENDPOINT into every Deployment,
-  # StatefulSet, and DaemonSet. The replacement collector is deny-by-default
-  # and does not listen on 4317 or 4318 while its allowlist is empty. Enabling
-  # this globally would make every workload retry against a closed port.
-  # Services opt in explicitly by name after joining the collector allowlist.
-  enabled: false
-  background: true # Apply to existing AND new resources
-  endpoint: ""
-  protocol: "grpc"
-  targetKinds:
-    - Deployment
-    - StatefulSet
-    - DaemonSet
-  excludeNamespaces:
-    - kube-system
-    - kube-public
-    - kube-node-lease
-
 # Require resource requests + a memory limit (AUDIT-only) in first-party app
 # namespaces, so regressions in our own charts surface as PolicyReports. A CPU
 # limit is intentionally NOT required: CPU limits cause CFS throttling even on an

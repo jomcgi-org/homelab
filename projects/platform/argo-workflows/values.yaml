@@ -49,11 +49,8 @@ argo-workflows:
     # must not manage them (would need cluster RBAC + the cluster-scoped CRD).
     clusterWorkflowTemplates:
       enabled: false
-    # Pre-populate the Kyverno OTEL mutation annotation to match the cluster
-    # webhook (prevents ArgoCD drift, see the argocd-otel-outofsync saga) and
-    # expose the controller's :9090 telemetry endpoint for pod discovery.
+    # Expose the controller's :9090 telemetry endpoint for pod discovery.
     podAnnotations:
-      otel.injected-by: kyverno/inject-otel-env-vars
       prometheus.io/scrape: "true"
       prometheus.io/port: "9090"
       prometheus.io/path: "/metrics"
@@ -79,7 +76,6 @@ argo-workflows:
     clusterWorkflowTemplates:
       enabled: false
     podAnnotations:
-      otel.injected-by: kyverno/inject-otel-env-vars
       prometheus.io/scrape: "true"
       prometheus.io/port: "9090"
       prometheus.io/path: "/metrics"

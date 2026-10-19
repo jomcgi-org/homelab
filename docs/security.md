@@ -400,12 +400,12 @@ RuntimeDefault`). The private monolith applies that context to its backend,
 progress-ingest and frontend containers. Each gets
 a separate writable `/tmp` `emptyDir`, owned through pod `fsGroup: 65532`;
 the remainder of each root filesystem is read-only. No admission policy
-enforces any of it. Kyverno runs two `ClusterPolicy` objects, both `Audit`
-(`kubectl get clusterpolicies`):
-`require-resource-requests`, scoped to the `monolith` and `monolith-public`
-namespaces, and `clone-monolith-workflows-secrets`, which copies Secrets
-into the job namespace. The OTel injection policy is disabled. Nothing is
-rejected at admission, and no check flags a new exception: the repo's
+enforces any of it. The Kyverno chart renders two `ClusterPolicy` objects:
+`require-resource-requests` uses Audit validation in the `monolith` and
+`monolith-public` namespaces; `clone-monolith-workflows-secrets-v2` generates
+synchronized Secret copies in the job namespace. The disabled OTel injection
+template has been removed. Neither policy rejects security-context exceptions
+at admission, and no check flags a new exception: the repo's
 `no-privileged` and `no-host-network` Semgrep rules were removed (#4777).
 
 (see: `projects/embervm/`, `projects/monolith/sandbox/`, `projects/platform/kyverno/`)
@@ -515,7 +515,7 @@ a convention this document asks for and nothing enforces.
 |-------|-----------|-------|
 | Semgrep registry rules | Semgrep Managed Scans, configured on the Semgrep side | live; not in this repo |
 | Chart admissibility (kubeconform) | #5337 | not merged |
-| Pod hardening and privilege | Kyverno | two policies, both `Audit`, neither about security context |
+| Pod hardening and privilege | Kyverno | resource Audit validation and Secret generation; neither enforces security context |
 | Resource requests and a memory limit | Kyverno `require-resource-requests` | `Audit`, `monolith` and `monolith-public` only |
 | Public binary import closure | `main_public_imports_test` | live in CI |
 | Public route shape | `public_httproute_chat_guard_test` | live in CI |

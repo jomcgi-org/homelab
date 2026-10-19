@@ -34,8 +34,7 @@ spec:
     podGC:
       strategy: OnWorkflowSuccess
     podMetadata:
-      annotations:
-        otel.injected-by: kyverno/inject-otel-env-vars
+      annotations: {}
     securityContext:
       runAsNonRoot: true
       runAsUser: 12021

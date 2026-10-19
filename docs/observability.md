@@ -101,11 +101,10 @@ When at least one trace service is admitted, the shared OTLP receiver also feeds
 the metrics pipeline. The trace allowlist remains specific to the traces
 pipeline.
 
-## Automatic injection is off
+## Workloads configure exporters
 
-Kyverno's cluster-wide OTel environment-variable injection is disabled in
-`projects/platform/kyverno/values.yaml`. It was not redirected to the
-collector.
+Kyverno's disabled OTel injection template and values have been removed.
+The chart provides no cluster-wide exporter injection.
 
 The OpenTelemetry Operator chart was retired in #6914.
 `projects/platform-gke/` carries no Application for it.
@@ -259,7 +258,6 @@ tests as part of this staged delivery.
 - Hub overrides, probe targets, pod-log namespaces and the Honeycomb protocol:
   `projects/platform/otel-collector/values-gke.yaml`
 - Honeycomb trigger specs and `sync.py`: `projects/platform/honeycomb/`
-- Disabled cluster-wide injection: `projects/platform/kyverno/values.yaml`
 - Monolith health components and Discord alerts:
   `projects/monolith/factory/ops_health.py`,
   `projects/monolith/factory/health_alerts.py`, chart values `healthAlerts`

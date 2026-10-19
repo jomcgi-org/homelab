@@ -1,54 +1,91 @@
 # Kyverno
 
-Policy engine for Kubernetes with custom ClusterPolicies for automated observability.
+This wrapper chart installs Kyverno and two custom ClusterPolicies: resource
+Audit validation and synchronized Secret generation for monolith workflows.
+The hub Application is `projects/platform-gke/kyverno/application.yaml`; it
+renders this chart with `values.yaml` in the `kyverno` namespace.
 
-## Overview
+## Policies
 
-Kyverno acts as a Kubernetes admission controller that mutates resources to enforce cluster-wide conventions. This chart wraps the upstream Kyverno chart and adds custom ClusterPolicies that automatically inject OpenTelemetry configuration.
+`require-resource-requests` checks containers in Deployments, StatefulSets and
+DaemonSets in `monolith` and `monolith-public`. It requires CPU and memory
+requests plus a memory limit. It does not require a CPU limit. Violations appear
+in PolicyReports because `validationFailureAction` is `Audit`.
 
-```mermaid
-flowchart LR
-    API[API Server] -->|admission webhook| KYV[Kyverno]
+`clone-monolith-workflows-secrets-v2` generates Secret copies in
+`monolith-workflows`. Each rule matches its source Secret, so recreating a source
+triggers cloning again. `generateExisting: true` covers existing sources and
+`synchronize: true` keeps copies updated. This is a generate-only policy.
 
-    subgraph Policies
-        OTEL[OTel Injection Policy]
-    end
+| Rule | Source namespace | Source and target Secret |
+| --- | --- | --- |
+| `clone-to-monolith-workflows` | `monolith` | `monolith-pg-app` |
+| `clone-secrets-to-monolith-workflows` | `monolith` | `monolith-secrets` |
+| `clone-chat-secrets-to-monolith-workflows` | `monolith` | `monolith-chat-secrets` |
+| `clone-openrouter-to-monolith-workflows` | `monolith` | `goosecracker` |
+| `clone-meta-spark-to-monolith-workflows` | `monolith` | `monolith-meta-spark` |
+| `clone-dev-pg-app-to-monolith-workflows` | `monolith-dev` | `monolith-dev-pg-app` |
+| `clone-r2-s3-to-monolith-workflows` | `monolith` | `monolith-r2-s3` |
 
-    KYV --> OTEL
-    OTEL -->|inject env vars| Workloads[Deployments / StatefulSets / DaemonSets]
-```
+The dev credential rule is retained. These rules clone whole Secrets; the chat
+and provider Secrets can contain keys beyond those an individual job uses.
+The two aggregation ClusterRoles in the clone template grant Secret access to
+the background and admission controllers. Admission has read-only verbs;
+background also has create, update and delete.
 
-## Architecture
+### Changing clone rules
 
-The chart deploys four Kyverno controllers plus four custom ClusterPolicies:
+Kyverno rejects edits or removals of existing synchronizing generate rules.
+The replacement identity removes the obsolete ClickHouse and pg-dump-reader
+rules from `clone-monolith-workflows-secrets` (#7072). ArgoCD is configured to
+create the replacement policy and prune the former one.
 
-- **Admission Controller** - Intercepts API server requests to mutate and validate resources against policies
-- **Background Controller** - Applies policies retroactively to existing resources (not just new ones)
-- **Cleanup Controller** - Manages lifecycle of policy reports
-- **Reports Controller** - Generates policy compliance reports
+The migration intends to preserve and adopt existing clone targets in place.
+Rendering does not prove adoption or continued synchronization. Those require
+metadata-only live verification after an authorized rollout. Do not delete
+Secrets or rotate credentials to migrate a policy. The template header records
+the earlier immutable-rule failures (#4713 and #4721).
 
-Custom policies included:
+## Controllers
 
-- **OTel Injection** (`inject-otel-env-vars`) - Mutates Deployments, StatefulSets, and DaemonSets to inject `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` environment variables
-- **Require Resource Requests** (`require-resource-requests`) - Audits workloads for missing CPU/memory resource requests
-- **Clone Monolith Workflow Secrets** (`clone-monolith-workflows-secrets`) - Clones the monolith Postgres app secret and the other job-pod Secrets into `monolith-workflows`, triggered on each source Secret so a recreated source is re-cloned
-- **Clone SigNoz API Key** (`clone-signoz-api-key`) - Replicates the SigNoz `signoz-api-key` secret from the `signoz` namespace into the namespaces that call the SigNoz API
+The upstream dependency provides four controller components, separate from the
+two custom policies:
 
-## Key Features
-
-- **Cluster-wide observability** - All workloads automatically get OTel configuration
-- **Opt-out model** - Label with `otel.instrumentation: disabled` to exclude
-- **Background enforcement** - Policies apply to both existing and new resources
-- **Audit mode** - Policies use `validationFailureAction: Audit` (non-blocking)
-- **Policy exceptions** - Supports Kyverno PolicyExceptions for fine-grained overrides
+- Admission evaluates admission requests and validates policies.
+- Background reconciles generate and mutate-existing requests.
+- Cleanup handles cleanup policies and resource TTL cleanup.
+- Reports produces policy reports, including background scans.
 
 ## Configuration
 
-| Value                                       | Description                                | Default                                               |
-| ------------------------------------------- | ------------------------------------------ | ----------------------------------------------------- |
-| `otelInjection.enabled`                     | Enable OTel env var injection policy       | `true`                                                |
-| `otelInjection.endpoint`                    | OTel collector endpoint                    | `""`                                                  |
-| `otelInjection.protocol`                    | OTel exporter protocol                     | `grpc`                                                |
-| `otelInjection.targetKinds`                 | Resource kinds to inject into              | `[Deployment, StatefulSet, DaemonSet]`                |
-| `kyverno.admissionController.replicas`      | Admission controller replicas              | `1`                                                   |
-| `kyverno.features.policyExceptions.enabled` | Enable PolicyException CRD                 | `true`                                                |
+Upstream dependency values belong under `kyverno.*`. Wrapper policy values such
+as `requireResources` stay at the top level. The clone rules are defined directly
+in `templates/clone-monolith-pg-secret-policy.yaml`.
+
+| Wrapper value | Consumer and default |
+| --- | --- |
+| `requireResources.enabled` | Gates `templates/require-resources-policy.yaml`; `true` |
+| `requireResources.background` | Sets the policy's background scan; `true` |
+| `requireResources.targetKinds` | Sets the match kinds; Deployment, StatefulSet, DaemonSet |
+| `requireResources.includeNamespaces` | Sets the match namespaces; monolith, monolith-public |
+
+The pinned dependency reads `kyverno.admissionController.replicas` and
+`podAnnotations` in its admission Deployment template. Its container resource
+and security settings use `kyverno.admissionController.container.resources`
+and `kyverno.admissionController.container.securityContext`. The existing
+sibling `resources` and `securityContext` entries in this wrapper's values do
+not configure that container. They are left unchanged here. The dependency's
+config template reads `kyverno.config.resourceFilters` and
+`kyverno.config.excludeKyvernoNamespace`.
+
+Workloads set their exporter endpoints explicitly and join the collector's
+service allowlist as described in [Observability](../../../docs/observability.md).
+
+## Validation
+
+`policy_cleanup_test.py` renders the policies and affected workflow charts with
+Helm, including suspended and disabled paths. It checks the retained rule bodies,
+aggregation RBAC, removed injection artifacts and explicit workflow telemetry.
+The `policy_cleanup_test` Bazel target supplies the pinned Helm binary and chart
+inputs. Repository chart admissibility also validates the registered manifests
+against the pinned Kubernetes and CRD schemas in Linux CI.
