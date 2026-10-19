@@ -52,7 +52,7 @@ def png_dimensions(path, expected_width):
     return {"width": width, "height": height}
 
 
-def fingerprint(source, name):
+def fingerprint(source, name, *, include_generated=True):
     frontend = source / "projects/monolith/frontend"
     directory = frontend / suite.SUITES[name][0]
     files = [
@@ -64,7 +64,11 @@ def fingerprint(source, name):
         and path.suffix
         in {".js", ".mjs", ".svelte", ".json", ".css", ".html", ".py", ".ttf"}
     ]
-    files += [frontend / relative for relative in EXTRA_FIXTURES.get(name, [])]
+    files += [
+        frontend / relative
+        for relative in EXTRA_FIXTURES.get(name, [])
+        if include_generated or ".generated" not in Path(relative).parts
+    ]
     suite.require(
         files and all(path.is_file() for path in files),
         f"{name}: fixture inputs missing",
@@ -76,6 +80,30 @@ def fingerprint(source, name):
         for path in sorted(files)
     }
     return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+
+
+def baseline_plan(head_source, base_source, names):
+    """Do not apply today's capture matrix to an incompatible old harness."""
+    inputs = {}
+    eligible = []
+    for name in names:
+        record = inputs[name] = {
+            "head": fingerprint(head_source, name, include_generated=False),
+            "before": None,
+        }
+        harness = base_source / "projects/monolith/frontend" / suite.SUITES[name][0]
+        if not (harness / "vite.config.js").is_file():
+            continue
+        try:
+            record["before"] = fingerprint(base_source, name, include_generated=False)
+        except ValueError:
+            record["unavailable"] = (
+                "Baseline harness exists but required synthetic fixture inputs are missing. "
+                "No comparable before capture is available."
+            )
+        if record["before"] == record["head"]:
+            eligible.append(name)
+    return inputs, eligible
 
 
 def case_details(name, filename):
@@ -149,10 +177,15 @@ def assemble(
         after_record = head_records[name]
         before_record = base_records.get(name)
         reason = None
-        if before_record is None:
-            reason = f"Baseline has no {suite.SUITES[name][0]} harness. No matching before capture exists."
-        elif fingerprints[name]["head"] != fingerprints[name]["before"]:
+        if fingerprints[name].get("unavailable"):
+            reason = fingerprints[name]["unavailable"]
+        elif (
+            fingerprints[name]["before"] is not None
+            and fingerprints[name]["head"] != fingerprints[name]["before"]
+        ):
             reason = "Synthetic inputs or capture harness differ at the baseline. These captures are not labeled as a matched pair."
+        elif before_record is None:
+            reason = f"Baseline has no {suite.SUITES[name][0]} harness. No matching before capture exists."
         elif any(
             after_record[key] != before_record[key]
             for key in ("playwright", "chromium")
@@ -247,16 +280,7 @@ def run(output, evidence, head, base_sha):
             registered = True
             try:
                 names = suite.selected_suites()
-                base_names = [
-                    name
-                    for name in names
-                    if (
-                        source
-                        / "projects/monolith/frontend"
-                        / suite.SUITES[name][0]
-                        / "vite.config.js"
-                    ).is_file()
-                ]
+                inputs, base_names = baseline_plan(ROOT, source, names)
                 suite.run(root / "head-artifact", evidence / "head", head, names, ROOT)
                 if base_names:
                     # Install the baseline's own frozen lock. No production or
@@ -284,15 +308,13 @@ def run(output, evidence, head, base_sha):
                         base_names,
                         source,
                     )
-                inputs = {
-                    name: {
+                # Generated fixture data is available only after each contract
+                # checker runs. Compare it too before pairing eligible captures.
+                for name in base_names:
+                    inputs[name] = {
                         "head": fingerprint(ROOT, name),
-                        "before": fingerprint(source, name)
-                        if name in base_names
-                        else None,
+                        "before": fingerprint(source, name),
                     }
-                    for name in names
-                }
                 suite.assert_revision(ROOT, head)
                 model = assemble(
                     output,

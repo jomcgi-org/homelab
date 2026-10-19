@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import struct
+import shutil
 import zlib
 
 import compare
@@ -33,6 +34,79 @@ def png(width, height=1000):
 
 
 class CompareTests(unittest.TestCase):
+    def setup_sources(self, root, name):
+        head = root / "head-source"
+        base = root / "base-source"
+        frontend = head / "projects/monolith/frontend"
+        harness = frontend / suite.SUITES[name][0]
+        harness.mkdir(parents=True)
+        (harness / "vite.config.js").write_text("synthetic config")
+        (harness / "browser_check.py").write_text("current capture harness")
+        for relative in compare.EXTRA_FIXTURES.get(name, []):
+            if ".generated" in Path(relative).parts:
+                continue
+            path = frontend / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("invented fixture input")
+        shutil.copytree(head, base)
+        return head, base
+
+    def test_changed_historical_harness_skips_current_capture_matrix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            head, base = self.setup_sources(root, "trips")
+            checker = base / "projects/monolith/frontend/trips-preview/browser_check.py"
+            checker.write_text("historical 24-capture harness")
+            inputs, eligible = compare.baseline_plan(head, base, ["trips"])
+            self.assertEqual(eligible, [])
+            self.setup_artifacts(root, "trips", baseline=False)
+            model = self.assemble(root, "trips", baseline=False, fingerprints=inputs)
+            self.assertEqual(len(model["rows"]), 32)
+            self.assertTrue(
+                all(
+                    row["before"] is None
+                    and "capture harness differ" in row["unavailable"]
+                    for row in model["rows"]
+                )
+            )
+
+    def test_missing_historical_fixture_inputs_are_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            head, base = self.setup_sources(root, "trips")
+            (base / "projects/monolith/frontend/test/trips-fixtures.js").unlink()
+            inputs, eligible = compare.baseline_plan(head, base, ["trips"])
+            self.assertEqual(eligible, [])
+            self.setup_artifacts(root, "trips", baseline=False)
+            model = self.assemble(root, "trips", baseline=False, fingerprints=inputs)
+            self.assertTrue(
+                all(
+                    row["before"] is None and "inputs are missing" in row["unavailable"]
+                    for row in model["rows"]
+                )
+            )
+
+    def test_generated_factory_inputs_are_checked_after_eligibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            head, base = self.setup_sources(root, "factory")
+            _, eligible = compare.baseline_plan(head, base, ["factory"])
+            self.assertEqual(eligible, ["factory"])
+            for source, data in (
+                (head, "new invented response"),
+                (base, "old invented response"),
+            ):
+                path = (
+                    source
+                    / "projects/monolith/frontend/factory-preview/.generated/pages.json"
+                )
+                path.parent.mkdir()
+                path.write_text(data)
+            self.assertNotEqual(
+                compare.fingerprint(head, "factory"),
+                compare.fingerprint(base, "factory"),
+            )
+
     def setup_artifacts(self, root, name, baseline=True):
         for side, sha in (("head", HEAD), ("before", BASE)):
             if side == "before" and not baseline:
