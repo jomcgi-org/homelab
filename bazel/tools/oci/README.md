@@ -175,9 +175,9 @@ Created targets:
 
 Builds one Python 3 image using `py_image_layer` from `@aspect_rules_py`.
 The platform transition selects Linux for the caller's CPU, amd64 in Linux
-CI. The default base is pulled for amd64 only; another CPU needs a matching
-custom base. Handles runfiles layout, `PYTHONPATH`, and a `/bin/bash`
-symlink layer automatically.
+CI. The default Ubuntu base supports amd64 and arm64, including the separate
+dual-arch `//projects/monolith:domain_images` targets. Handles runfiles layout,
+`PYTHONPATH`, and a `/bin/bash` symlink layer automatically.
 
 ```python
 # projects/my_app/BUILD
@@ -205,7 +205,6 @@ py3_image(
 | `workdir`        | workspace root (auto)                   | Container working directory                                              |
 | `base`           | `@python_base`                          | Base image                                                               |
 | `tars`           | `[]`                                    | Additional concrete tar layers                                          |
-| `multiarch_tars` | `[]`                                    | Compatibility argument; unused by the single-platform path, use `tars` |
 | `bash_symlink`   | `True`                                  | Add `/bin/bash -> /usr/bin/bash` symlink layer; set `False` for Wolfi    |
 | `repository`     | `ghcr.io/jomcgi/homelab/{package_name}` | OCI registry repository URL                                              |
 | `visibility`     | `["//bazel/images:__pkg__"]`            | Visibility of the `.push` target                                         |
@@ -251,7 +250,7 @@ the deploy-time `values.yaml` never needs manual image entries.
 
 - Linux CI builds `go_image` and `py3_image` as single-platform amd64 images.
   `apko_image` retains its separate `arm64` knob: callers pass `False` except
-  noded, which builds an amd64 plus arm64 index with per-arch tars.
+  noded, which builds an amd64 plus arm64 index with `multiarch_tars`.
 - All containers run as uid `65532` (nonroot). The distroless base enforces
   this; apko images should declare a non-root user in their config.
 - The `{name}.push` target is visible to `//bazel/images:__pkg__` by default,

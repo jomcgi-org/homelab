@@ -8,7 +8,7 @@ load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/tools/oci:providers.bzl", "oci_image_info")
 
-def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}, workdir = None, base = "@python_base", tars = [], multiarch_tars = [], bash_symlink = True, repository = None, visibility = ["//bazel/images:__pkg__"]):
+def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}, workdir = None, base = "@python_base", tars = [], bash_symlink = True, repository = None, visibility = ["//bazel/images:__pkg__"]):
     """Create a Python 3 image for the caller's CPU (amd64 in Linux CI).
 
     Args:
@@ -23,8 +23,6 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
         workdir: The working directory to set in the image.
         base: The base image to use for the image.
         tars: Additional tar layers to include in the image (e.g., extra binaries or config).
-        multiarch_tars: Retained for compatibility. The single-platform path does not
-                       consume these tar base names; pass concrete layers in tars.
         bash_symlink: Create /bin/bash -> /usr/bin/bash symlink layer. Set to False for bases
                      where /bin is a symlink to /usr/bin (e.g., Wolfi apko images), as the
                      layer would shadow the /bin symlink and break /bin/* resolution.
