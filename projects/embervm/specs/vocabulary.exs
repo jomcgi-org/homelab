@@ -58,8 +58,8 @@
         # adoption.
         ~w(EvictArtifact ListArtifacts ArchiveVolume)a ++
         # Artifact-decoupling Phase 2: control-plane -> daemon workload-registry
-        # push (SyncRegistry converges the full pushed set). It delivers image identity, not
-        # VM lifecycle or adoption, so they are outside the adoption TLA model.
+        # push (SyncRegistry converges the full pushed set). It delivers image
+        # identity, not VM lifecycle or adoption, so it is outside the adoption TLA model.
         ~w(SyncRegistry)a
     # BuildBase (R0): the once-per-image base bake. The spec abstracts the pool as
     # an inexhaustible id supply (RecycleId) and never models base builds, so it is
