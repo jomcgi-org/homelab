@@ -40,7 +40,11 @@ js_library(
 js_run_binary(
     name = "review_fixture_preview",
     srcs = [":review_fixture_src"],
-    args = ["build", "--config", "review-preview/vite.config.js"],
+    args = [
+        "build",
+        "--config",
+        "review-preview/vite.config.js",
+    ],
     chdir = package_name(),
     out_dirs = ["review-fixture-preview"],
     tool = ":vite",
