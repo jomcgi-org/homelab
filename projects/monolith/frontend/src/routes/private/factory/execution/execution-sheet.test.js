@@ -5,6 +5,24 @@ const css = readFileSync(
   new URL("./execution-sheet.css", import.meta.url),
   "utf8",
 );
+const shared = readFileSync(
+  new URL(
+    "../../../../lib/public/styles/technical-drawing.css",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const rgb = (hex) => hex.match(/\w{2}/g).map((part) => parseInt(part, 16));
+const luminance = (color) =>
+  color
+    .map((c) => c / 255)
+    .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+    .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+const colors = (role) =>
+  [...shared.matchAll(new RegExp(`--${role}: #([0-9a-f]{6});`, "g"))].map(
+    (match) => rgb(match[1]),
+  );
+
 test("execution roles derive from sheet tokens without another palette", () => {
   expect(css).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|gradient\(/i);
   for (const declaration of css.matchAll(/box-shadow:\s*([^;]+);/g))
@@ -41,26 +59,9 @@ test("night scrims dim with the dark paper token in both scheme selectors", () =
 });
 
 test("success text on its tinted background clears AA in both schemes", () => {
-  const shared = readFileSync(
-    new URL(
-      "../../../../lib/public/styles/technical-drawing.css",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   const mix =
     Number(css.match(/--ok-soft: color-mix\(in srgb, var\(--ok\) (\d+)%/)[1]) /
     100;
-  const rgb = (hex) => hex.match(/\w{2}/g).map((part) => parseInt(part, 16));
-  const luminance = (color) =>
-    color
-      .map((c) => c / 255)
-      .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
-      .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
-  const colors = (role) =>
-    [...shared.matchAll(new RegExp(`--${role}: #([0-9a-f]{6});`, "g"))].map(
-      (match) => rgb(match[1]),
-    );
   const sheets = colors("sheet");
   // The shared :root night selectors override .td.console's --ok alias.
   const foregrounds = [colors("tone-ram")[0], ...colors("ok").slice(1)];
@@ -75,6 +76,45 @@ test("success text on its tinted background clears AA in both schemes", () => {
       (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
     ).toBeGreaterThanOrEqual(4.5);
   }
+});
+
+test("unfocused input and select boundaries clear 3:1 in both schemes", () => {
+  expect(css).toContain("--line-strong: var(--ink-2)");
+  const boundaries = colors("ink-2");
+  const sheets = colors("sheet");
+  // Day, system night and explicit night must all retain visible outlines.
+  expect(boundaries).toHaveLength(3);
+  expect(sheets).toHaveLength(3);
+  for (const [index, boundary] of boundaries.entries()) {
+    const a = luminance(boundary);
+    const b = luminance(sheets[index]);
+    expect(
+      (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
+    ).toBeGreaterThanOrEqual(3);
+  }
+  for (const file of ["Launcher.svelte", "+page.svelte"]) {
+    const component = readFileSync(new URL(file, import.meta.url), "utf8");
+    expect(component.match(/  \.box\s*\{[^}]+\}/)[0]).toContain(
+      "border: 1px solid var(--line-strong)",
+    );
+    if (file === "+page.svelte") {
+      expect(
+        component.match(
+          /\.new-panel textarea,\s*\.composer textarea,\s*select\s*\{[^}]+\}/,
+        )[0],
+      ).toContain("border: 1px solid var(--line-strong)");
+    }
+  }
+});
+
+test("the floating session menu has an ink outline", () => {
+  const component = readFileSync(
+    new URL("./PaneHeader.svelte", import.meta.url),
+    "utf8",
+  );
+  expect(component.match(/\.session-menu-popover\s*\{[^}]+\}/)[0]).toContain(
+    "border: 1px solid var(--ink)",
+  );
 });
 
 test("walkthrough selection has the sheet's visible left marker", () => {

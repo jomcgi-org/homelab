@@ -381,7 +381,6 @@ js_library(
         "src/lib/public/apps.js",
         "src/lib/public/components/Nav.svelte",
         "src/lib/public/components/SchemeToggle.svelte",
-        "src/lib/public/components/SiteIndex.svelte",
         "src/lib/public/components/TechnicalDrawingChrome.svelte",
         "src/lib/public/components/Trail.svelte",
         "src/lib/public/factory/activity.css",

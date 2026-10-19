@@ -397,7 +397,7 @@
     width: 176px;
     overflow: hidden;
     padding: 4px;
-    border: 1px solid var(--line);
+    border: 1px solid var(--ink);
     border-radius: 0;
     background: var(--panel-bg);
     box-shadow: none;

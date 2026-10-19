@@ -7,7 +7,10 @@
   --text: var(--ink);
   --text-soft: var(--ink-2);
   --muted: var(--ink-2);
-  --line-strong: var(--stroke);
+  /* The 28% ink stroke gave input boundaries only 1.79:1 by day and
+     2.26:1 by night on the sheet. Ink-2 restores the 3:1 control floor:
+     6.56:1 by day and 6.80:1 by night, before focus. */
+  --line-strong: var(--ink-2);
   --hover: var(--band);
   --ink-text: var(--sheet);
   --code-bg: var(--paper);
@@ -73,8 +76,6 @@ html[data-theme="dark"] .td.console {
 body:has(main.execution-sheet) {
   overflow: hidden;
 }
-body:has(main.execution-sheet) > .back-to-dashboard,
-body:has(main.drain-page) > .back-to-dashboard,
 body:has(main.execution-sheet) .back-to-dashboard,
 body:has(main.drain-page) .back-to-dashboard {
   display: none;

@@ -488,7 +488,8 @@
     background: var(--hover);
   }
   /* The sheet's accent edge marks selection even when both grounds match.
-     Unexplained and contradicted files retain their error ground. */
+     Unexplained files retain their error ground; contradicted files retain
+     attention-coloured titles. */
   .point.on {
     background: var(--panel-bg);
     border-left-color: var(--accent-ink);

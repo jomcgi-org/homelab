@@ -99,14 +99,21 @@ def assert_color_roles(page):
         .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
       const fg = luminance(rgba('--ok')), bg = luminance(rgba('--ok-soft'));
       const sheet = rgba('--sheet'), scrim = rgba('--scrim-bg');
+      const boundary = rgba('--line-strong');
+      const boundaryLuminance = luminance(sheet.slice(0, 3).map((c, i) =>
+        boundary[i] * boundary[3] + c * (1 - boundary[3])));
+      const sheetLuminance = luminance(sheet);
       rgba('--accent-ink');
       const alpha = scrim[3];
       const blended = sheet.slice(0, 3).map((c, i) => scrim[i] * alpha + c * (1 - alpha));
       return {scheme: getComputedStyle(main).colorScheme, scrim, resolved,
         successContrast: (Math.max(fg, bg) + .05) / (Math.min(fg, bg) + .05),
+        controlBoundaryContrast: (Math.max(boundaryLuminance, sheetLuminance) + .05) /
+          (Math.min(boundaryLuminance, sheetLuminance) + .05),
         sheetLuminance: luminance(sheet), dimmedLuminance: luminance(blended)};
     }""")
     assert measured["successContrast"] >= 4.5, measured
+    assert measured["controlBoundaryContrast"] >= 3, measured
     assert measured["dimmedLuminance"] < measured["sheetLuminance"], measured
     return measured
 
