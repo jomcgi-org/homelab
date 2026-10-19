@@ -21,6 +21,7 @@ REGISTRY = "ghcr.io/jomcgi/homelab/charts"
 SHA = re.compile(r"[0-9a-f]{40}")
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 WORKLOADS = {"Deployment", "StatefulSet", "DaemonSet"}
+MAX_PUBLICATION_CANDIDATES = 8
 _recent: dict[tuple, tuple[float, object]] = {}
 
 
@@ -119,11 +120,12 @@ def ancestor(repo: str, older: str, newer: str, get) -> bool:
     return comparison.get("status") in ("ahead", "identical")
 
 
-def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
+def receipts_for(repo: str, merge_sha: str, get, listing) -> tuple[dict, list[dict]]:
     # A bounded search may defer, but may never turn an absent receipt into a
     # no-op publication. Lists come from main, not a PR or merge-queue ref.
     candidate = None
     latest = None
+    receipts = {}
     complete = False
     for page in (1, 2):
         commits = listing(repo, f"commits?sha=main&per_page=100&page={page}")
@@ -143,8 +145,9 @@ def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
                 continue
             if not ancestor(repo, receipt["source_sha"], receipt["commit_sha"], get):
                 raise Pending("publication_source_not_on_main")
-            # Publishers may finish out of source order. Source ancestry pins
-            # the first covering scope and the newest proven deployment.
+            receipts[receipt["commit_sha"]] = receipt
+            # Publishers may finish out of source order. Preserve the first
+            # covering scope and prefer the newest source when both are deployed.
             if latest is None:
                 latest = receipt
                 candidate = receipt
@@ -168,25 +171,9 @@ def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
         raise Pending("publication_receipt_missing")
     if not complete:
         raise Pending("publication_scope_incomplete")
-    successful = set()
-    for source_sha in dict.fromkeys((candidate["source_sha"], latest["source_sha"])):
-        ci = get(repo, f"commits/{source_sha}/status")
-        required = [
-            s for s in ci.get("statuses", []) if s.get("context") == "pr-checks"
-        ]
-        if len(required) == 1 and required[0].get("state") == "success":
-            successful.add(source_sha)
-    if latest["source_sha"] not in successful:
-        raise Pending("publication_ci_not_successful")
-    # Keep the first publication's catalog for complete, delivery-specific
-    # scope. A failed first source can be superseded only by deploying the
-    # successful descendant in every scoped Git source as well as its charts.
-    git_source = (
-        candidate["source_sha"]
-        if candidate["source_sha"] in successful
-        else latest["source_sha"]
-    )
-    return {**latest, "scope_receipt": candidate, "git_source_sha": git_source}
+    return candidate, [latest] + [
+        receipt for sha, receipt in receipts.items() if sha != latest["commit_sha"]
+    ]
 
 
 def sources(app: dict) -> list[dict]:
@@ -256,6 +243,92 @@ def chart_versions(repo: str, receipt: dict, get) -> dict[str, str]:
         name: version
         for name, (_, version) in chart_catalog(repo, receipt, get).items()
     }
+
+
+class CoveringPublications:
+    """Share bounded candidate proof across the scoped fleet in one observation."""
+
+    def __init__(self, repo, scope, receipts, get):
+        self.repo, self.scope, self.receipts, self.get = repo, scope, receipts, get
+        self.catalogs = {}
+        self.checked = set()
+
+    def catalog(self, receipt):
+        sha = receipt["commit_sha"]
+        if sha not in self.catalogs:
+            self.catalogs[sha] = chart_catalog(self.repo, receipt, self.get)
+        return self.catalogs[sha]
+
+    def successful(self, source_sha):
+        ci = self.get(self.repo, f"commits/{source_sha}/status")
+        required = [
+            s for s in ci.get("statuses", []) if s.get("context") == "pr-checks"
+        ]
+        return len(required) == 1 and required[0].get("state") == "success"
+
+    def proven(self, receipt):
+        sha = receipt["commit_sha"]
+        if sha not in self.checked:
+            if len(self.checked) >= MAX_PUBLICATION_CANDIDATES:
+                raise Pending("publication_candidate_limit")
+            self.checked.add(sha)
+        if not self.successful(receipt["source_sha"]):
+            raise Pending("publication_ci_not_successful")
+        # PR #7173: failed original CI requires the successful descendant
+        # in every scoped owned Git source, including values-only sources.
+        floor = (
+            self.scope["source_sha"]
+            if self.successful(self.scope["source_sha"])
+            else receipt["source_sha"]
+        )
+        return {**receipt, "git_source_sha": floor}
+
+    def evidence(self, snapshot, app=None):
+        blocker = None
+        for receipt in self.receipts:
+            if app is not None:
+                app_sources = sources(app)
+                revisions = deployed_revisions(app)
+                # A cheap rejection only. Chart names, CI and all live evidence
+                # are still verified below. Never read every newer chart catalog
+                # or CI status while production waits behind a promotion gate.
+                if len(revisions) == len(app_sources) and any(
+                    source.get("repoURL") == REGISTRY
+                    and revision not in receipt["charts"].values()
+                    for source, revision in zip(app_sources, revisions, strict=True)
+                ):
+                    continue
+            try:
+                proven = self.proven(receipt)
+                evidence = {}
+                if app is not None:
+                    versions = {
+                        name: version
+                        for name, (_, version) in self.catalog(receipt).items()
+                    }
+                    evidence = application_evidence(
+                        self.repo, proven, snapshot, versions, self.get, app
+                    )
+                return {
+                    **evidence,
+                    "publication_commit_sha": proven["commit_sha"],
+                    "source_commit_sha": proven["source_sha"],
+                    "git_source_commit_sha": proven["git_source_sha"],
+                }
+            except Pending as exc:
+                if str(exc) not in {
+                    "publication_ci_not_successful",
+                    "published_chart_not_deployed",
+                    "git_revision_not_deployed",
+                }:
+                    raise
+                blocker = blocker or exc
+        raise blocker or Pending("published_chart_not_deployed")
+
+
+def deployed_revisions(app):
+    sync = app.get("status", {}).get("sync", {})
+    return sync.get("revisions") or ([sync["revision"]] if sync.get("revision") else [])
 
 
 def changed_files(repo: str, pr_number: int | None, listing) -> set[str] | None:
@@ -620,10 +693,8 @@ def workload_evidence(workload: dict, pods: list[dict], *, pinned: bool) -> dict
 
 def evaluate(
     repo: str,
-    receipt: dict,
+    publications: CoveringPublications,
     snapshot: dict,
-    versions: dict,
-    get,
     scoped_applications: set[str] | None = None,
 ) -> list[dict]:
     applications = [app for app in snapshot["applications"] if managed(repo, app)]
@@ -635,9 +706,7 @@ def evaluate(
         if scoped_applications is not None and name not in scoped_applications:
             continue
         try:
-            evidence.append(
-                application_evidence(repo, receipt, snapshot, versions, get, app)
-            )
+            evidence.append(publications.evidence(snapshot, app))
         except Pending as exc:
             exc.application = name
             raise
@@ -683,9 +752,7 @@ def application_evidence(repo, receipt, snapshot, versions, get, app):
     )
     if normalized(observed_sources) != normalized(app_sources):
         raise Pending("application_comparison_stale")
-    revisions = sync.get("revisions") or (
-        [sync["revision"]] if sync.get("revision") else []
-    )
+    revisions = deployed_revisions(app)
     if len(revisions) != len(app_sources):
         raise Pending("deployed_revision_missing")
     pinned = False
@@ -808,19 +875,15 @@ async def cluster_snapshot(
 def verify(
     repo: str, merge_sha: str, pr_number=None, *, get=None, listing=None, snapshot=None
 ) -> dict:
-    get, listing = get or _get, listing or _listing
+    # Keep repeated ancestry, catalog and CI reads within this observation
+    # coherent, without extending the shared 30s freshness window.
+    get, listing = lru_cache(maxsize=1024)(get or _get), listing or _listing
     try:
         if not isinstance(merge_sha, str) or not SHA.fullmatch(merge_sha):
             raise Pending("merge_identity_missing")
-        receipt = receipt_for(repo, merge_sha, get, listing)
-        catalog = chart_catalog(repo, receipt, get)
-        scope_receipt = receipt["scope_receipt"]
-        scope_catalog = (
-            chart_catalog(repo, scope_receipt, get)
-            if scope_receipt["commit_sha"] != receipt["commit_sha"]
-            else catalog
-        )
-        versions = {name: version for name, (_, version) in catalog.items()}
+        scope_receipt, receipts = receipts_for(repo, merge_sha, get, listing)
+        publications = CoveringPublications(repo, scope_receipt, receipts, get)
+        scope_catalog = publications.catalog(scope_receipt)
         files = changed_files(repo, pr_number, listing)
         surface = DeploySurface(repo, merge_sha, get)
         if snapshot is None:
@@ -850,14 +913,23 @@ def verify(
                 ("snapshot", repo, tuple(sorted(scoped))),
                 lambda: asyncio.run(observe()),
             )
-        apps = evaluate(repo, receipt, snapshot, versions, get, scoped)
+        apps = evaluate(repo, publications, snapshot, scoped)
+        # A mixed fleet has no single deployed publication. Per-app evidence is
+        # authoritative; keep the common fields only where they agree.
+        proofs = apps or [publications.evidence(snapshot)]
+        identities = {}
+        for key in (
+            "publication_commit_sha",
+            "source_commit_sha",
+            "git_source_commit_sha",
+        ):
+            values = {proof[key] for proof in proofs}
+            identities[key] = values.pop() if len(values) == 1 else None
         result = {
             "verified": True,
             "merge_commit_sha": merge_sha,
-            "publication_commit_sha": receipt["commit_sha"],
+            **identities,
             "scope_publication_commit_sha": scope_receipt["commit_sha"],
-            "source_commit_sha": receipt["source_sha"],
-            "git_source_commit_sha": receipt["git_source_sha"],
             "observed_at": snapshot.get("observed_at")
             or datetime.now(timezone.utc).isoformat(),
             "applications": apps,
@@ -870,7 +942,7 @@ def verify(
                 render_check={
                     "context": "pr-checks",
                     "state": "success",
-                    "commit_sha": receipt["source_sha"],
+                    "commit_sha": identities["source_commit_sha"],
                 },
             )
         return result
