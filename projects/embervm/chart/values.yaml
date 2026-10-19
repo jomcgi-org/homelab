@@ -795,41 +795,8 @@ sandboxWorkloads:
     cap: 4
     timeoutSeconds: 30
 
-# The bazel-query workload (ADR embervm/010: the Skyframe snapshot demo). Task
-# class: the base is a warm Bazel server (Abseil analysis graph resident in the
-# JVM heap); each request restores a CoW clone, runs one `bazel cquery`, and the
-# VM is destroyed after the response (task-class Assign is the reap, so no idle
-# TTL). Its guest image ref is the SAME Bazel-pinned value the noded rootfs-builder
-# bakes and EMBERVM_NODED_IMAGES keys on, so BuildBase(ref) resolves on the node.
-# Guest contract: vsock 1027, /shim/ready (200 only after the warming client
-# exits), /query (one POST with {"expression": "..."}).
-bazelQueryWorkload:
-  enabled: true
-  name: bazel-query
-  port: 1027
-  readyPath: /shim/ready
-  invokePath: /query
-  vcpus: 2
-  # Measured warm usage at the base snapshot cutoff (#4062): 548 MiB of guest
-  # unreclaimable memory, including the 203 MiB /tmp tmpfs use. 1024 MiB gives
-  # about 1.9x headroom while leaving the -Xmx1g JVM heap unchanged.
-  #
-  # ENOSPC COUPLING: memMib is sized to hold the guest's tmpfs in RAM. If a live
-  # base build ENOSPCs on /tmp during the warming cquery, the tmpfs `size=` in the
-  # guest-init (runtimes/bazel/guest-init/cmd/mount_linux.go) and this memMib MUST be
-  # raised TOGETHER: a larger tmpfs with the same memMib would exhaust guest RAM
-  # instead of running out of /tmp, trading one failure for another.
-  memMib: 1024
-  # floor: one primed clone kept warm; restore is demand-paged so a miss is cheap.
-  floor: 1
-  # cap: the governor is RAM (ADR); raise only after measuring per-clone dirtied
-  # RSS. One query per clone means throughput scales with restore rate, not cap.
-  cap: 2
-  timeoutSeconds: 20
-
 # The shotter workload (ADR embervm/035: the website snapshotter). Task class,
-# the same warm-snapshot shape as bazel-query above but with a headless Chromium
-# resident instead of a Bazel server: guest-init launches Chromium, polls its CDP
+# with a headless Chromium resident: guest-init launches Chromium, polls its CDP
 # endpoint until it genuinely answers, and only then flips /shim/ready, which is
 # what triggers the base snapshot. Each request restores a CoW clone, drives one
 # screenshot over CDP, and the VM is destroyed after the response.
@@ -843,8 +810,7 @@ shotterWorkload:
   readyPath: /shim/ready
   invokePath: /shim/screenshot
   vcpus: 2
-  # ENOSPC COUPLING, the same invariant bazelQueryWorkload documents above and
-  # for the same reason: memMib has to hold the guest's tmpfs in RAM, because a
+  # ENOSPC COUPLING: memMib has to hold the guest's tmpfs in RAM, because a
   # tmpfs page is guest RAM the instant it is written. Chromium runs with
   # --disable-dev-shm-usage, so its shared-memory scratch lands on the 512m /tmp
   # tmpfs set in runtimes/shotter/guest-init/cmd/mount_linux.go. Nothing in the
@@ -857,8 +823,8 @@ shotterWorkload:
   # 2048 leaves roughly 1.5 GiB above the tmpfs cap for Chromium itself, which
   # idles far below that at about:blank but grows while rasterizing a page.
   memMib: 2048
-  # floor 0: unlike bazel-query this is called occasionally by an agent, not on a
-  # hot path, so a miss paying a restore (about 250ms cold spawn worst case) is
+  # floor 0: agents call this occasionally, so a miss paying a restore
+  # (about 250ms cold spawn worst case) is
   # the right trade. floor is a PER-BRICK multiplier, so a non-zero floor at
   # 2048 MiB would reserve capacity on every brick for a tool that is idle most
   # of the time.
@@ -958,15 +924,6 @@ workloads:
   scratchPostgres:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/scratch-postgres/rootfs.ext4
     harnessInit: /usr/local/bin/ember-postgres-init
-  # Bazel Skyframe query demo base (ADR embervm/010). Its PID-1 ember-bazel-init
-  # mounts a large tmpfs at /tmp, runs the warming `bazel cquery //absl/...`
-  # offline (distdir), and only flips /shim/ready after the warming CLIENT exits
-  # so BuildBase snapshots the warm JVM (analysis graph resident in heap). The key
-  # must match the top-level `bazelQuery` block below (the deployment ranges over
-  # `workloads` and looks the guest image up by the same key).
-  bazelQuery:
-    rootfsPath: /var/lib/embervm/scratch/embervm-noded/bazel-query/rootfs.ext4
-    harnessInit: /usr/local/bin/ember-bazel-init
   # Website snapshotter base (ADR embervm/035). Its PID-1 ember-shotter-init
   # launches headless Chromium, waits for the CDP endpoint to answer, and only
   # then flips /shim/ready, so BuildBase snapshots a browser that is already
@@ -1113,18 +1070,6 @@ scratchPostgres:
 # Workload CR's per-member source.image.ref. Disabled by default: enabling it
 # requires the 1Password item (scratchK8s.onepassword.itemPath) so the stable
 # EMBER_GROUP_SECRET exists.
-
-# The bazel-query base image (ADR embervm/010: the Skyframe snapshot demo), Bazel-
-# pinned (helm_chart images="bazelQuery.guestImage") from its .info provider.
-# Distinct FLAT top-level key (never nested) so the image pin does not collide on
-# YAML parse (D14a.6). Three refs derive from here and always match: the rootfs-
-# builder GUEST_IMAGE, the derived EMBERVM_NODED_IMAGES entry, and the Workload
-# CR's source.image.ref.
-bazelQuery:
-  guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/bazel
-    tag: latest
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 # The shotter base image (ADR embervm/035: the website snapshotter), a warm
 # headless Chromium. Bazel-pinned (helm_chart images="shotter.guestImage") from

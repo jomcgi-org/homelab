@@ -466,10 +466,6 @@ apko.translate_lock(
     lock = "//projects/embervm/runtimes/k3s/k3s-agent:apko.lock.json",
 )
 apko.translate_lock(
-    name = "embervm_runtime_bazel_lock",
-    lock = "//projects/embervm/runtimes/bazel:apko.lock.json",
-)
-apko.translate_lock(
     name = "shotter_lock",
     lock = "//projects/embervm/runtimes/shotter:apko.lock.json",
 )
@@ -485,7 +481,7 @@ apko.translate_lock(
     name = "embervm_runtime_pi_lock",
     lock = "//projects/embervm/runtimes/pi:apko.lock.json",
 )
-use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "shotter_lock", "stars_grid_apko_lock")
+use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "shotter_lock", "stars_grid_apko_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
@@ -552,36 +548,6 @@ k3s_archive(
     arm64_airgap_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s-airgap-images-arm64.tar.zst",
     arm64_binary_sha256 = "d6a4aac2945bf7a757b87a56f41b49c500ed5d4ccc2b42284ebfbd3cd1a25162",
     arm64_binary_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s-arm64",
-)
-
-# Vendor the Abseil checkout + its dep distdir for the EmberVM skyframe demo guest
-# (ADR embervm/010). The zero-egress bazel-query guest runs the warming
-# `bazel cquery //absl/...` fully offline via WORKSPACE mode + --distdir; this rule
-# bakes /opt/abseil and /opt/distdir into an apko layer. The dep set was enumerated
-# and its offline viability proven under Bazel 7.4.1 (see bazel_demo_workspace.bzl).
-bazel_demo_workspace = use_repo_rule("//bazel/tools/http:bazel_demo_workspace.bzl", "bazel_demo_workspace")
-
-bazel_demo_workspace(
-    name = "bazel_demo_workspace",
-    abseil_sha256 = "733726b8c3a6d39a4120d7e45ea8b41a434cdacde401cba500f14236c49b39dc",
-    abseil_strip_prefix = "abseil-cpp-20240116.2",
-    abseil_url = "https://github.com/abseil/abseil-cpp/releases/download/20240116.2/abseil-cpp-20240116.2.tar.gz",
-    distdir_sha256s = [
-        "cd55a062e763b9349921f0f5db8c3933288dc8ba4f76dd9416aac68acee3cb94",  # bazel-skylib-1.5.0.tar.gz
-        "6bc180a57d23d4d9515519f92b0c83d61b05b5bab188961f36ac7b06b0d9e9ce",  # v1.8.3.tar.gz (google/benchmark)
-        "8ad598c73ad796e0d8280b082cebd82a630d73e73cd3c70057938a6501bba5d7",  # v1.14.0.tar.gz (google/googletest)
-        "8150406605389ececb6da07cbcb509d5637a3ab9a24bc69b1101531367d89d74",  # platforms-0.0.8.tar.gz
-        "2037875b9a4456dce4a79d112a8ae885bbc4aad968e6587dca6e64f3a0900cdf",  # rules_cc-0.0.9.tar.gz
-        "0a8003b044294d7840ac7d9d73eef05d6ceb682d7516781a4ec62eeb34702578",  # rules_python-0.24.0.tar.gz
-    ],
-    distdir_urls = [
-        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.5.0/bazel-skylib-1.5.0.tar.gz",
-        "https://github.com/google/benchmark/archive/refs/tags/v1.8.3.tar.gz",
-        "https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz",
-        "https://github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
-        "https://github.com/bazelbuild/rules_cc/releases/download/0.0.9/rules_cc-0.0.9.tar.gz",
-        "https://github.com/bazelbuild/rules_python/releases/download/0.24.0/rules_python-0.24.0.tar.gz",
-    ],
 )
 
 # Linux-only acceptance tools for the public Envoy Gateway policy guard. egctl

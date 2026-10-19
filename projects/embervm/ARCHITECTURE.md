@@ -1863,9 +1863,12 @@ HTTPRoutes, with serving routes additionally constrained by node Envoy authority
 matches. Node Envoy returns 404 for `/shim/*` before routing to a serving
 workload, so the workload handler never sees the reserved prefix. Inside the
 guest, hydrate is build-only and the shim refuses another hydrate once it is
-ready. The pattern's proof is a public Bazel-query demo that serves each visitor
-query from a disposable CoW clone of a warm-Skyframe snapshot: server-controlled
-argv, zero egress, reaped per request.
+ready. The public Bazel-query demo exercised this pattern with server-controlled
+argv, zero egress and a disposable clone per query. Its exhibit retired in
+#6937; its unused guest image, Workload and build dependencies retired in #7056.
+
+**Why.** No deployed stack or caller used the Bazel demo after the exhibit was
+removed. Building and publishing its runtime no longer served a workload.
 
 **Guest identity**: a guest never holds a cluster credential (**Built**, by
 construction: no NIC, no mounted ServiceAccount); the
@@ -2260,7 +2263,7 @@ has the full text.
 | embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted historically; Postgres Built, cell work closed unmerged and is not planned ([#4753](https://github.com/jomcgi-org/homelab/issues/4753), [#3855](https://github.com/jomcgi-org/homelab/issues/3855), [PR #6069](https://github.com/jomcgi-org/homelab/pull/6069)); tracker [#3853](https://github.com/jomcgi-org/homelab/issues/3853) closed | deleted |
 | embervm/008 | Opt-in two-phase interruptible bank | Accepted, Built | deleted |
 | embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; quickstart merged (#3856, #3858), clean-host KVM validation not yet done | deleted |
-| embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Accepted, Built | deleted |
+| embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Retired with the exhibit (#6937); runtime removed in #7056 | deleted |
 | embervm/011 | Vendor-bound warmth, single-writer fencing, CP-sequenced rollouts | Accepted; stateful Longhorn withdrawn by 025; sole-issuer rule amended by 017, 018, 040 | deleted |
 | embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA not planned (#3862) | deleted |
 | embervm/013 | Classes are reuse semantics, substrates are lanes; brick sizing; bricks everywhere | Accepted, Built | deleted |

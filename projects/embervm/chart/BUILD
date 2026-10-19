@@ -66,12 +66,6 @@ helm_chart(
         # egress allowlist, so moving this pin is what changes the destination
         # policy.
         "shotter.guestImage": "//projects/embervm/runtimes/shotter:image.info",
-        # ADR embervm/010 (Skyframe snapshot demo): the bazel-query base image (a
-        # warm Bazel server over Abseil). Distinct FLAT top-level key (D14a.6),
-        # digest-pinned from its .info so the pushed image identity
-        # (EMBERVM_NODE_IMAGE_IDENTITY), the rootfs-builder GUEST_IMAGE, and the
-        # Workload CR's source.image.ref all resolve to the same pinned digest.
-        "bazelQuery.guestImage": "//projects/embervm/runtimes/bazel:image.info",
         "scratchPrep.image": "//projects/embervm/scratch-prep:image.info",
         "tokenBroker.image": "//projects/embervm/tokenbroker/image:image.info",
         # Dev-only deployed scenario runner. Kept beside tokenBroker.image as
