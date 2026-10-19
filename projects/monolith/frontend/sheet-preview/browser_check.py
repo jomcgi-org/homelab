@@ -28,12 +28,29 @@ def geometry(page):
     result = page.evaluate("""() => ({
       viewport: {width: innerWidth, height: innerHeight},
       scrollWidth: document.documentElement.scrollWidth,
+      scrollHeight: document.documentElement.scrollHeight,
+      scrollY,
+      bodyOverflowY: getComputedStyle(document.body).overflowY,
       sheet: (() => { const s = getComputedStyle(document.querySelector('main.sheet'));
         return {background: s.backgroundColor, ink: s.color, padding: s.padding}; })(),
       iframe: document.querySelector('iframe')?.getBoundingClientRect().toJSON() ?? null
     })""")
     assert result["scrollWidth"] <= result["viewport"]["width"], result
     return result
+
+
+def shared_rule_last(page, selector):
+    # Replay the actual shared rule after page CSS to cover either chunk order.
+    rules = page.evaluate(
+        """selector => [...document.styleSheets]
+      .filter(sheet => sheet.href?.startsWith(location.origin + '/'))
+      .flatMap(sheet => [...sheet.cssRules])
+      .filter(rule => rule.selectorText === selector)
+      .map(rule => rule.cssText)""",
+        selector,
+    )
+    assert len(rules) == 1, (selector, rules)
+    return page.add_style_tag(content=rules[0])
 
 
 def focus(page, locator):
@@ -64,6 +81,13 @@ def leaderboard_checks(page):
         page.get_by_role("navigation", name="You are here").filter(visible=True).count()
         == 1
     )
+    dock = page.locator(".lb-page .trail-dock")
+    assert dock.evaluate("node => getComputedStyle(node).marginBottom") == "0px"
+    shared = shared_rule_last(page, ".sheet .trail-dock")
+    try:
+        assert dock.evaluate("node => getComputedStyle(node).marginBottom") == "0px"
+    finally:
+        shared.evaluate("node => node.remove()")
     history_length = page.evaluate("history.length")
     page.get_by_role("button", name="All", exact=True).click()
     cost = page.locator(".ranked th button").filter(has_text=re.compile(r"^\$ / task"))
@@ -105,7 +129,7 @@ def leaderboard_checks(page):
     return result
 
 
-def artifact_checks(page, width):
+def artifact_checks(page, width, banner=False):
     frame = page.locator("iframe")
     assert frame.get_attribute("sandbox") == "allow-scripts"
     assert frame.get_attribute("src") == "/artifact/fixture/raw"
@@ -113,18 +137,47 @@ def artifact_checks(page, width):
     assert frame.get_attribute("srcdoc") is None
     assert page.title() == "Artifact"
     assert page.locator(".md-nav, .chrome, .scheme, .frame, .spine").count() == 0
-    bounds = geometry(page)["iframe"]
+    layout = geometry(page)
+    bounds = layout["iframe"]
+    banner_bounds = (
+        page.locator(".maintenance-banner").bounding_box() if banner else None
+    )
+    if banner:
+        assert banner_bounds and banner_bounds["height"] > 0, banner_bounds
+        assert layout["scrollHeight"] > HEIGHT, layout
     assert {key: bounds[key] for key in ["x", "y", "width", "height"]} == {
         "x": 0,
-        "y": 0,
+        "y": banner_bounds["height"] if banner else 0,
         "width": width,
         "height": HEIGHT,
     }, bounds
+    # Wheel over the banner (or iframe when absent) and keep outer-page scrolling
+    # disabled even when the banner makes the document taller than the viewport.
+    page.mouse.move(width / 2, 5)
+    page.mouse.wheel(0, HEIGHT)
+    page.wait_for_timeout(200)
+    layout = geometry(page)
+    assert layout["bodyOverflowY"] == "hidden" and layout["scrollY"] == 0, layout
+    shared = shared_rule_last(page, "body:has(.td)")
+    try:
+        page.mouse.wheel(0, HEIGHT)
+        page.wait_for_timeout(200)
+        shared_last_layout = geometry(page)
+        assert (
+            shared_last_layout["bodyOverflowY"] == "hidden"
+            and shared_last_layout["scrollY"] == 0
+        ), shared_last_layout
+    finally:
+        shared.evaluate("node => node.remove()")
     child = page.frame_locator("iframe")
     assert child.locator("body").get_attribute("data-parent-access") == "blocked"
     assert page.evaluate("window.artifactRan === undefined")
     button = child.get_by_role("button", name="Count locally")
-    result = {"button_focus": focus(page, button)}
+    result = {
+        "layout": layout,
+        "shared_rule_last_layout": shared_last_layout,
+        "button_focus": focus(page, button),
+    }
     button.press("Enter")
     assert child.get_by_role("status").inner_text() == "1 local clicks"
     return result
@@ -237,6 +290,13 @@ def check(root, output, executable=None):
                                     )
                                     artifact_checks(page, width)
                                     record["prefixed_routes"].append(geometry(page))
+                                page.goto(
+                                    f"{base}/?surface=artifact&banner=1",
+                                    wait_until="networkidle",
+                                )
+                                record["maintenance_banner"] = artifact_checks(
+                                    page, width, banner=True
+                                )
                             assert not errors, errors
                             record["status"] = "passed"
                         except (AssertionError, PlaywrightError):

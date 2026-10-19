@@ -55,8 +55,9 @@
   gap: 1.6rem;
 }
 
-/* The charts use the full sheet width, with no text spine. */
-.lb-page .trail-dock {
+/* The charts use the full sheet width, with no text spine. The frame gap
+ * supplies spacing, so outrank the shared dock margin in either chunk order. */
+.lb-page.sheet .trail-dock {
   align-self: flex-start;
   margin-bottom: 0;
 }

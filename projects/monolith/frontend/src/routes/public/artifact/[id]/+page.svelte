@@ -38,7 +38,8 @@
 <svelte:head>
   <title>Artifact</title>
   <style>
-    body {
+    /* Outrank the shared body:has(.td) rule regardless of chunk order. */
+    body:has(.td.artifact-sheet) {
       margin: 0;
       padding: 0;
       overflow: hidden;
