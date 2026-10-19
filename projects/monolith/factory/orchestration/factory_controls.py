@@ -3497,9 +3497,11 @@ def _can_start(
             reason = "task_deadline"
     if (
         reason is None
+        and start_key is not None
         and landing_held(row)
         and not execution_capacity_available(db, control, row)
     ):
+        # Decisions and settlement need no slot. Reacquire only for a start.
         reason = "capacity_waiting"
     return {"ok": reason is None, "reason": reason}
 

@@ -14417,6 +14417,79 @@ def admitted_keys(task):
     ]
 
 
+def occupy_held_task_slot(task, policy, monkeypatch):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_intake import admit_next, receive_issue
+
+    generation = policy.get("generation", 0) + 1
+    configured = controls.set_control(
+        "configure",
+        "operator",
+        policy={**policy, "issue_numbers": [7, 8], "generation": generation},
+    )
+    assert configured["ok"], configured
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "1")
+    with Session(conductor.get_engine()) as db, db.begin():
+        controls._receipt(db, task["id"]).direction_json = '{"landing_hold":null}'
+    receive_issue(
+        "owner/repo",
+        8,
+        "Distinct work",
+        "Acceptance",
+        "https://github.com/owner/repo/issues/8",
+        "poller",
+        generation=generation,
+    )
+    replacement = admit_next("scheduler")
+    assert replacement["ok"]
+    assert controls.status()["lanes"]["delivery"]["active"] == 1
+    return replacement["task_id"]
+
+
+def test_held_task_applies_decision_and_waits_for_start_capacity(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
+    task, policy = feedback_task()
+    complete_feedback_node(
+        task,
+        policy,
+        "conductor_1",
+        {
+            "action": "plan",
+            "reason": "Inspect the bounded repair",
+            "edits": [plan_edit("scope", "investigate")],
+        },
+    )
+    replacement = occupy_held_task_slot(task, policy, monkeypatch)
+    monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+    monkeypatch.setattr(
+        funding, "request", lambda *_a, **_k: pytest.fail("Capacity needs no funding")
+    )
+    before = controls.task_snapshot(task["id"])
+    conductor.reconcile_task(task["id"], policy, object())
+    assert "investigate_scope" in {
+        node["node_key"] for node in conductor.graph.load_graph(task["id"])
+    }
+    for _ in range(2):
+        conductor.reconcile_task(task["id"], policy, object())
+        assert admitted_keys(task) == []
+        after = controls.task_snapshot(task["id"])
+        assert after["state"] == "admitted" and not after["task_paused"]
+        assert after["starts"] == before["starts"]
+        assert after["turns_used"] == before["turns_used"]
+        assert after["direction"] == before["direction"]
+    assert controls.finish_task(replacement, "failed", "test")["ok"]
+    conductor.reconcile_task(task["id"], policy, object())
+    assert admitted_keys(task) == ["investigate_scope"]
+    assert controls.status()["lanes"]["delivery"]["active"] == 1
+
+
 def test_a_refused_capacity_reservation_leaves_the_node_ready(feedback_db, monkeypatch):
     from factory.orchestration import factory_controls as controls
 
@@ -17094,14 +17167,17 @@ def test_continuation_requires_current_reviewed_pr_evidence(
     )
 
 
+@pytest.mark.parametrize("full_capacity", [False, True])
 def test_granted_approval_finishes_without_spending_a_planner_turn(
-    feedback_db, monkeypatch
+    feedback_db, monkeypatch, full_capacity
 ):
     from factory.orchestration import factory_controls as controls
 
     task, policy = continuation_task(monkeypatch)
     conductor.reconcile_task(task["id"], policy, object())
     run_correction_round(task, policy, 1, verdict="approve", head=HEAD_TWO)
+    if full_capacity:
+        occupy_held_task_slot(task, policy, monkeypatch)
     checked = []
 
     def verify(task, number, runs, models, **kwargs):
@@ -18760,8 +18836,9 @@ def test_existing_funding_lifecycle_continues_after_creation_flag_disabled(
         assert funding.pending(db, task["id"])
 
 
+@pytest.mark.parametrize("full_capacity", [False, True])
 def test_completed_delivery_needs_no_new_funding_at_exhausted_limit(
-    feedback_db, monkeypatch
+    feedback_db, monkeypatch, full_capacity
 ):
     from factory.orchestration import (
         factory_funding as funding,
@@ -18769,6 +18846,8 @@ def test_completed_delivery_needs_no_new_funding_at_exhausted_limit(
     )
 
     task, policy = funding_task(monkeypatch)
+    if full_capacity:
+        occupy_held_task_slot(task, policy, monkeypatch)
     runs = conductor.graph.node_runs(task["id"])
     review = next(r for r in runs if r["node_key"] == "review_fix")
     original = conductor._artifact
@@ -18796,9 +18875,12 @@ def test_completed_delivery_needs_no_new_funding_at_exhausted_limit(
         "request",
         lambda *_a, **_k: pytest.fail("completed work needs no funding"),
     )
-    assert funding.reconcile(
-        task, policy, runs, {"ok": False, "reason": "task_deadline"}
+    permission = (
+        controls.can_start(task["id"])
+        if full_capacity
+        else {"ok": False, "reason": "task_deadline"}
     )
+    assert funding.reconcile(task, policy, runs, permission)
     assert controls.task_snapshot(task["id"])["state"] == "succeeded"
 
 
@@ -18885,8 +18967,9 @@ def test_conductor_refusal_keeps_an_actionable_pause(
     assert "factory:reconciler" in card["question"]
 
 
+@pytest.mark.parametrize("capacity_waiting", [False, True])
 def test_refused_dispatch_requests_reassessment_instead_of_pausing(
-    feedback_db, monkeypatch
+    feedback_db, monkeypatch, capacity_waiting
 ):
     from factory.orchestration import (
         factory_funding as funding,
@@ -18908,7 +18991,15 @@ def test_refused_dispatch_requests_reassessment_instead_of_pausing(
     monkeypatch.setattr(conductor, "branch_hydration", lambda *_a: "main")
     monkeypatch.setattr(conductor, "_dispatch_branch", lambda *_a: "factory/task")
     monkeypatch.setattr(conductor, "fan_out_wave", lambda *_a: [])
-    monkeypatch.setattr(conductor, "reserve_node", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        conductor,
+        "reserve_node",
+        lambda *_a, **_k: (
+            conductor.ReservationResult(False, "capacity_waiting")
+            if capacity_waiting
+            else False
+        ),
+    )
     node = {
         "node_key": "implement_race",
         "deps": [],
@@ -18918,7 +19009,7 @@ def test_refused_dispatch_requests_reassessment_instead_of_pausing(
     assert not conductor._dispatch_ready(
         {"id": "task", "repo": "owner/repo"}, [node], [], 1, fan_out=False, parallel=1
     )
-    assert len(requested) == 1
+    assert len(requested) == (0 if capacity_waiting else 1)
 
 
 @pytest.mark.parametrize(

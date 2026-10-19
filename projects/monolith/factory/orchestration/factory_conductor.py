@@ -7494,6 +7494,9 @@ def _dispatch_ready(
                     "allowance": reservation.allowance,
                 },
             )
+            if reservation.refusal_code == "capacity_waiting":
+                # Keep the node ready for capacity without pausing or funding it.
+                break
         if dispatched == 0:
             from factory.orchestration import factory_funding
             from factory.orchestration.factory_controls import (

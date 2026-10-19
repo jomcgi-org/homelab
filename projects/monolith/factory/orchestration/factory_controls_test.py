@@ -682,7 +682,7 @@ def test_hold_release_waits_durably_then_retries(db, policy, monkeypatch, constr
             session, control, row, "operator", release_hold=True
         )
         assert result["pending"] and controls.landing_held(row)
-    assert controls.can_start(first)["reason"] == "capacity_waiting"
+    assert controls.can_start(first, start_key="one")["reason"] == "capacity_waiting"
     assert grant(first)["reason"] == "capacity_waiting"
     assert controls.retry_capacity_releases() == 0
     assert controls.finish_task(second, "failed", "test")["ok"]
@@ -690,6 +690,30 @@ def test_hold_release_waits_durably_then_retries(db, policy, monkeypatch, constr
     with Session(db) as session:
         assert not controls.landing_held(controls._receipt(session, first))
     assert grant(first)["ok"]
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
+def test_held_reconciliation_needs_no_slot_but_new_starts_wait(
+    db, policy, monkeypatch, constraint
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, constraint, held=True)
+    before = controls.task_snapshot(first)
+    assert controls.can_start(first) == {"ok": True, "reason": None}
+    assert controls.can_start(first, start_key="one") == {
+        "ok": False,
+        "reason": "capacity_waiting",
+    }
+    with controls.start_guard(first, start_key="one") as permission:
+        assert permission == {"ok": False, "reason": "capacity_waiting"}
+    assert grant(first)["reason"] == "capacity_waiting"
+    after = controls.task_snapshot(first)
+    for field in ("state", "task_paused", "direction", "starts", "turns_used"):
+        assert after[field] == before[field]
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert grant(first)["ok"]
+    # An already-reserved start owns its slot, even when the lane is now full.
+    with controls.start_guard(first, start_key="one") as permission:
+        assert permission["ok"]
 
 
 @pytest.mark.parametrize("fence", ["pause", "cancel", "stop", "human", "settle"])
