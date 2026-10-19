@@ -224,6 +224,25 @@ def test_sync_script_propagates_helm_failure(tmp_path, version):
     assert 'version: "0.6.0"' in (consumer / "Chart.yaml").read_text()
 
 
+def test_sync_script_requires_helm(tmp_path):
+    _, environment = _sync_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    (bin_dir / "helm").unlink()
+    # Keep only the commands needed before the helm check, even on hosts with helm.
+    for command in ("bash", "grep", "awk", "tr"):
+        executable = shutil.which(command)
+        assert executable is not None, f"missing fixture prerequisite: {command}"
+        (bin_dir / command).symlink_to(executable)
+    environment["PATH"] = str(bin_dir)
+
+    result = _run_sync(tmp_path, environment)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "helm is required to sync chart dependencies" in result.stderr
+    assert "./bootstrap.sh && direnv allow" in result.stderr
+    assert not (tmp_path / "helm-call").exists()
+    assert "Rebuilt" not in result.stdout
+
+
 def test_sync_script_propagates_stale_checker_failure(tmp_path):
     consumer, environment = _sync_fixture(tmp_path)
     (consumer / "charts").mkdir()

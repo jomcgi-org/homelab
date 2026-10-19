@@ -1,7 +1,7 @@
 # Hand-managed targets (same convention as bazel/tools/format/readme_structure):
 # the checker is invoked as plain python3 from the CI "Format check" step against
 # the full working tree (a sandboxed bazel test cannot list projects/* on RBE),
-# so only the pure-logic contract is pinned by a bazel test here.
+# so this test pins the decision logic and runs the sync script in isolated fixtures.
 # gazelle:exclude check_helm_deps.py
 # gazelle:exclude check_helm_deps_test.py
 

@@ -2,7 +2,7 @@
   "version": "v1",
   "config": {
     "name": "projects/embervm/runtimes/postgres/apko.yaml",
-    "checksum": "sha256-mQ2WH7/glS0UoJBG4Wmwg3trWqVb32rNEI76CDCwZ4U="
+    "checksum": "sha256-QYXGWejXlRMjBa6EsdxWI7rFRNxOmEHZqYSmNVJK+WU="
   },
   "contents": {
     "keyring": [
