@@ -357,10 +357,12 @@ dispatch pins. The planner builds the whole DAG at plan time through one `plan`
 decision whose edits apply atomically under a single expected revision, the
 reconciler dispatches each ready node as its own pinned unit, and a review that
 returns `changes_requested` opens a correction and re-review pair the engine
-appends itself, bounded by the policy's `max_review_rounds` (default 2). A round
-that fails is reopened the same way, against the same reviewed head and
-findings, with the failed round counted against the bound. The
-planner is called back only for a named deviation: no plan applied yet, a node
+appends itself, bounded by the policy's `max_review_rounds` (default 2). A failed
+correction is reopened against the same reviewed head and findings, with the
+failed round counted against the bound. A failed re-review leaves the delivered
+correction intact and returns the missing review evidence to the planner as a
+named deviation. It cannot open another implementation against older findings.
+The planner is called back only for a named deviation: no plan applied yet, a node
 that failed or escalated with no runnable retry, review rounds spent, a fan-in
 the engine could not open, or a settled graph with no verified delivery.
 
@@ -728,7 +730,12 @@ reason. Those same two refusals are why the engine, not the planner, reopens a
 round that failed: a `correct_<n>` whose guest ended its turn without pushing
 leaves a node the planner may not name and, because it has a run, may not
 discard either, so handing that back to the planner asked it for an edit no
-edit could express and the task only paused. Delivery stays with the planner because `verify_delivery` is the gate a
+edit could express and the task only paused. This applies to failed corrections,
+not to re-reviews that failed to return a verdict: a lost or invalid verdict
+supplies no new findings against the corrected head, and mechanically replaying
+the earlier findings wastes another implementation and review round. Existing
+result adoption and cessation fences still own unknown invocation outcomes.
+Delivery stays with the planner because `verify_delivery` is the gate a
 completion claim has to pass, and an exhausted loop returns to the planner with
 the evidence instead of failing the task (#5419).
 
