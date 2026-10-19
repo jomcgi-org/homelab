@@ -37,6 +37,7 @@ afterEach(async () => {
   document.documentElement.removeAttribute("data-theme");
   localStorage.clear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 async function render(surface, data = tripsData(), query = "") {
   const path = {
@@ -176,6 +177,19 @@ describe("trips composed sheets", () => {
   it.each(["trip", "day"])(
     "repaints the existing %s map and cleans up scheme listeners",
     async (surface) => {
+      // Happy DOM 20.8.9 keeps MutationObserverListener's callback only in a
+      // WeakRef. GC during the full suite can silently drop that callback.
+      // Retain it for this test so the real observer, toggle and paint path
+      // still run, including disconnect on unmount. Browsers do not need this.
+      vi.stubGlobal(
+        "WeakRef",
+        class extends WeakRef {
+          constructor(target) {
+            super(target);
+            this.retained = target;
+          }
+        },
+      );
       await render(surface);
       const map = maps[0];
       const layers = map.layers.map((l) => l.id);
