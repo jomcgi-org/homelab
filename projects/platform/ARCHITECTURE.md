@@ -276,9 +276,9 @@ EmberVM session-create denial incident.
 **Kyverno** renders two cluster policies on the hub (`projects/platform/kyverno/templates/`):
 
 - `require-resource-requests` checks first-party namespaces for CPU and memory requests plus a memory limit. `validationFailureAction: Audit`, so violations surface as PolicyReports and nothing is rejected
-- `clone-monolith-workflows-secrets` copies the Secrets Argo CronWorkflow jobs need, the R2 credential among them, into `monolith-workflows`
+- `clone-monolith-workflows-secrets-v2` generates synchronized copies of the Secrets Argo CronWorkflow jobs need, the R2 credential among them, in `monolith-workflows`. It replaces `clone-monolith-workflows-secrets` because removing synchronizing generate rules requires a new policy identity. The seven retained rules and controller RBAC are unchanged; live migration acceptance is tracked in #7072
 
-The `inject-otel-env-vars` template is disabled. Non-root execution and dropped capabilities come from each chart's own `securityContext`. Network policy on the hub is plain `NetworkPolicy` only, and one exists (section 3); nothing on the hub enforces a `securityContext` at admission, since Kyverno's rules are Audit.
+The disabled OTel injection template and its configuration have been removed. Workloads configure telemetry explicitly. Non-root execution and dropped capabilities come from each chart's own `securityContext`. Network policy on the hub is plain `NetworkPolicy` only, and one exists (section 3); neither custom Kyverno policy enforces a `securityContext` at admission. Resource validation is Audit-only; the Secret policy is generate-only.
 
 **Sandbox runtime.** No workload runs under gVisor. The hub carries GKE's own `gvisor` RuntimeClass and no pod selects it; home never had one. ADR security/003 (runsc for agent sandbox pods) was accepted for a pod-shaped agent runtime that was then replaced: untrusted code runs in EmberVM Firecracker guests (`projects/embervm/ARCHITECTURE.md`, section 10), so the second kernel boundary is the microVM. #3894 remains open as the record; nothing depends on it.
 

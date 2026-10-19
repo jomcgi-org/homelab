@@ -1,4 +1,5 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
     name = "chart",
@@ -18,6 +19,26 @@ argocd_app(
     ],
     values_files = [
         "values.yaml",
+    ],
+)
+
+# Render conditional workflow paths as well as the default admissibility inputs.
+py_test(
+    name = "policy_cleanup_test",
+    srcs = ["policy_cleanup_test.py"],
+    # Chart filegroups also contain other suites with their own runfiles/env.
+    args = ["$(rootpath policy_cleanup_test.py)"],
+    data = [
+        ":chart",
+        "//projects/monolith/chart",
+        "//projects/platform/argo-workflows:chart",
+        "//projects/platform/renovate:chart",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
 
