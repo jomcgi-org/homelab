@@ -129,6 +129,13 @@ def main():
                 assert page.locator("main.td.sheet").count() == 1, "one sheet required"
                 assert page.locator("h1, h2").count() > 0, "heading missing"
                 record["assertions"]["sheet_chrome_heading"] = True
+                if width <= 760:
+                    trail = page.locator(".chrome .trail").bounding_box()
+                    toggle = page.locator(".chrome .scheme").bounding_box()
+                    assert trail["x"] + trail["width"] <= toggle["x"], (
+                        "trail overlaps scheme control"
+                    )
+                    record["assertions"]["chrome_controls_do_not_overlap"] = True
                 if name == "book" and state == "normal":
                     passage_width = page.locator(".pub-panel").evaluate(
                         "e=>e.getBoundingClientRect().width"

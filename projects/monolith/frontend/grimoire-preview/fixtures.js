@@ -56,13 +56,20 @@ export const sections = [
   },
 ];
 export const touched = [
-  { kind: "entity", id: person.id, name: person.name, entity_type: "npc" },
+  {
+    kind: "entity",
+    id: person.id,
+    name: person.name,
+    title: person.name,
+    entity_type: "npc",
+  },
   {
     kind: "chunk",
     id: chunk.id,
     book_id: chunk.book_id,
     section_path: chunk.section_path,
     name: "Lantern / Harbour",
+    title: "Lantern / Harbour",
   },
 ];
 export const messages = [

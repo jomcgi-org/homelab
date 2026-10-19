@@ -82,7 +82,7 @@
   />
 </svelte:head>
 
-<GrimoireSheet section="shared grimoire chat">
+<GrimoireSheet section="chat" current="shared grimoire chat">
   <h1 class="sr-only">A shared conversation with the Grimoire</h1>
   <div class="share-app">
     <section class="chat-box edition">

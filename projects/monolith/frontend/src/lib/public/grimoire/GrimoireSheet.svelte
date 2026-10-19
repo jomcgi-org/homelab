@@ -4,7 +4,12 @@
   import SiteIndex from "$lib/public/components/SiteIndex.svelte";
   import "$lib/public/styles/technical-drawing.css";
   import "./sheet.css";
-  let { section = "home", immersive = false, children } = $props();
+  let {
+    section = "home",
+    current = "",
+    immersive = false,
+    children,
+  } = $props();
   const links = [
     { id: "library", label: "Library" },
     { id: "world", label: "World" },
@@ -14,6 +19,7 @@
 
 {#snippet trail()}
   <Trail
+    {current}
     crumbs={[
       { label: "Grimoire", href: "/app/grimoire" },
       ...(section === "home" ? [] : [{ label: section }]),
