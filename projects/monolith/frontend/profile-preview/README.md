@@ -1,7 +1,7 @@
 # Home and CV fixture preview
 
 This fixture mounts the production root layout, public layout, home, CV,
-engineering and legacy Ember components. It uses the real theme styles and
+engineering, Firecracker and legacy Ember components. It uses the real theme styles and
 the vendored Schibsted Grotesk font from `preview/fonts/`. The stats in
 `fixtures.js` are invented. No backend, credentials or production data are used.
 
@@ -39,3 +39,30 @@ production surface is checked for horizontal page overflow.
 
 Keep generated output outside the worktree. These captures are repository
 evidence only. Actual-host navigation and rollout acceptance remain separate.
+
+## Firecracker evidence
+
+`firecracker-browser-check.mjs` visits `/ember/firecracker` through the same
+production layout fixture. Start the fixture above, build the production
+frontend, and run its adapter-node server on port 4174 for the separate
+no-JavaScript check:
+
+```sh
+HOST=127.0.0.1 PORT=4174 node dist/index.js
+node profile-preview/firecracker-browser-check.mjs /absolute/path/to/playwright/index.mjs /absolute/path/to/evidence
+```
+
+The checker records the source SHA, working-tree state, 390/1440 widths,
+both schemes, scroll and replay states, PNG filenames and measured horizontal
+overflow in `checks.json`. It exercises all twelve runs and wraparound, slow
+mode, reduced motion, keyboard focus, scheme persistence, resize and navigation
+through engineering, legacy Ember and legacy Nav. No-JavaScript evidence uses
+the production server's HTML, not the client-only fixture. Optional
+`CHROMIUM_EXECUTABLE_PATH` selects an already installed browser.
+
+Set `FACTORY_PREVIEW_SHA` to the PR head to require a clean tracked tree at that
+exact commit. Preliminary local captures of a dirty tree are marked as such
+and cannot settle exact-head acceptance. Keep the receipt beside its PNGs.
+Publishing that evidence to the PR is a separate delivery step; running the
+checker alone does not upload it. No credentials or production deployment
+are involved in capture.
