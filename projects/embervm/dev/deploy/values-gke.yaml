@@ -83,7 +83,8 @@ bricks:
       4gi: 0
       8gi: 0
       16gi: 0
-  # Memory requests EQUAL limits, as in production's hub overlay: reserved
+  # Memory requests EQUAL limits, as production's hub overlay will when it arms
+  # reserved (#6965; it still requests about 75% today): reserved
   # admission (values.yaml) fills a brick to its budget, so requests below the
   # limit would let kube-scheduler pack more brick memory onto a shared
   # ember-bricks node than it has. CPU requests stay at the chart's. Helm
