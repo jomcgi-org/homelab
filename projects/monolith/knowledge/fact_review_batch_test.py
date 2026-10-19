@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 
 import httpx
@@ -16,6 +17,7 @@ from knowledge.extraction import ExtractionOutputInvalid
 from knowledge.freshness import STANDARD, utc
 from knowledge.models import FactReviewBatch, FactReviewRun, Note, ReviewOutcome
 from knowledge.review_batch_sources import BatchSources
+from knowledge.review_sources import EvidenceUnsupported, collect_sources
 
 NOW = datetime(2026, 10, 18, tzinfo=UTC)
 SHA = "a" * 40
@@ -57,6 +59,52 @@ def coverage_fetch(files, *, calls=None, revision=SHA, unavailable=None):
         }
 
     return read
+
+
+@pytest.mark.parametrize("count,size", [(4, 110_000), (3, 127_000)])
+@pytest.mark.parametrize("batched", [False, True])
+def test_streamed_aggregate_blob_limit_precedes_reads_and_preserves_siblings(
+    monkeypatch, count, size, batched
+):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    files = {
+        f"projects/example/large-{index}.py": bytes([65 + index]) * size
+        for index in range(count)
+    }
+    claim = {"title": "Behavior of " + " and ".join(files), "content": None}
+    files["projects/example/small.py"] = b"bounded complete source"
+    calls = []
+    fetch = coverage_fetch(files, calls=calls)
+
+    def transport(request):
+        body = fetch(request.url.path)
+        if "content" in body:
+            # GitHub base64 blobs wrap at 60 characters, including a final LF.
+            encoded = body["content"]
+            body["content"] = "".join(
+                encoded[start : start + 60] + "\n"
+                for start in range(0, len(encoded), 60)
+            )
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(body).encode()))
+
+    monkeypatch.setattr(
+        httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(transport))
+    )
+    with BatchSources() as reader:
+        revision = reader.pin() if batched else None
+        with pytest.raises(EvidenceUnsupported, match="byte bound") as error:
+            if batched:
+                reader.collect(claim, revision)
+            else:
+                collect_sources(claim)
+        assert all(error.value.identity["files"].values())
+        assert len(error.value.identity["files"]) == count
+        assert not any("/git/blobs/" in path for path in calls)
+        if batched:
+            assert reader.stopped is None
+            sources = reader.collect({"title": "projects/example/small.py"}, revision)
+            assert sources[0]["text"] == "bounded complete source"
+            assert sum("/git/blobs/" in path for path in calls) == 1
 
 
 @pytest.fixture
