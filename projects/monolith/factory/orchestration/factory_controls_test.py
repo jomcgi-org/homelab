@@ -693,6 +693,55 @@ def test_hold_release_waits_durably_then_retries(db, policy, monkeypatch, constr
 
 
 @pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
+@pytest.mark.parametrize("outcome", ["succeeded", "failed", "escalated"])
+@pytest.mark.parametrize("resume", [False, True])
+def test_settlement_applies_pending_hold_release_without_capacity(
+    db, policy, monkeypatch, constraint, outcome, resume
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, constraint, held=True)
+    with controls._locked_session() as (session, control):
+        row = controls._receipt(session, first)
+        assert controls.request_capacity_release(
+            session, control, row, "operator", resume=resume, release_hold=True
+        )["pending"]
+        intent = json.loads(row.direction_json)["pending_capacity_release"]
+    evidence = {"state": "ready_for_review"}
+    assert controls.finish_task(first, outcome, "test", evidence=evidence) == {
+        "ok": True,
+        "state": outcome,
+    }
+    assert controls.finish_task(first, outcome, "test", evidence=evidence)["ok"]
+    assert controls.retry_capacity_releases() == 0
+    with Session(db) as session:
+        row = controls._receipt(session, first)
+        assert not controls.landing_held(row)
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+        assert controls._receipt(session, second).state == "admitted"
+        applied = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "settled_landing_hold_released"
+            )
+        ).all()
+        assert len(applied) == 1
+        assert applied[0].task_id == first and applied[0].actor == "operator"
+        assert json.loads(applied[0].detail_json)["intent"] == intent
+        revoked = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "execution_capacity_release_revoked"
+            )
+        ).all()
+        assert len(revoked) == int(resume)
+        if resume:
+            assert json.loads(revoked[0].detail_json) == {
+                "reason": "task_settled",
+                "intent": {
+                    key: value for key, value in intent.items() if key != "landing_hold"
+                },
+            }
+    assert controls.status()["lanes"]["delivery"]["active"] == 1
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
 def test_held_reconciliation_needs_no_slot_but_new_starts_wait(
     db, policy, monkeypatch, constraint
 ):
@@ -714,6 +763,31 @@ def test_held_reconciliation_needs_no_slot_but_new_starts_wait(
     # An already-reserved start owns its slot, even when the lane is now full.
     with controls.start_guard(first, start_key="one") as permission:
         assert permission["ok"]
+
+
+@pytest.mark.parametrize("fence", ["pause", "cancelled", "stop"])
+def test_settlement_keeps_fenced_pending_hold(db, policy, monkeypatch, fence):
+    first, _second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
+    with controls._locked_session() as (session, control):
+        row = controls._receipt(session, first)
+        assert controls.request_capacity_release(
+            session, control, row, "operator", release_hold=True
+        )["pending"]
+    if fence == "pause":
+        assert controls.set_control("pause_task", "operator", task_id=first)["ok"]
+    elif fence == "stop":
+        assert controls.set_control("stop", "operator")["ok"]
+    outcome = "cancelled" if fence == "cancelled" else "failed"
+    assert controls.finish_task(first, outcome, "test")["ok"]
+    with Session(db) as session:
+        row = controls._receipt(session, first)
+        assert controls.landing_held(row)
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+        assert not session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "settled_landing_hold_released"
+            )
+        ).all()
 
 
 @pytest.mark.parametrize("fence", ["pause", "cancel", "stop", "human", "settle"])
@@ -772,7 +846,10 @@ def test_repository_capacity_does_not_double_count_existing_holder(
         ("task", "task_changed"),
     ],
 )
-def test_revoked_release_intent_is_audited_once(db, policy, monkeypatch, fence, reason):
+@pytest.mark.parametrize("settle", [False, True])
+def test_revoked_release_intent_is_audited_once(
+    db, policy, monkeypatch, fence, reason, settle
+):
     first, _second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
     with controls._locked_session() as (session, control):
         row = controls._receipt(session, first)
@@ -804,7 +881,11 @@ def test_revoked_release_intent_is_audited_once(db, policy, monkeypatch, fence, 
             direction = json.loads(row.direction_json)
             direction["pending_capacity_release"] = intent
             row.direction_json = json.dumps(direction)
-        assert not controls._apply_capacity_release(session, control, row)
+        if settle:
+            assert controls.finish_task(first, "failed", "test", session=session)["ok"]
+            assert controls.landing_held(row)
+        else:
+            assert not controls._apply_capacity_release(session, control, row)
         assert not controls._apply_capacity_release(session, control, row)
         assert "pending_capacity_release" not in json.loads(row.direction_json)
         events = session.exec(

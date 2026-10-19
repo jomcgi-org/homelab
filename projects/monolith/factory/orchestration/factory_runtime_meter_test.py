@@ -933,9 +933,10 @@ def held_delivery(database, monkeypatch):
     return pull, direction
 
 
-@pytest.mark.parametrize("constraint", ["lane", "chart"])
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
+@pytest.mark.parametrize("settle", [False, True])
 def test_landing_release_retains_authorized_intent_while_full(
-    database, held_delivery, monkeypatch, constraint
+    database, held_delivery, monkeypatch, constraint, settle
 ):
     from factory.orchestration import factory_landing_release as releases
 
@@ -945,6 +946,13 @@ def test_landing_release_retains_authorized_intent_while_full(
     with Session(database) as db, db.begin():
         row = db.get(FactoryReceipt, 838)
         row.task_paused = False
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        if constraint != "lane":
+            policy["max_tasks"] = 2
+        if constraint == "repo":
+            policy["repos"] = {"org/repo": {"max_tasks": 1}}
+        control.policy_json = json.dumps(policy)
         db.add(
             SwarmTask(
                 id="other", task_text="other", conductor_model="astra", budget_usd=50
@@ -975,10 +983,20 @@ def test_landing_release_retains_authorized_intent_while_full(
         releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args) == result
     )
     assert controls.retry_capacity_releases() == 0
-    with Session(database) as db, db.begin():
-        assert controls.landing_held(db.get(FactoryReceipt, 838))
-        controls._receipt(db, "other").state = "failed"
-    assert controls.retry_capacity_releases() == 1
+    if settle:
+        assert controls.finish_task(
+            "task", "succeeded", "test", evidence={"state": "ready_for_review"}
+        ) == {"ok": True, "state": "succeeded"}
+        with Session(database) as db:
+            assert controls._receipt(db, "other").state == "admitted"
+            assert not controls.landing_held(db.get(FactoryReceipt, 838))
+        assert controls.retry_capacity_releases() == 0
+        result = {**result, "pending": False, "reason": None}
+    else:
+        with Session(database) as db, db.begin():
+            assert controls.landing_held(db.get(FactoryReceipt, 838))
+            controls._receipt(db, "other").state = "failed"
+        assert controls.retry_capacity_releases() == 1
     with Session(database) as db:
         row = db.get(FactoryReceipt, 838)
         assert not controls.landing_held(row)
@@ -991,6 +1009,21 @@ def test_landing_release_retains_authorized_intent_while_full(
     assert (
         releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args) == result
     )
+    if settle:
+        assert (
+            releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args)
+            == result
+        )
+        with Session(database) as db:
+            events = db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.action == "settled_landing_hold_released"
+                )
+            ).all()
+            assert len(events) == 1
+            detail = json.loads(events[0].detail_json)
+            assert detail["landing_authorization"]["request_key"] == args["request_key"]
+            assert detail["intent"]["landing_hold"] == held_delivery[1]["landing_hold"]
 
 
 @pytest.mark.parametrize("merged", [False, True])
