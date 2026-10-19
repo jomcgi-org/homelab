@@ -254,7 +254,8 @@ tailnet:
 deploymentObservations:
   enabled: true
 
-# Repository-only staging for #7002; enable with the shared checker later.
+# Read the shared hub backup observations and notify on stale base backups
+# through private advisory health (#7002). Unknown observations never recover.
 healthAlerts:
   cnpgBackups:
-    enabled: false
+    enabled: true
