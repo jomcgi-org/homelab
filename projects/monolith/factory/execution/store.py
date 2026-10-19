@@ -2045,6 +2045,14 @@ def _recovery_candidate_predicate(cutoff: datetime, now: datetime):
     old_lane_head_exists = exists().where(
         head.id == _lane_head_id(AgentSession.id),
         head.created_at <= cutoff,
+        # Durable capacity demand can outlive the zombie threshold without
+        # ever starting an invocation. A stale claimed attempt still requires
+        # the existing conservative recovery path.
+        or_(
+            head.capacity_intent_json.is_(None),
+            head.capacity_state == "legacy_unsupported",
+            head.claimed_by_replica.isnot(None),
+        ),
     )
     return and_(
         AgentSession.status == "running",
@@ -2610,7 +2618,16 @@ def claim_pending_message_for_session_sync(
             return None
         capacity_context = capacity_wait.handoff_context(pending)
         if capacity_context is not None:
+            from factory.execution.constants import exact_dispatch_id
+
             capacity_context["claimed_dispatch_count"] = pending.dispatch_count + 1
+            capacity_context["claimed_dispatch_id"] = exact_dispatch_id(
+                session_id,
+                row.ember_session_id,
+                pending.seq,
+                replica_id,
+                pending.dispatch_count + 1,
+            )
             capacity_context["claim_snapshot"] = {
                 "capacity_started_at": pending.capacity_started_at.isoformat()
                 if pending.capacity_started_at

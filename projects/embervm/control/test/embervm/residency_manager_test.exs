@@ -162,7 +162,9 @@ defmodule Embervm.ResidencyManagerTest do
     assert {:ok, %{"state" => "admitting"}} = SessionStore.residency_intent(ctx.store, {:get, intent["session_id"], waiter["id"]})
     refute_receive {:prime, _, _}
   end
-  test "acknowledged exact Prime is adopted after a crash before lifecycle commit" do
+  for commit_running <- [false, true] do
+  @commit_running commit_running
+  test "acknowledged exact Prime is adopted after a crash, running committed: #{commit_running}" do
     ctx = stack()
     intent = enqueue(ctx, "restart-after-prime")
     tick(ctx)
@@ -170,6 +172,11 @@ defmodule Embervm.ResidencyManagerTest do
     {:ok, admitting} = SessionStore.residency_intent(ctx.store, {:get, intent["session_id"], intent["id"]})
     restore = Map.put(admitting["restore"], "vm_id", "known-vm")
     {:ok, _} = SessionStore.residency_intent(ctx.store, {:change, intent["id"], admitting["version"], %{"restore" => restore}})
+    if @commit_running do
+      updates = %{node_id: "node", vm_id: "known-vm", volume_node_id: "node"}
+      {:ok, _} = SessionStore.transition(ctx.store, intent["session_id"], :rejoin_ready, :session_rejoined, updates, updates)
+    end
+    assert Registry.lookup(ctx.registry, intent["session_id"]) == []
     GenServer.stop(ctx.mgr)
     GenServer.stop(ctx.store)
     send(worker, {:finish, {:ok, %PrimeResponse{vm_id: "known-vm"}}})
@@ -180,10 +187,12 @@ defmodule Embervm.ResidencyManagerTest do
     tick(ctx)
     await(fn -> Enum.any?(intents(ctx), &(&1["state"] == "ready")) end)
     assert {:ok, %{vm_id: "known-vm", state: :running, turn_seq: 0}} = SessionStore.get(store, intent["session_id"])
+    assert Registry.lookup(ctx.registry, intent["session_id"]) != []
     refute_receive {:prime, _, _}
     tick(ctx)
     assert Inflight.pending_mib("node/pod", table: ctx.inflight) == 0
     refute_receive :unexpected_invoke
+  end
   end
 
   test "stale capacity and no fitting class stay queued; expiry never renews the deadline" do

@@ -7476,8 +7476,13 @@ defmodule Embervm.SessionManager do
           finish_residency_wake(state, intent["id"], intent["attempt_epoch"], restore,
             {:ok, restore["node_id"], observed_vm, 0, restore["dial_id"]})
         observed_vm == session.vm_id && not is_nil(observed_vm) && session.state == :running &&
-            session.generation == intent["generation"] && Registry.lookup(state.registry, session.session_id) != [] ->
-          residency_ready(state, intent, session, restore["dial_id"])
+            session.node_id == restore["node_id"] && session.generation == intent["generation"] ->
+          # A crash can follow the durable running transition but precede
+          # process creation. This owner must finish adoption: generic boot
+          # reconciliation deliberately leaves unresolved restore claims alone.
+          state = adopt_live(state, session, restore["node_id"], observed_vm, restore["dial_id"])
+          if Registry.lookup(state.registry, session.session_id) != [],
+            do: residency_ready(state, intent, session, restore["dial_id"]), else: state
         is_nil(fact) && residency_brick_gone?(state, restore["dial_id"]) ->
           # Use the existing registry's exact-incarnation cessation evidence,
           # never a request timeout or missing heartbeat alone.

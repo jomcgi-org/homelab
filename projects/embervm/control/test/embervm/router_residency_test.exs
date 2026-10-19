@@ -69,4 +69,17 @@ defmodule Embervm.RouterResidencyTest do
     assert Jason.decode!(response.resp_body)["dispatch_id"] == "exact"
     assert {:ok, %{turn_seq: 0}} = SessionStore.get(ctx.store, ctx.first.session_id)
   end
+
+  test "session capability view supplies the existing identity used by factory preflight", ctx do
+    path = "/v1/sessions/#{ctx.first.session_id}"
+    response = request(:get, path, ctx.first.token)
+    assert response.status == 200
+    view = Jason.decode!(response.resp_body)
+    assert view["session_id"] == ctx.first.session_id
+    assert view["lineage_id"] == ctx.first.lineage_id
+    assert view["generation"] == 0
+    assert view["expires_at"] == 100_000
+    payload = Jason.encode!(%{generation: view["generation"], deadline: view["expires_at"], task_deadline: 100_000})
+    assert request(:post, path <> "/residency", ctx.first.token, payload, [{"idempotency-key", "from-view"}]).status == 202
+  end
 end

@@ -2833,6 +2833,7 @@ defmodule Embervm.Router do
   defp session_view(session, node_statuses) do
     %{
       session_id: session.session_id,
+      lineage_id: session.lineage_id,
       workload: session.workload,
       principal: session.principal,
       state: to_string(session.state),
