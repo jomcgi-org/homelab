@@ -31,11 +31,19 @@ RETAINED = [
 def _render(chart, *, values=("values.yaml",), extra=()):
     monolith = chart == "monolith"
     path = ROOT / "projects" / ("monolith/chart" if monolith else f"platform/{chart}")
-    namespace = "monolith" if monolith else (
-        "kyverno" if chart == "kyverno" else "monolith-workflows"
+    namespace = (
+        "monolith"
+        if monolith
+        else ("kyverno" if chart == "kyverno" else "monolith-workflows")
     )
-    command = [os.environ.get("HELM_BIN", "helm"), "template", chart, str(path),
-               "--namespace", namespace]
+    command = [
+        os.environ.get("HELM_BIN", "helm"),
+        "template",
+        chart,
+        str(path),
+        "--namespace",
+        namespace,
+    ]
     for name in values:
         command.extend(["--values", str(path / name)])
     command.extend(extra)
@@ -64,36 +72,66 @@ def test_hub_policies_preserve_exact_retained_rule_bodies():
     assert set(policies) == {POLICY, "require-resource-requests"}
     expected = []
     for rule, namespace, secret in RETAINED:
-        expected.append({
-            "name": rule,
-            "skipBackgroundRequests": True,
-            "match": {"any": [{"resources": {
-                "kinds": ["Secret"], "namespaces": [namespace], "names": [secret],
-            }}]},
-            "generate": {
-                "apiVersion": "v1", "kind": "Secret", "name": secret,
-                "namespace": "monolith-workflows", "synchronize": True,
-                "generateExisting": True,
-                "clone": {"namespace": namespace, "name": secret},
-            },
-        })
+        expected.append(
+            {
+                "name": rule,
+                "skipBackgroundRequests": True,
+                "match": {
+                    "any": [
+                        {
+                            "resources": {
+                                "kinds": ["Secret"],
+                                "namespaces": [namespace],
+                                "names": [secret],
+                            }
+                        }
+                    ]
+                },
+                "generate": {
+                    "apiVersion": "v1",
+                    "kind": "Secret",
+                    "name": secret,
+                    "namespace": "monolith-workflows",
+                    "synchronize": True,
+                    "generateExisting": True,
+                    "clone": {"namespace": namespace, "name": secret},
+                },
+            }
+        )
     # Full spec equality also excludes mutation/validation, extra rules and gates.
     assert policies[POLICY]["spec"] == {"background": True, "rules": expected}
     audit = policies["require-resource-requests"]["spec"]
     assert audit["validationFailureAction"] == "Audit"
     assert audit["background"] is True
-    rule, = audit["rules"]
+    (rule,) = audit["rules"]
     assert rule["skipBackgroundRequests"] is True
-    assert rule["match"] == {"any": [{"resources": {
-        "kinds": ["Deployment", "StatefulSet", "DaemonSet"],
-        "namespaces": ["monolith", "monolith-public"],
-    }}]}
+    assert rule["match"] == {
+        "any": [
+            {
+                "resources": {
+                    "kinds": ["Deployment", "StatefulSet", "DaemonSet"],
+                    "namespaces": ["monolith", "monolith-public"],
+                }
+            }
+        ]
+    }
     assert rule["validate"]["allowExistingViolations"] is True
-    assert rule["validate"]["pattern"] == {"spec": {"template": {"spec": {
-        "containers": [{"resources": {
-            "requests": {"cpu": "?*", "memory": "?*"}, "limits": {"memory": "?*"},
-        }}],
-    }}}}
+    assert rule["validate"]["pattern"] == {
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "resources": {
+                                "requests": {"cpu": "?*", "memory": "?*"},
+                                "limits": {"memory": "?*"},
+                            }
+                        }
+                    ],
+                }
+            }
+        }
+    }
 
 
 def test_aggregation_roles_are_unchanged():
@@ -104,11 +142,15 @@ def test_aggregation_roles_are_unchanged():
     ):
         name = f"kyverno:clone-monolith-pg-secret-{controller}"
         assert roles[name] == {
-            "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
-            "metadata": {"name": name, "labels": {
-                "app.kubernetes.io/part-of": "kyverno",
-                f"rbac.kyverno.io/aggregate-to-{controller}-controller": "true",
-            }},
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRole",
+            "metadata": {
+                "name": name,
+                "labels": {
+                    "app.kubernetes.io/part-of": "kyverno",
+                    f"rbac.kyverno.io/aggregate-to-{controller}-controller": "true",
+                },
+            },
             "rules": [{"apiGroups": [""], "resources": ["secrets"], "verbs": verbs}],
         }
 
@@ -128,12 +170,19 @@ def test_resource_audit_remains_independently_optional():
     assert set(_kind(docs, "ClusterPolicy")) == {POLICY}
 
 
-@pytest.mark.parametrize("values", [("values.yaml",), ("values.yaml", "values-gke.yaml")])
+@pytest.mark.parametrize(
+    "values", [("values.yaml",), ("values.yaml", "values-gke.yaml")]
+)
 @pytest.mark.parametrize("server_enabled", [True, False])
 def test_argo_annotations_preserve_metrics_and_disabled_server(values, server_enabled):
-    docs = _render("argo-workflows", values=values, extra=(
-        "--set", f"argo-workflows.server.enabled={str(server_enabled).lower()}",
-    ))
+    docs = _render(
+        "argo-workflows",
+        values=values,
+        extra=(
+            "--set",
+            f"argo-workflows.server.enabled={str(server_enabled).lower()}",
+        ),
+    )
     deployments = _kind(docs, "Deployment")
     expected = {"argo-workflows-workflow-controller"}
     if server_enabled:
@@ -147,9 +196,14 @@ def test_argo_annotations_preserve_metrics_and_disabled_server(values, server_en
         assert annotations["prometheus.io/path"] == "/metrics"
 
 
-@pytest.mark.parametrize("overlay,suspended", [
-    (None, False), ("values-gke.yaml", True), ("values-home-suspend.yaml", True),
-])
+@pytest.mark.parametrize(
+    "overlay,suspended",
+    [
+        (None, False),
+        ("values-gke.yaml", True),
+        ("values-home-suspend.yaml", True),
+    ],
+)
 def test_renovate_annotations_preserve_suspension_and_secret_access(overlay, suspended):
     values = ("values.yaml", overlay) if overlay else ("values.yaml",)
     docs = _render("renovate", values=values)
@@ -164,9 +218,12 @@ def test_renovate_annotations_preserve_suspension_and_secret_access(overlay, sus
         assert spec["securityContext"]["runAsNonRoot"] is True
         for template in spec["templates"]:
             container = template["container"]
-            token = next(env for env in container["env"] if env["name"] == "RENOVATE_TOKEN")
+            token = next(
+                env for env in container["env"] if env["name"] == "RENOVATE_TOKEN"
+            )
             assert token["valueFrom"]["secretKeyRef"] == {
-                "name": "renovate-github", "key": "RENOVATE_TOKEN",
+                "name": "renovate-github",
+                "key": "RENOVATE_TOKEN",
             }
             assert container["resources"]["requests"]
             assert container["securityContext"]["readOnlyRootFilesystem"] is True
@@ -178,8 +235,12 @@ def test_monolith_job_gate_preserves_explicit_telemetry(with_image):
     # Checked-in activation, collector settings and exporter values are untouched.
     extra = ["--set", "backend.otelEndpoint=http://collector.example.test/v1/traces"]
     if with_image:
-        extra += ["--set", "jobs.image.repository=example.test/jobs",
-                  "--set-string", "jobs.image.digest=sha256:" + "0" * 64]
+        extra += [
+            "--set",
+            "jobs.image.repository=example.test/jobs",
+            "--set-string",
+            "jobs.image.digest=sha256:" + "0" * 64,
+        ]
     workflows = _kind(_render("monolith", extra=extra), "CronWorkflow")
     assert bool(workflows) is with_image
     _assert_no_marker(list(workflows.values()))
@@ -190,5 +251,6 @@ def test_monolith_job_gate_preserves_explicit_telemetry(with_image):
                 "http://collector.example.test/v1/traces"
             )
             assert env["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {
-                "name": "monolith-pg-app", "key": "uri",
+                "name": "monolith-pg-app",
+                "key": "uri",
             }

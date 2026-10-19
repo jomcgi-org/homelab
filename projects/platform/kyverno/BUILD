@@ -30,7 +30,7 @@ py_test(
     args = ["$(rootpath policy_cleanup_test.py)"],
     data = [
         ":chart",
-        "//projects/monolith/chart:chart",
+        "//projects/monolith/chart",
         "//projects/platform/argo-workflows:chart",
         "//projects/platform/renovate:chart",
         "@multitool//tools/helm",
