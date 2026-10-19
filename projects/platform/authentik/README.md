@@ -46,11 +46,19 @@ The database password is generated and managed by CloudNativePG through the
 so it is never committed to this repository.
 
 The Gateway API route publishes the Authentik login interface at
-`https://auth.jomcgi.dev`. No OIDC provider is configured yet, so there is no
-discovery document to fetch. authentik serves discovery per application at
-`/application/o/<slug>/.well-known/openid-configuration`, which starts
-answering once a provider exists. This deployment does not create an Ember
-OIDC provider or modify Ember's authentication configuration.
+`https://auth.jomcgi.dev`. Blueprints define separate OAuth2 providers and
+applications for `dev`, `kargo`, `preview`, `moving` and `grimoire`. The MCP
+blueprint updates the existing `mcp-friends` provider's mappings and application
+gate, and creates the `mcp-agents` client-credentials provider and application.
+The browser lanes use their own policy bindings; the agent lane is bound to
+`kg-agents`.
+
+Grimoire's provider and invitation-required enrollment flow are included by
+default. `grimoireLinkEnrollment` and `platformEnrollment` gate additional
+enrollment flows; `platformManagement` adds protected profile claims.
+authentik serves discovery per application at
+`/application/o/<slug>/.well-known/openid-configuration`. Ember's browser SSO
+remains intentionally unconfigured under ADR 032.
 
 Friend applications should use separate HTTPRoutes with Envoy OIDC policies.
 Do not attach those policies to the Authentik route itself or the login flow

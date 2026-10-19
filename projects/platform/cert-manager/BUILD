@@ -21,22 +21,6 @@ argocd_app(
     ],
 )
 
-argocd_app(
-    name = "cert-manager-gke",
-    chart = "projects/platform/cert-manager",
-    chart_files = ":chart",
-    namespace = "cert-manager",
-    release_name = "cert-manager",
-    tags = [
-        "helm",
-        "template",
-    ],
-    target_suffix = "_gke",
-    values_files = [
-        "values.yaml",
-    ],
-)
-
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(
