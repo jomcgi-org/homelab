@@ -66,6 +66,14 @@ def blob_response_bound(item):
     return encoded + 2 * ((encoded + 59) // 60) + MAX_BLOB_ENVELOPE_BYTES
 
 
+class SourceHTTPError(EvidenceUnavailable):
+    """Retain provider status so a batch can stop on shared outages or limits."""
+
+    def __init__(self, status_code):
+        super().__init__(f"GitHub returned {status_code}")
+        self.status_code = status_code
+
+
 def read_response(
     client, path, *, deadline_at=None, charge=None, max_bytes=MAX_RESPONSE_BYTES
 ):
@@ -80,9 +88,9 @@ def read_response(
         "GET", GITHUB_API + path, headers=headers, timeout=min(10, remaining)
     ) as response:
         if response.status_code != 200:
-            raise EvidenceUnavailable(f"GitHub returned {response.status_code}")
+            raise SourceHTTPError(response.status_code)
         if response.headers.get("content-encoding", "identity") != "identity":
-            raise EvidenceUnsupported("unsupported source transport encoding")
+            raise EvidenceUnavailable("unsupported source transport encoding")
         data = bytearray()
         for chunk in response.iter_raw(chunk_size=STREAM_CHUNK_BYTES):
             if time.monotonic() >= deadline_at:
@@ -94,10 +102,11 @@ def read_response(
             data.extend(chunk)
         try:
             result = json.loads(data.decode("utf-8"))
+            size = serialized_size(result)
         except (ValueError, UnicodeError, RecursionError) as exc:
-            raise EvidenceUnsupported("unsupported source JSON encoding") from exc
-        if serialized_size(result) > max_bytes:
-            raise EvidenceUnsupported("source response serialization bound exceeded")
+            raise EvidenceUnavailable("unsupported source JSON encoding") from exc
+        if size > max_bytes:
+            raise EvidenceUnavailable("source response serialization bound exceeded")
         return SourceResponse(result, len(data)) if isinstance(result, dict) else result
 
 

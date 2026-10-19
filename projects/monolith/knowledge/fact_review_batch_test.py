@@ -467,6 +467,66 @@ def test_transport_outage_makes_one_request_and_never_chains(db):
     assert db.get(FactReviewBatch, "batch").result["outcomes"] == {"unavailable": 32}
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "failure", [401, 403, 429, 500, 502, 503, httpx.ConnectError, httpx.ConnectTimeout]
+)
+def test_streamed_batch_stops_after_provider_failure(db, monkeypatch, enabled, failure):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(enabled).lower())
+    monkeypatch.setenv("KG_FACT_REVIEW_BATCH_SIZE", "32")
+    notes(db, 32, paths=[f"projects/member-{i}/app.py" for i in range(32)])
+    calls = []
+
+    def transport(request):
+        calls.append(request.url.path)
+        if "/git/ref/" in request.url.path:
+            return httpx.Response(
+                200,
+                stream=httpx.ByteStream(json.dumps({"object": {"sha": SHA}}).encode()),
+            )
+        if isinstance(failure, int):
+            return httpx.Response(failure)
+        raise failure("provider unavailable")
+
+    monkeypatch.setattr(
+        httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(transport))
+    )
+    assert prepare(db, fetch=None) == batch.SOURCE_UNAVAILABLE
+    assert len(calls) == 2  # one pin and the first member, never the other 31
+    parent = db.get(FactReviewBatch, "batch")
+    assert parent.metrics["source_requests"] == 2
+    assert parent.result["outcomes"] == {"unavailable": 32}
+    assert all(
+        utc(outcome.next_attempt_at) > NOW
+        for outcome in db.exec(select(ReviewOutcome)).all()
+    )
+
+
+@pytest.mark.parametrize("failure", [404, httpx.ReadTimeout])
+def test_enabled_streamed_batch_isolates_member_failure(monkeypatch, failure):
+    from knowledge.review_sources import EvidenceUnavailable
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    calls = []
+
+    def transport(request):
+        calls.append(request.url.path)
+        if request.url.path == "/failed":
+            if isinstance(failure, int):
+                return httpx.Response(failure)
+            raise failure("member timeout")
+        return httpx.Response(200, stream=httpx.ByteStream(b'{"ok": true}'))
+
+    with BatchSources() as reader:
+        reader.client.close()
+        reader.client = httpx.Client(transport=httpx.MockTransport(transport))
+        with pytest.raises(EvidenceUnavailable):
+            reader.read("/failed")
+        assert reader.stopped is None
+        assert reader.read("/healthy") == {"ok": True}
+        assert calls == ["/failed", "/healthy"]
+
+
 def test_prompt_budget_does_not_turn_temporary_deferral_into_unsupported(
     db, monkeypatch
 ):
