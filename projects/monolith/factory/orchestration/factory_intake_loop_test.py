@@ -2578,22 +2578,47 @@ def test_human_ownership_excludes_both_intake_lanes_without_policy_exclusion(
 
 
 @pytest.mark.parametrize(
-    "state,old,paused,expected",
+    "state,old,paused,held,start_state,expected",
     [
-        ("landing", False, False, 1),
-        ("landing", True, False, 1),
-        ("admitted", True, False, 0),
-        ("admitted", True, True, 0),
-        ("uncertain", True, False, 0),
-        ("queued", True, False, 1),
-        ("queued", False, False, 0),
+        ("landing", False, False, False, None, 1),
+        ("landing", True, False, False, None, 1),
+        ("admitted", True, False, False, None, 0),
+        ("admitted", True, True, False, None, 1),
+        ("admitted", False, False, True, "succeeded", 1),
+        ("admitted", True, True, True, "reserved", 0),
+        ("uncertain", True, False, False, None, 0),
+        ("uncertain", True, True, False, "cancelled", 1),
+        ("uncertain", False, False, True, "uncertain", 0),
+        ("queued", True, False, False, None, 1),
+        ("queued", False, False, False, None, 0),
     ],
 )
 def test_intake_capacity_matches_admission_across_generations(
-    db, monkeypatch, state, old, paused, expected
+    db, monkeypatch, state, old, paused, held, start_state, expected
 ):
     fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
     with Session(db) as session:
+        if state != "queued":
+            session.add(
+                SwarmTask(
+                    id="existing",
+                    task_text="work",
+                    conductor_model="opus",
+                    budget_usd=5,
+                )
+            )
+            session.flush()
+        if start_state:
+            session.add(
+                FactoryStart(
+                    task_id="existing",
+                    start_key="work",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status=start_state,
+                )
+            )
         session.add(
             FactoryReceipt(
                 repo="owner/repo",
@@ -2605,6 +2630,8 @@ def test_intake_capacity_matches_admission_across_generations(
                 actor=intake_loop.ACTOR,
                 state=state,
                 task_paused=paused,
+                task_id="existing" if state != "queued" else None,
+                direction_json=json.dumps({"landing_hold": None} if held else {}),
             )
         )
         session.commit()

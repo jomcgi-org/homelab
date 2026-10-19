@@ -8352,7 +8352,7 @@ def _observe_human_ownership(task: dict) -> bool:
 
 def tick() -> None:
     from factory.orchestration import uncertain_tasks
-    from factory.orchestration.factory_controls import status
+    from factory.orchestration.factory_controls import status, retry_capacity_releases
     from factory.orchestration.factory_intake import admit_next
 
     # First, before any early return: the uncertain-task snapshot span must
@@ -8361,6 +8361,12 @@ def tick() -> None:
     uncertain_tasks.emit_uncertain_task_snapshot()
 
     snapshot = status()
+    if any(
+        (row.get("direction") or {}).get("pending_capacity_release")
+        for row in snapshot.get("active_tasks", [])
+    ):
+        retry_capacity_releases()
+        snapshot = status()
     # Check publication is independent of admission, guest runtime and landing.
     try:
         from factory import dependency_gate

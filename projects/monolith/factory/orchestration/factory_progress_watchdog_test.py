@@ -649,6 +649,40 @@ def test_resume_from_the_card_rearms_from_current_turns(
     assert len(model.calls) == 1
 
 
+def test_card_resume_waits_at_capacity_and_retries_without_another_answer(
+    db, github, notices, model, spans
+):
+    task_id, policy = looped(db, github, notices, spans)
+    with Session(db) as session, session.begin():
+        session.add(
+            SwarmTask(id="busy", task_text="work", conductor_model="opus", budget_usd=5)
+        )
+        session.flush()
+        session.add(
+            FactoryReceipt(
+                task_id="busy",
+                repo=REPO,
+                issue_number=8,
+                title="busy",
+                body="",
+                url="",
+                actor="test",
+                state="admitted",
+            )
+        )
+    decided = decisions.apply_decision(receipt(db, task_id).id, "resume", "operator")
+    assert decided["ok"]
+    assert watchdog.check(task_id, policy) == "enact_waiting"
+    assert watchdog.check(task_id, policy) == "enact_waiting"
+    assert receipt(db, task_id).task_paused
+    assert not audits(db, watchdog.CLEARED)
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "busy").state = "failed"
+    assert controls.retry_capacity_releases() == 1
+    assert watchdog.check(task_id, policy) == "cleared"
+    assert not receipt(db, task_id).task_paused
+
+
 def test_plain_resume_task_also_rearms_and_answers_the_card(
     db, github, notices, model, spans
 ):

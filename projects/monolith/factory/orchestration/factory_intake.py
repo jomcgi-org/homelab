@@ -24,6 +24,7 @@ from factory.orchestration.factory_controls import (
     DEFAULT_TASK_CLASS,
     delivery_branch_owner,
     enabled_repos,
+    execution_slot_holders,
     factory_max_concurrent_tasks,
     granted_delivery_surface,
     INTAKE_ACTOR,
@@ -36,9 +37,11 @@ from factory.orchestration.factory_controls import (
     receipt_task_class,
     repo_effective_policy,
     repo_lane_limits,
+    retry_capacity_releases,
     TASK_CLASSES,
     validate_task_class,
     validate_policy,
+    unresolved_start_task_ids,
 )
 from factory.orchestration.factory_models import (  # noqa: F401 - same_work re-exported
     FactoryControl,
@@ -279,7 +282,7 @@ def ceiling_below_lanes(policy: dict) -> dict | None:
     }
 
 
-def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
+def open_lanes(policy: dict, rows, lanes=LANES, *, unresolved_task_ids=None) -> dict:
     """Room left per lane, given the receipts already holding slots in them.
 
     The chart owns one ceiling for the whole factory and the policy asks for a
@@ -295,9 +298,9 @@ def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
     first slot, because delivery is what the lane exists to do and a ceiling an
     operator set low must never leave it unable to start anything.
     """
-    from factory.orchestration.factory_controls import execution_slot_holders
-
-    rows = execution_slot_holders(policy, rows, include_queued=True)
+    rows = execution_slot_holders(
+        policy, rows, include_queued=True, unresolved_task_ids=unresolved_task_ids
+    )
     wanted = lane_max_tasks(policy)
     held = {lane: 0 for lane in LANES}
     for row in rows:
@@ -453,6 +456,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
     with _locked_session(session) as (db, control):
         if control.state != "enabled":
             return {"ok": False, "reason": control.state}
+        retry_capacity_releases(session=db)
         policy = validate_policy(json.loads(control.policy_json))
         limits = lane_limits(policy)
         active = db.exec(
@@ -460,21 +464,25 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             .where(FactoryReceipt.state.in_(("admitted", "uncertain")))
             .order_by(FactoryReceipt.id)
         ).all()
-        room = open_lanes(policy, active, lanes)
+        unresolved = unresolved_start_task_ids(db)
+        occupying = execution_slot_holders(
+            policy, active, unresolved_task_ids=unresolved
+        )
+        room = open_lanes(policy, occupying, lanes, unresolved_task_ids=unresolved)
         available = [lane for lane in lanes if room[lane] > 0]
         if not available:
-            held = [row.task_id for row in active]
+            held = [row.task_id for row in occupying]
             return {
                 "ok": False,
                 "reason": "wip_limit",
                 "task_id": held[0] if held else None,
                 "active_task_ids": held,
-                "active": len(active),
+                "active": len(occupying),
                 "limit": sum(limits[lane] for lane in lanes),
                 "lanes": {
                     lane: {
                         "limit": limits[lane] if lane in lanes else 0,
-                        "active": sum(1 for row in active if lane_of(row) == lane),
+                        "active": sum(1 for row in occupying if lane_of(row) == lane),
                     }
                     for lane in LANES
                 },

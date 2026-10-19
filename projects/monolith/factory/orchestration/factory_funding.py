@@ -405,21 +405,12 @@ def request(task, reason, *, recover=False):
             )
             return True
         if recover:
-            from factory.orchestration.factory_intake import open_lanes, lane_of
-
-            active = db.exec(
-                select(FactoryReceipt).where(
-                    FactoryReceipt.state.in_(["admitted", "uncertain"])
-                )
-            ).all()
-            if (
-                control.state != "enabled"
-                or open_lanes(json.loads(control.policy_json), active).get(
-                    lane_of(row), 0
-                )
-                < 1
+            if control.state != "enabled" or not controls.execution_capacity_available(
+                db, control, row
             ):
                 return False
+        elif not controls.execution_capacity_available(db, control, row):
+            return False
         policy = effective_policy(db, row)
         judge = model_pool.select_model("judge", policy)["model"]
         if judge not in policy["allowed_models"]:

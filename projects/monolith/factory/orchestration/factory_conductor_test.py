@@ -16848,6 +16848,72 @@ def test_continuation_grant_rolls_back_with_refused_second_edit(
     )
 
 
+@pytest.mark.parametrize("constraint", ["lane", "chart"])
+def test_continuation_waits_then_recovers_using_shared_capacity(
+    feedback_db, monkeypatch, constraint
+):
+    import json
+    from sqlmodel import Session
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
+    from factory.orchestration.models import SwarmTask
+
+    task, policy = continuation_task(monkeypatch)
+    assert controls.finish_task(task["id"], "escalated", "test")["ok"]
+    monkeypatch.setenv(
+        "FACTORY_MAX_CONCURRENT_TASKS", "1" if constraint == "chart" else "2"
+    )
+    with Session(conductor.get_engine()) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        current = json.loads(control.policy_json)
+        current["max_tasks"] = 2 if constraint == "chart" else 1
+        control.policy_json = json.dumps(current)
+        db.add(
+            SwarmTask(
+                id="capacity-owner",
+                task_text="work",
+                conductor_model="opus",
+                budget_usd=5,
+            )
+        )
+        db.flush()
+        db.add(
+            FactoryReceipt(
+                task_id="capacity-owner",
+                repo=task["repo"],
+                issue_number=9999,
+                title="busy",
+                body="",
+                url="",
+                actor="test",
+                state="admitted",
+            )
+        )
+    runs = conductor.graph.node_runs(task["id"])
+    nodes = conductor.graph.load_graph(task["id"])
+    pending = conductor._pending_correction(nodes, runs)
+
+    def attempt():
+        return conductor._insert_review_round(
+            task,
+            policy,
+            nodes,
+            runs,
+            pending,
+            1,
+            4,
+            conductor.graph.current_version(task["id"]),
+            recover_escalated=True,
+        )
+
+    assert attempt() == (False, "continuation_waiting")
+    assert controls.continuation_grant(task["id"]) is None
+    with Session(conductor.get_engine()) as db, db.begin():
+        controls._receipt(db, "capacity-owner").task_paused = True
+    assert attempt() == (True, None)
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"
+
+
 def test_continuation_recovers_same_escalated_task_without_new_budget(
     feedback_db, monkeypatch
 ):

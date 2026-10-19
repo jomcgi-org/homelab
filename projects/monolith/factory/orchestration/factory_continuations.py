@@ -5,11 +5,8 @@ import hashlib
 import json
 import os
 
-from sqlmodel import select
-
 from core.clock import aware
 from factory.orchestration import factory_controls as controls, graph
-from factory.orchestration.factory_models import FactoryReceipt
 
 ACTOR = "factory:continuation"
 
@@ -85,18 +82,10 @@ def try_grant(
             # never the old readmission path that discards its policy and history.
             if control.state != "enabled":
                 return False, "continuation_control_refused"
-            active = db.exec(
-                select(FactoryReceipt).where(
-                    FactoryReceipt.state.in_(["admitted", "uncertain"])
-                )
-            ).all()
-            from factory.orchestration.factory_intake import open_lanes, lane_of
-
-            current = json.loads(control.policy_json)
-            if open_lanes(current, active).get(lane_of(row), 0) < 1:
-                return False, "continuation_waiting"
         elif row.state != "admitted" or row.task_paused:
             return False, "continuation_control_refused"
+        if not controls.execution_capacity_available(db, control, row):
+            return False, "continuation_waiting"
         pinned = json.loads(row.policy_json)
         if (
             pinned != policy

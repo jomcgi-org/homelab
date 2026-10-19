@@ -42,6 +42,7 @@ TASK_RECOVERY_ACTION = "operator_task_recovery"
 MAX_TASK_EVIDENCE_LENGTH = 4096
 
 _ACTIVE = ("admitted", "uncertain")
+_UNRESOLVED_STARTS = ("reserved", "uncertain")
 _TERMINAL = ("succeeded", "failed", "cancelled")
 # A receipt whose task asked a person for a decision and left the lane to wait
 # for it. It holds no slot, starts nothing and keeps its graph, and it leaves
@@ -1358,20 +1359,43 @@ def admission_eligible(policy: dict, issue_number: int, actor: str) -> bool:
     return actor == INTAKE_ACTOR and bool(intake_policy(policy).get("enabled"))
 
 
+def unresolved_start_task_ids(db: Session) -> set[str]:
+    """Batch the exact unresolved-start predicate used by _accounting."""
+    return set(
+        db.exec(
+            select(FactoryStart.task_id)
+            .where(FactoryStart.status.in_(_UNRESOLVED_STARTS))
+            .distinct()
+        ).all()
+    )
+
+
 def execution_slot_holders(
-    policy: dict, receipts, *, include_queued: bool = False
+    policy: dict,
+    receipts,
+    *,
+    include_queued: bool = False,
+    unresolved_task_ids: set[str] | None = None,
 ) -> list:
     """One capacity projection for status, intake and admission.
 
-    Paused active work retains its slot across generations. Landing retains
-    ownership, but has no guest work. Only admissible current queues reserve
-    future intake room.
+    Paused or landing-held active work releases capacity only with affirmative
+    accounting evidence that it has no reserved or uncertain starts. Missing
+    batch evidence retains capacity. Ordinary active work counts across policy
+    generations. Landing retains ownership without an execution slot; only
+    admissible current queues reserve future intake room. Never use this list
+    for issue, branch or per-repository ownership.
     """
 
     def holds(row):
         get = row.get if isinstance(row, dict) else lambda key: getattr(row, key, None)
         if get("state") in _ACTIVE:
-            return True
+            return (
+                not (get("task_paused") or landing_held(row))
+                or unresolved_task_ids is None
+                or not get("task_id")
+                or get("task_id") in unresolved_task_ids
+            )
         return (
             include_queued
             and is_current_generation_queue(policy, row)
@@ -1381,7 +1405,7 @@ def execution_slot_holders(
     return [row for row in receipts if holds(row)]
 
 
-def lane_usage(policy: dict, receipts: list[dict]) -> dict:
+def lane_usage(policy: dict, receipts: list[dict], *, unresolved_task_ids=None) -> dict:
     """Per-lane limits beside what is in flight and what is waiting.
 
     Active tasks occupy capacity across policy generations. Only queued
@@ -1389,7 +1413,9 @@ def lane_usage(policy: dict, receipts: list[dict]) -> dict:
     """
     limits = lane_limits(policy)
     usage = {lane: {"limit": limits[lane], "active": 0, "queued": 0} for lane in LANES}
-    for receipt in execution_slot_holders(policy, receipts, include_queued=True):
+    for receipt in execution_slot_holders(
+        policy, receipts, include_queued=True, unresolved_task_ids=unresolved_task_ids
+    ):
         lane = receipt.get("routing_tier") or lane_for(
             receipt.get("task_class") or DEFAULT_TASK_CLASS
         )
@@ -1410,6 +1436,134 @@ def is_current_generation_queue(policy: dict, receipt: object) -> bool:
         state = getattr(receipt, "state", None)
         receipt_generation = getattr(receipt, "generation", 0)
     return state == "queued" and receipt_generation == generation
+
+
+def execution_capacity_available(db, control, row, *, active=None, unresolved=None):
+    """Check reacquisition under the admission lock, without counting self twice.
+
+    Callers mutating execution authority hold _locked_session until their
+    receipt transition or start reservation has flushed. Ownership checks use
+    the unfiltered receipts separately.
+    """
+    from factory.orchestration.factory_intake import lane_of, open_lanes
+
+    policy = json.loads(control.policy_json)
+    if unresolved is None:
+        unresolved = unresolved_start_task_ids(db)
+    if execution_slot_holders(policy, [row], unresolved_task_ids=unresolved):
+        return True
+    if active is None:
+        active = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.state.in_(_ACTIVE))
+        ).all()
+    lane = lane_of(row)
+    return open_lanes(policy, active, (lane,), unresolved_task_ids=unresolved)[lane] > 0
+
+
+def _capacity_release_refusal(db, control, row):
+    if row.cancellation_requested:
+        return "cancellation_pending"
+    if row.state not in _ACTIVE:
+        return "task_not_active"
+    if control.state not in ("enabled", "paused"):
+        return control.state
+    if row.work_item_id:
+        item = db.get(WorkItem, row.work_item_id)
+        if item and "human" in {label.lower() for label in item.labels}:
+            return "human_owned"
+    return None
+
+
+def _apply_capacity_release(db, control, row, *, active=None, unresolved=None):
+    direction = json.loads(row.direction_json or "{}")
+    intent = direction.get("pending_capacity_release")
+    if not intent:
+        return False
+    refusal = _capacity_release_refusal(db, control, row)
+    if intent["task_id"] != row.task_id or refusal:
+        # Cancellation, ownership handoff and a new pause revoke old intent.
+        direction.pop("pending_capacity_release")
+        row.direction_json = _json(direction)
+        return False
+    if (
+        "landing_hold" in intent
+        and direction.get("landing_hold") != intent["landing_hold"]
+    ):
+        direction.pop("pending_capacity_release")
+        row.direction_json = _json(direction)
+        return False
+    if not execution_capacity_available(
+        db, control, row, active=active, unresolved=unresolved
+    ):
+        return False
+    if intent.get("resume"):
+        row.task_paused = False
+    if "landing_hold" in intent:
+        direction.pop("landing_hold", None)
+    direction.pop("pending_capacity_release")
+    row.direction_json = _json(direction)
+    row.updated_at = _now()
+    _audit(
+        db,
+        intent["actor"],
+        "execution_capacity_reacquired",
+        task_id=row.task_id,
+        intent=intent,
+    )
+    return True
+
+
+def request_capacity_release(
+    db, control, row, actor, *, resume=False, release_hold=False
+):
+    """Persist explicit release intent and try it in this locked transaction.
+
+    The original fences stay set while the lane or chart is full. Only this
+    durable intent permits the normal reconciler to retry without a new answer.
+    """
+    refusal = _capacity_release_refusal(db, control, row)
+    if refusal:
+        return {"ok": False, "reason": refusal}
+    direction = json.loads(row.direction_json or "{}")
+    intent = direction.get("pending_capacity_release") or {
+        "task_id": row.task_id,
+        "actor": actor,
+        "requested_at": _now().isoformat(),
+    }
+    if resume:
+        intent["resume"] = True
+    if release_hold and "landing_hold" in direction:
+        intent["landing_hold"] = direction["landing_hold"]
+    direction["pending_capacity_release"] = intent
+    row.direction_json = _json(direction)
+    applied = _apply_capacity_release(db, control, row)
+    return {
+        "ok": True,
+        "pending": not applied,
+        "reason": None if applied else "capacity_waiting",
+    }
+
+
+def retry_capacity_releases(*, session=None):
+    """Retry only recorded intent, serialized with admission and other resumes."""
+    with _locked_session(session) as (db, control):
+        if control.state not in ("enabled", "paused"):
+            return 0
+        active = db.exec(
+            select(FactoryReceipt)
+            .where(FactoryReceipt.state.in_(_ACTIVE))
+            .order_by(FactoryReceipt.id)
+        ).all()
+        unresolved = unresolved_start_task_ids(db)
+        resumed = 0
+        for row in active:
+            if _apply_capacity_release(
+                db, control, row, active=active, unresolved=unresolved
+            ):
+                resumed += 1
+                control.version += 1
+                control.updated_at = _now()
+        return resumed
 
 
 def _validate_model_pools(pools: object, policy: dict) -> dict:
@@ -1738,7 +1892,12 @@ def _effective_policy(db, row):
 
 def landing_held(row) -> bool:
     """A receipt's explicit operator hold survives policy and task settlement."""
-    direction = json.loads(row.direction_json or "{}") if row is not None else {}
+    if isinstance(row, dict):
+        direction = row.get("direction") or json.loads(
+            row.get("direction_json") or "{}"
+        )
+    else:
+        direction = json.loads(getattr(row, "direction_json", None) or "{}")
     return "landing_hold" in direction
 
 
@@ -1871,7 +2030,7 @@ def _accounting(starts: list[FactoryStart]) -> dict:
     # were read in. An unsaved row sorts last; only settled rows carry a basis.
     for row in sorted(starts, key=lambda row: (row.id is None, row.id or 0)):
         committed += _committed_cost(row)
-        unresolved += row.status in ("reserved", "uncertain")
+        unresolved += row.status in _UNRESOLVED_STARTS
         if row.accounting_basis == "capacity_denied":
             node_key = _start_node_key(row)
             seen = denied.get(node_key, 0)
@@ -2692,7 +2851,9 @@ def status(*, session: Session | None = None) -> dict:
             "policy": policy,
             "intake": intake_state(policy, session=db),
             "problem_issues": problem_issues_state(policy, session=db),
-            "lanes": lane_usage(policy, receipts),
+            "lanes": lane_usage(
+                policy, receipts, unresolved_task_ids=unresolved_start_task_ids(db)
+            ),
             "review_routing": review_routing_view(policy, session=db),
             "admitted_count": control.admitted_count,
             "version": control.version,
@@ -2897,6 +3058,7 @@ def set_control(
     with _locked_session(session) as (db, control):
         reason = None
         configure_detail = {}
+        release_result = {}
         if control.state == "stopped" and action != "stop":
             reason = "stopped"
         elif action == "configure":
@@ -3010,7 +3172,17 @@ def set_control(
             elif row.cancellation_requested:
                 reason = "cancellation_pending"
             else:
-                row.task_paused = action == "pause_task"
+                if action == "pause_task":
+                    row.task_paused = True
+                    direction = json.loads(row.direction_json or "{}")
+                    direction.pop("pending_capacity_release", None)
+                    row.direction_json = _json(direction)
+                else:
+                    release_result = request_capacity_release(
+                        db, control, row, actor, resume=True
+                    )
+                    if not release_result["ok"]:
+                        reason = release_result["reason"]
                 row.updated_at = _now()
                 db.add(row)
         elif action == "stop":
@@ -3047,6 +3219,7 @@ def set_control(
             ok=reason is None,
             reason=reason,
             policy=configured,
+            pending=release_result.get("pending", False),
             **configure_detail,
         )
         return {
@@ -3054,6 +3227,7 @@ def set_control(
             "reason": reason,
             "state": control.state,
             "version": control.version,
+            **release_result,
         }
 
 
@@ -3275,6 +3449,12 @@ def _can_start(
             recovery_deadline or admitted + timedelta(seconds=timeout)
         ):
             reason = "task_deadline"
+    if (
+        reason is None
+        and landing_held(row)
+        and not execution_capacity_available(db, control, row)
+    ):
+        reason = "capacity_waiting"
     return {"ok": reason is None, "reason": reason}
 
 
@@ -3976,6 +4156,10 @@ def finish_task(
             outcome = "landing"
             action = "delivery_ready"
         row.state = outcome
+        if outcome not in _ACTIVE:
+            direction = json.loads(row.direction_json or "{}")
+            direction.pop("pending_capacity_release", None)
+            row.direction_json = _json(direction)
         row.updated_at = _now()
         db.add(row)
         if outcome == "landing":
@@ -4035,6 +4219,8 @@ def request_landing_recovery(
         row = _receipt(db, task_id)
         if row is None:
             return {"ok": False, "reason": "unknown_task"}
+        if landing_held(row):
+            return {"ok": False, "reason": "receipt_landing_held"}
         events = db.exec(
             select(FactoryAudit)
             .where(
@@ -4069,6 +4255,8 @@ def request_landing_recovery(
             return {"ok": False, "reason": "task_not_correctable"}
         if row.task_paused or row.cancellation_requested:
             return {"ok": False, "reason": "task_paused"}
+        if replaying and _landing_recovery_expired(db, task_id):
+            return {"ok": False, "reason": "landing_recovery_deadline"}
         if any(
             start.status in ("reserved", "uncertain") for start in _starts(db, task_id)
         ):
@@ -4086,14 +4274,35 @@ def request_landing_recovery(
 
             if any(same_work(r, row) and r.task_id != task_id for r in active):
                 return {"ok": False, "reason": "issue_already_active"}
-            if (
-                sum(
-                    (r.routing_tier or lane_for(receipt_task_class(r))) == "delivery"
-                    for r in active
-                )
-                >= lane_limits(live_policy)["delivery"]
-            ):
-                return {"ok": False, "reason": "delivery_capacity"}
+        if not replaying:
+            run_floor = (
+                db.exec(
+                    select(SwarmNodeRun.id)
+                    .where(SwarmNodeRun.task_id == task_id)
+                    .order_by(SwarmNodeRun.id.desc())
+                    .limit(1)
+                ).first()
+                or 0
+            )
+            # The landing loop retries this existing durable request when room
+            # opens. Waiting never renews its identity, allowance or deadline.
+            _audit(
+                db,
+                actor,
+                "landing_recovery_requested",
+                task_id=task_id,
+                run_id_floor=run_floor,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                source=source,
+                reason=reason,
+                deadline_at=(
+                    _now() + timedelta(seconds=LANDING_RECOVERY_TIMEOUT_SECONDS)
+                ).isoformat(),
+            )
+        if row.state in ("succeeded", "landing"):
+            if not execution_capacity_available(db, _control, row):
+                return {"ok": False, "reason": "delivery_capacity", "pending": True}
             row.state = "admitted"
             row.updated_at = _now()
             db.add(row)
@@ -4102,34 +4311,7 @@ def request_landing_recovery(
             task.start_state = "factory"
             task.start_updated_at = _now()
             db.add(task)
-        if replaying:
-            return {"ok": True, "replayed": True, "state": row.state}
-        run_floor = (
-            db.exec(
-                select(SwarmNodeRun.id)
-                .where(
-                    SwarmNodeRun.task_id == task_id,
-                )
-                .order_by(SwarmNodeRun.id.desc())
-                .limit(1)
-            ).first()
-            or 0
-        )
-        _audit(
-            db,
-            actor,
-            "landing_recovery_requested",
-            task_id=task_id,
-            run_id_floor=run_floor,
-            pr_number=pr_number,
-            head_sha=head_sha,
-            source=source,
-            reason=reason,
-            deadline_at=(
-                _now() + timedelta(seconds=LANDING_RECOVERY_TIMEOUT_SECONDS)
-            ).isoformat(),
-        )
-        return {"ok": True, "replayed": False, "state": row.state}
+        return {"ok": True, "replayed": replaying, "state": row.state}
 
 
 _SESSIONLESS_START_TERMINAL_WORKFLOW_STATUSES = frozenset({"CANCELLED", "ERROR"})

@@ -881,6 +881,66 @@ def held_delivery(database, monkeypatch):
     return pull, direction
 
 
+@pytest.mark.parametrize("constraint", ["lane", "chart"])
+def test_landing_release_retains_authorized_intent_while_full(
+    database, held_delivery, monkeypatch, constraint
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    monkeypatch.setenv(
+        "FACTORY_MAX_CONCURRENT_TASKS", "1" if constraint == "chart" else "2"
+    )
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.task_paused = False
+        db.add(
+            SwarmTask(
+                id="other", task_text="other", conductor_model="astra", budget_usd=50
+            )
+        )
+        db.flush()
+        db.add(
+            FactoryReceipt(
+                task_id="other",
+                repo="org/repo",
+                issue_number=7002,
+                title="other",
+                body="",
+                url="",
+                actor="test",
+                state="admitted",
+            )
+        )
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved exact delivery")
+    args = dict(
+        actor="operator",
+        request_key="release-waiting",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    result = releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args)
+    assert result["ok"] and result["pending"]
+    assert (
+        releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args) == result
+    )
+    assert controls.retry_capacity_releases() == 0
+    with Session(database) as db, db.begin():
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+        controls._receipt(db, "other").state = "failed"
+    assert controls.retry_capacity_releases() == 1
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert not controls.landing_held(row)
+        assert not row.task_paused
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+        assert (
+            json.loads(row.direction_json)["landing_authorization"]["head_sha"]
+            == "a" * 40
+        )
+    assert (
+        releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args) == result
+    )
+
+
 @pytest.mark.parametrize("merged", [False, True])
 def test_landing_release_only_removes_hold_and_is_idempotent(
     database, held_delivery, merged

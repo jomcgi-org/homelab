@@ -20,6 +20,7 @@ from factory.orchestration.factory_controls import (
     delivery_admissions,
     enabled_repos,
     execution_slot_holders,
+    unresolved_start_task_ids,
     intake_policy,
     intake_state,
     is_advisory,
@@ -225,7 +226,7 @@ def _idle(detail: dict) -> None:
     _throttled("intake_idle", detail)
 
 
-def _slot_holders(rows, policy: dict) -> list:
+def _slot_holders(rows, policy: dict, *, unresolved_task_ids=None) -> list:
     """Receipts that really hold a lane slot for this intake tick.
 
     A queued receipt holds a slot only if admit_next could admit it, which
@@ -234,7 +235,9 @@ def _slot_holders(rows, policy: dict) -> list:
     the allowlist can never admit, so counting it let four such receipts
     fill a delivery lane and stall intake with no audit (#6483).
     """
-    return execution_slot_holders(policy, rows, include_queued=True)
+    return execution_slot_holders(
+        policy, rows, include_queued=True, unresolved_task_ids=unresolved_task_ids
+    )
 
 
 def _listing_due(now: datetime) -> bool:
@@ -499,6 +502,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     )
                 ).all(),
                 {**policy, "generation": generation},
+                unresolved_task_ids=unresolved_start_task_ids(db),
             )
             room = open_lanes(policy, held, lanes)
             if not any(room.values()):
@@ -992,6 +996,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                         )
                     ).all(),
                     {**policy, "generation": generation},
+                    unresolved_task_ids=unresolved_start_task_ids(db),
                 )
                 room = open_lanes(policy, held, lanes)
                 held_counts: dict[str, int] = {}
