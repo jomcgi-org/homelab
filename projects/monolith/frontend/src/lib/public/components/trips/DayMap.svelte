@@ -9,8 +9,8 @@
   import "maplibre-gl/dist/maplibre-gl.css";
 
   // Single-day route map, a faithful port of the original React DayMap. The
-  // basemap is the light Carto Positron style, drawn in its normal light form
-  // (no CSS inversion), with a sheet-token route casing on top. Layers,
+  // basemap starts from Carto Positron and receives resolved sheet-token paint
+  // in either scheme (no CSS inversion), with an ink route casing on top. Layers,
   // in z-order: a thick ink `route-line` casing, a thin `route-color-accent`
   // (the real day colour) down its centre, and a wide transparent
   // `route-hit-area` for click-to-select. DOM markers mark the start, end and
@@ -100,8 +100,8 @@
     return ((azimuthDeg % 360) + 360) % 360;
   }
 
-  // Subtle, standard (non-inverted) hillshade: shadows dark, highlights light.
-  // The sun still sets the illumination direction (azimuth) and the relief
+  // Hillshade uses the sheet's ink and ground colours. The sun still sets the
+  // illumination direction (azimuth) and the relief
   // exaggeration (terrain reads stronger at low sun); the sheet supplies the
   // colours without changing the solar direction or exaggeration.
   function sunIntensity(sun) {
