@@ -1,0 +1,114 @@
+{{- if not .Values.config.r2Endpoint }}
+{{- fail "config.r2Endpoint is required" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "scotland-connector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scotland-connector.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  revisionHistoryLimit: 3
+  minReadySeconds: {{ .Values.minReadySeconds }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "scotland-connector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "scotland-connector.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "scotland-connector.fullname" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Spread replicas so a node drain or a zone event takes at most part of
+      # the serving set.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "scotland-connector.selectorLabels" . | nindent 14 }}
+      containers:
+        - name: connector
+          image: {{ include "scotland-connector.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+            - name: admin
+              containerPort: {{ .Values.adminPort }}
+              protocol: TCP
+          env:
+            - name: LISTEN_ADDR
+              value: ":{{ .Values.service.targetPort }}"
+            - name: ADMIN_ADDR
+              value: ":{{ .Values.adminPort }}"
+            - name: R2_ENDPOINT
+              value: {{ .Values.config.r2Endpoint | quote }}
+            - name: AWS_REGION
+              value: {{ .Values.config.region | quote }}
+            - name: S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.r2Credentials.secretName }}
+                  key: access-key-id
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.r2Credentials.secretName }}
+                  key: secret-access-key
+            - name: STARS_BUCKET
+              value: {{ .Values.config.bucket | quote }}
+            - name: STARS_SITES_KEY
+              value: {{ .Values.config.sitesKey | quote }}
+            - name: STARS_HISTORY_KEY
+              value: {{ .Values.config.historyKey | quote }}
+            - name: REFRESH_INTERVAL
+              value: {{ .Values.config.refreshInterval | quote }}
+            - name: PUBLIC_BASE_URL
+              value: {{ .Values.config.publicBaseURL | quote }}
+            - name: MCP_ALLOWED_ORIGINS
+              value: {{ join "," .Values.config.mcpAllowedOrigins | quote }}
+            - name: SERVICE_VERSION
+              value: {{ .Chart.Version | quote }}
+            - name: GOMEMLIMIT
+              value: {{ .Values.goMemLimit | quote }}
+            - name: SHUTDOWN_GRACE
+              value: "{{ sub (sub .Values.terminationGracePeriodSeconds .Values.preStopSleepSeconds) 5 }}s"
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 2
+            # A minute for the first R2 load, longer than the client timeout.
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

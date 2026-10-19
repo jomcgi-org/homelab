@@ -34,7 +34,11 @@ filegroup(
 filegroup(
     name = "chart_values",
     srcs = ["values.yaml"],
-    visibility = ["//projects/monolith:__pkg__"],
+    visibility = [
+        "//projects/monolith:__pkg__",
+        # The connector's chart test pins its client-identity regex to this one.
+        "//projects/scotland-connector/chart:__pkg__",
+    ],
 )
 
 # Guard: the packaged homelab-library must deploy images by content digest, not

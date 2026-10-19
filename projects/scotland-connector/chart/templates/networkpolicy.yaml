@@ -1,0 +1,72 @@
+{{- if .Values.networkPolicy.enabled }}
+# Ingress isolation for the whole namespace: the only accepted flow is the
+# Envoy Gateway data plane to the public port. Kubelet probes on the admin
+# port originate from the node and are not subject to NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "scotland-connector.fullname" . }}-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scotland-connector.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.gateway.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.gateway.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+{{- end }}
+{{- if .Values.networkPolicy.egress.enabled }}
+{{- if empty .Values.networkPolicy.egress.dnsServiceCidrs }}
+{{- fail "networkPolicy.egress.dnsServiceCidrs must contain a live-validated resolver address when egress is enabled" }}
+{{- end }}
+---
+# Egress allow-list: DNS, then HTTPS to public addresses only (R2). Private,
+# link-local (the metadata server) and shared ranges are excluded, so the pod
+# can reach nothing in-cluster beyond the resolver.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "scotland-connector.fullname" . }}-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scotland-connector.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        {{- range .Values.networkPolicy.egress.dnsServiceCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- toYaml .Values.networkPolicy.egress.publicHttpsExcept | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

@@ -1,0 +1,37 @@
+# Publication metadata for chart-version write-back, in the monolith-public
+# pattern. This file deploys nothing; the hub Application under
+# projects/gke-apps/scotland-connector/ is added once the first chart version
+# is published, with Kargo owning promotion (#7242).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: scotland-connector
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: scotland-connector
+      targetRevision: 0.1.0
+      helm:
+        releaseName: scotland-connector
+        valueFiles:
+          - $values/projects/scotland-connector/deploy/values.yaml
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: scotland-connector
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
