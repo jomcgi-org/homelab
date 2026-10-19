@@ -2599,6 +2599,24 @@ because it renews leases, deadlines and turn ceilings, and successive automatic
 grants still require new work evidence: useful investigation counts, while
 planner and funding turns alone do not. Historical charges remain recorded.
 
+Automatic funding may renew turn, planner, review and lease bounds within the
+current approved task budget. The judge proposes a budget; it cannot approve an
+increase. Settlement compares that proposal, including any recorded deficit,
+with the effective budget under the existing control and task locks. A higher
+proposal settles the review and pauses the same active receipt with
+`funding_budget_approval_required`, without a funding overlay or new allowance.
+The operator can use the existing exact-receipt amendment preview/apply, then
+explicitly resume. A smaller amendment does not authorize a larger proposal.
+Dispatch-refusal grants and their validated inherited source audits keep their
+existing operator authority. Existing grants and charged history are preserved.
+
+**Why approval is separate from accounting.** A recovered invocation can report
+charges above the approved budget. Those charges remain visible, but neither
+that report nor an automatic judge proposal is authority to increase the
+budget. An automatic tranche retains the existing approved budget even when
+the judge estimates less. This adds no fixed dollar ceiling or runtime cost
+cutoff and does not change graph or dispatch admission.
+
 An operator may also select sticky `nonrenewable_recovery=true` and bound the
 remaining planning attempts with `max_planner_turns`. This uses the same
 amendment preview/apply and separate explicit resume. The final authorized

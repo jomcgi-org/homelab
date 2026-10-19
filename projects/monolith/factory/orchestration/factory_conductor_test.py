@@ -17654,8 +17654,11 @@ def test_productive_extensions_preserve_original_policy(feedback_db, monkeypatch
     )["ok"]
     settle_funding(task, funding_decision())
     after = controls.task_snapshot(task["id"])
-    assert after["policy"]["task_budget_usd"] == 20
-    assert conductor.graph.budget_snapshot(task["id"])["task_budget_usd"] == 20
+    assert after["policy"]["task_budget_usd"] == policy["task_budget_usd"]
+    assert (
+        conductor.graph.budget_snapshot(task["id"])["task_budget_usd"]
+        == policy["task_budget_usd"]
+    )
     assert after["policy"]["max_task_turns_hard"] == before["turns_used"] + 4
     with Session(conductor.get_engine()) as db:
         assert json.loads(controls._receipt(db, task["id"]).policy_json) == policy
@@ -17673,7 +17676,10 @@ def test_productive_extensions_preserve_original_policy(feedback_db, monkeypatch
         task,
         funding_decision(task_budget_usd=25, additional_work_turns=3, action="steer"),
     )
-    assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 25
+    assert (
+        controls.task_snapshot(task["id"])["policy"]["task_budget_usd"]
+        == policy["task_budget_usd"]
+    )
     with controls._read_session() as db:
         assert funding.amendment(db, task["id"])["next_plan"].startswith("Correct")
 
@@ -17763,7 +17769,7 @@ def test_bookkeeping_without_new_evidence_cannot_renew_funding(
     assert not funding.request(task, "Same blocker, no new work evidence")
     snapshot = controls.task_snapshot(task["id"])
     assert snapshot["task_paused"]
-    assert snapshot["policy"]["task_budget_usd"] == 20
+    assert snapshot["policy"]["task_budget_usd"] == policy["task_budget_usd"]
     with controls._read_session() as db:
         assert funding.pending(db, task["id"]) is None
         blocked = funding.latest(db, task["id"], "allocation_recovery_required")
@@ -17874,10 +17880,10 @@ def test_funding_settles_against_a_spent_node_allocation(feedback_db, monkeypatc
 
     task, _ = exhausted_allocation_task(monkeypatch, "review_retirement_audit", 10)
     assert funding.request(task, "Request against the spent review allocation")
-    settle_funding(task, funding_decision(task_budget_usd=60))
+    settle_funding(task, funding_decision(task_budget_usd=50))
     snapshot = controls.task_snapshot(task["id"])
     assert not snapshot["task_paused"]
-    assert snapshot["policy"]["task_budget_usd"] == 60
+    assert snapshot["policy"]["task_budget_usd"] == 50
     with controls._read_session() as db:
         assert funding.amendment(db, task["id"]) is not None
         assert funding.pending(db, task["id"]) is None
@@ -18014,6 +18020,161 @@ def test_spent_allocation_needs_no_operator_recovery_and_keeps_its_charges(
     assert conductor.graph.budget_snapshot(task["id"])["accounted_cost_usd"] == 4
 
 
+@pytest.mark.parametrize("action", ["continue", "steer"])
+@pytest.mark.parametrize("creation_enabled", [False, True])
+def test_funding_increase_requires_operator_amendment(
+    feedback_db, monkeypatch, action, creation_enabled
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "Assess the next tranche")
+    monkeypatch.setenv(
+        "FACTORY_CONDUCTOR_FUNDING_ENABLED", str(creation_enabled).lower()
+    )
+    before = controls.task_snapshot(task["id"])
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    run_feedback_node(
+        task,
+        request["node_key"],
+        funding_decision(action=action, task_budget_usd=policy["task_budget_usd"] + 10),
+    )
+    task = conductor._task(task["id"])
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    after = controls.task_snapshot(task["id"])
+    assert after["task_paused"]
+    assert after["state"] == "admitted"
+    assert after["policy"] == before["policy"]
+    assert after["allowance"] == before["allowance"]
+    assert after["committed_cost_usd"] >= before["committed_cost_usd"]
+    with controls._read_session() as db:
+        assert funding.amendment(db, task["id"]) is None
+        assert funding.pending(db, task["id"]) is None
+        settled = funding.latest(db, task["id"], "funding_review_settled")
+        approval = funding.latest(db, task["id"], "funding_budget_approval_required")
+        assert settled["refusal"] is None
+        assert settled["budget_approval_required"] == {
+            "approved_task_budget_usd": policy["task_budget_usd"],
+            "proposed_task_budget_usd": policy["task_budget_usd"] + 10,
+        }
+        assert approval["request_id"] == settled["request_id"]
+        assert json.loads(controls._receipt(db, task["id"]).policy_json) == policy
+        settled_id = settled["audit_id"]
+    # Durable replay of the completed review cannot grant or charge it again.
+    funding.settle(task, conductor.graph.node_runs(task["id"])[-1], request)
+    with controls._read_session() as db:
+        assert (
+            funding.latest(db, task["id"], "funding_review_settled")["audit_id"]
+            == settled_id
+        )
+        assert funding.amendment(db, task["id"]) is None
+
+
+@pytest.mark.parametrize("charged", [5.0, 100.0])
+def test_funding_reports_spend_without_raising_approved_budget(
+    feedback_db, monkeypatch, charged
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, policy = funding_task(monkeypatch)
+    with Session(feedback_db) as db:
+        start = db.exec(
+            select(FactoryStart).where(FactoryStart.task_id == task["id"])
+        ).first()
+        start.cost_usd = charged
+        db.add(start)
+        db.commit()
+    assert funding.request(task, "Renew within the approved envelope")
+    before = controls.task_snapshot(task["id"])
+    settle_funding(task, funding_decision(task_budget_usd=20))
+    after = controls.task_snapshot(task["id"])
+    assert not after["task_paused"]
+    assert after["policy"]["task_budget_usd"] == policy["task_budget_usd"]
+    assert after["policy"]["max_task_turns_hard"] > policy["max_task_turns_hard"]
+    assert after["committed_cost_usd"] >= before["committed_cost_usd"] >= charged
+    with controls._read_session() as db:
+        grant = funding.amendment(db, task["id"])
+        assert grant["requested_task_budget_usd"] == 20
+        assert grant["granted_task_budget_usd"] == policy["task_budget_usd"]
+        assert grant["committed_cost_usd"] == after["committed_cost_usd"]
+        assert (
+            funding.latest(db, task["id"], "funding_budget_approval_required") is None
+        )
+
+
+@pytest.mark.parametrize("approved", [45.0, 50.0, 250.0])
+def test_operator_amendment_is_the_budget_increase_authority(
+    feedback_db, monkeypatch, approved
+):
+    from sqlmodel import SQLModel
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    feedback_db.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        feedback_db, tables=[AgentSession.__table__, PendingMessage.__table__]
+    )
+    task, original_policy = funding_task(monkeypatch)
+    proposed = max(50.0, approved)
+    assert funding.request(task, "Assess the next tranche")
+    settle_funding(task, funding_decision(task_budget_usd=proposed))
+    before = controls.task_snapshot(task["id"])
+    assert before["task_paused"]
+    history = conductor.graph.node_runs(task["id"])
+    with controls._read_session() as db:
+        receipt_id = controls._receipt(db, task["id"]).id
+    overlay = {"task_budget_usd": approved}
+    proposal = amendments.preview(receipt_id, overlay, "Approve this exact budget")
+    applied = amendments.apply(
+        receipt_id,
+        overlay,
+        "Approve this exact budget",
+        actor="operator",
+        request_key="approve-budget",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    assert applied["stays_paused"]
+    assert conductor.graph.node_runs(task["id"]) == history
+    amended = controls.task_snapshot(task["id"])
+    assert amended["policy"]["task_budget_usd"] == approved
+    assert amended["committed_cost_usd"] == before["committed_cost_usd"]
+    with controls._read_session() as db:
+        operator_grant = funding.amendment(db, task["id"])
+        assert operator_grant["grant_kind"] == "exact_operator_amendment"
+    controls.set_control("resume_task", "operator", task_id=task["id"])
+    task = conductor._task(task["id"])
+    assert funding.request(task, "Reassess against the approved budget")
+    settle_funding(task, funding_decision(task_budget_usd=proposed))
+    after = controls.task_snapshot(task["id"])
+    assert after["task_id"] == task["id"]
+    assert after["policy"]["task_budget_usd"] == approved
+    assert after["task_paused"] == (approved < proposed)
+    with controls._read_session() as db:
+        grant = funding.amendment(db, task["id"])
+        if approved < proposed:
+            assert grant["audit_id"] == operator_grant["audit_id"]
+            assert (
+                after["policy"]["max_task_turns_hard"]
+                == original_policy["max_task_turns_hard"]
+            )
+        else:
+            assert grant["audit_id"] > operator_grant["audit_id"]
+            assert grant["granted_task_budget_usd"] == approved
+
+
 @pytest.mark.parametrize(
     "judge_pool, expected",
     [(None, "opus"), (["astra"], "astra")],
@@ -18045,7 +18206,10 @@ def test_funding_review_runs_on_the_policy_judge_and_applies(
         settled = funding.latest(db, task["id"], "funding_review_settled")
         assert settled["refusal"] is None
         assert funding.amendment(db, task["id"]) is not None
-    assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 20
+    assert (
+        controls.task_snapshot(task["id"])["policy"]["task_budget_usd"]
+        == policy["task_budget_usd"]
+    )
 
 
 def test_funding_judge_schema_accepts_a_task_budget_past_the_old_ceiling():
@@ -18178,7 +18342,9 @@ def test_completed_funding_review_settles_after_admission_deadline(
             assert settled["refusal"] == "funding evidence changed"
         else:
             assert grant["source_run_id"] == run["id"]
-            assert grant["policy_overlay"]["task_budget_usd"] == 20
+            assert (
+                grant["policy_overlay"]["task_budget_usd"] == policy["task_budget_usd"]
+            )
             assert settled["refusal"] is None
     if changed_issue:
         assert controls.task_snapshot(task["id"])["policy"] == policy
@@ -18224,7 +18390,10 @@ def test_oversight_has_graph_and_start_headroom_after_task_budget_exhaustion(
         db.commit()
     assert funding.request(task, "Budget exhausted")
     settle_funding(task, funding_decision())
-    assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 20
+    assert (
+        controls.task_snapshot(task["id"])["policy"]["task_budget_usd"]
+        == policy["task_budget_usd"]
+    )
 
 
 def test_expired_unstarted_funding_review_is_retired_and_never_runs_normally(
