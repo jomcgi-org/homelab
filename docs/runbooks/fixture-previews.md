@@ -205,9 +205,8 @@ effect. After that, a fresh successful build of an open UI PR containing the
 reusable tooling can receive a working link while that UI PR stays unmerged.
 The publisher uses the URL returned by the real Pages API. There is no preview
 URL before a successful deployment. A manual cleanup dispatch does not import
-previously skipped builds; an original successful `workflow_run` event can be
-rerun while its exact-head artifact remains available and the PR is still open
-at that head.
+previously skipped builds. Use a fresh successful build after the publisher
+update lands.
 
 ## Publication boundary
 
