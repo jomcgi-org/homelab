@@ -1,10 +1,10 @@
 """Imported suite entry point includes sheets without polluting the checkout."""
 
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import browser_check
@@ -73,9 +73,9 @@ class SheetChainTests(unittest.TestCase):
                         "run",
                         side_effect=[None] * successful_commands + [failure],
                     ) as run,
+                    self.assertRaises(subprocess.CalledProcessError),
                 ):
-                    with self.assertRaises(subprocess.CalledProcessError):
-                        browser_check.check(Path("blog"), Path("evidence"))
+                    browser_check.check(Path("blog"), Path("evidence"))
                 self.assertEqual(run.call_count, successful_commands + 1)
                 artifact = Path(run.call_args_list[0].args[0][-1])
                 self.assertFalse(artifact.parent.exists())
@@ -84,9 +84,9 @@ class SheetChainTests(unittest.TestCase):
         with (
             patch.object(browser_check, "check_blog", side_effect=AssertionError),
             patch.object(browser_check.subprocess, "run") as run,
+            self.assertRaises(AssertionError),
         ):
-            with self.assertRaises(AssertionError):
-                browser_check.check(Path("blog"), Path("evidence"))
+            browser_check.check(Path("blog"), Path("evidence"))
         run.assert_not_called()
 
 
