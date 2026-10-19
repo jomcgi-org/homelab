@@ -23,9 +23,8 @@
 //   WatchNode   server-streamed capacity heartbeat; the daemon is the health
 //               authority and this is the control plane's only source of node
 //               truth.
-//   GetNodeStatus  unary snapshot of the same facts. The daemon implements it,
-//               but it is reserved for future control-plane polling or
-//               reconciliation; the current control plane uses WatchNode.
+//   GetNodeStatus  test-only unary snapshot of the same facts. Production
+//               consumers use WatchNode.
 //
 // Concurrency is owned by the control plane, NOT the daemon: the per-workload
 // semaphore of fc-invoke is deliberately dropped on the fork. The daemon
@@ -555,8 +554,8 @@ func (ArtifactKind) EnumDescriptor() ([]byte, []int) {
 
 // Trace carries the cross-cutting identifiers every RPC threads for tracing and
 // correlation. workload is the CR name the operation is for; task_id is an
-// opaque string the control plane assigns (empty for pool
-// operations with no task, e.g. Prime/BuildBase).
+// opaque string the control plane assigns (empty for pool operations with no
+// task, e.g. Prime/BuildBase).
 type Trace struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Workload      string                 `protobuf:"bytes,1,opt,name=workload,proto3" json:"workload,omitempty"`
@@ -4559,8 +4558,7 @@ func (x *GroupMemberPlanEntry) GetSubnetCidr() string {
 
 // RegistryEntry is the node-side identity of ONE workload the daemon can build a
 // base for and prime/serve. The current control plane pushes entries with
-// SyncRegistry. An entry
-// carries exactly what the retired EMBERVM_NODED_IMAGES env
+// SyncRegistry. An entry carries exactly what the retired EMBERVM_NODED_IMAGES env
 // table carried per image (rootfs path, harness init) plus the resolved image
 // digest and the base VM sizing, keyed by workload rather than by image ref. The
 // daemon interprets these node-side facts (a rootfs path is on-disk, an
