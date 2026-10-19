@@ -6,14 +6,14 @@ Personal monorepo. Dev tooling and deployment for my projects.
 
 - [**EmberVM**](projects/embervm/): Firecracker microVM orchestrator. An Elixir control plane and a Go node daemon run task, session, serving, stateful, and composite workloads. See its [current architecture](projects/embervm/ARCHITECTURE.md).
 - [**Firecracker components**](projects/firecracker/): guest images and shared host/guest utilities retained by EmberVM after the original fc-invoke daemon was retired.
-- [**Knowledge pipeline**](projects/monolith/knowledge/): an on-cluster LLM decomposes markdown into structured facts, embeds them, and stores them in pgvector. Searchable via MCP tools and a SvelteKit frontend.
+- [**Knowledge pipeline**](projects/monolith/knowledge/): remote LLM extraction turns markdown into structured facts, embedded with voyage-4-nano and stored in pgvector. Searchable via MCP tools and a SvelteKit frontend.
 - [**Agent platform**](projects/embervm/ARCHITECTURE.md): AI agents in sandboxed microVM sessions, with the monolith providing the user-facing control plane.
 - [**Discord bot**](projects/monolith/chat/): LLM-powered chat with vision, web search, knowledge graph context, and a per-user trust ledger ([monolith architecture, section 5](projects/monolith/ARCHITECTURE.md)).
 - [**OCI Model Cache**](projects/operators/oci-model-cache/): Kubernetes operator that syncs ML models from HuggingFace to OCI registries. Compiler-enforced state machines.
 - [**Sextant**](projects/sextant/): code generator that turns YAML state-machine specs into type-safe Go for operators. Invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.
 - [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against. One namespaced vocabulary, three deliberately distinct themes (neobrutalist, ember, Grimoire) that override it inside their own scope class. Rationale in [the platform architecture](projects/platform/ARCHITECTURE.md#decision-history).
 - [**oom-inference**](projects/oom-inference/): Rust inference engine for mixture-of-experts models bigger than memory. Serves a 125B model from a 24 GB GPU by tiering experts across VRAM, pinned RAM and NVMe. See its [architecture](projects/oom-inference/docs/dev/architecture.md).
-- [**Build system**](bazel/): custom Bazel rules for Helm and Cloudflare Pages. All builds run remotely via BuildBuddy RBE.
+- [**Build system**](bazel/): custom Bazel rules for Helm and OCI images. All builds run remotely via BuildBuddy RBE.
 
 ## Applications
 
@@ -26,7 +26,7 @@ Public apps served by the monolith at [jomcgi.dev/app](https://jomcgi.dev/app):
 - [**World Cup 2026 odds**](projects/monolith/frontend/src/routes/public/app/wc2026/): Scotland's qualification odds via an Elo Monte Carlo model.
 - [**Hiking routes**](projects/monolith/frontend/src/routes/public/app/hikes/): Scottish route finder with weather-based recommendations.
 - [**Grimoire**](projects/monolith/frontend/src/routes/public/app/grimoire/): Postgres-first D&D campaign manager with a public rules and lore explorer.
-- [**Notes**](projects/monolith/frontend/src/routes/public/app/notes/): Anonymous chat over an on-cluster Qwen model on a shared public scratchpad.
+- [**Notes**](projects/monolith/frontend/src/routes/public/app/notes/): Public knowledge graph browsing.
 - [**LLM Leaderboard**](projects/monolith/frontend/src/routes/public/app/llm-leaderboard/): Agentic coding benchmark results across models, from the model-bench harness.
 - [**NHS jobs**](projects/monolith/frontend/src/routes/public/app/dr-jobs/): NHS Scotland anaesthetics consultant vacancy aggregator.
 
@@ -40,11 +40,10 @@ See [docs/security.md](docs/security.md) for the defense-in-depth model, [projec
 | Untrusted code | Firecracker microVMs (EmberVM), STPA hazard model colocated with the monolith              |
 | Networking     | GKE Dataplane V2 (managed Cilium); network enforcement details in the platform architecture |
 | Observability  | Opt-in OpenTelemetry collector exporting traces and synthetic probes to Honeycomb           |
-| Policy         | Kyverno enforces non-root (uid 65532), read-only filesystems                               |
+| Policy         | Kyverno audits resource requests and memory limits; clones Secrets across namespaces       |
 | Secrets        | 1Password Operator, OnePasswordItem CRDs, nothing in Git                                   |
 | Storage        | GCE persistent disks; Cloudflare R2 for monolith blobs and GCS for EmberVM exports                |
-| Messaging      | NATS JetStream: pub/sub backbone for AIS data, trip points, agent jobs                     |
-| GPU            | Chat inference on the tailnet GPU host; embeddings on the GKE hub     |
+| Inference      | Monolith chat and generation use external APIs; voyage-4-nano embeddings run on the GKE hub |
 | Images         | apko + rules_apko: amd64, non-root uid 65532                  |
 | CI             | `ci` for validation; BuildBuddy remote execution; image publish on merge               |
 | GitOps         | ArgoCD with colocated `deploy/` dirs; `kubectl` is read-only                               |
@@ -53,7 +52,7 @@ See [docs/security.md](docs/security.md) for the defense-in-depth model, [projec
 
 ```
 projects/             # All services, operators, websites, colocated with deploy configs (major dirs shown)
-├── platform/         #   Cluster-critical infrastructure (ArgoCD, Cilium, OTel collector, etc.)
+├── platform/         #   Cluster-critical infrastructure (ArgoCD, Envoy Gateway, OTel collector, etc.)
 ├── monolith/         #   Knowledge graph, Discord bot, task management, public apps, frontend
 ├── monolith-public/  #   Read-only public replica of the monolith
 ├── monolith-agents/  #   Agent-facing MCP tier, pruned and with no cluster RBAC
