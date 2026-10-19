@@ -5025,6 +5025,12 @@ bdd_test(
     srcs = ["factory/orchestration/factory_daily_admission_limit_postgres_test.py"],
 )
 
+# Only the new-admission implementation pool changes in this guarded migration.
+bdd_test(
+    name = "swarm_factory_implement_sol_first_postgres_test",
+    srcs = ["factory/orchestration/factory_implement_sol_first_postgres_test.py"],
+)
+
 # Hand-registered real-PostgreSQL coverage for the no-new-notes pending
 # provenance write: the atom_raw_provenance_pending partial unique index
 # only exists in Postgres, so a SQLite test cannot prove the retry is
