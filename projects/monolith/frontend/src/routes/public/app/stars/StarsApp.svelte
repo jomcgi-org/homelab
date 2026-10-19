@@ -3,6 +3,11 @@
   import { goto, invalidateAll } from "$app/navigation";
   import { page } from "$app/stores";
   import StarsMap from "$lib/public/components/stars/StarsMap.svelte";
+  import Button from "@homelab/design-system/components/Button.svelte";
+  import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
+  import Trail from "$lib/public/components/Trail.svelte";
+  import SiteIndex from "$lib/public/components/SiteIndex.svelte";
+  import "$lib/public/styles/technical-drawing.css";
   import {
     historyView,
     monthLabel,
@@ -249,465 +254,345 @@
   });
 </script>
 
-<div class="stars-page">
-  <StarsMap
-    sites={mapSites}
-    {activeNights}
-    {nowMs}
-    {mode}
-    darknessMode={darkness}
-    heatVisible={heatOn}
-  />
+{#snippet trail()}
+  <Trail crumbs={[{ label: "stars" }]} label="Breadcrumb" />
+{/snippet}
 
-  <!-- Floating header: breadcrumb + headline stats, top-left clear of the map
-       chrome (mirrors the hikes control head). -->
-  <div class="controls">
-    <div class="panel control-head">
-      <div class="crumb-row">
-        <nav class="crumb" aria-label="Breadcrumb">
-          <a class="crumb-home" href="/"
-            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true"
-              >&nearr;</span
-            ></a
-          >
-          <span class="crumb-sep">/</span>
-          <span class="crumb-name">stars</span>
-        </nav>
-        {#if mode === "historical"}
-          <p class="stats">
-            {histCount}
-            {histCount === 1 ? "site" : "sites"} with history {historyScope}
-          </p>
-        {:else}
-          <p class="stats">
-            {count} dark-sky sites{#if topClearDark != null}
-              &middot; best {topClearDark} hrs of clear dark sky{/if}{#if agoLabel}
-              &middot; updated {agoLabel} ago{/if}
-          </p>
-        {/if}
-      </div>
-    </div>
+<TechnicalDrawingChrome {trail} />
+<main class="td sheet stars-page">
+  <div class="frame">
+    <div class="journal">
+      <aside class="spine">
+        <div class="trail-dock">{@render trail()}</div>
+        <div class="controls">
+          <div class="edition control-head">
+            <div class="ed-head">
+              {#if mode === "historical"}
+                <p class="stats">
+                  {histCount}
+                  {histCount === 1 ? "site" : "sites"} with history {historyScope}
+                </p>
+              {:else}
+                <p class="stats">
+                  {count} dark-sky sites{#if topClearDark != null}
+                    &middot; best {topClearDark} hrs of clear dark sky{/if}{#if agoLabel}
+                    &middot; updated {agoLabel} ago{/if}
+                </p>
+              {/if}
+            </div>
+          </div>
 
-    <!-- Mode toggle: LIVE forecast vs HISTORICAL clear-dark hours (stars v2). -->
-    <div class="panel mode-toggle" role="group" aria-label="Map mode">
-      <button
-        type="button"
-        class="seg"
-        class:is-active={mode === "live"}
-        aria-pressed={mode === "live"}
-        onclick={() => setMode("live")}
-      >
-        Live
-      </button>
-      <button
-        type="button"
-        class="seg"
-        class:is-active={mode === "historical"}
-        aria-pressed={mode === "historical"}
-        onclick={() => setMode("historical")}
-      >
-        Historical
-      </button>
-    </div>
-
-    {#if mode === "live"}
-      {#if nights.length > 1}
-        <div class="panel night-filter">
-          <button
-            type="button"
-            class="filter-toggle"
-            aria-expanded={nightOpen}
-            onclick={() => (nightOpen = !nightOpen)}
-          >
-            <span class="filter-label">Night</span>
-            <span class="filter-current"
-              >{effectiveNight === "all"
-                ? "All nights"
-                : nightLabel(effectiveNight)}</span
+          <!-- Mode toggle: LIVE forecast vs HISTORICAL clear-dark hours (stars v2). -->
+          <div class="edition mode-toggle" role="group" aria-label="Map mode">
+            <Button
+              type="button"
+              class="seg"
+              variant="secondary"
+              aria-pressed={mode === "live"}
+              onclick={() => setMode("live")}
             >
-            <span class="filter-caret" class:open={nightOpen} aria-hidden="true"
-              >&#9662;</span
+              Live
+            </Button>
+            <Button
+              type="button"
+              class="seg"
+              variant="secondary"
+              aria-pressed={mode === "historical"}
+              onclick={() => setMode("historical")}
             >
-          </button>
-          {#if nightOpen}
-            <div class="night-chips">
-              <button
-                type="button"
-                class="night-chip night-chip-all"
-                class:is-off={effectiveNight !== "all"}
-                aria-pressed={effectiveNight === "all"}
-                onclick={() => selectNight("all")}
-              >
-                All nights
-              </button>
-              {#each nights as night (night)}
+              Historical
+            </Button>
+          </div>
+
+          {#if mode === "live"}
+            {#if nights.length > 1}
+              <div class="edition night-filter">
                 <button
                   type="button"
-                  class="night-chip"
-                  class:is-off={effectiveNight !== night}
-                  aria-pressed={effectiveNight === night}
-                  onclick={() => selectNight(night)}
+                  class="filter-toggle"
+                  aria-expanded={nightOpen}
+                  onclick={() => (nightOpen = !nightOpen)}
                 >
-                  {nightLabel(night)}
+                  <span class="filter-label">Night</span>
+                  <span class="filter-current"
+                    >{effectiveNight === "all"
+                      ? "All nights"
+                      : nightLabel(effectiveNight)}</span
+                  >
+                  <span
+                    class="filter-caret"
+                    class:open={nightOpen}
+                    aria-hidden="true">&#9662;</span
+                  >
                 </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/if}
+                {#if nightOpen}
+                  <div class="night-chips">
+                    <button
+                      type="button"
+                      class="night-chip night-chip-all"
+                      class:is-off={effectiveNight !== "all"}
+                      aria-pressed={effectiveNight === "all"}
+                      onclick={() => selectNight("all")}
+                    >
+                      All nights
+                    </button>
+                    {#each nights as night (night)}
+                      <button
+                        type="button"
+                        class="night-chip"
+                        class:is-off={effectiveNight !== night}
+                        aria-pressed={effectiveNight === night}
+                        onclick={() => selectNight(night)}
+                      >
+                        {nightLabel(night)}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/if}
 
-      <!-- Summer twilight disclaimer: for ~7 weeks each midsummer Scotland gets
+            <!-- Summer twilight disclaimer: for ~7 weeks each midsummer Scotland gets
            no astronomical darkness, so the live layer falls back to the darkest
            twilight windows (down to -10 deg) and says so. -->
-      {#if darkness === "none"}
-        <div class="panel disclaimer" role="status">
-          The Scottish sky never gets properly dark at this time of year, so
-          there is nothing worth planning this week. Real darkness returns by
-          August.
-        </div>
-      {:else if darkness === "twilight"}
-        <div class="panel disclaimer" role="status">
-          No astronomical darkness in Scotland right now (it returns by August).
-          Showing the darkest twilight windows instead, best in the south.
-        </div>
-      {/if}
+            {#if darkness === "none"}
+              <div class="edition disclaimer" role="status">
+                The Scottish sky never gets properly dark at this time of year,
+                so there is nothing worth planning this week. Real darkness
+                returns by August.
+              </div>
+            {:else if darkness === "twilight"}
+              <div class="edition disclaimer" role="status">
+                No astronomical darkness in Scotland right now (it returns by
+                August). Showing the darkest twilight windows instead, best in
+                the south.
+              </div>
+            {/if}
 
-      {#if count === 0 && darkness === "astronomical"}
-        <div class="panel empty-state" role="status">
-          No dark-sky windows in the next few nights. Check back after the next
-          forecast refresh.
-        </div>
-      {/if}
-    {:else}
-      <!-- Month picker (historical): a collapsed summary that expands into a
+            {#if count === 0 && darkness === "astronomical"}
+              <div class="edition empty-state" role="status">
+                No dark-sky windows in the next few nights. Check back after the
+                next forecast refresh.
+              </div>
+            {/if}
+          {:else}
+            <!-- Month picker (historical): a collapsed summary that expands into a
            four-up grid of month chips, mirroring the night picker. -->
-      <div class="panel month-filter">
-        <button
-          type="button"
-          class="filter-toggle"
-          aria-expanded={monthOpen}
-          onclick={() => (monthOpen = !monthOpen)}
-        >
-          <span class="filter-label">Month</span>
-          <span class="filter-current">{monthSummary}</span>
-          <span class="filter-caret" class:open={monthOpen} aria-hidden="true"
-            >&#9662;</span
-          >
-        </button>
-        {#if monthOpen}
-          <div class="month-chips">
-            <button
-              type="button"
-              class="month-chip month-chip-all"
-              class:is-off={selectedMonth !== ALL_YEAR}
-              aria-pressed={selectedMonth === ALL_YEAR}
-              onclick={() => selectMonth(ALL_YEAR)}
-            >
-              All year
-            </button>
-            {#each MONTHS as m (m)}
+            <div class="edition month-filter">
               <button
                 type="button"
-                class="month-chip"
-                class:is-off={selectedMonth !== m}
-                aria-pressed={selectedMonth === m}
-                onclick={() => selectMonth(m)}
+                class="filter-toggle"
+                aria-expanded={monthOpen}
+                onclick={() => (monthOpen = !monthOpen)}
               >
-                {monthShort(m)}
+                <span class="filter-label">Month</span>
+                <span class="filter-current">{monthSummary}</span>
+                <span
+                  class="filter-caret"
+                  class:open={monthOpen}
+                  aria-hidden="true">&#9662;</span
+                >
               </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
+              {#if monthOpen}
+                <div class="month-chips">
+                  <button
+                    type="button"
+                    class="month-chip month-chip-all"
+                    class:is-off={selectedMonth !== ALL_YEAR}
+                    aria-pressed={selectedMonth === ALL_YEAR}
+                    onclick={() => selectMonth(ALL_YEAR)}
+                  >
+                    All year
+                  </button>
+                  {#each MONTHS as m (m)}
+                    <button
+                      type="button"
+                      class="month-chip"
+                      class:is-off={selectedMonth !== m}
+                      aria-pressed={selectedMonth === m}
+                      onclick={() => selectMonth(m)}
+                    >
+                      {monthShort(m)}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
 
-      {#if historyError}
-        <div class="panel empty-state" role="status">
-          Historical data is unavailable right now. Switch to Live, or check
-          back shortly.
+            {#if historyError}
+              <div class="edition empty-state" role="status">
+                Historical data is unavailable right now. Switch to Live, or
+                check back shortly.
+              </div>
+            {:else if historyLoading && !histReady}
+              <div class="edition empty-state" role="status">
+                Loading history&hellip;
+              </div>
+            {:else if histReady && histCount === 0}
+              <div class="edition empty-state" role="status">
+                No clear dark hours {historyScope}{selectedMonth === ALL_YEAR
+                  ? "."
+                  : ". Try another month."}
+              </div>
+            {/if}
+          {/if}
         </div>
-      {:else if historyLoading && !histReady}
-        <div class="panel empty-state" role="status">
-          Loading history&hellip;
-        </div>
-      {:else if histReady && histCount === 0}
-        <div class="panel empty-state" role="status">
-          No clear dark hours {historyScope}{selectedMonth === ALL_YEAR
-            ? "."
-            : ". Try another month."}
-        </div>
-      {/if}
-    {/if}
+        <SiteIndex here="stars" />
+      </aside>
+      <div class="content edition map-edition">
+        <StarsMap
+          sites={mapSites}
+          {activeNights}
+          {nowMs}
+          {mode}
+          darknessMode={darkness}
+          heatVisible={heatOn}
+        />
+      </div>
+    </div>
   </div>
-</div>
+</main>
 
 <style>
-  /* Full-bleed, map-first (same shell as /app/ships + /app/hikes): the map owns
-     the viewport and every control floats over it. StarsMap's .map-wrap is
-     absolutely positioned, so this is its containing block. --paper is the light
-     base so the load flash matches the light liberty basemap, not a dark flash. */
   .stars-page {
-    position: relative;
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-    background: var(--paper);
-    color: var(--ink);
+    padding-bottom: 2rem;
   }
 
-  /* Floating control stack, top-left, clear of the map's own chrome. */
+  .stars-page .journal {
+    grid-template-columns: minmax(13em, 16em) minmax(0, 1fr);
+    gap: 1.5rem;
+  }
+
   .controls {
-    position: absolute;
-    top: 16px;
-    left: 16px;
-    z-index: 5;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: min(420px, calc(100% - 32px));
-  }
-
-  /* Flat sharp-bordered overlay, matching the ships + hikes map overlays:
-     paper bg, 2px ink border, no border-radius. */
-  .panel {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    padding: 12px;
-  }
-
-  .control-head {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .crumb-row {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px 14px;
-    flex-wrap: wrap;
-  }
-
-  .crumb {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .crumb-home {
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-decoration-skip-ink: none;
-    text-underline-offset: 2px;
-    padding: 0 2px;
-    transition: background 140ms ease;
-  }
-
-  .crumb-home:hover,
-  .crumb-home:focus-visible {
-    background: linear-gradient(transparent 56%, var(--accent) 56%);
-    text-decoration-color: var(--ink);
-  }
-
-  .crumb-arrow {
-    font-size: 0.85em;
-    margin-left: 1px;
-  }
-
-  .crumb-sep {
-    color: var(--ink-3);
+    display: grid;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
   }
 
   .stats {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    margin: 0;
+    font: 0.75rem/1.6 var(--font-code);
     color: var(--ink-2);
   }
 
-  .empty-state {
-    font-family: var(--mono);
-    font-size: 12px;
-    line-height: 1.5;
-    letter-spacing: 0.02em;
-    color: var(--ink-2);
-  }
-
-  /* Summer twilight disclaimer: same mono read as the empty state, lifted with a
-     thick accent left edge so it registers as a heads-up, not an error. */
+  .empty-state,
   .disclaimer {
-    font-family: var(--mono);
-    font-size: 12px;
-    line-height: 1.5;
-    letter-spacing: 0.02em;
-    color: var(--ink);
-    border-left-width: 8px;
-    border-left-color: var(--accent);
+    padding: 0.8rem;
+    font: 0.75rem/1.6 var(--font-code);
+    color: var(--ink-2);
   }
 
-  /* Mode toggle: two equal segments, the active one filled ink-on-paper, the
-     other inverted, sharing one border (neobrutalist segmented control). */
+  .disclaimer {
+    border-left-color: var(--accent-ink);
+  }
+
   .mode-toggle {
     display: flex;
-    padding: 0;
-    overflow: hidden;
   }
 
-  .seg {
+  .mode-toggle :global(.seg) {
     flex: 1;
-    padding: 10px 12px;
-    background: var(--paper);
-    color: var(--ink);
-    border: none;
-    cursor: pointer;
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    transition: background 110ms ease;
+    min-width: 0;
+    border: 0;
+    font: 0.8rem var(--font-code);
   }
 
-  .seg + .seg {
-    border-left: 2px solid var(--ink);
+  .mode-toggle :global(.seg + .seg) {
+    border-left: 1px solid var(--stroke);
   }
 
-  .seg.is-active {
-    background: var(--ink);
-    color: var(--paper);
-  }
-
-  .seg:not(.is-active):hover,
-  .seg:not(.is-active):focus-visible {
-    background: var(--cream);
-  }
-
-  /* Time filters (night + month): a collapsed summary row that expands on click
-     into a grid of chips, so it stays out of the way until reached for. */
-  .night-filter,
-  .month-filter {
-    padding: 0;
+  .mode-toggle :global(.seg[aria-pressed="true"]) {
+    background: var(--band);
+    color: var(--accent-ink);
+    text-decoration: underline;
+    text-underline-offset: 0.3em;
   }
 
   .filter-toggle {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 0.5rem;
     width: 100%;
-    padding: 10px 12px;
-    background: var(--paper);
-    border: none;
+    min-height: 44px;
+    padding: 0.65rem 0.8rem;
+    background: var(--sheet);
+    border: 0;
     cursor: pointer;
-    font-family: var(--mono);
+    font: 0.75rem var(--font-code);
     color: var(--ink);
   }
 
   .filter-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
     color: var(--ink-2);
   }
 
   .filter-current {
     margin-left: auto;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-  }
-
-  .filter-caret {
-    font-size: 11px;
-    color: var(--ink-2);
-    transition: transform 140ms ease;
   }
 
   .filter-caret.open {
     transform: rotate(180deg);
   }
 
-  /* Grid of chips, revealed below the summary when expanded; the top rule
-     separates it from the toggle row. Nights are two-up, months four-up. */
-  .night-chips {
+  /* Time choices form one divided value; selection uses ink and an underline. */
+  .night-chips,
+  .month-chips {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-    padding: 10px 12px 12px;
-    border-top: 2px solid var(--ink);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-top: 1px solid var(--stroke);
   }
 
   .month-chips {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 6px;
-    padding: 10px 12px 12px;
-    border-top: 2px solid var(--ink);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .night-chip,
   .month-chip {
-    padding: 6px 9px;
-    background: var(--ink);
-    color: var(--paper);
-    border: 2px solid var(--ink);
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.5rem 0.2rem;
+    background: var(--band);
+    color: var(--accent-ink);
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    font: 0.75rem var(--font-code);
     text-align: center;
+    text-decoration: underline;
+    text-underline-offset: 0.25em;
     cursor: pointer;
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease,
-      opacity 110ms ease,
-      background 110ms ease;
+  }
+
+  .night-chip.is-off,
+  .month-chip.is-off {
+    background: var(--sheet);
+    color: var(--ink-2);
+    text-decoration: none;
   }
 
   .night-chip:hover,
-  .night-chip:focus-visible,
   .month-chip:hover,
-  .month-chip:focus-visible {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
-  }
-
-  .night-chip:active,
-  .month-chip:active {
-    transform: translate(-1px, -1px);
-    box-shadow: 1px 1px 0 var(--ink);
-  }
-
-  /* The picked chip is filled; the rest invert to paper + dim so the current
-     selection reads at a glance while staying tappable. */
-  .night-chip.is-off,
-  .month-chip.is-off {
-    background: var(--paper);
+  .filter-toggle:hover {
+    background: var(--band);
     color: var(--ink);
-    opacity: 0.55;
   }
 
-  /* The night reset and the "All year" option each span the full width above
-     their per-chip grid. */
   .night-chip-all,
   .month-chip-all {
     grid-column: 1 / -1;
   }
 
-  @media (max-width: 640px) {
+  .map-edition {
+    align-self: start;
+    overflow: visible;
+  }
+
+  @media (max-width: 760px) {
+    .stars-page .journal {
+      display: block;
+    }
+
     .controls {
-      top: 12px;
-      left: 12px;
-      width: calc(100% - 24px);
+      margin-bottom: 1rem;
     }
   }
 </style>

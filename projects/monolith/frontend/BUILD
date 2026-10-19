@@ -260,6 +260,9 @@ js_library(
         "test/ProfileRoute.svelte",
         "test/profile-page.svelte.js",
         "test/profile-stores.js",
+        "test/stars/Route.svelte",
+        "test/stars/fixtures.js",
+        "test/stars/maplibre.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
         # rationale: lives outside src/ so it never reaches the app bundle.
         "test/env-dynamic-private-stub.js",
@@ -310,6 +313,63 @@ apko_image(
 )
 
 # Keep synthetic preview fixtures out of the production source/build closure.
+js_library(
+    name = "stars_fixture_src",
+    srcs = glob(["stars-preview/**"], exclude = ["stars-preview/__pycache__/**"]) + [
+        "package.json",
+        "preview/fonts.css",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "preview/fonts/OFL.txt",
+        "test/stars/Route.svelte",
+        "test/stars/fixtures.js",
+        "test/profile-page.svelte.js",
+        "test/profile-stores.js",
+        "src/lib/global.css",
+        "src/lib/public/apps.js",
+        "src/lib/public/seo.js",
+        "src/lib/public/components/Nav.svelte",
+        "src/lib/public/components/SiteIndex.svelte",
+        "src/lib/public/components/TechnicalDrawingChrome.svelte",
+        "src/lib/public/components/Trail.svelte",
+        "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/stars/StarsMap.svelte",
+        "src/lib/public/stars/heat.js",
+        "src/lib/public/stars/mapTheme.js",
+        "src/lib/public/stars/urlParams.js",
+        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/technical-drawing.css",
+        "src/routes/+layout.svelte",
+        "src/routes/+error.svelte",
+        "src/routes/public/+layout.svelte",
+        "src/routes/public/app/stars/+page.svelte",
+        "src/routes/public/app/stars/StarsApp.svelte",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/@homelab/design-system",
+        ":node_modules/maplibre-gl",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        "//projects/design-system:pkg",
+    ],
+)
+
+js_run_binary(
+    name = "stars_fixture_preview",
+    srcs = [":stars_fixture_src"],
+    args = ["build", "--config", "stars-preview/vite.config.js"],
+    chdir = package_name(),
+    out_dirs = ["stars-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "stars_fixture_preview_build_test",
+    targets = [":stars_fixture_preview"],
+)
+
 # The dedicated Actions job compiles these real route components and runs
 # Chromium. This independent contract target makes fixture edits participate
 # in affected-target CI without making a test output an input to a build.
