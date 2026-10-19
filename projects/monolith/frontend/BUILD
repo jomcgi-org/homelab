@@ -309,7 +309,8 @@ vitest_bin.vitest_test(
     chdir = package_name(),
     data = [
         "BUILD",
-        # Compile Svelte templates whenever the frontend test target runs.
+        # Compile Svelte templates and supply the adapter-node handler used by
+        # retired-apps.test.js to check real HTTP 404s for old bookmarks.
         ":build",
         ":src",
         ":test_lib",
