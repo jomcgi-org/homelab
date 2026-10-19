@@ -360,6 +360,7 @@ class Ember:
         self.loop = None
         self.task = None
         self.reply_ready = None
+        self.finish_requested = Event()
         self.native_record = None
         self.lose_delete_ack = False
         self.on_get = None
@@ -384,6 +385,9 @@ class Ember:
                 ember.loop = asyncio.get_running_loop()
                 ember.task = asyncio.current_task()
                 ember.reply_ready = asyncio.Event()
+                # Keep a teardown release that arrived before POST startup.
+                if ember.finish_requested.is_set():
+                    ember.reply_ready.set()
                 ember.started.set()
                 try:
                     await ember.reply_ready.wait()
@@ -457,8 +461,105 @@ class Ember:
 
     def finish_post(self, record=None):
         self.native_record = record
-        if self.loop is not None and not self.loop.is_closed():
+        self.finish_requested.set()
+        if (
+            self.loop is not None
+            and self.reply_ready is not None
+            and not self.loop.is_closed()
+        ):
             self.loop.call_soon_threadsafe(self.reply_ready.set)
+
+
+class PendingExecutor:
+    """Own the real executor before transport startup can time out."""
+
+    def __init__(self, session_id):
+        self.loop = None
+        self.task = None
+        self.cancel_requested = Event()
+        self.pool = ThreadPoolExecutor(max_workers=1)
+        self.future = self.pool.submit(lambda: asyncio.run(self.execute(session_id)))
+
+    async def execute(self, session_id):
+        self.loop = asyncio.get_running_loop()
+        self.task = asyncio.current_task()
+        if self.cancel_requested.is_set():
+            raise asyncio.CancelledError
+        await mcp._execute_pending_message(session_id)
+
+    def cancel(self):
+        self.cancel_requested.set()
+        if (
+            self.loop is not None
+            and self.task is not None
+            and not self.loop.is_closed()
+        ):
+            self.loop.call_soon_threadsafe(self.task.cancel)
+
+    def startup_stack(self):
+        coroutine = self.task.get_coro() if self.task is not None else None
+        frames = []
+        while coroutine is not None:
+            frame = getattr(coroutine, "cr_frame", None)
+            if frame is not None:
+                frames.append(f"{frame.f_code.co_name}:{frame.f_lineno}")
+            coroutine = getattr(coroutine, "cr_await", None)
+        if frames:
+            return " -> ".join(frames)
+        return (
+            "executor thread has not entered its event loop"
+            if self.task is None
+            else "executor coroutine finished; runner cleanup remains"
+        )
+
+
+@pytest.mark.parametrize("cancel_before_start", [False, True])
+def test_fixture_can_cancel_executor_before_post(monkeypatch, cancel_before_start):
+    entered = Event()
+    release_thread = Event()
+
+    async def before_post(_sid):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(mcp, "_execute_pending_message", before_post)
+    if cancel_before_start:
+        original = PendingExecutor.execute
+
+        async def delayed_start(self, session_id):
+            await asyncio.to_thread(release_thread.wait)
+            await original(self, session_id)
+
+        monkeypatch.setattr(PendingExecutor, "execute", delayed_start)
+    executor = PendingExecutor(1)
+    try:
+        if not cancel_before_start:
+            assert entered.wait(5)
+            assert "before_post" in executor.startup_stack()
+        executor.cancel()
+        release_thread.set()
+        with pytest.raises(asyncio.CancelledError):
+            executor.future.result(timeout=5)
+        assert entered.is_set() == (not cancel_before_start)
+    finally:
+        release_thread.set()
+        executor.cancel()
+        executor.pool.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_fixture_release_before_post_is_not_lost(monkeypatch):
+    ember = Ember()
+    ember.install(monkeypatch)
+    # Teardown may run before the executor reaches its physical POST.
+    ember.finish_post()
+    async with transport.httpx.AsyncClient() as client:
+        with pytest.raises(httpx.ReadError, match="original response unavailable"):
+            await asyncio.wait_for(
+                client.post("https://ember.test/v1/sessions/s-original/invoke"),
+                timeout=0.1,
+            )
+    assert ember.started.is_set() and ember.exited.is_set()
 
 
 @pytest.fixture
@@ -468,13 +569,16 @@ def running(attempt, monkeypatch):
     ember.install(monkeypatch)
     heartbeat = HeartbeatGate()
     monkeypatch.setattr(mcp, "asyncio", heartbeat)
-    pool = ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(lambda: asyncio.run(mcp._execute_pending_message(s.sid)))
+    executor = PendingExecutor(s.sid)
+    future = executor.future
     try:
         if not ember.started.wait(5):
             if future.done():
                 future.result()
-            pytest.fail("the real pending executor never reached its POST")
+            pytest.fail(
+                "the real pending executor never reached its POST: "
+                + executor.startup_stack()
+            )
         with Session(s.engine) as db, db.begin():
             pending = store.get_pending_message(db, s.sid, 1)
             pending.partial_text = (
@@ -492,7 +596,8 @@ def running(attempt, monkeypatch):
         except asyncio.CancelledError:
             pass
         except TimeoutError:
-            ember.loop.call_soon_threadsafe(ember.task.cancel)
+            # The root task is owned before POST, including a startup failure.
+            executor.cancel()
             try:
                 future.result(timeout=5)
             except asyncio.CancelledError:
@@ -501,7 +606,7 @@ def running(attempt, monkeypatch):
                 "the test executor did not exit after its response was released"
             )
         finally:
-            pool.shutdown(wait=True)
+            executor.pool.shutdown(wait=True)
 
 
 def preview(s):
