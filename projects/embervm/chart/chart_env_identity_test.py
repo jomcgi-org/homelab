@@ -3188,6 +3188,47 @@ def _plain_env(container: dict) -> dict[str, str | None]:
     return {entry["name"]: entry.get("value") for entry in container.get("env", [])}
 
 
+@pytest.mark.parametrize(("overlay", "jailer"), [("dev", "true")])
+def test_hub_bricks_admit_reserved_with_memory_requests_at_their_limits(
+    overlay: str, jailer: str
+) -> None:
+    """#4185: the dev hub overlay admits on declared memory with no overcommit.
+
+    Production joins this parametrize, with its jailer still off, when #6965
+    arms reserved there.
+
+    A reserved brick fills its budget with declared memMib, so it requests its
+    whole memory limit and kube-scheduler cannot pack more brick limit onto a
+    node than it holds. Placement retries past a refusing brick. The jailer is
+    armed in embervm-dev only until a dev soak (#5255).
+    """
+    documents = _overlay_documents(*_HUB_OVERLAYS[overlay])
+    bricks = [
+        container
+        for _, container in _containers(documents, "noded-brick")
+        if container["name"] == "noded"
+    ]
+    assert len(bricks) == 5, (
+        "expected one brick Deployment per class; this test is inert"
+    )
+    for noded in bricks:
+        env = _plain_env(noded)
+        assert env["EMBERVM_NODED_ADMISSION_MODEL"] == "reserved"
+        assert env["EMBERVM_NODED_JAILER_ENABLED"] == jailer
+        resources = noded["resources"]
+        assert resources["requests"]["memory"] == resources["limits"]["memory"], (
+            f"{env['EMBERVM_NODED_SIZE_CLASS']} requests {resources['requests']['memory']} "
+            f"of a {resources['limits']['memory']} limit"
+        )
+
+    retry = [
+        _plain_env(container)["EMBERVM_PLACEMENT_RETRY"]
+        for _, container in _containers(documents)
+        if "EMBERVM_PLACEMENT_RETRY" in _plain_env(container)
+    ]
+    assert retry == ["true"]
+
+
 def test_jailer_scenario_gates_default_off() -> None:
     values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
     assert values["noded"]["jailer"]["enabled"] is False
@@ -3224,3 +3265,64 @@ def test_jailer_uid_block_base_renders_on_every_noded() -> None:
     bases = _rendered_noded_env_values(rendered, "EMBERVM_NODED_JAILER_UID_BLOCK_BASE")
     assert bases
     assert set(bases) == {"20"}
+
+
+@pytest.mark.parametrize(
+    "value_keys",
+    [["DEV_VALUES"], ["DEV_VALUES", "DEV_GKE_VALUES"]],
+    ids=["dev", "dev-gke"],
+)
+def test_conformance_jailer_gates_match_what_the_bricks_run(
+    value_keys: list[str],
+) -> None:
+    """S7 and S8 fail by design against bricks that cannot satisfy them.
+
+    S7 needs every brick armed. S8 needs the task workload inside the egress
+    scope and a sidecar that loads a CA, which it does only with the CA files
+    and a non-empty catalog. The probe lane must hold no credential and reach
+    nothing: both zones deny, every catalog host is a reserved .invalid name,
+    and no token broker or 1Password item is wired to it.
+    """
+    documents = _overlay_documents("embervm-dev", value_keys)
+    (runner,) = [
+        _plain_env(container)
+        for name, container in _containers(documents)
+        if name == "embervm-dev-embervm-conformance"
+    ]
+    assert runner["S7_REQUIRE_JAILER"] == "true"
+    bricks = list(_containers(documents, "noded-brick"))
+    assert bricks, "dev renders no brick; this test is inert"
+    for _, container in bricks:
+        if container["name"] == "noded":
+            assert _plain_env(container)["EMBERVM_NODED_JAILER_ENABLED"] == "true"
+            # Disjoint from production's 0 on a shared node.
+            assert _plain_env(container)["EMBERVM_NODED_JAILER_UID_BLOCK_BASE"] == "20"
+
+    if runner["S8_EGRESS_PROBE"] != "true":
+        assert value_keys == ["DEV_VALUES"], "only the hub overlay opens the probe lane"
+        return
+    task = runner["TASK_WORKLOAD"]
+    sidecars = [
+        container for _, container in bricks if container["name"] == "egress-proxy"
+    ]
+    assert sidecars, "the probe needs the egress sidecar on every brick"
+    for _, container in bricks:
+        env = _plain_env(container)
+        if container["name"] == "noded":
+            assert env["EMBERVM_NODED_EGRESS_WORKLOADS"] == task
+            continue
+        assert env["EGRESS_EXTERNAL"] == "deny"
+        assert env["EGRESS_INTERNAL_DEFAULT"] == "deny"
+        assert "EGRESS_INTERNAL_ALLOWLIST" not in env
+        assert "EGRESS_TOKEN_BROKER_URL" not in env
+        assert env["EGRESS_CA_CERT_FILE"] and env["EGRESS_CA_KEY_FILE"]
+        catalog = json.loads(env["EGRESS_SECRETS"])
+        assert catalog, "the sidecar loads its CA only with a non-empty catalog"
+        assert all(
+            host.endswith(".invalid") for entry in catalog for host in entry["egressTo"]
+        )
+    kinds = {(doc["kind"], doc["metadata"]["name"]) for doc in documents}
+    assert ("Certificate", "embervm-dev-embervm-egress-ca") in kinds
+    assert not any(
+        kind == "OnePasswordItem" and "egress" in name for kind, name in kinds
+    ), "the probe lane must not render a credential item"

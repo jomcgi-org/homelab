@@ -140,6 +140,25 @@ noded:
   # Node capacity. Dev runs one tiny brick, so use the smaller default.
   maxLiveVMs: 8
 
+  # ARMED in dev only (#5255). Every guest launches through the jailer: per-VM
+  # chroot, a uid from this daemon's leased block, a cgroup leaf with
+  # memory.oom.group, and its own PID namespace. A brick that cannot contain
+  # guests exits before it registers, and conformance S7 (requireJailer below)
+  # fails the dev gate if any launch ran unjailed or was refused. Production
+  # arms with the same one value after a dev soak. Rollback: false.
+  jailer:
+    enabled: true
+    # Dev and production bricks can share an ember-bricks node, and each release
+    # leases jail uid blocks under its own snapshot root, so only disjoint bases
+    # keep their uids apart. Production stays at the chart default 0.
+    uidBlockBase: 20
+
+  # Reserved admission, ahead of production on the same chart: declared memMib
+  # plus vmOverheadMib per VM against the brick budget, live and in-flight
+  # boots alike, with no overcommit. The rationale and the 2026-10-10 OOMKill
+  # evidence are in ARCHITECTURE.md section 7. Rollback: observed.
+  admissionModel: reserved
+
   # ARMED: brick silence timeout, ~6h (ADR embervm/037, #5073). Rollback: "".
   silenceTimeoutSeconds: "21600"
 
@@ -180,17 +199,18 @@ claudeRuntimeWorkload:
 # and its base is the ~100 MB pi image rather than the 300 MB claude one that
 # cost the first dev brick three of its four minutes.
 #
-# WHAT DEV CAN AND CANNOT PROVE HERE. Dev does not enable the egress lane
-# (egress.enabled defaults false and dev is silent on it), and a pi turn reaches
-# the in-cluster vLLM endpoint through that lane, so dev proves base build, cold
-# boot, readiness and session create/destroy at 256 MiB. It does NOT prove a
-# turn. That is production's to prove, which is why the CR ships enabled there
-# with nothing routed to it yet.
+# WHAT DEV CAN AND CANNOT PROVE HERE. pi-runtime is outside dev's egress lane
+# (the hub overlay opens it for the S8 probe's task workload only), and a pi
+# turn reaches the in-cluster vLLM endpoint through that lane, so dev proves
+# base build, cold boot, readiness and session create/destroy at 256 MiB. It
+# does NOT prove a turn. That is production's to prove, which is why the CR
+# ships enabled there with nothing routed to it yet.
 #
-# Watch for `pressure:mem` on create: admission compares raw cgroup headroom
-# against need (256) plus the reject floor (512), and a brick that has baked a
-# base carries page cache in memory.current. If dev flaps on admission, that is
-# a real finding about small guests on small bricks, not a dev-only artifact.
+# Watch for `pressure:mem` on create. Reserved admission charges the declared
+# 256 plus vmOverheadMib against the brick budget, and the observed guard
+# compares headroom net of reclaimable page cache against need plus the reject
+# floor (512). If dev flaps on admission, that is a real finding about small
+# guests on small bricks, not a dev-only artifact.
 piRuntimeWorkload:
   enabled: true
 
@@ -279,10 +299,20 @@ auth:
     - system:serviceaccount:embervm-dev:embervm-dev-embervm
     - system:serviceaccount:embervm-dev:embervm-dev-embervm-conformance
 
+# Placement reject/retry (#5230), ahead of production: a brick's
+# RESOURCE_EXHAUSTED refusal moves task, serving and session placement to the
+# next candidate instead of ending the attempt. Rollback: false.
+dispatcher:
+  placementRetry: true
+
 # The deployed conformance gate is dev-only. Its ServiceAccount is allow-listed
 # above so the runner can exercise the management API with its projected token.
 conformance:
   enabled: true
+  # S7 (#5255): every brick reports jailer_armed, no launch ran unjailed or was
+  # refused across the suite, and the suite's guests launched jailed. Paired
+  # with noded.jailer.enabled above; turn both off together.
+  requireJailer: true
   # S6 TLC trace validation (#6415), staged default-off even in dev. Narrower
   # than and independent of conformance.enabled above: an operator flips this
   # only after the embervm-dev lane is confirmed stable.
@@ -301,9 +331,10 @@ conformance:
   #
   # Must stay strictly BELOW the dev stage's verdictTimeout in
   # projects/platform/kargo/values.yaml (1h15m0s), which also has to cover the
-  # 6m10s suite after this wait ends (s1 60s + s2 180s + s3 60s + s4 10s +
-  # s5 60s, summed as totalBudget in conformance/main.go) and, when the first
-  # cycle is red, one more runInterval plus suite. It is a bound on waiting for bricks,
+  # 7m15s suite after this wait ends (s1 90s + s2 180s + s3 60s + s4 10s +
+  # s5 60s + s7 15s + s8 20s, summed as totalBudget in conformance/main.go)
+  # and, when the first cycle is red, one more runInterval plus suite: 74m30s
+  # at worst, 30s inside the verdictTimeout. It is a bound on waiting for bricks,
   # not a budget for the suite, so a fast roll is unaffected: readiness is
   # polled, not slept.
   readyWait: 30m0s
