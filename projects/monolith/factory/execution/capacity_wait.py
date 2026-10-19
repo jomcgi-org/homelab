@@ -74,6 +74,7 @@ def _read(session_id: int, *, include_claimed: bool = False) -> dict | None:
         )
         return {
             "continuation": continuation,
+            "started_at": pending.capacity_started_at,
             "session_id": session_id,
             "seq": pending.seq,
             "local_session_id": agent.local_session_id,
@@ -87,7 +88,13 @@ def _read(session_id: int, *, include_claimed: bool = False) -> dict | None:
         }
 
 
-def _save(snapshot: dict, context: dict, *, expected_key: str | None) -> bool:
+def _save(
+    snapshot: dict,
+    context: dict,
+    *,
+    expected_key: str | None,
+    started_at: datetime | None = None,
+) -> bool:
     # The session lock is the existing pending-lane serialization boundary.
     from factory.execution.store import _lock_session
 
@@ -114,6 +121,8 @@ def _save(snapshot: dict, context: dict, *, expected_key: str | None) -> bool:
         if current.get("key") != expected_key:
             return False
         pending.capacity_intent_json = json.dumps(context)
+        if pending.capacity_started_at is None and started_at is not None:
+            pending.capacity_started_at = started_at
         pending.capacity_state = context["state"]
         pending.capacity_next_poll_at = datetime.now(timezone.utc) + timedelta(
             seconds=5
@@ -180,6 +189,34 @@ async def poll(session_id: int, transport, *, allowed: bool) -> bool:
     if snapshot["next_poll"] and datetime.now(timezone.utc) < snapshot["next_poll"]:
         return False
     try:
+        if snapshot["continuation"] and snapshot["started_at"] is None:
+            # A fast interrupted response can release the claim before the
+            # ordinary observer sees consumption. Preserve that first execution
+            # clock before replacing the only durable operation reference.
+            result = await transport.residency_request(
+                snapshot["guest_id"],
+                snapshot["token"],
+                "GET",
+                operation_id=context["operation_id"],
+            )
+            if (
+                result.get("state") != "consumed"
+                or not context.get("claimed_dispatch_id")
+                or result.get("dispatch_id") != context["claimed_dispatch_id"]
+                or result.get("session_id") != snapshot["guest_id"]
+                or result.get("id") != context["operation_id"]
+                or type(result.get("updated_at")) is not int
+            ):
+                return False
+            started = datetime.fromtimestamp(result["updated_at"] / 1000, timezone.utc)
+            if not await asyncio.to_thread(
+                _save,
+                snapshot,
+                context,
+                expected_key=context["key"],
+                started_at=started,
+            ):
+                return False
         if (
             context is None
             or snapshot["continuation"]
@@ -304,7 +341,13 @@ async def poll(session_id: int, transport, *, allowed: bool) -> bool:
             _save, snapshot, context, expected_key=context["key"]
         )
         return saved and context["state"] == "ready"
-    except (httpx.HTTPError, EmberVMTransportError, ValueError, KeyError):
+    except (
+        httpx.HTTPError,
+        EmberVMTransportError,
+        ValueError,
+        KeyError,
+        OverflowError,
+    ):
         return False
 
 

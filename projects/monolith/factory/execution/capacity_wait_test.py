@@ -86,6 +86,7 @@ class FakeEmber:
         self.lose_enqueue = False
         self.unsupported = False
         self.expected_dispatch_count = 0
+        self.consumed = {}
 
     async def get_session(self, guest, token):
         assert guest == "guest" and token == "secret-capability"
@@ -106,6 +107,8 @@ class FakeEmber:
         assert token not in row.capacity_intent_json
         assert row.message_text not in row.capacity_intent_json
         self.calls.append((method, kwargs))
+        if method == "GET" and kwargs.get("operation_id") in self.consumed:
+            return self.consumed[kwargs["operation_id"]]
         if method == "POST":
             assert context["key"] == kwargs["key"]
             assert context["enqueue_attempted"]
@@ -325,8 +328,10 @@ def test_pause_after_lost_enqueue_reattaches_by_read_and_cancels_only_interest(
     assert json.loads(row.capacity_intent_json)["operation_id"]
 
 
+@pytest.mark.parametrize("clock_already_observed", [False, True])
 def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
     database,
+    clock_already_observed,
 ):
     engine, sid, deadline = database
     ember = FakeEmber(engine, deadline)
@@ -334,12 +339,16 @@ def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
     assert asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
     assert store.claim_pending_message_for_session_sync(sid, "first") == 1
     original = json.loads(pending(engine).capacity_intent_json)
-    started = datetime.now(timezone.utc) - timedelta(seconds=30)
-    with Session(engine) as db:
-        row = db.exec(select(PendingMessage)).one()
-        row.capacity_started_at = started
-        db.add(row)
-        db.commit()
+    started_ms = int(
+        (datetime.now(timezone.utc) - timedelta(seconds=30)).timestamp() * 1000
+    )
+    started = datetime.fromtimestamp(started_ms / 1000, timezone.utc)
+    if clock_already_observed:
+        with Session(engine) as db:
+            row = db.exec(select(PendingMessage)).one()
+            row.capacity_started_at = started
+            db.add(row)
+            db.commit()
     interrupted = transport.Turn(
         result="checkpoint",
         terminal_reason="interrupted_for_drain",
@@ -367,6 +376,21 @@ def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
     )
     ember.expected_dispatch_count = 1
     ember.state, ember.reason, ember.generation = "queued", "capacity", 4
+    if not clock_already_observed:
+        evidence = {
+            "id": original["operation_id"],
+            "session_id": "guest",
+            "state": "consumed",
+            "updated_at": started_ms,
+            "dispatch_id": "wrong",
+        }
+        ember.consumed[original["operation_id"]] = evidence
+        allow_poll(engine)
+        # A mismatched consumption cannot discard the old reference or mint demand.
+        assert not asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
+        assert json.loads(pending(engine).capacity_intent_json) == original
+        assert pending(engine).capacity_started_at is None
+        evidence["dispatch_id"] = exact_dispatch_id(sid, "guest", 1, "first", 1)
     allow_poll(engine)
     assert not asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
     current = json.loads(pending(engine).capacity_intent_json)
@@ -379,6 +403,7 @@ def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
         turn = store.get_turn(db, sid, 1)
         assert json.loads(turn.usage_json)["retry_dispatch_count"] == 1
         assert turn.cost_usd == 0.02
+
     ember.state, ember.reason = "ready", "resident"
     allow_poll(engine)
     assert asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
@@ -398,3 +423,23 @@ def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
         turn = store.get_turn(db, sid, 1)
         assert json.loads(turn.usage_json)["retry_dispatch_count"] == 1
         assert turn.cost_usd == 0.02
+
+
+@pytest.mark.parametrize("capacity_state", ["waiting_capacity", "ready"])
+def test_unclaimed_capacity_demand_never_becomes_a_zombie(database, capacity_state):
+    engine, sid, deadline = database
+    ember = FakeEmber(engine, deadline)
+    ember.state = "queued" if capacity_state == "waiting_capacity" else "ready"
+    asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=3)
+    with Session(engine) as db:
+        row = db.exec(select(PendingMessage)).one()
+        row.created_at = now - timedelta(minutes=10)
+        db.add(row)
+        db.commit()
+        assert store.find_zombie_session_ids(db, cutoff, now) == []
+        assert store.claim_zombie_session_recovery(db, sid, cutoff, now) is None
+        assert db.get(AgentSession, sid).status == "running"
+        assert not db.exec(select(AgentTurn)).all()
+        assert row.claimed_by_replica is None and row.dispatch_count == 0
