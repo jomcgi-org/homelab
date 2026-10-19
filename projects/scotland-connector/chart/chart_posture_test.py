@@ -1,0 +1,206 @@
+"""Posture pins for the public connector chart: the public route reaches only
+the API and MCP paths, the admin port is never exposed, ingress is admitted
+only from the Envoy Gateway, the pod runs restricted, and the image deploys by
+digest."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+_CHART_DIR = Path(__file__).resolve().parent
+_DEPLOY_VALUES = Path(
+    os.environ.get("DEPLOY_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml")
+)
+_MONOLITH_PUBLIC_VALUES = Path(
+    os.environ.get(
+        "MONOLITH_PUBLIC_VALUES",
+        _CHART_DIR.parent.parent / "monolith-public" / "chart" / "values.yaml",
+    )
+)
+_ROUTE_ON = ["route.enabled=true", "route.hostname=connector.example.test"]
+
+
+def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
+    argv = [
+        os.environ.get("HELM_BIN", "helm"),
+        "template",
+        "scotland-connector",
+        str(_CHART_DIR),
+        "--namespace",
+        "scotland-connector",
+        "--values",
+        str(_DEPLOY_VALUES),
+    ]
+    for override in overrides or []:
+        argv += ["--set", override]
+    result = subprocess.run(argv, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"helm template failed: {result.stderr}")
+    return [d for d in yaml.safe_load_all(result.stdout) if d]
+
+
+def _one(docs: list[dict[str, Any]], kind: str) -> dict[str, Any]:
+    found = [d for d in docs if d["kind"] == kind]
+    assert len(found) == 1, f"want one {kind}, got {len(found)}"
+    return found[0]
+
+
+def test_deployed_values_keep_the_route_off_until_a_hostname_is_chosen() -> None:
+    kinds = {d["kind"] for d in _render()}
+    assert "HTTPRoute" not in kinds
+    assert {
+        "Namespace",
+        "Deployment",
+        "Service",
+        "NetworkPolicy",
+        "HorizontalPodAutoscaler",
+        "PodDisruptionBudget",
+        "OnePasswordItem",
+    } <= kinds
+
+
+def test_route_exposes_only_the_api_and_mcp_paths() -> None:
+    docs = _render(_ROUTE_ON)
+    route = _one(docs, "HTTPRoute")
+    assert route["metadata"]["labels"]["ingress-tier"] == "public"
+    assert route["spec"]["hostnames"] == ["connector.example.test"]
+    (rule,) = route["spec"]["rules"]
+    assert rule["matches"] == [
+        {"path": {"type": "PathPrefix", "value": "/v1/"}},
+        {"path": {"type": "Exact", "value": "/mcp"}},
+    ]
+    service = _one(docs, "Service")
+    (backend,) = rule["backendRefs"]
+    assert backend["name"] == service["metadata"]["name"]
+    assert backend["port"] == service["spec"]["ports"][0]["port"]
+
+
+def test_route_carries_per_client_limits_and_worker_denies() -> None:
+    docs = _render(_ROUTE_ON)
+    policy = _one(docs, "BackendTrafficPolicy")
+    fallback, per_client = policy["spec"]["rateLimit"]["local"]["rules"]
+    assert "clientSelectors" not in fallback
+    headers = per_client["clientSelectors"][0]["headers"]
+    assert [(h["name"], h["type"]) for h in headers] == [
+        ("CF-Connecting-IP", "Distinct"),
+        ("CF-Connecting-IP", "RegularExpression"),
+    ]
+    # The identity pattern is the one monolith-public's Envoy acceptance test
+    # proves; a copy that drifts from it is untested.
+    monolith_public = yaml.safe_load(_MONOLITH_PUBLIC_VALUES.read_text())
+    want = monolith_public["cfIngress"]["public"]["clientIdentity"]["clientHeader"][
+        "valuePattern"
+    ]
+    assert headers[1]["value"] == want, (
+        "client identity regex drifted from monolith-public"
+    )
+    deny = {
+        r["name"]
+        for r in _one(docs, "SecurityPolicy")["spec"]["authorization"]["rules"]
+    }
+    assert deny == {"deny-same-zone-workers", "deny-cross-zone-workers"}
+
+
+def test_admin_port_is_never_exposed() -> None:
+    docs = _render(_ROUTE_ON)
+    service = _one(docs, "Service")
+    assert [p["targetPort"] for p in service["spec"]["ports"]] == ["http"]
+    container = _one(docs, "Deployment")["spec"]["template"]["spec"]["containers"][0]
+    ports = {p["name"]: p["containerPort"] for p in container["ports"]}
+    for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+        assert container[probe]["httpGet"]["port"] == "admin"
+    policy = next(
+        d
+        for d in docs
+        if d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-ingress")
+    )
+    (rule,) = policy["spec"]["ingress"]
+    assert [p["port"] for p in rule["ports"]] == [ports["http"]]
+
+
+def test_ingress_is_admitted_only_from_the_envoy_gateway() -> None:
+    docs = _render()
+    policy = next(
+        d
+        for d in docs
+        if d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-ingress")
+    )
+    assert policy["spec"]["podSelector"] == {}
+    (rule,) = policy["spec"]["ingress"]
+    (peer,) = rule["from"]
+    assert peer["namespaceSelector"]["matchLabels"] == {
+        "kubernetes.io/metadata.name": "envoy-gateway-system"
+    }
+    assert peer["podSelector"]["matchLabels"] == {
+        "gateway.envoyproxy.io/owning-gateway-name": "cloudflare-ingress",
+        "gateway.envoyproxy.io/owning-gateway-namespace": "envoy-gateway-system",
+    }
+
+
+def test_egress_policy_refuses_to_render_without_a_resolver() -> None:
+    with pytest.raises(RuntimeError, match="dnsServiceCidrs"):
+        _render(["networkPolicy.egress.enabled=true"])
+    docs = _render(
+        [
+            "networkPolicy.egress.enabled=true",
+            "networkPolicy.egress.dnsServiceCidrs[0]=10.0.0.10/32",
+        ]
+    )
+    egress = next(
+        d
+        for d in docs
+        if d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-egress")
+    )
+    https = egress["spec"]["egress"][1]
+    assert https["ports"] == [{"protocol": "TCP", "port": 443}]
+    assert {"10.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16"} <= set(
+        https["to"][0]["ipBlock"]["except"]
+    )
+
+
+def test_pod_runs_restricted_without_an_api_token() -> None:
+    docs = _render()
+    ns = _one(docs, "Namespace")
+    assert (
+        ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "restricted"
+    )
+    pod = _one(docs, "Deployment")["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert pod["securityContext"]["runAsUser"] == 65532
+    container = pod["containers"][0]
+    sc = container["securityContext"]
+    assert sc["readOnlyRootFilesystem"] is True
+    assert sc["allowPrivilegeEscalation"] is False
+    assert sc["capabilities"]["drop"] == ["ALL"]
+    resources = container["resources"]
+    assert resources["requests"]["memory"] == resources["limits"]["memory"]
+    assert "cpu" not in resources["limits"]
+
+
+def test_image_deploys_by_digest_when_stamped() -> None:
+    digest = "sha256:" + "a" * 64
+    container = _one(_render([f"image.digest={digest}"]), "Deployment")["spec"][
+        "template"
+    ]["spec"]["containers"][0]
+    assert (
+        container["image"]
+        == f"ghcr.io/jomcgi/homelab/projects/scotland-connector@{digest}"
+    )
+
+
+def test_hpa_owns_replicas_with_a_floor_of_two() -> None:
+    docs = _render()
+    hpa = _one(docs, "HorizontalPodAutoscaler")
+    assert hpa["spec"]["minReplicas"] >= 2
+    assert (
+        hpa["spec"]["scaleTargetRef"]["name"]
+        == _one(docs, "Deployment")["metadata"]["name"]
+    )
+    assert _one(docs, "PodDisruptionBudget")["spec"]["maxUnavailable"] == 1

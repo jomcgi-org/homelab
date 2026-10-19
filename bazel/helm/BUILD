@@ -51,6 +51,7 @@ MANIFEST_SETS = [
     "//projects/monolith/deploy:manifests_gke/all.yaml",
     "//projects/monolith/dev/deploy:manifests/all.yaml",
     "//projects/operators/oci-model-cache/deploy:manifests/all.yaml",
+    "//projects/scotland-connector/deploy:manifests/all.yaml",
     # Platform charts rendered by argocd_app. The plain `manifests` target is
     # the chart's default-values render (the home overlay until #6914 retired
     # it); `manifests_gke` is the hub overlay.

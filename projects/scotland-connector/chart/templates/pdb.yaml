@@ -1,0 +1,16 @@
+{{- if .Values.pdb.enabled }}
+# maxUnavailable rather than minAvailable: a single-replica render must not
+# block node drains.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "scotland-connector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scotland-connector.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.pdb.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "scotland-connector.selectorLabels" . | nindent 6 }}
+{{- end }}

@@ -1,0 +1,19 @@
+# Hub production values for the public Scotland connector. There is one
+# cluster, so there is no values-gke.yaml overlay.
+
+config:
+  # Cloudflare R2 account endpoint, the one the monolith's stars-refresh job
+  # writes stars/sites.json and stars/history-map.json to.
+  r2Endpoint: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+
+r2Credentials:
+  onepassword:
+    # The existing read-only R2 token monolith-public already uses for the
+    # same stars objects. A token scoped to the stars bucket alone would be
+    # tighter; it needs a new R2 token and 1Password item.
+    itemPath: vaults/k8s-homelab/items/r2-s3-public-read
+
+route:
+  # Off until the product name and hostname are chosen (#7243), and the
+  # hostname's Cloudflare tunnel public hostname exists.
+  enabled: false
