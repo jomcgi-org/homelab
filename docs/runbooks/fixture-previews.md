@@ -198,9 +198,13 @@ The first run creates `fixture-preview-state`; remove the ownership/bootstrap
 variable after that run. Activation requires separate approval of these exact
 settings. The reusable-suite change leaves all activation controls disabled.
 
-Only after merge and activation can a tested PR receive a working link. The
-publisher uses the Pages API URL returned for the real site. There is no preview
-URL to visit before the first successful deployment.
+The trusted publisher is already on `main`. After approved activation, a
+successful exact-head build on an open PR can receive a working link while
+that PR stays unmerged. The publisher uses the Pages API URL returned for the
+real site. There is no preview URL before the first successful deployment.
+Merging the reusable suite is a separate approval step. After activation,
+complete a fresh successful build of the current open PR; a manual publisher
+cleanup run does not import a previously skipped build.
 
 ## Publication boundary
 
