@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
+from core.clock import as_utc
 from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, or_, text
@@ -157,14 +158,6 @@ def ensure_audit_job(session: Session) -> bool:
     return result.rowcount > 0
 
 
-def _utc(value: datetime) -> datetime:
-    return (
-        value.replace(tzinfo=timezone.utc)
-        if value.tzinfo is None
-        else value.astimezone(timezone.utc)
-    )
-
-
 def _eligible(now: datetime, settings: AuditSettings):
     disputed = select(Dispute.note_id).where(
         Dispute.state.in_(("open", "resolution_failed"))
@@ -220,7 +213,7 @@ def sample_notes(
     if not audit_enabled():
         return []
     settings = audit_settings()
-    now = _utc(now or datetime.now(timezone.utc))
+    now = as_utc(now or datetime.now(timezone.utc))
     rng = random.Random(seed)
     half = settings.samples_per_day // 2
     eligible = _eligible(now, settings)
@@ -243,7 +236,7 @@ def sample_notes(
                 AtomRawProvenance.atom_fk == note.id,
             )
         ).one()
-        age = min(365, max(0, (now - _utc(note.observed_at or note.created_at)).days))
+        age = min(365, max(0, (now - as_utc(note.observed_at or note.created_at)).days))
         weight = (
             (1 + math.log1p(max(0, retrievals)))
             * (1 + age / 30)
@@ -279,7 +272,9 @@ def _note_data(session: Session, note: Note) -> dict:
         "body": note.content,
         "scope": note.scope,
         "verification_state": note.verification_state,
-        "observed_at": _utc(note.observed_at).isoformat() if note.observed_at else None,
+        "observed_at": as_utc(note.observed_at).isoformat()
+        if note.observed_at
+        else None,
         "entities": [
             {"kind": entity.kind, "slug": entity.slug, "role": edge.role}
             for entity, edge in entities
@@ -774,9 +769,9 @@ def compute_audit_metrics(
     Wilson intervals describe only uniform draws, not targeted discovery rows.
     Resolver outcomes are read from disputes, never inferred from audit verdicts.
     """
-    lower = _utc(now) - timedelta(days=window_days)
+    lower = as_utc(now) - timedelta(days=window_days)
     selected = [
-        item for item in findings if lower <= _utc(item["created_at"]) <= _utc(now)
+        item for item in findings if lower <= as_utc(item["created_at"]) <= as_utc(now)
     ]
     metrics = {
         "window_days": window_days,
@@ -840,11 +835,11 @@ def compute_audit_metrics(
         metrics["repairs"][outcome] = sum(disputes.get(id_) == outcome for id_ in ids)
     for item in selected:
         if item.get("cause"):
-            day = _utc(item["created_at"]).date().isoformat()
+            day = as_utc(item["created_at"]).date().isoformat()
             daily = metrics["causes_over_time"].setdefault(day, {})
             daily[item["cause"]] = daily.get(item["cause"], 0) + 1
     for run in runs:
-        if lower <= _utc(run["started_at"]) <= _utc(now):
+        if lower <= as_utc(run["started_at"]) <= as_utc(now):
             metrics["cost_per_run"][str(run["id"])] = run["cost_usd"]
     return metrics
 
