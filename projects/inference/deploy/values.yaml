@@ -172,10 +172,6 @@ nodeSelector:
 strategy:
   type: Recreate
 
-podAnnotations:
-  prometheus.io/scrape: "true"
-  prometheus.io/port: "8080"
-
 # The NInfer image runs as the homelab non-root uid; nothing in it needs root.
 podSecurityContext:
   runAsUser: 65532
@@ -285,9 +281,6 @@ embeddings:
   runtimeClassName: null
   nodeSelector:
     kubernetes.io/hostname: node-4
-  podAnnotations:
-    prometheus.io/scrape: "true"
-    prometheus.io/port: "8080"
   # Historical 7-day RSS is ~5.5Gi (llama.cpp holds the GGUF weights in host RAM,
   # n-gpu-layers 0), and the grimoire bulk sourcebook load (2026-07-04, ~40k
   # chunks at 60k-char batches against 8192-token ubatch) OOMKilled the pod at
