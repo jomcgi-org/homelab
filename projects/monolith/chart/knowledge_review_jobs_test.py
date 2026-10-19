@@ -306,6 +306,8 @@ def test_grimoire_verifier_tracks_configured_extraction_model_and_endpoint(tmp_p
     container = job["workflowSpec"]["templates"][0]["container"]
     env = {entry["name"]: entry.get("value") for entry in container["env"]}
     assert env["GRIMOIRE_VERIFY_MODEL"] == env["GRIMOIRE_EXTRACT_MODEL"] == "test-model"
-    assert env["GRIMOIRE_VERIFY_BASE_URL"] == env["GRIMOIRE_EXTRACT_BASE_URL"] == (
-        "https://inference.invalid/chat/completions"
+    assert (
+        env["GRIMOIRE_VERIFY_BASE_URL"]
+        == env["GRIMOIRE_EXTRACT_BASE_URL"]
+        == ("https://inference.invalid/chat/completions")
     )
