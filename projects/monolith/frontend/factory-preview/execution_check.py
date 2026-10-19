@@ -22,7 +22,7 @@ def geometry(page):
         mainHeight: rect.height, sheet: getComputedStyle(main).getPropertyValue('--sheet').trim(),
         chromePosition: getComputedStyle(document.querySelector('.chrome')).position,
         legacyLoaded: getComputedStyle(document.documentElement).getPropertyValue('--cream').trim(),
-        inbox: box('.inbox-scroll'), transcript: box('.turns'),
+        inbox: box('.inbox-body'), transcript: box('.turns'),
         navVisible: [...document.querySelectorAll('.md-nav, .back-to-dashboard')].some(e => e.checkVisibility()),
         maintenanceBanner: !!document.querySelector('.maintenance-banner')};
     }""")
@@ -45,6 +45,9 @@ def assert_geometry(page, view):
         assert measured["chromePosition"] == "static", (
             "floating chrome covers console controls"
         )
+        assert measured["inbox"] and measured["inbox"]["overflowY"] == "auto", measured
+        if measured["transcript"]:
+            assert measured["transcript"]["overflowY"] == "auto", measured
     else:
         assert measured["bodyOverflow"] == "auto", (
             "drain must retain document scrolling"
@@ -171,7 +174,6 @@ def check_execution(browser, base, output, evidence):
                         page.wait_for_function(
                             "document.querySelector('.transcript-head').textContent.includes('asleep')"
                         )
-                        shot("updated-transcript")
                         scroller = page.locator(".turns")
                         assert scroller.evaluate(
                             "e => e.scrollHeight > e.clientHeight"
@@ -180,6 +182,7 @@ def check_execution(browser, base, output, evidence):
                         assert page.evaluate("scrollY === 0"), (
                             "transcript scrolled the document"
                         )
+                        shot("updated-transcript")
                         if width == 390:
                             page.get_by_role(
                                 "button", name="Session actions", exact=True
