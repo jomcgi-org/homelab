@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 	"log/slog"
 	"net"
 	"os"
@@ -645,7 +646,7 @@ func waitForSocketOrExit(ctx context.Context, socketPath string, timeout time.Du
 	defer cancel()
 	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
 	for waitCtx.Err() == nil {
-		conn, err := dialer.DialContext(waitCtx, "unix", socketPath)
+		conn, err := unixsock.DialWith(waitCtx, &dialer, socketPath)
 		if err == nil {
 			_ = conn.Close()
 			return nil

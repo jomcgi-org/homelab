@@ -17,6 +17,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
+	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 )
 
 // mmdsEnvKeyNamesSorted returns the sorted key names of an mmds_env map, for
@@ -517,7 +518,9 @@ func (s *Server) releaseOrphanedAttach(workload string) {
 // produced by a missing socket or a socket with no Firecracker listener. Other
 // dial errors fail closed and preserve the healthy-attach fast path.
 func statefulAPISocketDead(path string) bool {
-	conn, err := net.DialTimeout("unix", path, statefulAPISocketProbeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), statefulAPISocketProbeTimeout)
+	defer cancel()
+	conn, err := unixsock.Dial(ctx, path)
 	if err == nil {
 		_ = conn.Close()
 		return false
