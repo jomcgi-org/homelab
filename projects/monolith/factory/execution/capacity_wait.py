@@ -72,9 +72,18 @@ def _read(session_id: int, *, include_claimed: bool = False) -> dict | None:
                 store.get_turn(db, session_id, pending.seq), pending
             )
         )
+        legacy_started_at = (
+            pending.last_dispatch_at
+            if context is None
+            and store._retry_permission(
+                store.get_turn(db, session_id, pending.seq), pending
+            )
+            else None
+        )
         return {
             "continuation": continuation,
             "started_at": pending.capacity_started_at,
+            "legacy_started_at": legacy_started_at,
             "session_id": session_id,
             "seq": pending.seq,
             "local_session_id": agent.local_session_id,
@@ -266,7 +275,11 @@ async def poll(session_id: int, transport, *, allowed: bool) -> bool:
                 "enqueue_attempted": False,
             }
             if not await asyncio.to_thread(
-                _save, snapshot, context, expected_key=previous_key
+                _save,
+                snapshot,
+                context,
+                expected_key=previous_key,
+                started_at=snapshot["legacy_started_at"],
             ):
                 return False
         if not context.get("operation_id"):

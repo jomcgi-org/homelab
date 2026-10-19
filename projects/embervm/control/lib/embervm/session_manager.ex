@@ -6772,6 +6772,7 @@ defmodule Embervm.SessionManager do
       with {:ok, response} <- destroy_fun.(channel, request),
            {:ok, completion} <- Embervm.SessionStopProof.validate(intent, response) do
         Embervm.Scheduler.Reservation.release_confirmed(intent["instance_id"], intent["vm_id"], true)
+        release_residency_vm_claims(state, intent["session_id"], intent["node_id"], intent["vm_id"], intent["instance_id"])
         {:stop_completion, completion}
       else
         _ -> false
@@ -6790,10 +6791,11 @@ defmodule Embervm.SessionManager do
     dial_key =
       case Map.get(target, :dial_id) do
         dial when is_binary(dial) and dial != "" -> dial
-        _ -> session_dial(state, session_id, node_id, vm_id)
+        _ -> residency_teardown_dial(state, session_id, node_id, vm_id)
       end
 
-    case safe_channel(state.channel_fun, dial_key) do
+    channel = if is_binary(dial_key), do: safe_channel(state.channel_fun, dial_key), else: {:error, :unresolved_teardown_owner}
+    case channel do
       {:ok, channel} ->
         opts = state.session_opts
 
@@ -6809,6 +6811,9 @@ defmodule Embervm.SessionManager do
             {:ok, %{teardown_confirmed: true}} ->
               :ok = Embervm.Dispatcher.drop_vm(state.dispatcher, vm_id)
               Embervm.Scheduler.Reservation.release_confirmed(dial_key, vm_id, true)
+              # This common boundary covers expiry, direct/resumed destroy and
+              # cleanup workers, including a VM never observed in inventory.
+              release_residency_vm_claims(state, session_id, node_id, vm_id, dial_key)
               true
 
             _ -> false
@@ -7272,12 +7277,29 @@ defmodule Embervm.SessionManager do
   defp default_clock, do: System.system_time(:millisecond)
   # Durable asynchronous wakes use no parked GenServer caller and never carry a
   # GuestRequest. The same bank/relight/rejoin helpers still own physical work.
-  defp release_residency_vm_claims(state, session_id, node_id, vm_id) do
+  defp residency_teardown_dial(state, session_id, node_id, vm_id) do
+    case residency_rows(state) do
+      {:ok, rows} ->
+        dials = for intent <- rows, intent["session_id"] == session_id,
+          restore = intent["restore"], is_map(restore),
+          restore["node_id"] == node_id and restore["vm_id"] == vm_id,
+          do: restore["dial_id"]
+        case Enum.uniq(dials) do
+          [] -> session_dial(state, session_id, node_id, vm_id)
+          [dial] -> dial
+          _ -> nil
+        end
+      _ -> nil
+    end
+  end
+
+  defp release_residency_vm_claims(state, session_id, node_id, vm_id, dial_id \\ nil) do
     case residency_rows(state) do
       {:ok, rows} ->
         for intent <- rows, intent["session_id"] == session_id,
             restore = intent["restore"], is_map(restore),
-            restore["node_id"] == node_id, restore["vm_id"] == vm_id do
+            is_binary(vm_id), restore["node_id"] == node_id, restore["vm_id"] == vm_id,
+            is_nil(dial_id) or restore["dial_id"] == dial_id do
           acknowledge_residency_claim(state, intent)
         end
       _ -> :ok
@@ -7350,7 +7372,7 @@ defmodule Embervm.SessionManager do
   defp reconcile_residency_interest(intent, state) do
     cond do
       intent["state"] in ["ready", "consumed", "cancelled", "expired", "failed"] and intent["restore"] != nil and intent["claim_reconciled"] != true ->
-        release_observed_residency_claim(state, intent)
+        state = release_observed_residency_claim(state, intent)
         if intent["state"] == "ready", do: reconcile_residency_interest(Map.put(intent, "restore", nil), state), else: state
       not Embervm.ResidencyIntent.active?(intent) -> state
       intent["state"] in ["admitting", "cancelling"] ->
@@ -7427,8 +7449,20 @@ defmodule Embervm.SessionManager do
           restore["vm_id"] in (get_in(fact, [:workloads, intent["workload"], :primed_vm_ids]) || []))
     end)) do
       acknowledge_residency_claim(state, intent)
+      state
+    else
+      # Teardown may have succeeded just before an acknowledgement failed or
+      # the CP crashed. Re-drive the existing idempotent Destroy for that exact
+      # terminal session/VM/brick; absence alone never releases its claim.
+      with {:ok, session} <- SessionStore.get(state.session_store, intent["session_id"]),
+           true <- SessionState.terminal?(session.state),
+           true <- is_binary(restore["vm_id"]) and session.vm_id == restore["vm_id"] and
+             session.node_id == restore["node_id"] and session.generation == intent["generation"] do
+        spawn_destroy_worker(state, Map.put(session, :dial_id, restore["dial_id"]), true)
+      else
+        _ -> state
+      end
     end
-    state
   end
 
   defp acknowledge_residency_claim(state, intent) do
