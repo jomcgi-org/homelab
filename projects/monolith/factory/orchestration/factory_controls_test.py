@@ -725,6 +725,22 @@ def test_unrequested_pause_stays_paused_when_capacity_opens(db, policy, monkeypa
     assert controls.can_start(first)["reason"] == "task_paused"
 
 
+@pytest.mark.parametrize("direction", [None, "{}", '{"note": "keep spacing"}'])
+@pytest.mark.parametrize("transition", ["pause", "settle"])
+def test_no_pending_intent_leaves_direction_unchanged(
+    db, policy, direction, transition
+):
+    task = admitted(policy)
+    with Session(db) as session, session.begin():
+        controls._receipt(session, task).direction_json = direction
+    if transition == "pause":
+        assert controls.set_control("pause_task", "operator", task_id=task)["ok"]
+    else:
+        assert controls.finish_task(task, "cancelled", "operator")["ok"]
+    with Session(db) as session:
+        assert controls._receipt(session, task).direction_json == direction
+
+
 @pytest.mark.parametrize("change", ["new_hold", "pause", "cancel"])
 def test_pending_hold_release_preserves_replacement_fences(
     db, policy, monkeypatch, change
