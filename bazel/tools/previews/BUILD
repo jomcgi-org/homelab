@@ -10,3 +10,14 @@ py_test(
     imports = ["."],
     main = "publish_test.py",
 )
+
+py_test(
+    name = "suite_test",
+    srcs = [
+        "publish.py",
+        "suite.py",
+        "suite_test.py",
+    ],
+    imports = ["."],
+    main = "suite_test.py",
+)
