@@ -10878,6 +10878,38 @@ def test_machine_verified_task_still_uses_pool_selection(feedback_db, monkeypatc
     assert calls[1] == ("worker", policy)
 
 
+@pytest.mark.parametrize(
+    "overrides, expected_model, expected_effort",
+    [({}, "sol", "medium"), ({"model": "astra", "effort": "xhigh"}, "astra", "xhigh")],
+)
+def test_sol_first_implementation_pool_preserves_explicit_planner_pins(
+    feedback_db, monkeypatch, overrides, expected_model, expected_effort
+):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    task, policy = feedback_task(
+        allowed_models=["astra", "sol", "spark", "sonnet", "opus"],
+        conductor_model="astra",
+        worker_model="astra",
+        reviewer_model="opus",
+        model_pools={
+            "worker": ["astra", "sol", "spark", "sonnet"],
+            "implement": ["sol", "astra", "spark", "sonnet"],
+        },
+        role_effort={"implement": "medium"},
+    )
+    edit = plan_edit("work", "implement", **overrides)
+    prepared = conductor._prepare_add(task, policy, edit)
+    assert prepared["model"] == expected_model
+    assert (
+        model_pool.effort_for("implement_work", policy, prepared["effort"])
+        == expected_effort
+    )
+    investigate = conductor._prepare_add(task, policy, plan_edit("look", "investigate"))
+    assert investigate["model"] == "astra"
+
+
 def test_planner_prompt_names_only_the_judgment_floor(feedback_db):
     task, _policy = feedback_task()
     judgment = conductor.planner_prompt(task, [], [], task_class="judgment-analysis")

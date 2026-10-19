@@ -1,5 +1,119 @@
 # Fixture previews
 
+## Compare before and after
+
+The public entry page compares screenshots on one page. Native Before/After
+radio controls preserve the screenshot frame's scroll position. Fixture, view,
+phone/desktop width and light/dark selectors choose the same capture state on
+both sides. Full baseline and head SHAs stay visible. Links open each revision's
+interactive fixture or map gallery separately.
+Both sides reserve the taller capture's scroll extent, so switching through a
+shorter image cannot lose the original offset. A separate browser regression
+uses clearly labeled UI-only images of unequal heights; those images never
+enter the published artifact.
+
+The build checks out the exact PR head and computes `git merge-base` against
+the event's base SHA. It captures that real ancestor in a separate disposable
+worktree with its own frozen dependency install. Neither revision receives a
+publication credential. A pair requires matching synthetic inputs, fixture
+harness files, capture code, Playwright and Chromium versions. Identical PNGs
+are labeled identical. Changed harnesses or fixture data are labeled
+unavailable for comparison; the baseline is never replaced with a different
+revision. A missing baseline harness is also shown as unavailable. In
+particular, a changed historical capture harness is rejected before applying
+the current required PNG matrix. A baseline with missing fixture inputs is
+also unavailable. Eligible baselines still run their own contract checks and
+compare generated fixture data before any screenshots are paired. A new Trips
+or Stars harness cannot supply historical screenshots
+that were never captured. Their owner must establish a comparable baseline
+before visual before/after acceptance can be claimed.
+
+The comparison uses local PNGs under the existing CSP. It loads no production
+API, external tile, worker or remote image. Browser checks decode every
+referenced PNG, operate the selectors and keyboard radio controls, verify
+preserved scroll offsets at phone/desktop widths in both browser schemes, and
+check that an unavailable side displays no substitute image. Missing captures
+from an available harness fail the build. Head and baseline evidence remain
+separate under `head/` and `before/` in the exact-head evidence artifact.
+
+Run the complete comparison from a clean committed checkout with the pinned
+dependencies and browser installed:
+
+```sh
+python3 bazel/tools/previews/compare.py --expected-sha "$(git rev-parse HEAD)" \
+  --base-sha "$(git rev-parse origin/main)" \
+  --output /tmp/fixture-comparison --evidence /tmp/fixture-comparison-evidence
+```
+
+## Browse synthetic screens
+
+`bazel/tools/previews/suite.py` builds one navigable artifact from the registered
+harnesses present at the tested commit. The blog and factory demos remain
+interactive. The private review demo composes the actual `ReviewCard`,
+`ModeToggle` and `UndoToast` with invented records and local callbacks. It
+does not import the private page, loaders, authentication or API clients.
+Its build permits only those three private components. Other private screens
+need their own reviewed synthetic boundary before registration.
+The existing review controls retain their desktop layout in a named, focusable
+scroll frame on phones. The receipt records that frame's visible and content
+widths separately from page overflow. This composition does not establish that
+the production private review page is responsive.
+
+The suite runs each existing contract and browser checker. It adds 16 private
+review captures, measured document/body overflow and keyboard decision and
+delete/undo checks. It verifies 9 blog captures and 40 factory review captures
+in addition to the factory checker's complete interaction matrix. Missing,
+empty or invalid PNGs fail the build. Each suite records the source SHA,
+Playwright and Chromium versions, output digests and required PNG digests in
+`suite.json`. Assertions retain failure PNGs and traces. The assembled artifact
+is checked again at 390px and 1440px under a nested path and validated with the
+publisher's existing archive, size and CSP checks. Tests cannot rewrite the
+published bytes.
+
+Trips and Stars remain owned by [#7213](https://github.com/jomcgi-org/homelab/pull/7213)
+and [#7217](https://github.com/jomcgi-org/homelab/pull/7217). When their harnesses
+are present, the suite calls their supplied `check` functions. Trips requires
+all 32 captures: 16 base pages, 8 timeline viewer/map states and 8 day map-control
+and fullscreen states. Stars requires all 8
+live/historical captures. Shared instrumentation records browser versions and
+traces, supplies an invented blank Stars basemap, and denies unknown remote
+requests. Trips keeps its owner's synthetic style and terrain responses.
+The capture banner explicitly identifies the offline profile.
+These checks exercise real WebGL controls with invented data and no geographic
+tile acceptance. The public map demos are navigable PNG galleries, containing
+no map JavaScript or workers. `connect-src 'none'` and `worker-src 'none'` stay
+unchanged. The original interactive map artifacts remain evidence inputs.
+
+After installing the frozen workspace dependencies and Python Playwright
+1.63.0 with its Chromium, commit the source and run from the repository root:
+
+```sh
+python3 -m unittest discover -s bazel/tools/previews -p '*_test.py'
+python3 bazel/tools/previews/suite.py --expected-sha "$(git rev-parse HEAD)" \
+  --output /tmp/fixture-demo --evidence /tmp/fixture-evidence
+```
+
+Both output paths must be fresh. `--suite review` selects one registered suite
+for focused testing. `--source /path/to/owner-worktree --suite trips` runs the
+same tooling against an unchanged owner checkout, recording both source and
+runner commits. It neither rebases the owner branch nor restarts a factory job.
+Use a credential-free local process for PR-owned code. The Actions build
+already has read-only access, no persisted checkout credential and no secrets.
+
+The build workflow uploads `fixture-preview-<full SHA>` for publication and
+`fixture-preview-evidence-<full SHA>` separately for screenshot review. Evidence
+requests 90-day retention, bounded by the repository's Actions retention policy;
+the publish input retains 14 days. Evidence includes PNGs, logs, JSON receipts
+and traces, and is never copied into the public aggregate. Download and retain
+the exact-SHA evidence before its Actions expiry if it is needed longer.
+Replacing a served SHA or closing a PR does not remove that separate artifact.
+
+Private previews never contain production records, credentials or authenticated
+connections. Adding a preview does not authorize changes to production access,
+Pages ownership, deployment environments or CSP.
+
+## Existing blog contract
+
 The first preview renders the public 4090 blog page using the production page,
 layout, replay controls, graph and styles from the PR commit. Its article,
 inference events, timings and graph content are invented. A visible banner
@@ -68,35 +182,38 @@ synthetic response fixtures before it joins this preview. Broad `dict[Any]`
 responses need narrower types at that boundary; this change does not overhaul
 Grimoire models.
 
-## Enable publication separately
+## Publication on the dedicated Pages site
 
-This PR adds implementation only. No Pages site, branch protection, environment,
-credential, OAuth grant, token or repository variable is created by the author.
-The publisher is disabled unless `FIXTURE_PREVIEWS_ENABLED` is `true`.
+The repository owner confirmed on 2026-10-19 that this Pages site is unused and
+is dedicated to public synthetic fixture previews. Once this publisher version
+is on `main`, successful fixture builds publish automatically. No activation or
+ownership variables are required. If `fixture-preview-state` is absent, the
+trusted publisher creates its marked state branch. An existing unmarked state
+branch is still rejected rather than replaced.
 
-A repository administrator must first inspect the existing Pages configuration
-and confirm this repository's Pages site is dedicated to public fixture previews.
-The connected integration used to prepare this PR could not read the Pages
-settings endpoint. There were no existing GitHub Actions workflows in the
-inspected repository. Those facts do not prove there is no existing site.
-Do not replace an unrelated Pages deployment.
+The Pages API now confirms GitHub Actions as the publishing source, the
+`https://jomcgi-org.github.io/homelab/` origin and no custom domain. The
+`github-pages` environment admits only the selected `main` branch. The
+publisher continues to verify the configured origin, path and publishing source
+on every run. No Pages setting, deployment policy, credential, OAuth grant,
+token or repository variable is changed by this implementation.
 
-After authorization, use GitHub Pages' Actions publishing source, retain the
-`github.io` hostname with no custom domain, configure the `github-pages`
-environment to admit only the default branch, and review the publisher's bounded
-job permissions. The publisher needs repository contents write for its dedicated
-aggregate state branch, Pages write and OIDC for deployment, Actions read to
-retrieve artifacts, and pull-request write for its one status comment. No PAT or
-cloud credential is required. Bootstrapping the dedicated state branch and
-setting the enable/ownership variables are explicit activation steps. Set
-`FIXTURE_PREVIEWS_OWN_PAGES_SITE=true` only after confirming the entire existing
-site may be managed by this publisher, then set `FIXTURE_PREVIEWS_ENABLED=true`.
-The first run creates `fixture-preview-state`; remove the ownership/bootstrap
-variable after that run. Do not activate this draft.
+The publisher uses bounded job permissions: contents write for its dedicated
+state branch, Pages write and OIDC for deployment, Actions read to retrieve
+artifacts, and pull-request write for its one status comment. No PAT or cloud
+credential is required. Removing the variables removes their manual pause and
+bootstrap acknowledgement; the site's dedicated purpose is now an explicit
+repository-owned decision. All artifact, state-marker, stale-head and cleanup
+checks remain in force.
 
-Only after merge and activation can a tested PR receive a working link. The
-publisher uses the Pages API URL returned for the real site. There is no preview
-URL to visit before the first successful deployment.
+The privileged publisher runs only default-branch-owned code. The updated
+publisher must therefore land on `main` before this automatic behavior takes
+effect. After that, a fresh successful build of an open UI PR containing the
+reusable tooling can receive a working link while that UI PR stays unmerged.
+The publisher uses the URL returned by the real Pages API. There is no preview
+URL before a successful deployment. A manual cleanup dispatch does not import
+previously skipped builds. Use a fresh successful build after the publisher
+update lands.
 
 ## Publication boundary
 
