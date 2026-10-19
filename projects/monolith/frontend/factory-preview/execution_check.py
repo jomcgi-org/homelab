@@ -3,6 +3,7 @@
 from urllib.parse import urlencode
 
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import expect
 
 
 def geometry(page):
@@ -98,6 +99,7 @@ def assert_color_roles(page):
         .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
       const fg = luminance(rgba('--ok')), bg = luminance(rgba('--ok-soft'));
       const sheet = rgba('--sheet'), scrim = rgba('--scrim-bg');
+      rgba('--accent-ink');
       const alpha = scrim[3];
       const blended = sheet.slice(0, 3).map((c, i) => scrim[i] * alpha + c * (1 - alpha));
       return {scheme: getComputedStyle(main).colorScheme, scrim, resolved,
@@ -257,14 +259,16 @@ def check_execution(browser, base, output, evidence):
                         points.nth(1).wait_for()
                         assert points.count() == 2
                         points.nth(1).click()
-                        # Legacy reduced-motion CSS sets every element's
-                        # transition-duration to 0.01ms, including this border.
-                        # Advance the controlled clock through its next frame.
-                        page.clock.run_for(32)
                         selected = page.locator(
                             '.turns .walk .point[aria-current="true"]'
                         )
                         assert "selection.js" in selected.inner_text()
+                        # CSS transitions use the rendering timeline, separate
+                        # from the fixture's JS clock. Wait for the actual
+                        # accent state instead of sampling a transition frame.
+                        accent = record["colors"]["system"]["resolved"]["--accent-ink"]
+                        expect(selected).to_have_css("border-left-color", accent)
+                        expect(selected).to_have_css("color", accent)
                         marker = selected.evaluate("""e => {
                           const s = getComputedStyle(e);
                           return {width: s.borderLeftWidth, style: s.borderLeftStyle,
