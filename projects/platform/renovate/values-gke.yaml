@@ -1,7 +1,7 @@
-# The hub is the sole intended deployment. Both schedules remain default-off
-# pending separately authorized credential/identity verification and enablement.
-# Operational acceptance stays on #7068, with overlapping enablement in #7001.
-suspend: true
+# The hub is the only enrolled writer. This overlay enables both schedules.
+# Verify live preconditions before landing; see README.md and #7001.
+# Suspending either schedule does not stop an already-running Workflow.
+suspend: false
 
 apkoLockMaintenance:
-  suspend: true
+  suspend: false
