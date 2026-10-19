@@ -420,6 +420,41 @@ vitest_bin.vitest_test(
 # Static fixture harness: production presentation code, synthetic inputs only.
 # This does not change the adapter-node application or its server loaders.
 js_library(
+    name = "private_factory_fixture_src",
+    srcs = glob(
+        ["private-factory-preview/**"],
+        exclude = ["private-factory-preview/__pycache__/**"],
+    ) + [
+        "factory-preview/fonts.css",
+        "factory-preview/fonts/OFL.txt",
+        "factory-preview/fonts/SchibstedGrotesk.ttf",
+        "package.json",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        ":node_modules/vitest",
+        ":src",
+        "//:node_modules/happy-dom",
+        "//projects/design-system:pkg",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "private_factory_fixture_test",
+    args = [
+        "run",
+        "--config",
+        "private-factory-preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [":private_factory_fixture_src"],
+)
+
+js_library(
     name = "fixture_preview_src",
     srcs = glob(
         ["preview/**"],
