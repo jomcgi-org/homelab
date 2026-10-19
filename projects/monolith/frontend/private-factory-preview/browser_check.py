@@ -61,6 +61,11 @@ def measurements(page):
         legacyBackCount: document.querySelectorAll('.back-to-dashboard').length,
         sticky: {position:getComputedStyle(spine).position, top:getComputedStyle(spine).top},
         controls,
+        hotkeys: [...main.querySelectorAll('.hotkey')].filter(el => el.checkVisibility()).map(el => {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          return {label: el.textContent.trim(), lines: range.getClientRects().length};
+        }),
         dialogs: [...document.querySelectorAll('dialog,[role="dialog"]')].map(el=>({open:el.open,visible:el.checkVisibility()})),
         confirmation: document.querySelector('.confirm')?.textContent ?? null};
     }""")
@@ -93,6 +98,10 @@ def capture(page, output, records, commit, view, scenario, scheme, state="base")
     )
     assert data["sticky"]["position"] == "sticky", f"{name}: lost sticky index {data}"
     assert data["scheme"] == scheme
+    for hotkey in data["hotkeys"]:
+        assert not hotkey["label"] or hotkey["lines"] == 1, (
+            f"{name}: wrapped keyboard shortcut {hotkey}"
+        )
     for control in data["controls"]:
         assert control["radius"] == "0px" and control["shadow"] == "none", (
             f"{name}: legacy control style {control}"
