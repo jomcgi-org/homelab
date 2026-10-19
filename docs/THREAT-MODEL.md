@@ -1,6 +1,6 @@
 # Homelab Threat Model
 
-_Reviewed against commit 8e4107491 (2026-10-19); issue states checked the same day._
+_Reviewed against commit 8e4107491 (2026-10-19); listed issue states checked the same day._
 
 Open security findings across everything the cluster hosts, ranked.
 The live list is the

@@ -5,7 +5,7 @@
     "summary": "Adversarial abuse of the monolith's control structure: an attacker who deliberately forges or withholds identity, reaches a tool the entitlement model does not yet gate, or crosses a tier boundary in the control structure.",
     "built": "Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, GroupPolicyMiddleware denying every MCP tool call outside the operators group (no tool tagged mcp:public), Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation (ArgoCD sync, per-Kargo-project promote Roles) to the private pod.",
     "designed": "A narrower-than-operators scope for the production-moving MCP tools (#6475), principal attribution on MCP-driven cluster mutations (#6476), activation of the staged native default-deny egress NetworkPolicy for the private pod, per-domain database isolation and cross-domain contract.",
-    "note": "Bounded #7097 corrections against 8e4107491 (2026-10-19): closed trackers, MCP boundaries and public-content checks. No fresh live validation; existing safeguard statuses and unrelated findings retain their earlier review stamp."
+    "note": "Bounded #7097 corrections against 8e4107491 (2026-10-19): the named closed trackers, MCP boundaries and public-content checks. No fresh live validation; existing safeguard statuses and unrelated findings retain their earlier review stamp."
   },
   "losses": [
     {

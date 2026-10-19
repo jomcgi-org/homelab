@@ -289,7 +289,7 @@
         "unrestricted-tool-visibility",
         "secret-in-wrong-tier"
       ],
-      "evidence": "projects/monolith/core/mcp_policy.py:126"
+      "evidence": "projects/monolith/core/mcp_policy.py:129"
     },
     {
       "key": "lock.reclaim.wrong-timing",
@@ -349,7 +349,7 @@
       "hazards": [
         "unrestricted-tool-visibility"
       ],
-      "evidence": "projects/monolith/core/mcp_policy.py:126"
+      "evidence": "projects/monolith/core/mcp_policy.py:129"
     },
     {
       "key": "shotter.store.wrong-duration",
@@ -602,7 +602,7 @@
     "How should the native ingress successor cover Context Forge and direct-mount callers after #5816 removed the inert Cilium ingress template?",
     "Does any workload other than shotter and the six sandbox languages share the same EmberVM Idempotency-Key-from-request-parameters pattern, and if so does its key cover every parameter that affects the result?",
     "In production, can a chat message handler (LLM summarizer) exceed the 30s message-lock TTL under load and trip lock.reclaim.wrong-timing, or is processing reliably shorter?",
-    "How should header-authz-drift distinguish the browser factory gate's verified Cloudflare Access claim from attribution-only headers? #4940 closed as an umbrella without selecting delegated authority; projects/monolith/ARCHITECTURE.md section 7 records the current surface boundaries.",
+    "How should header-authz-drift distinguish the browser factory gate's verified Cloudflare Access claim from attribution-only headers? #4940 closed as an umbrella without selecting delegated authority; the surface table in projects/monolith/ARCHITECTURE.md section 7 records those boundaries.",
     "Is the shotter SeaweedFS bucket's read path gated the way artifact's is (proxied through a monolith-mediated read), or does anything with in-cluster network reach get an anonymous GET against the S3 endpoint once it has or guesses a content hash?",
     "What ownership policy should govern direct get_note and monolith_agent_detail reads by callers already admitted to the shared MCP surface? search_knowledge has caller-derived scope filters, but those direct reads lack object checks (knowledge/mcp.py, knowledge/retrieval_policy.py, factory/execution/mcp.py). This residual has no open tracker here; #4569 closed after consolidation into #5573.",
     "The framework is now built, but strict per-domain schema isolation and the cross-domain contract are still conventions. Re-run this analysis when those controls become enforceable rather than merely compositional.",

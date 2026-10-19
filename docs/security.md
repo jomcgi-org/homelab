@@ -148,8 +148,8 @@ call access. Knowledge search filters by caller-derived grants
 (`knowledge/retrieval_policy.py`), with explicit, audited personal-scope
 opt-in. Direct `get_note` and `monolith_agent_detail` reads still lack
 per-object ownership checks for admitted callers, an untracked residual.
-#4569 closed as consolidated into #5573, not as proof of complete result
-authorization. EmberVM agent guests take a second path: the guest's MCP URL is
+#4569 closed as consolidated into #5573; complete result authorization remains
+unverified. EmberVM agent guests take a second path: the guest's MCP URL is
 delivered as a kernel boot argument, the egress sidecar admits the
 `monolith-agents` service by name and address, and the token broker mints
 an authentik token for one shared service account (provider `mcp-agents`,
@@ -183,8 +183,8 @@ The noded listener and control-plane dialer remain shipped off
 (`noded.spiffe.enabled`, `controlPlane.spiffe.enabled` and `dialNoded`);
 plaintext gRPC and the transport bearer remain configured. Guests still have
 no individual identity. #5759 closed not planned, folding its ordered rollout
-checks into #5706. These are source and committed-values observations, not a
-new live verification of listeners, SVID rotation or credential retirement.
+checks into #5706. These source and committed-values observations leave live
+listeners, SVID rotation and credential retirement unverified here.
 
 Restore-capability MAC key decoupling shipped default-off in #5756. Its rollout order is:
 ship the default-off shared Secret wiring and a noded verifier that accepts the
@@ -229,7 +229,7 @@ and path reach. There is no `Service` of type `LoadBalancer` outside
 Tunnel protocol is pinned to `http2`. The Tailscale operator is the second
 way in: it publishes the Kubernetes API to the tailnet and impersonates the
 tailnet identity as a Kubernetes user bound to `cluster-admin` for the
-admins listed in `projects/platform-gke/tailscale/values.yaml`, exposes the
+admins listed in `projects/platform-gke/tailscale/values.yaml`, and exposes the
 monolith API as a tailnet host. The hub values retain one egress Service,
 `inference-bridge-freetoken`, targeting `node-4.tail33e678.ts.net:8090`.
 The old inference and embeddings bridges were removed in `e0db0c802`.
@@ -262,7 +262,7 @@ host. That is an accepted GKE residual, not an exact replacement for Cilium's
 FQDN rules. Metadata-server access would remain denied.
 
 Native-policy enforcement remains tracked by #5276 and #5277. #3897 closed
-completed for staged default-off private policy support, not live enforcement.
+completed for staged default-off private policy support; enforcement is #5277.
 The staged native egress policy intentionally scopes default-deny to
 the private app endpoint. Searxng, CNPG, Atlas migration jobs, and
 the separate `monolith-workflows` batch namespace retain their existing egress
