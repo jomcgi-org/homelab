@@ -15,13 +15,26 @@ python3 trips-preview/browser_check.py --artifact /tmp/trips-preview --output /t
 
 The browser script uses the existing Python Playwright 1.63.0 runner. It
 captures all four pages at 390 and 1440 pixels, light and dark, plus timeline
-viewer and map states. `checks.json` records the source head, dimensions,
+viewer/map and day map-controls/fullscreen states. `checks.json` records the source head, dimensions,
 scheme and measured document overflow. All remote requests are fulfilled
 locally or rejected. MapLibre uses its real WebGL renderer, production
 controls and layers on a blank local basemap and synthetic terrain tile.
 This does not validate production tile geography or real-host interaction.
 The image swatches exercise the existing gallery/display URL selection,
 decoding, keyboard and focus wiring, not photographic colour fidelity.
+
+The current basemap repaint uses `--paper` for water, park, wood, landuse and
+building fills over `--sheet`. Real water/land contrast remains unverified.
+Liberty's `natural_earth` raster and `building-3d` fill-extrusion keep their
+upstream paints. The blank fixture cannot show these layers or certify their
+light/dark appearance; its `checks.json` carries that limitation. Inspect
+real Liberty and Positron tiles during the retained live check on #7141.
+
+A complete capture has 32 PNGs: 16 page/width/scheme combinations, eight
+timeline viewer/map states and eight day map-controls/fullscreen states.
+Build and capture at the exact PR head and link the viewable PNGs and
+`checks.json` in the PR. Any source or CI-format commit invalidates that
+exact-head evidence and requires a new build and capture.
 
 `//projects/monolith/frontend:test` includes the composed DOM tests and the
 existing timeline lifecycle suite. `:trips_fixture_preview_build_test` builds

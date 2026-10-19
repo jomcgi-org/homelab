@@ -23,7 +23,8 @@
       <aside class="spine">
         <div class="trail-dock">{@render trail()}</div>
         {#if trip && current}
-          <nav class="index" aria-label="Trip">
+          <nav class="index strip" aria-label="Trip">
+            <p class="sec-label">/ Index</p>
             <div class="index-list">
               <a href={`/app/trips/${trip.slug}`}
                 >{trip.short_title ?? trip.slug}</a
@@ -62,6 +63,31 @@
   }
   .trips-sheet :global(.maplibregl-ctrl-group button + button) {
     border-top: 1px solid var(--stroke);
+  }
+  .trips-sheet :global(.maplibregl-ctrl.maplibregl-ctrl-attrib) {
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
+    color: var(--ink);
+    font-family: var(--font-code);
+  }
+  .trips-sheet :global(.maplibregl-ctrl-attrib a) {
+    color: var(--ink);
+  }
+  .trips-sheet :global(.maplibregl-ctrl-attrib .maplibregl-ctrl-attrib-button) {
+    background: var(--sheet);
+    color: var(--ink);
+    border-radius: 0;
+    font: 0.8rem / 24px var(--font-code);
+    text-align: center;
+  }
+  .trips-sheet :global(.maplibregl-ctrl-attrib-button::before) {
+    content: "i";
+  }
+  .trips-sheet :global(.maplibregl-ctrl-attrib-button:focus-visible) {
+    box-shadow: none;
+    outline: 1px solid var(--ink);
+    outline-offset: 2px;
   }
   /* MapLibre's stock icons are black bitmaps. Text glyphs let the sheet's ink
      paint them in either scheme without filtering the map or photographs. */

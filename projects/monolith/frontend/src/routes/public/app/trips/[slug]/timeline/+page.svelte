@@ -80,9 +80,6 @@
 
 <TripSheet {trip} current="timeline">
   <header class="head edition ed-body" bind:this={focusFallback} tabindex="-1">
-    <a class="trip-link" href={`/app/trips/${trip?.slug}`}
-      >{trip?.short_title ?? trip?.slug}</a
-    >
     <div class="controls">
       <ViewToggle
         bind:value={view}
@@ -125,11 +122,6 @@
 </TripSheet>
 
 <style>
-  .trip-link {
-    display: inline-block;
-    margin-bottom: 1rem;
-    font: 0.8rem var(--font-code);
-  }
   .head {
     padding: 1rem;
     margin-bottom: 1.5rem;

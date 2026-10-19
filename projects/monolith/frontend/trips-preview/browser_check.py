@@ -29,6 +29,14 @@ STYLE = {
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
+LIMITATIONS = (
+    "Invented route, synthetic image swatches, blank local basemap and DEM. "
+    "Real WebGL controls; no actual-host or geographic tile acceptance. "
+    "Production water, park, wood, landuse and building fills share --paper "
+    "over --sheet, so water/land contrast is not established by this fixture. "
+    "Liberty natural_earth raster and building-3d fill-extrusion are not "
+    "repainted or represented here. Inspect those on real tiles in both schemes."
+)
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -157,13 +165,25 @@ def check(root, output, head):
                                 page.get_by_role(
                                     "button", name="Zoom in", exact=True
                                 ).click()
+                                page.screenshot(
+                                    path=str(output / f"{name}-map-controls.png"),
+                                    full_page=True,
+                                )
                                 page.get_by_role(
                                     "button", name="Next photo", exact=True
                                 ).click()
                                 page.get_by_role(
                                     "button", name="View photo 2 fullscreen", exact=True
                                 ).click()
+                                fullscreen = page.get_by_role(
+                                    "button", name="Close fullscreen photo", exact=True
+                                )
+                                fullscreen.wait_for(state="visible")
+                                page.screenshot(
+                                    path=str(output / f"{name}-fullscreen.png")
+                                )
                                 page.keyboard.press("Escape")
+                                fullscreen.wait_for(state="hidden")
                             page.locator("button.scheme").click()
                             assert (
                                 page.evaluate("document.documentElement.dataset.theme")
@@ -189,7 +209,7 @@ def check(root, output, head):
                                 json.dumps(
                                     {
                                         "head": head,
-                                        "limitations": "Invented route, synthetic image swatches, blank local basemap and DEM. Real WebGL controls; no actual-host or geographic tile acceptance.",
+                                        "limitations": LIMITATIONS,
                                         "checks": results,
                                     },
                                     indent=2,

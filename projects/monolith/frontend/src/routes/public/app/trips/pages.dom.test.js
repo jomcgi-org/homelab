@@ -98,6 +98,26 @@ describe("trips composed sheets", () => {
     await settle();
     expect(document.body.textContent).toContain("No trips yet.");
   });
+  it.each(["day", "timeline"])(
+    "keeps the %s trip link in its labelled mobile index",
+    async (surface) => {
+      const data = tripsData();
+      await render(surface, data);
+      const index = document.querySelector('nav[aria-label="Trip"]');
+      expect(index.classList.contains("strip")).toBe(true);
+      expect(index.querySelector(".sec-label").textContent).toBe("/ Index");
+      const links = index.querySelectorAll(
+        `a[href="/app/trips/${data.trip.slug}"]`,
+      );
+      expect(links).toHaveLength(1);
+      expect(links[0].textContent).toBe(data.trip.short_title);
+      if (surface === "timeline") {
+        expect(
+          document.querySelectorAll(`a[href="/app/trips/${data.trip.slug}"]`),
+        ).toHaveLength(1);
+      }
+    },
+  );
   it("retains summary totals, export controls, route selection and empty data", async () => {
     await render("trip");
     expect(document.querySelector("h1").textContent).toBe(

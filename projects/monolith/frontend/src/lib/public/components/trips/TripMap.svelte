@@ -195,7 +195,7 @@
     min-height: 240px;
   }
   .map :global(.maplibregl-ctrl-attrib-inner) {
-    font-family: var(--mono);
+    font-family: var(--font-code);
     font-size: 10px;
   }
 </style>

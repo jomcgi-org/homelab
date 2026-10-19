@@ -469,7 +469,7 @@
   .photo img {
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    object-fit: contain;
     display: block;
   }
   .photo.empty {
@@ -647,6 +647,11 @@
     min-height: 120px;
   }
 
+  .panel > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
   /* Row 3 cells. */
   .cell-position {
     padding: 10px 12px;
@@ -662,6 +667,7 @@
   .cell-stat {
     padding: 10px;
     background: var(--band);
+    border-bottom: 1px solid var(--stroke);
   }
   .km-val {
     font-size: 16px;
@@ -688,7 +694,7 @@
   .fs {
     position: fixed;
     inset: 0;
-    z-index: 1000;
+    z-index: 1100;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -712,10 +718,10 @@
       width: 100%;
       height: auto;
       max-height: 60vh;
+      aspect-ratio: 1;
     }
     .photo img {
       max-height: 60vh;
-      object-fit: contain;
     }
     .panel {
       border-left: none;
@@ -733,25 +739,6 @@
     .col1,
     .cell-position {
       border-right: none;
-    }
-  }
-
-  .panel > * {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-  .fs {
-    z-index: 1100;
-  }
-  .photo img {
-    object-fit: contain;
-  }
-  .cell-stat {
-    border-bottom: 1px solid var(--stroke);
-  }
-  @media (max-width: 1200px) {
-    .photo {
-      aspect-ratio: 1;
     }
   }
 </style>
