@@ -23,9 +23,8 @@
 //   WatchNode   server-streamed capacity heartbeat; the daemon is the health
 //               authority and this is the control plane's only source of node
 //               truth.
-//   GetNodeStatus  unary snapshot of the same facts. The daemon implements it,
-//               but it is reserved for future control-plane polling or
-//               reconciliation; the current control plane uses WatchNode.
+//   GetNodeStatus  test-only unary snapshot of the same facts. Production
+//               consumers use WatchNode.
 //
 // Concurrency is owned by the control plane, NOT the daemon: the per-workload
 // semaphore of fc-invoke is deliberately dropped on the fork. The daemon
