@@ -330,6 +330,9 @@ def ingest(receipt_id, token, value):
                 else []
             )
         for current_owner in current_owners:
+            controls.revoke_capacity_release(
+                db, current_owner, "factory:runtime-meter", "runtime_meter_pause"
+            )
             factory_pause.pause_locked(
                 db,
                 current_owner,
@@ -337,9 +340,6 @@ def ingest(receipt_id, token, value):
                 "objective_list_backstop"
                 if objective_exceeded
                 else reason or trips[0]["reason"],
-            )
-            controls.revoke_capacity_release(
-                db, current_owner, "factory:runtime-meter", "runtime_meter_pause"
             )
         stop = bool(reason or trips or active is None)
     # A failed external observation does not erase the committed trip. The
@@ -412,6 +412,9 @@ def reconcile(task_id):
             owner = db.get(FactoryReceipt, binding["objective_receipt_id"])
             if active is not None and owner is not None and owner.task_id == task_id:
                 _trip(db, binding, "meter_usage_stale")
+                controls.revoke_capacity_release(
+                    db, owner, "factory:runtime-meter", "runtime_meter_pause"
+                )
                 factory_pause.pause_locked(
                     db, owner, "factory:runtime-meter", "meter_usage_stale"
                 )

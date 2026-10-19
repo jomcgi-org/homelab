@@ -769,6 +769,11 @@ def _enact(task: dict, open_: dict, receipt, trail, used, threshold, runs) -> st
                 .get("resume")
             ):
                 return "enact_waiting"
+            if current.task_paused:
+                _record(
+                    ENACT_REFUSED, task_id, option_key=choice, refusal="task_paused"
+                )
+                return "enact_refused"
         # A direct resume is the operator's action even if an automatic
         # revalidation previously dismissed the card without releasing it.
         actor = getattr(resumed, "actor", None) or (resolved or {}).get("actor", ACTOR)

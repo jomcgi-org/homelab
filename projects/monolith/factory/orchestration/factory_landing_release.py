@@ -173,15 +173,20 @@ def _replay(db, actor, request):
             if previous["result"].get("pending"):
                 for applied_raw in db.exec(
                     select(FactoryAudit.detail_json).where(
-                        FactoryAudit.action == "settled_landing_hold_released",
+                        FactoryAudit.action.in_(
+                            (
+                                "settled_landing_hold_released",
+                                "execution_capacity_reacquired",
+                            )
+                        ),
                         FactoryAudit.task_id == previous["result"]["task_id"],
                     )
                 ).all():
-                    authorization = (
-                        json.loads(applied_raw).get("landing_authorization") or {}
-                    )
+                    applied = json.loads(applied_raw)
+                    authorization = applied.get("landing_authorization") or {}
                     if (
-                        authorization.get("actor") == actor
+                        "landing_hold" in applied.get("intent", {})
+                        and authorization.get("actor") == actor
                         and authorization.get("request_key") == request["request_key"]
                     ):
                         return {**previous["result"], "pending": False, "reason": None}
