@@ -203,9 +203,9 @@ for another agent, assume it has no KG and put what it must know in the spec.
 
 ## Gotchas
 
-- **For `monolith`, `monolith-public` and `embervm`, `targetRevision` in git
-  does not say what is deployed.** Kargo owns it on the hub. The
-  `projects/gke-apps/` pins are hand-edited floors kept as the revert lever, so
+- **For `monolith`, `monolith-agents`, `monolith-public` and `embervm`,
+  `targetRevision` in git does not say what is deployed.** Kargo owns it on the
+  hub. The `projects/gke-apps/` pins are hand-edited floors kept as the revert lever, so
   `git != live` is correct there. Read the live value:
   `kubectl get application monolith -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'`.
   Every other chart deploys off the git value.
