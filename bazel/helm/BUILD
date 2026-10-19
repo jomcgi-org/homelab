@@ -1,6 +1,8 @@
-load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 
+# The standalone CRD schema command needs only its existing binary. File mode
+# generates main-module binaries without a duplicate package-wide library.
+# gazelle:python_generation_mode file
 # gazelle:exclude **/*.bzl
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
@@ -250,11 +252,4 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
-)
-
-py_library(
-    name = "helm",
-    srcs = ["crd-schemas.py"],
-    visibility = ["//:__subpackages__"],
-    deps = ["@pip//pyyaml"],
 )
