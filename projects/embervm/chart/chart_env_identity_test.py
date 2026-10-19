@@ -3205,7 +3205,9 @@ def test_hub_bricks_admit_reserved_with_memory_requests_at_their_limits(
         for _, container in _containers(documents, "noded-brick")
         if container["name"] == "noded"
     ]
-    assert len(bricks) == 5, "expected one brick Deployment per class; this test is inert"
+    assert len(bricks) == 5, (
+        "expected one brick Deployment per class; this test is inert"
+    )
     for noded in bricks:
         env = _plain_env(noded)
         assert env["EMBERVM_NODED_ADMISSION_MODEL"] == "reserved"
@@ -3263,9 +3265,13 @@ def test_jailer_uid_block_base_renders_on_every_noded() -> None:
 
 
 @pytest.mark.parametrize(
-    "value_keys", [["DEV_VALUES"], ["DEV_VALUES", "DEV_GKE_VALUES"]], ids=["dev", "dev-gke"]
+    "value_keys",
+    [["DEV_VALUES"], ["DEV_VALUES", "DEV_GKE_VALUES"]],
+    ids=["dev", "dev-gke"],
 )
-def test_conformance_jailer_gates_match_what_the_bricks_run(value_keys: list[str]) -> None:
+def test_conformance_jailer_gates_match_what_the_bricks_run(
+    value_keys: list[str],
+) -> None:
     """S7 and S8 fail by design against bricks that cannot satisfy them.
 
     S7 needs every brick armed. S8 needs the task workload inside the egress
@@ -3293,7 +3299,9 @@ def test_conformance_jailer_gates_match_what_the_bricks_run(value_keys: list[str
         assert value_keys == ["DEV_VALUES"], "only the hub overlay opens the probe lane"
         return
     task = runner["TASK_WORKLOAD"]
-    sidecars = [container for _, container in bricks if container["name"] == "egress-proxy"]
+    sidecars = [
+        container for _, container in bricks if container["name"] == "egress-proxy"
+    ]
     assert sidecars, "the probe needs the egress sidecar on every brick"
     for _, container in bricks:
         env = _plain_env(container)
