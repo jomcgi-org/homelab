@@ -29,13 +29,20 @@ export default defineConfig({
   ],
   resolve: {
     conditions: ["browser"],
-    alias: {
-      $lib: here("../src/lib"),
-      "$app/state": here("../test/profile-page.svelte.js"),
-      "$app/stores": here("../test/profile-stores.js"),
-      "$app/navigation": here("./navigation.js"),
-      "$app/environment": here("../test/app-environment-stub.js"),
-    },
+    alias: [
+      { find: /^maplibre-gl$/, replacement: here("./maplibre.js") },
+      { find: "$lib", replacement: here("../src/lib") },
+      {
+        find: "$app/state",
+        replacement: here("../test/profile-page.svelte.js"),
+      },
+      { find: "$app/stores", replacement: here("../test/profile-stores.js") },
+      { find: "$app/navigation", replacement: here("./navigation.js") },
+      {
+        find: "$app/environment",
+        replacement: here("../test/app-environment-stub.js"),
+      },
+    ],
   },
   build: { target: "es2022", outDir: here("../trips-fixture-preview") },
 });

@@ -54,6 +54,24 @@ def font_widths(page):
 
 
 def capture(page, output, record, state="page", full_page=True):
+    if page.locator("canvas.maplibregl-canvas").count():
+        page.wait_for_function(
+            """() => globalThis.__tripsPreviewMaps?.length === 1 &&
+              globalThis.__tripsPreviewMaps.every(map =>
+                map.previewErrors.length || (map.loaded() && !map.isMoving()))"""
+        )
+        maps = page.evaluate(
+            """() => globalThis.__tripsPreviewMaps.map(map => ({
+              errors: map.previewErrors,
+              layers: map.getStyle().layers.map(layer => layer.id),
+              rendered_routes: map.queryRenderedFeatures().filter(feature =>
+                feature.layer.id.startsWith('route') &&
+                !feature.layer.id.includes('hit')).length
+            }))"""
+        )
+        record.setdefault("maps", {})[state] = maps
+        assert all(not map["errors"] for map in maps), maps
+        assert all(map["rendered_routes"] > 0 for map in maps), maps
     overflow = page.evaluate(
         "document.documentElement.scrollWidth - document.documentElement.clientWidth"
     )

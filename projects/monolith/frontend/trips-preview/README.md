@@ -44,6 +44,13 @@ evidence: a fontless browser can render empty labels and falsely report zero
 overflow. `font_widths_px` records that preflight. Inspect every captured image;
 passing browser assertions alone does not establish visual acceptance.
 
+The fixture-only MapLibre adapter bundles the module worker explicitly and
+exposes real map instances to the browser check. Captures wait for loaded,
+stationary maps, reject map errors and require rendered route features.
+`maps` in each check records the layer IDs and rendered-route counts. A canvas
+element alone is insufficient: without the worker bundle, a blank map could
+pass the old capture checks. Production imports and map options are unchanged.
+
 `//projects/monolith/frontend:test` includes the composed DOM tests and the
 existing timeline lifecycle suite. `:trips_fixture_preview_build_test` builds
 the fixture in Linux CI. Browser capture needs a runner with Chromium's system
