@@ -5020,6 +5020,12 @@ bdd_test(
     ],
 )
 
+# The daily admission cap migration must preserve all other policy and accounting.
+bdd_test(
+    name = "swarm_factory_daily_admission_limit_postgres_test",
+    srcs = ["factory/orchestration/factory_daily_admission_limit_postgres_test.py"],
+)
+
 # Hand-registered real-PostgreSQL coverage for the no-new-notes pending
 # provenance write: the atom_raw_provenance_pending partial unique index
 # only exists in Postgres, so a SQLite test cannot prove the retry is
