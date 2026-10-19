@@ -61,10 +61,64 @@ def coverage_fetch(files, *, calls=None, revision=SHA, unavailable=None):
     return read
 
 
-@pytest.mark.parametrize("count,size", [(4, 110_000), (3, 127_000)])
+def streamed_coverage(
+    monkeypatch, files, calls, *, pin_padding=0, tree_padding=0, blob_padding=0
+):
+    fetch = coverage_fetch(files, calls=calls)
+
+    def transport(request):
+        body = fetch(request.url.path)
+        base = "https://api.github.com/repos/jomcgi-org/homelab"
+        if "object" in body:
+            body.update(
+                ref="refs/heads/main",
+                node_id="REF_kwDORcE7qq9yZWZzL2hlYWRzL21haW4",
+                url=base + "/git/refs/heads/main",
+            )
+            body["object"].update(
+                type="commit", url=base + "/git/commits/" + body["object"]["sha"]
+            )
+        if "tree" in body:
+            body.update(sha="c" * 40, url=base + "/git/trees/" + "c" * 40)
+            for entry in body["tree"]:
+                entry["url"] = base + "/git/blobs/" + entry["sha"]
+        if "content" in body:
+            # GitHub base64 blobs wrap at 60 characters, including a final LF.
+            encoded = body["content"]
+            body["content"] = "".join(
+                encoded[start : start + 60] + "\n"
+                for start in range(0, len(encoded), 60)
+            )
+            body["url"] = base + "/git/blobs/" + body["sha"]
+            body["node_id"] = "B_kwDORcE7qtoAK" + body["sha"]
+        padding = (
+            pin_padding
+            if "object" in body
+            else tree_padding
+            if "tree" in body
+            else blob_padding
+        )
+        raw = json.dumps(body).encode() + b" " * padding
+        return httpx.Response(200, stream=httpx.ByteStream(raw))
+
+    monkeypatch.setattr(
+        httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(transport))
+    )
+
+
+@pytest.mark.parametrize(
+    "count,size,pin_padding,tree_padding",
+    [
+        (4, 110_000, 0, 0),
+        (3, 127_000, 0, 0),
+        (3, 123_400, 0, 0),
+        (3, 115_000, 30_000, 0),
+        (3, 115_000, 0, 30_000),
+    ],
+)
 @pytest.mark.parametrize("batched", [False, True])
 def test_streamed_aggregate_blob_limit_precedes_reads_and_preserves_siblings(
-    monkeypatch, count, size, batched
+    monkeypatch, count, size, pin_padding, tree_padding, batched
 ):
     monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     files = {
@@ -74,21 +128,8 @@ def test_streamed_aggregate_blob_limit_precedes_reads_and_preserves_siblings(
     claim = {"title": "Behavior of " + " and ".join(files), "content": None}
     files["projects/example/small.py"] = b"bounded complete source"
     calls = []
-    fetch = coverage_fetch(files, calls=calls)
-
-    def transport(request):
-        body = fetch(request.url.path)
-        if "content" in body:
-            # GitHub base64 blobs wrap at 60 characters, including a final LF.
-            encoded = body["content"]
-            body["content"] = "".join(
-                encoded[start : start + 60] + "\n"
-                for start in range(0, len(encoded), 60)
-            )
-        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(body).encode()))
-
-    monkeypatch.setattr(
-        httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(transport))
+    streamed_coverage(
+        monkeypatch, files, calls, pin_padding=pin_padding, tree_padding=tree_padding
     )
     with BatchSources() as reader:
         revision = reader.pin() if batched else None
@@ -105,6 +146,41 @@ def test_streamed_aggregate_blob_limit_precedes_reads_and_preserves_siblings(
             sources = reader.collect({"title": "projects/example/small.py"}, revision)
             assert sources[0]["text"] == "bounded complete source"
             assert sum("/git/blobs/" in path for path in calls) == 1
+
+
+@pytest.mark.parametrize("blob_padding", [0, 2000])
+def test_streamed_blob_envelope_bound_is_enforced_without_stopping_batch(
+    monkeypatch, blob_padding
+):
+    from knowledge import review_coverage as coverage
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    files = {
+        f"projects/example/large-{index}.py": bytes([65 + index]) * 115_000
+        for index in range(3)
+    }
+    clauses = [
+        f"`{path}` contains the exact text `{raw[:8].decode()}`."
+        for path, raw in files.items()
+    ]
+    claim = {"title": clauses[0], "content": "\n".join(clauses[1:])}
+    calls = []
+    streamed_coverage(monkeypatch, files, calls, blob_padding=blob_padding)
+    with BatchSources() as reader:
+        revision = reader.pin()
+        if blob_padding:
+            with pytest.raises(
+                EvidenceUnsupported, match="response byte bound"
+            ) as error:
+                reader.collect(claim, revision)
+            assert all(error.value.identity["files"].values())
+            assert sum("/git/blobs/" in path for path in calls) == 1
+        else:
+            sources = reader.collect(claim, revision)
+            assert len(sources) == 3
+            assert sum("/git/blobs/" in path for path in calls) == 3
+        assert reader.transfer_bytes <= coverage.MAX_TRANSFER_BYTES
+        assert reader.stopped is None
 
 
 @pytest.fixture
