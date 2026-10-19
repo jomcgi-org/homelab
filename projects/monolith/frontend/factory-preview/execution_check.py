@@ -48,7 +48,9 @@ def assert_geometry(page, view):
         "private route inherited public maintenance chrome"
     )
     assert measured["legacyLoaded"], "production legacy stylesheet was not loaded"
-    assert measured["publicSiteLinks"] == 0, "public-tier links cannot resolve on the private host"
+    assert measured["publicSiteLinks"] == 0, (
+        "public-tier links cannot resolve on the private host"
+    )
     for count in measured["inboxCounts"]:
         assert count["size"] >= 11.5 and count["after"] in ("none", "normal"), count
     if view == "execution":
@@ -157,10 +159,15 @@ def check_execution(browser, base, output, evidence):
                     assert record["colors"]["system"]["scheme"] == scheme
                     # An explicit toggle must win even against the other OS scheme.
                     for override in ("light", "dark"):
-                        page.evaluate("theme => document.documentElement.dataset.theme = theme", override)
+                        page.evaluate(
+                            "theme => document.documentElement.dataset.theme = theme",
+                            override,
+                        )
                         record["colors"][override] = assert_color_roles(page)
                         assert record["colors"][override]["scheme"] == override
-                    page.evaluate("document.documentElement.removeAttribute('data-theme')")
+                    page.evaluate(
+                        "document.documentElement.removeAttribute('data-theme')"
+                    )
                     if view == "drain":
                         page.get_by_text(
                             "Synthetic checkpoint 0", exact=False
@@ -245,14 +252,18 @@ def check_execution(browser, base, output, evidence):
                         points.nth(1).wait_for()
                         assert points.count() == 2
                         points.nth(1).click()
-                        selected = page.locator('.turns .walk .point[aria-current="true"]')
+                        selected = page.locator(
+                            '.turns .walk .point[aria-current="true"]'
+                        )
                         assert "selection.js" in selected.inner_text()
                         marker = selected.evaluate("""e => {
                           const s = getComputedStyle(e);
                           return {width: s.borderLeftWidth, style: s.borderLeftStyle,
                             edge: s.borderLeftColor, text: s.color};
                         }""")
-                        assert marker["width"] == "2px" and marker["style"] == "solid", marker
+                        assert (
+                            marker["width"] == "2px" and marker["style"] == "solid"
+                        ), marker
                         assert marker["edge"] == marker["text"], marker
                         assert points.first.get_attribute("aria-current") == "false"
                         record["selectionMarker"] = marker
@@ -270,7 +281,9 @@ def check_execution(browser, base, output, evidence):
                             page.get_by_role(
                                 "button", name="Walkthrough", exact=True
                             ).click()
-                        page.get_by_text("Fixture walkthrough for synthetic.js", exact=True).wait_for()
+                        page.get_by_text(
+                            "Fixture walkthrough for synthetic.js", exact=True
+                        ).wait_for()
                         shot("walkthrough")
                         if width == 390:
                             page.get_by_role(
