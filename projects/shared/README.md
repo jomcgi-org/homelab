@@ -18,6 +18,7 @@ Kubernetes manifests on their own; they only supply reusable helpers.
 | `homelab.labels` / `homelab.selectorLabels`                   | `_helpers.tpl`         | Common + selector label blocks                        |
 | `homelab.componentLabels` / `homelab.componentSelectorLabels` | `_helpers.tpl`         | Per-component labels (`app.kubernetes.io/component`)  |
 | `homelab.serviceAccountName`                                  | `_helpers.tpl`         | Service account name resolution                       |
+| `homelab.imageRef`                                            | `_helpers.tpl`         | Image reference, preferring the digest over the tag   |
 | `homelab.deployment`                                          | `_deployment.tpl`      | Complete `apps/v1` Deployment                         |
 | `homelab.service`                                             | `_service.tpl`         | `v1` Service (single or multi-port)                   |
 | `homelab.serviceaccount`                                      | `_serviceaccount.tpl`  | `v1` ServiceAccount (optional)                        |
@@ -47,7 +48,8 @@ Security defaults: every Deployment mounts an `emptyDir` at
 `/tmp` (required when containers run read-only) and inherits
 `podSecurityContext`/`securityContext` from the chart's global values. When
 `imagePullSecret.enabled` is true the pod references a `ghcr-imagepull-secret`
-Secret the consuming chart must provide; the library does not create it.
+Secret that must already exist in the namespace; the library does not create
+it. Otherwise, `imagePullSecrets` is used verbatim when set.
 
 ### Adding as a dependency
 
@@ -88,6 +90,14 @@ committed tarball matches the library source (it compares `templates/*` and
 `values.yaml` plus the `Chart.yaml` version); CI runs the latter. Note that
 `projects/mcp/context-forge-gateway/chart` also depends on `mcp-stack` from
 `oci://ghcr.io/jomcgi/homelab/charts`, so `helm dependency update` there needs
-registry auth. Without it, package the library (`helm package
-projects/shared/helm/homelab-library/chart`) or reuse the tarball built for
-another consumer, and write `Chart.lock` with the matching version and digest.
+registry auth. Log in with your GitHub username and enter a personal access
+token (classic) with `read:packages` access to the package at the password
+prompt, then regenerate the dependencies:
+
+```bash
+helm registry login ghcr.io --username YOUR_GITHUB_USERNAME
+helm dependency update projects/mcp/context-forge-gateway/chart
+```
+
+Let `helm dependency update` generate `Chart.lock`, including its dependency
+digest. Do not hand-edit the lock file.
