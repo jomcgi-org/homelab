@@ -55,11 +55,30 @@ pass the old capture checks. Production imports and map options are unchanged.
 
 `//projects/monolith/frontend:test` includes the composed DOM tests and the
 existing timeline lifecycle suite. `:trips_fixture_preview_build_test` builds
-the fixture in Linux CI. Browser capture needs a runner with Chromium's system
-libraries. Its output is the viewable PNGs and `checks.json`; publish those
-through the repository's fixture-evidence artifact workflow and link the
-exact-head artifact in the draft PR. That workflow currently captures the blog
-fixture and does not yet invoke this trips runner. Connecting this runner to
-it requires workflow-write authorization. Generated output stays outside Git.
-The operator landing hold remains in force, and screenshots remain a blocking
-repository-acceptance requirement until captured and inspected.
+the fixture in required Linux CI. No active workflow invokes this browser
+runner. The blog and factory preview jobs do not establish trips acceptance.
+
+`ci-evidence.workflow.yml` is an inactive workflow template for an authorized
+dispatcher to install as `.github/workflows/trips-fixture-evidence.yml`.
+GitHub refused the correction runner's workflow push because its credential
+lacks `workflow` scope. The template does not execute from this directory,
+and staging it does not satisfy the screenshot requirement. Activation needs
+an authorized workflow writer; do not change credentials to work around the
+refusal.
+
+The proposed job checks out the exact PR head with read-only permissions and
+no persisted Git credentials, runs the targeted tests, builds this fixture
+and installs the pinned browser with its system libraries. It uploads all 32
+PNGs and `checks.json` as `trips-fixture-evidence-<full-head-sha>` for 14 days,
+including partial evidence on failure. A failed capture keeps its job red.
+
+After activation, link the workflow run and its downloadable artifact in the
+draft PR. Verify
+`checks.json` has the current head, `complete: true`, all 16 combinations and
+zero overflow for all 32 PNGs, then inspect the images. Rebuild and recapture after
+any new source or CI-format commit; expired artifacts also need fresh capture.
+Generated output stays outside Git. The template has no publisher, Pages
+deployment or connection to the `Fixture preview build` publisher trigger.
+The operator landing hold remains in force after evidence and CI pass.
+Screenshots remain a blocking repository-acceptance requirement, separate
+from post-merge rollout and real-host acceptance on #7141.
