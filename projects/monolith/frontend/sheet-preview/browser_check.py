@@ -289,10 +289,22 @@ def check(root, output, executable=None):
                                         f"{base}/?{query}", wait_until="networkidle"
                                     )
                                     artifact_checks(page, width)
-                                    record["prefixed_routes"].append(geometry(page))
+                                    prefixed = geometry(page)
+                                    prefixed["route"] = f"/{prefix}/artifact/fixture"
+                                    page.goto(
+                                        f"{base}/?{query}&banner=1",
+                                        wait_until="networkidle",
+                                    )
+                                    prefixed["maintenance_banner"] = artifact_checks(
+                                        page, width, banner=True
+                                    )
+                                    record["prefixed_routes"].append(prefixed)
                                 page.goto(
                                     f"{base}/?surface=artifact&banner=1",
                                     wait_until="networkidle",
+                                )
+                                page.screenshot(
+                                    path=str(output / f"{name}-maintenance-banner.png")
                                 )
                                 record["maintenance_banner"] = artifact_checks(
                                     page, width, banner=True

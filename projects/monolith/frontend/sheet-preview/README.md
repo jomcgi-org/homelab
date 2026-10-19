@@ -24,15 +24,16 @@ CSS. All other non-fixture requests are rejected.
 
 Every capture is 1000px high, at widths 390 and 1440, in both light and dark.
 The eight opening screenshots include both pages. Four additional full-page
-leaderboard captures show all charts and task rows. Geometry assertions check
+leaderboard captures show all charts and task rows, and four artifact captures
+show the maintenance banner. Geometry assertions check
 horizontal page overflow and every iframe edge against the viewport. The
 artifact checks also mount the production maintenance banner, confirm that it
 makes the document taller than the viewport and verify computed body overflow
 stays hidden with no outer-page wheel scrolling. They retain the banner's
 existing offset above the full-height iframe. Both page overrides are checked
 again with the shared CSS rule loaded last, including the leaderboard trail's
-zero bottom margin. The browser also checks both prefixed artifact paths,
-sandbox isolation, page
+zero bottom margin. Both prefixed artifact paths run the same overflow checks
+with and without the banner. The browser also checks sandbox isolation, page
 titles, canonical metadata, accessible controls, focus outlines, keyboard
 interaction, scheme persistence, selection, sorting and shallow query updates.
 The artifact owns its own document scheme; the wrapper does not inject styles
