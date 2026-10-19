@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "ac81a1554",
+  "commit": "e7905ea1c",
   "nodes": [
     {
       "key": "console-caller",
@@ -226,6 +226,38 @@
       "view": "logical",
       "layer": "control_plane",
       "maturity": "built"
+    },
+    {
+      "key": "backup-health",
+      "label": "Private CNPG backup advisory evaluator",
+      "view": "logical",
+      "layer": "serving",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/ops_health.py:649"
+    },
+    {
+      "key": "health-alerts",
+      "label": "Leader-owned health transition notifier",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/health_alerts.py:158"
+    },
+    {
+      "key": "backup-checker",
+      "label": "Shared collector CNPG checker CronJob",
+      "view": "physical",
+      "layer": "boundary",
+      "maturity": "built",
+      "evidence": "projects/platform/otel-collector/templates/backup-check.yaml:133"
+    },
+    {
+      "key": "backup-status",
+      "label": "Named backup-status ConfigMap",
+      "view": "physical",
+      "layer": "data",
+      "maturity": "built",
+      "evidence": "projects/platform/otel-collector/templates/backup-check.yaml:83"
     }
   ],
   "control_actions": [
@@ -489,6 +521,33 @@
       "to": "agent-runner",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/drainer.py:404"
+    },
+    {
+      "key": "backup-checker.publish",
+      "label": "Publish bounded per-target observation to the named ConfigMap",
+      "view": "physical",
+      "from": "backup-checker",
+      "to": "backup-status",
+      "maturity": "built",
+      "evidence": "projects/platform/otel-collector/files/backup_check.py:216"
+    },
+    {
+      "key": "backup-health.read",
+      "label": "Read the configured backup-status ConfigMap",
+      "view": "physical",
+      "from": "private-binary",
+      "to": "backup-status",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/ops_health.py:732"
+    },
+    {
+      "key": "health-alerts.notify",
+      "label": "Enqueue a health transition or six-hour reminder",
+      "view": "logical",
+      "from": "health-alerts",
+      "to": "outbox",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/health_alerts.py:137"
     }
   ],
   "feedback": [
@@ -557,6 +616,24 @@
       "from": "postgres",
       "to": "mcp-caller",
       "signal": "disputed flag + verification_state on search/get_note results"
+    },
+    {
+      "view": "physical",
+      "from": "backup-status",
+      "to": "private-binary",
+      "signal": "Per-target timestamp, successful-backup age and collector acceptance"
+    },
+    {
+      "view": "logical",
+      "from": "backup-health",
+      "to": "health-alerts",
+      "signal": "Healthy, known failure or unknown backup advisory result"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "health-alerts",
+      "signal": "Durable last-announced health state and reminder timestamp"
     }
   ]
 }

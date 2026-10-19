@@ -172,7 +172,7 @@ Settings are the chart's `healthAlerts` values.
 | `agent_turns` | For Codex (luna, terra, sol, astra) or Claude (opus, sonnet, fable, and sessions with no model): at least 2 turns attempted in the last 60 minutes and none delivered | `agent_sessions.agent_turns` joined to `agent_sessions.agent_sessions`. Delivered means a clean terminal reason (`completed`, `end_turn`, `stop`, `user_interrupt`). Interrupted turns and turns cancelled before dispatch are not attempts. Spark and pi are not covered |
 | `codex_quota_fresh` | The token broker's latest Codex quota observation is older than 60 minutes (or missing, or the broker is unreachable) **and** at least one Codex turn was attempted in the last 60 minutes | Broker `GET /quota` (the monolith's existing 30-second cached poll) and the same turn counts. The demand condition keeps idle nights quiet; the cost is that a fault that stops Codex work from being attempted at all is left to `agent_turns` and `embervm_capacity` |
 | `factory_stuck` | A factory receipt has been `uncertain` for more than 2 hours, or a `queued` receipt at the live policy's repo and generation is not `admission_eligible` (the #6483 trap). Intake receipts while intake is off and older-generation receipts are not flagged | `swarm.factory_receipt` and the `swarm.factory_control` policy. Uncertain age is measured from the receipt's `updated_at` |
-| `cnpg_backups` (staged off) | A fresh checker observation reports no successful backup, even for a newly created cluster, or a successful backup strictly older than 129600 seconds (36 hours). Exactly 36 hours passes | `otel-collector/cnpg-backup-status`, key `observation.json`, written by the same checker that emits the age metric. Required targets: `monolith/monolith-pg`, `authentik/authentik-pg`, `mcp/context-forge-pg`; optional `loom/loom-pg` only when the producer's Loom gate includes it. This checks base-backup status, not WAL archival |
+| `cnpg_backups` (hub enabled) | A fresh checker observation reports no successful backup, even for a newly created cluster, or a successful backup strictly older than 129600 seconds (36 hours). Exactly 36 hours passes | `otel-collector/cnpg-backup-status`, key `observation.json`, written by the same checker that emits the age metric. Required targets: `monolith/monolith-pg`, `authentik/authentik-pg`, `mcp/context-forge-pg`; optional `loom/loom-pg` only when the producer's Loom gate includes it. This checks base-backup status, not WAL archival |
 
 Each check is cached for 60 seconds per process, bounded to 10 seconds with a
 5-second Postgres statement timeout, and never raises.
@@ -191,17 +191,20 @@ There are no Loom probe, backup-age or checker-absence Honeycomb trigger specs;
 the [one-trigger policy](../projects/platform/honeycomb/README.md) reserves the
 only trigger for the public health composite. The signals are available for
 investigation after enablement and do not create Loom alert notifications.
-The shared checker and private backup advisory below are staged separately
-under #7002 and can include Loom after its own gate is enabled. They provide
-no Loom probe or checker-absence alert.
+The shared checker and private backup advisory below are enabled for the three
+existing hub clusters under #7002 and can include Loom after its own gate is
+enabled. They provide no Loom probe or checker-absence alert.
 
-## Staged shared backup advisory
+## Shared hub backup advisory
 
-The collector's `backupCheck.enabled` and `backupCheck.status.enabled`, and the
-monolith's `healthAlerts.cnpgBackups.enabled`, default off in chart defaults and
-checked-in deployment overlays. No backup alert rollout is claimed by this
-repository change. The existing public Honeycomb trigger is unchanged; no
-additional trigger is needed for the Discord advisory.
+The hub overlays enable the collector's `backupCheck.enabled` and
+`backupCheck.status.enabled`, and the monolith's
+`healthAlerts.cnpgBackups.enabled`, for `monolith/monolith-pg`,
+`authentik/authentik-pg` and `mcp/context-forge-pg`. Chart defaults and the base
+monolith deployment remain opt-in; `loom.enabled` stays false pending #6605.
+The existing public Honeycomb trigger is unchanged; no additional trigger is
+needed for the Discord advisory. Enabled configuration does not complete the
+operational acceptance on #7002.
 
 The checker reads each configured Cluster once, exports that observation, then
 patches one precreated ConfigMap through the Kubernetes API with its existing
@@ -242,15 +245,32 @@ The hub Application ignores `/data/observation.json` on this exact ConfigMap
 during both diff and sync (`RespectIgnoreDifferences=true`). A renamed handoff
 must update that ignore rule and both charts together.
 
-A later authorized enablement PR must enable the two collector flags and the
-monolith reader, preserving the existing OTLP admission path. Keep
-`loom.enabled=false` until #6605's independent acceptance is complete. The
-operational checklist on #7002 still requires rollout and scheduled-run
-verification, effective named-object RBAC (including additive bindings), metric
-and advisory arrival, non-destructive failure/recovery tests, unknown and
-deduplication checks across leader handover, health endpoint isolation, and
-conditional Loom validation. Do not apply trigger specs or fire live alert
-tests as part of this staged delivery.
+The Applications reconcile independently; the reader reports unknown until the
+collector publishes a fresh observation. Before accepting the rollout, verify
+both Applications are Synced and Healthy, observe the checker complete on its
+normal schedule, and read a fresh `observation.json` for all
+three targets. Confirm the successful backup timestamps are younger than
+129600 seconds and each target has `export_ok=true`; confirm metric arrival in
+Honeycomb separately. The live collector Service must still expose port 4318
+and the metrics pipeline must retain the shared OTLP receiver.
+
+The checker identity is
+`system:serviceaccount:otel-collector:otel-collector-cnpg-backup`. Inspect every
+RoleBinding and ClusterRoleBinding applying to that identity or its groups,
+including aggregated ClusterRoles. Verify it can get only the three named
+Clusters, cannot list/watch Clusters or read an unrelated Cluster, and can
+get/patch only `otel-collector/cnpg-backup-status` for its status handoff. Rendered
+RBAC proves chart intent; it does not rule out additive grants in the cluster.
+
+Keep #7002 open for these observations, runtime ConfigMap survival across Argo
+reconciliation, the approved non-destructive failure/recovery and leader-handover
+checks, and health endpoint isolation. Offline contract tests cover stale and
+never-backed-up targets, unknown observations, partial failure, failed exports,
+normal handover deduplication and recovery without sending live notifications.
+Do not inject fake failures into the production status ConfigMap. Keep
+`loom.enabled=false` until #6605's independent acceptance is complete, and then
+verify it joins the same workload. Revert the three hub enablement flags to
+false through Git to disable this path; existing backup schedules are unchanged.
 
 ## Configuration
 

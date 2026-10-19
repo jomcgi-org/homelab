@@ -437,7 +437,7 @@ cdHealth:
 deploymentObservations:
   enabled: false
 
-# Repository-only staging for #7002; enable with the shared checker later.
+# Base deployment stays opt-in; the hub enables the #7002 advisory reader.
 healthAlerts:
   cnpgBackups:
     enabled: false
