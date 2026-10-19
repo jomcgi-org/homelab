@@ -12,15 +12,15 @@ From `projects/monolith/frontend`, after `pnpm install --frozen-lockfile`:
 pnpm exec vite --config campsites-preview/vite.config.js --port 4173
 ```
 
-With Playwright, Chromium, system fonts and browser dependencies installed:
+With Playwright, Chromium, system fonts and browser dependencies installed,
+run the component regressions:
 
 ```sh
-node campsites-preview/browser-check.mjs /absolute/path/to/playwright/index.mjs /absolute/path/to/evidence
 pnpm exec vitest run src/routes/public/app/campsites
 ```
 
-To exercise the built bundle and emitted MapLibre worker (the recorded
-captures use this path), start this server instead of the dev server:
+The browser checks require the built bundle and emitted MapLibre worker.
+Start this server instead of the dev server:
 
 ```sh
 pnpm exec vite build --config campsites-preview/vite.config.js --outDir /tmp/campsites-preview-dist
@@ -34,6 +34,10 @@ It checks actual map pin hit testing, list selection, source/layer retention
 across scheme changes, layer visibility, pan/zoom, filters, all three sorts,
 night URL updates and hydration, empty data, legend dismissal, keyboard focus,
 scheme persistence and document overflow with controls closed and open.
+OS scheme changes repaint the existing map; an explicit saved choice wins
+over later OS changes. The worker assertion inspects the initialized actor
+inside a running worker from the built `/assets/` URL. Source head and worker
+path are recorded in each receipt entry.
 Navigation composes engineering, legacy Ember, a legacy Nav surface and the
 campsites page without unloading stylesheets. Legacy paint is compared with a
 fresh load. `checks.json` records each viewport and scheme.
@@ -45,7 +49,9 @@ change independently of this fixture. Chromium uses software WebGL. The
 history adapter is not SvelteKit routing or server navigation. The refresh
 adapter counts invalidations without fetching a backend; DOM tests execute
 the production interval callback and check timer cleanup. Server tests retain
-the timeout, cache headers and validators.
+the timeout, cache headers and validators. The DOM suite mocks only MapLibre
+and its exact worker-URL asset import. Production page/map effects still run;
+the browser check exercises Vite's real worker emission and loading.
 
 Generated bundles are not committed. Evidence captures belong outside the
 production `:src` and `:src_public` inputs. Browser evidence does not establish

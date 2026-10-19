@@ -5,18 +5,28 @@ import Page from "./+page.svelte";
 import { dates, snapshot } from "../../../../../campsites-preview/fixtures.js";
 
 vi.mock("$app/environment", () => ({ browser: true, version: "testbuild" }));
-const { invalidateAll, maps, popups } = vi.hoisted(() => ({
+const { invalidateAll, maps, popups, setWorkerUrl } = vi.hoisted(() => ({
   invalidateAll: vi.fn(),
+  setWorkerUrl: vi.fn(),
   maps: [],
   popups: [],
 }));
 vi.mock("$app/navigation", () => ({ invalidateAll }));
-// Only the external WebGL boundary is mocked. Page, map, theme paint, scheme
-// switch and every event/effect are the production components.
+// Asset transformation belongs to Vite's production build, not the WebGL DOM
+// double. Bazel's runfiles root cannot serve the package's ?url import. Keep
+// this seam exact; browser-check.mjs verifies the real emitted worker loads.
+vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
+  default: "/test-assets/maplibre-worker.js",
+}));
+// Only external WebGL and its worker URL are mocked. Page, map, theme paint,
+// scheme switch and every event/effect are the production components.
 vi.mock("maplibre-gl", () => ({
-  setWorkerUrl: vi.fn(),
+  setWorkerUrl,
   Map: class {
     constructor(options) {
+      expect(setWorkerUrl).toHaveBeenLastCalledWith(
+        "/test-assets/maplibre-worker.js",
+      );
       this.options = options;
       this.events = [];
       this.sources = {};
@@ -65,6 +75,13 @@ vi.mock("maplibre-gl", () => ({
     getStyle() {
       return { layers: this.layers };
     }
+    setLayoutProperty(id, key, value) {
+      const layer = this.layers.find((layer) => layer.id === id);
+      layer.layout = { ...layer.layout, [key]: value };
+    }
+    getLayoutProperty(id, key) {
+      return this.layers.find((layer) => layer.id === id).layout?.[key];
+    }
     getZoom() {
       return 5;
     }
@@ -94,7 +111,7 @@ vi.mock("maplibre-gl", () => ({
   },
 }));
 
-let instance, target, resizeDisconnect;
+let instance, target, resizeDisconnect, media;
 beforeEach(() => {
   window.happyDOM.settings.disableCSSFileLoading = true;
   window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = true;
@@ -104,6 +121,15 @@ beforeEach(() => {
   maps.length = 0;
   popups.length = 0;
   invalidateAll.mockClear();
+  setWorkerUrl.mockClear();
+  media = new EventTarget();
+  media.matches = false;
+  vi.spyOn(media, "addEventListener");
+  vi.spyOn(media, "removeEventListener");
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => media),
+  );
   resizeDisconnect = vi.fn();
   vi.stubGlobal(
     "ResizeObserver",
@@ -144,6 +170,7 @@ const features = () => maps[0].getSource("parks").data.features;
 describe("campsites production page and map boundary", () => {
   it("renders one sheet, existing metadata, initial collapsed controls and every park", async () => {
     const map = await render();
+    expect(setWorkerUrl).toHaveBeenCalledTimes(1);
     expect(target.querySelector("main.td.sheet")).not.toBeNull();
     expect(target.querySelectorAll("button.scheme")).toHaveLength(1);
     expect(
@@ -268,6 +295,14 @@ describe("campsites production page and map boundary", () => {
       expect.objectContaining({ center: [-122.1, 50.9] }),
     );
     expect(target.querySelectorAll(".day-cell")).toHaveLength(14);
+    expect(target.querySelector(".day-cell").title).toBe(
+      "Open, 3% cloud, 0.0 mm rain, 16C max",
+    );
+    expect(target.querySelector(".day-temp").textContent).toBe("16°");
+    expect(target.querySelector(".day-rain-wet").textContent).toBe("2.4mm");
+    expect(target.querySelector(".book-link").href).toBe(
+      "https://example.com/booking",
+    );
     map.hits = [features().find((f) => f.id === "alpha")];
     map.emit("click", { point: { x: -123.8, y: 49.8 } });
     await tick();
@@ -295,9 +330,11 @@ describe("campsites production page and map boundary", () => {
     const map = await render();
     await click(".collapse-btn");
     await click(".row");
+    map.setLayoutProperty("weather-heat", "visibility", "none");
     const source = map.getSource("parks");
     const layers = [...map.layers];
     const listeners = [...map.events];
+    const cameraCalls = map.flyTo.mock.calls.length;
     map.setPaintProperty.mockClear();
     await click("button.scheme");
     await vi.waitFor(() => expect(map.setPaintProperty).toHaveBeenCalled());
@@ -305,6 +342,9 @@ describe("campsites production page and map boundary", () => {
     expect(map.getSource("parks")).toBe(source);
     expect(map.layers).toEqual(layers);
     expect(map.events).toEqual(listeners);
+    expect(map.getLayoutProperty("weather-heat", "visibility")).toBe("none");
+    expect(map.flyTo).toHaveBeenCalledTimes(cameraCalls);
+    expect(maps).toHaveLength(1);
     expect(features().find((f) => f.id === "birch").properties.sel).toBe(1);
     expect(
       map.setPaintProperty.mock.calls.some(
@@ -316,6 +356,62 @@ describe("campsites production page and map boundary", () => {
         ([id, key]) => id === "water" && key === "fill-color",
       ),
     ).toBe(true);
+  });
+
+  it("follows OS scheme changes and unregisters the media listener on unmount", async () => {
+    const map = await render();
+    const source = map.getSource("parks");
+    const listeners = [...map.events];
+    map.setLayoutProperty("weather-heat", "visibility", "none");
+    map.setPaintProperty.mockClear();
+    media.matches = true;
+    media.dispatchEvent(new Event("change"));
+    await tick();
+    expect(
+      target.querySelector("button.scheme").getAttribute("aria-label"),
+    ).toBe("Switch to day scheme");
+    expect(map.setPaintProperty).toHaveBeenCalledWith(
+      "parks",
+      "circle-color",
+      expect.any(Array),
+    );
+    expect(map.getSource("parks")).toBe(source);
+    expect(map.events).toEqual(listeners);
+    expect(map.getLayoutProperty("weather-heat", "visibility")).toBe("none");
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+    expect(localStorage.getItem("td-theme")).toBeNull();
+    const callbacks = media.addEventListener.mock.calls.filter(
+      ([type]) => type === "change",
+    );
+    await unmount(instance);
+    instance = undefined;
+    for (const [type, listener] of callbacks) {
+      expect(media.removeEventListener).toHaveBeenCalledWith(type, listener);
+    }
+    map.setPaintProperty.mockClear();
+    media.matches = false;
+    media.dispatchEvent(new Event("change"));
+    await tick();
+    expect(map.setPaintProperty).not.toHaveBeenCalled();
+  });
+
+  it("ignores scheme changes before map load and initializes once with current selection", async () => {
+    instance = mount(Page, { target, props: { data: { snapshot } } });
+    await tick();
+    await vi.waitFor(() => expect(maps).toHaveLength(1));
+    const map = maps[0];
+    await click("button.scheme");
+    await click(".collapse-btn");
+    await click(".row");
+    media.dispatchEvent(new Event("change"));
+    await tick();
+    expect(map.setPaintProperty).not.toHaveBeenCalled();
+    expect(map.flyTo).not.toHaveBeenCalled();
+    map.emit("load");
+    await tick();
+    expect(features().find((f) => f.id === "birch").properties.sel).toBe(1);
+    expect(map.flyTo).toHaveBeenCalledTimes(1);
+    expect(map.setPaintProperty).toHaveBeenCalled();
   });
 
   it("closes the legend outside, keeps attribution open once requested and cleans up", async () => {

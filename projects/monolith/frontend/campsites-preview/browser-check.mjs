@@ -2,10 +2,14 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
 const { chromium } = await import(pathToFileURL(resolve(process.argv[2])).href);
 const output = resolve(process.argv[3]);
 await mkdir(output, { recursive: true });
-const base = process.env.CAMPSITES_PREVIEW_URL ?? "http://127.0.0.1:4173";
+const base = process.env.CAMPSITES_PREVIEW_URL ?? "http://127.0.0.1:4174";
+const sourceHead = execFileSync("git", ["rev-parse", "HEAD"], {
+  encoding: "utf8",
+}).trim();
 let browser;
 const evidence = [];
 try {
@@ -57,6 +61,20 @@ try {
         );
       await page.goto(`${base}/app/campsites`);
       await ready();
+      // Inspect the running MapLibre worker, not just an emitted filename.
+      // The initialized actor and subsequent GeoJSON/hit-test assertions prove
+      // that the built URL is usable by the production map's worker pool.
+      const worker = page
+        .workers()
+        .find((worker) =>
+          /\/assets\/maplibre-gl-worker-[\w-]+\.js$/.test(worker.url()),
+        );
+      assert.ok(worker, "built MapLibre worker is running");
+      const workerState = await worker.evaluate(() => ({
+        url: self.location.pathname,
+        initialized: Boolean(self.worker?.actor),
+      }));
+      assert.equal(workerState.initialized, true);
       await page.evaluate(() => document.fonts.ready);
       const checks = [await overflow("closed")];
       assert.equal(await page.locator("button.scheme").count(), 1);
@@ -71,6 +89,55 @@ try {
         "cedar",
         "dormant",
       ]);
+      // Follow the OS with no saved override, then restore the capture scheme.
+      await page.evaluate(() => {
+        const map = window.campsitesMap;
+        window.beforeOS = {
+          map,
+          source: map.getSource("parks"),
+          center: map.getCenter().toArray(),
+          zoom: map.getZoom(),
+          layers: map.getStyle().layers.map((l) => l.id),
+          paint: map.getPaintProperty("parks", "circle-color"),
+        };
+        map.setLayoutProperty("weather-heat", "visibility", "none");
+      });
+      const opposite = scheme === "light" ? "dark" : "light";
+      await page.emulateMedia({ colorScheme: opposite });
+      await page.waitForFunction(
+        () =>
+          JSON.stringify(window.beforeOS.paint) !==
+          JSON.stringify(
+            window.campsitesMap.getPaintProperty("parks", "circle-color"),
+          ),
+      );
+      assert.equal(
+        await page.evaluate(() => {
+          const before = window.beforeOS,
+            map = window.campsitesMap;
+          return (
+            map === before.map &&
+            map.getSource("parks") === before.source &&
+            map.getZoom() === before.zoom &&
+            JSON.stringify(map.getCenter().toArray()) ===
+              JSON.stringify(before.center) &&
+            JSON.stringify(map.getStyle().layers.map((l) => l.id)) ===
+              JSON.stringify(before.layers) &&
+            map.getLayoutProperty("weather-heat", "visibility") === "none" &&
+            !document.documentElement.hasAttribute("data-theme") &&
+            localStorage.getItem("td-theme") === null
+          );
+        }),
+        true,
+      );
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.waitForFunction(
+        () =>
+          JSON.stringify(window.beforeOS.paint) ===
+          JSON.stringify(
+            window.campsitesMap.getPaintProperty("parks", "circle-color"),
+          ),
+      );
       // Save identity and real renderer state before a keyboard scheme change.
       await page.evaluate(() => {
         const map = window.campsitesMap;
@@ -133,6 +200,24 @@ try {
         await page.evaluate(() => document.documentElement.dataset.theme),
         scheme,
       );
+      const explicitPaint = await page.evaluate(() =>
+        window.campsitesMap.getPaintProperty("parks", "circle-color"),
+      );
+      await page.emulateMedia({ colorScheme: opposite });
+      await ready();
+      await page.evaluate(
+        () =>
+          new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          ),
+      );
+      assert.deepEqual(
+        await page.evaluate(() =>
+          window.campsitesMap.getPaintProperty("parks", "circle-color"),
+        ),
+        explicitPaint,
+      );
+      await page.emulateMedia({ colorScheme: scheme });
       await page.locator(".nights-toggle").click();
       await page.locator(".collapse-btn").click();
       checks.push(await overflow("panels-open"));
@@ -359,8 +444,12 @@ try {
       );
       assert.deepEqual(errors, []);
       evidence.push({
+        sourceHead,
         width,
         scheme,
+        worker: workerState,
+        osScheme:
+          "repaints in place without override; persisted choice wins over OS",
         screenshot,
         checks,
         painted,

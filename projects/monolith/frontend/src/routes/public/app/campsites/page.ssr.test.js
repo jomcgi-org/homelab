@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render } from "svelte/server";
 import Page from "./+page.svelte";
 import { snapshot } from "../../../../../campsites-preview/fixtures.js";
 
+vi.mock("maplibre-gl", () => {
+  throw new Error("SSR must not import the WebGL runtime");
+});
+
 describe("campsites server shell", () => {
   it("renders the existing title, description and collapsed controls without WebGL", async () => {
+    expect(typeof window).toBe("undefined");
+    expect(typeof document).toBe("undefined");
     const { body, head } = await render(Page, {
       props: { data: { snapshot } },
     });
