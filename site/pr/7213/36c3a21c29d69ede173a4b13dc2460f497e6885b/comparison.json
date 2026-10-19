@@ -1,0 +1,1875 @@
+{
+  "head": "36c3a21c29d69ede173a4b13dc2460f497e6885b",
+  "baseline": "152c50077a0ec270eb4586eea973ba6116145e29",
+  "baseline_kind": "git merge-base",
+  "rows": [
+    {
+      "suite": "blog",
+      "case": "complete",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/blog/after-1440x1000-complete.png",
+      "before": "captures/blog/before-1440x1000-complete.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1757
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1757
+      },
+      "interactive_after": "after/suites/blog/",
+      "interactive_before": "before/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/blog/after-1440x1000-full.png",
+      "before": "captures/blog/before-1440x1000-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1757
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1757
+      },
+      "interactive_after": "after/suites/blog/",
+      "interactive_before": "before/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/blog/after-1440x1000-opening.png",
+      "before": "captures/blog/before-1440x1000-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/blog/",
+      "interactive_before": "before/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "complete",
+      "width": 360,
+      "scheme": "light",
+      "after": "captures/blog/after-360x640-complete.png",
+      "before": "captures/blog/before-360x640-complete.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 360,
+        "height": 1841
+      },
+      "before_dimensions": {
+        "width": 360,
+        "height": 1841
+      },
+      "interactive_after": "after/suites/blog/",
+      "interactive_before": "before/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "full",
+      "width": 360,
+      "scheme": "light",
+      "after": "captures/blog/after-360x640-full.png",
+      "before": "captures/blog/before-360x640-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 360,
+        "height": 1631
+      },
+      "before_dimensions": {
+        "width": 360,
+        "height": 1631
+      },
+      "interactive_after": "after/suites/blog/",
+      "interactive_before": "before/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "opening",
+      "width": 360,
+      "scheme": "light",
+      "after": "captures/blog/after-360x640-opening.png",
+      "before": "captures/blog/before-360x640-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 360,
+        "height": 640
+      },
+      "before_dimensions": {
+        "width": 360,
+        "height": 640
+      },
+      "interactive_after": "after/suites/blog/",
+      "interactive_before": "before/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "complete",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/blog/after-390x844-complete.png",
+      "before": "captures/blog/before-390x844-complete.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1844
+      },
+      "interactive_after": "after/suites/blog/",
+      "interactive_before": "before/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/blog/after-390x844-full.png",
+      "before": "captures/blog/before-390x844-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1803
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1803
+      },
+      "interactive_after": "after/suites/blog/",
+      "interactive_before": "before/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/blog/after-390x844-opening.png",
+      "before": "captures/blog/before-390x844-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/blog/",
+      "interactive_before": "before/suites/blog/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-activity-live-1440x1000-dark-100pct-full.png",
+      "before": "captures/factory/before-activity-live-1440x1000-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1882
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1882
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-activity-live-1440x1000-dark-100pct-opening.png",
+      "before": "captures/factory/before-activity-live-1440x1000-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-activity-live-1440x1000-light-100pct-full.png",
+      "before": "captures/factory/before-activity-live-1440x1000-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1882
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1882
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-activity-live-1440x1000-light-100pct-opening.png",
+      "before": "captures/factory/before-activity-live-1440x1000-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-activity-live-390x844-dark-100pct-full.png",
+      "before": "captures/factory/before-activity-live-390x844-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 4505
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 4505
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-activity-live-390x844-dark-100pct-opening.png",
+      "before": "captures/factory/before-activity-live-390x844-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-activity-live-390x844-light-100pct-full.png",
+      "before": "captures/factory/before-activity-live-390x844-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 4505
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 4505
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-activity-live-390x844-light-100pct-opening.png",
+      "before": "captures/factory/before-activity-live-390x844-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-chapter-live-1440x1000-dark-100pct-full.png",
+      "before": "captures/factory/before-chapter-live-1440x1000-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-chapter-live-1440x1000-dark-100pct-opening.png",
+      "before": "captures/factory/before-chapter-live-1440x1000-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-chapter-live-1440x1000-light-100pct-full.png",
+      "before": "captures/factory/before-chapter-live-1440x1000-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-chapter-live-1440x1000-light-100pct-opening.png",
+      "before": "captures/factory/before-chapter-live-1440x1000-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-chapter-live-390x844-dark-100pct-full.png",
+      "before": "captures/factory/before-chapter-live-390x844-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 2186
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 2186
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-chapter-live-390x844-dark-100pct-opening.png",
+      "before": "captures/factory/before-chapter-live-390x844-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-chapter-live-390x844-light-100pct-full.png",
+      "before": "captures/factory/before-chapter-live-390x844-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 2186
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 2186
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-chapter-live-390x844-light-100pct-opening.png",
+      "before": "captures/factory/before-chapter-live-390x844-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-context-live-1440x1000-dark-100pct-full.png",
+      "before": "captures/factory/before-context-live-1440x1000-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-context-live-1440x1000-dark-100pct-opening.png",
+      "before": "captures/factory/before-context-live-1440x1000-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-context-live-1440x1000-light-100pct-full.png",
+      "before": "captures/factory/before-context-live-1440x1000-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-context-live-1440x1000-light-100pct-opening.png",
+      "before": "captures/factory/before-context-live-1440x1000-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-context-live-390x844-dark-100pct-full.png",
+      "before": "captures/factory/before-context-live-390x844-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1301
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1301
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-context-live-390x844-dark-100pct-opening.png",
+      "before": "captures/factory/before-context-live-390x844-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-context-live-390x844-light-100pct-full.png",
+      "before": "captures/factory/before-context-live-390x844-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1301
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1301
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-context-live-390x844-light-100pct-opening.png",
+      "before": "captures/factory/before-context-live-390x844-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-full.png",
+      "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-opening.png",
+      "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-overview-live-1440x1000-light-100pct-full.png",
+      "before": "captures/factory/before-overview-live-1440x1000-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-overview-live-1440x1000-light-100pct-opening.png",
+      "before": "captures/factory/before-overview-live-1440x1000-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-overview-live-390x844-dark-100pct-full.png",
+      "before": "captures/factory/before-overview-live-390x844-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 3854
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 3854
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-overview-live-390x844-dark-100pct-opening.png",
+      "before": "captures/factory/before-overview-live-390x844-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-overview-live-390x844-light-100pct-full.png",
+      "before": "captures/factory/before-overview-live-390x844-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 3854
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 3854
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-overview-live-390x844-light-100pct-opening.png",
+      "before": "captures/factory/before-overview-live-390x844-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-search-live-1440x1000-dark-100pct-full.png",
+      "before": "captures/factory/before-search-live-1440x1000-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-search-live-1440x1000-dark-100pct-opening.png",
+      "before": "captures/factory/before-search-live-1440x1000-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-search-live-1440x1000-light-100pct-full.png",
+      "before": "captures/factory/before-search-live-1440x1000-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-search-live-1440x1000-light-100pct-opening.png",
+      "before": "captures/factory/before-search-live-1440x1000-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-search-live-390x844-dark-100pct-full.png",
+      "before": "captures/factory/before-search-live-390x844-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 2176
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 2176
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-search-live-390x844-dark-100pct-opening.png",
+      "before": "captures/factory/before-search-live-390x844-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-search-live-390x844-light-100pct-full.png",
+      "before": "captures/factory/before-search-live-390x844-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 2176
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 2176
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-search-live-390x844-light-100pct-opening.png",
+      "before": "captures/factory/before-search-live-390x844-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/",
+      "interactive_before": "before/suites/factory/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-audit",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/review/after-gaps-audit-1440-dark.png",
+      "before": "captures/review/before-gaps-audit-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1162
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1162
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-audit",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/review/after-gaps-audit-1440-light.png",
+      "before": "captures/review/before-gaps-audit-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1162
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1162
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-audit",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/review/after-gaps-audit-390-dark.png",
+      "before": "captures/review/before-gaps-audit-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1306
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1306
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-audit",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/review/after-gaps-audit-390-light.png",
+      "before": "captures/review/before-gaps-audit-390-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1306
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1306
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-pending",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/review/after-gaps-pending-1440-dark.png",
+      "before": "captures/review/before-gaps-pending-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1114
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1114
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-pending",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/review/after-gaps-pending-1440-light.png",
+      "before": "captures/review/before-gaps-pending-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1114
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1114
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-pending",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/review/after-gaps-pending-390-dark.png",
+      "before": "captures/review/before-gaps-pending-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1258
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1258
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-pending",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/review/after-gaps-pending-390-light.png",
+      "before": "captures/review/before-gaps-pending-390-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1258
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1258
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-audit",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/review/after-notes-audit-1440-dark.png",
+      "before": "captures/review/before-notes-audit-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1064
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1064
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-audit",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/review/after-notes-audit-1440-light.png",
+      "before": "captures/review/before-notes-audit-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1064
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1064
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-audit",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/review/after-notes-audit-390-dark.png",
+      "before": "captures/review/before-notes-audit-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1208
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1208
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-audit",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/review/after-notes-audit-390-light.png",
+      "before": "captures/review/before-notes-audit-390-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1208
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1208
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-pending",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/review/after-notes-pending-1440-dark.png",
+      "before": "captures/review/before-notes-pending-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1016
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1016
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-pending",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/review/after-notes-pending-1440-light.png",
+      "before": "captures/review/before-notes-pending-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1016
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1016
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-pending",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/review/after-notes-pending-390-dark.png",
+      "before": "captures/review/before-notes-pending-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1160
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1160
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-pending",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/review/after-notes-pending-390-light.png",
+      "before": "captures/review/before-notes-pending-390-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1160
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1160
+      },
+      "interactive_after": "after/suites/review/",
+      "interactive_before": "before/suites/review/"
+    },
+    {
+      "suite": "trips",
+      "case": "day-fullscreen",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-1440-dark-fullscreen.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day-map-controls",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-1440-dark-map-controls.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-1440-dark.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day-fullscreen",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-day-1440-light-fullscreen.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day-map-controls",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-day-1440-light-map-controls.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-day-1440-light.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day-fullscreen",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-390-dark-fullscreen.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day-map-controls",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-390-dark-map-controls.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-390-dark.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day-fullscreen",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-day-390-light-fullscreen.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day-map-controls",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-day-390-light-map-controls.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "day",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-day-390-light.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "index",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-index-1440-dark.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "index",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-index-1440-light.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "index",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-index-390-dark.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1107
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "index",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-index-390-light.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1107
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-map",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-1440-dark-map.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1037
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-viewer",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-1440-dark-viewer.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-1440-dark.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-map",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-1440-light-map.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1037
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-viewer",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-1440-light-viewer.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-1440-light.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-map",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-390-dark-map.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1171
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-viewer",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-390-dark-viewer.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-390-dark.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1128
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-map",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-390-light-map.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1171
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-viewer",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-390-light-viewer.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "timeline",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-390-light.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1128
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "trip",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-trip-1440-dark.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1439
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "trip",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-trip-1440-light.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1439
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "trip",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-trip-390-dark.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1337
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    },
+    {
+      "suite": "trips",
+      "case": "trip",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-trip-390-light.png",
+      "before": null,
+      "unavailable": "Baseline has no trips-preview harness. No matching before capture exists.",
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1337
+      },
+      "before_dimensions": null,
+      "interactive_after": "after/suites/trips/",
+      "interactive_before": null
+    }
+  ],
+  "suites": {
+    "blog": "Blog replay",
+    "factory": "Factory overview, activity and context",
+    "review": "Private review components",
+    "trips": "Trips sheets and photo viewer"
+  },
+  "fixture_fingerprints": {
+    "blog": {
+      "head": "bbc5a3113ec31bbc635e4f7cd1e3d8e52fcae76215e00deaa44f9c90bb9ebf77",
+      "before": "bbc5a3113ec31bbc635e4f7cd1e3d8e52fcae76215e00deaa44f9c90bb9ebf77"
+    },
+    "factory": {
+      "head": "945065fd1c97b29f1dca19ace5c76c73c92f15863f395e3cdc1138d0e62d70c1",
+      "before": "945065fd1c97b29f1dca19ace5c76c73c92f15863f395e3cdc1138d0e62d70c1"
+    },
+    "review": {
+      "head": "59a516e59167c0f3596b6eb529c97db5bd6a3696ae72c8a2a29325fa576b0ed0",
+      "before": "59a516e59167c0f3596b6eb529c97db5bd6a3696ae72c8a2a29325fa576b0ed0"
+    },
+    "trips": {
+      "head": "93a2391681cf450230c57e124750b26d731ff84c84bd2d3d5ae12b3c6a3b2020",
+      "before": null
+    }
+  }
+}
