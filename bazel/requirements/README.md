@@ -9,13 +9,11 @@ flowchart TB
     subgraph "Source Files (.in)"
         PT[pyproject.toml<br/>runtime deps]
         TEST[test.in<br/>test-only deps]
-        TOOLS[tools.in<br/>dev tools]
     end
 
     subgraph "Lock Files (.txt)"
         RT[runtime.txt<br/>pinned runtime]
         ALL[all.txt<br/>all deps combined]
-        TOOL[tools.txt<br/>pinned tools]
     end
 
     subgraph "Bazel"
@@ -25,9 +23,7 @@ flowchart TB
 
     PT -->|uv pip compile| RT
     RT -->|constrain| TEST
-    RT -->|constrain| TOOLS
     TEST -->|uv pip compile| ALL
-    TOOLS -->|uv pip compile| TOOL
     ALL -->|pip.parse| PIP
     PIP --> TARGETS
 ```
@@ -39,10 +35,8 @@ flowchart TB
 | `pyproject.toml#dependencies` | Runtime dependencies (loose constraints)                 | Developers       |
 | `runtime.txt`                 | Pinned runtime dependencies                              | `uv pip compile` |
 | `test.in`                     | Test-only dependencies (loose)                           | Developers       |
-| `tools.in`                    | Dev tool dependencies (loose)                            | Developers       |
-| `all.in`                      | Aggregator (references test.in + tools.in + runtime.txt) | Auto-generated   |
+| `all.in`                      | Aggregator (references test.in + runtime.txt)            | Auto-generated   |
 | `all.txt`                     | Pinned all dependencies                                  | `uv pip compile` |
-| `tools.txt`                   | Pinned tool dependencies                                 | `uv pip compile` |
 
 ## Dependency Groups
 
@@ -77,19 +71,6 @@ Defined in `test.in`. Constrained against `runtime.txt` to prevent version confl
 # test.in
 -c runtime.txt  # Constrain to runtime versions
 pytest
-```
-
-### Tool Dependencies
-
-Defined in `tools.in`. Used for developer tasks and Bazel build tools, not tests or runtime.
-The layer is currently empty (copier and semgrep were removed in #6913); `tools.txt` is
-header-only until a tool is added.
-
-**Format:**
-
-```bash
-# tools.in
-some-tool>=1.5.0
 ```
 
 ## Workflow
@@ -141,16 +122,6 @@ some-tool>=1.5.0
 
 2. Recompile and update as above.
 
-#### Tool Dependency
-
-1. Add to `tools.in`:
-
-   ```bash
-   new-tool>=1.5.0
-   ```
-
-2. Recompile and update as above.
-
 ### Updating Dependencies
 
 #### Update All Dependencies
@@ -163,7 +134,7 @@ This runs `uv pip compile` on all `.in` files and regenerates lock files.
 
 #### Update Single Dependency
 
-1. Modify version constraint in source file (pyproject.toml, test.in, or tools.in)
+1. Modify version constraint in source file (pyproject.toml or test.in)
 2. Run `bazel run //bazel/requirements:update`
 
 #### Upgrade to Latest Versions
@@ -282,10 +253,6 @@ This repository uses the [pip-tools layered requirements workflow](https://pip-t
 2. **Test layer** (test.in → all.txt)
    - Constrained by runtime.txt (`-c runtime.txt`)
    - Ensures test dependencies don't conflict with runtime
-
-3. **Tools layer** (tools.in → tools.txt)
-   - Standalone tools for development
-   - Not included in all.txt (used separately)
 
 **Why this pattern?**
 
