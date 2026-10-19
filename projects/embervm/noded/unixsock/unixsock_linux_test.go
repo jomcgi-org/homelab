@@ -12,8 +12,9 @@ import (
 	"time"
 )
 
-// longDir returns a directory whose socket path is length bytes long, built
-// under a short temp root so the listener can bind it through a short alias.
+// longDir returns a directory whose api.sock path is exactly length bytes,
+// built under a short temp root so the listener can bind it through a short
+// alias.
 func longDir(t *testing.T, length int) (dir, sock string) {
 	t.Helper()
 	root, err := os.MkdirTemp("/tmp", "us")
@@ -22,17 +23,27 @@ func longDir(t *testing.T, length int) (dir, sock string) {
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
 	dir = root
-	for len(filepath.Join(dir, "api.sock")) < length {
-		pad := min(length-len(filepath.Join(dir, "api.sock")), 40)
-		if pad < 2 {
-			pad = 2
+	// Each segment adds len+1 bytes ("/" + name). Keep the last one at least
+	// two bytes long by never leaving a one-byte remainder.
+	for {
+		rest := length - len(filepath.Join(dir, "api.sock"))
+		if rest <= 0 {
+			break
 		}
-		dir = filepath.Join(dir, strings.Repeat("d", pad-1))
+		seg := min(rest, 40)
+		if rest-seg == 1 {
+			seg--
+		}
+		dir = filepath.Join(dir, strings.Repeat("d", seg-1))
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return dir, filepath.Join(dir, "api.sock")
+	sock = filepath.Join(dir, "api.sock")
+	if len(sock) != length {
+		t.Fatalf("built a %d-byte socket path, want exactly %d", len(sock), length)
+	}
+	return dir, sock
 }
 
 // serve binds a listener in dir through a short symlink, the way Firecracker
@@ -69,9 +80,6 @@ func TestDialReachesSocketsAtAndPastTheSunPathLimit(t *testing.T) {
 	for _, length := range []int{MaxPathLen - 10, MaxPathLen - 1, MaxPathLen, MaxPathLen + 2, 200} {
 		t.Run(fmt.Sprint(length), func(t *testing.T) {
 			dir, sock := longDir(t, length)
-			if len(sock) < length {
-				t.Fatalf("built a %d-byte path, want %d", len(sock), length)
-			}
 			serve(t, dir)
 			if length >= MaxPathLen {
 				// The bug this package exists for: a plain dial cannot even try.
