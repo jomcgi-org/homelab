@@ -6,9 +6,9 @@ one thing: the `homelab-library` Helm library chart.
 ## homelab-library
 
 `helm/homelab-library/chart` is a [Helm library chart](https://helm.sh/docs/topics/library_charts/)
-(type: `library`, version `0.5.0`). It provides named template partials that
+(type: `library`, version `0.7.0`). It provides named template partials that
 individual service charts call with `include`. Library charts produce no
-Kubernetes manifests on their own — they only supply reusable helpers.
+Kubernetes manifests on their own; they only supply reusable helpers.
 
 ### Templates
 
@@ -19,15 +19,13 @@ Kubernetes manifests on their own — they only supply reusable helpers.
 | `homelab.componentLabels` / `homelab.componentSelectorLabels` | `_helpers.tpl`         | Per-component labels (`app.kubernetes.io/component`)  |
 | `homelab.serviceAccountName`                                  | `_helpers.tpl`         | Service account name resolution                       |
 | `homelab.deployment`                                          | `_deployment.tpl`      | Complete `apps/v1` Deployment                         |
-| `homelab.statefulset`                                         | `_statefulset.tpl`     | Complete `apps/v1` StatefulSet with a PVC             |
 | `homelab.service`                                             | `_service.tpl`         | `v1` Service (single or multi-port)                   |
 | `homelab.serviceaccount`                                      | `_serviceaccount.tpl`  | `v1` ServiceAccount (optional)                        |
-| `homelab.imagepullsecret`                                     | `_imagepullsecret.tpl` | 1Password-backed GHCR pull secret (`OnePasswordItem`) |
 
 ### Convention
 
-`homelab.deployment` and `homelab.statefulset` read all per-component config
-from `.Values.<component>`. Consumer templates set up values on that key, then
+`homelab.deployment` reads all per-component config
+from `.Values.<component>`. Consumer templates set values on that key, then
 call:
 
 ```yaml
@@ -45,10 +43,11 @@ Kubernetes resource name stays kebab-case:
 }
 ```
 
-Security defaults: every Deployment and StatefulSet mounts an `emptyDir` at
-`/tmp` (required when containers run read-only), inherits
-`podSecurityContext`/`securityContext` from the chart's global values, and
-respects the `imagePullSecret.enabled` toggle for GHCR auth.
+Security defaults: every Deployment mounts an `emptyDir` at
+`/tmp` (required when containers run read-only) and inherits
+`podSecurityContext`/`securityContext` from the chart's global values. When
+`imagePullSecret.enabled` is true the pod references a `ghcr-imagepull-secret`
+Secret the consuming chart must provide; the library does not create it.
 
 ### Adding as a dependency
 
@@ -58,7 +57,7 @@ Reference the chart with a `file://` path from the consuming chart's
 ```yaml
 dependencies:
   - name: homelab-library
-    version: "0.5.0"
+    version: "0.7.0"
     repository: "file://../../shared/helm/homelab-library/chart"
 ```
 
@@ -71,10 +70,24 @@ Adjust the relative path depth as needed (services nested one level deeper use
 | --------------------------- | ------------------------------------------ |
 | `mcp/context-forge-gateway` | `projects/mcp/context-forge-gateway/chart` |
 | `monolith-public`           | `projects/monolith-public/chart`           |
+| `monolith-agents`           | `projects/monolith-agents/chart`           |
 
 ### Bumping the version
 
-When changing any template, bump `version` in `Chart.yaml` here and update the
-`version` field in every consumer's `Chart.yaml` dependency block to match.
-Run `helm dependency update <chart-dir>` in each consumer to regenerate its
-`charts/` lockfile before committing.
+When changing any template, bump `version` in the library `Chart.yaml` and
+update the `version` field in each consumer's `Chart.yaml` dependency block to
+match (`projects/monolith-public/chart`, `projects/monolith-agents/chart`,
+`projects/mcp/context-forge-gateway/chart`). Then regenerate each consumer's
+vendored artifacts: its `Chart.lock` and `charts/homelab-library-<version>.tgz`
+(`helm dependency update <chart-dir>` rebuilds both, and removes the old
+tarball so exactly one remains).
+
+`bazel/tools/format/sync-helm-deps.sh --check` flags version mismatches, and
+`bazel/tools/format/helm_deps/check_helm_deps.py --root .` verifies each
+committed tarball matches the library source (it compares `templates/*` and
+`values.yaml` plus the `Chart.yaml` version); CI runs the latter. Note that
+`projects/mcp/context-forge-gateway/chart` also depends on `mcp-stack` from
+`oci://ghcr.io/jomcgi/homelab/charts`, so `helm dependency update` there needs
+registry auth. Without it, package the library (`helm package
+projects/shared/helm/homelab-library/chart`) or reuse the tarball built for
+another consumer, and write `Chart.lock` with the matching version and digest.

@@ -26,7 +26,7 @@ import tarfile
 from pathlib import Path
 
 # Templates that render a container image and must route through the helper.
-_IMAGE_RENDERING_TEMPLATES = ("_deployment.tpl", "_statefulset.tpl")
+_IMAGE_RENDERING_TEMPLATES = ("_deployment.tpl",)
 
 
 def _packaged_library() -> Path:
