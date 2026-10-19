@@ -38,6 +38,10 @@
     const path = $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/";
     if (path === "/") return false;
     if (/^\/(app|review|chat|notes|qwen)(\/|$)/.test(path)) return false;
+    // These factory documents carry their own Trail and persisted scheme
+    // switch. Execution routes still need the legacy dashboard link.
+    if (/^\/factory(?:\/?|\/escalations\/?|\/work-items\/[^/]+\/?)$/.test(path))
+      return false;
     return true;
   });
 </script>

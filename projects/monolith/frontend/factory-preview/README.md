@@ -72,3 +72,9 @@ missing dependencies (including Pillow), missing/clipped captures and provenance
 mismatches fail without emitting a handoff. Existing captures survive a failed
 preparation; files created by that failed preparation are removed. The output
 handoff must be outside the evidence directory to avoid a self-referential hash.
+After these public checks, the browser entry point runs the isolated
+`private-factory-preview/ci_check.py`. That fixture builds the three private
+factory routes separately, retaining this public build's private-module guard.
+The existing evidence upload includes its `private/MATRIX.md` screenshots and
+`private/results.json` provenance and overflow/action checks. See that fixture's
+README for its scope; a public preview pass alone does not cover private pages.
