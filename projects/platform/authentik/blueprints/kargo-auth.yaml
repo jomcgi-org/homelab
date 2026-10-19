@@ -97,7 +97,7 @@ entries:
     attrs:
       name: Kargo
       provider: !KeyOf kargo-provider
-      meta_description: Promotion controller UI for the monolith's dev and production stages.
+      meta_description: Kargo pipeline UI for the hub's monolith services and EmberVM.
 
   # ── 3. Gate it ───────────────────────────────────────────────────────────
   # Without a policy binding authentik lets EVERY authenticated account

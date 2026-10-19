@@ -1,4 +1,4 @@
-# Kargo, owning the monolith's chart version in dev and production.
+# Kargo owns chart revisions for the hub's four promotion pipelines.
 #
 # Everything not needed for that is off, because each enabled integration
 # widens the controller's RBAC and the chart's own docs say explicitly
@@ -171,51 +171,22 @@ promotion:
       # receives literal backslashes. expr accepts either quote style, so using
       # single quotes here means nothing needs escaping.
       desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith').Version }}"
-      # ONE STAGE ON GKE, and that is a reduction from what this pipeline was
-      # designed to do. The home cluster ran dev then prod, where `upstream`
-      # made it a pipeline rather than two independent subscribers: prod could
-      # only receive Freight dev had already taken and held healthily for a
-      # soak. GKE has no dev Applications yet, so prod subscribes to the
-      # Warehouse directly and that pre-production exposure does not exist.
+      # Prod only: this pipeline has no registered dev Application or upstream
+      # Stage. EmberVM has its own dev/prod pipeline below. Adding a monolith
+      # dev lane is a separate decision.
       #
-      # What remains is still worth having and is the reason this is being
-      # deployed: promotion becomes automatic and health-verified. argocd-update
-      # applies the new chart version and WAITS for the Application to reach
-      # Synced and Healthy, and a Promotion that does not get there fails, so a
-      # chart that cannot come up stops rather than sitting half-rolled. That
-      # replaces hand-editing targetRevision in projects/gke-apps, which is what
-      # every deploy on this cluster has been since the cutover.
-      #
-      # Restoring the dev stage is the follow-up, and it is a prerequisite for
-      # calling this a gate rather than a deploy mechanism. The overlays already
-      # exist (projects/monolith/dev/deploy, projects/embervm/dev/deploy); what
-      # is missing is the Applications on this cluster.
-      #
-      # THE GATE IS argocd-wait, not Kargo `verification`. Kargo's
-      # verification block needs Argo Rollouts AnalysisTemplates and Rollouts stays
-      # off (see controller.rollouts above), so the assertions live in the
-      # promotion steps instead. A Stage with no `verification` reports "Freight has
-      # been verified" the moment its Promotion succeeds, so that status is not the
-      # signal; the Promotion succeeding is.
-      #
-      # What that buys, honestly: the promoted chart reached production, the sync
-      # finished, and the workload came Healthy (readiness probe /healthz) at
-      # that moment. What it does not buy, and bought on the home cluster: a
-      # settling window in which a pod that comes up Healthy and then crashloops
-      # is caught before production sees it. argocd-wait is a point-in-time
-      # check, so that class now reaches prod. It also does not buy any
-      # functional assertion beyond the readiness probe. The revision-aware
-      # health sample (the residual race in templates/promotion.yaml) is
-      # wired below as `revisionURL` and rendered only once
-      # `promotion.revisionGate.enabled` is true; #4745 tracks that flip and
-      # the functional assertion that remains out of scope.
+      # argocd-update and argocd-wait check sync completion and point-in-time
+      # readiness. There is no upstream soak or functional assertion here.
+      # Assertions live in promotion steps; Argo Rollouts and the separate
+      # Kargo verification block are unused. Freight becomes verified when the
+      # Promotion succeeds, which alone is insufficient rollout evidence.
+      # revisionURL below is inert while promotion.revisionGate.enabled is
+      # false; #4745 tracks revision-aware and functional verification.
       stages:
         - name: prod
           application: monolith
-          # Nothing upstream: with no dev environment on this cluster, prod
-          # subscribes to the Warehouse directly. No requiredSoakTime either,
-          # because a soak is a constraint on how long the UPSTREAM stage must
-          # hold Freight, and there is no upstream stage to hold it.
+          # Subscribes directly to the Warehouse. No upstream Stage means
+          # there is no requiredSoakTime for this pipeline.
           upstream: []
           # Operator removed the recovery drill from the factory launch path.
           # Resume automatic promotion through the existing rollout checks.
