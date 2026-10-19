@@ -62,6 +62,8 @@ def pause(db, task_id, blocker):
 
     row = controls._receipt(db, task_id)
     actor = "factory:allocation-recovery"
+    if row is not None and row.state in controls._ACTIVE:
+        controls.revoke_capacity_release(db, row, actor, "pause_task")
     if factory_pause.pause_locked(db, row, actor, controls._json(blocker)):
         controls._audit(
             db, actor, "allocation_recovery_required", task_id=task_id, **blocker

@@ -572,9 +572,13 @@ release request while their repository lane, global lane or chart-wide ceiling
 is full. The regular reconciler and admission retry those requests under the
 singleton control lock.
 A new pause, including a runtime-meter fence, cancellation, human handoff or
-replacement hold revokes pending release intent. Non-cancellation settlement
-applies a still-matching hold removal without an execution slot and revokes only
-the resume part; its audit makes replay acknowledge the applied hold release.
+replacement hold revokes pending release intent, even if the receipt was already
+paused. Settlement other than cancellation or human handoff applies a surviving,
+still-matching hold removal without an execution slot regardless of a pre-existing
+pause, and revokes only the resume part. Both settlement and capacity-retry audits
+retain the landing authorization so same-key replay acknowledges an applied hold
+release. A revoked request retains its original acknowledgement on replay and
+cannot recreate release intent.
 Revocations record the request and reason in the audit.
 A hold-only release on a paused receipt preserves the pause and needs no
 free slot. No request means no automatic resume. Held repository work reacquires

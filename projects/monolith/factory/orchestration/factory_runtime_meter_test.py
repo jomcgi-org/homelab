@@ -934,9 +934,19 @@ def held_delivery(database, monkeypatch):
 
 
 @pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
-@pytest.mark.parametrize("settle", [False, True])
-def test_landing_release_retains_authorized_intent_while_full(
-    database, held_delivery, monkeypatch, constraint, settle
+@pytest.mark.parametrize("intent_shape", ["hold", "resume", "combined"])
+@pytest.mark.parametrize("pause_history", ["unpaused", "before", "after"])
+@pytest.mark.parametrize(
+    "outcome", ["succeeded", "escalated", "failed", "cancelled", "human", "retry"]
+)
+def test_capacity_release_intent_matrix(
+    database,
+    held_delivery,
+    monkeypatch,
+    constraint,
+    intent_shape,
+    pause_history,
+    outcome,
 ):
     from factory.orchestration import factory_landing_release as releases
 
@@ -969,61 +979,171 @@ def test_landing_release_retains_authorized_intent_while_full(
                 url="",
                 actor="test",
                 state="admitted",
+                policy_json=json.dumps(policy),
             )
         )
-    proposal = releases.preview(838, 7170, "a" * 40, "Approved exact delivery")
-    args = dict(
-        actor="operator",
-        request_key="release-waiting",
-        expected_preview_sha256=proposal["preview_sha256"],
+    has_hold = intent_shape != "resume"
+    has_resume = intent_shape != "hold"
+    if pause_history == "before":
+        assert controls.set_control("pause_task", "operator", task_id="task")["ok"]
+    resume_args = dict(
+        task_id="task",
+        request_key="resume-waiting",
+        expected_version=controls.status()["version"],
     )
-    result = releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args)
-    assert result["ok"] and result["pending"]
-    assert (
-        releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args) == result
-    )
-    assert controls.retry_capacity_releases() == 0
-    if settle:
-        assert controls.finish_task(
-            "task", "succeeded", "test", evidence={"state": "ready_for_review"}
-        ) == {"ok": True, "state": "succeeded"}
-        with Session(database) as db:
-            assert controls._receipt(db, "other").state == "admitted"
-            assert not controls.landing_held(db.get(FactoryReceipt, 838))
-        assert controls.retry_capacity_releases() == 0
-        result = {**result, "pending": False, "reason": None}
-    else:
-        with Session(database) as db, db.begin():
-            assert controls.landing_held(db.get(FactoryReceipt, 838))
-            controls._receipt(db, "other").state = "failed"
-        assert controls.retry_capacity_releases() == 1
-    with Session(database) as db:
-        row = db.get(FactoryReceipt, 838)
-        assert not controls.landing_held(row)
-        assert not row.task_paused
-        assert "pending_capacity_release" not in json.loads(row.direction_json)
-        assert (
-            json.loads(row.direction_json)["landing_authorization"]["head_sha"]
-            == "a" * 40
+    if has_resume:
+        resumed = controls.request_control("resume_task", "operator", **resume_args)
+        assert resumed["ok"] and resumed["pending"]
+    if has_hold:
+        proposal = releases.preview(838, 7170, "a" * 40, "Approved exact delivery")
+        args = dict(
+            actor="operator",
+            request_key="release-waiting",
+            expected_preview_sha256=proposal["preview_sha256"],
         )
-    assert (
-        releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args) == result
-    )
-    if settle:
+        result = releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args)
+        assert result["ok"]
+        # A hold-only release on an already paused receipt needs no slot.
+        assert result["pending"] == (has_resume or pause_history != "before")
         assert (
             releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args)
             == result
         )
-        with Session(database) as db:
-            events = db.exec(
-                select(FactoryAudit).where(
-                    FactoryAudit.action == "settled_landing_hold_released"
+    with Session(database) as db:
+        intent = json.loads(db.get(FactoryReceipt, 838).direction_json).get(
+            "pending_capacity_release"
+        )
+    if pause_history == "after":
+        assert controls.set_control("pause_task", "operator", task_id="task")["ok"]
+    assert controls.retry_capacity_releases() == 0
+    refused_success = outcome == "succeeded" and pause_history != "unpaused"
+    settles_hold = (
+        has_hold
+        and intent is not None
+        and pause_history != "after"
+        and outcome in ("succeeded", "escalated", "failed")
+        and not refused_success
+    )
+    retry_applies = (
+        outcome == "retry" and intent is not None and pause_history != "after"
+    )
+    immediate = has_hold and intent is None
+    if outcome == "retry":
+        with Session(database) as db, db.begin():
+            controls._receipt(db, "other").state = "failed"
+        assert controls.retry_capacity_releases() == int(retry_applies)
+    else:
+        evidence = {"state": "ready_for_review"}
+        settled_outcome = outcome
+        if outcome == "human":
+            assert controls.human_handoff("task", "operator", observed=True)
+            evidence = controls.HUMAN_HANDOFF_EVIDENCE
+            settled_outcome = "cancelled"
+        finished = controls.finish_task(
+            "task", settled_outcome, "test", evidence=evidence
+        )
+        if refused_success:
+            # The matrix must preserve the separate paused-success proof gate.
+            assert finished == {"ok": False, "reason": "task_paused"}
+        else:
+            assert finished == {"ok": True, "state": settled_outcome}
+            assert controls.finish_task(
+                "task", settled_outcome, "test", evidence=evidence
+            )["ok"]
+    hold_applied = immediate or settles_hold or (retry_applies and has_hold)
+    assert controls.retry_capacity_releases() == 0
+    with Session(database) as db:
+        audit_count = len(db.exec(select(FactoryAudit)).all())
+        row = db.get(FactoryReceipt, 838)
+        assert controls.landing_held(row) == (not hold_applied)
+        assert row.task_paused == (
+            pause_history != "unpaused" and not (retry_applies and has_resume)
+        )
+        pending = json.loads(row.direction_json).get("pending_capacity_release")
+        assert pending == (
+            intent if refused_success and pause_history == "before" else None
+        )
+        assert controls._receipt(db, "other").state == (
+            "failed" if outcome == "retry" else "admitted"
+        )
+        events = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == "task",
+                FactoryAudit.action.in_(
+                    [
+                        "settled_landing_hold_released",
+                        "execution_capacity_reacquired",
+                        "execution_capacity_release_revoked",
+                    ]
+                ),
+            )
+            .order_by(FactoryAudit.id)
+        ).all()
+        applied = [
+            e for e in events if e.action != "execution_capacity_release_revoked"
+        ]
+        revoked = [
+            e for e in events if e.action == "execution_capacity_release_revoked"
+        ]
+        assert len(applied) == int(immediate or settles_hold or retry_applies)
+        if applied:
+            assert applied[0].action == (
+                "settled_landing_hold_released"
+                if settles_hold
+                else "execution_capacity_reacquired"
+            )
+            detail = json.loads(applied[0].detail_json)
+            assert applied[0].actor == "operator"
+            if intent is not None:
+                assert detail["intent"] == intent
+            if has_hold:
+                assert (
+                    detail["landing_authorization"]["request_key"]
+                    == args["request_key"]
                 )
-            ).all()
-            assert len(events) == 1
-            detail = json.loads(events[0].detail_json)
-            assert detail["landing_authorization"]["request_key"] == args["request_key"]
-            assert detail["intent"]["landing_hold"] == held_delivery[1]["landing_hold"]
+                assert (
+                    detail["intent"]["landing_hold"] == held_delivery[1]["landing_hold"]
+                )
+        must_revoke = intent is not None and (
+            pause_history == "after"
+            or (
+                outcome != "retry"
+                and not refused_success
+                and (not settles_hold or has_resume)
+            )
+        )
+        assert len(revoked) == int(must_revoke)
+        if revoked:
+            assert json.loads(revoked[0].detail_json) == {
+                "reason": "pause_task" if pause_history == "after" else "task_settled",
+                "intent": {k: v for k, v in intent.items() if k != "landing_hold"}
+                if settles_hold
+                else intent,
+            }
+    if has_hold:
+        # Replays acknowledge application through either path. Revoked requests
+        # keep their original acknowledgement and never recreate an intent.
+        expected = (
+            {**result, "pending": False, "reason": None} if hold_applied else result
+        )
+        assert (
+            releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args)
+            == expected
+        )
+    if has_resume:
+        assert (
+            controls.request_control("resume_task", "operator", **resume_args)
+            == resumed
+        )
+    with Session(database) as db:
+        assert (
+            json.loads(db.get(FactoryReceipt, 838).direction_json).get(
+                "pending_capacity_release"
+            )
+            == pending
+        )
+        assert len(db.exec(select(FactoryAudit)).all()) == audit_count
 
 
 @pytest.mark.parametrize("merged", [False, True])
@@ -1544,8 +1664,9 @@ def test_objective_backstop_revokes_pending_resume(database):
 
 
 @pytest.mark.parametrize("sample", ["none", "zero", "early", "duplicates"])
+@pytest.mark.parametrize("intent_shape", ["hold", "resume", "combined"])
 def test_missing_or_stale_native_usage_trips_even_after_enrollment_is_disabled(
-    database, monkeypatch, sample
+    database, monkeypatch, sample, intent_shape
 ):
     now = datetime.now(timezone.utc)
     monkeypatch.setattr(controls, "_now", lambda: now)
@@ -1561,6 +1682,21 @@ def test_missing_or_stale_native_usage_trips_even_after_enrollment_is_disabled(
         update(receipt, 2, 100)
     meter.reconcile("task")
     assert stopped == []
+    intent = {"task_id": "task", "actor": "operator", "requested_at": now.isoformat()}
+    if intent_shape != "hold":
+        intent["resume"] = True
+    if intent_shape != "resume":
+        intent["landing_hold"] = {"actor": "operator"}
+    # A stale-meter pause must fence intent even on an already paused owner.
+    with Session(database) as db, db.begin():
+        owner = db.get(FactoryReceipt, 838)
+        owner.task_paused = True
+        owner.direction_json = json.dumps(
+            {
+                "landing_hold": {"actor": "operator"},
+                "pending_capacity_release": intent,
+            }
+        )
     monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "false")
     now += timedelta(seconds=1)
     meter.reconcile("task")
@@ -1572,11 +1708,25 @@ def test_missing_or_stale_native_usage_trips_even_after_enrollment_is_disabled(
         )
         assert card["open"] and not card["briefing"] and card["options"]
         assert card["reason"] == "meter_usage_stale"
+        owner = db.get(FactoryReceipt, 838)
+        assert owner.task_paused and controls.landing_held(owner)
+        assert "pending_capacity_release" not in json.loads(owner.direction_json)
+        revoked = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "execution_capacity_release_revoked"
+            )
+        ).one()
+        assert revoked.actor == "factory:runtime-meter"
+        assert json.loads(revoked.detail_json) == {
+            "reason": "runtime_meter_pause",
+            "intent": intent,
+        }
         assert (
             meter._records_for_receipt(db, receipt["id"], meter.TRIP)[0]["reason"]
             == "meter_usage_stale"
         )
         assert db.exec(select(FactoryStart)).one().status == "reserved"
+    assert controls.retry_capacity_releases() == 0
 
 
 @pytest.mark.parametrize(

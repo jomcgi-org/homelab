@@ -1509,8 +1509,9 @@ def _apply_capacity_release(
     ):
         revoke_capacity_release(db, row, intent["actor"], "landing_hold_changed")
         return False
-    # Settlement can apply only the matching hold removal, never a resume.
-    if settling and (row.task_paused or "landing_hold" not in intent):
+    # A pause after intent revokes it. A pre-existing pause does not revoke
+    # the matching hold removal on settlement, which never applies a resume.
+    if settling and "landing_hold" not in intent:
         return False
     # Removing only a hold preserves the pause and cannot acquire a new slot.
     remains_paused = row.task_paused and not intent.get("resume")
@@ -1545,7 +1546,7 @@ def _apply_capacity_release(
         intent=intent,
         **(
             {"landing_authorization": direction.get("landing_authorization")}
-            if settling
+            if "landing_hold" in intent
             else {}
         ),
     )
@@ -1971,9 +1972,11 @@ def pause_nonrenewable_recovery(task_id, reason, *, session=None) -> bool:
             return False
         from factory.orchestration import factory_pause
 
-        if factory_pause.pause_locked(db, row, "factory:nonrenewable-recovery", reason):
+        actor = "factory:nonrenewable-recovery"
+        if row.state in _ACTIVE:
+            revoke_capacity_release(db, row, actor, "pause_task")
+        if factory_pause.pause_locked(db, row, actor, reason):
             # This is an operator envelope, not an expiring reconciler pause.
-            actor = "factory:nonrenewable-recovery"
             _audit(
                 db,
                 actor,

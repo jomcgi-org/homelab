@@ -649,8 +649,9 @@ def test_resume_from_the_card_rearms_from_current_turns(
     assert len(model.calls) == 1
 
 
+@pytest.mark.parametrize("pause_again", [False, True])
 def test_card_resume_waits_at_capacity_and_retries_without_another_answer(
-    db, github, notices, model, spans
+    db, github, notices, model, spans, pause_again
 ):
     task_id, policy = looped(db, github, notices, spans)
     with Session(db) as session, session.begin():
@@ -676,9 +677,17 @@ def test_card_resume_waits_at_capacity_and_retries_without_another_answer(
     assert watchdog.check(task_id, policy) == "enact_waiting"
     assert receipt(db, task_id).task_paused
     assert not audits(db, watchdog.CLEARED)
+    if pause_again:
+        assert controls.set_control("pause_task", "operator", task_id=task_id)["ok"]
     with Session(db) as session, session.begin():
         controls._receipt(session, "busy").state = "failed"
-    assert controls.retry_capacity_releases() == 1
+    assert controls.retry_capacity_releases() == int(not pause_again)
+    if pause_again:
+        assert watchdog.check(task_id, policy) == "enact_refused"
+        assert not audits(db, watchdog.CLEARED)
+        assert receipt(db, task_id).task_paused
+        assert audits(db, watchdog.ENACT_REFUSED)[-1]["refusal"] == "task_paused"
+        return
     assert watchdog.check(task_id, policy) == "cleared"
     assert not receipt(db, task_id).task_paused
 

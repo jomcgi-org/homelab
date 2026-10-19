@@ -824,6 +824,38 @@ def test_hold_only_release_on_paused_receipt_needs_no_capacity(db, policy, monke
     assert controls.set_control("resume_task", "operator", task_id=first)["pending"]
 
 
+@pytest.mark.parametrize("recovery", ["nonrenewable", "allocation"])
+def test_recovery_fences_pending_resume_on_already_paused_receipt(
+    db, policy, monkeypatch, recovery
+):
+    from factory.orchestration import factory_allocation_recovery as allocation
+
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart")
+    with Session(db) as session, session.begin():
+        controls._receipt(session, first).direction_json = json.dumps(
+            {"nonrenewable_recovery": {"actor": "operator"}}
+        )
+    assert controls.set_control("resume_task", "operator", task_id=first)["pending"]
+    if recovery == "nonrenewable":
+        assert controls.pause_nonrenewable_recovery(first, "spent allowance")
+    else:
+        with controls._locked_session() as (session, _control):
+            allocation.pause(session, first, {"code": "funding_without_progress"})
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 0
+    with Session(db) as session:
+        row = controls._receipt(session, first)
+        assert row.task_paused
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+        revoked = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "execution_capacity_release_revoked"
+            )
+        ).one()
+        assert revoked.actor == f"factory:{recovery}-recovery"
+        assert json.loads(revoked.detail_json)["reason"] == "pause_task"
+
+
 def test_repository_capacity_does_not_double_count_existing_holder(
     db, policy, monkeypatch
 ):
