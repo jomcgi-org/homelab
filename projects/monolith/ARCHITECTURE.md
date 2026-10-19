@@ -1541,9 +1541,13 @@ files at 128,000 bytes, and per-claim transfer at 512,000 bytes. The existing
 and retained cache each have a 512,000-byte bound. Single prompts are capped at
 96,000 bytes; batch prompts retain their 256,000-byte bound. Fetch deadlines,
 request limits and the 30-minute evidence age still apply.
-Tree sizes preflight aggregate base64 transport, including escaped line breaks,
-before any blob is fetched. Fixed overflow is unsupported with a resolved file
-identity and leaves the shared batch reader available to later members.
+Tree sizes preflight aggregate base64 transport, including escaped line breaks
+and a 1,024-byte envelope allowance per blob, before any blob is fetched. The
+same per-blob bound is enforced while streaming. Prior responses count their
+actual wire size or serialized size, whichever is larger; batches include the
+shared pin response. Preflight reserves one final streaming chunk so rejected
+response bytes remain charged. Preflight overflow is unsupported with a resolved
+file identity and leaves the batch reader available to later members.
 
 Files that do not fit the evidence bound can supply positive literal witnesses.
 Every nonempty title/body line must match the closed grammar

@@ -24,6 +24,8 @@ VERSION = "literal-witness/v1"
 MAX_FILE_BYTES = 128_000
 MAX_RESPONSE_BYTES = 192_000
 MAX_TRANSFER_BYTES = 512_000
+MAX_BLOB_ENVELOPE_BYTES = 1024
+STREAM_CHUNK_BYTES = 8192
 MAX_WITNESSES = 12
 _SHA = re.compile(r"[0-9a-f]{40}")
 _CLAUSE = re.compile(
@@ -43,11 +45,35 @@ def serialized_size(value):
         raise EvidenceUnsupported("unsupported JSON representation") from exc
 
 
-def read_response(client, path, *, deadline_at=None, charge=None):
+class SourceResponse(dict):
+    """Keep the actual wire charge with cached JSON, including whitespace."""
+
+    def __init__(self, value, wire_bytes):
+        super().__init__(value)
+        self.wire_bytes = wire_bytes
+
+
+def response_size(value):
+    return max(serialized_size(value), getattr(value, "wire_bytes", 0))
+
+
+def blob_response_bound(item):
+    encoded = ((item["size"] + 2) // 3) * 4
+    # GitHub wraps base64 at 60 characters; each LF takes two JSON bytes.
+    # The envelope allowance includes URLs, node IDs and JSON formatting.
+    # Enforce this same bound while streaming; collection also reserves the
+    # one possible overflow chunk, which still counts as transferred bytes.
+    return encoded + 2 * ((encoded + 59) // 60) + MAX_BLOB_ENVELOPE_BYTES
+
+
+def read_response(
+    client, path, *, deadline_at=None, charge=None, max_bytes=MAX_RESPONSE_BYTES
+):
     """Bound wire bytes before decoding, including unsuccessful responses."""
     headers = {**_github_headers(), "Accept-Encoding": "identity"}
     deadline_at = deadline_at if deadline_at is not None else time.monotonic() + 90
     remaining = deadline_at - time.monotonic()
+    max_bytes = min(max_bytes, MAX_RESPONSE_BYTES)
     if remaining <= 0:
         raise EvidenceUnavailable("source collection deadline exhausted")
     with client.stream(
@@ -58,21 +84,21 @@ def read_response(client, path, *, deadline_at=None, charge=None):
         if response.headers.get("content-encoding", "identity") != "identity":
             raise EvidenceUnsupported("unsupported source transport encoding")
         data = bytearray()
-        for chunk in response.iter_raw(chunk_size=8192):
+        for chunk in response.iter_raw(chunk_size=STREAM_CHUNK_BYTES):
             if time.monotonic() >= deadline_at:
                 raise EvidenceUnavailable("source collection deadline exhausted")
             if charge is not None:
                 charge(len(chunk))
-            if len(data) + len(chunk) > MAX_RESPONSE_BYTES:
+            if len(data) + len(chunk) > max_bytes:
                 raise EvidenceUnsupported("source response byte bound exceeded")
             data.extend(chunk)
         try:
             result = json.loads(data.decode("utf-8"))
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise EvidenceUnsupported("unsupported source JSON encoding") from exc
-        if serialized_size(result) > MAX_RESPONSE_BYTES:
+        if serialized_size(result) > max_bytes:
             raise EvidenceUnsupported("source response serialization bound exceeded")
-        return result
+        return SourceResponse(result, len(data)) if isinstance(result, dict) else result
 
 
 def file_identity(paths, main, get):
