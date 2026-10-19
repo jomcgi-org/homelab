@@ -36,8 +36,6 @@ def _issue(receipt_id):
 
 
 def _capacity(db, control, row):
-    from factory.orchestration.factory_intake import lane_of
-
     policy = json.loads(control.policy_json)
     if (
         control.state != "enabled"
@@ -54,18 +52,7 @@ def _capacity(db, control, row):
     if any(same_work(other, row) for other in owned):
         raise ValueError("recovery_work_owned_elsewhere")
     active = [other for other in owned if other.state in controls._ACTIVE]
-    unresolved = controls.unresolved_start_task_ids(db)
-    occupying = controls.execution_slot_holders(
-        policy, active, unresolved_task_ids=unresolved
-    )
-    lane = lane_of(row)
-    if (
-        not controls.execution_capacity_available(
-            db, control, row, active=active, unresolved=unresolved
-        )
-        or sum(other.repo == row.repo and lane_of(other) == lane for other in occupying)
-        >= controls.repo_lane_limits(policy, row.repo)[lane]
-    ):
+    if not controls.execution_capacity_available(db, control, row, active=active):
         raise ValueError("recovery_capacity_unavailable")
     if row.work_item_id:
         item = db.get(WorkItem, row.work_item_id)

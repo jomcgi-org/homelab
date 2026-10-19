@@ -568,8 +568,9 @@ reserve intake room. Per-repository lane caps count the same execution-slot
 holders. Waiting and landing receipts retain issue and branch ownership.
 
 Authorized resumes and landing-hold releases retain their fences and a durable
-release request while their lane or the chart-wide ceiling is full. The regular
-reconciler and admission retry those requests under the singleton control lock.
+release request while their repository lane, global lane or chart-wide ceiling
+is full. The regular reconciler and admission retry those requests under the
+singleton control lock.
 A new pause, including a runtime-meter fence, cancellation or human handoff
 revokes pending resume intent. Revocations record the request and reason in the
 audit. A hold-only release on a paused receipt preserves the pause and needs no

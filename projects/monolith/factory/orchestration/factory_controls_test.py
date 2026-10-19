@@ -601,6 +601,16 @@ def _capacity_pair(db, policy, monkeypatch, constraint, *, held=False):
         controls.set_control("pause_task", "operator", task_id=first)
     if constraint == "chart":
         monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "1")
+    elif constraint == "repo":
+        assert controls.set_control(
+            "configure",
+            "operator",
+            policy={
+                **policy,
+                "generation": 1,
+                "repos": {"owner/repo": {"max_tasks": 1}},
+            },
+        )["ok"]
     else:
         assert controls.set_control(
             "configure", "operator", policy={**policy, "generation": 1, "max_tasks": 1}
@@ -608,7 +618,7 @@ def _capacity_pair(db, policy, monkeypatch, constraint, *, held=False):
     return first, second
 
 
-@pytest.mark.parametrize("constraint", ["lane", "chart"])
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
 def test_resume_waits_durably_then_retries_without_another_decision(
     db, policy, monkeypatch, constraint
 ):
@@ -634,7 +644,7 @@ def test_resume_waits_durably_then_retries_without_another_decision(
     assert not controls.can_start(first)["ok"]
 
 
-@pytest.mark.parametrize("constraint", ["lane", "chart"])
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
 def test_hold_release_waits_durably_then_retries(db, policy, monkeypatch, constraint):
     first, second = _capacity_pair(db, policy, monkeypatch, constraint, held=True)
     with controls._locked_session() as (session, control):
@@ -685,6 +695,19 @@ def test_hold_only_release_on_paused_receipt_needs_no_capacity(db, policy, monke
         assert row.task_paused and not controls.landing_held(row)
     assert controls.status()["lanes"]["delivery"]["active"] == 1
     assert controls.set_control("resume_task", "operator", task_id=first)["pending"]
+
+
+def test_repository_capacity_does_not_double_count_existing_holder(
+    db, policy, monkeypatch
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, "repo", held=True)
+    with controls._locked_session() as (session, control):
+        assert controls.execution_capacity_available(
+            session, control, controls._receipt(session, second)
+        )
+        assert not controls.execution_capacity_available(
+            session, control, controls._receipt(session, first)
+        )
 
 
 @pytest.mark.parametrize(
@@ -841,8 +864,11 @@ def test_pending_hold_release_preserves_replacement_fences(
         assert "pending_capacity_release" not in json.loads(row.direction_json)
 
 
-def test_held_start_reservations_contend_under_admission_lock(db, policy, monkeypatch):
-    first, second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
+@pytest.mark.parametrize("constraint", ["chart", "repo"])
+def test_held_start_reservations_contend_under_admission_lock(
+    db, policy, monkeypatch, constraint
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, constraint, held=True)
     with Session(db) as session, session.begin():
         controls._receipt(session, second).direction_json = '{"landing_hold":null}'
     from threading import Barrier
