@@ -317,7 +317,10 @@ apko_image(
 # blog fixture, whose CSP forbids artifact iframes. These inputs are hand-listed.
 js_library(
     name = "sheet_fixture_src",
-    srcs = glob(["sheet-preview/**"], exclude = ["sheet-preview/__pycache__/**"]) + [
+    srcs = glob(
+        ["sheet-preview/**"],
+        exclude = ["sheet-preview/__pycache__/**"],
+    ) + [
         "package.json",
         "preview/fonts.css",
         "preview/fonts/SchibstedGrotesk.ttf",
@@ -368,7 +371,11 @@ js_library(
 js_run_binary(
     name = "sheet_fixture_preview",
     srcs = [":sheet_fixture_src"],
-    args = ["build", "--config", "sheet-preview/vite.config.js"],
+    args = [
+        "build",
+        "--config",
+        "sheet-preview/vite.config.js",
+    ],
     chdir = package_name(),
     out_dirs = ["sheet-fixture-preview"],
     tool = ":vite",
@@ -378,6 +385,7 @@ build_test(
     name = "sheet_fixture_preview_build_test",
     targets = [":sheet_fixture_preview"],
 )
+
 # The dedicated Actions job compiles these real route components and runs
 # Chromium. This independent contract target makes fixture edits participate
 # in affected-target CI without making a test output an input to a build.
