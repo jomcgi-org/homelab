@@ -68,6 +68,9 @@ def measurements(page):
 
 def capture(page, output, records, commit, view, scenario, scheme, state="base"):
     page.evaluate("document.fonts.ready")
+    # Locator clicks scroll controls into view. Normalize full-page evidence
+    # so sticky navigation is not captured across the middle of a record.
+    page.evaluate("window.scrollTo(0, 0)")
     data = measurements(page)
     name = f"{view}-{scenario}-{data['viewport']['width']}-{scheme}-{state}"
     page.screenshot(path=str(output / f"{name}.png"), full_page=True)
@@ -98,6 +101,7 @@ def capture(page, output, records, commit, view, scenario, scheme, state="base")
             control["left"] >= -1 and control["right"] <= data["viewport"]["width"] + 1
         ), f"{name}: offscreen control {control}"
         assert control["height"] >= 43, f"{name}: short control {control}"
+        assert control["width"] >= 43, f"{name}: narrow control {control}"
 
 
 def actions(page, view, snapshot):
