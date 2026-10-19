@@ -461,23 +461,23 @@
     outline-offset: 3px;
   }
 
-  /* Masthead: the app chrome the slop/factory page wears, one boxed strip
-     of crumbs and one of view tabs, both partitioned by --stroke. */
+  /* Eight values form complete rows on both phone and desktop. */
   .stats {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     border: 1px solid var(--ink);
   }
   .stats > div {
     min-width: 0;
     padding: 0.55rem 0.8rem 0.6rem;
     border-right: 1px solid var(--stroke);
+    border-bottom: 1px solid var(--stroke);
   }
-  .stats > div:nth-child(3n) {
+  .stats > div:nth-child(2n) {
     border-right: 0;
   }
-  .stats > div:nth-child(-n + 3) {
-    border-bottom: 1px solid var(--stroke);
+  .stats > div:nth-last-child(-n + 2) {
+    border-bottom: 0;
   }
   .stats .k {
     display: block;
@@ -732,13 +732,13 @@
     .stats {
       grid-template-columns: repeat(4, minmax(0, 1fr));
     }
-    .stats > div:nth-child(3n) {
+    .stats > div:nth-child(2n) {
       border-right: 1px solid var(--stroke);
     }
-    .stats > div:last-child {
+    .stats > div:nth-child(4n) {
       border-right: 0;
     }
-    .stats > div:nth-child(-n + 3) {
+    .stats > div:nth-last-child(-n + 4) {
       border-bottom: 0;
     }
     .stats .v {

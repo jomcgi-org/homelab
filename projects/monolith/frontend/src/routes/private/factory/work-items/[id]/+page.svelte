@@ -177,7 +177,7 @@
       </div>
     </header>
 
-    <section aria-label="Work item edges">
+    <section class="edition item-section" aria-label="Work item edges">
       <p class="sec-label">/ Blocked by</p>
       {#if !edges.blocked_by?.length}
         <p class="none">none</p>
@@ -375,7 +375,7 @@
     {/if}
 
     {#if document.receipts?.length}
-      <section aria-label="Receipts">
+      <section class="edition item-section" aria-label="Receipts">
         <p class="sec-label">/ Receipts</p>
         {#each document.receipts as receipt}
           {#if receipt.state === "escalated"}
@@ -411,7 +411,7 @@
       </section>
     {/if}
 
-    <section aria-label="Event history">
+    <section class="edition item-section" aria-label="Event history">
       <p class="sec-label">/ Events</p>
       {#if !eventHistory.length}
         <p class="none">none</p>
@@ -503,6 +503,12 @@
 
   section {
     margin-top: 2.25rem;
+  }
+  .item-section {
+    padding: 1rem;
+  }
+  .edge-line + .sec-label {
+    margin-top: 1.5rem;
   }
 
   .edge-line {
@@ -633,14 +639,6 @@
   @media (max-width: 40em) {
     .add-form {
       grid-template-columns: 1fr;
-    }
-    .edge-line {
-      flex-direction: column;
-      align-items: flex-start;
-    }
-    .edge-line :global(.remove-btn) {
-      margin-left: 0;
-      margin-top: 0.3rem;
     }
   }
 </style>
