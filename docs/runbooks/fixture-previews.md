@@ -20,7 +20,11 @@ harness files, capture code, Playwright and Chromium versions. Identical PNGs
 are labeled identical. Changed harnesses or fixture data are labeled
 unavailable for comparison; the baseline is never replaced with a different
 revision. A missing baseline harness is also shown as unavailable. In
-particular, a new Trips or Stars harness cannot supply historical screenshots
+particular, a changed historical capture harness is rejected before applying
+the current required PNG matrix. A baseline with missing fixture inputs is
+also unavailable. Eligible baselines still run their own contract checks and
+compare generated fixture data before any screenshots are paired. A new Trips
+or Stars harness cannot supply historical screenshots
 that were never captured. Their owner must establish a comparable baseline
 before visual before/after acceptance can be claimed.
 
