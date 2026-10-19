@@ -295,6 +295,10 @@ metaSpark:
 # documented in factory/orchestration/FACTORY.md under "Review publisher".
 swarm:
   enabled: true
+  # Requires the compatible sidecar exclusion from #7231 on every brick.
+  # Defer stale preferred-account work before enabling B-first egress.
+  codexExhaustedGrantExclusion: true
+  codexPreferredGrant: codex-b
   # Webhook stays homelab-only: the legacy repository value in the chart is
   # ingested, and no extra repos are configured until the staged
   # weave-hand/loom operator migration in FACTORY.md sets this.
