@@ -154,7 +154,16 @@ def main():
                     record["cover_contrast_ratios"] = contrasts
                     assert contrasts and min(contrasts) >= 4.5, contrasts
                     record["assertions"]["cover_labels_contrast"] = True
-                if extra == "source":
+                if extra == "graph":
+                    page.get_by_role("button", name="Close codex").click()
+                    graph = page.locator(".canvas-stage canvas")
+                    before_zoom = graph.evaluate("e=>e.toDataURL()")
+                    graph.hover()
+                    page.mouse.wheel(0, -300)
+                    page.wait_for_timeout(250)
+                    assert graph.evaluate("e=>e.toDataURL()") != before_zoom
+                    record["assertions"]["graph_zoom"] = True
+                elif extra == "source":
                     page.locator("button.touched-chip").first.click()
                     page.get_by_role("dialog").wait_for()
                 elif extra == "chapters":
@@ -198,6 +207,9 @@ def main():
                         else None
                     )
                     toggle = page.locator(".scheme")
+                    # Admission is clicked with the pointer. Enter keyboard
+                    # modality before checking the :focus-visible treatment.
+                    page.keyboard.press("Tab")
                     toggle.focus()
                     assert (
                         toggle.evaluate("e=>getComputedStyle(e).outlineStyle") != "none"
@@ -263,6 +275,7 @@ def main():
             visit("library", 390, scheme, state="error")
             visit("book", 901, scheme)
             visit("home", 1440, scheme, extra="from-engineering")
+            visit("world", 390, scheme, extra="graph")
         browser.close()
     server.shutdown()
     print(f"Grimoire captures: {len(checks)}, failures: {len(failures)}, head: {head}")
