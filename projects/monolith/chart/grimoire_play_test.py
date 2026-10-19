@@ -95,3 +95,35 @@ def test_transcript_default_off_and_explicit_switch_reach_both_containers(
         ]
         assert values == [expected]
         assert isinstance(values[0], str)
+
+
+@pytest.mark.parametrize("deploy", [False, True])
+@pytest.mark.parametrize("enabled", [None, True, False])
+def test_factory_async_residency_default_off_and_explicit_rollback(deploy, enabled):
+    chart = Path(__file__).resolve().parent
+    command = [os.environ.get("HELM_BIN", "helm"), "template", "kg", str(chart)]
+    if deploy:
+        command += [
+            "-f",
+            os.environ.get(
+                "DEPLOY_VALUES", str(chart.parent / "deploy" / "values.yaml")
+            ),
+        ]
+    if enabled is not None:
+        command += [
+            "--set",
+            f"agents.sessions.asyncResidencyEnabled={str(enabled).lower()}",
+        ]
+    rendered = subprocess.run(
+        command, capture_output=True, text=True, check=True, timeout=120
+    )
+    values = [
+        entry["value"]
+        for doc in yaml.safe_load_all(rendered.stdout)
+        if doc and doc.get("kind") == "Deployment"
+        for container in doc["spec"]["template"]["spec"]["containers"]
+        for entry in container.get("env", [])
+        if entry["name"] == "FACTORY_ASYNC_RESIDENCY_ENABLED"
+    ]
+    assert values
+    assert set(values) == {"true" if enabled else "false"}

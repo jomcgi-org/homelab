@@ -1,3 +1,5 @@
+import pytest
+
 from bench.verifiers import get_verifier, VerifyResult
 
 
@@ -6,6 +8,32 @@ def test_dispatch_unknown_kind_raises():
 
     with pytest.raises(KeyError):
         get_verifier("nope")
+
+
+@pytest.mark.parametrize("kind", ["py-compile", "go-build", "ruff", "buildifier"])
+def test_removed_verifier_kinds_are_unknown(kind):
+    with pytest.raises(KeyError, match=f"unknown verifier kind: {kind}"):
+        get_verifier(kind)
+
+
+@pytest.mark.parametrize(
+    ("kind", "module"),
+    [
+        ("checks", "checks"),
+        ("command", "command"),
+        ("helm-template", "helm"),
+        ("json-match", "jsonmatch"),
+        ("mutation", "mutation"),
+        ("pytest", "pytest"),
+        ("rbac-cover", "rbac"),
+        ("review-findings", "review"),
+        ("speedup", "speedup"),
+    ],
+)
+def test_retained_verifier_kinds_dispatch_to_their_modules(kind, module):
+    verifier = get_verifier(kind)
+    assert callable(verifier)
+    assert verifier.__module__.endswith(f"verifiers.{module}")
 
 
 def test_command_verifier_passes_on_zero_exit(tmp_path):
@@ -18,13 +46,6 @@ def test_command_verifier_reports_stderr_on_fail(tmp_path):
     v = get_verifier("command")
     r = v(tmp_path, {"cmd": ["sh", "-c", "echo boom 1>&2; exit 1"]})
     assert not r.passed and "boom" in r.feedback
-
-
-def test_compile_python_detects_syntax_error(tmp_path):
-    (tmp_path / "m.py").write_text("def f(:\n")
-    v = get_verifier("py-compile")
-    r = v(tmp_path, {"file": "m.py"})
-    assert not r.passed and "SyntaxError" in r.feedback
 
 
 def test_command_write_files_drops_hidden_test(tmp_path):

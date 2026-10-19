@@ -390,15 +390,26 @@ class AggregateTests(unittest.TestCase):
         ):
             publish.finish_site(self.state, self.files)
 
-    def test_absent_state_requires_explicit_owned_site_bootstrap(self):
+    def test_absent_state_initializes_dedicated_site_marker(self):
         api = mock.Mock()
         api.optional.return_value = None
-        with self.assertRaises(publish.Unsafe):
-            publish.load_state(api, URL, False)
-        parent, state, files = publish.load_state(api, URL, True)
+        parent, state, files = publish.load_state(api, URL)
         self.assertIsNone(parent)
         self.assertEqual(state["schema"], publish.MARKER)
+        self.assertEqual(state["repository"], publish.REPOSITORY)
+        self.assertEqual(state["pages_url"], URL)
         self.assertEqual(files, {})
+
+    def test_existing_unmarked_state_branch_is_never_reinitialized(self):
+        api = mock.Mock()
+        api.optional.return_value = {"object": {"sha": C}}
+        responses = {
+            f"/git/commits/{C}": {"tree": {"sha": B}},
+            f"/git/trees/{B}?recursive=1": {"tree": []},
+        }
+        api.repo.side_effect = lambda path: responses[path]
+        with self.assertRaisesRegex(publish.Unsafe, "unmarked state branch"):
+            publish.load_state(api, URL)
 
 
 class GuardAndCommentTests(unittest.TestCase):

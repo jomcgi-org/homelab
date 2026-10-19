@@ -120,6 +120,7 @@ defmodule Embervm.StatefulSweeperTest do
     @impl true
     def load_tasks(server), do: SQLite.load_tasks(server)
     @impl true
+    def load_residency_intents(server), do: SQLite.load_residency_intents(server)
     def load_sessions(server), do: SQLite.load_sessions(server)
     @impl true
     def load_serving_instances(server), do: SQLite.load_serving_instances(server)

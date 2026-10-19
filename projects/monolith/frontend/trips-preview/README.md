@@ -55,30 +55,26 @@ pass the old capture checks. Production imports and map options are unchanged.
 
 `//projects/monolith/frontend:test` includes the composed DOM tests and the
 existing timeline lifecycle suite. `:trips_fixture_preview_build_test` builds
-the fixture in required Linux CI. No active workflow invokes this browser
-runner. The blog and factory preview jobs do not establish trips acceptance.
+the fixture in required Linux CI. The shared `Fixture preview build` workflow
+from #7220 now invokes this same browser runner and requires all 32 PNGs. It
+records source/runner SHA, browser versions, image hashes and failure traces,
+then uploads `fixture-preview-evidence-<full-head-sha>` separately from the
+static public artifact. Evidence requests 90-day retention, bounded by the
+repository policy. Its aggregate includes an offline PNG gallery, with no map
+JavaScript or worker published and no production/backend connection.
 
-`ci-evidence.workflow.yml` is an inactive workflow template for an authorized
-dispatcher to install as `.github/workflows/trips-fixture-evidence.yml`.
-GitHub refused the correction runner's workflow push because its credential
-lacks `workflow` scope. The template does not execute from this directory,
-and staging it does not satisfy the screenshot requirement. Activation needs
-an authorized workflow writer; do not change credentials to work around the
-refusal.
+The comparison displays the actual PR head and merge base. A missing or changed
+historical harness is explicitly unavailable; it never substitutes another
+revision. These synthetic screenshots do not certify geographic tiles or
+actual-host acceptance.
 
-The proposed job checks out the exact PR head with read-only permissions and
-no persisted Git credentials, runs the targeted tests, builds this fixture
-and installs the pinned browser with its system libraries. It uploads all 32
-PNGs and `checks.json` as `trips-fixture-evidence-<full-head-sha>` for 14 days,
-including partial evidence on failure. A failed capture keeps its job red.
+`ci-evidence.workflow.yml` remains an inactive staged template from the earlier
+factory credential refusal. The shared workflow is the authorized capture
+path, so this integration does not install that template or expand credentials.
+Generated output remains outside Git. Rebuild and recapture after every new
+source or CI-format commit. Inspect all PNGs and confirm `complete: true`,
+positive font widths, all 32 per-PNG overflow receipts, and rendered routes.
 
-After activation, link the workflow run and its downloadable artifact in the
-draft PR. Verify
-`checks.json` has the current head, `complete: true`, all 16 combinations and
-zero overflow for all 32 PNGs, then inspect the images. Rebuild and recapture after
-any new source or CI-format commit; expired artifacts also need fresh capture.
-Generated output stays outside Git. The template has no publisher, Pages
-deployment or connection to the `Fixture preview build` publisher trigger.
 The operator landing hold remains in force after evidence and CI pass.
-Screenshots remain a blocking repository-acceptance requirement, separate
-from post-merge rollout and real-host acceptance on #7141.
+Screenshots remain a repository-acceptance requirement, separate from
+post-merge rollout and real-host acceptance on #7141.
