@@ -341,6 +341,8 @@ js_library(
         "src/lib/public/seo.js",
         "src/lib/public/styles/design-system.css",
         "src/lib/public/styles/technical-drawing.css",
+        # Imported by global.css through the production root layout.
+        "src/lib/styles/shared/tokens.css",
         "src/routes/+error.svelte",
         "src/routes/+layout.svelte",
         "src/routes/public/+layout.svelte",
