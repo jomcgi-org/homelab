@@ -242,9 +242,19 @@ defmodule Embervm.ResidencyManagerTest do
     refute_receive {:prime, _, _}
   end
 
-  test "ordinary reconciliation and expiry cannot steal a pending asynchronous relight" do
+  for confirmed_at_expiry <- [true, false] do
+  @confirmed_at_expiry confirmed_at_expiry
+  test "ordinary reconciliation and expiry retain physical claims until confirmed teardown: #{@confirmed_at_expiry}" do
     parent = self()
-    ctx = stack(relight_fun: fn _, _ ->
+    {:ok, teardown} = Agent.start_link(fn -> @confirmed_at_expiry end)
+    ctx = stack(channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+      retire_volume_fun: fn _, _ -> :ok end,
+      session_opts: [channel_fun: fn _ -> {:ok, :channel} end,
+        assign_fun: fn _, _ -> send(parent, :unexpected_invoke); {:error, :unexpected} end,
+        destroy_fun: fn channel, vm_id ->
+          send(parent, {:destroyed, channel, vm_id})
+          {:ok, %{teardown_confirmed: Agent.get(teardown, & &1)}}
+        end], relight_fun: fn _, _ ->
       send(parent, {:relight, self()})
       receive do {:finish, result} -> result end
     end)
@@ -270,7 +280,28 @@ defmodule Embervm.ResidencyManagerTest do
     send(worker, {:finish, {:ok, %Embervm.Node.V1.RelightResponse{vm_id: "late-vm"}}})
     await(fn -> Enum.any?(intents(ctx), &(&1["state"] == "expired")) end)
     assert {:ok, %{state: :running, vm_id: "late-vm", turn_seq: 0}} = SessionStore.get(ctx.store, intent["session_id"])
+    # The late VM never appears in inventory before expiry destroys it.
+    report(ctx, [])
+    SessionManager.sweep(ctx.mgr)
+    assert_receive {:destroyed, {:channel, "node/pod"}, "late-vm"}
+    assert {:ok, %{state: :expired}} = SessionStore.get(ctx.store, intent["session_id"])
+    expected = if @confirmed_at_expiry, do: 0, else: 576
+    assert Inflight.pending_mib("node/pod", table: ctx.inflight) == expected
+    GenServer.stop(ctx.mgr)
+    GenServer.stop(ctx.store)
+    :ets.delete_all_objects(ctx.inflight)
+    Agent.update(teardown, fn _ -> true end)
+    {:ok, store} = SessionStore.start_link(ctx.store_opts)
+    {:ok, mgr} = SessionManager.start_link(Keyword.put(ctx.mgr_opts, :session_store, store))
+    ctx = %{ctx | mgr: mgr, store: store}
+    tick(ctx)
+    await(fn -> Enum.any?(intents(ctx), &(&1["id"] == intent["id"] and &1["claim_reconciled"] == true)) end)
+    assert Inflight.pending_mib("node/pod", table: ctx.inflight) == 0
+    assert {:ok, %{"claim_reconciled" => true}} = SessionStore.residency_intent(store, {:get, intent["session_id"], intent["id"]})
+    if not @confirmed_at_expiry, do: assert_receive({:destroyed, {:channel, "node/pod"}, "late-vm"})
+    refute_receive {:prime, _, _}
     refute_receive :unexpected_invoke
+  end
   end
 
   test "qualified cross-node recovery preserves verified workspace fingerprint" do

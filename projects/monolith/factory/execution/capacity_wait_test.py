@@ -328,25 +328,29 @@ def test_pause_after_lost_enqueue_reattaches_by_read_and_cancels_only_interest(
     assert json.loads(row.capacity_intent_json)["operation_id"]
 
 
-@pytest.mark.parametrize("clock_already_observed", [False, True])
+@pytest.mark.parametrize("clock_mode", ["unobserved", "observed", "legacy"])
 def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
     database,
-    clock_already_observed,
+    clock_mode,
 ):
     engine, sid, deadline = database
     ember = FakeEmber(engine, deadline)
     ember.state = "ready"
-    assert asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
+    if clock_mode != "legacy":
+        assert asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
     assert store.claim_pending_message_for_session_sync(sid, "first") == 1
-    original = json.loads(pending(engine).capacity_intent_json)
+    original = json.loads(pending(engine).capacity_intent_json or "{}")
     started_ms = int(
         (datetime.now(timezone.utc) - timedelta(seconds=30)).timestamp() * 1000
     )
     started = datetime.fromtimestamp(started_ms / 1000, timezone.utc)
-    if clock_already_observed:
+    if clock_mode in {"observed", "legacy"}:
         with Session(engine) as db:
             row = db.exec(select(PendingMessage)).one()
-            row.capacity_started_at = started
+            if clock_mode == "legacy":
+                row.last_dispatch_at = started
+            else:
+                row.capacity_started_at = started
             db.add(row)
             db.commit()
     interrupted = transport.Turn(
@@ -376,7 +380,7 @@ def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
     )
     ember.expected_dispatch_count = 1
     ember.state, ember.reason, ember.generation = "queued", "capacity", 4
-    if not clock_already_observed:
+    if clock_mode == "unobserved":
         evidence = {
             "id": original["operation_id"],
             "session_id": "guest",
@@ -394,11 +398,13 @@ def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
     allow_poll(engine)
     assert not asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
     current = json.loads(pending(engine).capacity_intent_json)
-    assert current["operation_id"] != original["operation_id"]
-    assert current["key"] != original["key"]
+    assert current["operation_id"] != original.get("operation_id")
+    assert current["key"] != original.get("key")
     assert current["generation"] == 4
-    for field in ("deadline", "task_deadline", "first_wait_at"):
-        assert current[field] == original[field]
+    if original:
+        for field in ("deadline", "task_deadline", "first_wait_at"):
+            assert current[field] == original[field]
+    assert capacity_wait._utc(pending(engine).capacity_started_at) == started
     with Session(engine) as db:
         turn = store.get_turn(db, sid, 1)
         assert json.loads(turn.usage_json)["retry_dispatch_count"] == 1
