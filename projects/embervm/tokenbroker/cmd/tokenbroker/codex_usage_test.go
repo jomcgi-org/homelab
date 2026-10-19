@@ -98,14 +98,14 @@ func TestCodexUsageEligibility(t *testing.T) {
 		{name: "stale", observed: true, age: 11 * time.Minute, status: "allowed", window: true, resetAfter: time.Hour, want: 1},
 		{name: "fresh", observed: true, age: 9 * time.Minute, status: "allowed", window: true, resetAfter: time.Hour},
 		{name: "refresh-age-boundary", observed: true, age: 10 * time.Minute, status: "allowed", window: true, resetAfter: time.Hour},
-		{name: "exhausted-future", observed: true, age: 20 * time.Minute, status: "allowed", percent: 100, window: true, resetAfter: time.Hour},
-		{name: "gate-threshold", observed: true, age: 20 * time.Minute, status: "allowed", percent: 97, window: true, resetAfter: time.Hour},
+		{name: "exhausted-future", observed: true, age: 20 * time.Minute, status: "allowed", percent: 100, window: true, resetAfter: time.Hour, want: 1},
+		{name: "gate-threshold", observed: true, age: 20 * time.Minute, status: "allowed", percent: 97, window: true, resetAfter: time.Hour, want: 1},
 		{name: "below-gate-threshold", observed: true, age: 20 * time.Minute, status: "allowed", percent: 96, window: true, resetAfter: time.Hour, want: 1},
-		{name: "rejected-future-low-use", observed: true, age: 20 * time.Minute, status: "rejected", percent: 1, window: true, resetAfter: time.Hour},
+		{name: "rejected-future-low-use", observed: true, age: 20 * time.Minute, status: "rejected", percent: 1, window: true, resetAfter: time.Hour, want: 1},
 		{name: "expired-exhausted", observed: true, age: 20 * time.Minute, status: "allowed", percent: 100, window: true, resetAfter: -time.Second, want: 1},
 		{name: "rejected-reset-passed", observed: true, age: 11 * time.Minute, status: "rejected", window: true, resetAfter: -time.Second, want: 1},
-		{name: "windowless-rejection-young", observed: true, age: 11 * time.Minute, status: "rejected"},
-		{name: "windowless-rejection-boundary", observed: true, age: 15 * time.Minute, status: "rejected"},
+		{name: "windowless-rejection-young", observed: true, age: 11 * time.Minute, status: "rejected", want: 1},
+		{name: "windowless-rejection-boundary", observed: true, age: 15 * time.Minute, status: "rejected", want: 1},
 		{name: "windowless-rejection-old", observed: true, age: 15*time.Minute + time.Second, status: "rejected", want: 1},
 		{name: "windowless-allowed", observed: true, age: 11 * time.Minute, status: "allowed", want: 1},
 	} {
@@ -135,39 +135,34 @@ func TestCodexUsageEligibility(t *testing.T) {
 	}
 }
 
-func TestCodexUsageResumesAfterReset(t *testing.T) {
+func TestCodexUsageDiscoversManualResetBeforeAdvertisedReset(t *testing.T) {
 	r, requests, _ := newUsageTest(t, 200, usageTestPayload(time.Now()))
 	now := r.now()
-	seedUsage(t, r, 20*time.Minute, "allowed", 97, now.Add(time.Minute), true)
+	seedUsage(t, r, 8*time.Hour, "allowed", 100, now.Add(5*24*time.Hour), true)
 	r.refresh(context.Background(), "codex-b")
-	if requests.Load() != 0 {
-		t.Fatal("exhausted grant was requested")
+	view := r.server.quotaStore.GetGrantAt("codex-b", now)
+	if requests.Load() != 1 || view.Exhausted || view.AgeSeconds != 0 || view.Windows[0].UsedPercent != 23 {
+		t.Fatalf("manual reset was not discovered: requests=%d view=%+v", requests.Load(), view)
 	}
-	r.now = func() time.Time { return now.Add(time.Minute) }
 	r.refresh(context.Background(), "codex-b")
 	if requests.Load() != 1 {
-		t.Fatal("grant was not refreshed at reset")
+		t.Fatal("manual reset bypassed refresh interval")
 	}
 }
 
-func TestCodexUsageExpiredPrimaryDoesNotBlockSecondary(t *testing.T) {
+func TestCodexUsageExpiredTokenDoesNotRefreshOAuth(t *testing.T) {
 	r, requests, _ := newUsageTest(t, 200, usageTestPayload(time.Now()))
-	now := r.now()
-	obs := quota.Observation{Provider: "codex", ObservedAt: now.Add(-20 * time.Minute).Format(time.RFC3339), Status: "allowed", Windows: []quota.Window{
-		{Name: "primary", UsedPercent: 100, ResetsAt: now.Add(time.Minute).Format(time.RFC3339)},
-		{Name: "secondary", UsedPercent: 41, ResetsAt: now.Add(2 * time.Hour).Format(time.RFC3339)},
-	}}
-	if err := r.server.quotaStore.PutGrant("codex-b", "codex", obs, now); err != nil {
-		t.Fatal(err)
-	}
+	st := r.server.store.(*fakeStore)
+	grant := st.grants["codex-b"]
+	grant.TokenBundle.ExpiresAt = time.Now().Add(-time.Hour)
+	grant.TokenBundle.RefreshToken = "test-refresh-token"
+	st.grants["codex-b"] = grant
 	r.refresh(context.Background(), "codex-b")
-	if requests.Load() != 0 {
-		t.Fatal("exhausted primary was requested")
+	if requests.Load() != 0 || st.grants["codex-b"].TokenBundle.AccessToken != grant.TokenBundle.AccessToken || st.grants["codex-b"].LastRefresh != grant.LastRefresh {
+		t.Fatal("usage observation refreshed OAuth or requested usage with an expired token")
 	}
-	r.now = func() time.Time { return now.Add(time.Minute) }
-	r.refresh(context.Background(), "codex-b")
-	if requests.Load() != 1 {
-		t.Fatal("expired primary blocked usable secondary")
+	if testutil.ToFloat64(r.metrics.WithLabelValues("codex-b", "token_error")) != 1 {
+		t.Fatal("expired cached token was not reported")
 	}
 }
 
@@ -177,8 +172,8 @@ func TestCodexUsageErrorsRecordNothing(t *testing.T) {
 		status        int
 		body, outcome string
 	}{
-		{"unauthorized", 401, "token must never be logged", "http_error"},
-		{"forbidden", 403, "account must never be logged", "http_error"},
+		{"unauthorized", 401, "token must never be logged", "authorization_error"},
+		{"forbidden", 403, "account must never be logged", "authorization_error"},
 		{"server-error", 500, "upstream failure", "http_error"},
 		{"malformed", 200, "{", "decode_error"},
 		{"type-error", 200, strings.Replace(usageTestPayload(time.Now()), `"used_percent":23`, `"used_percent":"bad"`, 1), "decode_error"},
@@ -416,9 +411,9 @@ type usageCountingTokens struct {
 	calls atomic.Int32
 }
 
-func (s *usageCountingTokens) GetAccessToken(name string, ctx context.Context) (string, time.Time, error) {
+func (s *usageCountingTokens) CachedAccessToken(name string, ctx context.Context) (string, time.Time, error) {
 	s.calls.Add(1)
-	return s.usageTokenSource.GetAccessToken(name, ctx)
+	return s.usageTokenSource.CachedAccessToken(name, ctx)
 }
 
 func TestCodexUsageCancelledBeforeToken(t *testing.T) {
@@ -477,7 +472,7 @@ func TestCodexUsageWindowValidation(t *testing.T) {
 type usageTokenFailure struct{}
 
 func (usageTokenFailure) NeedsLogin(string) bool { return false }
-func (usageTokenFailure) GetAccessToken(string, context.Context) (string, time.Time, error) {
+func (usageTokenFailure) CachedAccessToken(string, context.Context) (string, time.Time, error) {
 	return usageTestToken(usageClaims), time.Time{}, errors.New("secret token error")
 }
 
@@ -633,7 +628,7 @@ func (s usageDeadlineTokens) GetAccessToken(name string, ctx context.Context) (s
 	if !ok || time.Until(deadline) > 10*time.Second {
 		s.t.Fatal("token request context has no usage deadline")
 	}
-	return s.usageTokenSource.GetAccessToken(name, ctx)
+	return s.usageTokenSource.CachedAccessToken(name, ctx)
 }
 
 func TestCodexUsageLatestWins(t *testing.T) {

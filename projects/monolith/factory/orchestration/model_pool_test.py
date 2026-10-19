@@ -949,3 +949,67 @@ def test_grant_observation_state_shares_one_freshness_reading():
     assert model_pool.grant_observation_state({"age_seconds": 5000.0}) == "stale"
     for age in (None, True, -1.0, float("nan"), float("inf"), "10"):
         assert model_pool.grant_observation_state({"age_seconds": age}) == "unknown"
+
+
+@pytest.mark.parametrize(
+    "used, rejected", [(97.0, False), (100.0, False), (20.0, True)]
+)
+def test_refreshed_exhausted_account_does_not_veto_usable_codex(used, rejected):
+    grants = {
+        "codex-b": _codex_grant("codex-b", age=0.0, used=used),
+        "codex-cluster": _codex_grant("codex-cluster", age=10.0),
+    }
+    grants["codex-b"]["exhausted"] = rejected
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    assert model_pool.confirmed_availability("luna", rolled) == (
+        True,
+        "confirmed_available",
+    )
+
+
+def test_fresh_windowless_rejection_does_not_veto_usable_codex():
+    grants = {
+        "codex-b": {
+            **_codex_grant("codex-b", age=0.0),
+            "exhausted": True,
+            "windows": [],
+        },
+        "codex-cluster": _codex_grant("codex-cluster", age=10.0),
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    assert model_pool.confirmed_availability("luna", rolled)[0] is True
+    grants.pop("codex-cluster")
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    assert model_pool.confirmed_availability("luna", rolled)[0] is False
+
+
+@pytest.mark.parametrize("configured", ["threshold", "floor"])
+def test_gate_does_not_skip_accounts_which_sidecar_can_still_select(
+    monkeypatch, configured
+):
+    if configured == "threshold":
+        monkeypatch.setenv("SWARM_MODEL_POOL_EXHAUSTED_PERCENT", "90")
+    else:
+        monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex":{"worker":10}}')
+    grants = {
+        "codex-b": _codex_grant("codex-b", age=10.0, used=95.0),
+        "codex-cluster": _codex_grant("codex-cluster", age=10.0),
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    assert model_pool.confirmed_availability("luna", rolled, role="worker")[0] is False
+
+
+def test_exhaustion_does_not_hide_malformed_telemetry():
+    grants = {
+        "codex-b": {
+            **_codex_grant("codex-b", age=10.0),
+            "exhausted": True,
+            "windows": [{}],
+        },
+        "codex-cluster": _codex_grant("codex-cluster", age=10.0),
+    }
+    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
+    assert model_pool.confirmed_availability("luna", rolled) == (
+        False,
+        "grant codex-b window_unusable",
+    )

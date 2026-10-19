@@ -1970,14 +1970,50 @@ account for long stretches and each account burns down in quarter steps)
 for no cross-service plumbing, and the occasional cache miss on a flip is
 cheaper than that plumbing. See #5974.
 
-**Why.** The broker holds every grant's token, so it can refresh an unused
-pooled Codex grant without a guest session. Its optional refresher reads
-`GET /wham/usage` without inference, through the cached `GetAccessToken`
-path, and leaves the sidecar ranker unchanged. The hub refresh age is 600
-seconds, below the gate's 900-second freshness bound and the ranker's
-15-minute bound. Known exhausted grants wait for their reset, and
-window-less rejections wait 15 minutes: refreshing those observations
-early would keep the KG gate's fresh-exhaustion veto active. See #6637.
+**Why.** The broker observes every pooled Codex grant with `GET /wham/usage`,
+including exhausted grants. The hub refresh age is 600 seconds; a one-minute
+tick starts at most one request per grant per refresh interval, with a ten-second
+timeout, no redirects, and a 64 KiB body limit. A manual reset can precede the
+reported reset by days. Waiting until that timestamp latched B at 100 percent.
+Usage polling reads only an existing access token with more than a minute left;
+it never rotates OAuth credentials or sends inference. Missing/expired tokens,
+authorization failures (401/403), transport failures and malformed usage retain
+the previous quota observation without extending its freshness. Ordinary token
+serving still owns OAuth refresh. An idle grant with an expired token needs
+that existing serving path before polling can resume.
+
+The Codex sidecar excludes grants at 97 percent or explicit exhaustion, and
+never falls from a fresh usable tier into stale or exhausted quota after a
+token-fetch failure. The KG gate can therefore ignore exhausted accounts beside
+a fresh permitting account. Unknown inventory, malformed evidence, role floors
+and no fresh permitting account still defer. Cached sidecar observations age
+even while the broker is unavailable. Deploy the sidecar exclusion before the
+relaxed KG gate; during the opposite version skew, an old sidecar could still
+fall through to an account the new gate excluded.
+
+**Account preference** (implemented, activation held): `grantPolicy: prefer-first`
+on a two-member Codex catalog pool chooses its first member whenever fresh usage
+proves every reported window usable. The intended order is `[codex-b,
+codex-cluster]`. A fresh exhaustion report or the existing 60-second token-failure
+cooldown permits fallback to A. Stale, missing or invalid B telemetry pauses
+selection until another usage observation; it does not prove B exhausted.
+
+A can displace usable B only when both have fresh observations, all windows
+are below 97 percent, all durations and future resets are known, and A's longest
+window resets before B's. Its remaining time must be at most
+`min(12 hours, longest window duration * minimum remaining fraction across windows)`.
+This uses reported headroom and time without assuming account capacities or
+subscription weights. A short-window reset alone cannot preempt B's weekly
+budget. Once the condition stops holding, B wins again regardless of the
+previously selected account. Provider and model routing are separate.
+
+**Why.** The shared sidecar receives only a destination preamble, and its broker
+SPIFFE identity identifies noded rather than a factory session. Enabling the
+policy in the current deployment would affect every Codex guest on that brick,
+including interactive guests. The deployment leaves the opt-in unset until
+that shared scope is accepted or trusted workload metadata is separately
+implemented. Guest-supplied headers are not an account authorization boundary.
+No credentials, access rules or identity plumbing change here.
 
 **Why.** Quota responses include advisory pacing against the longest reported
 window, with remaining daily budget and the reported next reset of a shorter

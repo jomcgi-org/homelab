@@ -2168,6 +2168,8 @@ egress:
   #
   #   - header: Authorization                      # a POOL of grants, more than one
   #     valuePrefix: "Bearer "                     # account on the same provider. The
+  #     grantPolicy: prefer-first                 # optional: exactly two Codex grants;
+  #                                              # applies to every guest on the brick.
   #     brokerGrants: [codex-a, codex-b]           # sidecar picks the active grant per
   #     egressTo: [chatgpt.com]                    # connection by remaining quota in
   #     quotaProvider: codex                       # 25% bands with hysteresis (see

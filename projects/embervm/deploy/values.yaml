@@ -676,6 +676,10 @@ egress:
       # connection by remaining quota. Both grants were device-logged before
       # pooling; an unlogged member is skipped with a cooldown, not fatal.
       brokerGrants: ["codex-cluster", "codex-b"]
+      # Factory preference is implemented but activation is held: this catalog
+      # serves interactive guests too and has no trusted factory identity.
+      # After accepting that shared scope, use brokerGrants [codex-b, codex-cluster]
+      # with grantPolicy: prefer-first. See ARCHITECTURE.md, Account preference.
       claimHeader: "chatgpt-account-id"
       claimPath: "https://api.openai.com/auth.chatgpt_account_id"
       # The CLI's rmcp connector client sends no Authorization header at all
