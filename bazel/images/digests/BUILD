@@ -15,7 +15,6 @@ oci_digest_manifest(
         "//projects/embervm/conformance:image.info": "//projects/embervm/conformance:image.push",
         "//projects/embervm/image:image.info": "//projects/embervm/image:image.push",
         "//projects/embervm/noded/image:image.info": "//projects/embervm/noded/image:image.push",
-        "//projects/embervm/runtimes/bazel:image.info": "//projects/embervm/runtimes/bazel:image.push",
         "//projects/embervm/runtimes/claude:image.info": "//projects/embervm/runtimes/claude:image.push",
         "//projects/embervm/runtimes/k3s/k3s-agent:image.info": "//projects/embervm/runtimes/k3s/k3s-agent:image.push",
         "//projects/embervm/runtimes/k3s/k3s-server:image.info": "//projects/embervm/runtimes/k3s/k3s-server:image.push",
