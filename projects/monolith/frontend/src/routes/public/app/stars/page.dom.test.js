@@ -13,6 +13,11 @@ vi.mock(
 );
 vi.mock("$app/stores", () => import("../../../../../test/profile-stores.js"));
 vi.mock("maplibre-gl", () => import("../../../../../test/stars/maplibre.js"));
+// The map boundary owns its worker too. Resolving Vite's worker URL in the
+// DOM runner escapes Bazel's test filesystem; the real preview builds it.
+vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
+  default: "/stars-test-worker.js",
+}));
 vi.mock("$app/navigation", () => ({
   goto: vi.fn((url) => setPage(url, data)),
   invalidateAll: vi.fn(),

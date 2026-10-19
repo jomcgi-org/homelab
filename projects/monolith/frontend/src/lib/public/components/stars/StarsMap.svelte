@@ -510,7 +510,7 @@
       resize.observe(mapContainer);
 
       // MapLibre supplies keyboard pan and zoom. Enter selects the site under
-      // the centre crosshair; Escape closes its details without moving focus.
+      // the map centre; Escape closes its details without moving focus.
       const canvas = map.getCanvas();
       canvas.setAttribute("aria-label", "Dark-sky sites");
       canvas.setAttribute(
@@ -537,7 +537,7 @@
         map.addSource(CELL_SOURCE, { type: "geojson", data: emptyFC() });
 
         // Box-cell heatmap first, so it sits BENEATH the markers. One square per
-        // site, filled by the cell `score` via the plasma ramp; visible only when
+        // site, filled by the cell `score` via the sheet ramp; visible only when
         // the parent toggles heat on (always in historical), where the markers
         // hide. Transparent outline so adjacent same-score cells merge into a
         // field rather than a grid of boxes.
@@ -737,8 +737,7 @@
         {/if}
       {/if}
 
-      <!-- Location footer: the coordinates themselves are the link out to maps
-           (this is the card's primary action, hence the accent fill). -->
+      <!-- Location footer: the coordinates themselves link out to maps. -->
       <a class="card-loc" href={mapsLink} target="_blank" rel="noopener">
         <span class="card-loc-coord"
           >{fmtCoord(selected.lat, selected.lon)}<span
