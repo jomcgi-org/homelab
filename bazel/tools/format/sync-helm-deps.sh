@@ -4,6 +4,7 @@
 # Reads the version from projects/shared/helm/homelab-library/chart/Chart.yaml
 # and updates any consuming chart whose dependency version doesn't match.
 # Rebuilds Chart.lock and charts/*.tgz when a mismatch is found.
+# ci regen invokes this when Chart.yaml, Chart.lock or charts/*.tgz changes.
 #
 # Usage:
 #   sync-helm-deps.sh          # Check and fix all charts

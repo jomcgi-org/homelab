@@ -6,7 +6,6 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_push")
-load("//bazel/tools/js:node_modules_tar.bzl", "node_modules_tar")
 load("//bazel/tools/oci:providers.bzl", "oci_image_info")
 load(":go_tools_tar.bzl", "go_tools_tar")
 load(":multitool_tar.bzl", "multitool_tar")
@@ -58,33 +57,6 @@ go_tools_tar(
 # each containing /usr/bin/node for the target platform.
 node_tar(name = "node_tar")
 
-# ESLint is platform-independent JavaScript. Package its complete pnpm
-# lockfile-managed dependency closure and invoke it through the image's pinned
-# Node.js runtime. The wrapper derives the extraction root from argv[0], so it
-# works from ~/.cache/homelab-tools rather than assuming installation at /.
-node_modules_tar(
-    name = "eslint_node_modules",
-    deps = ["//:node_modules/eslint"],
-)
-
-genrule(
-    name = "eslint_wrapper_tar",
-    outs = ["eslint_wrapper.tar"],
-    cmd = """
-        set -e
-        WORK=$$(mktemp -d)
-        mkdir -p "$$WORK/usr/bin"
-        cat > "$$WORK/usr/bin/eslint" << 'WRAPPER'
-#!/usr/bin/env bash
-ROOT="$$(cd "$$(dirname "$$0")/../.." && pwd)"
-exec "$$ROOT/usr/bin/node" "$$ROOT/usr/local/lib/node_modules/eslint/bin/eslint.js" "$$@"
-WRAPPER
-        chmod 0755 "$$WORK/usr/bin/eslint"
-        tar -cf $@ -C "$$WORK" .
-        rm -rf "$$WORK"
-    """,
-)
-
 # Package pnpm from the aspect_rules_js-managed @pnpm repo.
 # pnpm is a JS script (cross-platform) that runs on Node.js.
 # Places the package at /usr/local/lib/node_modules/pnpm/
@@ -113,8 +85,8 @@ genrule(
 # lockfile-managed npm packages. Plugins live next to prettier under
 # /usr/local/lib/node_modules/; /usr/bin/prettier is a wrapper that sets
 # NODE_PATH so require("prettier-plugin-svelte") from the repo config resolves
-# without a full workspace node_modules tree (bootstrap / ci lint path). Like
-# the eslint wrapper, it derives the extraction root from argv[0], so it works
+# without a full workspace node_modules tree (bootstrap / ci lint path). The
+# wrapper derives the extraction root from argv[0], so it works
 # from ~/.cache/homelab-tools rather than assuming installation at /.
 # nosemgrep: single-npm-package-in-apko-genrule -- intentional multi-package node_modules for PATH prettier plugins
 genrule(
@@ -155,7 +127,7 @@ genrule(
         chmod 755 "$$NM/prettier/bin/prettier.cjs"
         cat > "$$WORK/usr/bin/prettier" << 'WRAPPER'
 #!/usr/bin/env bash
-# Resolve the extraction root from argv[0] (like the eslint wrapper) so this
+# Resolve the extraction root from argv[0] so this
 # works from ~/.cache/homelab-tools as well as from an image rooted at /.
 ROOT="$$(cd "$$(dirname "$$0")/../.." && pwd)"
 # Ensure plugins packaged next to prettier resolve from any config require().
@@ -256,8 +228,6 @@ oci_image(
         ":tools_tar_linux_amd64",
         ":source_tools_tar_linux_amd64",
         ":node_tar_linux_amd64",
-        ":eslint_node_modules",
-        ":eslint_wrapper_tar",
         ":python_tar_linux_amd64",
         ":pnpm_tar",
         ":prettier_tar",
@@ -273,8 +243,6 @@ oci_image(
         ":tools_tar_linux_arm64",
         ":source_tools_tar_linux_arm64",
         ":node_tar_linux_arm64",
-        ":eslint_node_modules",
-        ":eslint_wrapper_tar",
         ":python_tar_linux_arm64",
         ":pnpm_tar",
         ":prettier_tar",
@@ -290,8 +258,6 @@ oci_image(
         ":tools_tar_darwin_arm64",
         ":source_tools_tar_darwin_arm64",
         ":node_tar_darwin_arm64",
-        ":eslint_node_modules",
-        ":eslint_wrapper_tar",
         ":python_tar_darwin_arm64",
         ":pnpm_tar",
         ":prettier_tar",
@@ -359,8 +325,6 @@ py_test(
     name = "tools_image_test",
     srcs = ["tools_image_test.py"],
     data = [
-        ":eslint_node_modules",
-        ":eslint_wrapper_tar",
         ":node_tar_darwin_arm64",
         ":node_tar_linux_amd64",
         ":node_tar_linux_arm64",
@@ -382,8 +346,6 @@ py_test(
     name = "tools_image_linux_arm64_test",
     srcs = ["tools_image_test.py"],
     data = [
-        ":eslint_node_modules",
-        ":eslint_wrapper_tar",
         ":node_tar_linux_arm64",
         ":prettier_tar",
         ":source_tools_tar_linux_arm64",
@@ -402,8 +364,6 @@ py_test(
     name = "tools_image_darwin_arm64_test",
     srcs = ["tools_image_test.py"],
     data = [
-        ":eslint_node_modules",
-        ":eslint_wrapper_tar",
         ":node_tar_darwin_arm64",
         ":prettier_tar",
         ":source_tools_tar_darwin_arm64",

@@ -75,7 +75,7 @@ sh_binary(
     data = [":prettier"],
 )
 
-# Pure-script doc/config generators share one list with fast-format.sh.
+# Pure-script doc/config generators share one list with ci regen.
 # Bazel-backed Go stub copies run separately after this parallel format batch.
 sh_binary(
     name = "run_generators",
@@ -91,31 +91,6 @@ multirun(
         "//:gazelle",
     ],
     jobs = 10,
-)
-
-# Update apko lock files
-sh_binary(
-    name = "update_apko_locks",
-    srcs = ["update-apko-locks.sh"],
-)
-
-# Update Python requirements lock files
-sh_binary(
-    name = "update_python_requirements",
-    srcs = ["update-python-requirements.sh"],
-)
-
-# Validate apko config files
-sh_binary(
-    name = "validate_apko_configs",
-    srcs = ["validate-apko-configs.sh"],
-)
-
-# Fast format script - builds once, runs in parallel
-# Used by both pre-commit and CI for identical formatting
-sh_binary(
-    name = "fast_format",
-    srcs = ["fast-format.sh"],
 )
 
 # Atlas migration checksum validator — used by sh_test targets in chart BUILD files

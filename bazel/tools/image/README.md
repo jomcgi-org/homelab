@@ -4,7 +4,7 @@ Builds the multi-arch developer tools OCI image pushed to
 `ghcr.io/jomcgi/homelab/bazel/tools/image`.
 
 This is a single-purpose package. It does not expose reusable macros to the
-rest of the repo. The three `.bzl` files here are internal helpers for
+rest of the repo. The four `.bzl` files here are internal helpers for
 assembling per-platform tar layers; they are not loaded by any other package.
 If you are looking for macros to build application service images (Go services,
 Python services, nginx frontends), those live in [`//bazel/tools/oci`](../oci/README.md).
@@ -16,7 +16,6 @@ Python services, nginx frontends), those live in [`//bazel/tools/oci`](../oci/RE
 | `argocd`, `bb`, `buildifier`, `buildozer`, `claude`, `crane`, `gh`, `gofumpt`, `helm`, `kind`, `op`, `ruff`, `shellcheck`, `shfmt` | multitool lockfile (per-platform binary repos) |
 | `hf2oci`                              | Repository `go_binary` target, cross-built per platform |
 | `node`                                 | `@nodejs_{platform}//:node_bin` from rules_nodejs          |
-| `eslint`                               | `//:node_modules/eslint` dependency closure and root-relative wrapper |
 | Python runtime + stdlib + pip packages | `py_image_layer` from `@aspect_rules_py`, with platform transitions |
 | `pnpm`                                 | `@pnpm//:pkg` (aspect_rules_js)                            |
 | `prettier` (+ `prettier-plugin-svelte`, peer `svelte`) | `//:node_modules/*` (pnpm lockfile); wrapper sets `NODE_PATH` |
@@ -27,9 +26,8 @@ alongside the interpreter. pnpm and prettier (with the Svelte plugin) are
 installed under `/usr/local/lib/node_modules/`; `/usr/bin/prettier` is a
 wrapper that sets `NODE_PATH` so `require("prettier-plugin-svelte")` from
 `bazel/tools/format/prettier.config.cjs` resolves without a workspace
-`node_modules` tree. ESLint and its dependency closure use the same package
-directory, and its wrapper resolves both Node and the JavaScript entry point
-relative to the extracted image root.
+`node_modules` tree. The prettier wrapper resolves both Node and its JavaScript
+entry point relative to the extracted image root.
 
 ### What it deliberately does not contain
 
@@ -88,11 +86,11 @@ is intentional: Python and other tools depend on their stdlib being at a
 relative path inside the same root.
 
 Bootstrap validates that `hf2oci`, `bb`, `claude`, `buildifier`,
-`shellcheck`, and `eslint` are executable before recording the image digest.
+and `shellcheck` are executable before recording the image digest.
 An incomplete cache is re-extracted even when its digest matches.
 
-The image includes the complete ESLint dependency closure plus the downloaded
-command binaries. Every image digest change makes bootstrap export the full
+The image includes the downloaded command binaries and packaged runtimes.
+Every image digest change makes bootstrap export the full
 filesystem again, so additions increase both the image size and the one-time
 download and extraction cost paid by each developer after an image update.
 
