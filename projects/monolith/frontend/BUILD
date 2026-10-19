@@ -258,11 +258,20 @@ js_library(
         "test/app-state-stub.js",
         "test/app-stores-stub.js",
         "test/ProfileRoute.svelte",
+        "test/DrJobsRoute.svelte",
         "test/profile-page.svelte.js",
         "test/profile-stores.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
         # rationale: lives outside src/ so it never reaches the app bundle.
         "test/env-dynamic-private-stub.js",
+        "dr-jobs-preview/App.svelte",
+        "dr-jobs-preview/fixtures.js",
+        "dr-jobs-preview/navigation.js",
+        "dr-jobs-preview/server-render.js",
+        "dr-jobs-preview/server.js",
+        "dr-jobs-preview/state.svelte.js",
+        "dr-jobs-preview/stores.js",
+        "dr-jobs-preview/vite.config.js",
     ],
     deps = [
         ":node_modules/vitest",
@@ -350,6 +359,7 @@ js_library(
         "src/routes/public/slop/factory/context/+page.svelte",
     ],
     deps = [
+        ":dr_jobs_fixture_src",
         ":node_modules/@esbuild/linux-x64",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@sveltejs/vite-plugin-svelte",
@@ -466,6 +476,52 @@ vitest_bin.vitest_test(
         ":node_modules/vitest",
         ":src",
     ],
+)
+
+# The production DR jobs page with synthetic data and a bounded URL adapter.
+# Hand-list the complete imported closure; fixture files never enter :src.
+js_library(
+    name = "dr_jobs_fixture_src",
+    srcs = glob(["dr-jobs-preview/**"], exclude = ["dr-jobs-preview/__pycache__/**"]) + [
+        "package.json",
+        "preview/fonts.css",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "preview/fonts/OFL.txt",
+        "preview/browser_check.py",
+        "src/lib/global.css",
+        "src/lib/public/apps.js",
+        "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/SiteIndex.svelte",
+        "src/lib/public/components/TechnicalDrawingChrome.svelte",
+        "src/lib/public/components/Trail.svelte",
+        "src/lib/public/dr-jobs/urlParams.js",
+        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/technical-drawing.css",
+        "src/lib/styles/shared/tokens.css",
+        "src/routes/public/app/dr-jobs/+page.svelte",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        "//projects/design-system:pkg",
+    ],
+)
+
+js_run_binary(
+    name = "dr_jobs_fixture_preview",
+    srcs = [":dr_jobs_fixture_src"],
+    args = ["build", "--config", "dr-jobs-preview/vite.config.js"],
+    chdir = package_name(),
+    out_dirs = ["dr-jobs-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "dr_jobs_fixture_preview_build_test",
+    targets = [":dr_jobs_fixture_preview"],
 )
 
 # Shared controls fixture only, never part of :src or :src_public.

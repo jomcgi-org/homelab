@@ -5,6 +5,12 @@ pages, SchemeToggle, Trail, shared tokens, and styles. It cannot fetch a live
 origin. All task titles, dates, activity, goals, facts, and identifiers are
 invented in `fixtures.js`.
 
+The build also includes the production DR jobs page as a separate synthetic
+artifact under `dr-jobs/`, with its own module graph and navigation adapter.
+The existing browser runner checks that sibling first and saves its four
+width/scheme variants, captures and receipt under the evidence directory's
+`dr-jobs/`. See `../dr-jobs-preview/README.md` for its fixed data and checks.
+
 Run from `projects/monolith/frontend`:
 
 ```sh

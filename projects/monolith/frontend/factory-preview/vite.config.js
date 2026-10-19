@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { build, defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -33,8 +33,20 @@ export default defineConfig({
           fileName: "build.json",
           source: JSON.stringify({
             commit: process.env.FACTORY_PREVIEW_SHA ?? "local-unpublished",
-            scope: "synthetic factory fixtures only",
+            scope: "synthetic factory and DR jobs fixtures only",
           }),
+        });
+      },
+      // Keep the DR jobs route in its own compilation graph and URL adapter.
+      // The existing read-only browser workflow captures this sibling artifact
+      // too; no workflow permission or publishing change is required.
+      async closeBundle() {
+        await build({
+          configFile: here("../dr-jobs-preview/vite.config.js"),
+          build: {
+            outDir: here("../factory-fixture-preview/dr-jobs"),
+            emptyOutDir: true,
+          },
         });
       },
     },

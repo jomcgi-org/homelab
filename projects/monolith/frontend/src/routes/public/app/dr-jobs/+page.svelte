@@ -2,7 +2,11 @@
   import { onMount } from "svelte";
   import { goto, invalidateAll } from "$app/navigation";
   import { page } from "$app/stores";
-  import BrutalistSelect from "$lib/public/components/BrutalistSelect.svelte";
+  import { Button, Field } from "@homelab/design-system/components";
+  import SiteIndex from "$lib/public/components/SiteIndex.svelte";
+  import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
+  import Trail from "$lib/public/components/Trail.svelte";
+  import "$lib/public/styles/technical-drawing.css";
   import {
     readDrJobsParams,
     writeDrJobsParams,
@@ -114,7 +118,7 @@
   }
 
   // Drop the leading "REF - " from the display title (the reference shows as its
-  // own chip), falling back to the raw title if stripping leaves nothing.
+  // own metadata value), falling back to the raw title if stripping leaves nothing.
   function cleanTitle(j) {
     if (j.reference && j.title.startsWith(j.reference)) {
       const rest = j.title
@@ -142,490 +146,281 @@
   />
 </svelte:head>
 
-<div class="page">
-  <h1 class="sr-only">NHS Scotland anaesthetics consultant vacancies</h1>
+{#snippet trail()}
+  <Trail crumbs={[{ label: "dr-jobs" }]} label="Breadcrumb" />
+{/snippet}
 
-  <!-- One bordered data-sheet: header band on top, hairline-divided job rows
-       below. No floating boxes, no resting shadows. -->
-  <div class="board">
-    <header class="board-head">
-      <div class="crumb-row">
-        <nav class="crumb" aria-label="Breadcrumb">
-          <a class="crumb-home" href="/"
-            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true"
-              >&nearr;</span
-            ></a
-          >
-          <span class="crumb-sep">/</span>
-          <span class="crumb-name">dr-jobs</span>
-        </nav>
-        <p class="stats">
-          <strong>{liveJobs.length}</strong> live
-          <span class="stats-sep">&middot;</span>
-          {historyJobs.length} past
-        </p>
-      </div>
+<TechnicalDrawingChrome {trail} />
+<main class="td sheet dr-jobs">
+  <div class="frame">
+    <h1 class="sr-only">NHS Scotland anaesthetics consultant vacancies</h1>
+    <div class="journal">
+      <aside class="spine">
+        <div class="trail-dock">{@render trail()}</div>
+        <SiteIndex here="dr-jobs" />
+      </aside>
+      <section class="content edition" aria-label="Jobs">
+        <header>
+          <div class="ed-head">
+            <p class="stats">
+              <strong>{liveJobs.length}</strong> live
+              <span class="stats-sep">&middot;</span>
+              {historyJobs.length} past
+            </p>
+          </div>
 
-      <p class="source">
-        NHS Scotland consultant &amp; locum consultant anaesthetics, hourly from
-        <a href="https://apply.jobs.scot.nhs.uk/Home/Job" rel="external"
-          >apply.jobs.scot.nhs.uk</a
-        >
-      </p>
+          <div class="ed-lead">
+            <p class="source">
+              NHS Scotland consultant &amp; locum consultant anaesthetics,
+              hourly from
+              <a href="https://apply.jobs.scot.nhs.uk/Home/Job" rel="external"
+                >apply.jobs.scot.nhs.uk</a
+              >
+            </p>
+          </div>
 
-      <div class="controls">
-        <div class="toggle" role="group" aria-label="Show live or past jobs">
-          <button
-            class="seg"
-            class:active={view === "live"}
-            aria-pressed={view === "live"}
-            onclick={() => (view = "live")}
-          >
-            Live ({liveJobs.length})
-          </button>
-          <button
-            class="seg"
-            class:active={view === "history"}
-            aria-pressed={view === "history"}
-            onclick={() => (view = "history")}
-          >
-            Past ({historyJobs.length})
-          </button>
-        </div>
-
-        <BrutalistSelect
-          options={townOptions}
-          bind:value={town}
-          label="Filter by location"
-          id="dr-jobs-town"
-        />
-      </div>
-    </header>
-
-    {#if visible.length === 0}
-      <p class="empty">
-        {#if view === "live"}
-          No live anaesthetics consultant posts right now. Try History for
-          recent listings.
-        {:else}
-          No past listings recorded yet.
-        {/if}
-      </p>
-    {:else}
-      <ul class="rows">
-        {#each visible as j (j.job_id)}
-          <li>
-            <a
-              class="row"
-              class:past={!j.is_live}
-              href={j.url}
-              target="_blank"
-              rel="noopener"
-              aria-label={`${cleanTitle(j)}${j.town ? `, ${j.town}` : ""}, closes ${fmtDate(j.closing_date)}`}
+          <div class="controls">
+            <div
+              class="toggle"
+              role="group"
+              aria-label="Show live or past jobs"
             >
-              <span class="r-body">
-                <span class="r-head">
-                  <span class="r-title">{cleanTitle(j)}</span>
-                  {#if j.is_live && isNew(j)}
-                    <span class="badge new">New</span>
-                  {/if}
-                  {#if j.reference}
-                    <span class="badge ref">{j.reference}</span>
-                  {/if}
-                </span>
-                <span class="r-meta">
-                  {#if j.town}<span>{j.town}</span>{/if}
-                  {#if j.employment_type}<span class="dot">&middot;</span><span
-                      >{j.employment_type}</span
-                    >{/if}
-                  {#if j.salary_band}<span class="dot">&middot;</span><span
-                      >{j.salary_band}</span
-                    >{/if}
-                </span>
-              </span>
-              <span class="r-when">
-                <span class="r-date">{fmtDate(j.closing_date)}</span>
-                <span
-                  class="r-rel"
-                  class:urgent={isClosingSoon(j.closing_date)}
+              <Button
+                variant="secondary"
+                class="seg"
+                aria-pressed={view === "live"}
+                onclick={() => (view = "live")}
+              >
+                Live ({liveJobs.length})
+              </Button>
+              <Button
+                variant="secondary"
+                class="seg"
+                aria-pressed={view === "history"}
+                onclick={() => (view = "history")}
+              >
+                Past ({historyJobs.length})
+              </Button>
+            </div>
+
+            <div class="location-filter">
+              <Field label="Filter by location">
+                {#snippet control(attributes)}
+                  <select {...attributes} bind:value={town}>
+                    {#each townOptions as option (option.value)}
+                      <option value={option.value}>{option.label}</option>
+                    {/each}
+                  </select>
+                {/snippet}
+              </Field>
+            </div>
+          </div>
+        </header>
+
+        {#if visible.length === 0}
+          <p class="empty">
+            {#if view === "live"}
+              No live anaesthetics consultant posts right now. Try History for
+              recent listings.
+            {:else}
+              No past listings recorded yet.
+            {/if}
+          </p>
+        {:else}
+          <ul class="rows">
+            {#each visible as j (j.job_id)}
+              <li>
+                <a
+                  class="row"
+                  class:past={!j.is_live}
+                  href={j.url}
+                  target="_blank"
+                  rel="noopener"
+                  aria-label={`${cleanTitle(j)}${j.town ? `, ${j.town}` : ""}, closes ${fmtDate(j.closing_date)}`}
                 >
-                  {closesLabel(j.closing_date)}
-                </span>
-              </span>
-            </a>
-          </li>
-        {/each}
-      </ul>
-    {/if}
+                  <span class="r-body">
+                    <span class="r-head">
+                      <span class="r-title">{cleanTitle(j)}</span>
+                      {#if j.is_live && isNew(j)}
+                        <span class="badge new">New</span>
+                      {/if}
+                    </span>
+                    <span class="r-meta">
+                      {#if j.reference}<span class="ref">{j.reference}</span
+                        >{/if}
+                      {#if j.town}<span>{j.town}</span>{/if}
+                      {#if j.employment_type}<span>{j.employment_type}</span
+                        >{/if}
+                      {#if j.salary_band}<span>{j.salary_band}</span>{/if}
+                    </span>
+                  </span>
+                  <span class="r-when">
+                    <span class="r-date">{fmtDate(j.closing_date)}</span>
+                    <span
+                      class="r-rel"
+                      class:urgent={isClosingSoon(j.closing_date)}
+                    >
+                      {closesLabel(j.closing_date)}
+                    </span>
+                  </span>
+                </a>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    </div>
   </div>
-</div>
+</main>
 
 <style>
-  .page {
-    min-height: 100vh;
-    min-height: 100dvh;
-    background: var(--cream);
-    color: var(--ink);
-    padding: 16px 12px;
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  /* The whole app is one hard-edged sheet: 2px ink border, sharp corners, no
-     shadow. Narrow column so the dense rows do not sprawl. */
-  .board {
-    max-width: 680px;
-    margin: 0 auto;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-  }
-
-  /* Masthead: same white paper as the rows (no cream-on-cream tint), set off
-     from the row body only by the 2px rule. */
-  .board-head {
-    display: flex;
-    flex-direction: column;
-    gap: 9px;
-    padding: 12px 14px;
-    border-bottom: 2px solid var(--ink);
-  }
-
-  .crumb-row {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px 14px;
-    flex-wrap: wrap;
-  }
-
-  .crumb {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .crumb-home {
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 2px;
-    padding: 0 2px;
-    transition: background 140ms ease;
-  }
-
-  .crumb-home:hover,
-  .crumb-home:focus-visible {
-    background: linear-gradient(transparent 56%, var(--accent) 56%);
-    text-decoration-color: var(--ink);
-  }
-
-  .crumb-arrow {
-    font-size: 0.85em;
-  }
-
   .stats {
     margin: 0;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: var(--ink-3);
-    white-space: nowrap;
   }
-
   .stats strong {
     color: var(--ink);
-    font-weight: 700;
   }
-
-  .stats-sep {
-    opacity: 0.5;
-  }
-
   .source {
-    margin: 0;
-    font-size: 12px;
-    line-height: 1.4;
-    color: var(--ink-3);
+    overflow-wrap: anywhere;
   }
-
-  .source a {
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-  }
-
   .controls {
     display: flex;
     flex-wrap: wrap;
     align-items: flex-end;
-    gap: 10px;
-    margin-top: 1px;
+    gap: 1rem;
+    padding: 0 1rem 1rem;
   }
-
-  /* LIVE / HISTORY: two self-bordered boxes, flat at rest, that lift off
-     leaving a hard shadow on hover (they ARE clickable, unlike the rows). */
   .toggle {
-    display: inline-flex;
+    display: flex;
+    flex: none;
   }
-
-  .seg {
-    position: relative;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 7px 13px;
-    background: var(--paper);
-    color: var(--ink);
-    border: 2px solid var(--ink);
-    cursor: pointer;
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease,
-      background 120ms ease;
+  /* Shared buttons keep native pressed/focus semantics. A horizontal strip
+     marks the selection underneath, in the sheet's accent ink. */
+  .toggle :global(.seg) {
+    font-family: var(--font-code);
+    font-size: 0.8rem;
+    border-color: var(--stroke);
+    border-bottom: 2px solid transparent;
+    background: var(--sheet);
+    color: var(--ink-2);
   }
-
-  .seg + .seg {
-    margin-left: -2px;
+  .toggle :global(.seg + .seg) {
+    margin-left: -1px;
   }
-
-  .seg.active {
-    background: var(--accent);
-    z-index: 1;
+  .toggle :global(.seg[aria-pressed="true"]) {
+    color: var(--accent-ink);
+    border-bottom-color: var(--accent-ink);
   }
-
-  .seg:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: var(--shadow-hard);
-    z-index: 2;
+  .location-filter {
+    flex: 1 1 15rem;
+    min-width: 0;
+    font-size: 0.85rem;
   }
-
-  /* Job rows: a hairline-divided ledger. Each row is a whole-row link, so the
-     feedback is a flat accent wash on hover (NOT a lift, which would imply a
-     box that pops but goes nowhere). */
   .rows {
     list-style: none;
     margin: 0;
     padding: 0;
   }
-
-  .rows li + li {
-    border-top: 2px solid var(--ink);
+  .rows li {
+    border-top: 1px solid var(--stroke);
   }
-
   .row {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 9px 14px;
+    gap: 1rem;
+    padding: 0.85rem 1rem;
     text-decoration: none;
-    color: var(--ink);
-    transition: background 100ms ease;
   }
-
   .row:hover,
   .row:focus-visible {
-    background: var(--accent);
-    outline: none;
+    background: var(--band);
   }
-
+  /* Keep closed listings readable, including metadata, in both schemes. */
   .row.past {
-    opacity: 0.55;
+    color: var(--ink-2);
   }
-
   .r-body {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
     min-width: 0;
   }
-
   .r-head {
     display: flex;
-    align-items: baseline;
     flex-wrap: wrap;
-    gap: 7px;
+    align-items: baseline;
+    gap: 0.5rem;
   }
-
   .r-title {
-    font-size: 15px;
+    font-size: 1rem;
     font-weight: 700;
-    line-height: 1.25;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
     text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 2px;
+    text-decoration-color: var(--stroke);
+    text-underline-offset: 0.2em;
   }
-
-  .row:hover .r-title,
-  .row:focus-visible .r-title {
-    text-decoration-color: var(--ink);
+  .row:hover .r-title {
+    text-decoration-color: var(--accent-ink);
   }
-
+  /* Metadata is one divided value, including references. Long unbroken
+     source values wrap inside the column instead of widening the sheet. */
   .r-meta {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
-    gap: 5px;
-    font-size: 12px;
-    color: var(--ink-3);
+    margin-top: 0.4rem;
+    color: var(--ink-2);
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
   }
-
-  .row:hover .r-meta,
-  .row:focus-visible .r-meta {
-    color: var(--ink);
+  .r-meta > span {
+    min-width: 0;
+    padding-right: 0.6em;
   }
-
-  .r-meta .dot {
-    opacity: 0.5;
+  .r-meta > span + span {
+    border-left: 1px solid var(--stroke);
+    padding-left: 0.6em;
   }
-
+  .ref {
+    font-family: var(--font-code);
+  }
   .r-when {
     display: flex;
     flex-direction: column;
-    align-items: flex-end;
-    gap: 1px;
-    text-align: right;
-    white-space: nowrap;
-    flex-shrink: 0;
+    gap: 0.2rem;
+    font-family: var(--font-code);
+    font-size: 0.8rem;
+    color: var(--ink-2);
   }
-
   .r-date {
-    font-family: var(--mono);
-    font-size: 13px;
-    font-weight: 700;
-  }
-
-  .r-rel {
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.02em;
-    color: var(--ink-3);
-  }
-
-  .row:hover .r-rel,
-  .row:focus-visible .r-rel {
-    color: var(--ink);
-  }
-
-  .r-rel.urgent {
-    color: var(--coral);
-    font-weight: 700;
-  }
-
-  .row:hover .r-rel.urgent,
-  .row:focus-visible .r-rel.urgent {
-    color: var(--ink);
-  }
-
-  /* Status pills: green = fresh, outline = board reference. */
-  .badge {
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 1px 7px;
-    border: 1.5px solid var(--ink);
-    border-radius: 999px;
     white-space: nowrap;
   }
-
-  .badge.new {
-    background: var(--green);
+  .r-rel.urgent {
+    color: var(--warn);
+    font-weight: 600;
   }
-
-  .badge.ref {
-    background: transparent;
-    color: var(--ink);
+  .badge {
+    border: 1px solid currentColor;
+    padding: 0 0.4em;
+    font-family: var(--font-code);
+    font-size: 0.7rem;
+    /* --ok alone measured 3.97:1 on the day sheet at this small size.
+       Mixing with ink keeps the positive hue above AA in both schemes. */
+    color: color-mix(in srgb, var(--ok) 80%, var(--ink));
   }
-
   .empty {
     margin: 0;
-    padding: 16px 14px;
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--ink-3);
+    padding: 1rem;
+    border-top: 1px solid var(--stroke);
+    color: var(--ink-2);
   }
-
   @media (max-width: 460px) {
     .row {
-      flex-direction: column;
-      align-items: stretch;
-      gap: 6px;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.6rem;
     }
     .r-when {
       flex-direction: row;
-      align-items: baseline;
-      gap: 8px;
-      text-align: left;
-    }
-  }
-
-  /* Desktop scale-up: the 680px mobile-first column gets lost in the middle of a
-     wide viewport ("tiny on a normal page"). Past the tablet breakpoint, widen
-     the sheet and step the dense-ledger type up a notch so it reads at a
-     comfortable desktop size. Mobile (< 768px) keeps the compact sizing that
-     already works. The location <select> sets its own size inside
-     BrutalistSelect (Svelte scoping puts it out of reach here). */
-  @media (min-width: 768px) {
-    .page {
-      padding: 32px 24px;
-    }
-    .board {
-      max-width: 940px;
-    }
-    .board-head {
-      gap: 11px;
-      padding: 16px 22px;
-    }
-    .crumb,
-    .stats,
-    .source {
-      font-size: 13px;
-    }
-    .seg {
-      font-size: 13px;
-      padding: 8px 16px;
-    }
-    .row {
-      padding: 13px 22px;
-    }
-    .r-title {
-      font-size: 17px;
-    }
-    .r-meta {
-      font-size: 13px;
-    }
-    .r-date {
-      font-size: 15px;
-    }
-    .r-rel {
-      font-size: 12px;
-    }
-    .empty {
-      font-size: 15px;
-      padding: 22px;
+      flex-wrap: wrap;
+      gap: 0.8rem;
     }
   }
 </style>

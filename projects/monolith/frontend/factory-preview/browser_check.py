@@ -5,6 +5,7 @@ import functools
 import hashlib
 import http.server
 import importlib.metadata
+import importlib.util
 import itertools
 import json
 import re
@@ -669,4 +670,16 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--expected-sha", required=True)
     args = parser.parse_args()
+    # The factory build includes a separate actual-page DR jobs fixture. Keep
+    # its captures in the existing exact-head evidence artifact, with their
+    # own receipt, before running the unchanged factory browser matrix.
+    dr_jobs_path = (
+        Path(__file__).resolve().parents[1] / "dr-jobs-preview/check_browser.py"
+    )
+    spec = importlib.util.spec_from_file_location("dr_jobs_browser_check", dr_jobs_path)
+    dr_jobs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dr_jobs)
+    dr_jobs.check(
+        args.artifact.resolve() / "dr-jobs", args.output.resolve() / "dr-jobs"
+    )
     check(args.artifact.resolve(), args.output.resolve(), args.expected_sha)
