@@ -9,6 +9,10 @@ interactive. The private review demo composes the actual `ReviewCard`,
 does not import the private page, loaders, authentication or API clients.
 Its build permits only those three private components. Other private screens
 need their own reviewed synthetic boundary before registration.
+The existing review controls retain their desktop layout in a named, focusable
+scroll frame on phones. The receipt records that frame's visible and content
+widths separately from page overflow. This composition does not establish that
+the production private review page is responsive.
 
 The suite runs each existing contract and browser checker. It adds 16 private
 review captures, measured document/body overflow and keyboard decision and

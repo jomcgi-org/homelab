@@ -19,7 +19,7 @@ STYLE = {
     "sources": {},
     "layers": [
         {
-            "id": "synthetic-ground",
+            "id": "background",
             "type": "background",
             "paint": {"background-color": "white"},
         }
@@ -172,6 +172,10 @@ def review(root, output):
                     if mode == "audit":
                         page.get_by_role("tab", name="Audit auto-decisions").click()
                     before = measure(page)
+                    frame = page.get_by_role("region", name="Desktop review controls")
+                    frame_widths = frame.evaluate(
+                        "e=>({visible:e.clientWidth, content:e.scrollWidth})"
+                    )
                     page.screenshot(path=str(output / (name + ".png")), full_page=True)
                     button = page.get_by_role(
                         "button",
@@ -193,6 +197,7 @@ def review(root, output):
                         {
                             "name": name,
                             "before": before,
+                            "desktop_frame": frame_widths,
                             "after": measure(page),
                             "status": "passed",
                             "keyboard_decision": True,
@@ -228,9 +233,10 @@ def aggregate(root, output, names):
                             # Lazy images are scrolled into view before validation.
                             for img in page.locator("img").all():
                                 img.scroll_into_view_if_needed()
-                                assert img.evaluate(
-                                    "e=>e.complete && e.naturalWidth>0"
-                                ), "missing gallery PNG"
+                                img.evaluate("e=>e.decode()")
+                                assert img.evaluate("e=>e.naturalWidth>0"), (
+                                    "missing gallery PNG"
+                                )
                         measure(page)
                         results.append(
                             {"suite": name, "width": width, "status": "passed"}
