@@ -1,8 +1,7 @@
-"""Pin the hub enrollment and default-off renders without using credentials."""
+"""Pin the hub enrollment and active schedules without using credentials."""
 
 from __future__ import annotations
 
-import copy
 import os
 import re
 import subprocess
@@ -62,7 +61,7 @@ def test_base_render_remains_available_without_a_deployment_enrollment():
     }
 
 
-def test_hub_application_orders_overlay_last_and_renders_suspended():
+def test_hub_application_orders_overlay_last_and_renders_active():
     application = _load(GKE / "renovate" / "application.yaml")
     assert application["metadata"]["name"] == "renovate"
     assert application["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "2"
@@ -82,22 +81,17 @@ def test_hub_application_orders_overlay_last_and_renders_suspended():
     }
     docs = _render(*application["spec"]["source"]["helm"]["valueFiles"])
     assert _cron_suspensions(docs) == {
-        "renovate": True,
-        "renovate-apko-lock-maintenance": True,
+        "renovate": False,
+        "renovate-apko-lock-maintenance": False,
     }
 
 
-def test_hub_overlay_only_suspends_both_schedules():
+def test_hub_overlay_enables_schedules_without_other_changes():
     assert _load(HERE / "values-gke.yaml") == {
-        "suspend": True,
-        "apkoLockMaintenance": {"suspend": True},
+        "suspend": False,
+        "apkoLockMaintenance": {"suspend": False},
     }
-    base = _render("values.yaml")
-    expected = copy.deepcopy(base)
-    for doc in expected:
-        if doc.get("kind") == "CronWorkflow":
-            doc["spec"]["suspend"] = True
-    assert _render("values.yaml", "values-gke.yaml") == expected
+    assert _render("values.yaml", "values-gke.yaml") == _render("values.yaml")
 
 
 def test_hub_preserves_resource_names_schedules_and_credential_references():

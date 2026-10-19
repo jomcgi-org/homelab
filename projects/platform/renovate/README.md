@@ -1,15 +1,11 @@
 # Renovate
 
-The GKE hub is the sole intended deployment for Renovate and apko lock
-maintenance in `monolith-workflows`. Both schedules are presently suspended:
-the hub Application loads `values.yaml` followed by `values-gke.yaml`, which
-sets both effective `spec.suspend` values to `true`.
-
-Issue #7068 removes the retired home enrollment and cutover scaffolding while
-keeping the hub default-off. Credential and identity verification, enablement,
-and scheduled-run acceptance remain outstanding. Enablement overlaps #7001
-and needs separately authorized ownership reconciliation before either flag
-changes. This repository cleanup does not establish that dependency updates run.
+The GKE hub is the only enrolled deployment for Renovate and apko lock
+maintenance in `monolith-workflows`. The hub Application loads `values.yaml`
+followed by `values-gke.yaml`, which configures both effective `spec.suspend`
+values as `false`. Issue #7001 owns this activation; #7068 removed the retired
+home enrollment. Live rollout and scheduled-run evidence remain on those
+issues until observed.
 
 ## GitHub credential
 
@@ -32,19 +28,18 @@ Read-only organization member access is also required. Workflows write lets
 the GitHub Actions manager update checked-in workflows.
 
 The Renovate template and apko script still target `jomcgi/homelab`; the hub
-Application reads configuration from `jomcgi-org/homelab`. A separately
-authorized operator must verify Secret materialization and the dedicated
+Application reads configuration from `jomcgi-org/homelab`. Before activation
+lands, verify Secret materialization and the dedicated
 GitHub bot/App identity's intended repository access without disclosing Secret
-contents. This cleanup neither verifies nor changes those credentials or
-external-account settings.
+contents. The configured repository name and credential references are
+unchanged; this activation does not establish credential validity.
 
 ## Operations
 
 The configured Renovate schedule is 04:00 America/Vancouver every day.
 `renovate.json` limits ordinary PR creation to before 06:00 on Monday in the
-same timezone; vulnerability alerts have an any-time exception. Both hub
-schedules remain suspended. When enabled, concurrent runs are
-forbidden, each run has a two-hour deadline, failed runs retry twice, successful
+same timezone; vulnerability alerts have an any-time exception. Concurrent runs
+are forbidden, each run has a two-hour deadline, failed runs retry twice, successful
 pods are removed promptly, and failed workflow state remains available for one
 day.
 
@@ -64,8 +59,9 @@ creation grants no merge authority; dependency updates require adversarial
 review and separately authorized merging.
 
 Factory dependency intake has its own activation checklist in
-`projects/monolith/factory/orchestration/FACTORY.md`. This cleanup does not
-enable dependency landing or change its approval requirements.
+`projects/monolith/factory/orchestration/FACTORY.md`. Enabling scheduled
+maintenance does not enable factory dependency landing or change its approval
+requirements.
 
 ## Repository checks
 
@@ -78,32 +74,45 @@ manager labels, and the unconditional auto-merge prohibitions.
 
 Linux renders and CI provide repository evidence only.
 
-## Outstanding acceptance
+## Activation evidence
 
-Keep #7068 open until separately authorized operational work records:
+Before merging the activation, record timestamped read-only checks on the hub.
+These commands print resource metadata and status, never Secret data:
 
-- Ownership reconciliation with #7001, identifying which reviewed PR owns the
-  suspension flip, and current evidence of no retired home or competing writer.
-  Record active runs and any limits in available workflow history.
-- Hub `renovate` Application health, `renovate-github` OnePasswordItem sync and
-  Secret materialization, and dedicated GitHub identity verification without
-  disclosing credentials.
-- A subsequent reviewed enablement and verified rollout with both effective
-  hub `spec.suspend` values `false` and no competing or overlapping writer.
-- A successful scheduled Renovate scan and resulting dependency PR evidence
-  under the dedicated identity during the configured Monday PR window.
-- A successful scheduled apko maintenance run and its PR, with auto-merge
-  still disabled. Record workflow identities, timestamps, and PR evidence for
-  both scheduled runs.
+```bash
+date -u +%FT%TZ
+kubectl get application renovate -n argocd -o 'custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REVISION:.status.sync.revision,RECONCILED:.status.reconciledAt'
+kubectl get onepassworditem renovate-github -n monolith-workflows -o 'jsonpath={.metadata.name}{"\n"}{.status}{"\n"}'
+kubectl get secret renovate-github -n monolith-workflows -o 'custom-columns=NAME:.metadata.name,CREATED:.metadata.creationTimestamp,VERSION:.metadata.resourceVersion'
+kubectl get cronworkflow renovate renovate-apko-lock-maintenance -n monolith-workflows -o 'custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend,LAST:.status.lastScheduledTime,ACTIVE:.status.active[*].name'
+kubectl get workflows -A -l 'workflows.argoproj.io/cron-workflow in (renovate,renovate-apko-lock-maintenance)' -o 'custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,START:.status.startedAt,FINISH:.status.finishedAt'
+```
 
-Changing `suspend` does not terminate an already-running Workflow. No live
-acceptance check is established by this cleanup.
+The Application must be healthy, the OnePasswordItem synchronized, the Secret
+materialized, and both schedules suspended before the activation merges.
+Confirm the dedicated identity has the documented permissions for the intended
+repository without printing its token. Check current enrollment roots for a
+competing writer and wait for any active maintenance Workflow to finish.
+Record the available workflow-history interval. Successful workflows expire
+after one hour and failed workflows after one day; an empty current list does
+not prove no earlier run occurred. Missing evidence keeps activation blocked.
+
+After reconciliation, repeat the resource checks and require both effective
+`spec.suspend` values to be `false`. Observe successful scheduled runs of both
+workflows, record their identities and timestamps, and link the resulting
+dependency PRs under the dedicated identity. Ordinary Renovate PR creation
+must occur within the configured Monday window; apko maintains
+`renovate/apko-lock-maintenance`. Verify neither path requests auto-merge.
+Keep #7001 and #7068 open until those operational checks are recorded.
+
+For rollback, set both suspension fields in `values-gke.yaml` to `true` in a
+reviewed PR and verify reconciliation. Suspending does not terminate a Workflow
+already running. Wait for active work to finish before starting another writer.
 
 ## apko lock maintenance
 
-A second CronWorkflow is configured for 01:00 America/Vancouver each Monday
-and is also suspended on the hub. When enabled, it regenerates
-every committed `apko.lock.json` on Linux through the repository's pinned
+A second CronWorkflow is configured for 01:00 America/Vancouver each Monday.
+It regenerates every committed `apko.lock.json` on Linux through the repository's pinned
 `rules_apko` toolchain, runs the committed-artifact generators, and maintains a
 single `renovate/apko-lock-maintenance` PR. The script opens or updates the PR
 and labels it `dependencies`; it never requests auto-merge. Updated Wolfi
