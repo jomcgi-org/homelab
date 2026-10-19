@@ -728,9 +728,7 @@ def _serialize_open_dispute(mapper, connection, target) -> None:
 ReviewStatus = Literal["success", "failed", "unavailable", "unsupported"]
 
 
-class ReviewOutcome(
-    SQLModel, table=True
-):
+class ReviewOutcome(SQLModel, table=True):
     """Durable record of one evidence review attempt, kept for every outcome.
 
     ``next_attempt_at`` is the admission gate: NULL after ``unsupported`` means
@@ -770,9 +768,7 @@ class ReviewOutcome(
     )
 
 
-class Intervention(
-    SQLModel, table=True
-):
+class Intervention(SQLModel, table=True):
     """Human lifecycle for a retained distress raw."""
 
     __tablename__ = "interventions"

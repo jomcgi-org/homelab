@@ -87,9 +87,7 @@ class ChatMessage(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
-class ChatResponseCache(
-    SQLModel, table=True
-):
+class ChatResponseCache(SQLModel, table=True):
     """A durable, cross-pod cache of grimoire-chat answers.
 
     A simple key/value row: ``cache_key`` is a hash of
@@ -117,9 +115,7 @@ class ChatResponseCache(
     hit_count: int = Field(default=0)
 
 
-class ChatSnapshot(
-    SQLModel, table=True
-):
+class ChatSnapshot(SQLModel, table=True):
     """An opt-in, read-only, immutable share of a chat transcript ("share this
     chat").
 

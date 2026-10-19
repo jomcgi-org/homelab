@@ -47,9 +47,7 @@ class SiteHour(SQLModel, table=True):
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class SiteMonthClimatology(
-    SQLModel, table=True
-):
+class SiteMonthClimatology(SQLModel, table=True):
     """Per-site, per-month-of-year ERA5/CERRA reanalysis backfill (v2).
 
     A long-run seasonal baseline computed offline from the ERA5/CERRA reanalysis

@@ -27,9 +27,7 @@ class Campground(SQLModel, table=True):
     updated_at: datetime.datetime | None = None
 
 
-class Availability(
-    SQLModel, table=True
-):
+class Availability(SQLModel, table=True):
     __tablename__ = "availability"
     __table_args__ = _SCHEMA
     # Composite primary key: one row per (campground, date).

@@ -51,9 +51,7 @@ class Position(SQLModel, table=True):
     received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class LatestPosition(
-    SQLModel, table=True
-):
+class LatestPosition(SQLModel, table=True):
     __tablename__ = "latest_positions"
     __table_args__ = {"schema": "ships", "extend_existing": True}
 
@@ -83,9 +81,7 @@ class HeatCell(SQLModel, table=True):
     computed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class HeatCellHistorical(
-    SQLModel, table=True
-):
+class HeatCellHistorical(SQLModel, table=True):
     __tablename__ = "heat_cells_historical"
     __table_args__ = {"schema": "ships", "extend_existing": True}
 
