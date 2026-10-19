@@ -604,13 +604,19 @@
   }
 
   .panel {
+    position: relative;
     margin-bottom: 0.9rem;
   }
   /* The cursor marker, the tier's 2px left bar on a vertical list. Drawn
      inside the border so the panel does not shift as it moves. */
-  .panel.here {
-    border-left-color: var(--accent-ink);
-    border-left-width: 3px;
+  .panel.here::before {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    border-left: 2px solid var(--accent-ink);
+    pointer-events: none;
+    content: "";
   }
   .panel-head {
     min-height: 2.75rem;

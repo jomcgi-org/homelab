@@ -73,7 +73,10 @@
     min-height: 2.75rem;
     align-items: center;
   }
-  .factory-sheet :global(button),
+  .factory-sheet :global(button) {
+    max-width: 100%;
+    border-radius: 0;
+  }
   .factory-sheet :global(input),
   .factory-sheet :global(select),
   .factory-sheet :global(textarea) {
