@@ -3192,7 +3192,10 @@ def _plain_env(container: dict) -> dict[str, str | None]:
 def test_hub_bricks_admit_reserved_with_memory_requests_at_their_limits(
     overlay: str, jailer: str
 ) -> None:
-    """#4185: both hub overlays admit on declared memory with no overcommit.
+    """#4185: the dev hub overlay admits on declared memory with no overcommit.
+
+    Production joins this parametrize, with its jailer still off, when #6965
+    arms reserved there.
 
     A reserved brick fills its budget with declared memMib, so it requests its
     whole memory limit and kube-scheduler cannot pack more brick limit onto a
