@@ -353,6 +353,7 @@ oci.pull(
     ],
 )
 use_repo(oci, "python_base", "python_base_linux_amd64", "python_base_linux_arm64_v8")
+use_repo(oci, "custom_crane_regctl_toolchains")
 
 # PostgreSQL 16 + pgvector for e2e integration tests
 oci.pull(

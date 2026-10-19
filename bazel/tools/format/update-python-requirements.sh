@@ -8,7 +8,7 @@ echo "Updating Python requirements..."
 # Regenerate runtime.txt from pyproject.toml
 bazel run //bazel/requirements:runtime
 
-# Regenerate all.txt (includes test/tools dependencies)
+# Regenerate all.txt (includes test dependencies)
 bazel run //bazel/requirements:requirements.all
 
 echo "✅ Python requirements updated"
