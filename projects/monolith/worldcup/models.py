@@ -50,9 +50,7 @@ class Fixture(SQLModel, table=True):
     updated_at: datetime | None = None
 
 
-class Qualification(
-    SQLModel, table=True
-):
+class Qualification(SQLModel, table=True):
     __tablename__ = "qualification"
     __table_args__ = _SCHEMA
     team_id: str = Field(primary_key=True)
