@@ -46,7 +46,9 @@ passing browser assertions alone does not establish visual acceptance.
 
 The fixture-only MapLibre adapter bundles the module worker explicitly and
 exposes real map instances to the browser check. Captures wait for loaded,
-stationary maps, reject map errors and require rendered route features.
+stationary maps, a fresh idle render and browser presentation frames. They
+reject map errors and require rendered route features. Readiness predicates
+alone had allowed a stale canvas frame beside an updated DOM photo marker.
 `maps` in each check records the layer IDs and rendered-route counts. A canvas
 element alone is insufficient: without the worker bundle, a blank map could
 pass the old capture checks. Production imports and map options are unchanged.

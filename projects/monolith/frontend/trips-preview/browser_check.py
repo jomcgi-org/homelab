@@ -60,6 +60,25 @@ def capture(page, output, record, state="page", full_page=True):
               globalThis.__tripsPreviewMaps.every(map =>
                 map.previewErrors.length || (map.loaded() && !map.isMoving()))"""
         )
+        # The readiness predicates alone allowed a stale WebGL frame beside
+        # updated DOM markers. Wait for a fresh idle render and presentation.
+        page.evaluate(
+            """async () => {
+              await Promise.all(globalThis.__tripsPreviewMaps.map(map =>
+                new Promise((resolve, reject) => {
+                  if (map.previewErrors.length) return resolve();
+                  const timeout = setTimeout(() =>
+                    reject(new Error('Map did not render an idle frame')), 10000);
+                  map.once('idle', () => {
+                    clearTimeout(timeout);
+                    resolve();
+                  });
+                  map.triggerRepaint();
+                })));
+              await new Promise(resolve => requestAnimationFrame(() =>
+                requestAnimationFrame(resolve)));
+            }"""
+        )
         maps = page.evaluate(
             """() => globalThis.__tripsPreviewMaps.map(map => ({
               errors: map.previewErrors,
