@@ -13,7 +13,7 @@ import (
 
 // workloadEntry is the daemon's in-memory copy of one pushed RegistryEntry: the
 // node-side identity of a workload (image digest, rootfs ref, harness init,
-// sizing) the control plane owns and pushes over SyncRegistry/RegisterWorkload.
+// sizing) the control plane owns and pushes over SyncRegistry.
 // It is the artifact-decoupling replacement for the retired EMBERVM_NODED_IMAGES
 // config table: the daemon boots with NO entries and admits no work until the
 // control plane replays the authoritative set on (re)connect.
@@ -23,22 +23,20 @@ type workloadEntry struct {
 	// ImageRef is the OCI ref a BuildBase resolves against to find this entry's
 	// node-side rootfs/harness (the join key the retired EMBERVM_NODED_IMAGES
 	// table keyed on). getByImageRef indexes on it.
-	ImageRef             string                 `json:"imageRef"`
-	RootfsRef            string                 `json:"rootfsRef"`
-	HarnessInit          string                 `json:"harnessInit"`
-	VCPUs                uint32                 `json:"vcpus"`
-	MemMib               uint32                 `json:"memMib"`
-	NodeLocalWake        bool                   `json:"nodeLocalWake"`
-	ServingPort          uint32                 `json:"servingPort"`
-	ServingHealthPath    string                 `json:"servingHealthPath"`
-	StatefulListenPort   uint32                 `json:"statefulListenPort"`
-	StatefulPort         uint32                 `json:"statefulPort"`
-	StatefulVolumeMount  string                 `json:"statefulVolumeMount"`
-	StatefulBootImageRef string                 `json:"statefulBootImageRef"`
-	StatefulVolumeDevice string                 `json:"statefulVolumeDevice"`
-	GroupListenPort      uint32                 `json:"groupListenPort"`
-	GroupMemberPlan      []groupMemberPlanEntry `json:"groupMemberPlan,omitempty"`
-	BlessingLeases       []volume.BlessingLease `json:"blessingLeases,omitempty"`
+	ImageRef            string                 `json:"imageRef"`
+	RootfsRef           string                 `json:"rootfsRef"`
+	HarnessInit         string                 `json:"harnessInit"`
+	VCPUs               uint32                 `json:"vcpus"`
+	MemMib              uint32                 `json:"memMib"`
+	NodeLocalWake       bool                   `json:"nodeLocalWake"`
+	ServingPort         uint32                 `json:"servingPort"`
+	ServingHealthPath   string                 `json:"servingHealthPath"`
+	StatefulListenPort  uint32                 `json:"statefulListenPort"`
+	StatefulPort        uint32                 `json:"statefulPort"`
+	StatefulVolumeMount string                 `json:"statefulVolumeMount"`
+	GroupListenPort     uint32                 `json:"groupListenPort"`
+	GroupMemberPlan     []groupMemberPlanEntry `json:"groupMemberPlan,omitempty"`
+	BlessingLeases      []volume.BlessingLease `json:"blessingLeases,omitempty"`
 }
 
 type groupMemberPlanEntry struct {
@@ -70,24 +68,22 @@ func entryFromProto(e *nodev1.RegistryEntry) workloadEntry {
 		})
 	}
 	return workloadEntry{
-		Workload:             e.GetWorkload(),
-		ImageDigest:          e.GetImageDigest(),
-		ImageRef:             e.GetImageRef(),
-		RootfsRef:            e.GetRootfsRef(),
-		HarnessInit:          e.GetHarnessInit(),
-		VCPUs:                e.GetSizing().GetVcpus(),
-		MemMib:               e.GetSizing().GetMemMib(),
-		NodeLocalWake:        e.GetNodeLocalWake(),
-		ServingPort:          e.GetServingPort(),
-		ServingHealthPath:    e.GetServingHealthPath(),
-		StatefulListenPort:   e.GetStatefulListenPort(),
-		StatefulPort:         e.GetStatefulPort(),
-		StatefulVolumeMount:  e.GetStatefulVolumeMount(),
-		StatefulBootImageRef: e.GetStatefulBootImageRef(),
-		StatefulVolumeDevice: e.GetStatefulVolumeDevice(),
-		GroupListenPort:      e.GetGroupListenPort(),
-		GroupMemberPlan:      groupPlan,
-		BlessingLeases:       blessingLeasesFromProto(e.GetBlessingLeases()),
+		Workload:            e.GetWorkload(),
+		ImageDigest:         e.GetImageDigest(),
+		ImageRef:            e.GetImageRef(),
+		RootfsRef:           e.GetRootfsRef(),
+		HarnessInit:         e.GetHarnessInit(),
+		VCPUs:               e.GetSizing().GetVcpus(),
+		MemMib:              e.GetSizing().GetMemMib(),
+		NodeLocalWake:       e.GetNodeLocalWake(),
+		ServingPort:         e.GetServingPort(),
+		ServingHealthPath:   e.GetServingHealthPath(),
+		StatefulListenPort:  e.GetStatefulListenPort(),
+		StatefulPort:        e.GetStatefulPort(),
+		StatefulVolumeMount: e.GetStatefulVolumeMount(),
+		GroupListenPort:     e.GetGroupListenPort(),
+		GroupMemberPlan:     groupPlan,
+		BlessingLeases:      blessingLeasesFromProto(e.GetBlessingLeases()),
 	}
 }
 
@@ -103,8 +99,7 @@ func blessingLeasesFromProto(leases []*nodev1.BlessingLease) []volume.BlessingLe
 }
 
 // workloadRegistry is the daemon's in-memory, control-plane-pushed workload
-// table. It is fed exclusively by the registry verbs (SyncRegistry converges to
-// exactly the pushed set; Register/Deregister mutate one entry) and is the
+// table. It is fed exclusively by SyncRegistry (exactly the pushed set) and is the
 // authority for whether the daemon has received its registry replay yet
 // (readiness gates on synced).
 //
@@ -177,39 +172,6 @@ func (r *workloadRegistry) syncEntries(entries []workloadEntry, controlPlaneActi
 
 	persistCache(path, snapshot)
 	return len(next)
-}
-
-// register adds-or-updates one entry incrementally. It does NOT clear the stale
-// mark or set synced: an incremental register is not the authoritative full
-// replay the readiness gate waits for (only SyncRegistry converges the whole
-// set). It persists the updated table. Returns the resulting entry count. An
-// empty workload name is ignored.
-func (r *workloadRegistry) register(e workloadEntry) int {
-	r.mu.Lock()
-	if e.Workload != "" {
-		r.entries[e.Workload] = e
-	}
-	n := len(r.entries)
-	snapshot := r.snapshotLocked()
-	path := r.cachePath
-	r.mu.Unlock()
-
-	persistCache(path, snapshot)
-	return n
-}
-
-// deregister removes one entry by workload name. Idempotent on an absent name.
-// It persists the updated table. Returns the resulting entry count.
-func (r *workloadRegistry) deregister(workload string) int {
-	r.mu.Lock()
-	delete(r.entries, workload)
-	n := len(r.entries)
-	snapshot := r.snapshotLocked()
-	path := r.cachePath
-	r.mu.Unlock()
-
-	persistCache(path, snapshot)
-	return n
 }
 
 // get returns the entry for a workload and whether it is present.

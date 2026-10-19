@@ -22,6 +22,7 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
 )
 
 // TestMain isolates every test in this package from the host's own cgroup. New
@@ -1336,10 +1337,11 @@ func TestReservedRefusalMessageNamesTheModel(t *testing.T) {
 func TestPrimeVolumeColdBootCarriesWorkloadSizing(t *testing.T) {
 	drv := &fakeDriver{}
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
+	srv.volumes = volume.NewManager(t.TempDir())
 	seedBase(srv, "sess__sizing", "claude-runtime")
 	srv.registry.sync([]workloadEntry{{Workload: "claude-runtime", VCPUs: 2, MemMib: 3072}})
 
-	if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "sess__sizing", VolumeDiskPath: "/sessions/l/workspace.img"}); err != nil {
+	if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "sess__sizing", LineageId: "l", VolumeMount: "/workspace", VolumeSizeBytes: 1 << 20}); err != nil {
 		t.Fatalf("volume Prime: %v", err)
 	}
 	if spec := drv.claimSpec(); spec.ColdBootVCPUs != 2 || spec.ColdBootMemMib != 3072 {

@@ -173,28 +173,22 @@ func (*fakeServer) StopServing(_ context.Context, req *nodev1.StopServingRequest
 // how the round-trip test exercises each pairing branch against a stateless fake.
 // FRESH/COLD cold-boot from boot_image_ref and report a bumped generation.
 //
-// blessed_generation and volume_device (R7) are recorded on the fake's response
-// so the client can assert both crossed the wire: the returned generation
+// blessed_generation is recorded on the fake's response so the client can
+// assert it crossed the wire: the returned generation
 // mirrors blessed_generation when the caller set one (0 falls back to the
-// scripted legacy self-bump values below), and volume_device is echoed back
-// verbatim in vm_id's suffix so an empty value (legacy vol.img lane) and a set
-// one (Longhorn device path) are both observable.
+// scripted legacy self-bump values below).
 func (*fakeServer) StartStateful(_ context.Context, req *nodev1.StartStatefulRequest) (*nodev1.StartStatefulResponse, error) {
-	vmIDSuffix := ""
-	if dev := req.GetVolumeDevice(); dev != "" {
-		vmIDSuffix = "@" + dev
-	}
 	if req.GetMode() == nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT {
 		ref := req.GetRelightSnapshotRef()
 		switch {
 		case strings.Contains(ref, "mismatch"):
 			return &nodev1.StartStatefulResponse{
-				VmId: "vm:" + ref + vmIDSuffix, Ip: "10.99.0.3", Port: req.GetPort(),
+				VmId: "vm:" + ref, Ip: "10.99.0.3", Port: req.GetPort(),
 				Generation: 8, WasRelight: false, ColdBootReason: "generation_mismatch",
 			}, nil
 		case strings.Contains(ref, "noledger"):
 			return &nodev1.StartStatefulResponse{
-				VmId: "vm:" + ref + vmIDSuffix, Ip: "10.99.0.3", Port: req.GetPort(),
+				VmId: "vm:" + ref, Ip: "10.99.0.3", Port: req.GetPort(),
 				Generation: 8, WasRelight: false, ColdBootReason: "ledger_unreadable",
 			}, nil
 		default:
@@ -203,7 +197,7 @@ func (*fakeServer) StartStateful(_ context.Context, req *nodev1.StartStatefulReq
 				gen = bg
 			}
 			return &nodev1.StartStatefulResponse{
-				VmId: "vm:" + ref + vmIDSuffix, Ip: "10.99.0.3", Port: req.GetPort(),
+				VmId: "vm:" + ref, Ip: "10.99.0.3", Port: req.GetPort(),
 				Generation: gen, WasRelight: true, ColdBootReason: "",
 			}, nil
 		}
@@ -216,7 +210,7 @@ func (*fakeServer) StartStateful(_ context.Context, req *nodev1.StartStatefulReq
 		gen = bg
 	}
 	return &nodev1.StartStatefulResponse{
-		VmId: "vm:" + req.GetBootImageRef() + vmIDSuffix, Ip: "10.99.0.3", Port: req.GetPort(),
+		VmId: "vm:" + req.GetBootImageRef(), Ip: "10.99.0.3", Port: req.GetPort(),
 		Generation: gen, WasRelight: false, ColdBootReason: "",
 	}, nil
 }
@@ -446,10 +440,8 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 		// volume, and set exported flags below prove the per-artifact fields cross.
 		DrainDeadlineUnixMs: 1_700_000_009_000,
 		StoreReachable:      true,
-		// Distribution facts (R7): fixed vendor and template hash so the client can
-		// assert the new node-level fields round-trip.
-		CpuVendor:        "amd",
-		NodeTemplateHash: "tmpl-abc123",
+		// Distribution facts (R7): a fixed vendor for the cross-language assertion.
+		CpuVendor: "amd",
 		// Session facts (R2): deterministic, so the client can assert the new
 		// repeated/scalar status fields round-trip.
 		SessionVms: []*nodev1.SessionVm{
