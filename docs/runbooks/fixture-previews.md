@@ -69,7 +69,8 @@ published bytes.
 Trips and Stars remain owned by [#7213](https://github.com/jomcgi-org/homelab/pull/7213)
 and [#7217](https://github.com/jomcgi-org/homelab/pull/7217). When their harnesses
 are present, the suite calls their supplied `check` functions. Trips requires
-all 16 base page captures plus 8 viewer/map captures; Stars requires all 8
+all 32 captures: 16 base pages, 8 timeline viewer/map states and 8 day map-control
+and fullscreen states. Stars requires all 8
 live/historical captures. Shared instrumentation records browser versions and
 traces, supplies an invented blank Stars basemap, and denies unknown remote
 requests. Trips keeps its owner's synthetic style and terrain responses.

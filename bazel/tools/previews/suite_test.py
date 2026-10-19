@@ -18,13 +18,28 @@ SHA = "a" * 40
 
 class SuiteTests(unittest.TestCase):
     def test_owner_capture_contracts(self):
-        self.assertEqual(len(suite.expected_captures("trips")), 24)
+        self.assertEqual(len(suite.expected_captures("trips")), 32)
         self.assertEqual(len(suite.expected_captures("stars")), 8)
         self.assertEqual(len(suite.expected_captures("review")), 16)
         self.assertIn("timeline-390-dark-viewer.png", suite.expected_captures("trips"))
         self.assertIn("timeline-1440-light-map.png", suite.expected_captures("trips"))
+        self.assertIn("day-390-dark-fullscreen.png", suite.expected_captures("trips"))
+        self.assertIn(
+            "day-1440-light-map-controls.png", suite.expected_captures("trips")
+        )
         self.assertEqual(len(suite.expected_captures("blog")), 9)
         self.assertEqual(len(suite.expected_captures("factory")), 40)
+
+    def test_missing_day_fullscreen_capture_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in suite.expected_captures("trips"):
+                (root / name).write_bytes(PNG)
+            (root / "day-390-dark-fullscreen.png").unlink()
+            with self.assertRaisesRegex(
+                ValueError, "missing capture day-390-dark-fullscreen"
+            ):
+                suite.validate_captures("trips", root)
 
     def test_missing_empty_and_invalid_capture_fail(self):
         with tempfile.TemporaryDirectory() as directory:

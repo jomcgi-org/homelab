@@ -131,12 +131,21 @@ def expected_captures(name):
                 ("index", "trip", "day", "timeline"), (390, 1440), ("light", "dark")
             )
         }
-        return base | {
-            f"timeline-{width}-{scheme}-{state}.png"
-            for width, scheme, state in itertools.product(
-                (390, 1440), ("light", "dark"), ("viewer", "map")
-            )
-        }
+        return (
+            base
+            | {
+                f"timeline-{width}-{scheme}-{state}.png"
+                for width, scheme, state in itertools.product(
+                    (390, 1440), ("light", "dark"), ("viewer", "map")
+                )
+            }
+            | {
+                f"day-{width}-{scheme}-{state}.png"
+                for width, scheme, state in itertools.product(
+                    (390, 1440), ("light", "dark"), ("map-controls", "fullscreen")
+                )
+            }
+        )
     return {
         f"{mode}-{scheme}-{width}.png"
         for mode, scheme, width in itertools.product(

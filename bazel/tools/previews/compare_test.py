@@ -167,6 +167,10 @@ class CompareTests(unittest.TestCase):
             ("timeline-viewer", 1440, "light"),
         )
         self.assertEqual(
+            compare.case_details("trips", "day-390-dark-fullscreen.png"),
+            ("day-fullscreen", 390, "dark"),
+        )
+        self.assertEqual(
             compare.case_details("stars", "historical-dark-390.png"),
             ("historical", 390, "dark"),
         )
