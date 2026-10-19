@@ -313,7 +313,8 @@ a backend could not replay it elsewhere. Context Forge implements exchange but
 authentik does not advertise the grant. The replay path is **not** closed on
 the network on the hub: the inert token-replay Cilium template was removed
 in #5816 because the hub exposes no corresponding CRDs. Native-policy
-successor work remains #5277 / #3897. The monolith has no code path
+enforcement remains tracked by #5277; #3897 closed completed for default-off
+native policy support. The monolith has no code path
 that calls the gateway, which is the only thing keeping that theoretical.
 
 **The token now reaches the monolith.** On 2026-09-05 the hub monolith logged
@@ -329,13 +330,22 @@ the session opener and every later message runs in its context, so a stateful
 mount would pin `current_principal()` to the opener again (#4569 records the
 mechanism).
 
-**Per-caller result scoping is still not built** (#4569). The shared monolith
-surface now requires `operators` for every current tool call, so an anonymous
-caller cannot call `search_knowledge` at all. Among callers admitted to a tool,
-the tool still returns the same rows or object regardless of subject: for
-example, `search_knowledge` does not filter notes and
-`monolith_agent_detail` returns a requested turn's verbatim result without a
-per-session ownership check. Domain checks can narrow the surface gate:
+**Result authorization is tool-specific.** The shared monolith surface
+requires `operators` for every current tool call: `GroupPolicyMiddleware` is
+enabled by default and the committed values do not disable it. No tool carries
+`mcp:public`; anonymous catalogue refresh authorizes no call.
+`search_knowledge` applies `knowledge/retrieval_policy.py` to verified scopes
+and the explicit `homelab-admin` / `kg-agents` group mappings before querying.
+Personal and legacy NULL-scoped notes require explicit opt-in, an authorized
+personal grant and a durable audit row. `operators` alone grants no search scope.
+
+The remaining gap is direct object access by an admitted caller:
+`knowledge/mcp.py:get_note` retrieves a note by ID, and
+`factory/execution/mcp.py:monolith_agent_detail` returns a turn's verbatim
+result, without per-note or per-session ownership checks. This residual has
+no open tracker here. #4569 closed not planned after consolidation into #5573,
+which remains open; closure alone established no authorization. Domain checks
+can narrow the surface gate:
 factory orchestration requires a standing human operator, `grant_kg_burst`
 checks the operator group, and `submit_product_update` checks
 `updates:submit`. Identity and attribution therefore do not themselves grant
@@ -347,8 +357,9 @@ or repository object belongs to the caller, so identity must reach the domain
 that owns that object (ADR agents/055, ADR agents/059). Trusted identity headers
 were rejected because an in-cluster caller could forge them; a verifiable bearer
 keeps the resource server responsible for validation. ADR agents/059 superseded
-055's proposed placement. Any future GitHub mediation remains gated by #4940,
-#4944, and #4946; no broker or delegated grant enforcement is shipped.
+055's proposed placement. #4940 closed as an umbrella; #4944 and #4946 also
+closed not planned with evidence gates for reconsideration. No monolith GitHub
+mutation broker or delegated grant enforcement is shipped.
 
 ## Deployment
 
@@ -509,5 +520,5 @@ Rationale only. None of these describes current state.
 | `agents/020` | Deprecate Context Forge, serve MCP from the monolith | Superseded by 059; its execution issues #3832 and #3833 stay open, #3831 closed 2026-09-05 | deleted |
 | `agents/034` | Per-tier guest MCP ACL at `/private/mcp/{tier}/` | Draft; #3838 open. The agents tier (#5656) is the shape that shipped instead | deleted |
 | `agents/042` | Agent MCP v1 follow-ons | Accepted, partially shipped; #3844 | deleted |
-| `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059. The GitHub registration here is disabled with no tools; #4940 retains the gated direction, and no monolith broker is selected or shipped | deleted |
+| `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059. The GitHub registration here is disabled with no tools; #4940 closed as an umbrella, and no monolith broker is selected or shipped | deleted |
 | `agents/059` | Authentik federates identity, the monolith serves MCP directly | Accepted 2026-09-11, execution #3832; chart route and RFC 9728 document staged default-off in the monolith chart. Context Forge remains the front door until #3832; decommission is #3833 | deleted |

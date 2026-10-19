@@ -2,7 +2,9 @@
 
 Current state of the controls that hold the homelab together, and where
 each one is enforced. Decision rationale lives in the **Why** paragraph
-under each section; this page says what is live today. Open findings and
+under each section. Built controls, committed deployment gates and dated live
+observations are distinct; repository configuration alone proves no rollout.
+Open findings and
 the per-surface ranking live in [THREAT-MODEL.md](THREAT-MODEL.md); open
 work is tracked in GitHub Issues, never here.
 
@@ -140,8 +142,14 @@ authorization is the `groups` claim inside the verified token.
 **MCP identity has two entry points.** External callers reach Context Forge
 on `mcp.jomcgi.dev` (`projects/mcp/ARCHITECTURE.md`): it validates the
 authentik token, filters tools per caller, and forwards the token to the
-monolith, which verifies it again. Per-caller result scoping is not live
-(#4569). EmberVM agent guests take a second path: the guest's MCP URL is
+monolith, which verifies it again. The shared surface requires `operators`
+for tool calls (`core/mcp_policy.py`); anonymous catalogue refresh grants no
+call access. Knowledge search filters by caller-derived grants
+(`knowledge/retrieval_policy.py`), with explicit, audited personal-scope
+opt-in. Direct `get_note` and `monolith_agent_detail` reads still lack
+per-object ownership checks for admitted callers, an untracked residual.
+#4569 closed as consolidated into #5573, not as proof of complete result
+authorization. EmberVM agent guests take a second path: the guest's MCP URL is
 delivered as a kernel boot argument, the egress sidecar admits the
 `monolith-agents` service by name and address, and the token broker mints
 an authentik token for one shared service account (provider `mcp-agents`,
@@ -149,26 +157,36 @@ an authentik token for one shared service account (provider `mcp-agents`,
 `monolith-agents` validates alongside the human `mcp-friends` issuer
 (`projects/monolith-agents/deploy/values.yaml`, `auth:`). Every guest is
 therefore the same principal at that service until SPIFFE phase 4. The agent
-application checks only that a principal is non-anonymous, not that it belongs
-to `kg-agents`, so accepting the human issuer is a broader source boundary than
-the guest-only topology implies. Network reachability supplies no application
-authorization.
+application admits non-anonymous principals to the knowledge catalogue, then
+search applies its scope policy. Board tools require a server-trusted binding
+and their enable flag; Kubernetes tools require the standing, undelegated
+`kg-agent-sa` identity in `kg-agents`. Accepting the human issuer broadens the
+entry boundary beyond guests. Network reachability grants no permission.
 
-**SPIFFE identity exists and nothing presents it yet.** SPIRE runs on the
+**SPIFFE transport is built, with a partial hub configuration.** SPIRE runs on the
 hub (`projects/platform/spire`, Application `projects/platform-gke/spire`):
 trust domain `embervm.jomcgi.dev`, server on the core pool with its
 datastore as a database on `monolith-pg`, an agent on every node attesting
 with `k8s_psat`, and the CSI driver. Three `ClusterSPIFFEID` objects issue
 an X.509-SVID of the form `spiffe://embervm.jomcgi.dev/ns/<ns>/sa/<sa>` to
 every pod in the `embervm`, `monolith` and `monolith-agents` namespaces
-(`kubectl get clusterspiffeids`). The token broker chart can mount the
-Workload API and serve `/token` over SPIFFE mTLS on a second port, gated on
-`tokenBroker.spiffe.enabled`, which is false with no hub override (#5755);
-nothing else mounts it, the control-plane-to-noded hop still carries a
-static bearer token, and guests hold no identity. Phase 2 is #5755 to
-#5759; the phase plan is #5706.
+(`projects/platform/spire/values.yaml`). Broker mTLS (#5755), the dedicated
+restore-capability key (#5756), the noded mTLS listener (#5757), and the
+control-plane mTLS dialer (#5758) are built; all four issues closed completed.
+The EmberVM hub overlay enables `tokenBroker.spiffe.enabled` and
+`egress.tokenBroker.spiffe.enabled`: the broker's token route requires mTLS
+and the egress proxy uses that listener. The monolith's broker mTLS client remains
+off, and `tokenBroker.plaintext.retireProtectedRoutes` remains false, retaining
+plaintext login, refresh and quota routes (#5791).
 
-Restore-capability MAC key decoupling is phase 2a (#5756). Its rollout order is:
+The noded listener and control-plane dialer remain shipped off
+(`noded.spiffe.enabled`, `controlPlane.spiffe.enabled` and `dialNoded`);
+plaintext gRPC and the transport bearer remain configured. Guests still have
+no individual identity. #5759 closed not planned, folding its ordered rollout
+checks into #5706. These are source and committed-values observations, not a
+new live verification of listeners, SVID rotation or credential retirement.
+
+Restore-capability MAC key decoupling shipped default-off in #5756. Its rollout order is:
 ship the default-off shared Secret wiring and a noded verifier that accepts the
 dedicated key before the legacy bearer, enable the dedicated key on the control
 plane and every noded pod in one staged values change, then verify restores
@@ -212,8 +230,12 @@ Tunnel protocol is pinned to `http2`. The Tailscale operator is the second
 way in: it publishes the Kubernetes API to the tailnet and impersonates the
 tailnet identity as a Kubernetes user bound to `cluster-admin` for the
 admins listed in `projects/platform-gke/tailscale/values.yaml`, exposes the
-monolith API as a tailnet host, and runs three egress bridges to the home
-inference host.
+monolith API as a tailnet host. The hub values retain one egress Service,
+`inference-bridge-freetoken`, targeting `node-4.tail33e678.ts.net:8090`.
+The old inference and embeddings bridges were removed in `e0db0c802`.
+The retained Service feeds `frontend.qwenApiBase`, rendered as `QWEN_API_BASE`
+and read by the private `/qwen` proxies. This is a configured consumer path;
+git does not establish that the remote host is reachable or serving FreeToken.
 
 **GKE Dataplane V2 is the CNI, and there is no enforced private-monolith
 egress policy on the hub.**
@@ -239,8 +261,9 @@ shared-address, and multicast ranges but cannot deny an arbitrary public HTTPS
 host. That is an accepted GKE residual, not an exact replacement for Cilium's
 FQDN rules. Metadata-server access would remain denied.
 
-Native-policy successors remain #5276, #5277 and #3897. The staged native
-egress policy intentionally scopes default-deny to
+Native-policy enforcement remains tracked by #5276 and #5277. #3897 closed
+completed for staged default-off private policy support, not live enforcement.
+The staged native egress policy intentionally scopes default-deny to
 the private app endpoint. Searxng, CNPG, Atlas migration jobs, and
 the separate `monolith-workflows` batch namespace retain their existing egress
 behavior because they are distinct workload and credential boundaries. They
@@ -390,7 +413,7 @@ soak (#6965).
 GKE registers one, but it selects nodes labelled `sandbox.gke.io/runtime`
 and no pool runs GKE Sandbox (`kubectl get runtimeclass`, node labels). ADR
 security/003 targeted container sandboxes that were replaced by Firecracker
-guests; #3894 stays open as its record.
+guests; #3894 closed not planned as superseded.
 
 **Container security context is a convention, not a control.** The apko
 images build as uid 65532 (`bazel/tools/oci/go_image.bzl`) and most charts
@@ -434,14 +457,28 @@ closure is pruned in `projects/monolith/BUILD` and asserted by
   A PreToolUse hook (`bazel/tools/hooks/check-public-reader-grant.sh`)
   blocks a new `CREATE TABLE` in a public schema without one; it fires only
   for edits made through Claude Code.
-- **One write path.** Public chat writes as `public_writer` on the primary,
-  scoped to DML on `chat_public` (`projects/monolith/chat_public_grants_test.py`).
+- **Constrained chat writes.** Grimoire chat writes as `public_writer` on the
+  primary, scoped to its `grimoire_chat` tables; the retired notes-chat
+  `chat_public` grants and tables remain (`chart/migrations/20260706200000_grimoire_chat.sql`
+  and `chat_public_grants_test.py` under `projects/monolith/`).
   Sessions are Turnstile-bound with per-session token budgets and a global
   concurrency slot of one (`projects/monolith/grimoire_chat/limits.py`). On
-  the hub the chat model is an external API (`CHAT_PUBLIC_INFERENCE_URL` in
-  `projects/monolith-public/deploy/values-gke.yaml`), so anonymous prompts
-  leave the cluster and the slot bounds spend rather than a GPU. The
-  scheduled purge ADR security/005 requires is not built (#3899).
+  the hub, `grimoire_chat/inference.py` reads `GRIMOIRE_CHAT_INFERENCE_URL`
+  with `CHAT_PUBLIC_INFERENCE_URL` as its fallback. The public hub values
+  still set that fallback to Meta's external API. The public composition
+  mounts Grimoire chat, reached through `/app/grimoire/chat` frontend proxies;
+  the old notes-chat router and inference client are removed. Anonymous
+  Grimoire prompts therefore use the configured off-cluster path, whose
+  availability is not verified here.
+- **Legacy notes-chat purge is built.** #3899 closed completed on 2026-10-01.
+  `chat_public/retention.py` and `app/jobs_main.py` implement retention and
+  selector-based takedown with audit counts, hashed selectors and dry-run
+  rollback. The private chart schedules `chat-public-retention` at `15 4 * * *`
+  with `suspend: false`; `chat-public-takedown` is manual-only and suspended.
+  CronWorkflows render when the jobs image is pinned. Defaults remove
+  snapshots older than 365 days and sessions idle over 30 days with no
+  remaining snapshot, including their messages. These jobs cover
+  `chat_public`, not `grimoire_chat`; no successful live purge is claimed here.
 - **No `/api` on the public origin.** The public `HTTPRoute`s
   (`projects/monolith-public/chart/templates/httproute-public.yaml`) carry
   no `/api` rule, asserted by `public_httproute_chat_guard_test`; pages
@@ -455,7 +492,8 @@ closure is pruned in `projects/monolith/BUILD` and asserted by
   fails the docs and posts generators on in-cluster hostnames, private
   addresses, node and brick names, bucket URIs, 1Password references and
   secret-shaped assignments. It is a fixed marker list: an identifier
-  matching no marker publishes verbatim.
+  matching no marker publishes verbatim. #5275 closed completed for that
+  content gate; this residual limitation has no open tracker.
 
 The inert destination-scoped Cilium policy and its policy-only guard were
 removed in #5816. Public native-policy enforcement remains #5276 (Network
@@ -514,7 +552,7 @@ a convention this document asks for and nothing enforces.
 | Check | Mechanism | State |
 |-------|-----------|-------|
 | Semgrep registry rules | Semgrep Managed Scans, configured on the Semgrep side | live; not in this repo |
-| Chart admissibility (kubeconform) | #5337 | not merged |
+| Chart admissibility (kubeconform) | `//bazel/helm:chart_admissibility_test`, `chart-admissibility-test.sh` and `admissibility.bzl` | landed; validates the explicit `MANIFEST_SETS` in `bazel/helm/BUILD`: application/dev and platform default/hub renders plus Loom manifests, against pinned Kubernetes and CRD schemas; completeness checks retain explicit skips |
 | Pod hardening and privilege | Kyverno | two policies, both `Audit`, neither about security context |
 | Resource requests and a memory limit | Kyverno `require-resource-requests` | `Audit`, `monolith` and `monolith-public` only |
 | Public binary import closure | `main_public_imports_test` | live in CI |
@@ -607,8 +645,8 @@ document carries what shipped.
 |-----|----------|--------------|-------------|
 | security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Superseded: the Bazel layer never scanned and was removed; CI scanning is Semgrep Managed Scans (#4777) | deleted |
 | security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | deleted |
-| security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Accepted, never built (#3894); the sandboxes it targeted became Firecracker guests | deleted |
-| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica, imports test and private rootfs hardening shipped; private egress policy is gated pending live audit and inert on the hub (#3897, #5277); tracking #3895 | deleted |
-| security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Implemented except the purge (#3899); inference moved off-cluster | deleted |
+| security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Superseded by Firecracker guests; #3894 closed not planned | deleted |
+| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Composition, role, replica, imports test and private rootfs hardening shipped; #3897 completed staged default-off policy support, #5277 owns private enforcement; umbrella #3895 closed not planned | deleted |
+| security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Notes-chat retention and takedown built (#3899 completed); its public chat endpoint was later retired. Grimoire chat retains the budgets and off-cluster inference; the legacy purge covers only `chat_public` | deleted |
 | security/006 Friends authorization lane | `/moving` on `friends.jomcgi.dev` behind an authentik `family` group | Accepted, shipped (#4968) | deleted |
 | security/007 Aggregate threat model index | one ranked index over labelled issues, re-ranked by hand | Accepted; decisions 1, 2 and 4 live, decision 3 superseded by STPA lenses (#5294) | deleted |
