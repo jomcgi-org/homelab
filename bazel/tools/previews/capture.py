@@ -166,6 +166,17 @@ def review(root, output):
                 with checked_context(browser, output, name, width, scheme) as page:
                     page.goto(base, wait_until="networkidle")
                     page.evaluate("document.fonts.ready")
+                    assert page.evaluate(
+                        "document.body.classList.contains('dark')"
+                    ) == (scheme == "dark"), (
+                        "private scheme did not follow browser preference"
+                    )
+                    paint = page.locator("article.card").evaluate(
+                        "e=>({background:getComputedStyle(e).backgroundColor,ink:getComputedStyle(e).color})"
+                    )
+                    assert paint["background"] == (
+                        "rgb(0, 0, 0)" if scheme == "dark" else "rgb(255, 255, 255)"
+                    ), paint
                     page.get_by_role("navigation", name="Record type").get_by_role(
                         "button", name=tab.capitalize()
                     ).click()
@@ -198,6 +209,7 @@ def review(root, output):
                             "name": name,
                             "before": before,
                             "desktop_frame": frame_widths,
+                            "paint": paint,
                             "after": measure(page),
                             "status": "passed",
                             "keyboard_decision": True,
