@@ -790,7 +790,7 @@
   }
   .escape-btn {
     display: inline-grid;
-    grid-template-columns: 1.4rem minmax(0, 1fr);
+    grid-template-columns: minmax(max-content, 1.4rem) minmax(0, 1fr);
     gap: 0.1rem 0.5rem;
     align-items: center;
     min-height: 2.75rem;
@@ -820,6 +820,7 @@
     align-self: center;
     font-size: 0.78rem;
     text-align: center;
+    white-space: nowrap;
   }
   .escape-btn .label {
     color: inherit;
