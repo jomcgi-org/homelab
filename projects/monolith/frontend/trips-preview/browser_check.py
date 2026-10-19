@@ -39,6 +39,32 @@ LIMITATIONS = (
 )
 
 
+def font_widths(page):
+    # A minimal guest can start Chromium without any usable system fonts.
+    # In that case text has zero width and even overflow checks falsely pass.
+    return page.evaluate(
+        """() => {
+          const context = document.createElement('canvas').getContext('2d');
+          return Object.fromEntries(['sans-serif', 'monospace'].map(family => {
+            context.font = `16px ${family}`;
+            return [family, context.measureText('Trips 0123456789').width];
+          }));
+        }"""
+    )
+
+
+def capture(page, output, record, state="page", full_page=True):
+    overflow = page.evaluate(
+        "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+    )
+    filename = record["name"] + ("" if state == "page" else f"-{state}") + ".png"
+    receipt = {"state": state, "file": filename, "overflow_px": overflow}
+    record.setdefault("screenshots", []).append(receipt)
+    page.screenshot(path=str(output / filename), full_page=full_page)
+    assert overflow <= 0, (filename, overflow)
+    return overflow
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if urlsplit(self.path).path.startswith("/app/trips"):
@@ -113,22 +139,21 @@ def check(root, output, head):
                         try:
                             page.goto(base + path, wait_until="networkidle")
                             page.evaluate("document.fonts.ready")
+                            record["font_widths_px"] = font_widths(page)
+                            assert all(
+                                value > 0 for value in record["font_widths_px"].values()
+                            ), (
+                                "Missing browser fonts: install system sans-serif and monospace fonts"
+                            )
                             assert page.locator("main.td.sheet").count() == 1
                             assert page.locator("button.scheme").count() == 1
                             assert page.locator(".md-nav").count() == 0
-                            overflow = page.evaluate(
-                                "document.documentElement.scrollWidth - document.documentElement.clientWidth"
-                            )
-                            record["overflow_px"] = overflow
-                            assert overflow <= 0, (name, overflow)
+                            record["overflow_px"] = capture(page, output, record)
                             if surface in ("trip", "day"):
                                 assert (
                                     page.locator("canvas.maplibregl-canvas").count()
                                     == 1
                                 )
-                            page.screenshot(
-                                path=str(output / f"{name}.png"), full_page=True
-                            )
                             if surface == "timeline":
                                 page.get_by_role(
                                     "button", name="Open photo 1", exact=True
@@ -145,7 +170,7 @@ def check(root, output, head):
                                     .get_attribute("alt")
                                     == "Photo 2 of 6"
                                 )
-                                page.screenshot(path=str(output / f"{name}-viewer.png"))
+                                capture(page, output, record, "viewer", full_page=False)
                                 page.keyboard.press("Escape")
                                 assert page.get_by_role(
                                     "button", name="Open photo 1", exact=True
@@ -158,17 +183,12 @@ def check(root, output, head):
                                     "button", name="Map", exact=True
                                 ).click()
                                 page.wait_for_selector("canvas.maplibregl-canvas")
-                                page.screenshot(
-                                    path=str(output / f"{name}-map.png"), full_page=True
-                                )
+                                capture(page, output, record, "map")
                             if surface == "day":
                                 page.get_by_role(
                                     "button", name="Zoom in", exact=True
                                 ).click()
-                                page.screenshot(
-                                    path=str(output / f"{name}-map-controls.png"),
-                                    full_page=True,
-                                )
+                                capture(page, output, record, "map-controls")
                                 page.get_by_role(
                                     "button", name="Next photo", exact=True
                                 ).click()
@@ -179,8 +199,8 @@ def check(root, output, head):
                                     "button", name="Close fullscreen photo", exact=True
                                 )
                                 fullscreen.wait_for(state="visible")
-                                page.screenshot(
-                                    path=str(output / f"{name}-fullscreen.png")
+                                capture(
+                                    page, output, record, "fullscreen", full_page=False
                                 )
                                 page.keyboard.press("Escape")
                                 fullscreen.wait_for(state="hidden")
@@ -209,6 +229,9 @@ def check(root, output, head):
                                 json.dumps(
                                     {
                                         "head": head,
+                                        "browser": browser.version,
+                                        "complete": len(results) == 16
+                                        and all(row.get("passed") for row in results),
                                         "limitations": LIMITATIONS,
                                         "checks": results,
                                     },
