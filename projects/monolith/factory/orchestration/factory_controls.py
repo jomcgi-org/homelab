@@ -1104,7 +1104,11 @@ def repo_entry(policy: dict, repo: str) -> dict:
 
 def repo_lane_max_tasks(policy: dict, repo: str) -> dict:
     """What the repo entry asks for per lane, before the chart ceiling."""
-    return _validate_max_tasks(repo_entry(policy, repo)["max_tasks"])
+    entry = _stored_repos(policy).get(normalize_repo(repo))
+    if entry is None:
+        raise ValueError("unknown repo")
+    # Capacity reads also serve legacy landing policies with no budget block.
+    return _validate_max_tasks(entry.get("max_tasks", lane_max_tasks(policy)))
 
 
 def repo_lane_limits(policy: dict, repo: str) -> dict:
@@ -1458,7 +1462,15 @@ def execution_capacity_available(db, control, row, *, active=None, unresolved=No
             select(FactoryReceipt).where(FactoryReceipt.state.in_(_ACTIVE))
         ).all()
     lane = lane_of(row)
-    return open_lanes(policy, active, (lane,), unresolved_task_ids=unresolved)[lane] > 0
+    occupying = execution_slot_holders(policy, active, unresolved_task_ids=unresolved)
+    if normalize_repo(row.repo) not in _stored_repos(policy):
+        return False
+    held = sum(other.repo == row.repo and lane_of(other) == lane for other in occupying)
+    return (
+        held < repo_lane_limits(policy, row.repo)[lane]
+        and open_lanes(policy, occupying, (lane,), unresolved_task_ids=unresolved)[lane]
+        > 0
+    )
 
 
 def _capacity_release_refusal(db, control, row):
