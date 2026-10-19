@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -320,6 +321,59 @@ func TestHandleBoundsPreamble(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCAFetchRecoversWithoutOpeningDeniedDestinations(t *testing.T) {
+	certFile, keyFile := writeTestCA(t)
+	certPEM, err := os.ReadFile(certFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	source := &caMinterSource{certFile: dir + "/tls.crt", keyFile: dir + "/tls.key"}
+	p := &proxy{
+		caSource: source,
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		lookupIP: func(host string) ([]net.IP, error) {
+			if host == "internal.invalid" {
+				return []net.IP{net.ParseIP("127.0.0.1")}, nil
+			}
+			return []net.IP{net.ParseIP("203.0.113.1")}, nil
+		},
+	}
+	assertDenied := func() {
+		t.Helper()
+		for _, host := range []string{"internal.invalid", "external.invalid"} {
+			if got := driveHandle(t, p, host+":443\n"); got != "" {
+				t.Fatalf("deny-only proxy answered %s: %q", host, got)
+			}
+		}
+	}
+	assertDenied()
+	if !source.nextAttempt.IsZero() {
+		t.Fatal("denied destination attempted CA recovery")
+	}
+	if got := driveHandle(t, p, caFetchHost+":80\n"); got != "" {
+		t.Fatalf("missing CA fetch answered %q", got)
+	}
+	// The same proxy survives late Secret publication. Advance the loader's
+	// explicit clock instead of making the test sleep through its retry interval.
+	for target, original := range map[string]string{source.certFile: certFile, source.keyFile: keyFile} {
+		data, err := os.ReadFile(original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if minter, err := source.get(time.Now().Add(caLoadRetryInterval)); minter == nil || err != nil {
+		t.Fatalf("late CA did not load: %v", err)
+	}
+	if got := driveHandle(t, p, caFetchHost+":80\n"); got != string(certPEM) {
+		t.Fatal("running proxy did not serve the recovered CA")
+	}
+	assertDenied()
 }
 
 func TestConnectionCap(t *testing.T) {

@@ -968,9 +968,10 @@ volumes:
       # mount. Optional breaks the deadlock.
       #
       # Degrading is safe: the sidecar treats an unreadable CA as "no MITM lane"
-      # (newCAMinter fails, minter stays nil) and keeps injecting on the
-      # cleartext lane, so a guest loses https:// credential injection rather
-      # than all egress.
+      # and keeps injecting on the cleartext lane. CA-dependent requests retry
+      # the initial load at most once per five seconds, so cert-manager can
+      # populate this optional mount after startup without a manual restart.
+      # The first valid CA stays fixed until restart; this does not rotate it.
       optional: true
 {{- end }}
   - name: dev-kvm
