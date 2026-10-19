@@ -207,7 +207,7 @@ def apply(
             raise ValueError("landing_release_preview_changed")
         row = db.get(FactoryReceipt, receipt_id)
         direction = json.loads(row.direction_json)
-        prior_hold = direction.pop("landing_hold", None)
+        prior_hold = direction.get("landing_hold")
         prior_authorization = direction.get("landing_authorization")
         direction["landing_authorization"] = {
             "actor": actor,
@@ -218,12 +218,23 @@ def apply(
             "authorized_at": controls._now().isoformat(),
         }
         row.direction_json = controls._json(direction)
+        release = {"ok": True, "pending": False, "reason": None}
+        if proposal["operation"] == "release":
+            if row.state in controls._ACTIVE:
+                release = controls.request_capacity_release(
+                    db, control, row, actor, release_hold=True
+                )
+                if not release["ok"]:
+                    raise ValueError(release["reason"])
+            else:
+                direction.pop("landing_hold")
+                row.direction_json = controls._json(direction)
         row.updated_at = controls._now()
         control.version += 1
         control.actor = actor
         control.updated_at = controls._now()
         result = {
-            "ok": True,
+            **release,
             "operation": proposal["operation"],
             "receipt_id": row.id,
             "task_id": row.task_id,

@@ -36,7 +36,7 @@ def _issue(receipt_id):
 
 
 def _capacity(db, control, row):
-    from factory.orchestration.factory_intake import lane_of, open_lanes
+    from factory.orchestration.factory_intake import lane_of
 
     policy = json.loads(control.policy_json)
     if (
@@ -56,7 +56,7 @@ def _capacity(db, control, row):
     active = [other for other in owned if other.state in controls._ACTIVE]
     lane = lane_of(row)
     if (
-        open_lanes(policy, active, (lane,))[lane] <= 0
+        not controls.execution_capacity_available(db, control, row, active=active)
         or sum(other.repo == row.repo and lane_of(other) == lane for other in active)
         >= controls.repo_lane_limits(policy, row.repo)[lane]
     ):

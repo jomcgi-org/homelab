@@ -677,8 +677,11 @@ def test_recovery_is_bounded_across_new_settlements(db, monkeypatch):
     assert warned == [("t-1", 3)]
 
 
-def test_recovery_respects_delivery_capacity(db, monkeypatch):
-    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "1")
+@pytest.mark.parametrize("constraint", ["lane", "chart"])
+def test_recovery_respects_delivery_capacity(db, monkeypatch, constraint):
+    monkeypatch.setenv(
+        "FACTORY_MAX_CONCURRENT_TASKS", "1" if constraint == "chart" else "2"
+    )
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
     with Session(db) as session:
@@ -686,13 +689,27 @@ def test_recovery_respects_delivery_capacity(db, monkeypatch):
             select(FactoryReceipt).where(FactoryReceipt.task_id == "t-2")
         ).one()
         row.state = "admitted"
+        if constraint == "lane":
+            control = session.get(FactoryControl, "factory")
+            control.policy_json = json.dumps({**POLICY, "max_tasks": 1})
         session.add(row)
         session.commit()
     calls = github(monkeypatch, pulls={3: {**pull(3), "mergeable": False}})
     landing.landing_tick(POLICY)
     assert receipt_state(db, "t-1") == "succeeded"
-    assert audits(db, "landing_recovery_requested", "t-1") == []
+    requests = audits(db, "landing_recovery_requested", "t-1")
+    assert len(requests) == 1
     assert calls["graphql"] == []
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "succeeded"
+    assert audits(db, "landing_recovery_requested", "t-1") == requests
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "t-2").task_paused = True
+    # The existing landing retry uses the same request and deadline once the
+    # other receipt is quiescent, even though that receipt still owns its work.
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "admitted"
+    assert audits(db, "landing_recovery_requested", "t-1") == requests
 
 
 def test_conflict_disarms_holder_and_advances_next_delivery(db, monkeypatch):

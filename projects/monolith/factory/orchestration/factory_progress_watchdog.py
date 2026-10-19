@@ -757,8 +757,18 @@ def _enact(task: dict, open_: dict, receipt, trail, used, threshold, runs) -> st
         if not result["ok"]:
             _record(ENACT_REFUSED, task_id, option_key=choice, refusal=result["reason"])
             return "enact_refused"
+        if result.get("pending"):
+            return "enact_waiting"
         resumed = True
     if resumed is not None:
+        with controls._read_session() as db:
+            current = controls._receipt(db, task_id)
+            if (
+                json.loads(current.direction_json or "{}")
+                .get("pending_capacity_release", {})
+                .get("resume")
+            ):
+                return "enact_waiting"
         # A direct resume is the operator's action even if an automatic
         # revalidation previously dismissed the card without releasing it.
         actor = getattr(resumed, "actor", None) or (resolved or {}).get("actor", ACTOR)

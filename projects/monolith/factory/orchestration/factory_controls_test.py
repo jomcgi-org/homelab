@@ -536,6 +536,246 @@ def test_resume_winning_before_stop_is_refused_without_unknown_outcome(db, polic
     assert factory_pause.pause(task_id, "test", "new safety refusal")
 
 
+@pytest.mark.parametrize("state", ["admitted", "uncertain"])
+@pytest.mark.parametrize("paused,held", [(True, False), (False, True), (True, True)])
+@pytest.mark.parametrize(
+    "start_state", [None, "succeeded", "failed", "cancelled", "reserved", "uncertain"]
+)
+def test_waiting_capacity_requires_unresolved_start_evidence(
+    db, policy, state, paused, held, start_state
+):
+    task = admitted(policy)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, task)
+        row.state, row.task_paused = state, paused
+        row.direction_json = json.dumps({"landing_hold": None} if held else {})
+        if start_state:
+            session.add(
+                FactoryStart(
+                    task_id=task,
+                    start_key="work",
+                    actor="test",
+                    model="luna",
+                    max_cost_usd=1,
+                    status=start_state,
+                )
+            )
+    snapshot = controls.status()
+    assert snapshot["lanes"]["delivery"]["active"] == int(
+        start_state in ("reserved", "uncertain")
+    )
+    assert [r["task_id"] for r in snapshot["active_tasks"]] == [task]
+    with Session(db) as session:
+        assert (
+            controls.delivery_branch_owner(session, "owner/repo", f"factory/{task}")
+            == task
+        )
+        row = controls._receipt(session, task)
+        unresolved = controls.unresolved_start_task_ids(session)
+        for candidate in (row, snapshot["active_tasks"][0]):
+            assert bool(
+                controls.execution_slot_holders(
+                    policy, [candidate], unresolved_task_ids=unresolved
+                )
+            ) == (start_state in ("reserved", "uncertain"))
+            # An omitted batch is unknown, even if a snapshot claims zero.
+            assert controls.execution_slot_holders(policy, [candidate]) == [candidate]
+
+
+def _capacity_pair(db, policy, monkeypatch, constraint, *, held=False):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    first = admitted(policy)
+    receive_issue(
+        "owner/repo",
+        2,
+        "second",
+        "body",
+        "https://github.com/owner/repo/issues/2",
+        "poller",
+    )
+    second = admit_next("scheduler")["task_id"]
+    if held:
+        with Session(db) as session, session.begin():
+            controls._receipt(session, first).direction_json = '{"landing_hold":null}'
+    else:
+        controls.set_control("pause_task", "operator", task_id=first)
+    if constraint == "chart":
+        monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "1")
+    else:
+        assert controls.set_control(
+            "configure", "operator", policy={**policy, "generation": 1, "max_tasks": 1}
+        )["ok"]
+    return first, second
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart"])
+def test_resume_waits_durably_then_retries_without_another_decision(
+    db, policy, monkeypatch, constraint
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, constraint)
+    args = dict(
+        task_id=first,
+        request_key="resume-once",
+        expected_version=controls.status()["version"],
+    )
+    result = controls.request_control("resume_task", "operator", **args)
+    assert result["ok"] and result["pending"] and result["reason"] == "capacity_waiting"
+    assert controls.request_control("resume_task", "operator", **args) == result
+    assert controls.retry_capacity_releases() == 0
+    assert not controls.can_start(first)["ok"]
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 1
+    assert controls.can_start(first)["ok"]
+    assert controls.retry_capacity_releases() == 0
+    # A replay acknowledges the old request and cannot undo a newer pause.
+    controls.set_control("pause_task", "operator", task_id=first)
+    assert controls.request_control("resume_task", "operator", **args) == result
+    assert controls.retry_capacity_releases() == 0
+    assert not controls.can_start(first)["ok"]
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart"])
+def test_hold_release_waits_durably_then_retries(db, policy, monkeypatch, constraint):
+    first, second = _capacity_pair(db, policy, monkeypatch, constraint, held=True)
+    with controls._locked_session() as (session, control):
+        row = controls._receipt(session, first)
+        result = controls.request_capacity_release(
+            session, control, row, "operator", release_hold=True
+        )
+        assert result["pending"] and controls.landing_held(row)
+    assert controls.can_start(first)["reason"] == "capacity_waiting"
+    assert grant(first)["reason"] == "capacity_waiting"
+    assert controls.retry_capacity_releases() == 0
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 1
+    with Session(db) as session:
+        assert not controls.landing_held(controls._receipt(session, first))
+    assert grant(first)["ok"]
+
+
+@pytest.mark.parametrize("fence", ["pause", "cancel", "stop", "human", "settle"])
+def test_pending_resume_does_not_override_new_fences(db, policy, monkeypatch, fence):
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart")
+    assert controls.set_control("resume_task", "operator", task_id=first)["pending"]
+    if fence == "pause":
+        controls.set_control("pause_task", "operator", task_id=first)
+    elif fence == "stop":
+        controls.set_control("stop", "operator")
+    elif fence == "human":
+        assert controls.human_handoff(first, "operator", observed=True)
+    elif fence == "settle":
+        assert controls.finish_task(first, "cancelled", "operator")["ok"]
+    else:
+        with Session(db) as session, session.begin():
+            controls._receipt(session, first).cancellation_requested = True
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 0
+    assert not controls.can_start(first)["ok"]
+
+
+def test_pending_resumes_and_admission_contend_for_one_slot(db, policy, monkeypatch):
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart")
+    controls.set_control("pause_task", "operator", task_id=second)
+    # Both tasks retain ownership, while another repository can contend.
+    with Session(db) as session, session.begin():
+        current = session.get(FactoryControl, "factory")
+        configured = json.loads(current.policy_json)
+        configured["repos"] = {"owner/repo": {}, "owner/other": {"enabled": True}}
+        current.policy_json = json.dumps(configured)
+    receive_issue(
+        "owner/other",
+        1,
+        "third",
+        "body",
+        "https://github.com/owner/other/issues/1",
+        "poller",
+    )
+    from threading import Barrier
+
+    barrier = Barrier(3)
+
+    def contend(task):
+        barrier.wait(timeout=5)
+        if task:
+            return controls.set_control("resume_task", "operator", task_id=task)
+        return admit_next("scheduler")
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(contend, [first, second, None]))
+    assert sum(bool(r["ok"] and not r.get("pending")) for r in results) == 1
+    assert controls.status()["lanes"]["delivery"]["active"] == 1
+    assert controls.retry_capacity_releases() == 0
+
+
+def test_resume_with_unresolved_start_does_not_count_self_twice(
+    db, policy, monkeypatch
+):
+    first = admitted(policy)
+    assert grant(first)["ok"]
+    controls.set_control("pause_task", "operator", task_id=first)
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "1")
+    result = controls.set_control("resume_task", "operator", task_id=first)
+    assert result["ok"] and not result["pending"]
+
+
+def test_unrequested_pause_stays_paused_when_capacity_opens(db, policy, monkeypatch):
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart")
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 0
+    assert controls.can_start(first)["reason"] == "task_paused"
+
+
+@pytest.mark.parametrize("change", ["new_hold", "pause", "cancel"])
+def test_pending_hold_release_preserves_replacement_fences(
+    db, policy, monkeypatch, change
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
+    with controls._locked_session() as (session, control):
+        assert controls.request_capacity_release(
+            session,
+            control,
+            controls._receipt(session, first),
+            "operator",
+            release_hold=True,
+        )["pending"]
+    if change == "pause":
+        controls.set_control("pause_task", "operator", task_id=first)
+    else:
+        with Session(db) as session, session.begin():
+            row = controls._receipt(session, first)
+            if change == "cancel":
+                row.cancellation_requested = True
+            else:
+                direction = json.loads(row.direction_json)
+                direction["landing_hold"] = {"actor": "operator", "reason": "new hold"}
+                row.direction_json = json.dumps(direction)
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 0
+    with Session(db) as session:
+        row = controls._receipt(session, first)
+        assert controls.landing_held(row)
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+
+
+def test_held_start_reservations_contend_under_admission_lock(db, policy, monkeypatch):
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
+    with Session(db) as session, session.begin():
+        controls._receipt(session, second).direction_json = '{"landing_hold":null}'
+    from threading import Barrier
+
+    barrier = Barrier(2)
+
+    def start(task):
+        barrier.wait(timeout=5)
+        return grant(task)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(start, [first, second]))
+    assert sum(r["ok"] for r in results) == 1
+    assert [r["reason"] for r in results if not r["ok"]] == ["capacity_waiting"]
+    assert controls.status()["lanes"]["delivery"]["active"] == 1
+
+
 @pytest.mark.parametrize(
     "evidence",
     [None, {"state": "ready_for_review"}, {"state": "merged_review_missing"}],

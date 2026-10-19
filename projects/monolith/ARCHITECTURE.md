@@ -560,9 +560,28 @@ without another planner or funding grant. Paused and explicitly held receipts
 remain fenced. Infrastructure rollout and outstanding functional acceptance are
 separate from repository merge observation, including externally closed issues.
 
-Execution capacity uses one projection: admitted and uncertain receipts retain
-slots across generations, including pauses; current admission-eligible queues
-reserve intake room; landing receipts retain issue ownership without guest slots.
+Execution capacity uses one projection: admitted and uncertain receipts count
+across generations, except paused or landing-held receipts with no reserved or
+uncertain starts. Each database caller supplies that accounting evidence in one
+batch; missing evidence retains the slot. Current admission-eligible queues
+reserve intake room. Waiting and landing receipts retain issue, branch and
+per-repository ownership independently of execution capacity.
+
+Authorized resumes and landing-hold releases retain their fences and a durable
+release request while their lane or the chart-wide ceiling is full. The regular
+reconciler and admission retry those requests under the singleton control lock.
+A new pause, cancellation or human handoff revokes pending resume intent. No
+request means no automatic resume. Held repository work reacquires capacity at
+its next start reservation. Continuations and landing recovery use the same
+capacity projection; landing recovery retains its existing request and deadline
+while waiting.
+
+**Why.** Joe reversed pause-slot retention in #7163 after quiescent tasks waiting
+on a person filled the delivery lane. Execution capacity follows unresolved
+starts; ownership persists while the person decides. Reacquisition shares the
+admission transaction so competing admissions and resumes cannot take the same
+last slot. This change is staged as repository-only delivery. Rollout and live
+status, intake and resume acceptance remain on #7163.
 The existing operational health loop reports landing or observed-merged active
 work awaiting reconciliation or rollout for over 30 minutes. It does not settle,
 resume or otherwise repair a task as a side effect of health evaluation.
@@ -2063,6 +2082,7 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
+| Release execution capacity for quiescent paused or landing-held tasks while retaining ownership and durable authorized resume intent | section 4; Joe's 2026-10-18 decision | #7163 | repository implementation staged; separately authorized rollout and live capacity, ownership and reacquisition checks remain |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Remove dormant scheduler registration while retaining rows and Argo run-now compatibility | section 4, batch execution | #7021 | repository removal; later table retirement and CronWorkflow-native listing need separate scope |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |

@@ -123,6 +123,38 @@ def enable(policy):
     assert controls.set_control("enable", "operator")["ok"]
 
 
+@pytest.mark.parametrize("held", [False, True])
+def test_waiting_receipt_retains_issue_branch_and_repo_ownership(
+    db, policy, monkeypatch, held
+):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    policy["repos"] = {"owner/repo": {"max_tasks": 1}, "owner/other": {"enabled": True}}
+    enable(policy)
+    issue(1)
+    task = admit_next("scheduler")["task_id"]
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, task)
+        row.task_paused = not held
+        row.direction_json = json.dumps({"landing_hold": None} if held else {})
+    assert controls.set_control(
+        "configure", "operator", policy={**policy, "generation": 1}
+    )["ok"]
+    # Same-issue cross-generation and distinct-issue same-repository receipts
+    # remain excluded. Another repository can use the released execution slot.
+    duplicate = issue(1, generation=1)
+    same_repo = issue(2, generation=1)
+    other_repo = issue(1, repo="owner/other", generation=1)
+    result = admit_next("scheduler")
+    assert result["ok"] and result["receipt_id"] == other_repo["receipt"]["id"]
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, duplicate["receipt"]["id"]).state == "queued"
+        assert session.get(FactoryReceipt, same_repo["receipt"]["id"]).state == "queued"
+        assert (
+            controls.delivery_branch_owner(session, "owner/repo", f"factory/{task}")
+            == task
+        )
+
+
 @pytest.mark.parametrize(
     "issue_number,actor,intake_enabled,expected",
     [
