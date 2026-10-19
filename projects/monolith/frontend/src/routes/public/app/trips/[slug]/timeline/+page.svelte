@@ -1,4 +1,5 @@
 <script>
+  import TripSheet from "$lib/public/components/trips/TripSheet.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import TripMap from "$lib/public/components/trips/TripMap.svelte";
@@ -77,18 +78,11 @@
   >
 </svelte:head>
 
-<div class="page">
-  <header class="head" bind:this={focusFallback} tabindex="-1">
-    <nav class="crumb" aria-label="Breadcrumb">
-      <a class="crumb-link" href="/app/trips">trips</a>
-      <span class="crumb-sep">/</span>
-      <a class="crumb-link" href={`/app/trips/${trip?.slug}`}
-        >{trip?.short_title ?? trip?.slug}</a
-      >
-      <span class="crumb-sep">/</span>
-      <span class="crumb-name">timeline</span>
-    </nav>
-
+<TripSheet {trip} current="timeline">
+  <header class="head edition ed-body" bind:this={focusFallback} tabindex="-1">
+    <a class="trip-link" href={`/app/trips/${trip?.slug}`}
+      >{trip?.short_title ?? trip?.slug}</a
+    >
     <div class="controls">
       <ViewToggle
         bind:value={view}
@@ -128,63 +122,34 @@
       />
     {/if}
   {/if}
-</div>
+</TripSheet>
 
 <style>
-  .page {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 24px 24px 64px;
-    background: var(--cream);
-    color: var(--ink);
-    min-height: 100vh;
+  .trip-link {
+    display: inline-block;
+    margin-bottom: 1rem;
+    font: 0.8rem var(--font-code);
   }
-  .crumb {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    margin-bottom: 18px;
-  }
-  .crumb-link {
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 2px;
-    padding: 0 2px;
-  }
-  .crumb-link:hover {
-    background: linear-gradient(transparent 56%, var(--accent) 56%);
-  }
-  .crumb-sep {
-    color: var(--ink-3);
+  .head {
+    padding: 1rem;
+    margin-bottom: 1.5rem;
   }
   .controls {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 1rem;
     flex-wrap: wrap;
-    margin-bottom: 14px;
   }
   .count {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--ink-3);
+    font: 0.75rem var(--font-code);
+    color: var(--ink-2);
     margin: 0;
   }
   .tags {
-    margin-bottom: 20px;
+    margin-top: 1rem;
   }
   .map-box {
-    border: 2px solid var(--ink);
+    border: 1px solid var(--ink);
     height: 70vh;
   }
 </style>
