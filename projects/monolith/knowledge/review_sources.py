@@ -42,17 +42,36 @@ class EvidenceUnavailable(ValueError):
 
 
 class EvidenceUnsupported(EvidenceUnavailable):
-    """Coverage cannot improve by retrying the same claim revision."""
+    """Coverage cannot improve without a claim or relevant source change."""
+
+    def __init__(self, message, *, identity=None):
+        super().__init__(message)
+        self.identity = identity
 
 
 def collect_sources(
     claim: dict, *, fetch=None, repo: str = GITHUB_REPO, main_sha: str | None = None
 ) -> tuple[list[dict], datetime | None]:
     """No retries; one shared request, byte and elapsed-time bound per claim."""
+    from knowledge import review_coverage as coverage
+
+    staged = coverage.enabled()
     if fetch is None:
         with httpx.Client(timeout=10, follow_redirects=False) as client:
+            deadline_at = time.monotonic() + DEADLINE_SECONDS
+            wire_bytes = 0
+
+            def charge(size):
+                nonlocal wire_bytes
+                wire_bytes += size
+                if wire_bytes > coverage.MAX_TRANSFER_BYTES:
+                    raise EvidenceUnavailable("source transport budget exhausted")
 
             def read(path):
+                if staged:
+                    return coverage.read_response(
+                        client, path, deadline_at=deadline_at, charge=charge
+                    )
                 response = client.get(GITHUB_API + path, headers=_github_headers())
                 if response.status_code != 200:
                     raise EvidenceUnavailable(f"GitHub returned {response.status_code}")
@@ -81,10 +100,13 @@ def collect_sources(
     sources = []
     started = time.monotonic()
     requests = 0
+    transferred = 0
     observed = None
 
     def get(path):
-        nonlocal requests, observed
+        nonlocal requests, observed, transferred
+        if staged and requests >= MAX_REQUESTS:
+            raise EvidenceUnsupported("source collection request bound exceeded")
         if requests >= MAX_REQUESTS or time.monotonic() - started >= DEADLINE_SECONDS:
             raise EvidenceUnavailable("source collection budget exhausted")
         requests += 1
@@ -92,10 +114,22 @@ def collect_sources(
         observed = observed or before
         try:
             result = fetch(path)
+        except EvidenceUnavailable:
+            raise
         except (httpx.HTTPError, ValueError) as exc:
             raise EvidenceUnavailable(str(exc)) from exc
         if not isinstance(result, dict):
             raise EvidenceUnavailable("malformed GitHub response")
+        if staged:
+            size = coverage.serialized_size(result)
+            transferred += size
+            if (
+                size > coverage.MAX_RESPONSE_BYTES
+                or transferred > coverage.MAX_TRANSFER_BYTES
+            ):
+                raise EvidenceUnsupported("source response byte bound exceeded")
+            if time.monotonic() - started >= DEADLINE_SECONDS:
+                raise EvidenceUnavailable("source collection deadline exhausted")
         return result
 
     def add(subject, url, body):
@@ -218,6 +252,50 @@ def collect_sources(
         ).get("sha")
         if not re.fullmatch(r"[0-9a-f]{40}", str(main)):
             raise EvidenceUnavailable("missing main commit")
+        if staged:
+            try:
+                identity = coverage.file_identity(
+                    paths, main, lambda suffix: get(f"/repos/{repo}" + suffix)
+                )
+            except EvidenceUnsupported as exc:
+                raise EvidenceUnsupported(
+                    str(exc),
+                    identity={
+                        "version": coverage.VERSION,
+                        "files": dict.fromkeys(paths),
+                    },
+                ) from exc
+            try:
+                contents = {}
+                for path, item in identity["files"].items():
+                    if item["type"] != "blob" or item["mode"] not in {
+                        "100644",
+                        "100755",
+                    }:
+                        raise EvidenceUnsupported("unsupported source file type")
+                    if item["size"] > coverage.MAX_FILE_BYTES:
+                        raise EvidenceUnsupported("source decode byte bound exceeded")
+                    body = get(f"/repos/{repo}/git/blobs/{item['sha']}")
+                    contents[path] = coverage.decode_blob(body, item)
+                complete = [
+                    {
+                        "id": f"s{len(sources) + index}",
+                        "subject": f"file:{path}",
+                        "url": f"https://github.com/{repo}/blob/{main}/{path}",
+                        "text": content,
+                    }
+                    for index, (path, content) in enumerate(contents.items(), 1)
+                ]
+                if coverage.serialized_size(sources + complete) > MAX_BYTES:
+                    complete = coverage.witnesses(claim, contents, identity, repo, main)
+                if (
+                    len(sources + complete) > MAX_SOURCES
+                    or coverage.serialized_size(sources + complete) > MAX_BYTES
+                ):
+                    raise EvidenceUnsupported("source evidence exceeds byte bound")
+                return sources + complete, observed
+            except EvidenceUnsupported as exc:
+                raise EvidenceUnsupported(str(exc), identity=identity) from exc
         for path in paths:
             body = get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={main}")
             if (

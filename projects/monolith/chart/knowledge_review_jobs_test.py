@@ -77,6 +77,23 @@ def _backend_env(documents: list[dict]) -> dict[str, str | None]:
 
 
 @pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
+def test_source_coverage_is_default_off_with_reachable_opt_in(values, tmp_path):
+    before = _render_documents(*values)
+    env = _backend_env(before)
+    assert env.get("KG_FACT_REVIEW_COVERAGE_ENABLED", "false") == "false"
+    domain = tmp_path / "knowledge.yaml"
+    domain.write_text("knowledge:\n  enabled: true\n")
+    before = _render_documents(*values, domain)
+    env = _backend_env(before)
+    assert env["KG_FACT_REVIEW_COVERAGE_ENABLED"] == "false"
+    override = tmp_path / "coverage.yaml"
+    override.write_text("knowledge:\n  factReview:\n    coverageEnabled: true\n")
+    after = _render_documents(*values, domain, override)
+    assert _backend_env(after) == env | {"KG_FACT_REVIEW_COVERAGE_ENABLED": "true"}
+    assert _cronworkflows(before) == _cronworkflows(after)
+
+
+@pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
 def test_review_mutation_jobs_are_suspended_by_default(values):
     jobs = _render(*values)
     # Force the jobs image above so a missing CronWorkflow cannot pass vacuously.

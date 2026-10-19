@@ -1,5 +1,7 @@
 """Real PostgreSQL serialization for batch admission and receipt application."""
 
+import base64
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -11,7 +13,13 @@ from sqlmodel import Session, create_engine, select
 from knowledge import fact_review as review
 from knowledge import fact_review_batch as batch
 from knowledge.freshness import STANDARD
-from knowledge.models import FactReviewBatch, FactReviewRun, Note, ReviewOutcome
+from knowledge.models import (
+    FactReviewBatch,
+    FactReviewRun,
+    FactReviewSourceBlock,
+    Note,
+    ReviewOutcome,
+)
 
 
 def test_concurrent_batches_reserve_distinct_claims_and_replay_once(pg, monkeypatch):
@@ -137,6 +145,117 @@ def test_concurrent_batches_reserve_distinct_claims_and_replay_once(pg, monkeypa
             ).all()
             assert len(outcomes) == 2 and all(
                 row.status == "success" for row in outcomes
+            )
+    finally:
+        engine.dispose()
+
+
+def test_coverage_migration_restart_and_concurrent_probe_reservations(pg, monkeypatch):
+    """Uses the migration-created table and real PostgreSQL admission locks."""
+    from knowledge.review_source_blocks import probe
+    from knowledge.review_sources import collect_sources
+
+    identity = uuid4().hex
+    scope = f"repo:coverage-test/{identity}"
+    repo = scope.removeprefix("repo:")
+    now = datetime.now(UTC)
+    engine = create_engine(pg.url)
+    monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "20000")
+    monkeypatch.setattr(review, "_get_repo_scope", lambda: scope)
+    raw = b"bounded_identity = True\n" * 3000
+    sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+    def fetch(url):
+        if "/git/ref/" in url:
+            return {"object": {"sha": "a" * 40}}
+        if "/git/trees/" in url:
+            return {
+                "truncated": False,
+                "tree": [
+                    {
+                        "path": "source.py",
+                        "size": len(raw),
+                        "sha": sha,
+                        "type": "blob",
+                        "mode": "100644",
+                    }
+                ],
+            }
+        return {
+            "sha": sha,
+            "size": len(raw),
+            "encoding": "base64",
+            "content": base64.b64encode(raw).decode(),
+        }
+
+    ids = [f"coverage-{identity}-{i}" for i in range(4)]
+    try:
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    Note(
+                        note_id=key,
+                        path=key + ".md",
+                        title="General source behavior",
+                        content="projects/source.py proves runtime behavior",
+                        content_hash=key,
+                        type="fact",
+                        scope=scope,
+                        verification_state="verified",
+                        review_after=now - timedelta(days=1),
+                        review_policy=STANDARD,
+                    )
+                    for key in ids
+                ]
+            )
+            session.commit()
+            for index in range(4):
+                review.prepare(
+                    session,
+                    f"coverage-run-{identity}-{index}",
+                    collector=lambda claim: collect_sources(
+                        claim, fetch=fetch, repo=repo
+                    ),
+                    probe_fetch=fetch,
+                    now=now,
+                )
+            assert (
+                len(
+                    session.exec(
+                        select(FactReviewSourceBlock).where(
+                            FactReviewSourceBlock.note_id.in_(ids)
+                        )
+                    ).all()
+                )
+                == 4
+            )
+        start = Barrier(2)
+
+        def poll(_):
+            with Session(engine) as session:
+                start.wait(timeout=10)
+                probe(session, now + timedelta(hours=7), fetch=fetch)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(poll, range(2)))
+        with Session(engine) as session:
+            blocks = session.exec(
+                select(FactReviewSourceBlock).where(
+                    FactReviewSourceBlock.note_id.in_(ids)
+                )
+            ).all()
+            assert sum(block.last_probe_at is not None for block in blocks) == 2
+            assert not any(block.released for block in blocks)
+            assert review._candidate(session, now + timedelta(hours=7)) is None
+            assert (
+                len(
+                    session.exec(
+                        select(FactReviewRun).where(FactReviewRun.note_id.in_(ids))
+                    ).all()
+                )
+                == 4
             )
     finally:
         engine.dispose()

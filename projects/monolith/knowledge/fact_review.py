@@ -23,7 +23,13 @@ from sqlmodel import Session, select
 from knowledge.disputes import create_dispute
 from knowledge.extraction import ExtractionOutputInvalid
 from knowledge.freshness import commit_successful_review, record_outcome, utc
-from knowledge.models import Dispute, FactReviewRun, Note, ReviewOutcome
+from knowledge.models import (
+    Dispute,
+    FactReviewRun,
+    FactReviewSourceBlock,
+    Note,
+    ReviewOutcome,
+)
 from knowledge.public_fact_counts import fact_summary
 from knowledge.recall import _get_repo_scope
 from knowledge.review_sources import (
@@ -37,6 +43,7 @@ PREFIX = "source-review/v1: "
 NO_REVIEW = "No source-grounded review is due."
 NO_MODEL = "Source review completed without model inference."
 MAX_EVIDENCE_AGE = timedelta(minutes=30)
+MAX_PROMPT_BYTES = 96_000
 
 
 def enabled() -> bool:
@@ -209,9 +216,45 @@ def throughput(session: Session, *, now: datetime) -> dict:
 
 
 def _candidates(session: Session, now: datetime, *, limit: int = 1):
+    from knowledge import review_coverage as coverage
+
     newer = aliased(ReviewOutcome)
     # The deterministic verifier's unsupported outcome is eligible for this
     # separate reviewer. Its own unsupported outcomes wait for a new revision.
+    unsupported = (
+        ReviewOutcome.status == "unsupported"
+    ) & ReviewOutcome.reason.startswith(PREFIX)
+    coverage_blocked = False
+    if coverage.enabled():
+        reconsidered = (
+            select(FactReviewSourceBlock.note_id)
+            .where(
+                FactReviewSourceBlock.note_id == Note.note_id,
+                FactReviewSourceBlock.outcome_id == ReviewOutcome.id,
+                or_(
+                    FactReviewSourceBlock.released.is_(True),
+                    FactReviewSourceBlock.identity["version"].as_string()
+                    != coverage.VERSION,
+                    FactReviewSourceBlock.content_hash != Note.content_hash,
+                ),
+            )
+            .correlate(Note, ReviewOutcome)
+            .exists()
+        )
+        unsupported = unsupported & ~reconsidered
+        coverage_blocked = (
+            select(FactReviewSourceBlock.note_id)
+            .where(
+                FactReviewSourceBlock.note_id == Note.note_id,
+                FactReviewSourceBlock.revision == Note.revision,
+                FactReviewSourceBlock.content_hash == Note.content_hash,
+                FactReviewSourceBlock.identity["version"].as_string()
+                == coverage.VERSION,
+                FactReviewSourceBlock.released.is_(False),
+            )
+            .correlate(Note)
+            .exists()
+        )
     blocked = (
         select(ReviewOutcome.id)
         .where(
@@ -221,8 +264,7 @@ def _candidates(session: Session, now: datetime, *, limit: int = 1):
             .where(newer.note_id == ReviewOutcome.note_id, newer.id > ReviewOutcome.id)
             .exists(),
             or_(
-                (ReviewOutcome.status == "unsupported")
-                & ReviewOutcome.reason.startswith(PREFIX),
+                unsupported,
                 ReviewOutcome.next_attempt_at > now,
             ),
         )
@@ -254,6 +296,7 @@ def _candidates(session: Session, now: datetime, *, limit: int = 1):
         .where(
             *_review_pool(now),
             ~blocked,
+            ~coverage_blocked if coverage_blocked is not False else True,
             ~pending,
         )
         .order_by(
@@ -302,6 +345,10 @@ def _prompt(run: FactReviewRun, progress_signal: bool = False) -> str:
         "configuration or execution. No source coverage means unsupported. If a source "
         "contradicts the claim, return changed with the exact conflicting clause. If source "
         "coverage is insufficient, return unsupported. Do not rewrite or simplify the claim.\n"
+        "A literal-witness source explicitly omits the rest of its file. It establishes only "
+        "the exact positive literal-presence clause shown, never behavior or absence. "
+        "For such sources, quote EVERY complete witness, including different literals in "
+        "the same file. Missing coverage is unsupported, never changed.\n"
         "Cite exact, nonempty quotations from supplied sources by id. For holds, cite at least "
         "one source for every source subject supplied, and explain coverage of every claim. "
         "Return exactly one JSON fence with no other text: "
@@ -319,6 +366,7 @@ def prepare(
     invocation_key: str,
     *,
     collector=collect_sources,
+    probe_fetch=None,
     now=None,
     progress_signal: bool = False,
 ) -> str:
@@ -326,6 +374,11 @@ def prepare(
     if not enabled():
         return NO_REVIEW
     now = utc(now or datetime.now(UTC))
+    from knowledge import review_coverage as coverage
+    from knowledge.review_source_blocks import probe, record_block
+
+    if coverage.enabled() and session.get(FactReviewRun, invocation_key) is None:
+        probe(session, now, fetch=probe_fetch)
     if session.get_bind().dialect.name != "sqlite":
         session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": JOB_NAME}
@@ -368,6 +421,7 @@ def prepare(
     # SQLAlchemy expiration. A retry never replaces this pinned evidence.
     claim = dict(run.claim)
     session.commit()
+    identity = None
     try:
         sources, observed = collector(claim)
         failure = (
@@ -376,6 +430,7 @@ def prepare(
         status = "unsupported"
     except EvidenceUnsupported as exc:
         sources, observed, failure, status = [], None, str(exc), "unsupported"
+        identity = exc.identity
     except EvidenceUnavailable as exc:
         sources, observed, failure, status = [], None, str(exc), "unavailable"
     run = session.exec(
@@ -391,8 +446,18 @@ def prepare(
         session.commit()
         return prompt
     run.sources, run.observed_at = sources, observed
+    if (
+        coverage.enabled()
+        and not failure
+        and len(_prompt(run).encode("utf-8")) > MAX_PROMPT_BYTES
+    ):
+        failure, status = "complete prompt exceeds byte bound", "unsupported"
+        identity = next(
+            (s["coverage"]["identity"] for s in sources if "coverage" in s), None
+        )
+        run.sources, run.observed_at = [], None
     if failure:
-        record_outcome(
+        outcome = record_outcome(
             session,
             note_id=run.note_id,
             revision=run.revision,
@@ -400,6 +465,8 @@ def prepare(
             reason=PREFIX + failure,
             now=now,
         )
+        if status == "unsupported":
+            record_block(session, run, outcome, identity, now)
         run.status = "complete"
         run.completed_at = now
         run.result = {
@@ -441,7 +508,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
         return {**run.result, "replayed": True}
     try:
         blocks = re.findall(r"```json\s*\n(.*?)\n```", result_text, re.DOTALL)
-        if len(result_text) > 32_000 or len(blocks) != 1:
+        if len(result_text.encode("utf-8")) > 32_000 or len(blocks) != 1:
             raise ValueError("one bounded JSON block required")
         verdict = Verdict.model_validate_json(blocks[0])
         if verdict.claim_hash != _digest(run.claim):
@@ -463,6 +530,18 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
             item["subject"] for item in run.sources
         }:
             raise ValueError("renewal omitted a source subject")
+        from knowledge.review_coverage import complete_witness_citations
+
+        partial = any("coverage" in source for source in run.sources)
+        if partial and (
+            verdict.verdict == "changed"
+            or verdict.verdict == "holds"
+            and not complete_witness_citations(
+                run.claim, run.sources, verdict.citations
+            )
+        ):
+            verdict.verdict = "unsupported"
+            verdict.rationale = "Incomplete literal-witness coverage cannot renew or disprove the complete claim."
     except (ValueError, TypeError) as exc:
         record_outcome(
             session,
@@ -521,7 +600,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
         outcome = "renewed" if committed.renewed else "aborted"
     else:
         outcome = "failed" if verdict.verdict == "changed" else "unsupported"
-        record_outcome(
+        recorded = record_outcome(
             session,
             note_id=run.note_id,
             revision=run.revision,
@@ -531,6 +610,12 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
             evidence=evidence,
             evidence_observed_at=observed,
         )
+        if partial and outcome == "unsupported":
+            from knowledge.review_source_blocks import record_block
+
+            record_block(
+                session, run, recorded, run.sources[0]["coverage"]["identity"], now
+            )
         if verdict.verdict == "changed" and note.verification_state not in {
             "disputed",
             "invalidated",
