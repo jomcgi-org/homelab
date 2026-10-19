@@ -14,6 +14,9 @@
   page.data = {
     leaderboard: query.has("empty") ? {} : leaderboard,
     hasBlog: true,
+    maintenanceBanner: query.has("banner")
+      ? "Synthetic maintenance notice"
+      : "",
   };
   pageStore.set(page);
 </script>
