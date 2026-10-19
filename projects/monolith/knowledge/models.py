@@ -123,6 +123,26 @@ class FactReviewRun(SQLModel, table=True):
     )
 
 
+class FactReviewSourceBlock(SQLModel, table=True):
+    """A deterministic coverage failure, separate from paid review receipts."""
+
+    __tablename__ = "fact_review_source_blocks"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    note_id: str = Field(primary_key=True)
+    revision: int
+    content_hash: str
+    outcome_id: int
+    identity: dict = Field(sa_column=Column(_JSONB, nullable=False))
+    released: bool = False
+    next_probe_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    last_probe_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), index=True)
+    )
+
+
 class FactReviewBatch(SQLModel, table=True):
     """Immutable membership and first model response for a bounded review session."""
 

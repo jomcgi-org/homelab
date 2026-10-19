@@ -9,6 +9,7 @@ import time
 import httpx
 from core.github import GITHUB_API, GITHUB_REPO, _github_headers
 
+from knowledge import review_coverage as coverage
 from knowledge.review_sources import EvidenceUnavailable, collect_sources
 
 MAX_REQUESTS = 64
@@ -25,6 +26,7 @@ class BatchSources:
         self.requests = 0
         self.cache_hits = 0
         self.bytes = 0
+        self.transfer_bytes = 0
         self.started = time.monotonic()
         self.stopped = None
 
@@ -52,6 +54,13 @@ class BatchSources:
         try:
             if self.fetch is not None:
                 result = self.fetch(path)
+            elif coverage.enabled():
+                result = coverage.read_response(
+                    self.client,
+                    path,
+                    deadline_at=self.started + DEADLINE_SECONDS,
+                    charge=self._charge,
+                )
             else:
                 response = self.client.get(GITHUB_API + path, headers=_github_headers())
                 if response.status_code != 200:
@@ -64,17 +73,40 @@ class BatchSources:
                     raise EvidenceUnavailable(message)
                 result = response.json()
         except httpx.HTTPError as exc:
-            self.stopped = "batch source transport unavailable"
-            raise EvidenceUnavailable(self.stopped) from exc
+            message = "batch source transport unavailable"
+            if not coverage.enabled():
+                self.stopped = message
+            raise EvidenceUnavailable(message) from exc
         if not isinstance(result, dict):
             raise EvidenceUnavailable("malformed GitHub response")
-        size = len(json.dumps(result).encode())
-        if self.bytes + size > MAX_CACHE_BYTES:
-            self.stopped = "batch source byte budget exhausted"
+        size = (
+            coverage.serialized_size(result)
+            if coverage.enabled()
+            else len(json.dumps(result).encode())
+        )
+        if coverage.enabled() and self.fetch is not None:
+            self._charge(size)
+        if coverage.enabled() and time.monotonic() - self.started >= DEADLINE_SECONDS:
+            self.stopped = "batch source deadline exhausted"
             raise EvidenceUnavailable(self.stopped)
+        if coverage.enabled() and size > coverage.MAX_RESPONSE_BYTES:
+            from knowledge.review_sources import EvidenceUnsupported
+
+            raise EvidenceUnsupported("source response byte bound exceeded")
+        if self.bytes + size > MAX_CACHE_BYTES:
+            message = "batch source byte budget exhausted"
+            if not coverage.enabled():
+                self.stopped = message
+            raise EvidenceUnavailable(message)
         self.bytes += size
         self.cache[path] = result
         return result
+
+    def _charge(self, size):
+        self.transfer_bytes += size
+        if self.transfer_bytes > MAX_CACHE_BYTES:
+            self.stopped = "batch source transport byte budget exhausted"
+            raise EvidenceUnavailable(self.stopped)
 
     def pin(self):
         sha = (

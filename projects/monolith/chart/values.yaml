@@ -1433,6 +1433,8 @@ knowledge:
   # Scope assigned to repository knowledge reports when callers propose repo.
   defaultRepoScope: "repo:jomcgi-org/homelab"
   factReview:
+    # Bounded literal witnesses and content-based reconsideration (#6995).
+    coverageEnabled: false
     # Independent source-grounded review within the shared KG admission budget.
     enabled: false
     maxDaily: 20

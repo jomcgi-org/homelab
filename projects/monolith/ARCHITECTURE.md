@@ -1474,8 +1474,47 @@ cached responses and 90 seconds; the complete prompt is bounded to 256 KB.
 Existing per-claim source and byte limits remain. A shared source pool carries
 an explicit allowed-source list for every claim. The reviewer must support
 every clause and qualification, and cite exact quotations from that claim's
-sources. Partial coverage cannot renew a fact. Oversized files are still
-unavailable until the source coverage work in #6995 is resolved.
+sources. Partial coverage cannot renew a fact.
+
+`knowledge.factReview.coverageEnabled` defaults to false. When enabled, both
+review paths resolve cited files through non-recursive directory trees at one
+pinned main commit and verify decoded bytes against the returned Git blob hash.
+Wire responses and their serialized JSON are capped at 192,000 bytes, decoded
+files at 128,000 bytes, and per-claim transfer at 512,000 bytes. The existing
+48,000-byte evidence bound includes JSON escaping and metadata. Batch transfer
+and retained cache each have a 512,000-byte bound. Single prompts are capped at
+96,000 bytes; batch prompts retain their 256,000-byte bound. Fetch deadlines,
+request limits and the 30-minute evidence age still apply.
+
+Files that do not fit the evidence bound can supply positive literal witnesses.
+Every nonempty title/body line must match the closed grammar
+`` `projects/path.py` contains the exact text `literal text`. ``
+with at most twelve clauses. The server finds every literal in the verified
+file bytes before supplying any witness. Each witness records its blob identity,
+byte offsets, line numbers and omitted byte ranges. Renewal requires an exact
+citation for every witness, including distinct literals in one file. Broader
+behavioral statements, negative claims, missing literals and extra qualifications
+are unsupported. Missing coverage never produces a changed verdict or dispute.
+There is no rewrite of an existing note into the supported grammar.
+
+Deterministic file-coverage failures keep an additive
+`knowledge.fact_review_source_blocks` record with the note revision/content hash,
+outcome ID, cited-file blob identities and coverage algorithm version. Unchanged
+blocks are excluded in SQL before fact selection. Reconsideration reserves at
+most two metadata probes per fifteen minutes under the shared admission lock,
+with a six-hour per-block cooldown persisted before I/O. A failed probe retains
+the block. Changed cited blobs, claim revision/content or algorithm version
+permit another selection. Neither main's SHA nor the directory tree hash is a
+retry identity. Probes allocate no fact-review receipt, append no review outcome
+and consume no fact-selection allowance. Prepared and unknown-outcome receipts
+retain their existing fences. Network/provider failures keep ordinary backoff.
+
+**Why.** Exact literal presence can be established from a bounded positive
+witness without reading omitted regions into the model prompt. General source
+behavior needs context this representation does not establish. The closed grammar
+gives the server a complete-claim check before model inference. Content-addressed
+file identities permit reconsideration without polling unchanged oversized bodies
+or charging another review because an unrelated file moved (#6995).
 
 Each verdict passes the existing source-subject, quotation, 30-minute evidence
 age and revision/dispute checks. A missing, duplicate or malformed verdict
@@ -2043,6 +2082,7 @@ this table when the work ships or the issue closes without it.
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Remove dormant scheduler registration while retaining rows and Argo run-now compatibility | section 4, batch execution | #7021 | repository removal; later table retirement and CronWorkflow-native listing need separate scope |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
+| Bound oversized source coverage with exact literal witnesses and reconsider deterministic blocks by cited blob identity | section 6, source coverage | #6995 | default-off contract; broader behavioral and negative claims require complete evidence |
 | Every public, private and friends surface renders in the technical-drawing language; the brutalist, ember and grimoire stylesheets retire with their last consumer | section 8, visual language | #7016 | foundation, `/engineering`, `/docs` and the root error page shipped; home, cv, the apps, the private and friends tiers remain |
 | Sol-first planner implementation follows pool routing and role effort, with structured complex-work overrides | The factory conductor, implementation admission | #6992 | admission fix staged; merge and deployment held for operator confirmation |
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |

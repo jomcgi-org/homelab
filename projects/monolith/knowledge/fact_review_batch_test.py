@@ -1,8 +1,10 @@
 """Batch amortization preserves per-fact coverage, revision and replay fences."""
 
 import base64
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -18,6 +20,43 @@ from knowledge.review_batch_sources import BatchSources
 NOW = datetime(2026, 10, 18, tzinfo=UTC)
 SHA = "a" * 40
 SOURCE = "if not inputs: raise ValueError('empty inputs')"
+
+
+def coverage_fetch(files, *, calls=None, revision=SHA, unavailable=None):
+    blobs = {}
+    entries = []
+    for path, raw in files.items():
+        sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        blobs[sha] = (path, raw)
+        entries.append(
+            {
+                "path": Path(path).name,
+                "size": len(raw),
+                "sha": sha,
+                "type": "blob",
+                "mode": "100644",
+            }
+        )
+
+    def read(url):
+        if calls is not None:
+            calls.append(url)
+        if "/git/ref/" in url:
+            return {"object": {"sha": revision}}
+        if "/git/trees/" in url:
+            return {"truncated": False, "tree": entries}
+        sha = url.rsplit("/", 1)[-1]
+        path, raw = blobs[sha]
+        if path == unavailable:
+            raise httpx.ReadTimeout("source timeout")
+        return {
+            "sha": sha,
+            "size": len(raw),
+            "encoding": "base64",
+            "content": base64.b64encode(raw).decode(),
+        }
+
+    return read
 
 
 @pytest.fixture
@@ -313,6 +352,195 @@ def test_prompt_budget_does_not_turn_temporary_deferral_into_unsupported(
     assert {row.status for row in db.exec(select(ReviewOutcome)).all()} == {
         "unavailable"
     }
+
+
+def test_staged_mixed_batch_shared_large_source_and_failure_isolation(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    path = "projects/monolith/knowledge/extraction.py"
+    files = {
+        path: Path(__file__).with_name("extraction.py").read_bytes(),
+        "projects/monolith/knowledge/small.py": SOURCE.encode(),
+        "projects/monolith/knowledge/offline.py": b"unavailable source",
+    }
+    rows = notes(
+        db,
+        5,
+        paths=[
+            path,
+            path,
+            path,
+            "projects/monolith/knowledge/offline.py",
+            "projects/monolith/knowledge/small.py",
+        ],
+    )
+    for row, literal in zip(rows[:2], ["RAW_BODY_CAP = 60_000", "DOC_DRIFT_CAP = 10"]):
+        row.title = f"`{path}` contains the exact text `{literal}`."
+        row.content = row.title
+    db.commit()
+    calls = []
+    prompt = prepare(
+        db,
+        fetch=coverage_fetch(
+            files, calls=calls, unavailable="projects/monolith/knowledge/offline.py"
+        ),
+    )
+    parent = db.get(FactReviewBatch, "batch")
+    runs = [db.get(FactReviewRun, key) for key in parent.member_keys]
+    assert {run.note_id: run.result.get("outcome") for run in runs} == {
+        "fact-0": None,
+        "fact-1": None,
+        "fact-2": "unsupported",
+        "fact-3": "unavailable",
+        "fact-4": None,
+    }
+    assert len(calls) == 5  # pin, shared directory, three distinct blobs
+    assert parent.metrics["source_cache_hits"] >= 4
+    assert len(prompt.encode()) <= batch.MAX_PROMPT_BYTES
+    engine = db.get_bind()
+    answer = {"reviews": []}
+    for index, run in enumerate(runs, 1):
+        if run.sources:
+            answer["reviews"].append(
+                {
+                    "id": f"f{index}",
+                    "claim_hash": review._digest(run.claim),
+                    "verdict": "holds",
+                    "rationale": "Every positive literal and the complete small source have exact assigned quotations.",
+                    "citations": [
+                        {"source_id": s["id"], "quote": s["text"]} for s in run.sources
+                    ],
+                }
+            )
+    db.commit()
+    with Session(engine) as restarted:
+        assert (
+            prepare(restarted, fetch=lambda _: pytest.fail("replay refetched"))
+            == prompt
+        )
+        result = batch.apply(
+            restarted, "batch", json.dumps(answer), now=NOW + timedelta(minutes=1)
+        )
+        assert result["outcomes"] == {"renewed": 3, "unsupported": 1, "unavailable": 1}
+        replay = batch.apply(restarted, "batch", "bad replay", now=NOW)
+        assert replay["outcomes"] == result["outcomes"]
+        assert len(restarted.exec(select(ReviewOutcome)).all()) == 5
+
+
+def test_batch_rejects_cross_claim_witnesses_without_poisoning_sibling(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    path = "projects/monolith/knowledge/extraction.py"
+    rows = notes(db, 2, paths=[path])
+    for row, literal in zip(rows, ["RAW_BODY_CAP = 60_000", "DOC_DRIFT_CAP = 10"]):
+        row.title = f"`{path}` contains the exact text `{literal}`."
+        row.content = None
+    db.commit()
+    prepare(
+        db,
+        fetch=coverage_fetch(
+            {path: Path(__file__).with_name("extraction.py").read_bytes()}
+        ),
+    )
+    parent = db.get(FactReviewBatch, "batch")
+    first, second = [db.get(FactReviewRun, key) for key in parent.member_keys]
+    assert first.sources[0]["id"] != second.sources[0]["id"]
+    answer = {
+        "reviews": [
+            {
+                "id": f"f{i}",
+                "claim_hash": review._digest(run.claim),
+                "verdict": "holds",
+                "rationale": "The witness supports this literal presence clause in the source.",
+                "citations": [
+                    {
+                        "source_id": second.sources[0]["id"],
+                        "quote": second.sources[0]["text"],
+                    }
+                ],
+            }
+            for i, run in enumerate([first, second], 1)
+        ]
+    }
+    result = batch.apply(
+        db, "batch", json.dumps(answer), now=NOW + timedelta(minutes=1)
+    )
+    assert result["outcomes"] == {"unavailable": 1, "renewed": 1}
+
+
+def test_batch_block_reconsideration_does_not_charge_unchanged_polls(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    path = "projects/monolith/knowledge/extraction.py"
+    notes(db, 3, paths=[path])
+    raw = Path(__file__).with_name("extraction.py").read_bytes()
+    assert prepare(db, fetch=coverage_fetch({path: raw})) == review.NO_MODEL
+    engine = db.get_bind()
+    db.commit()
+    with Session(engine) as restarted:
+        assert (
+            prepare(
+                restarted,
+                "unchanged",
+                fetch=lambda _: pytest.fail("unexpected network"),
+                now=NOW + timedelta(minutes=1),
+            )
+            == review.NO_REVIEW
+        )
+        assert (
+            review.throughput(restarted, now=NOW + timedelta(minutes=1))["attempts"]
+            == 3
+        )
+        # Probe at most two candidates. One remains blocked without starving others.
+        prompt = prepare(
+            restarted,
+            "changed",
+            fetch=coverage_fetch({path: SOURCE.encode()}, revision="b" * 40),
+            now=NOW + timedelta(hours=7),
+        )
+        assert SOURCE in prompt
+        assert len(restarted.get(FactReviewBatch, "changed").member_keys) == 2
+        assert (
+            review.throughput(restarted, now=NOW + timedelta(hours=7))["attempts"] == 5
+        )
+        assert (
+            prepare(
+                restarted,
+                "pending",
+                fetch=lambda _: pytest.fail("pending/reprobe"),
+                now=NOW + timedelta(hours=7, minutes=1),
+            )
+            == review.NO_REVIEW
+        )
+
+
+def test_staged_cache_counts_escaped_bytes_and_rejected_transfers(monkeypatch):
+    from knowledge import review_batch_sources as cache
+    from knowledge.review_sources import EvidenceUnavailable, EvidenceUnsupported
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    monkeypatch.setattr(cache, "MAX_CACHE_BYTES", 300_000)
+    value = {"x": "é" * 35_000}
+    with BatchSources(fetch=lambda _: value) as reader:
+        with pytest.raises(EvidenceUnsupported):
+            reader.read("/oversized")
+        assert reader.cache == {}
+        with pytest.raises(EvidenceUnavailable, match="transport byte budget"):
+            reader.read("/oversized-again")
+        assert reader.requests == 2 and reader.stopped
+
+
+def test_staged_batch_prompt_limit_preserves_backoff_and_valid_sibling(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    notes(db, 2, paths=["projects/a.py", "projects/b.py"])
+    monkeypatch.setattr(batch, "MAX_PROMPT_BYTES", 12_000)
+    prompt = prepare(
+        db,
+        fetch=coverage_fetch(
+            {"projects/a.py": SOURCE.encode(), "projects/b.py": b"x" * 20_000}
+        ),
+    )
+    parent = db.get(FactReviewBatch, "batch")
+    runs = [db.get(FactReviewRun, key) for key in parent.member_keys]
+    assert runs[0].sources and runs[1].result["outcome"] == "unavailable"
+    assert len(prompt.encode()) <= batch.MAX_PROMPT_BYTES
 
 
 def test_known_failure_releases_with_backoff_but_unresolved_batch_stays_fenced(db):

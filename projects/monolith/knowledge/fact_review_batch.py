@@ -94,7 +94,7 @@ def _reserve(session, key, now):
     return keys
 
 
-def _failure(session, key, status, reason, now, *, commit=True):
+def _failure(session, key, status, reason, now, *, commit=True, identity=None):
     run = session.exec(
         select(FactReviewRun)
         .where(FactReviewRun.invocation_key == key)
@@ -102,7 +102,7 @@ def _failure(session, key, status, reason, now, *, commit=True):
         .execution_options(populate_existing=True)
     ).one()
     if run.status != "complete":
-        record_outcome(
+        outcome = record_outcome(
             session,
             note_id=run.note_id,
             revision=run.revision,
@@ -110,6 +110,10 @@ def _failure(session, key, status, reason, now, *, commit=True):
             reason=review.PREFIX + reason,
             now=now,
         )
+        if status == "unsupported" and identity:
+            from knowledge.review_source_blocks import record_block
+
+            record_block(session, run, outcome, identity, now)
         run.status = "complete"
         run.completed_at = now
         run.result = {
@@ -201,6 +205,11 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
         return utc(fixed_now or datetime.now(UTC))
 
     now = completed_now()
+    from knowledge import review_coverage as coverage
+    from knowledge.review_source_blocks import probe
+
+    if coverage.enabled() and session.get(FactReviewBatch, key) is None:
+        probe(session, now, fetch=fetch)
     keys = _reserve(session, key, now)
     if not keys:
         _finish(session, key, completed_now())
@@ -267,6 +276,7 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
                     else "unavailable",
                     str(exc),
                     now,
+                    identity=getattr(exc, "identity", None),
                 )
                 continue
             run = session.exec(

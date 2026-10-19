@@ -1,7 +1,10 @@
 """Evidence, replay, scope, bounds and concurrent-change contracts for prose review."""
 
+import base64
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -455,6 +458,289 @@ def test_invalid_configuration_is_refused(monkeypatch, key, value):
     monkeypatch.setenv(key, value)
     with pytest.raises(ValueError):
         review.settings()
+
+
+LARGE_PATH = "projects/monolith/knowledge/extraction.py"
+
+
+def large_fetch(raw=None, *, revision="a" * 40, calls=None, failure=None):
+    raw = (
+        raw
+        if raw is not None
+        else Path(__file__).with_name("extraction.py").read_bytes()
+    )
+    sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+    def fetch(url):
+        if calls is not None:
+            calls.append(url)
+        if failure:
+            raise failure
+        if "/git/ref/" in url:
+            return {"object": {"sha": revision}}
+        if "/git/trees/" in url:
+            return {
+                "truncated": False,
+                "tree": [
+                    {
+                        "path": "extraction.py",
+                        "size": len(raw),
+                        "sha": sha,
+                        "type": "blob",
+                        "mode": "100644",
+                    }
+                ],
+            }
+        assert url.endswith("/git/blobs/" + sha)
+        return {
+            "size": len(raw),
+            "sha": sha,
+            "encoding": "base64",
+            "content": base64.b64encode(raw).decode(),
+        }
+
+    return fetch
+
+
+def literal_note(db, name="literal", *, two=False):
+    title = f"`{LARGE_PATH}` contains the exact text `RAW_BODY_CAP = 60_000`."
+    body = (
+        f"`{LARGE_PATH}` contains the exact text `DOC_DRIFT_CAP = 10`." if two else None
+    )
+    return note(db, name, title=title, content=body)
+
+
+def production_prepare(db, key, *, fetch=None, now=NOW):
+    from knowledge.review_sources import collect_sources
+
+    fetch = fetch or large_fetch()
+    return review.prepare(
+        db,
+        key,
+        collector=lambda claim: collect_sources(claim, fetch=fetch),
+        probe_fetch=fetch,
+        now=now,
+    )
+
+
+def witness_output(db, key, **changes):
+    run = db.get(FactReviewRun, key)
+    citations = [
+        {"source_id": source["id"], "quote": source["text"]} for source in run.sources
+    ]
+    return output(db, key, **({"citations": citations} | changes))
+
+
+def test_large_source_real_collector_prepare_apply_and_restart_replay(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    literal_note(db, two=True)
+    now = datetime.now(UTC)
+    prompt = production_prepare(db, "large", now=now)
+    assert "omitted_bytes" in prompt
+    engine = db.get_bind()
+    db.commit()
+    with Session(engine) as restarted:
+        assert (
+            review.prepare(
+                restarted,
+                "large",
+                collector=lambda _: pytest.fail("refetch"),
+                probe_fetch=lambda _: pytest.fail("reprobe"),
+                now=now,
+            )
+            == prompt
+        )
+        answer = witness_output(restarted, "large")
+        assert (
+            review.apply(restarted, "large", answer, now=now + timedelta(minutes=1))[
+                "outcome"
+            ]
+            == "renewed"
+        )
+    with Session(engine) as restarted:
+        result = review.apply(restarted, "large", "malformed replay", now=now)
+        assert result["replayed"] and result["outcome"] == "renewed"
+        assert len(restarted.exec(select(ReviewOutcome)).all()) == 1
+
+
+@pytest.mark.parametrize(
+    "case", ["partial", "changed", "fabricated", "stale", "revision", "dispute"]
+)
+def test_witnesses_cannot_bypass_complete_claim_or_freshness_guards(
+    db, monkeypatch, case
+):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    row = literal_note(db, two=True)
+    now = datetime.now(UTC)
+    production_prepare(db, "large", now=now)
+    run = db.get(FactReviewRun, "large")
+    changes = {}
+    if case == "partial":
+        changes["citations"] = [
+            {"source_id": run.sources[0]["id"], "quote": run.sources[0]["text"]}
+        ]
+    if case == "changed":
+        changes["verdict"] = "changed"
+    if case == "fabricated":
+        changes["citations"] = [
+            {"source_id": run.sources[0]["id"], "quote": "fabricated source quote"}
+        ]
+    if case == "revision":
+        row.revision += 1
+        db.commit()
+    if case == "dispute":
+        db.add(Dispute(note_id=row.note_id, reason="pending correction", state="open"))
+        db.commit()
+    clock = now + timedelta(hours=1) if case == "stale" else now + timedelta(minutes=1)
+    answer = witness_output(db, "large", **changes)
+    if case == "fabricated":
+        with pytest.raises(ExtractionOutputInvalid):
+            review.apply(db, "large", answer, now=clock)
+    else:
+        result = review.apply(db, "large", answer, now=clock)
+        assert result["outcome"] != "renewed"
+        if case in {"partial", "changed"}:
+            assert result["outcome"] == "unsupported"
+            assert not db.exec(select(Dispute)).all()
+    db.refresh(row)
+    assert utc(row.review_after) == NOW - timedelta(days=10)
+
+
+def test_unchanged_blocks_survive_restarts_without_spending_selection_allowance(
+    db, monkeypatch
+):
+    from knowledge.models import FactReviewSourceBlock
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    note(db, content="Behavior of " + LARGE_PATH)
+    assert production_prepare(db, "blocked") == review.NO_REVIEW
+    assert db.get(FactReviewSourceBlock, "fact").identity["files"][LARGE_PATH]
+    engine = db.get_bind()
+    db.commit()
+    for index in range(4):
+        with Session(engine) as restarted:
+            calls = []
+            assert (
+                production_prepare(
+                    restarted,
+                    f"poll-{index}",
+                    fetch=large_fetch(calls=calls),
+                    now=NOW + timedelta(minutes=index + 1),
+                )
+                == review.NO_REVIEW
+            )
+            assert calls == []
+            assert (
+                review.throughput(restarted, now=NOW + timedelta(minutes=5))["attempts"]
+                == 1
+            )
+    with Session(engine) as restarted:
+        calls = []
+        # Main and its directory tree moved, but the cited blob did not.
+        assert (
+            production_prepare(
+                restarted,
+                "unrelated",
+                fetch=large_fetch(revision="b" * 40, calls=calls),
+                now=NOW + timedelta(hours=7),
+            )
+            == review.NO_REVIEW
+        )
+        assert len(calls) == 2 and not any("/git/blobs/" in call for call in calls)
+        assert (
+            review.throughput(restarted, now=NOW + timedelta(hours=7))["attempts"] == 1
+        )
+    with Session(engine) as restarted:
+        # Relevant source coverage can now fit completely. No outcome clearing.
+        prompt = production_prepare(
+            restarted,
+            "changed-source",
+            fetch=large_fetch(b"bounded complete source", revision="c" * 40),
+            now=NOW + timedelta(hours=14),
+        )
+        assert "bounded complete source" in prompt
+        assert len(restarted.exec(select(ReviewOutcome)).all()) == 1
+        assert (
+            review.throughput(restarted, now=NOW + timedelta(hours=14))["attempts"] == 2
+        )
+        assert (
+            review._candidate(restarted, NOW + timedelta(hours=14)) is None
+        )  # pending fence
+
+
+@pytest.mark.parametrize("change", ["claim", "policy", "hash"])
+def test_changed_claim_or_coverage_policy_is_eligible_without_probe(
+    db, monkeypatch, change
+):
+    from knowledge import review_coverage
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    row = note(db, content="Behavior of " + LARGE_PATH)
+    production_prepare(db, "blocked")
+    assert review._candidate(db, NOW) is None
+    if change == "claim":
+        row.revision += 1
+    elif change == "hash":
+        row.content_hash = "changed"
+    else:
+        monkeypatch.setattr(review_coverage, "VERSION", "literal-witness/v2")
+    db.commit()
+    assert review._candidate(db, NOW).note_id == row.note_id
+
+
+def test_probe_failure_is_bounded_and_does_not_starve_valid_candidates(db, monkeypatch):
+    from knowledge.models import FactReviewSourceBlock
+    from knowledge.review_source_blocks import probe
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    for index in range(4):
+        note(db, f"blocked-{index}", content="Behavior of " + LARGE_PATH)
+        production_prepare(db, f"blocked-run-{index}")
+    now = NOW + timedelta(hours=7)
+    calls = []
+    probe(
+        db,
+        now,
+        fetch=large_fetch(calls=calls, failure=EvidenceUnavailable("provider offline")),
+    )
+    assert len(calls) == 1
+    engine = db.get_bind()
+    db.commit()
+    with Session(engine) as restarted:
+        probe(
+            restarted,
+            now + timedelta(minutes=1),
+            fetch=lambda _: pytest.fail("global probe cooldown"),
+        )
+        assert len(restarted.exec(select(FactReviewRun)).all()) == 4
+        assert (
+            sum(
+                block.last_probe_at is not None
+                for block in restarted.exec(select(FactReviewSourceBlock)).all()
+            )
+            == 2
+        )
+        assert not any(
+            block.released
+            for block in restarted.exec(select(FactReviewSourceBlock)).all()
+        )
+        note(restarted, "valid")
+        assert review._candidate(restarted, now).note_id == "valid"
+
+
+def test_transient_large_source_failures_keep_existing_backoff(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    literal_note(db)
+    production_prepare(
+        db, "outage", fetch=large_fetch(failure=EvidenceUnavailable("provider offline"))
+    )
+    outcome = db.exec(select(ReviewOutcome)).one()
+    assert outcome.status == "unavailable"
+    assert review._candidate(db, NOW) is None
+    assert (
+        review._candidate(db, utc(outcome.next_attempt_at) + timedelta(seconds=1))
+        is not None
+    )
 
 
 @pytest.mark.parametrize("state", ["scheduled", "leased", "held", "unknown", "stopped"])
