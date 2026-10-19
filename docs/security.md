@@ -146,8 +146,13 @@ monolith, which verifies it again. The shared surface requires `operators`
 for tool calls (`core/mcp_policy.py`); anonymous catalogue refresh grants no
 call access. Knowledge search filters by caller-derived grants
 (`knowledge/retrieval_policy.py`), with explicit, audited personal-scope
-opt-in. Direct `get_note` and `monolith_agent_detail` reads still lack
-per-object ownership checks for admitted callers, an untracked residual.
+opt-in. Other shared tools still lack caller-scoped result and mutation
+authorization. For example, task list/search and daily/weekly views ignore
+`notes.scope`, and `update_task` patches any task note by ID. Direct `get_note`,
+`monolith_agent_detail` and `monolith_agent_session_status` reads lack
+per-object ownership checks; `monolith_agent_session_send` and
+`monolith_agent_session_destroy` also act on supplied session or VM IDs
+without caller ownership checks. These gaps remain untracked.
 #4569 closed as consolidated into #5573; complete result authorization remains
 unverified. EmberVM agent guests take a second path: the guest's MCP URL is
 delivered as a kernel boot argument, the egress sidecar admits the

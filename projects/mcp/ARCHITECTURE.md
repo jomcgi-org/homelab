@@ -339,10 +339,15 @@ and the explicit `homelab-admin` / `kg-agents` group mappings before querying.
 Personal and legacy NULL-scoped notes require explicit opt-in, an authorized
 personal grant and a durable audit row. `operators` alone grants no search scope.
 
-The remaining gap is direct object access by an admitted caller:
-`knowledge/mcp.py:get_note` retrieves a note by ID, and
-`factory/execution/mcp.py:monolith_agent_detail` returns a turn's verbatim
-result, without per-note or per-session ownership checks. This residual has
+Outside `search_knowledge`, shared task and session tools still lack
+caller-scoped result and mutation authorization. For example, `list_tasks`,
+`search_tasks`, `get_daily_tasks` and `get_weekly_tasks` query active notes
+regardless of `notes.scope`, and `update_task` patches any task note by ID
+(`knowledge/mcp.py`, `knowledge/store.py`). Direct `get_note`,
+`monolith_agent_detail` and `monolith_agent_session_status` reads lack
+per-object ownership checks. `monolith_agent_session_send` and
+`monolith_agent_session_destroy` also act on supplied session or VM IDs
+without caller ownership checks (`factory/execution/mcp.py`). These gaps have
 no open tracker here. #4569 closed not planned after consolidation into #5573,
 which remains open; closure alone established no authorization. Domain checks
 can narrow the surface gate:
