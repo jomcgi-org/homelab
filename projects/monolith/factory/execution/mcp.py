@@ -831,8 +831,11 @@ async def _execute_pending_message(session_id: int) -> None:
     from factory.execution import capacity_wait
     from factory.execution.transport import EmberResidencyNotDispatched
 
-    if not await capacity_wait.poll(session_id, _transport, allowed=allowed):
-        return
+    if not allowed or str(getattr(factory_row, "local_session_id", "")).startswith(
+        "factory:"
+    ):
+        if not await capacity_wait.poll(session_id, _transport, allowed=allowed):
+            return
     claim_owner = f"{_REPLICA_ID}:{uuid4()}"
     claimed_seq = await asyncio.to_thread(
         _claim_pending_message_sync, session_id, claim_owner

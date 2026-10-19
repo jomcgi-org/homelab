@@ -2610,7 +2610,11 @@ def claim_pending_message_for_session_sync(
             return None
         capacity_context = capacity_wait.handoff_context(pending)
         if capacity_context is not None:
+            capacity_context["claimed_dispatch_count"] = pending.dispatch_count + 1
             capacity_context["claim_snapshot"] = {
+                "capacity_started_at": pending.capacity_started_at.isoformat()
+                if pending.capacity_started_at
+                else None,
                 "dispatch_count": pending.dispatch_count,
                 "last_dispatch_at": pending.last_dispatch_at.isoformat()
                 if pending.last_dispatch_at

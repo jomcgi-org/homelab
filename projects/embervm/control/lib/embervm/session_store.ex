@@ -386,6 +386,10 @@ defmodule Embervm.SessionStore do
       residency: residency,
       idem: idem,
       residency_intents: %{},
+      residency_work: %{},
+      residency_keys: %{},
+      residency_order: 0,
+      residency_totals: %{restore_attempts: 0, invocation_starts: 0},
       residency_uncertain: false,
       # workload -> %{live, banked}, kept in step with the hot set on every write.
       counts: %{}
@@ -423,7 +427,10 @@ defmodule Embervm.SessionStore do
 
   defp rebuild_residency(state) do
     case state.op_log_mod.load_residency_intents(state.op_log) do
-      {:ok, rows} -> {:ok, %{state | residency_intents: Map.new(rows, &{&1["id"], &1}), residency_uncertain: false}}
+      {:ok, rows} ->
+        empty = %{state | residency_intents: %{}, residency_work: %{}, residency_keys: %{},
+          residency_order: 0, residency_totals: %{restore_attempts: 0, invocation_starts: 0}, residency_uncertain: false}
+        {:ok, Enum.reduce(rows, empty, &index_residency(&2, &1))}
       {:error, reason} -> {:stop, {:residency_rebuild_failed, reason}}
     end
   end
@@ -1074,7 +1081,7 @@ defmodule Embervm.SessionStore do
 
   defp residency_command({:submit, session_id, attrs, limits}, state) do
     with {:ok, session} <- fetch(state, session_id) do
-      existing = Enum.find(Map.values(state.residency_intents), &(&1["principal"] == session.principal and &1["key"] == attrs["key"]))
+      existing = Map.get(state.residency_intents, Map.get(state.residency_keys, {session.principal, attrs["key"]}))
       cond do
         existing && Embervm.ResidencyIntent.replay?(existing, session, attrs) -> {:reply, {:ok, existing}, state}
         existing -> {:reply, {:error, :idempotency_conflict}, state}
@@ -1083,9 +1090,8 @@ defmodule Embervm.SessionStore do
         true ->
           case Embervm.ResidencyIntent.new(session, attrs, state.clock.()) do
             {:ok, proposed} ->
-              order = state.residency_intents |> Map.values() |> Enum.map(&Map.get(&1, "queue_order", 0)) |> Enum.max(fn -> 0 end)
-              proposed = Map.put(proposed, "queue_order", order + 1)
-              active = Enum.filter(Map.values(state.residency_intents), &Embervm.ResidencyIntent.active?/1)
+              proposed = Map.put(proposed, "queue_order", state.residency_order + 1)
+              active = Enum.filter(Map.values(state.residency_work), &Embervm.ResidencyIntent.active?/1)
               if length(active) >= limits.global or Enum.count(active, &(&1["principal"] == session.principal)) >= limits.principal,
                 do: {:reply, {:error, :residency_queue_full}, state},
                 else: persist_residency(state, session, proposed)
@@ -1097,6 +1103,11 @@ defmodule Embervm.SessionStore do
     end
   end
 
+  # Internal hot working set. Terminal status/dedupe records remain addressable,
+  # but completed traffic never increases the periodic manager's scan workload.
+  defp residency_command(:working, state), do: {:reply, {:ok, Map.values(state.residency_work)}, state}
+  defp residency_command(:totals, state), do: {:reply, {:ok, state.residency_totals}, state}
+
   defp residency_command({:list, session_id, limit, offset}, state) do
     items = Map.values(state.residency_intents)
       |> Enum.filter(&(is_nil(session_id) or &1["session_id"] == session_id))
@@ -1105,8 +1116,10 @@ defmodule Embervm.SessionStore do
   end
 
   defp residency_command({:lookup, session_id, key}, state) do
-    intent = Enum.find(Map.values(state.residency_intents), &(&1["session_id"] == session_id and &1["key"] == key))
-    {:reply, if(intent, do: {:ok, intent}, else: {:error, :not_found}), state}
+    result = with {:ok, session} <- fetch(state, session_id),
+      id when is_binary(id) <- Map.get(state.residency_keys, {session.principal, key}),
+      do: scoped_intent(state, session, id)
+    {:reply, if(is_nil(result), do: {:error, :not_found}, else: result), state}
   end
 
   defp residency_command({:get, session_id, id}, state) do
@@ -1163,7 +1176,23 @@ defmodule Embervm.SessionStore do
       %{count: 1, wait_ms: max(intent["updated_at"] - intent["first_wait_at"], 0),
         restore_ms: if(intent["ready_at"] && intent["admitted_at"], do: max(intent["ready_at"] - intent["admitted_at"], 0), else: 0)},
       %{state: intent["state"], reason: intent["reason"]})
-    %{state | residency_intents: Map.put(state.residency_intents, intent["id"], intent)}
+    index_residency(state, intent)
+  end
+
+  defp index_residency(state, intent) do
+    previous = Map.get(state.residency_intents, intent["id"], %{})
+    work = if Embervm.ResidencyIntent.active?(intent) or
+        (intent["restore"] != nil and intent["claim_reconciled"] != true),
+      do: Map.put(state.residency_work, intent["id"], intent),
+      else: Map.delete(state.residency_work, intent["id"])
+    totals = %{restore_attempts: state.residency_totals.restore_attempts +
+        intent["attempt_epoch"] - (previous["attempt_epoch"] || 0),
+      invocation_starts: state.residency_totals.invocation_starts +
+        (if intent["state"] == "consumed", do: 1, else: 0) -
+        (if previous["state"] == "consumed", do: 1, else: 0)}
+    %{state | residency_intents: Map.put(state.residency_intents, intent["id"], intent),
+      residency_work: work, residency_keys: Map.put(state.residency_keys, {intent["principal"], intent["key"]}, intent["id"]),
+      residency_order: max(state.residency_order, intent["queue_order"] || 0), residency_totals: totals}
   end
 
   defp persist_residency(state, session, intent) do

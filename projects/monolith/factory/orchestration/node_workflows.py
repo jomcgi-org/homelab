@@ -1017,9 +1017,6 @@ def _read_node_dispatch(pin: dict, session_id: int) -> dict:
     from core.db import get_engine
     from sqlmodel import Session
 
-    from factory.execution.capacity_wait import observe_handoff
-
-    observe_handoff(session_id)
     with Session(get_engine()) as db:
         state = read_factory_dispatch(db, pin, session_id)
     # After the dispatch read, not before: a successful adoption deletes the

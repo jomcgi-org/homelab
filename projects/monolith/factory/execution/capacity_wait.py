@@ -13,7 +13,6 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import httpx
-from core.db import get_engine
 from faas.embervm_client import EmberVMTransportError
 from opentelemetry import metrics
 from sqlmodel import Session, select
@@ -25,6 +24,13 @@ _waits = _meter.create_counter("factory.capacity_wait.transitions")
 _starts = _meter.create_counter("factory.capacity_wait.invocation_starts")
 
 
+def get_engine():
+    # Use the pending-lane store's DB owner, including its test seam.
+    from factory.execution import store
+
+    return store.get_engine()
+
+
 def enabled() -> bool:
     return os.getenv("FACTORY_ASYNC_RESIDENCY_ENABLED", "").lower() in {"1", "true"}
 
@@ -33,7 +39,7 @@ def _utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def _read(session_id: int) -> dict | None:
+def _read(session_id: int, *, include_claimed: bool = False) -> dict | None:
     with Session(get_engine()) as db:
         agent = db.get(AgentSession, session_id)
         pending = db.exec(
@@ -41,7 +47,11 @@ def _read(session_id: int) -> dict | None:
             .where(PendingMessage.session_id == session_id)
             .order_by(PendingMessage.seq)
         ).first()
-        if agent is None or pending is None or pending.claimed_by_replica:
+        if (
+            agent is None
+            or pending is None
+            or (pending.claimed_by_replica and not include_claimed)
+        ):
             return None
         if (
             not agent.local_session_id.startswith("factory:")
@@ -53,7 +63,17 @@ def _read(session_id: int) -> dict | None:
             if pending.capacity_intent_json
             else None
         )
+        from factory.execution import store
+
+        continuation = bool(
+            context
+            and context.get("claimed_dispatch_count") == pending.dispatch_count
+            and store._retry_permission(
+                store.get_turn(db, session_id, pending.seq), pending
+            )
+        )
         return {
+            "continuation": continuation,
             "session_id": session_id,
             "seq": pending.seq,
             "local_session_id": agent.local_session_id,
@@ -155,15 +175,20 @@ async def poll(session_id: int, transport, *, allowed: bool) -> bool:
         return False
     if not allowed:
         return False
-    if context and context["state"] == "ready":
+    if context and context["state"] == "ready" and not snapshot["continuation"]:
         return True
     if snapshot["next_poll"] and datetime.now(timezone.utc) < snapshot["next_poll"]:
         return False
     try:
-        if context is None or context.get("reason") in {
-            "stale_generation",
-            "cancelled",
-        }:
+        if (
+            context is None
+            or snapshot["continuation"]
+            or context.get("reason")
+            in {
+                "stale_generation",
+                "cancelled",
+            }
+        ):
             view = await transport.get_session(snapshot["guest_id"], snapshot["token"])
             if (
                 view.get("session_id") != snapshot["guest_id"]
@@ -362,7 +387,11 @@ def resolve_not_dispatched(
             if prior["last_dispatch_at"]
             else None
         )
-        pending.capacity_started_at = None
+        pending.capacity_started_at = (
+            datetime.fromisoformat(prior["capacity_started_at"])
+            if prior.get("capacity_started_at")
+            else None
+        )
         pending.claimed_at = None
         pending.claimed_by_replica = None
         context.update(state="waiting_capacity", reason=proof["reason"])
@@ -401,6 +430,9 @@ async def return_before_post(
         await transport.residency_request(
             guest_id, token, "DELETE", operation_id=context["operation_id"]
         )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 409:
+            return False
     except (httpx.HTTPError, ValueError):
         pass
     proof = {
@@ -421,12 +453,12 @@ async def return_before_post(
     )
 
 
-def observe_handoff(session_id: int) -> None:
+def observe_handoff(session_id: int, *, engine=None) -> None:
     """Resolve the dispatch clock from exact durable CP evidence, never a lease."""
     from factory.execution import store, transport
     from factory.execution.constants import exact_dispatch_id
 
-    with Session(get_engine()) as db:
+    with Session(engine if engine is not None else get_engine()) as db:
         agent = db.get(AgentSession, session_id)
         pending = db.exec(
             select(PendingMessage)
@@ -475,7 +507,7 @@ def observe_handoff(session_id: int) -> None:
         started = datetime.fromtimestamp(result["updated_at"] / 1000, timezone.utc)
     except (httpx.HTTPError, ValueError, KeyError, OverflowError):
         return
-    with Session(get_engine()) as db:
+    with Session(engine if engine is not None else get_engine()) as db:
         agent = store._lock_session(db, session_id)
         pending = store.get_pending_message(db, session_id, seq)
         if (

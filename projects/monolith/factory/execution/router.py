@@ -1466,7 +1466,9 @@ async def prewarm_session(session_id: int) -> Response:
         from factory.execution import capacity_wait
 
         if row.local_session_id.startswith("factory:"):
-            snapshot = await asyncio.to_thread(capacity_wait._read, session_id)
+            snapshot = await asyncio.to_thread(
+                capacity_wait._read, session_id, include_claimed=True
+            )
             if capacity_wait.enabled() or (snapshot and snapshot["context"]):
                 # Durable pending work owns this admission. Composer warming
                 # must not dispatch the health-endpoint workaround beside it.
