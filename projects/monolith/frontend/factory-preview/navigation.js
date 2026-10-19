@@ -1,4 +1,19 @@
 import { page } from "./state.svelte.js";
+import { executionLocation } from "./execution-stores.js";
+
+export async function goto(url, options = {}) {
+  const target = new URL(url, "https://private.fixture.invalid");
+  if (target.pathname !== "/factory/execution")
+    throw new Error(`Unexpected fixture navigation: ${url}`);
+  executionLocation("execution", target.search);
+  const physical = new URL(location.href);
+  physical.searchParams.set("selection", target.search);
+  history[options.replaceState ? "replaceState" : "pushState"](
+    {},
+    "",
+    physical,
+  );
+}
 
 export function replaceState(url, state) {
   const target = new URL(url, location.href);

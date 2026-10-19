@@ -14,6 +14,7 @@ from urllib.parse import urlencode, urlsplit
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
+from execution_check import check_execution
 
 PREFIX = "/synthetic/factory/"
 NOW = "2026-10-03T12:00:00.000Z"
@@ -648,6 +649,7 @@ def check(root, output, expected_sha):
                     print(f"{record['status']}: {name}", flush=True)
                     for issue in record["issues"]:
                         print(f"  {issue}", flush=True)
+            check_execution(browser, base, output, evidence)
             browser.close()
     finally:
         server.shutdown()
@@ -656,7 +658,7 @@ def check(root, output, expected_sha):
         (output / "tested-files.json").write_text(json.dumps(before, indent=2) + "\n")
     assert before == digest_tree(root), "browser check changed the static artifact"
     failed = [case for case in evidence["cases"] if case["status"] != "passed"]
-    expected_cases = len(list(matrix()))
+    expected_cases = len(list(matrix())) + 8
     assert len(evidence["cases"]) == expected_cases, "browser matrix was incomplete"
     assert not failed, (
         f"{len(failed)} of {expected_cases} browser cases failed; see result.json and screenshots"

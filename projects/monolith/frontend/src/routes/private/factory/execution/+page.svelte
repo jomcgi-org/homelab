@@ -15,8 +15,11 @@
     withSearch,
   } from "./url-state.js";
   import { statusClass, statusLabel, vmState } from "./status.js";
-  import "./agents-theme.css";
-  import "./run-view.css";
+  import "$lib/public/styles/technical-drawing.css";
+  import "./execution-sheet.css";
+  import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
+  import Trail from "$lib/public/components/Trail.svelte";
+  import SiteIndex from "$lib/public/components/SiteIndex.svelte";
   import RunView from "./RunView.svelte";
   import Launcher from "./Launcher.svelte";
   import { shapeStateClass } from "./dag.js";
@@ -62,7 +65,6 @@
     SESSION_VIEW_WALKTHROUGH,
     walkthroughTurns,
   } from "./session-view.js";
-  import { periodForHour } from "$lib/private/period.js";
   import { modelEntries, modelLabel, modelName } from "./model-list.js";
   import {
     advanceStartPoll,
@@ -170,18 +172,8 @@
   let newPromptEl = $state(null);
   let repoControlEl = $state(null);
   let titleEl = $state(null);
-  // ── Period (time-of-day palette) ────────────
+  // Relative timestamps retain their existing minute cadence.
   let now = $state(new Date());
-  let period = $derived(periodForHour(now.getHours()));
-
-  $effect(() => {
-    // Update the period attribute on document.documentElement to enable CSS
-    // selectors that key off data-agents-period. This matches the initial
-    // value set by the blocking inline script in app.html.
-    if (typeof document !== "undefined") {
-      document.documentElement.setAttribute("data-agents-period", period);
-    }
-  });
 
   onMount(() => {
     // Update the clock every 60 seconds to match the landing page's refresh rate.
@@ -1881,761 +1873,787 @@
 <svelte:head><title>{P.labels.pageTitle}</title></svelte:head>
 <svelte:window onkeydown={handleGlobalKeydown} />
 
+{#snippet trail()}
+  <Trail
+    crumbs={[{ label: "Factory", href: "/factory" }, { label: "Execution" }]}
+  />
+{/snippet}
+
 <main
   bind:this={consoleEl}
   class:mobile-transcript={mobileTranscript}
   class:rail-folded={railMode === "folded"}
   class:voice-mode={voiceMode}
-  class="console"
+  class="td sheet console execution-sheet"
 >
-  <header class="topbar">
-    <a class="wordmark" href="/factory">Factory</a>
-    {#if voiceMode}
-      <span class="mode-pill">
-        <span class="level-bars" aria-hidden="true"
-          ><i></i><i></i><i></i><i></i></span
-        >
-        {P.labels.voice}
-      </span>
-      <span class="voice-attachment">
-        {#if voiceStage.attachedSessionId != null}
-          <span class="desktop-attachment">
-            {P.labels.attachedTo}
-            <span class="voice-session-id">#{voiceStage.attachedSessionId}</span
-            >
-            {voiceTitle}
-          </span>
-          <span class="phone-attachment">
-            #{voiceStage.attachedSessionId}
-            {P.punct.dot}
-            {voiceSession?.model || P.labels.defaultModel}
-            {P.punct.dot}
-            {P.labels.vmWord}
-            {voiceVmState || P.labels.unknownValue}
-          </span>
-          <span class="pill voice-vm-pill">
-            {#if voiceVmState === "awake"}<span
-                class="pill-dot"
-                aria-hidden="true"
-              ></span>{/if}
-            {P.labels.vmWord}
-            {voiceVmState || P.labels.unknownValue}
-          </span>
-        {:else}
-          <span class="desktop-attachment">{P.labels.notAttached}</span>
-          <span class="phone-attachment">{P.labels.notAttached}</span>
-        {/if}
-      </span>
-    {/if}
-    <button
-      class="top-search"
-      type="button"
-      aria-label={P.labels.searchPlaceholder}
-      aria-haspopup="dialog"
-      onclick={() => openJump()}
-    >
-      <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true">
-        <circle cx="7" cy="7" r="4.25"></circle>
-        <path d="m10.25 10.25 3 3"></path>
-      </svg>
-      <span class="search-label">{P.labels.searchPlaceholder}</span>
-      <kbd class="kbd">{P.labels.shortcutCommandK}</kbd>
-    </button>
-    <div class="guest-state">
-      <span class:idle={awakeGuests === 0} class="awake-dot" aria-hidden="true"
-      ></span>
-      {awakeGuests}
-      {P.labels.guestsAwake}
-    </div>
-    {#if voiceMode}
-      <button class="leave-voice" type="button" onclick={leaveVoiceMode}
-        >{P.labels.leaveVoice}</button
-      >
-    {:else}
+  <div class="frame execution-frame">
+    <TechnicalDrawingChrome {trail} />
+    <header class="topbar">
+      <a class="wordmark" href="/factory">Factory</a>
+      {#if voiceMode}
+        <span class="mode-pill">
+          <span class="level-bars" aria-hidden="true"
+            ><i></i><i></i><i></i><i></i></span
+          >
+          {P.labels.voice}
+        </span>
+        <span class="voice-attachment">
+          {#if voiceStage.attachedSessionId != null}
+            <span class="desktop-attachment">
+              {P.labels.attachedTo}
+              <span class="voice-session-id"
+                >#{voiceStage.attachedSessionId}</span
+              >
+              {voiceTitle}
+            </span>
+            <span class="phone-attachment">
+              #{voiceStage.attachedSessionId}
+              {P.punct.dot}
+              {voiceSession?.model || P.labels.defaultModel}
+              {P.punct.dot}
+              {P.labels.vmWord}
+              {voiceVmState || P.labels.unknownValue}
+            </span>
+            <span class="pill voice-vm-pill">
+              {#if voiceVmState === "awake"}<span
+                  class="pill-dot"
+                  aria-hidden="true"
+                ></span>{/if}
+              {P.labels.vmWord}
+              {voiceVmState || P.labels.unknownValue}
+            </span>
+          {:else}
+            <span class="desktop-attachment">{P.labels.notAttached}</span>
+            <span class="phone-attachment">{P.labels.notAttached}</span>
+          {/if}
+        </span>
+      {/if}
       <button
-        class="new-button"
+        class="top-search"
         type="button"
-        bind:this={newButtonEl}
-        onclick={() => (showNewPanel ? closeNewPanel() : openNewPanel())}
+        aria-label={P.labels.searchPlaceholder}
+        aria-haspopup="dialog"
+        onclick={() => openJump()}
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M8 3v10M3 8h10"></path>
+        <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="7" cy="7" r="4.25"></circle>
+          <path d="m10.25 10.25 3 3"></path>
         </svg>
-        New
+        <span class="search-label">{P.labels.searchPlaceholder}</span>
+        <kbd class="kbd">{P.labels.shortcutCommandK}</kbd>
       </button>
-    {/if}
-  </header>
-
-  <div class="shell">
-    <aside class="inbox" aria-label={P.labels.sessionsRegion}>
-      <div class="fold-rail">
+      <div class="guest-state">
+        <span
+          class:idle={awakeGuests === 0}
+          class="awake-dot"
+          aria-hidden="true"
+        ></span>
+        {awakeGuests}
+        {P.labels.guestsAwake}
+      </div>
+      {#if voiceMode}
+        <button class="leave-voice" type="button" onclick={leaveVoiceMode}
+          >{P.labels.leaveVoice}</button
+        >
+      {:else}
         <button
-          class:activity-cue={inboxActivityCue}
-          class="fold-button"
+          class="new-button"
           type="button"
-          aria-label={P.labels.expandInbox}
-          aria-expanded="false"
-          title={P.labels.expandInbox}
-          onclick={toggleSidebar}
-          onanimationend={clearInboxActivityCue}
+          bind:this={newButtonEl}
+          onclick={() => (showNewPanel ? closeNewPanel() : openNewPanel())}
         >
           <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="m6 3 5 5-5 5"></path>
+            <path d="M8 3v10M3 8h10"></path>
           </svg>
+          New
         </button>
-        <span class="rail-hairline"></span>
-        <button
-          class:activity-cue={inboxActivityCue && inbox.needsYou.length > 0}
-          class:attention={inbox.needsYou.length > 0}
-          class:idle={inboxEmpty}
-          class="rail-badge"
-          type="button"
-          aria-label={`${inbox.needsYou.length} ${P.labels.needsYouExpandInbox}`}
-          onclick={toggleSidebar}
-          onanimationend={clearInboxActivityCue}>{inbox.needsYou.length}</button
-        >
-        <button
-          class:activity-cue={inboxActivityCue && inbox.running.length > 0}
-          class:idle={inboxEmpty}
-          class="rail-badge running"
-          type="button"
-          aria-label={`${inbox.running.length} ${P.labels.runningExpandInbox}`}
-          onclick={toggleSidebar}
-          onanimationend={clearInboxActivityCue}
-        >
-          <span class="awake-dot" aria-hidden="true"></span>
-          {inbox.running.length}
-        </button>
-      </div>
+      {/if}
+    </header>
 
-      <div class="inbox-expanded">
-        <div class="inbox-head">
-          <h1>{P.labels.inbox}</h1>
+    <div class="execution-workspace">
+      <aside class="inbox" aria-label={P.labels.sessionsRegion}>
+        <div class="fold-rail">
           <button
             class:activity-cue={inboxActivityCue}
             class="fold-button"
             type="button"
-            aria-label={P.labels.collapseInbox}
-            aria-expanded="true"
-            title={P.labels.collapseInbox}
+            aria-label={P.labels.expandInbox}
+            aria-expanded="false"
+            title={P.labels.expandInbox}
             onclick={toggleSidebar}
             onanimationend={clearInboxActivityCue}
           >
             <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path d="m10 3-5 5 5 5"></path>
+              <path d="m6 3 5 5-5 5"></path>
             </svg>
+          </button>
+          <span class="rail-hairline"></span>
+          <button
+            class:activity-cue={inboxActivityCue && inbox.needsYou.length > 0}
+            class:attention={inbox.needsYou.length > 0}
+            class:idle={inboxEmpty}
+            class="rail-badge"
+            type="button"
+            aria-label={`${inbox.needsYou.length} ${P.labels.needsYouExpandInbox}`}
+            onclick={toggleSidebar}
+            onanimationend={clearInboxActivityCue}
+            >{inbox.needsYou.length}</button
+          >
+          <button
+            class:activity-cue={inboxActivityCue && inbox.running.length > 0}
+            class:idle={inboxEmpty}
+            class="rail-badge running"
+            type="button"
+            aria-label={`${inbox.running.length} ${P.labels.runningExpandInbox}`}
+            onclick={toggleSidebar}
+            onanimationend={clearInboxActivityCue}
+          >
+            <span class="awake-dot" aria-hidden="true"></span>
+            {inbox.running.length}
           </button>
         </div>
 
-        <div class="inbox-body">
-          {#if (!fixture || fixture.home) && !selectedId && !selectedRunId && !startingTaskId && inboxEmpty && searchResults === null}
-            <!-- The launcher stays in both responsive panes because CSS cannot
+        <div class="inbox-expanded">
+          <details class="execution-site-index">
+            <summary>/ Site</summary>
+            <SiteIndex />
+          </details>
+          <div class="inbox-head">
+            <h1>{P.labels.inbox}</h1>
+            <button
+              class:activity-cue={inboxActivityCue}
+              class="fold-button"
+              type="button"
+              aria-label={P.labels.collapseInbox}
+              aria-expanded="true"
+              title={P.labels.collapseInbox}
+              onclick={toggleSidebar}
+              onanimationend={clearInboxActivityCue}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="m10 3-5 5 5 5"></path>
+              </svg>
+            </button>
+          </div>
+
+          <div class="inbox-body">
+            {#if (!fixture || fixture.home) && !selectedId && !selectedRunId && !startingTaskId && inboxEmpty && searchResults === null}
+              <!-- The launcher stays in both responsive panes because CSS cannot
                  move one component across the detail and inbox scroll roots. -->
-            <div class="mobile-home">
-              <Launcher
-                bind:session={newSession}
-                models={availableModels}
-                {repos}
-                {branches}
-                {repoLoading}
-                {branchLoading}
-                {creating}
-                {drain}
-                {factory}
-                summary={launcherRecent}
-                jumpCount={launcherJumpTotal}
-                onLoadBranches={loadBranches}
-                onSubmit={createTask}
-                onOpenRun={selectRun}
-                onOpenSession={selectInboxSession}
-                onOpenJump={() => openJump()}
-              />
-            </div>
-          {/if}
-          {#if searchResults !== null}
-            <div class="group">
-              <div class="turn-search-head">
-                <span class="turn-search-title">{turnSearchHeading}</span>
-                {#if searchLoading}
-                  <span class="turn-search-loading mono"
-                    >{P.labels.searching}</span
-                  >
-                {/if}
-                <button
-                  type="button"
-                  aria-label={P.labels.clearTurnSearch}
-                  title={P.labels.clearTurnSearch}
-                  onclick={clearTurnSearch}>{P.labels.clearMark}</button
-                >
-              </div>
-              <div class="row-list">
-                {#each visibleSearchResults as result (result.session_id + ":" + result.seq)}
-                  <button
-                    class:chosen={String(selectedId) ===
-                      String(result.session_id)}
-                    class="row search-result"
-                    type="button"
-                    onclick={() => selectSession(result.session_id)}
-                  >
-                    <span class="dot idle" aria-hidden="true"></span>
-                    <span class="main">
-                      <span class="row-title">{result.snippet}</span>
-                      <span class="row-sub mono"
-                        >{String(
-                          result.local_session_id || result.workspace || "",
-                        ).slice(0, 8)} · turn {result.seq}</span
-                      >
-                    </span>
-                    <span class="age mono"
-                      >{relativeTime(result.created_at)}</span
-                    >
-                  </button>
-                {:else}<div class="empty">
-                    {P.labels.noMatchingTurns}
-                  </div>{/each}
-              </div>
-            </div>
-          {:else}
-            {#if inbox.needsYou.length}
-              <div class="group attention-group">
-                <div class="group-title">
-                  <span>{P.labels.needsYou}</span>
-                  <span class="group-count">{inbox.needsYou.length}</span>
-                </div>
-                <div class="row-list">
-                  {#each inbox.needsYou as item (`${item.kind}:${item.id}`)}
-                    {@render inboxRow(item, true)}
-                  {/each}
-                </div>
-              </div>
-            {/if}
-            {#if inbox.running.length}
-              <div class="group">
-                <div class="group-title">
-                  <span>{P.labels.runningGroup}</span>
-                  <span class="group-count">{inbox.running.length}</span>
-                </div>
-                <div class="row-list">
-                  {#each inbox.running as item (`${item.kind}:${item.id}`)}
-                    {@render inboxRow(item, false)}
-                  {/each}
-                </div>
-              </div>
-            {/if}
-            <button
-              class="hist"
-              type="button"
-              aria-haspopup="dialog"
-              onclick={() => openJump()}
-            >
-              <span
-                >{P.labels.sessionsAndRunsInJump.replace(
-                  "{count}",
-                  String(launcherJumpTotal),
-                )}</span
-              >
-              <kbd class="kbd">{P.labels.shortcutCommandK}</kbd>
-            </button>
-          {/if}
-        </div>
-
-        <div
-          class={`inbox-foot mono ${vmStreamStatus.mode}`}
-          title={vmStreamStatus.error ?? P.labels.vmStreamState}
-        >
-          <span class="vm-stream-dot" aria-hidden="true"></span>
-          {#if vmStreamStatus.error}<span class="sr-only"
-              >: {vmStreamStatus.error}</span
-            >{/if}
-          {#if vmStreamStatus.mode === "streaming"}
-            {P.labels.vmStreamLive} · {awakeGuests} {P.labels.guestsAwake}
-          {:else if vmStreamStatus.mode === "polling"}
-            {P.labels.vmStreamPolling}{#if vmStreamStatus.lastUpdateAt != null}
-              · {P.labels.updated}
-              {streamAge(vmStreamNow - vmStreamStatus.lastUpdateAt)}{/if}
-          {:else if vmStreamStatus.mode === "stalled"}
-            {P.labels.vmStreamStalled}{#if vmStreamStatus.lastUpdateAt != null}
-              · {P.labels.updated}
-              {streamAge(vmStreamNow - vmStreamStatus.lastUpdateAt)}{/if}
-          {:else}
-            {P.labels.vmStreamConnecting}
-          {/if}
-        </div>
-      </div>
-    </aside>
-
-    <section
-      class="detail transcript"
-      aria-label={voiceMode
-        ? P.labels.voiceCompanion
-        : P.labels.transcriptRegion}
-    >
-      {#if voiceMode}
-        <VoiceCompanion
-          stage={voiceStage}
-          rows={voiceRows}
-          sessionDetail={voiceSessionDetail}
-          {vms}
-          runDetails={voiceRunDetails}
-          now={voiceNow}
-          {renderedPending}
-          onPin={pinVoiceCard}
-          onDismiss={dismissVoiceCard}
-          onSend={sendVoicePrompt}
-          onDecide={decideVoiceRun}
-          onAnswered={answerVoiceCard}
-        />
-      {:else}
-        {#if !(selectedId && selectedSession)}
-          <div class="mobile-detail-nav">
-            <button
-              class="mobile-back"
-              type="button"
-              aria-label={P.labels.backToSessions}
-              onclick={returnToSessionList}
-            >
-              <svg viewBox="0 0 18 18" aria-hidden="true">
-                <path d="m11 4-5 5 5 5"></path>
-              </svg>
-            </button>
-            <button
-              class="mobile-jump"
-              type="button"
-              aria-label={P.labels.jumpOpenLabel}
-              aria-haspopup="dialog"
-              onclick={() => openJump()}
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <circle cx="7" cy="7" r="4.25"></circle>
-                <path d="m10.25 10.25 3 3"></path>
-              </svg>
-            </button>
-          </div>
-        {/if}
-        {#if fixture?.walkthrough}
-          <!-- Walkthrough visual states are reviewed via ?fixture=walk-*; the
-           component gets its payload inline and never fetches. -->
-          <div class="walkthrough-page">
-            <div class="walkthrough-inner">
-              <h2>{P.labels.walkSummary}</h2>
-              <WalkthroughNarrative
-                turnSeq={fixture.walkthrough.turnSeq}
-                fixture={fixture.walkthrough}
-              />
-            </div>
-          </div>
-        {:else if fixture && !fixture.home}
-          <RunView
-            run={fixture.run}
-            view={fixture.view}
-            sessions={fixture.sessions}
-            onSelectSession={selectSession}
-            onCrumb={paneCrumb}
-            onVoice={openVoiceMode}
-            onError={(message) => (errorMessage = message)}
-          />
-        {:else if selectedId && selectedSession}
-          <header class="transcript-head">
-            <button
-              class="mobile-back"
-              type="button"
-              aria-label={P.labels.backToSessions}
-              onclick={returnToSessionList}
-            >
-              <svg viewBox="0 0 18 18" aria-hidden="true">
-                <path d="m11 4-5 5 5 5"></path>
-              </svg>
-            </button>
-            <PaneHeader
-              sessionRow
-              crumbs={sessionCrumbs}
-              onCrumb={paneCrumb}
-              selectedRun={Boolean(selectedRunId)}
-              sessionId={selectedSession.local_session_id}
-              {sessionView}
-              onBackToRun={returnToRun}
-              onChangeView={(view) => (sessionView = view)}
-              onDestroy={destroySession}
-              onVoice={openVoiceMode}
-            >
-              <h1
-                class="session-title"
-                title={headerTitle}
-                tabindex="-1"
-                bind:this={titleEl}
-              >
-                <span class="session-title-text">{headerTitle}</span>
-                <span class="session-mobile-meta mono">
-                  {statusLabel(selectedDisplayStatus)}
-                  {P.punct.dot}
-                  {selectedSession.model ||
-                    "luna"}{#if formatRepoContext(selectedSession)}
-                    {P.punct.dot} {formatRepoContext(selectedSession)}
-                  {/if}
-                </span>
-              </h1>
-              <span
-                class="pill"
-                title={vms[selectedSession.ember_session_id]?.cp_state
-                  ? P.labels.controlPlaneState.replace(
-                      "{state}",
-                      vms[selectedSession.ember_session_id].cp_state,
-                    )
-                  : P.labels.noLiveVm}
-              >
-                {#if vmState(selectedSession, vms) === "awake"}
-                  <span class="pill-dot" aria-hidden="true"></span>
-                {/if}
-                {P.labels.vmWord}
-                {vmState(selectedSession, vms)}
-              </span>
-              <span class="pill">{selectedSession.model || "luna"}</span>
-              {#if formatRepoContext(selectedSession)}
-                <span class="pill">{formatRepoContext(selectedSession)}</span>
-              {/if}
-              {#if ["needs_input", "warn", "failed", "awaiting_login", "recovering"].includes(statusClass(selectedSession))}
-                <span class={`pill state-pill ${statusClass(selectedSession)}`}
-                  >{statusClass(selectedSession) === "awaiting_login"
-                    ? P.labels.awaitingLogin
-                    : statusLabel(selectedDisplayStatus)}</span
-                >
-              {/if}
-              {#if statusClass(selectedSession) === "awaiting_login"}
-                <CodexLogin
-                  authorizeLabel={P.labels.authorizeCodex}
-                  authorizingLabel={P.labels.authorizingCodex}
-                  copiedLabel={P.labels.copied}
-                  unavailableLabel={P.labels.codexLoginUnavailable}
-                  invalidResponseLabel={P.labels.codexLoginInvalidResponse}
-                  openLinkLabel={P.labels.codexLoginOpenLink}
-                  requestNewCodeLabel={P.labels.codexLoginRequestNewCode}
-                  startingLabel={P.labels.codexLoginStarting}
-                  initialUserCode={selectedCodexLoginCode}
-                  initialVerificationUrl={selectedCodexLoginUrl}
-                  onError={(message) => (errorMessage = message)}
-                  onNotice={(message) => (noticeMessage = message)}
+              <div class="mobile-home">
+                <Launcher
+                  bind:session={newSession}
+                  models={availableModels}
+                  {repos}
+                  {branches}
+                  {repoLoading}
+                  {branchLoading}
+                  {creating}
+                  {drain}
+                  {factory}
+                  summary={launcherRecent}
+                  jumpCount={launcherJumpTotal}
+                  onLoadBranches={loadBranches}
+                  onSubmit={createTask}
+                  onOpenRun={selectRun}
+                  onOpenSession={selectInboxSession}
+                  onOpenJump={() => openJump()}
                 />
+              </div>
+            {/if}
+            {#if searchResults !== null}
+              <div class="group">
+                <div class="turn-search-head">
+                  <span class="turn-search-title">{turnSearchHeading}</span>
+                  {#if searchLoading}
+                    <span class="turn-search-loading mono"
+                      >{P.labels.searching}</span
+                    >
+                  {/if}
+                  <button
+                    type="button"
+                    aria-label={P.labels.clearTurnSearch}
+                    title={P.labels.clearTurnSearch}
+                    onclick={clearTurnSearch}>{P.labels.clearMark}</button
+                  >
+                </div>
+                <div class="row-list">
+                  {#each visibleSearchResults as result (result.session_id + ":" + result.seq)}
+                    <button
+                      class:chosen={String(selectedId) ===
+                        String(result.session_id)}
+                      class="row search-result"
+                      type="button"
+                      onclick={() => selectSession(result.session_id)}
+                    >
+                      <span class="dot idle" aria-hidden="true"></span>
+                      <span class="main">
+                        <span class="row-title">{result.snippet}</span>
+                        <span class="row-sub mono"
+                          >{String(
+                            result.local_session_id || result.workspace || "",
+                          ).slice(0, 8)} · turn {result.seq}</span
+                        >
+                      </span>
+                      <span class="age mono"
+                        >{relativeTime(result.created_at)}</span
+                      >
+                    </button>
+                  {:else}<div class="empty">
+                      {P.labels.noMatchingTurns}
+                    </div>{/each}
+                </div>
+              </div>
+            {:else}
+              {#if inbox.needsYou.length}
+                <div class="group attention-group">
+                  <div class="group-title">
+                    <span>{P.labels.needsYou}</span>
+                    <span class="group-count">{inbox.needsYou.length}</span>
+                  </div>
+                  <div class="row-list">
+                    {#each inbox.needsYou as item (`${item.kind}:${item.id}`)}
+                      {@render inboxRow(item, true)}
+                    {/each}
+                  </div>
+                </div>
               {/if}
-              <span
-                class="seg"
-                role="group"
-                aria-label={P.labels.sessionViewLabel}
+              {#if inbox.running.length}
+                <div class="group">
+                  <div class="group-title">
+                    <span>{P.labels.runningGroup}</span>
+                    <span class="group-count">{inbox.running.length}</span>
+                  </div>
+                  <div class="row-list">
+                    {#each inbox.running as item (`${item.kind}:${item.id}`)}
+                      {@render inboxRow(item, false)}
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+              <button
+                class="hist"
+                type="button"
+                aria-haspopup="dialog"
+                onclick={() => openJump()}
               >
-                <button
-                  type="button"
-                  class:selected={sessionView === SESSION_VIEW_CONVERSATION}
-                  aria-pressed={sessionView === SESSION_VIEW_CONVERSATION}
-                  onclick={() => (sessionView = SESSION_VIEW_CONVERSATION)}
-                  >{P.labels.conversationView}</button
+                <span
+                  >{P.labels.sessionsAndRunsInJump.replace(
+                    "{count}",
+                    String(launcherJumpTotal),
+                  )}</span
                 >
-                <button
-                  type="button"
-                  class:selected={sessionView === SESSION_VIEW_WALKTHROUGH}
-                  aria-pressed={sessionView === SESSION_VIEW_WALKTHROUGH}
-                  onclick={() => (sessionView = SESSION_VIEW_WALKTHROUGH)}
-                  >{P.labels.walkthroughView}</button
-                >
-              </span>
-            </PaneHeader>
-            <button
-              class="mobile-jump"
-              type="button"
-              aria-label={P.labels.jumpOpenLabel}
-              aria-haspopup="dialog"
-              onclick={() => openJump()}
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <circle cx="7" cy="7" r="4.25"></circle>
-                <path d="m10.25 10.25 3 3"></path>
-              </svg>
-            </button>
-          </header>
-          {#if statusClass(selectedSession) === "recovering"}
-            <div class="session-recovery-banner" role="status">
-              {#if latestSelectedTurn?.stop_reason === "brick_preempted"}
-                This agent's VM was reclaimed by the cloud provider. The turn is
-                running again.
-              {:else}
-                Agent recovering from an error.
-              {/if}{#if selectedSession.recovery_workspace_loss}
-                Workspace state may have been lost.
-              {/if}
+                <kbd class="kbd">{P.labels.shortcutCommandK}</kbd>
+              </button>
+            {/if}
+          </div>
+
+          <div
+            class={`inbox-foot mono ${vmStreamStatus.mode}`}
+            title={vmStreamStatus.error ?? P.labels.vmStreamState}
+          >
+            <span class="vm-stream-dot" aria-hidden="true"></span>
+            {#if vmStreamStatus.error}<span class="sr-only"
+                >: {vmStreamStatus.error}</span
+              >{/if}
+            {#if vmStreamStatus.mode === "streaming"}
+              {P.labels.vmStreamLive} · {awakeGuests} {P.labels.guestsAwake}
+            {:else if vmStreamStatus.mode === "polling"}
+              {P.labels
+                .vmStreamPolling}{#if vmStreamStatus.lastUpdateAt != null}
+                · {P.labels.updated}
+                {streamAge(vmStreamNow - vmStreamStatus.lastUpdateAt)}{/if}
+            {:else if vmStreamStatus.mode === "stalled"}
+              {P.labels
+                .vmStreamStalled}{#if vmStreamStatus.lastUpdateAt != null}
+                · {P.labels.updated}
+                {streamAge(vmStreamNow - vmStreamStatus.lastUpdateAt)}{/if}
+            {:else}
+              {P.labels.vmStreamConnecting}
+            {/if}
+          </div>
+        </div>
+      </aside>
+
+      <section
+        class="detail transcript"
+        aria-label={voiceMode
+          ? P.labels.voiceCompanion
+          : P.labels.transcriptRegion}
+      >
+        {#if voiceMode}
+          <VoiceCompanion
+            stage={voiceStage}
+            rows={voiceRows}
+            sessionDetail={voiceSessionDetail}
+            {vms}
+            runDetails={voiceRunDetails}
+            now={voiceNow}
+            {renderedPending}
+            onPin={pinVoiceCard}
+            onDismiss={dismissVoiceCard}
+            onSend={sendVoicePrompt}
+            onDecide={decideVoiceRun}
+            onAnswered={answerVoiceCard}
+          />
+        {:else}
+          {#if !(selectedId && selectedSession)}
+            <div class="mobile-detail-nav">
+              <button
+                class="mobile-back"
+                type="button"
+                aria-label={P.labels.backToSessions}
+                onclick={returnToSessionList}
+              >
+                <svg viewBox="0 0 18 18" aria-hidden="true">
+                  <path d="m11 4-5 5 5 5"></path>
+                </svg>
+              </button>
+              <button
+                class="mobile-jump"
+                type="button"
+                aria-label={P.labels.jumpOpenLabel}
+                aria-haspopup="dialog"
+                onclick={() => openJump()}
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="7" cy="7" r="4.25"></circle>
+                  <path d="m10.25 10.25 3 3"></path>
+                </svg>
+              </button>
             </div>
           {/if}
-          {#if sessionView === SESSION_VIEW_CONVERSATION}
-            <Turns
-              {detail}
-              {selectedSession}
-              attemptN={crumbLineage?.attemptN ?? selectedSession.node_attempt}
-              attemptCount={crumbLineage?.attemptCount ??
-                selectedSession.node_attempt}
-              {renderedPending}
-              {vms}
-              bind:element={turnsEl}
-            />
-          {:else}
+          {#if fixture?.walkthrough}
+            <!-- Walkthrough visual states are reviewed via ?fixture=walk-*; the
+           component gets its payload inline and never fetches. -->
             <div class="walkthrough-page">
               <div class="walkthrough-inner">
                 <h2>{P.labels.walkSummary}</h2>
-                {#each eligibleWalkthroughTurns as turn (turn.seq)}
-                  <WalkthroughNarrative
-                    sessionId={selectedSession.id}
-                    turnSeq={turn.seq}
-                    walkthroughTurnCount={eligibleWalkthroughTurns.length}
-                  />
-                {:else}
-                  <div class="empty walkthrough-empty">
-                    {P.labels.walkthroughUnavailableForSession}
-                  </div>
-                {/each}
+                <WalkthroughNarrative
+                  turnSeq={fixture.walkthrough.turnSeq}
+                  fixture={fixture.walkthrough}
+                />
               </div>
             </div>
-          {/if}
-
-          <StopControl
-            enabled={Boolean(
-              data.sessionStopControlEnabled && detail?.stop_control?.enabled,
-            )}
-            identity={detail?.stop_control?.active ?? null}
-            status={stopPresentation}
-            onStop={stopActiveTurn}
-          />
-
-          <form
-            class="composer"
-            onsubmit={(event) => {
-              event.preventDefault();
-              sendPrompt();
-            }}
-          >
-            <div class="box">
-              <textarea
-                bind:value={prompt}
-                placeholder={P.labels.replyTo.replace(
-                  "{model}",
-                  composerModel || selectedSession.model || "luna",
-                )}
-                rows="3"
-                onkeydown={(e) => {
-                  if (
-                    (e.metaKey || e.ctrlKey) &&
-                    e.key === "Enter" &&
-                    !e.isComposing &&
-                    !sending &&
-                    prompt.trim()
-                  ) {
-                    e.preventDefault();
-                    sendPrompt();
-                  }
-                }}></textarea>
-              <div class="bar">
-                {@render modelPicker(
-                  composerModel,
-                  (model) => {
-                    composerModelOverride = model;
-                  },
-                  true,
-                )}
-                <span class="composer-hint mono">{P.labels.sendHint}</span>
-                <button
-                  class="composer-submit"
-                  type="submit"
-                  aria-label={sending ? P.labels.sending : P.labels.sendPrompt}
-                  disabled={sending || !prompt.trim()}
-                >
-                  <svg viewBox="0 0 18 18" aria-hidden="true">
-                    <path d="M9 14V4m0 0L5 8m4-4 4 4"></path>
-                  </svg>
-                </button>
-              </div>
-            </div>
-          </form>
-          <ComposerPrewarm sessionId={selectedSession.id} />
-        {:else if startingTaskId}
-          <div class="loading-session">
-            <PaneHeader kind={P.labels.session} />
-            <div class="empty blank-state">{P.labels.startingRun}</div>
-          </div>
-        {:else if selectedId}
-          <!-- ?session= for a row absent from the server-rendered list. Without
-           this branch the pane falls through to the launcher and swaps
-           once loadDetail resolves. -->
-          <div class="loading-session">
-            <PaneHeader kind={P.labels.session} />
-            <div class="empty blank-state">{P.labels.loadingSession}</div>
-          </div>
-        {:else if selectedRunId}
-          {#if runDetail?.run}
+          {:else if fixture && !fixture.home}
             <RunView
-              run={runDetail.run}
-              view={runDetail.view}
-              sessions={runDetail.sessions}
+              run={fixture.run}
+              view={fixture.view}
+              sessions={fixture.sessions}
               onSelectSession={selectSession}
-              onCancel={() => cancelRun(selectedRunId)}
               onCrumb={paneCrumb}
               onVoice={openVoiceMode}
               onError={(message) => (errorMessage = message)}
             />
-            <!-- loadRunDetail's catch leaves runDetail set with run: null and the
+          {:else if selectedId && selectedSession}
+            <header class="transcript-head">
+              <button
+                class="mobile-back"
+                type="button"
+                aria-label={P.labels.backToSessions}
+                onclick={returnToSessionList}
+              >
+                <svg viewBox="0 0 18 18" aria-hidden="true">
+                  <path d="m11 4-5 5 5 5"></path>
+                </svg>
+              </button>
+              <PaneHeader
+                sessionRow
+                crumbs={sessionCrumbs}
+                onCrumb={paneCrumb}
+                selectedRun={Boolean(selectedRunId)}
+                sessionId={selectedSession.local_session_id}
+                {sessionView}
+                onBackToRun={returnToRun}
+                onChangeView={(view) => (sessionView = view)}
+                onDestroy={destroySession}
+                onVoice={openVoiceMode}
+              >
+                <h1
+                  class="session-title"
+                  title={headerTitle}
+                  tabindex="-1"
+                  bind:this={titleEl}
+                >
+                  <span class="session-title-text">{headerTitle}</span>
+                  <span class="session-mobile-meta mono">
+                    {statusLabel(selectedDisplayStatus)}
+                    {P.punct.dot}
+                    {selectedSession.model ||
+                      "luna"}{#if formatRepoContext(selectedSession)}
+                      {P.punct.dot} {formatRepoContext(selectedSession)}
+                    {/if}
+                  </span>
+                </h1>
+                <span
+                  class="pill"
+                  title={vms[selectedSession.ember_session_id]?.cp_state
+                    ? P.labels.controlPlaneState.replace(
+                        "{state}",
+                        vms[selectedSession.ember_session_id].cp_state,
+                      )
+                    : P.labels.noLiveVm}
+                >
+                  {#if vmState(selectedSession, vms) === "awake"}
+                    <span class="pill-dot" aria-hidden="true"></span>
+                  {/if}
+                  {P.labels.vmWord}
+                  {vmState(selectedSession, vms)}
+                </span>
+                <span class="pill">{selectedSession.model || "luna"}</span>
+                {#if formatRepoContext(selectedSession)}
+                  <span class="pill">{formatRepoContext(selectedSession)}</span>
+                {/if}
+                {#if ["needs_input", "warn", "failed", "awaiting_login", "recovering"].includes(statusClass(selectedSession))}
+                  <span
+                    class={`pill state-pill ${statusClass(selectedSession)}`}
+                    >{statusClass(selectedSession) === "awaiting_login"
+                      ? P.labels.awaitingLogin
+                      : statusLabel(selectedDisplayStatus)}</span
+                  >
+                {/if}
+                {#if statusClass(selectedSession) === "awaiting_login"}
+                  <CodexLogin
+                    authorizeLabel={P.labels.authorizeCodex}
+                    authorizingLabel={P.labels.authorizingCodex}
+                    copiedLabel={P.labels.copied}
+                    unavailableLabel={P.labels.codexLoginUnavailable}
+                    invalidResponseLabel={P.labels.codexLoginInvalidResponse}
+                    openLinkLabel={P.labels.codexLoginOpenLink}
+                    requestNewCodeLabel={P.labels.codexLoginRequestNewCode}
+                    startingLabel={P.labels.codexLoginStarting}
+                    initialUserCode={selectedCodexLoginCode}
+                    initialVerificationUrl={selectedCodexLoginUrl}
+                    onError={(message) => (errorMessage = message)}
+                    onNotice={(message) => (noticeMessage = message)}
+                  />
+                {/if}
+                <span
+                  class="seg"
+                  role="group"
+                  aria-label={P.labels.sessionViewLabel}
+                >
+                  <button
+                    type="button"
+                    class:selected={sessionView === SESSION_VIEW_CONVERSATION}
+                    aria-pressed={sessionView === SESSION_VIEW_CONVERSATION}
+                    onclick={() => (sessionView = SESSION_VIEW_CONVERSATION)}
+                    >{P.labels.conversationView}</button
+                  >
+                  <button
+                    type="button"
+                    class:selected={sessionView === SESSION_VIEW_WALKTHROUGH}
+                    aria-pressed={sessionView === SESSION_VIEW_WALKTHROUGH}
+                    onclick={() => (sessionView = SESSION_VIEW_WALKTHROUGH)}
+                    >{P.labels.walkthroughView}</button
+                  >
+                </span>
+              </PaneHeader>
+              <button
+                class="mobile-jump"
+                type="button"
+                aria-label={P.labels.jumpOpenLabel}
+                aria-haspopup="dialog"
+                onclick={() => openJump()}
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="7" cy="7" r="4.25"></circle>
+                  <path d="m10.25 10.25 3 3"></path>
+                </svg>
+              </button>
+            </header>
+            {#if statusClass(selectedSession) === "recovering"}
+              <div class="session-recovery-banner" role="status">
+                {#if latestSelectedTurn?.stop_reason === "brick_preempted"}
+                  This agent's VM was reclaimed by the cloud provider. The turn
+                  is running again.
+                {:else}
+                  Agent recovering from an error.
+                {/if}{#if selectedSession.recovery_workspace_loss}
+                  Workspace state may have been lost.
+                {/if}
+              </div>
+            {/if}
+            {#if sessionView === SESSION_VIEW_CONVERSATION}
+              <Turns
+                {detail}
+                {selectedSession}
+                attemptN={crumbLineage?.attemptN ??
+                  selectedSession.node_attempt}
+                attemptCount={crumbLineage?.attemptCount ??
+                  selectedSession.node_attempt}
+                {renderedPending}
+                {vms}
+                bind:element={turnsEl}
+              />
+            {:else}
+              <div class="walkthrough-page">
+                <div class="walkthrough-inner">
+                  <h2>{P.labels.walkSummary}</h2>
+                  {#each eligibleWalkthroughTurns as turn (turn.seq)}
+                    <WalkthroughNarrative
+                      sessionId={selectedSession.id}
+                      turnSeq={turn.seq}
+                      walkthroughTurnCount={eligibleWalkthroughTurns.length}
+                    />
+                  {:else}
+                    <div class="empty walkthrough-empty">
+                      {P.labels.walkthroughUnavailableForSession}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            <StopControl
+              enabled={Boolean(
+                data.sessionStopControlEnabled && detail?.stop_control?.enabled,
+              )}
+              identity={detail?.stop_control?.active ?? null}
+              status={stopPresentation}
+              onStop={stopActiveTurn}
+            />
+
+            <form
+              class="composer"
+              onsubmit={(event) => {
+                event.preventDefault();
+                sendPrompt();
+              }}
+            >
+              <div class="box">
+                <textarea
+                  bind:value={prompt}
+                  placeholder={P.labels.replyTo.replace(
+                    "{model}",
+                    composerModel || selectedSession.model || "luna",
+                  )}
+                  rows="3"
+                  onkeydown={(e) => {
+                    if (
+                      (e.metaKey || e.ctrlKey) &&
+                      e.key === "Enter" &&
+                      !e.isComposing &&
+                      !sending &&
+                      prompt.trim()
+                    ) {
+                      e.preventDefault();
+                      sendPrompt();
+                    }
+                  }}></textarea>
+                <div class="bar">
+                  {@render modelPicker(
+                    composerModel,
+                    (model) => {
+                      composerModelOverride = model;
+                    },
+                    true,
+                  )}
+                  <span class="composer-hint mono">{P.labels.sendHint}</span>
+                  <button
+                    class="composer-submit"
+                    type="submit"
+                    aria-label={sending
+                      ? P.labels.sending
+                      : P.labels.sendPrompt}
+                    disabled={sending || !prompt.trim()}
+                  >
+                    <svg viewBox="0 0 18 18" aria-hidden="true">
+                      <path d="M9 14V4m0 0L5 8m4-4 4 4"></path>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </form>
+            <ComposerPrewarm sessionId={selectedSession.id} />
+          {:else if startingTaskId}
+            <div class="loading-session">
+              <PaneHeader kind={P.labels.session} />
+              <div class="empty blank-state">{P.labels.startingRun}</div>
+            </div>
+          {:else if selectedId}
+            <!-- ?session= for a row absent from the server-rendered list. Without
+           this branch the pane falls through to the launcher and swaps
+           once loadDetail resolves. -->
+            <div class="loading-session">
+              <PaneHeader kind={P.labels.session} />
+              <div class="empty blank-state">{P.labels.loadingSession}</div>
+            </div>
+          {:else if selectedRunId}
+            {#if runDetail?.run}
+              <RunView
+                run={runDetail.run}
+                view={runDetail.view}
+                sessions={runDetail.sessions}
+                onSelectSession={selectSession}
+                onCancel={() => cancelRun(selectedRunId)}
+                onCrumb={paneCrumb}
+                onVoice={openVoiceMode}
+                onError={(message) => (errorMessage = message)}
+              />
+              <!-- loadRunDetail's catch leaves runDetail set with run: null and the
              tier marked absent. Without this branch that state is
              indistinguishable from the pre-fetch one, so a ?run= naming a run
              that does not resolve sits on "Loading run…" forever and reads as
              broken navigation rather than a missing run. -->
-          {:else if runDetail?.view?.engine_tier === "absent"}
-            <div class="empty blank-state">{P.labels.absentNotice}</div>
-          {:else}<div class="empty blank-state">{P.labels.loadingRun}</div>{/if}
-        {:else}
-          <Launcher
-            bind:session={newSession}
-            models={availableModels}
-            {repos}
-            {branches}
-            {repoLoading}
-            {branchLoading}
-            {creating}
-            {drain}
-            {factory}
-            summary={launcherRecent}
-            jumpCount={launcherJumpTotal}
-            onLoadBranches={loadBranches}
-            onSubmit={createTask}
-            onOpenRun={selectRun}
-            onOpenSession={selectInboxSession}
-            onOpenJump={() => openJump()}
-          />
+            {:else if runDetail?.view?.engine_tier === "absent"}
+              <div class="empty blank-state">{P.labels.absentNotice}</div>
+            {:else}<div class="empty blank-state">
+                {P.labels.loadingRun}
+              </div>{/if}
+          {:else}
+            <Launcher
+              bind:session={newSession}
+              models={availableModels}
+              {repos}
+              {branches}
+              {repoLoading}
+              {branchLoading}
+              {creating}
+              {drain}
+              {factory}
+              summary={launcherRecent}
+              jumpCount={launcherJumpTotal}
+              onLoadBranches={loadBranches}
+              onSubmit={createTask}
+              onOpenRun={selectRun}
+              onOpenSession={selectInboxSession}
+              onOpenJump={() => openJump()}
+            />
+          {/if}
         {/if}
-      {/if}
-    </section>
-  </div>
+      </section>
+    </div>
 
-  {#if showNewPanel}
-    <button
-      class="new-panel-scrim"
-      type="button"
-      aria-label="Close new session panel"
-      onclick={closeNewPanel}
-    ></button>
-    <div class="new-panel" role="dialog" aria-label={P.labels.submitTask}>
-      <div class="eyebrow">{P.labels.submitTask}</div>
-      <form
-        onsubmit={(event) => {
-          event.preventDefault();
-          createTask();
-        }}
-      >
-        <label
-          >{P.labels.task}<textarea
-            bind:value={newSession.prompt}
-            bind:this={newPromptEl}
-            rows="7"
-            placeholder="what should the agent do?"
-            onkeydown={(e) => {
-              if (
-                (e.metaKey || e.ctrlKey) &&
-                e.key === "Enter" &&
-                !e.isComposing &&
-                !creating &&
-                newSession.prompt.trim()
-              ) {
-                e.preventDefault();
-                createTask();
-              }
-            }}></textarea></label
+    {#if showNewPanel}
+      <button
+        class="new-panel-scrim"
+        type="button"
+        aria-label="Close new session panel"
+        onclick={closeNewPanel}
+      ></button>
+      <div class="new-panel" role="dialog" aria-label={P.labels.submitTask}>
+        <div class="eyebrow">{P.labels.submitTask}</div>
+        <form
+          onsubmit={(event) => {
+            event.preventDefault();
+            createTask();
+          }}
         >
-        <div class="field">
-          <span class="field-label">{P.labels.modelWord}</span>
-          {@render modelPicker(newSession.model, (model) => {
-            newSession.model = model;
-          })}
-        </div>
-        <label
-          >{P.labels.repoWord}<select
-            bind:this={repoControlEl}
-            class:needs-input={needsInputState}
-            aria-invalid={needsInputState}
-            class="mono"
-            bind:value={newSession.repo}
-            disabled={repoLoading}
-            onchange={() => {
-              newSession.branch = "";
-              loadBranches(newSession.repo);
-            }}
+          <label
+            >{P.labels.task}<textarea
+              bind:value={newSession.prompt}
+              bind:this={newPromptEl}
+              rows="7"
+              placeholder="what should the agent do?"
+              onkeydown={(e) => {
+                if (
+                  (e.metaKey || e.ctrlKey) &&
+                  e.key === "Enter" &&
+                  !e.isComposing &&
+                  !creating &&
+                  newSession.prompt.trim()
+                ) {
+                  e.preventDefault();
+                  createTask();
+                }
+              }}></textarea></label
           >
-            {#if repoLoading}
-              <option value="">{P.labels.loadingRepos}</option>
-            {:else}
-              <option value="">{P.labels.scratchWorkspace}</option>
-              {#each repos as repo}
-                <option value={repo.id} title={repo.description || ""}>
-                  {repo.id}
-                </option>
-              {/each}
-            {/if}
-          </select></label
-        >
-        {#if needsInputState}
-          <div class="needs-input-message" role="status">
-            {P.labels.plannedNeedsRepoBranch}
+          <div class="field">
+            <span class="field-label">{P.labels.modelWord}</span>
+            {@render modelPicker(newSession.model, (model) => {
+              newSession.model = model;
+            })}
           </div>
-        {/if}
-        <label>
-          {P.labels.branchWord}<select
-            class="mono"
-            bind:value={newSession.branch}
-            disabled={!newSession.repo || branchLoading}
+          <label
+            >{P.labels.repoWord}<select
+              bind:this={repoControlEl}
+              class:needs-input={needsInputState}
+              aria-invalid={needsInputState}
+              class="mono"
+              bind:value={newSession.repo}
+              disabled={repoLoading}
+              onchange={() => {
+                newSession.branch = "";
+                loadBranches(newSession.repo);
+              }}
+            >
+              {#if repoLoading}
+                <option value="">{P.labels.loadingRepos}</option>
+              {:else}
+                <option value="">{P.labels.scratchWorkspace}</option>
+                {#each repos as repo}
+                  <option value={repo.id} title={repo.description || ""}>
+                    {repo.id}
+                  </option>
+                {/each}
+              {/if}
+            </select></label
           >
-            {#if branchLoading}
-              <option value="">{P.labels.loadingBranches}</option>
-            {:else if branches.length === 0}
-              <option value={P.labels.defaultBranch}
-                >{P.labels.defaultBranch}</option
-              >
-            {:else}
-              {#each branches as branch}
-                <option value={branch.name}>{branch.name}</option>
-              {/each}
-            {/if}
-          </select>
-        </label>
-        <div class="new-actions">
-          <button type="button" class="quiet-button" onclick={closeNewPanel}
-            >{P.labels.cancelWord}</button
-          ><button
-            class="primary-button"
-            type="submit"
-            disabled={creating || !newSession.prompt.trim()}
-            >{creating ? P.labels.creating : P.labels.submitTask}</button
-          >
-        </div>
-      </form>
-    </div>
-  {/if}
+          {#if needsInputState}
+            <div class="needs-input-message" role="status">
+              {P.labels.plannedNeedsRepoBranch}
+            </div>
+          {/if}
+          <label>
+            {P.labels.branchWord}<select
+              class="mono"
+              bind:value={newSession.branch}
+              disabled={!newSession.repo || branchLoading}
+            >
+              {#if branchLoading}
+                <option value="">{P.labels.loadingBranches}</option>
+              {:else if branches.length === 0}
+                <option value={P.labels.defaultBranch}
+                  >{P.labels.defaultBranch}</option
+                >
+              {:else}
+                {#each branches as branch}
+                  <option value={branch.name}>{branch.name}</option>
+                {/each}
+              {/if}
+            </select>
+          </label>
+          <div class="new-actions">
+            <button type="button" class="quiet-button" onclick={closeNewPanel}
+              >{P.labels.cancelWord}</button
+            ><button
+              class="primary-button"
+              type="submit"
+              disabled={creating || !newSession.prompt.trim()}
+              >{creating ? P.labels.creating : P.labels.submitTask}</button
+            >
+          </div>
+        </form>
+      </div>
+    {/if}
 
-  <JumpPalette
-    open={jumpOpen}
-    bind:query={jumpQuery}
-    {sessions}
-    {runs}
-    {terminalRuns}
-    {inbox}
-    onClose={closeJump}
-    onOpenRun={selectRun}
-    onOpenSession={selectInboxSession}
-    onNewSession={openNewSessionFromJump}
-    onSearchTurns={searchTurnsFromJump}
-    onOpenVoice={openVoiceMode}
-  />
+    <JumpPalette
+      open={jumpOpen}
+      bind:query={jumpQuery}
+      {sessions}
+      {runs}
+      {terminalRuns}
+      {inbox}
+      onClose={closeJump}
+      onOpenRun={selectRun}
+      onOpenSession={selectInboxSession}
+      onNewSession={openNewSessionFromJump}
+      onSearchTurns={searchTurnsFromJump}
+      onOpenVoice={openVoiceMode}
+    />
 
-  {#if noticeMessage || errorMessage}
-    <div class="message-banners">
-      {#if noticeMessage}<div class="notice-banner" role="status">
-          {noticeMessage}
-        </div>{/if}
-      {#if errorMessage}<div class="error-banner" role="status">
-          {errorMessage}
-        </div>{/if}
-    </div>
-  {/if}
+    {#if noticeMessage || errorMessage}
+      <div class="message-banners">
+        {#if noticeMessage}<div class="notice-banner" role="status">
+            {noticeMessage}
+          </div>{/if}
+        {#if errorMessage}<div class="error-banner" role="status">
+            {errorMessage}
+          </div>{/if}
+      </div>
+    {/if}
+  </div>
 </main>
 
 {#snippet inboxRow(item, attention)}
@@ -2725,8 +2743,10 @@
     margin: 0;
   }
 
-  .console {
+  .console.execution-sheet {
     height: var(--console-h, 100dvh);
+    min-height: 0;
+    padding: 0;
     display: flex;
     flex-direction: column;
     background: var(--page-bg);
@@ -2757,7 +2777,7 @@
   button,
   textarea,
   select {
-    border-radius: var(--radius-md);
+    border-radius: 0;
   }
   button:focus-visible,
   textarea:focus-visible,
@@ -2786,7 +2806,7 @@
     height: 32px;
     padding: 0 12px;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     font-size: 13px;
     line-height: 1;
   }
@@ -2865,7 +2885,7 @@
     align-items: center;
     gap: 8px;
     padding: 0 12px;
-    border-radius: var(--radius-pill);
+    border-radius: 0;
     color: var(--info);
     background: var(--info-soft);
     font-size: 13px;
@@ -2879,7 +2899,7 @@
   }
   .level-bars i {
     width: 3px;
-    border-radius: 1px;
+    border-radius: 0;
     background: var(--info);
     transform-origin: bottom;
   }
@@ -2923,7 +2943,7 @@
     height: 32px;
     padding: 0 12px;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--text);
     background: var(--panel-bg);
     font-size: 13px;
@@ -2941,7 +2961,7 @@
     min-width: 0;
     padding: 0 8px 0 10px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--muted);
     background: var(--panel-bg);
     font-size: 13px;
@@ -2985,7 +3005,7 @@
     width: 6px;
     height: 6px;
     flex: 0 0 6px;
-    border-radius: var(--radius-circle);
+    border-radius: 0;
     background: var(--ok);
   }
   .awake-dot.idle {
@@ -3012,7 +3032,7 @@
     color: var(--ink-text);
     background: var(--ink);
   }
-  .shell {
+  .execution-workspace {
     flex: 1;
     min-height: 0;
     display: flex;
@@ -3054,7 +3074,7 @@
     justify-content: center;
     padding: 0;
     border: 0;
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--muted);
     background: transparent;
   }
@@ -3155,7 +3175,7 @@
     gap: 12px;
     padding: 8px 12px;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: 0;
     color: inherit;
     background: transparent;
     text-align: left;
@@ -3181,7 +3201,7 @@
     height: 8px;
     flex: 0 0 8px;
     margin: 0;
-    border-radius: var(--radius-circle);
+    border-radius: 0;
     background: var(--dot-idle);
   }
   .dot.idle,
@@ -3211,7 +3231,7 @@
     width: 7px;
     height: 7px;
     flex: 0 0 7px;
-    border-radius: 2px;
+    border-radius: 0;
     background: currentColor;
   }
   .shape-node.gate {
@@ -3262,7 +3282,7 @@
     margin-top: 10px;
     padding: 0 12px;
     border: 0;
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--muted);
     background: transparent;
     font-size: 12px;
@@ -3306,7 +3326,7 @@
     gap: 5px;
     padding: 0;
     border: 0;
-    border-radius: 6px;
+    border-radius: 0;
     color: var(--text-soft);
     background: transparent;
     font: 600 13px var(--font-mono);
@@ -3330,7 +3350,7 @@
   }
   .model-picker select {
     height: 28px;
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--text);
     background: transparent;
     font-size: 12.5px;
@@ -3399,7 +3419,7 @@
   .vm-stream-dot {
     width: 6px;
     height: 6px;
-    border-radius: var(--radius-circle);
+    border-radius: 0;
     background: var(--muted);
   }
   .walkthrough-page {
@@ -3434,7 +3454,7 @@
     margin: 0 auto;
     /* No overflow clip: it would cut the focus rings of the controls inside. */
     border: 1px solid var(--line-strong);
-    border-radius: 6px;
+    border-radius: 0;
     background: var(--panel-bg);
   }
   .box:focus-within {
@@ -3498,7 +3518,7 @@
     justify-content: center;
     padding: 0;
     border: 1px solid var(--ink);
-    border-radius: 4px;
+    border-radius: 0;
     color: var(--ink-text);
     background: var(--ink);
   }
@@ -3526,7 +3546,7 @@
     background: var(--panel-bg);
     border-left: 1px solid var(--line-strong);
     padding: 20px;
-    box-shadow: var(--panel-shadow);
+    box-shadow: none;
   }
   .new-panel-scrim,
   .mobile-detail-nav,
@@ -3589,7 +3609,7 @@
   .notice-banner,
   .error-banner {
     padding: 8px 12px;
-    border-radius: var(--radius-lg);
+    border-radius: 0;
     font-size: var(--size-detail);
   }
   .notice-banner {
@@ -3676,7 +3696,7 @@
     50% {
       color: var(--attn-text);
       background: var(--attn-soft);
-      box-shadow: 0 0 0 3px var(--attn-soft);
+      box-shadow: none;
     }
   }
   @keyframes voice-level {
@@ -3741,7 +3761,7 @@
       height: 44px;
       padding: 0 8px;
     }
-    .console .shell .inbox {
+    .console .execution-workspace .inbox {
       flex: 0 0 100%;
       border-right: 0;
     }
@@ -3849,7 +3869,7 @@
       overflow: auto;
       border-left: 0;
       border-top: 1px solid var(--line-strong);
-      border-radius: 8px 8px 0 0;
+      border-radius: 0;
     }
     .new-panel .model-picker select {
       min-height: 44px;
@@ -3913,7 +3933,7 @@
       width: 44px;
       height: 44px;
       flex-basis: 44px;
-      border-radius: 6px;
+      border-radius: 0;
     }
     /* A desktop fold must not blank the phone column. These outrank the fold
        rules above by source order at equal specificity. */

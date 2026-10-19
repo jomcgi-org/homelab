@@ -44,6 +44,7 @@
       isFriends ||
       /^\/(?:public\/?|(?:public\/)?cv\/?)?$/.test($page.url.pathname) ||
       /^\/private(?:\/|$)/.test($page.url.pathname) ||
+      /^\/(?:private\/)?factory\/execution(?:\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?blog(\/|$)/.test($page.url.pathname) ||

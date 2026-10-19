@@ -1,7 +1,10 @@
 <script>
   import { onMount } from "svelte";
-  import { periodForHour } from "$lib/private/period.js";
-  import "../agents-theme.css";
+  import "$lib/public/styles/technical-drawing.css";
+  import "../execution-sheet.css";
+  import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
+  import Trail from "$lib/public/components/Trail.svelte";
+  import SiteIndex from "$lib/public/components/SiteIndex.svelte";
   import { renderAgentMarkdown } from "../markdown.js";
   import { fmtCost } from "../run-format.js";
   import { relativeTime } from "../run-history.js";
@@ -191,15 +194,6 @@
     }[prState(pr)];
   }
 
-  $effect(() => {
-    if (typeof document !== "undefined") {
-      document.documentElement.setAttribute(
-        "data-agents-period",
-        periodForHour(new Date(nowMs).getHours()),
-      );
-    }
-  });
-
   onMount(() => {
     load();
     const poll = setInterval(load, POLL_MS);
@@ -217,403 +211,428 @@
   <title>{D.labels.title}</title>
 </svelte:head>
 
-<div class="console drain-page">
-  <div class="wrap">
-    <header class="top">
-      <a class="back mono" href="/factory/execution"
-        >&larr; {D.labels.backToAgents}</a
-      >
-      <h1>{D.labels.title}</h1>
-      <span class="grow" aria-hidden="true"></span>
-      <button
-        class="ghost mono"
-        type="button"
-        disabled={kicking}
-        onclick={kick}
-      >
-        {kicking ? D.labels.kicking : D.labels.kick}
-      </button>
-    </header>
+{#snippet trail()}
+  <Trail
+    crumbs={[
+      { label: "Factory", href: "/factory" },
+      { label: "Execution", href: "/factory/execution" },
+    ]}
+    current={D.labels.title}
+  />
+{/snippet}
 
-    {#if actionError}
-      <p class="action-error" role="alert">{actionError}</p>
-    {/if}
-
-    {#if !data}
-      <p class="quiet-note mono">{loadError || D.labels.loading}</p>
-    {:else}
-      <section
-        class={`rail state-${laneClass(lane?.state)}`}
-        role="status"
-        aria-label={`${D.labels.title}: ${laneWord}`}
-      >
-        <div class="rail-head">
-          <span class={`dot ${laneClass(lane?.state)}`} aria-hidden="true"
-          ></span>
-          <span class="word">{laneWord}</span>
-          <span class="hint">{laneHint}</span>
-          {#if loadError}
-            <span class="stale mono">{loadError}</span>
-          {/if}
-        </div>
-        {#if cycle}
-          <div class="rail-meta mono">
-            <span class="clock">
-              {fmtClockAge(checkpointAge)}
-            </span>
-            <span>{D.labels.lastCheckpoint}</span>
-            <span class="sep" aria-hidden="true">{D.labels.dot}</span>
-            <span>
-              {D.labels.cycleWord}
-              {shortId(cycle.workflow_id)}
-              {cycle.status}
-              {fmtClockAge(cycleAge)}
-            </span>
-            {#if cycle.last_step}
-              <span class="sep" aria-hidden="true">{D.labels.dot}</span>
-              <span>{D.labels.lastStep} {cycle.last_step}</span>
-            {/if}
-            <span class="sep" aria-hidden="true">{D.labels.dot}</span>
-            <span>
-              {fill(D.labels.claimsOfFinishes, {
-                finishes: cycle.finishes,
-                claims: cycle.claims,
-              })}
-            </span>
-            {#if data.queue?.due}
-              <span class="sep" aria-hidden="true">{D.labels.dot}</span>
-              <span>
-                {fill(D.labels.queuedBehind, { count: data.queue.due })}
-              </span>
-            {/if}
-          </div>
-          <div class="rail-actions">
-            <span class="reap mono">
-              {fill(D.labels.reapNote, {
-                duration: fmtDuration(lane.reap_after_seconds),
-              })}
-            </span>
-            {#if cancellable}
-              <button
-                class="danger mono"
-                type="button"
-                disabled={cancelling}
-                onclick={cancelCycle}
-              >
-                {cancelling ? D.labels.cancelling : D.labels.cancelCycle}
-              </button>
-            {/if}
-          </div>
-        {:else if lane?.error}
-          <div class="rail-meta mono">{lane.error}</div>
-        {/if}
-      </section>
-
-      {#if data.recent_cycles?.length}
-        <section class="cycles" aria-label={D.labels.recentCycles}>
-          <span class="cycles-label mono">{D.labels.recentCycles}</span>
-          {#each data.recent_cycles as recent (recent.workflow_id)}
-            <span
-              class={`cycle-chip mono ${recent.status === "SUCCESS" ? "" : "bad"}`}
-              title={`${recent.workflow_id} ${recent.status}`}
-            >
-              {recent.status === "SUCCESS" ? "ok" : recent.status.toLowerCase()}
-              {#if recent.duration_seconds != null}
-                {fmtDuration(recent.duration_seconds)}
-              {/if}
-              {recent.finishes}j
-              {relativeTime(recent.created_at)}
-            </span>
-          {/each}
-        </section>
-      {/if}
-
-      <section class="jobs" aria-label={D.labels.jobsHeading}>
-        <div class="filters" role="group" aria-label={D.labels.jobsHeading}>
-          <button
-            class="chip mono"
-            class:active={filter === "all"}
-            type="button"
-            aria-pressed={filter === "all"}
-            onclick={() => (filter = "all")}
+<TechnicalDrawingChrome {trail} />
+<main class="td sheet console drain-page">
+  <div class="frame">
+    <div class="journal">
+      <aside class="spine">
+        <div class="trail-dock">{@render trail()}</div>
+        <SiteIndex />
+      </aside>
+      <div class="content editions">
+        <header class="top ed-head">
+          <a class="back mono" href="/factory/execution"
+            >&larr; {D.labels.backToAgents}</a
           >
-            {D.labels.filterAll}
-            {data.jobs?.length ?? 0}
+          <h1>{D.labels.title}</h1>
+          <span class="grow" aria-hidden="true"></span>
+          <button
+            class="ghost mono"
+            type="button"
+            disabled={kicking}
+            onclick={kick}
+          >
+            {kicking ? D.labels.kicking : D.labels.kick}
           </button>
-          {#each filterStates as state (state)}
-            <button
-              class={`chip mono chip-${jobClass(state)}`}
-              class:active={filter === state}
-              type="button"
-              aria-pressed={filter === state}
-              onclick={() => (filter = filter === state ? "all" : state)}
-            >
-              {D.jobStates[state]}
-              {data.queue?.[state] ?? 0}
-            </button>
-          {/each}
-        </div>
+        </header>
 
-        <div class="job-list">
-          {#each visibleJobs as job (job.name)}
-            {@const calls = jobCalls(job)}
-            <!-- The nested button provides keyboard access while this div enlarges the pointer target. -->
-            <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-            <div
-              class="job-row"
-              class:open={expanded === job.name}
-              onclick={() => toggle(job.name)}
-            >
-              <span
-                class={`dot ${jobClass(job.state)}`}
-                title={D.jobStates[job.state] || job.state}
+        {#if actionError}
+          <p class="action-error" role="alert">{actionError}</p>
+        {/if}
+
+        {#if !data}
+          <p class="quiet-note mono">{loadError || D.labels.loading}</p>
+        {:else}
+          <section
+            class={`rail edition state-${laneClass(lane?.state)}`}
+            role="status"
+            aria-label={`${D.labels.title}: ${laneWord}`}
+          >
+            <div class="rail-head">
+              <span class={`dot ${laneClass(lane?.state)}`} aria-hidden="true"
               ></span>
-              <span class="job-main">
-                <button
-                  class="job-toggle"
-                  type="button"
-                  aria-expanded={expanded === job.name}
-                  onclick={(event) => {
-                    stopPropagation(event);
-                    toggle(job.name);
-                  }}
-                >
-                  <span class="job-name mono">{job.name}</span>
-                </button>
-                <span class="job-sub">
-                  {#if job.state === "error" && job.summary_head}
-                    <span class="err-text">{job.summary_head}</span>
-                  {:else if job.state === "deferred" && job.summary_head}
-                    {job.summary_head}
-                  {:else if job.state === "ok" && job.outcome === "pr" && job.pr}
-                    <a
-                      class="pr-ref mono"
-                      href={job.pr.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      onclick={stopPropagation}
-                      >{D.labels.numberMark}{job.pr.number}</a
-                    >
-                  {:else if job.state === "ok"}
-                    {job.summary_head || job.prompt_head || D.labels.dash}
-                  {:else}
-                    {job.prompt_head || job.summary_head || D.labels.dash}
-                  {/if}
-                </span>
-              </span>
-              <span class="job-calls mono" class:runaway={isRunaway(calls)}>
-                {#if calls != null}
-                  <span class="track" aria-hidden="true">
-                    <span
-                      class="bar"
-                      style={`width:${Math.round(fingerprintFraction(calls) * 100)}%`}
-                    ></span>
-                  </span>
-                  {calls}
-                  {job.state === "running"
-                    ? D.labels.liveCallsWord
-                    : D.labels.callsWord}
-                {/if}
-              </span>
-              <span class="job-meta mono">
-                {#if job.session?.cost_usd}
-                  {fmtCost(job.session.cost_usd)}
-                {/if}
-              </span>
-              <span class="job-age mono">
-                {relativeTime(
-                  job.state === "running"
-                    ? job.locked_at
-                    : job.last_run_at || job.next_run_at,
-                )}
-              </span>
-              <span class={`job-state mono state-${jobClass(job.state)}`}>
-                {D.jobStates[job.state] || job.state}
-              </span>
+              <span class="word">{laneWord}</span>
+              <span class="hint">{laneHint}</span>
+              {#if loadError}
+                <span class="stale mono">{loadError}</span>
+              {/if}
             </div>
-
-            {#if expanded === job.name}
-              <div class="job-detail">
-                {#if detailLoading}
-                  <p class="quiet-note mono">{D.labels.loading}</p>
-                {:else if detail?.error}
-                  <p class="quiet-note mono">{detail.error}</p>
-                {:else if detail}
-                  <div class="detail-head">
-                    {#if detail.job.repo}
-                      <a
-                        class="mono detail-kind detail-repo"
-                        href={`https://github.com/${detail.job.repo}${detail.job.branch ? `/tree/${detail.job.branch}` : ""}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {detail.job.repo}{detail.job.branch
-                          ? `@${detail.job.branch}`
-                          : ""}
-                      </a>
-                    {:else}
-                      <span class="mono detail-kind">
-                        {detail.job.repo || ""}{detail.job.branch
-                          ? `@${detail.job.branch}`
-                          : ""}
-                      </span>
-                    {/if}
-                    <span class="grow" aria-hidden="true"></span>
-                    {#if ["deferred", "error", "parked", "ok"].includes(detail.job.state)}
-                      <button
-                        class="ghost mono"
-                        type="button"
-                        disabled={requeueing === job.name}
-                        onclick={() => requeue(job.name)}
-                      >
-                        {requeueing === job.name
-                          ? D.labels.requeueing
-                          : D.labels.requeue}
-                      </button>
-                    {/if}
-                  </div>
-                  <h3 class="detail-label">{D.labels.promptWord}</h3>
-                  <pre class="detail-pre">{detail.job.prompt ||
-                      D.labels.dash}</pre>
-                  {#if detail.job.outcome === "pr" && detail.job.pr}
-                    {@const state = prState(detail.job.pr)}
-                    <h3 class="detail-label">{D.labels.prCard}</h3>
-                    <div class="pr-card">
-                      <div class="pr-card-head">
-                        <a
-                          class="pr-number mono"
-                          href={detail.job.pr.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          aria-label={`${D.labels.openPr} ${D.labels.numberMark}${detail.job.pr.number}`}
-                        >
-                          {D.labels.numberMark}{detail.job.pr.number}
-                        </a>
-                        {#if state}
-                          <span class={`pr-state mono pr-state-${state}`}>
-                            {prStateLabel(detail.job.pr)}
-                          </span>
-                        {/if}
-                      </div>
-                      {#if detail.job.pr.title}
-                        <div class="pr-title">{detail.job.pr.title}</div>
-                      {/if}
-                      {#if detail.job.pr.changed_files != null && detail.job.pr.additions != null && detail.job.pr.deletions != null}
-                        <div class="pr-stats mono">
-                          <span>
-                            {detail.job.pr.changed_files}
-                            {detail.job.pr.changed_files === 1
-                              ? D.labels.fileWord
-                              : D.labels.filesWord}
-                          </span>
-                          <span class="pr-add">
-                            {D.labels.additionMark}{detail.job.pr.additions}
-                          </span>
-                          <span class="pr-del">
-                            {D.labels.deletionMark}{detail.job.pr.deletions}
-                          </span>
-                        </div>
-                      {/if}
-                    </div>
-                  {/if}
-                  {#if detail.job.last_summary}
-                    {#if detail.job.outcome === "pr"}
-                      {@const summaryWithoutUrl = detail.job.last_summary
-                        .replace(
-                          /https:\/\/github\.com\/[^\s]+\/pull\/\d+/g,
-                          "",
-                        )
-                        .trim()}
-                      {#if summaryWithoutUrl}
-                        <h3 class="detail-label">
-                          {D.labels.resultWordForReport}
-                        </h3>
-                        <div class="result-md">
-                          {@html renderAgentMarkdown(
-                            linkifyRefs(summaryWithoutUrl, detail.job.repo),
-                          )}
-                        </div>
-                      {/if}
-                    {:else if detail.job.outcome === "report"}
-                      <h3 class="detail-label">
-                        {D.labels.resultWordForReport}
-                      </h3>
-                      <div class="result-md">
-                        {@html renderAgentMarkdown(
-                          linkifyRefs(detail.job.last_summary, detail.job.repo),
-                        )}
-                      </div>
-                    {:else}
-                      <h3 class="detail-label">{D.labels.resultWord}</h3>
-                      <pre class="detail-pre">{detail.job.last_summary}</pre>
-                    {/if}
-                  {/if}
-                  {#each detail.attempts as attempt (attempt.session_id)}
-                    <div class="attempt">
-                      <div class="attempt-head mono">
-                        <span>
-                          {detail.attempts.length > 1
-                            ? `${D.labels.attemptWord} ${detail.attempts.length - detail.attempts.indexOf(attempt)}`
-                            : D.labels.attemptWord}
-                        </span>
-                        <span class="sep" aria-hidden="true"
-                          >{D.labels.dot}</span
-                        >
-                        <span>{attempt.status}</span>
-                        {#if attempt.turn?.terminal_reason}
-                          <span class="sep" aria-hidden="true"
-                            >{D.labels.dot}</span
-                          >
-                          <span>{attempt.turn.terminal_reason}</span>
-                        {/if}
-                        <span class="sep" aria-hidden="true"
-                          >{D.labels.dot}</span
-                        >
-                        <span>{relativeTime(attempt.created_at)}</span>
-                        <span class="grow" aria-hidden="true"></span>
-                        <a
-                          class="session-link mono"
-                          href={`/factory/execution?session=${attempt.session_id}`}
-                        >
-                          {D.labels.openSession} &rarr;
-                        </a>
-                      </div>
-                      {#if attempt.live?.calls != null}
-                        <p class="quiet-note mono">
-                          {attempt.live.calls}
-                          {D.labels.liveCallsWord}
-                        </p>
-                      {/if}
-                      {#if attempt.activities?.length}
-                        <p class="quiet-note mono">
-                          {fill(D.labels.activityTailNote, {
-                            shown: attempt.activities.length,
-                            total: attempt.calls,
-                          })}
-                        </p>
-                        <ol class="activities mono">
-                          {#each attempt.activities as activity, index (index)}
-                            <li>{activityLine(activity)}</li>
-                          {/each}
-                        </ol>
-                      {:else}
-                        <p class="quiet-note mono">{D.labels.noActivity}</p>
-                      {/if}
-                    </div>
-                  {/each}
+            {#if cycle}
+              <div class="rail-meta mono">
+                <span class="clock">
+                  {fmtClockAge(checkpointAge)}
+                </span>
+                <span>{D.labels.lastCheckpoint}</span>
+                <span class="sep" aria-hidden="true">{D.labels.dot}</span>
+                <span>
+                  {D.labels.cycleWord}
+                  {shortId(cycle.workflow_id)}
+                  {cycle.status}
+                  {fmtClockAge(cycleAge)}
+                </span>
+                {#if cycle.last_step}
+                  <span class="sep" aria-hidden="true">{D.labels.dot}</span>
+                  <span>{D.labels.lastStep} {cycle.last_step}</span>
+                {/if}
+                <span class="sep" aria-hidden="true">{D.labels.dot}</span>
+                <span>
+                  {fill(D.labels.claimsOfFinishes, {
+                    finishes: cycle.finishes,
+                    claims: cycle.claims,
+                  })}
+                </span>
+                {#if data.queue?.due}
+                  <span class="sep" aria-hidden="true">{D.labels.dot}</span>
+                  <span>
+                    {fill(D.labels.queuedBehind, { count: data.queue.due })}
+                  </span>
                 {/if}
               </div>
+              <div class="rail-actions">
+                <span class="reap mono">
+                  {fill(D.labels.reapNote, {
+                    duration: fmtDuration(lane.reap_after_seconds),
+                  })}
+                </span>
+                {#if cancellable}
+                  <button
+                    class="danger mono"
+                    type="button"
+                    disabled={cancelling}
+                    onclick={cancelCycle}
+                  >
+                    {cancelling ? D.labels.cancelling : D.labels.cancelCycle}
+                  </button>
+                {/if}
+              </div>
+            {:else if lane?.error}
+              <div class="rail-meta mono">{lane.error}</div>
             {/if}
-          {:else}
-            <p class="quiet-note mono">
-              {data.jobs?.length ? D.labels.noneMatching : D.labels.noJobs}
-            </p>
-          {/each}
-        </div>
-      </section>
-    {/if}
+          </section>
+
+          {#if data.recent_cycles?.length}
+            <section class="cycles edition" aria-label={D.labels.recentCycles}>
+              <span class="cycles-label mono">{D.labels.recentCycles}</span>
+              {#each data.recent_cycles as recent (recent.workflow_id)}
+                <span
+                  class={`cycle-chip mono ${recent.status === "SUCCESS" ? "" : "bad"}`}
+                  title={`${recent.workflow_id} ${recent.status}`}
+                >
+                  {recent.status === "SUCCESS"
+                    ? "ok"
+                    : recent.status.toLowerCase()}
+                  {#if recent.duration_seconds != null}
+                    {fmtDuration(recent.duration_seconds)}
+                  {/if}
+                  {recent.finishes}j
+                  {relativeTime(recent.created_at)}
+                </span>
+              {/each}
+            </section>
+          {/if}
+
+          <section class="jobs edition" aria-label={D.labels.jobsHeading}>
+            <div class="filters" role="group" aria-label={D.labels.jobsHeading}>
+              <button
+                class="chip mono"
+                class:active={filter === "all"}
+                type="button"
+                aria-pressed={filter === "all"}
+                onclick={() => (filter = "all")}
+              >
+                {D.labels.filterAll}
+                {data.jobs?.length ?? 0}
+              </button>
+              {#each filterStates as state (state)}
+                <button
+                  class={`chip mono chip-${jobClass(state)}`}
+                  class:active={filter === state}
+                  type="button"
+                  aria-pressed={filter === state}
+                  onclick={() => (filter = filter === state ? "all" : state)}
+                >
+                  {D.jobStates[state]}
+                  {data.queue?.[state] ?? 0}
+                </button>
+              {/each}
+            </div>
+
+            <div class="job-list">
+              {#each visibleJobs as job (job.name)}
+                {@const calls = jobCalls(job)}
+                <!-- The nested button provides keyboard access while this div enlarges the pointer target. -->
+                <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+                <div
+                  class="job-row"
+                  class:open={expanded === job.name}
+                  onclick={() => toggle(job.name)}
+                >
+                  <span
+                    class={`dot ${jobClass(job.state)}`}
+                    title={D.jobStates[job.state] || job.state}
+                  ></span>
+                  <span class="job-main">
+                    <button
+                      class="job-toggle"
+                      type="button"
+                      aria-expanded={expanded === job.name}
+                      onclick={(event) => {
+                        stopPropagation(event);
+                        toggle(job.name);
+                      }}
+                    >
+                      <span class="job-name mono">{job.name}</span>
+                    </button>
+                    <span class="job-sub">
+                      {#if job.state === "error" && job.summary_head}
+                        <span class="err-text">{job.summary_head}</span>
+                      {:else if job.state === "deferred" && job.summary_head}
+                        {job.summary_head}
+                      {:else if job.state === "ok" && job.outcome === "pr" && job.pr}
+                        <a
+                          class="pr-ref mono"
+                          href={job.pr.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          onclick={stopPropagation}
+                          >{D.labels.numberMark}{job.pr.number}</a
+                        >
+                      {:else if job.state === "ok"}
+                        {job.summary_head || job.prompt_head || D.labels.dash}
+                      {:else}
+                        {job.prompt_head || job.summary_head || D.labels.dash}
+                      {/if}
+                    </span>
+                  </span>
+                  <span class="job-calls mono" class:runaway={isRunaway(calls)}>
+                    {#if calls != null}
+                      <span class="track" aria-hidden="true">
+                        <span
+                          class="bar"
+                          style={`width:${Math.round(fingerprintFraction(calls) * 100)}%`}
+                        ></span>
+                      </span>
+                      {calls}
+                      {job.state === "running"
+                        ? D.labels.liveCallsWord
+                        : D.labels.callsWord}
+                    {/if}
+                  </span>
+                  <span class="job-meta mono">
+                    {#if job.session?.cost_usd}
+                      {fmtCost(job.session.cost_usd)}
+                    {/if}
+                  </span>
+                  <span class="job-age mono">
+                    {relativeTime(
+                      job.state === "running"
+                        ? job.locked_at
+                        : job.last_run_at || job.next_run_at,
+                    )}
+                  </span>
+                  <span class={`job-state mono state-${jobClass(job.state)}`}>
+                    {D.jobStates[job.state] || job.state}
+                  </span>
+                </div>
+
+                {#if expanded === job.name}
+                  <div class="job-detail">
+                    {#if detailLoading}
+                      <p class="quiet-note mono">{D.labels.loading}</p>
+                    {:else if detail?.error}
+                      <p class="quiet-note mono">{detail.error}</p>
+                    {:else if detail}
+                      <div class="detail-head">
+                        {#if detail.job.repo}
+                          <a
+                            class="mono detail-kind detail-repo"
+                            href={`https://github.com/${detail.job.repo}${detail.job.branch ? `/tree/${detail.job.branch}` : ""}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {detail.job.repo}{detail.job.branch
+                              ? `@${detail.job.branch}`
+                              : ""}
+                          </a>
+                        {:else}
+                          <span class="mono detail-kind">
+                            {detail.job.repo || ""}{detail.job.branch
+                              ? `@${detail.job.branch}`
+                              : ""}
+                          </span>
+                        {/if}
+                        <span class="grow" aria-hidden="true"></span>
+                        {#if ["deferred", "error", "parked", "ok"].includes(detail.job.state)}
+                          <button
+                            class="ghost mono"
+                            type="button"
+                            disabled={requeueing === job.name}
+                            onclick={() => requeue(job.name)}
+                          >
+                            {requeueing === job.name
+                              ? D.labels.requeueing
+                              : D.labels.requeue}
+                          </button>
+                        {/if}
+                      </div>
+                      <h3 class="detail-label">{D.labels.promptWord}</h3>
+                      <pre class="detail-pre">{detail.job.prompt ||
+                          D.labels.dash}</pre>
+                      {#if detail.job.outcome === "pr" && detail.job.pr}
+                        {@const state = prState(detail.job.pr)}
+                        <h3 class="detail-label">{D.labels.prCard}</h3>
+                        <div class="pr-card">
+                          <div class="pr-card-head">
+                            <a
+                              class="pr-number mono"
+                              href={detail.job.pr.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              aria-label={`${D.labels.openPr} ${D.labels.numberMark}${detail.job.pr.number}`}
+                            >
+                              {D.labels.numberMark}{detail.job.pr.number}
+                            </a>
+                            {#if state}
+                              <span class={`pr-state mono pr-state-${state}`}>
+                                {prStateLabel(detail.job.pr)}
+                              </span>
+                            {/if}
+                          </div>
+                          {#if detail.job.pr.title}
+                            <div class="pr-title">{detail.job.pr.title}</div>
+                          {/if}
+                          {#if detail.job.pr.changed_files != null && detail.job.pr.additions != null && detail.job.pr.deletions != null}
+                            <div class="pr-stats mono">
+                              <span>
+                                {detail.job.pr.changed_files}
+                                {detail.job.pr.changed_files === 1
+                                  ? D.labels.fileWord
+                                  : D.labels.filesWord}
+                              </span>
+                              <span class="pr-add">
+                                {D.labels.additionMark}{detail.job.pr.additions}
+                              </span>
+                              <span class="pr-del">
+                                {D.labels.deletionMark}{detail.job.pr.deletions}
+                              </span>
+                            </div>
+                          {/if}
+                        </div>
+                      {/if}
+                      {#if detail.job.last_summary}
+                        {#if detail.job.outcome === "pr"}
+                          {@const summaryWithoutUrl = detail.job.last_summary
+                            .replace(
+                              /https:\/\/github\.com\/[^\s]+\/pull\/\d+/g,
+                              "",
+                            )
+                            .trim()}
+                          {#if summaryWithoutUrl}
+                            <h3 class="detail-label">
+                              {D.labels.resultWordForReport}
+                            </h3>
+                            <div class="result-md">
+                              {@html renderAgentMarkdown(
+                                linkifyRefs(summaryWithoutUrl, detail.job.repo),
+                              )}
+                            </div>
+                          {/if}
+                        {:else if detail.job.outcome === "report"}
+                          <h3 class="detail-label">
+                            {D.labels.resultWordForReport}
+                          </h3>
+                          <div class="result-md">
+                            {@html renderAgentMarkdown(
+                              linkifyRefs(
+                                detail.job.last_summary,
+                                detail.job.repo,
+                              ),
+                            )}
+                          </div>
+                        {:else}
+                          <h3 class="detail-label">{D.labels.resultWord}</h3>
+                          <pre class="detail-pre">{detail.job
+                              .last_summary}</pre>
+                        {/if}
+                      {/if}
+                      {#each detail.attempts as attempt (attempt.session_id)}
+                        <div class="attempt">
+                          <div class="attempt-head mono">
+                            <span>
+                              {detail.attempts.length > 1
+                                ? `${D.labels.attemptWord} ${detail.attempts.length - detail.attempts.indexOf(attempt)}`
+                                : D.labels.attemptWord}
+                            </span>
+                            <span class="sep" aria-hidden="true"
+                              >{D.labels.dot}</span
+                            >
+                            <span>{attempt.status}</span>
+                            {#if attempt.turn?.terminal_reason}
+                              <span class="sep" aria-hidden="true"
+                                >{D.labels.dot}</span
+                              >
+                              <span>{attempt.turn.terminal_reason}</span>
+                            {/if}
+                            <span class="sep" aria-hidden="true"
+                              >{D.labels.dot}</span
+                            >
+                            <span>{relativeTime(attempt.created_at)}</span>
+                            <span class="grow" aria-hidden="true"></span>
+                            <a
+                              class="session-link mono"
+                              href={`/factory/execution?session=${attempt.session_id}`}
+                            >
+                              {D.labels.openSession} &rarr;
+                            </a>
+                          </div>
+                          {#if attempt.live?.calls != null}
+                            <p class="quiet-note mono">
+                              {attempt.live.calls}
+                              {D.labels.liveCallsWord}
+                            </p>
+                          {/if}
+                          {#if attempt.activities?.length}
+                            <p class="quiet-note mono">
+                              {fill(D.labels.activityTailNote, {
+                                shown: attempt.activities.length,
+                                total: attempt.calls,
+                              })}
+                            </p>
+                            <ol class="activities mono">
+                              {#each attempt.activities as activity, index (index)}
+                                <li>{activityLine(activity)}</li>
+                              {/each}
+                            </ol>
+                          {:else}
+                            <p class="quiet-note mono">{D.labels.noActivity}</p>
+                          {/if}
+                        </div>
+                      {/each}
+                    {/if}
+                  </div>
+                {/if}
+              {:else}
+                <p class="quiet-note mono">
+                  {data.jobs?.length ? D.labels.noneMatching : D.labels.noJobs}
+                </p>
+              {/each}
+            </div>
+          </section>
+        {/if}
+      </div>
+    </div>
   </div>
-</div>
+</main>
 
 <style>
   .drain-page {
@@ -623,14 +642,6 @@
     font-family: var(--font-ui);
     font-size: var(--size-body);
     line-height: 1.45;
-  }
-  .wrap {
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 24px 16px 64px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
   }
   .mono {
     font-family: var(--font-mono);
@@ -642,6 +653,7 @@
     display: flex;
     align-items: baseline;
     gap: 14px;
+    flex-wrap: wrap;
   }
   .top h1 {
     margin: 0;
@@ -660,7 +672,7 @@
   .ghost {
     padding: 5px 10px;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--text-soft);
     background: var(--panel-bg);
     font-size: 12px;
@@ -676,7 +688,7 @@
   .danger {
     padding: 5px 10px;
     border: 1px solid var(--err);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--err);
     background: var(--panel-bg);
     font-size: 12px;
@@ -693,7 +705,7 @@
     margin: 0;
     padding: 8px 12px;
     border: 1px solid var(--err-line);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--err);
     background: var(--err-bg);
     font-size: 13px;
@@ -707,8 +719,8 @@
   .rail {
     padding: 12px 14px;
     border: 1px solid var(--line);
-    border-left: 3px solid var(--dot-idle);
-    border-radius: var(--radius-lg);
+    border-left: 1px solid var(--dot-idle);
+    border-radius: 0;
     background: var(--panel-bg);
     display: flex;
     flex-direction: column;
@@ -797,7 +809,7 @@
   .cycle-chip {
     padding: 2px 8px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-pill);
+    border-radius: 0;
     color: var(--text-soft);
     background: var(--panel-bg);
     font-size: var(--size-meta);
@@ -817,7 +829,7 @@
   .chip {
     padding: 4px 10px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-pill);
+    border-radius: 0;
     color: var(--text-soft);
     background: var(--panel-bg);
     font-size: 12px;
@@ -838,7 +850,7 @@
     display: flex;
     flex-direction: column;
     border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
+    border-radius: 0;
     background: var(--panel-bg);
     overflow: hidden;
   }
@@ -878,7 +890,7 @@
     width: 8px;
     height: 8px;
     flex: 0 0 8px;
-    border-radius: var(--radius-circle);
+    border-radius: 0;
     background: var(--dot-idle);
   }
   .dot.ok {
@@ -938,7 +950,7 @@
   .track {
     width: 48px;
     height: 4px;
-    border-radius: 2px;
+    border-radius: 0;
     background: var(--line);
     overflow: hidden;
   }
@@ -1018,7 +1030,7 @@
     padding: 10px 12px;
     overflow: auto;
     border: 1px solid var(--line);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     background: var(--panel-bg);
     font-family: var(--font-mono);
     font-size: var(--size-body-mono);
@@ -1056,7 +1068,7 @@
   }
   .result-md :global(code) {
     padding: 2px 4px;
-    border-radius: 3px;
+    border-radius: 0;
     background: var(--code-bg);
     font: var(--size-body-mono) var(--font-mono);
   }
@@ -1065,7 +1077,7 @@
     padding: 12px 14px;
     overflow-x: auto;
     border: 0;
-    border-radius: var(--radius-lg);
+    border-radius: 0;
     background: var(--code-bg);
     font-size: var(--size-body-mono);
     line-height: 1.55;
@@ -1098,7 +1110,7 @@
     color: var(--info);
     background: var(--panel-bg);
     border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
+    border-radius: 0;
     text-decoration: none;
   }
   .pr-ref:hover {
@@ -1110,7 +1122,7 @@
     gap: 8px;
     padding: 12px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     background: var(--panel-bg);
   }
   .pr-card-head,
@@ -1129,7 +1141,7 @@
   }
   .pr-state {
     padding: 2px 7px;
-    border-radius: var(--radius-pill);
+    border-radius: 0;
     font-size: var(--size-meta);
   }
   .pr-state-open {
@@ -1187,7 +1199,7 @@
     padding: 10px 12px 10px 40px;
     overflow: auto;
     border: 1px solid var(--line);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     background: var(--panel-bg);
     color: var(--text-soft);
     font-size: var(--size-body-mono);

@@ -229,7 +229,7 @@
   .walk-turn {
     min-width: 0;
     padding: 24px 0 36px;
-    border-top: 4px solid var(--line);
+    border-top: 1px solid var(--line);
   }
   .walk-turn:first-child {
     border-top: 0;
@@ -262,7 +262,7 @@
     margin-left: 8px;
     padding: 0 8px;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     background: transparent;
     color: var(--text-soft);
     font: var(--size-meta) var(--font-mono);
@@ -376,7 +376,7 @@
   .contradictions {
     margin-top: 24px;
     padding-top: 20px;
-    border-top: 4px solid var(--line);
+    border-top: 1px solid var(--line);
   }
   .supporting > h4 {
     margin: 0;
@@ -409,7 +409,7 @@
   .unexplained-change {
     margin-top: 16px;
     padding-left: 12px;
-    border-left: 4px solid var(--err-line);
+    border-left: 1px solid var(--err-line);
   }
   @media (max-width: 760px) {
     .walk-turn {

@@ -8,7 +8,7 @@
 // side so a legitimately busy job does not get painted as a runaway.
 export const RUNAWAY_CALLS = 100;
 
-// Lane state to the console's state-token vocabulary (agents-theme.css):
+// Lane state to the console's sheet roles (execution-sheet.css):
 // ok is running, attn is degraded or waiting on time, err is broken, and
 // idle/muted carries the no-news states.
 const LANE_CLASSES = {

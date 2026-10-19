@@ -397,7 +397,7 @@
 </details>
 
 <style>
-  /* Colors, sizes, and radii come from agents-theme.css tokens (including
+  /* Colors, sizes, and radii come from execution-sheet.css roles (including
      the diff tokens added for this surface); spacing follows the console's
      existing 4/8/16 rhythm. */
   .walk {
@@ -433,7 +433,7 @@
     margin-left: 8px;
     padding: 0 8px;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     background: transparent;
     color: var(--text-soft);
     font: var(--size-meta) var(--font-mono);
@@ -442,7 +442,7 @@
   .walk-frame {
     margin-top: 8px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
+    border-radius: 0;
     overflow: hidden;
   }
   /* The provenance banner is the register statement for the whole surface:
@@ -490,7 +490,7 @@
      unexplained red ground survives selection. */
   .point.on {
     background: var(--panel-bg);
-    box-shadow: inset 2px 0 0 var(--ink);
+    box-shadow: none;
   }
   .point-top {
     display: flex;
@@ -553,7 +553,7 @@
     margin: 8px 12px 0;
     padding: 0 8px;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     background: transparent;
     color: var(--text-soft);
     font: var(--size-meta) var(--font-mono);
@@ -574,7 +574,7 @@
      restated in system voice. */
   .why-txt {
     font-size: var(--size-detail);
-    border-left: 2px solid var(--attn);
+    border-left: 1px solid var(--attn);
     padding-left: 12px;
     text-wrap: pretty;
   }
@@ -586,7 +586,7 @@
     margin: 12px 16px;
     padding: 10px 12px;
     background: var(--err-bg);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     font-size: var(--size-detail);
   }
   .nowhy b {

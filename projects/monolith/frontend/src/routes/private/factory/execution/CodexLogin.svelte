@@ -130,7 +130,7 @@
     gap: 7px;
     padding: 6px;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     background: var(--panel-bg);
   }
   .primary-action {
@@ -139,7 +139,7 @@
     min-height: 28px;
     padding: 0 9px;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--ink-text);
     background: var(--ink);
     font: 600 12px var(--font-mono);
@@ -159,7 +159,7 @@
     min-height: 28px;
     padding: 0 7px;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--text);
     background: var(--panel-bg);
     font: 500 11px var(--font-mono);
