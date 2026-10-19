@@ -78,9 +78,13 @@ class BatchSources:
                         self.stopped = message
                     raise EvidenceUnavailable(message)
                 result = response.json()
+        except coverage.SourceHTTPError as exc:
+            if exc.status_code in {401, 403, 429} or exc.status_code >= 500:
+                self.stopped = str(exc)
+            raise
         except httpx.HTTPError as exc:
             message = "batch source transport unavailable"
-            if not coverage.enabled():
+            if not coverage.enabled() or not isinstance(exc, httpx.ReadTimeout):
                 self.stopped = message
             raise EvidenceUnavailable(message) from exc
         if not isinstance(result, dict):

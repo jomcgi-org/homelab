@@ -330,10 +330,13 @@ def test_streaming_bounds_wire_decoding_and_json_expansion():
             for start in range(0, len(self.raw), 8192):
                 yield self.raw[start : start + 8192]
 
-    for raw in (
-        b" " * (coverage.MAX_RESPONSE_BYTES + 1),
-        b"\xff",
-        json.dumps({"x": "é" * 40_000}, ensure_ascii=False).encode(),
+    for raw, error_type in (
+        (b" " * (coverage.MAX_RESPONSE_BYTES + 1), EvidenceUnsupported),
+        (b"\xff", EvidenceUnavailable),
+        (
+            json.dumps({"x": "é" * 40_000}, ensure_ascii=False).encode(),
+            EvidenceUnavailable,
+        ),
     ):
         with (
             httpx.Client(
@@ -341,9 +344,10 @@ def test_streaming_bounds_wire_decoding_and_json_expansion():
                     lambda request, body=raw: httpx.Response(200, stream=Stream(body))
                 )
             ) as client,
-            pytest.raises(EvidenceUnsupported),
+            pytest.raises(error_type) as error,
         ):
             coverage.read_response(client, "/repos/test/repo")
+        assert type(error.value) is error_type
 
 
 def test_duplicate_references_and_all_positive_clauses_are_covered(monkeypatch):

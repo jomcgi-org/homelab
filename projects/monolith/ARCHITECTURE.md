@@ -1549,6 +1549,16 @@ shared pin response. Preflight reserves one final streaming chunk so rejected
 response bytes remain charged. Preflight overflow is unsupported with a resolved
 file identity and leaves the batch reader available to later members.
 
+HTTP 401/403/429, server errors and transport failures stop further batch reads;
+the enabled path isolates a single read timeout to its member. HTTP 404 remains
+member-local. Invalid JSON/UTF-8 response envelopes, unexpected content encoding
+and response serialization overflow record unavailable outcomes with backoff on
+both enabled paths, without creating source blocks. Blob content failures and
+explicit wire/file/coverage bounds retain deterministic unsupported outcomes.
+
+**Why.** A shared provider failure must not fan out across the remaining batch.
+Malformed response envelopes cannot establish that a cited source is unsupported.
+
 Files that do not fit the evidence bound can supply positive literal witnesses.
 Every nonempty title/body line must match the closed grammar
 `` `projects/path.py` contains the exact text `literal text`. ``

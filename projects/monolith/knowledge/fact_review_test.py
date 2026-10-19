@@ -4,8 +4,10 @@ import base64
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -802,6 +804,59 @@ def test_transient_large_source_failures_keep_existing_backoff(db, monkeypatch):
         review._candidate(db, utc(outcome.next_attempt_at) + timedelta(seconds=1))
         is not None
     )
+
+
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("stage", ["/git/ref/", "/git/trees/", "/git/blobs/"])
+@pytest.mark.parametrize("anomaly", ["json", "utf8", "encoding", "serialization"])
+def test_response_envelope_anomalies_remain_retryable(
+    db, monkeypatch, batched, stage, anomaly
+):
+    from knowledge import fact_review_batch as batch
+    from knowledge.models import FactReviewSourceBlock
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    literal_note(db)
+    healthy = large_fetch()
+    calls = []
+    failing = True
+
+    def transport(request):
+        path = request.url.path
+        calls.append(path)
+        headers = {}
+        if failing and stage in path:
+            raw = {
+                "json": b"not JSON",
+                "utf8": b"\xff",
+                "encoding": b"{}",
+                "serialization": json.dumps(
+                    {"x": "é" * 40_000}, ensure_ascii=False
+                ).encode(),
+            }[anomaly]
+            if anomaly == "encoding":
+                headers["Content-Encoding"] = "gzip"
+        else:
+            raw = json.dumps(healthy(path)).encode()
+        return httpx.Response(200, stream=httpx.ByteStream(raw), headers=headers)
+
+    monkeypatch.setattr(
+        httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(transport))
+    )
+    prepare_review = batch.prepare if batched else review.prepare
+    prepare_review(db, "outage", now=NOW)
+    outcome = db.exec(select(ReviewOutcome)).one()
+    assert outcome.status == "unavailable"
+    assert utc(outcome.next_attempt_at) > NOW
+    assert db.exec(select(FactReviewSourceBlock)).all() == []
+    assert review._candidate(db, NOW) is None
+    assert len(calls) == {"/git/ref/": 1, "/git/trees/": 2, "/git/blobs/": 3}[stage]
+    retry_at = utc(outcome.next_attempt_at) + timedelta(seconds=1)
+    assert review._candidate(db, retry_at) is not None
+    failing = False
+    prompt = prepare_review(db, "recovered", now=retry_at)
+    assert "omitted_bytes" in prompt
+    assert db.exec(select(FactReviewSourceBlock)).all() == []
 
 
 @pytest.mark.parametrize("state", ["scheduled", "leased", "held", "unknown", "stopped"])
