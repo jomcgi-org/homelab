@@ -171,7 +171,9 @@ def check(root, output, expected_sha):
                         for join in layout["figureJoins"]:
                             assert abs(join["gap"]) < 1, layout
                             assert join["topRule"] == "0px", layout
-                        assert page.locator('[aria-current="page"]:visible').count() == 1
+                        assert (
+                            page.locator('[aria-current="page"]:visible').count() == 1
+                        )
 
                         def geometry(
                             label, page=page, mode=mode, scheme=scheme, width=width
