@@ -571,9 +571,12 @@ Authorized resumes and landing-hold releases retain their fences and a durable
 release request while their repository lane, global lane or chart-wide ceiling
 is full. The regular reconciler and admission retry those requests under the
 singleton control lock.
-A new pause, including a runtime-meter fence, cancellation or human handoff
-revokes pending resume intent. Revocations record the request and reason in the
-audit. A hold-only release on a paused receipt preserves the pause and needs no
+A new pause, including a runtime-meter fence, cancellation, human handoff or
+replacement hold revokes pending release intent. Non-cancellation settlement
+applies a still-matching hold removal without an execution slot and revokes only
+the resume part; its audit makes replay acknowledge the applied hold release.
+Revocations record the request and reason in the audit.
+A hold-only release on a paused receipt preserves the pause and needs no
 free slot. No request means no automatic resume. Held repository work reacquires
 capacity at its next start reservation. Completed decisions and settlement need
 no execution slot and still reconcile while capacity is full. A capacity-refused

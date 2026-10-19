@@ -1487,7 +1487,9 @@ def _capacity_release_refusal(db, control, row):
     return None
 
 
-def _apply_capacity_release(db, control, row, *, active=None, unresolved=None):
+def _apply_capacity_release(
+    db, control, row, *, active=None, unresolved=None, settling=False
+):
     direction = json.loads(row.direction_json or "{}")
     intent = direction.get("pending_capacity_release")
     if not intent:
@@ -1501,31 +1503,51 @@ def _apply_capacity_release(db, control, row, *, active=None, unresolved=None):
             "task_changed" if intent["task_id"] != row.task_id else refusal,
         )
         return False
-    if (
-        "landing_hold" in intent
-        and direction.get("landing_hold") != intent["landing_hold"]
+    if "landing_hold" in intent and (
+        "landing_hold" not in direction
+        or direction["landing_hold"] != intent["landing_hold"]
     ):
         revoke_capacity_release(db, row, intent["actor"], "landing_hold_changed")
         return False
+    # Settlement can apply only the matching hold removal, never a resume.
+    if settling and (row.task_paused or "landing_hold" not in intent):
+        return False
     # Removing only a hold preserves the pause and cannot acquire a new slot.
     remains_paused = row.task_paused and not intent.get("resume")
-    if not remains_paused and not execution_capacity_available(
-        db, control, row, active=active, unresolved=unresolved
+    if (
+        not settling
+        and not remains_paused
+        and not execution_capacity_available(
+            db, control, row, active=active, unresolved=unresolved
+        )
     ):
         return False
-    if intent.get("resume"):
+    if intent.get("resume") and not settling:
         row.task_paused = False
     if "landing_hold" in intent:
         direction.pop("landing_hold", None)
-    direction.pop("pending_capacity_release")
+    if settling and intent.get("resume"):
+        # finish_task revokes the remaining resume with its original identity.
+        direction["pending_capacity_release"] = {
+            key: value for key, value in intent.items() if key != "landing_hold"
+        }
+    else:
+        direction.pop("pending_capacity_release")
     row.direction_json = _json(direction)
     row.updated_at = _now()
     _audit(
         db,
         intent["actor"],
-        "execution_capacity_reacquired",
+        "settled_landing_hold_released"
+        if settling
+        else "execution_capacity_reacquired",
         task_id=row.task_id,
         intent=intent,
+        **(
+            {"landing_authorization": direction.get("landing_authorization")}
+            if settling
+            else {}
+        ),
     )
     return True
 
@@ -4203,6 +4225,8 @@ def finish_task(
             # Delivery approval ends guest execution, not the deployment task.
             outcome = "landing"
             action = "delivery_ready"
+        if row.state in _ACTIVE and outcome not in (*_ACTIVE, "cancelled"):
+            _apply_capacity_release(db, _control, row, settling=True)
         row.state = outcome
         if outcome not in _ACTIVE:
             revoke_capacity_release(db, row, actor, "task_settled")
