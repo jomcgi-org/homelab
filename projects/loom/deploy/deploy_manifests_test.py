@@ -13,7 +13,6 @@ MANIFESTS = [
     "cnpg-cluster.yaml",
     "cnpg-scheduledbackup.yaml",
     "onepassworditem-cnpg-backup-gcs.yaml",
-    "cnpg-metrics-service.yaml",
     "httproute.yaml",
     "image-pull-secret.yaml",
     "onepassworditem-r2.yaml",
@@ -192,7 +191,7 @@ def test_cluster_bootstrap_storage_and_resources(cluster):
     assert spec["resources"]["requests"] == {"cpu": "50m", "memory": "256Mi"}
     assert spec["resources"]["limits"]["memory"] == "512Mi"
     assert "cpu" not in spec["resources"]["limits"]
-    assert spec["monitoring"]["enablePodMonitor"] is True
+    assert spec["monitoring"]["enablePodMonitor"] is False
 
 
 def test_backup_uses_loom_archive_with_retention_and_compression(cluster):
@@ -255,22 +254,6 @@ def test_no_plaintext_credentials_anywhere_in_manifests(documents):
             assert "data" not in document
             assert "stringData" not in document
             assert_no_plaintext_credential(document)
-
-
-def test_metrics_service_selects_cluster_and_exposes_metrics(documents, cluster):
-    service = documents["cnpg-metrics-service.yaml"][0]
-    assert service["kind"] == "Service"
-    assert service["apiVersion"] == "v1"
-    assert service["metadata"]["name"] == "loom-pg-metrics"
-    assert service["metadata"]["labels"]["app.kubernetes.io/component"] == (
-        "database-metrics"
-    )
-    assert service["spec"]["selector"] == {
-        "cnpg.io/cluster": cluster["metadata"]["name"]
-    }
-    assert service["spec"]["ports"] == [
-        {"name": "metrics", "port": 9187, "targetPort": 9187, "protocol": "TCP"}
-    ]
 
 
 def test_default_off_has_no_application(documents):

@@ -26,7 +26,6 @@ MANIFEST_SETS = [
     "//projects/gke-apps/loom:application.yaml",
     "//projects/gke-apps/loom:argocd-repo-cred.yaml",
     "//projects/loom/deploy:cnpg-cluster.yaml",
-    "//projects/loom/deploy:cnpg-metrics-service.yaml",
     "//projects/loom/deploy:cnpg-scheduledbackup.yaml",
     "//projects/loom/deploy:httproute.yaml",
     "//projects/loom/deploy:image-pull-secret.yaml",

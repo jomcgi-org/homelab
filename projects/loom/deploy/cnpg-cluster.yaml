@@ -25,7 +25,7 @@ spec:
     limits:
       memory: 512Mi
   monitoring:
-    enablePodMonitor: true
+    enablePodMonitor: false
   backup:
     retentionPolicy: "14d"
     barmanObjectStore:

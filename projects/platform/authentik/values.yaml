@@ -212,7 +212,7 @@ cnpg:
   database: authentik
   owner: authentik
   monitoring:
-    enablePodMonitor: true
+    enablePodMonitor: false
   bootstrap:
     recovery: null
   externalClusters: []

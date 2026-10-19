@@ -157,7 +157,7 @@ cnpg:
       cpu: 500m
       memory: 512Mi
   monitoring:
-    enablePodMonitor: true
+    enablePodMonitor: false
   bootstrap:
     recovery: null
   externalClusters: []
