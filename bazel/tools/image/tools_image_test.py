@@ -1,7 +1,6 @@
 """Regression tests for the developer tools image layers."""
 
 import functools
-import json
 import os
 import pathlib
 import platform as host_platform
@@ -18,12 +17,11 @@ REQUIRED_COMMANDS = {
     "bb",
     "buildifier",
     "claude",
-    "eslint",
     "hf2oci",
     "prettier",
     "shellcheck",
 }
-NODE_WRAPPERS = {"eslint", "prettier"}
+NODE_WRAPPERS = {"prettier"}
 NATIVE_COMMANDS = REQUIRED_COMMANDS - NODE_WRAPPERS
 SUPPORTED_PLATFORMS = ["linux_amd64", "linux_arm64", "darwin_arm64"]
 RUNTIME_PLATFORM = os.environ.get("TOOLS_IMAGE_RUNTIME_PLATFORM")
@@ -54,8 +52,6 @@ def _layers(platform: str) -> list[pathlib.Path]:
         _runfile(f"tools_tar_{platform}.tar"),
         _runfile(f"source_tools_tar_{platform}.tar"),
         _runfile(f"node_tar_{platform}.tar"),
-        _runfile("eslint_node_modules.tar"),
-        _runfile("eslint_wrapper.tar"),
         _runfile("prettier.tar"),
     ]
 
@@ -108,53 +104,6 @@ def _extract_layers(layers: list[pathlib.Path], root: pathlib.Path) -> None:
             archive.extractall(root, filter="data")
 
 
-def _package_directories(root: pathlib.Path, package_name: str) -> list[pathlib.Path]:
-    store = root / "usr/local/lib/node_modules/.aspect_rules_js"
-    matches = []
-    for package_json in store.rglob("package.json"):
-        metadata = json.loads(package_json.read_text())
-        if metadata.get("name") == package_name:
-            matches.append(package_json.parent)
-    return matches
-
-
-def _package_directory(root: pathlib.Path, package_name: str) -> pathlib.Path:
-    matches = _package_directories(root, package_name)
-    assert len(matches) == 1, f"expected one {package_name} directory, got {matches}"
-    return matches[0]
-
-
-def _semver(version: str) -> tuple[int, int, int]:
-    core = version.split("-", 1)[0]
-    parts = core.split(".")
-    assert len(parts) == 3 and all(part.isdigit() for part in parts), version
-    return tuple(int(part) for part in parts)
-
-
-def _caret_dependency_match(
-    package_dir: pathlib.Path, name: str, available_versions: set[str]
-) -> str:
-    metadata = json.loads((package_dir / "package.json").read_text())
-    declared = metadata["dependencies"][name]
-    assert declared.startswith("^"), f"unsupported {name} range: {declared}"
-
-    lower = _semver(declared.removeprefix("^"))
-    if lower[0]:
-        upper = (lower[0] + 1, 0, 0)
-    elif lower[1]:
-        upper = (0, lower[1] + 1, 0)
-    else:
-        upper = (0, 0, lower[2] + 1)
-
-    matches = {
-        version for version in available_versions if lower <= _semver(version) < upper
-    }
-    assert len(matches) == 1, (
-        f"{metadata['name']} range {name}@{declared} matches {matches}"
-    )
-    return matches.pop()
-
-
 @pytest.mark.parametrize("platform", TEST_PLATFORMS)
 def test_source_tools_exclude_retired_agent_run(platform: str) -> None:
     layer = _runfile(f"source_tools_tar_{platform}.tar")
@@ -176,11 +125,6 @@ def test_every_platform_contains_executable_commands(platform: str) -> None:
         if command in NATIVE_COMMANDS:
             _assert_native_format(payload, platform)
 
-    eslint_payload = _read_member(commands["eslint"], "usr/bin/eslint")
-    assert eslint_payload is not None
-    assert b'exec "$ROOT/usr/bin/node"' in eslint_payload
-    assert b'"$ROOT/usr/local/lib/node_modules/eslint/bin/eslint.js"' in eslint_payload
-
     # bootstrap.sh extracts the image under ~/.cache/homelab-tools, so the
     # prettier wrapper must resolve node and its plugins from its own root.
     prettier_payload = _read_member(commands["prettier"], "usr/bin/prettier")
@@ -195,36 +139,6 @@ def test_every_platform_contains_executable_commands(platform: str) -> None:
 
     combined_members = set().union(*(_members(layer) for layer in layers))
     assert "usr/bin/node" in combined_members
-
-
-def test_eslint_preserves_versioned_dependency_graph() -> None:
-    platform = RUNTIME_PLATFORM or "linux_amd64"
-    with tempfile.TemporaryDirectory() as temp:
-        root = pathlib.Path(temp)
-        _extract_layers(_layers(platform), root)
-
-        eslint = (root / "usr/local/lib/node_modules/eslint").resolve(strict=True)
-        eslint_utils = _package_directory(root, "@eslint-community/eslint-utils")
-        espree = _package_directory(root, "espree")
-        visitor_versions = {
-            json.loads((directory / "package.json").read_text())["version"]
-            for directory in _package_directories(root, "eslint-visitor-keys")
-        }
-        assert len(visitor_versions) == 2
-        resolved_versions = {
-            _caret_dependency_match(consumer, "eslint-visitor-keys", visitor_versions)
-            for consumer in (eslint, eslint_utils, espree)
-        }
-        assert len(resolved_versions) == 2, (
-            "expected two eslint-visitor-keys versions in the pnpm graph, got "
-            f"{resolved_versions}"
-        )
-        assert _caret_dependency_match(
-            eslint, "eslint-visitor-keys", visitor_versions
-        ) == _caret_dependency_match(espree, "eslint-visitor-keys", visitor_versions)
-        assert _caret_dependency_match(
-            eslint_utils, "eslint-visitor-keys", visitor_versions
-        ) != _caret_dependency_match(eslint, "eslint-visitor-keys", visitor_versions)
 
 
 def _assert_native_host(platform: str) -> None:

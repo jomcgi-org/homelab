@@ -3,7 +3,8 @@
 #
 # Steps:
 #   1. lint     format only files changed vs origin/main
-#   2. regen    generators only when their inputs changed (BUILD generation is CI-only)
+#   2. regen    selective generators, Helm dependency sync and migration checks
+#               (BUILD generation is CI-only)
 #   3. ratchet  verification tags, central BUILD entries, chart versions, source patterns
 #   4. test     bb remote (Linux) affected Bazel tests with the PR Test flags
 #
@@ -34,9 +35,6 @@ if [[ -z "$ROOT" ]]; then
 fi
 cd "$ROOT"
 
-if [[ -d "$ROOT/.tools/bin" ]]; then
-	export PATH="$ROOT/.tools/bin:$PATH"
-fi
 if [[ -d "${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools/usr/bin" ]]; then
 	export PATH="${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools/usr/bin:$PATH"
 fi
@@ -188,6 +186,18 @@ need_gazelle() {
 	return 1
 }
 
+need_helm_deps() {
+	local f
+	while IFS= read -r f; do
+		case "$f" in
+		Chart.yaml | Chart.lock | charts/*.tgz | */Chart.yaml | */Chart.lock | */charts/*.tgz)
+			return 0
+			;;
+		esac
+	done < <(changed_files)
+	return 1
+}
+
 need_migration_check() {
 	local f
 	while IFS= read -r f; do
@@ -199,6 +209,15 @@ need_migration_check() {
 }
 
 cmd_regen() {
+	if need_helm_deps; then
+		if ! command -v helm >/dev/null 2>&1; then
+			err "regen: helm is required to sync chart dependencies (run ./bootstrap.sh && direnv allow)"
+			return 1
+		fi
+		log "regen: syncing Helm dependencies (chart inputs changed)"
+		./bazel/tools/format/sync-helm-deps.sh
+	fi
+
 	if need_generators; then
 		log "regen: running generators (inputs changed)"
 		./bazel/tools/format/run-generators.sh

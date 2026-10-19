@@ -260,7 +260,8 @@ else
 	fail "lint_extensions" "missing py/js/svelte cases"
 fi
 
-if grep -q 'need_generators' "$CI" && grep -q 'need_gazelle' "$CI"; then
+if grep -q 'need_generators' "$CI" && grep -q 'need_gazelle' "$CI" &&
+	grep -q 'need_helm_deps' "$CI"; then
 	pass "regen_helpers"
 else
 	fail "regen_helpers" "missing need_* helpers"
@@ -281,6 +282,8 @@ elif [[ "$1" == "merge-base" ]]; then
 	[[ -z "${MERGE_BASE_LOG:-}" ]] || printf '%s\n' "$*" >>"$MERGE_BASE_LOG"
 	[[ "${FAIL_MERGE_BASE:-0}" == 0 ]] || exit 1
 	echo resolved-merge-base
+elif [[ "$1" == "diff" ]]; then
+	printf '%s\n' "${CI_CHANGED_FILE:-}"
 fi
 exit 0
 EOF
@@ -302,6 +305,65 @@ if [[ "${1##*/}" == "${FAIL_GUARD:-}" ]]; then
 fi
 EOF
 chmod +x "$STUB_BIN/python3"
+
+# Run the real regen entry point with a minimal PATH. A developer's installed
+# helm or tools cache must not turn the missing-tool case into a false pass.
+REGEN_BIN="$TMP/regen-bin"
+HELM_BIN="$TMP/helm-bin"
+mkdir -p "$REGEN_BIN" "$HELM_BIN" "$FAKE_ROOT/bazel/tools/format"
+for tool in bash sed sort; do
+	ln -s "$(command -v "$tool")" "$REGEN_BIN/$tool"
+done
+ln -s "$STUB_BIN/git" "$REGEN_BIN/git"
+cat >"$HELM_BIN/helm" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$FAKE_ROOT/bazel/tools/format/sync-helm-deps.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' sync >>"$SYNC_LOG"
+exit "${SYNC_STATUS:-0}"
+EOF
+chmod +x "$HELM_BIN/helm" "$FAKE_ROOT/bazel/tools/format/sync-helm-deps.sh"
+
+run_regen_case() {
+	local name="$1" changed="$2" helm="$3" sync_status="$4" expected_status="$5" expected_runs="$6"
+	local regen_path="$REGEN_BIN" actual_status=0 actual_runs=0
+	[[ "$helm" != available ]] || regen_path="$HELM_BIN:$regen_path"
+	if (cd "$FAKE_ROOT" && XDG_CACHE_HOME="$TMP/regen-cache" \
+		PATH="$regen_path" CI_FAKE_ROOT="$FAKE_ROOT" CI_CHANGED_FILE="$changed" \
+		SYNC_LOG="$TMP/$name.sync" SYNC_STATUS="$sync_status" \
+		"$CI" regen >"$TMP/$name.out" 2>&1); then
+		actual_status=0
+	else
+		actual_status=$?
+	fi
+	if [[ -f "$TMP/$name.sync" ]]; then
+		actual_runs=$(wc -l <"$TMP/$name.sync")
+	fi
+	if [[ "$actual_status" -eq "$expected_status" && "$actual_runs" -eq "$expected_runs" ]]; then
+		pass "$name"
+	else
+		fail "$name" "exit=$actual_status syncs=$actual_runs: $(tr '\n' ' ' <"$TMP/$name.out")"
+	fi
+}
+
+run_regen_case helm_chart_yaml projects/example/chart/Chart.yaml available 0 0 1
+run_regen_case helm_chart_lock projects/example/chart/Chart.lock available 0 0 1
+run_regen_case helm_tarball projects/example/chart/charts/library-1.0.0.tgz available 0 0 1
+run_regen_case helm_root_yaml Chart.yaml available 0 0 1
+run_regen_case helm_root_lock Chart.lock available 0 0 1
+run_regen_case helm_root_tarball charts/library-1.0.0.tgz available 0 0 1
+run_regen_case helm_shallow_lock example/Chart.lock available 0 0 1
+run_regen_case helm_unrelated tools/example.txt missing 0 0 0
+run_regen_case helm_missing projects/example/chart/Chart.lock missing 0 1 0
+run_regen_case helm_sync_failure projects/example/chart/Chart.lock available 7 7 1
+if grep -qF './bootstrap.sh' "$TMP/helm_missing.out" &&
+	grep -qF 'helm' "$TMP/helm_missing.out"; then
+	pass "helm_missing_bootstrap_hint"
+else
+	fail "helm_missing_bootstrap_hint" "missing helm/bootstrap diagnostic"
+fi
 
 cat >"$TMP/green_run" <<'EOF'
 INFO: Analyzed 361 targets

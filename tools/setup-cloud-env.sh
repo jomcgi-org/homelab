@@ -127,7 +127,7 @@ if [[ "$MODE" == "user" ]]; then
 	echo ""
 	echo "==> Verifying tools"
 	missing=0
-	for tool in ci crane prettier eslint shellcheck bb; do
+	for tool in ci crane prettier shellcheck bb; do
 		if command -v "$tool" >/dev/null 2>&1; then
 			echo "    $tool: OK"
 		else

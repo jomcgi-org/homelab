@@ -1,4 +1,3 @@
-load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 
 # gazelle:exclude **/*.bzl
@@ -247,13 +246,6 @@ bzl_library(
         "@bazel_skylib//lib:paths",  # keep
         "@rules_shell//shell:rules_bzl",  # keep
     ],
-)
-
-py_library(
-    name = "helm",
-    srcs = ["crd-schemas.py"],
-    visibility = ["//:__subpackages__"],
-    deps = ["@pip//pyyaml"],
 )
 
 # Markdown read by the monolith doc-manifest genrules (#6446). See

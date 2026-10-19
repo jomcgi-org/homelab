@@ -1,9 +1,5 @@
 # User-specific settings file for this repo
-.aspect/bazelrc/user.bazelrc
 user.bazelrc
-
-# Temporary file created when RBE is disabled in CI
-.bazelrc.remote.disabled
 
 # Don't check in lockfile for now. It is unstable.
 # https://github.com/bazelbuild/bazel/issues/19026
@@ -24,8 +20,6 @@ MODULE.bazel.lock
 # many legitimate cmd/ package directories under projects/.
 /cmd
 
-# Local developer tools (from bootstrap.sh / crane export)
-.tools/
 # CI-local tool symlinks (from buildbuddy.yaml format check)
 .ci-tools/
 
