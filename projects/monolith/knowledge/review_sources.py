@@ -93,6 +93,12 @@ def collect_sources(
         {int(n) for n in _REF.findall(prose)} | {int(n) for _, n in urls + named}
     )
     paths = sorted(set(_FILE.findall(prose)) | set(_URL_FILE.findall(prose)))
+    literal_clauses = coverage.literal_clauses(claim) if staged else None
+    if literal_clauses is not None:
+        # Strings inside a literal are evidence to locate, not additional
+        # repository pointers or GitHub lifecycle subjects.
+        numbers = []
+        paths = sorted({path for path, _ in literal_clauses})
     if len(numbers) > 3 or len(paths) > 4:
         raise EvidenceUnsupported("claim exceeds source coverage bounds")
     if any(".." in PurePosixPath(path).parts for path in paths):

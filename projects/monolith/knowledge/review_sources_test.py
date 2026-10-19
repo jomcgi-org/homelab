@@ -427,3 +427,15 @@ def test_enabled_foreign_claim_does_not_reach_metadata_probe(monkeypatch):
             | {"content": "https://github.com/foreign/repo/blob/main/projects/a.py"},
             fetch=lambda _: pytest.fail("foreign fetch"),
         )
+
+
+def test_pointers_inside_a_literal_are_not_extra_source_subjects(monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    literal = "PR #1 names projects/other/source.py"
+    raw = ("# padding\n" * 8000 + literal).encode()
+    calls = []
+    sources, _ = collect_sources(
+        literal_claim(literal), fetch=blob_fetch(raw, calls=calls)
+    )
+    assert len(calls) == 3
+    assert len(sources) == 1 and sources[0]["text"] == literal

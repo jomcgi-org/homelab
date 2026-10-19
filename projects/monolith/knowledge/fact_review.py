@@ -614,7 +614,15 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
             from knowledge.review_source_blocks import record_block
 
             record_block(
-                session, run, recorded, run.sources[0]["coverage"]["identity"], now
+                session,
+                run,
+                recorded,
+                next(
+                    source["coverage"]["identity"]
+                    for source in run.sources
+                    if "coverage" in source
+                ),
+                now,
             )
         if verdict.verdict == "changed" and note.verification_state not in {
             "disputed",
