@@ -37,3 +37,10 @@ links stay in the fixture; no production requests or credentials are allowed.
 This tests real route components and synthetic loader data, not SvelteKit
 server routing, live API availability, or real-time revalidation. A passing
 layout check does not replace visual review of the phone and desktop images.
+
+After these public checks, the browser entry point runs the isolated
+`private-factory-preview/ci_check.py`. That fixture builds the three private
+factory routes separately, retaining this public build's private-module guard.
+The existing evidence upload includes its `private/MATRIX.md` screenshots and
+`private/results.json` provenance and overflow/action checks. See that fixture's
+README for its scope; a public preview pass alone does not cover private pages.
