@@ -1,3 +1,4 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 
 # gazelle:exclude **/*.bzl
@@ -258,4 +259,11 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+py_library(
+    name = "helm",
+    srcs = ["crd-schemas.py"],
+    visibility = ["//:__subpackages__"],
+    deps = ["@pip//pyyaml"],
 )
