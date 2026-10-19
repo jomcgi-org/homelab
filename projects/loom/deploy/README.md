@@ -7,11 +7,10 @@ Loom runs its own sqlx migrations and needs no Postgres extensions. CNPG creates
 the `loom-pg-app` Secret for application access.
 
 The Application at `projects/gke-apps/loom` is registered in
-`projects/gke-apps/kustomization.yaml`. Its activation PR must remain draft
-until the package, 1Password item and R2 bucket checks below are recorded on
-#6605. Registration alone does not verify a rollout. Its three sources combine
-the upstream chart, this repo's values and this directory's kustomize
-manifests. The manifest guard
+`projects/gke-apps/kustomization.yaml`. Activation requires the package,
+1Password item and R2 bucket checks below to be recorded on #6605. Registration
+alone does not verify a rollout. Its three sources combine the upstream chart,
+this repo's values and this directory's kustomize manifests. The manifest guard
 checks that resource set, and Linux CI renders the pinned chart and validates
 every resource against the pinned Kubernetes and operator schemas. The ArgoCD
 OCI repository credential lives in `projects/gke-apps/loom`, not here, so the

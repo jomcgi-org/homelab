@@ -68,7 +68,7 @@ http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_
 multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl", "multiarch_http_file")
 
 # Loom 0.2.0 templates from weave-hand/loom#691. Package publication is an
-# operator check in #6605; the unregistered hub Application stays default-off.
+# operator check in #6605 before the hub Application registration is merged.
 http_archive(
     name = "loom_chart_0_2_0",
     build_file_content = """
