@@ -2788,7 +2788,6 @@ defmodule Embervm.BaseBuilder do
     %BuildBaseRequest{
       trace: %Trace{workload: w.name},
       workload_revision: base_revision(w),
-      guest_port: w.guest_port || 0,
       ready_path: w.ready_path,
       resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
       init_env: w.init_env,
@@ -2814,7 +2813,6 @@ defmodule Embervm.BaseBuilder do
       trace: %Trace{workload: w.name},
       image_ref: w.image_ref,
       workload_revision: base_revision(w),
-      guest_port: w.guest_port || 0,
       ready_path: w.ready_path,
       resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
       init_env: w.init_env,

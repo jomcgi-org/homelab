@@ -368,7 +368,6 @@ func (a *statefulActivator) wake(ctx context.Context, reg workloadEntry) (*state
 		Port:              reg.StatefulPort,
 		BootImageRef:      bootImageRef,
 		VolumeMount:       reg.StatefulVolumeMount,
-		VolumeDevice:      reg.StatefulVolumeDevice,
 		BlessedGeneration: 0,
 		Resources:         &nodev1.ResourceSpec{Vcpus: reg.VCPUs, MemMib: reg.MemMib},
 	}

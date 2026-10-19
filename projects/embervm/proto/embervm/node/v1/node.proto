@@ -89,10 +89,8 @@ service NodeService {
   // subscribe, then on every material change and at a liveness interval.
   rpc WatchNode(WatchNodeRequest) returns (stream NodeStatus);
 
-  // GetNodeStatus is a unary snapshot of the same facts WatchNode streams. The
-  // daemon implements this RPC, but the current control plane has no caller for
-  // it and uses WatchNode for node status. It is reserved for a future polling
-  // fallback or reconciliation path.
+  // GetNodeStatus is a test-only convenience for a unary snapshot of the facts
+  // WatchNode streams. Production node-status consumers use WatchNode.
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
 
   // -- Workload registry verbs (artifact-decoupling Phase 2, ADDITIVE) -------
@@ -101,9 +99,7 @@ service NodeService {
   // only node substrate paths now, never an image identity table). The current
   // control plane PUSHES the full workload registry with SyncRegistry, so a
   // daemon boots with an EMPTY registry and does not admit work until the
-  // control plane has replayed the authoritative set on (re)connect. The daemon
-  // also implements RegisterWorkload and DeregisterWorkload, but those RPCs are
-  // reserved for future incremental control-plane updates. This retires the
+  // control plane has replayed the authoritative set on (re)connect. This retires the
   // EMBERVM_NODED_IMAGES env table: image identity (rootfs ref, harness init,
   // sizing) now arrives over the wire, keyed by workload, from the control
   // plane's op-log-backed workload view. The verbs are additive: a daemon that
@@ -119,19 +115,6 @@ service NodeService {
   // no-op. The response echoes the resulting entry count for the control plane's
   // own correlation.
   rpc SyncRegistry(SyncRegistryRequest) returns (SyncRegistryResponse);
-
-  // RegisterWorkload adds-or-updates ONE registry entry. The daemon implements
-  // this idempotent operation, but the current control plane has no caller for
-  // it; it is reserved for a future incremental optimization. Re-registering the
-  // same entry overwrites in place. SyncRegistry remains the current control-
-  // plane convergence path.
-  rpc RegisterWorkload(RegisterWorkloadRequest) returns (RegisterWorkloadResponse);
-
-  // DeregisterWorkload removes ONE registry entry by workload name. The daemon
-  // implements this idempotent operation, but the current control plane has no
-  // caller for it; it is reserved for the future incremental counterpart of
-  // RegisterWorkload. Deregistering an absent workload is a no-op.
-  rpc DeregisterWorkload(DeregisterWorkloadRequest) returns (DeregisterWorkloadResponse);
 
   // -- Session verbs (R2) ----------------------------------------------------
   //
@@ -506,13 +489,14 @@ service NodeService {
 }
 
 // Trace carries the cross-cutting identifiers every RPC threads for tracing and
-// correlation. workload is the CR name the operation is for; task_id/
-// correlation_id are opaque strings the control plane assigns (empty for pool
+// correlation. workload is the CR name the operation is for; task_id is an
+// opaque string the control plane assigns (empty for pool
 // operations with no task, e.g. Prime/BuildBase).
 message Trace {
   string workload = 1;
   string task_id = 2;
-  string correlation_id = 3;
+  reserved 3;
+  reserved "correlation_id";
 }
 
 // ResourceSpec is the VM resource shape, mirroring the Workload CR `resources`
@@ -569,9 +553,10 @@ message BuildBaseRequest {
   // idempotency key for the base build. For the ZIP lane the idempotency key is
   // (runtime image digest, archive sha256) instead (see server.baseKeyForZip).
   string workload_revision = 3;
-  // Guest contract knobs (frozen contract): the port the guest HTTP server
-  // listens on over vsock, and the path that answers 200 when ready.
-  uint32 guest_port = 4;
+  reserved 4;
+  reserved "guest_port";
+  // Path that answers 200 when ready. The guest HTTP vsock port is fixed by
+  // the guest contract, not configured by this request.
   string ready_path = 5;
   // Resource shape of the base VM (vcpus, mem). memMib in particular sizes the
   // snapshot and the restore footprint.
@@ -625,9 +610,9 @@ message BuildBaseResponse {
 message PrimeRequest {
   Trace trace = 1;
   string snapshot_ref = 2;
-  // Optional node-local writable session volume. When set, the node cold-boots
-  // the base rootfs with this per-lineage drive instead of restoring memory.
-  string volume_disk_path = 3;
+  reserved 3;
+  reserved "volume_disk_path";
+  // Session volumes are resolved on the node from lineage_id, never a caller path.
   string volume_mount = 4;
   uint64 volume_size_bytes = 5;
   string lineage_id = 6;
@@ -743,9 +728,9 @@ message SessionAssignRequest {
   // NodeStatus.session_vms so a restarted control plane adopts rather than
   // orphans. The daemon never interprets it.
   string session_id = 5;
-  // Carried for wire compatibility and observability. Session boot provisioning
-  // happens on Prime, before this invoke RPC is possible.
-  string volume_disk_path = 6;
+  reserved 6;
+  reserved "volume_disk_path";
+  // Session boot provisioning happens on Prime, before this invoke RPC.
   string volume_mount = 7;
   uint64 volume_size_bytes = 8;
   string lineage_id = 9;
@@ -959,11 +944,8 @@ message StartStatefulRequest {
   // only the node-local activator's blessing lease may advance a generation
   // without one).
   uint64 blessed_generation = 11;
-  // volume_device is the host block-device path (e.g. /dev/longhorn/<name>) the
-  // control plane resolved for this workload's Longhorn-native volume (R7,
-  // standing decision 2). Empty means the legacy vol.img lane during the
-  // transition: the daemon falls back to volume_size_bytes/volume_mount.
-  string volume_device = 12;
+  reserved 12;
+  reserved "volume_device";
 }
 
 message StartStatefulResponse {
@@ -1110,16 +1092,6 @@ message RetireVolumeRequest {
 message RetireVolumeResponse {}
 
 // ---- Group verbs (R5) ------------------------------------------------------
-
-// GROUP_GUEST_AGENT_VSOCK_PORT is the dedicated vsock port a member guest's
-// control agent listens on for the sync_clock handshake (see the StartGroupMember
-// / group-verbs comment for the frame contract). It is a documented constant of
-// the frozen guest contract, distinct from the guest HTTP port; the daemon dials
-// it only on a RELIGHT resume.
-enum GroupGuestAgent {
-  GROUP_GUEST_AGENT_UNSPECIFIED = 0;
-  GROUP_GUEST_AGENT_VSOCK_PORT = 1024;
-}
 
 // CreateGroupNetworkRequest asks the daemon to stand up the per-group bridge for
 // group_instance_id on cidr. group_instance_id is the control plane's opaque
@@ -1322,7 +1294,7 @@ message GroupMemberPlanEntry {
 
 // RegistryEntry is the node-side identity of ONE workload the daemon can build a
 // base for and prime/serve. The current control plane pushes entries with
-// SyncRegistry; RegisterWorkload is a reserved future incremental path. An entry
+// SyncRegistry. An entry
 // carries exactly what the retired EMBERVM_NODED_IMAGES env
 // table carried per image (rootfs path, harness init) plus the resolved image
 // digest and the base VM sizing, keyed by workload rather than by image ref. The
@@ -1330,7 +1302,7 @@ message GroupMemberPlanEntry {
 // image_digest is opaque); the control plane owns their values.
 message RegistryEntry {
   // workload is the CR name this entry is for and the registry KEY: SyncRegistry
-  // converges on the set of workloads, Deregister removes by this name.
+  // converges on the set of workloads, removing names absent from the push.
   string workload = 1;
   // image_digest is the resolved OCI digest of the workload's guest image (the
   // identity BuildBase records and the store keys rootfs artifacts under). Opaque
@@ -1405,15 +1377,8 @@ message RegistryEntry {
   uint32 stateful_port = 11;
   // stateful_volume_mount is the guest mount path (StartStatefulRequest.volume_mount).
   string stateful_volume_mount = 12;
-  // stateful_boot_image_ref is the cold-boot source for the COLD fallback when the
-  // banked bundle is absent (StartStatefulRequest.boot_image_ref). The RELIGHT path
-  // resolves the bundle from local inventory and never needs this.
-  string stateful_boot_image_ref = 13;
-  // stateful_volume_device is the resolved host block-device path (e.g.
-  // /dev/longhorn/<name>) for the workload's Longhorn-native volume
-  // (StartStatefulRequest.volume_device). Empty means the legacy vol.img lane
-  // (VolumeRoot/<workload>/vol.img), exactly as StartStateful falls back.
-  string stateful_volume_device = 14;
+  reserved 13, 14;
+  reserved "stateful_boot_image_ref", "stateful_volume_device";
 
   // -- Node-local composite activator fields (ADR embervm/018 Phase 3) --------
   // The group listen port is the L4 accept identity for the node-local group
@@ -1463,28 +1428,6 @@ message SyncRegistryRequest {
 // SyncRegistryResponse echoes the resulting registry size after convergence, for
 // the control plane's correlation and logging. entry_count == len(entries).
 message SyncRegistryResponse {
-  uint32 entry_count = 1;
-}
-
-// RegisterWorkloadRequest adds-or-updates one registry entry incrementally.
-message RegisterWorkloadRequest {
-  RegistryEntry entry = 1;
-  Trace trace = 2;
-}
-
-// RegisterWorkloadResponse echoes the resulting registry size after the add.
-message RegisterWorkloadResponse {
-  uint32 entry_count = 1;
-}
-
-// DeregisterWorkloadRequest removes one registry entry by workload name.
-message DeregisterWorkloadRequest {
-  string workload = 1;
-  Trace trace = 2;
-}
-
-// DeregisterWorkloadResponse echoes the resulting registry size after the removal.
-message DeregisterWorkloadResponse {
   uint32 entry_count = 1;
 }
 
@@ -1539,7 +1482,7 @@ enum BaseBuildState {
   BASE_BUILD_STATE_NONE = 1;      // no base on this node for the workload
   BASE_BUILD_STATE_BUILDING = 2;  // BuildBase in progress
   BASE_BUILD_STATE_READY = 3;     // base built and restorable
-  BASE_BUILD_STATE_FAILED = 4;    // last BuildBase failed (see build_error)
+  BASE_BUILD_STATE_FAILED = 4;    // daemon recorded a failed base build; see NodeStatus.build_error
 }
 
 // BaseInventoryEntry is ONE base snapshot dir the daemon holds on local disk
@@ -2080,8 +2023,9 @@ message NodeStatus {
   uint32 max_live_vms = 6;
   // draining true means the daemon is shutting down or cordoned; stop assigning.
   bool draining = 7;
-  // build_error carries the last BuildBase failure string for any workload in
-  // BASE_BUILD_STATE_FAILED, surfaced into the Workload CR condition message.
+  // build_error carries a daemon diagnostic from any base in FAILED state.
+  // The control plane derives Workload condition messages from the BuildBase
+  // RPC error, not this node-wide diagnostic.
   string build_error = 8;
 
   // -- Session facts (R2, additive) ------------------------------------------
@@ -2194,11 +2138,8 @@ message NodeStatus {
   // placement decisions on this (standing decision 1): memory snapshots never
   // cross the vendor boundary.
   string cpu_vendor = 24;
-  // node_template_hash is the pod-template hash the running noded was deployed
-  // from (the DaemonSet controller-revision the pod's owner reference names).
-  // The CP rollout controller (standing decision 6) compares this against the
-  // current DaemonSet template hash to decide which node still needs a roll.
-  string node_template_hash = 25;
+  reserved 25;
+  reserved "node_template_hash";
 
   // -- Budget facts (R0 PR-1, additive) ----------------------------------------
   // These two fields are the budget-agnostic daemon's sensor output (ADR

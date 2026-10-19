@@ -58,10 +58,9 @@
         # adoption.
         ~w(EvictArtifact ListArtifacts ArchiveVolume)a ++
         # Artifact-decoupling Phase 2: control-plane -> daemon workload-registry
-        # push verbs (SyncRegistry converges the pushed set; Register/Deregister
-        # are the incremental forms). They deliver node-side image identity, not
+        # push (SyncRegistry converges the full pushed set). It delivers image identity, not
         # VM lifecycle or adoption, so they are outside the adoption TLA model.
-        ~w(SyncRegistry RegisterWorkload DeregisterWorkload)a
+        ~w(SyncRegistry)a
     # BuildBase (R0): the once-per-image base bake. The spec abstracts the pool as
     # an inexhaustible id supply (RecycleId) and never models base builds, so it is
     # excluded even though it is an R0 verb.

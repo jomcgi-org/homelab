@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -325,26 +326,60 @@ func TestSyncClearsReadinessGate(t *testing.T) {
 	}
 }
 
-// TestRegisterDeregisterIncremental proves the incremental verbs mutate one entry
-// each and are idempotent.
-func TestRegisterDeregisterIncremental(t *testing.T) {
-	r := newWorkloadRegistry("")
-	r.register(entry("a", "d1", "/a"))
-	if r.count() != 1 {
-		t.Fatalf("after register count = %d, want 1", r.count())
+// Old optional JSON keys must not prevent warmth recovery or open readiness.
+// Only the live full replay is authoritative, including an empty replay.
+func TestSyncRegistryReplacesLegacyCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	legacy := `[{"workload":"a","rootfsRef":"/a","statefulBootImageRef":"old-base","statefulVolumeDevice":"/dev/longhorn/old"},{"workload":"b","rootfsRef":"/b"}]`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	// Register does NOT clear the readiness gate (only a full sync is the replay).
-	if r.isSynced() {
-		t.Error("register must not set synced; only SyncRegistry is the authoritative replay")
+	c, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+	s.registry = newWorkloadRegistry(path)
+	if !s.registry.loadCache() || !s.registry.isStale() || s.RegistrySynced() {
+		t.Fatal("legacy cache must load stale without opening readiness")
 	}
-	r.deregister("a")
-	if r.count() != 0 {
-		t.Errorf("after deregister count = %d, want 0", r.count())
+	if got, ok := s.registry.get("a"); !ok || got.RootfsRef != "/a" || s.registry.count() != 2 {
+		t.Fatalf("legacy cache lost known fields: %+v, %v", got, ok)
 	}
-	// Idempotent on an absent workload.
-	r.deregister("a")
-	if r.count() != 0 {
-		t.Errorf("deregister of absent workload changed count to %d", r.count())
+	changes := s.subscribe()
+	defer s.unsubscribe(changes)
+	for _, entries := range [][]*nodev1.RegistryEntry{
+		{{Workload: "a", RootfsRef: "/a2"}, {Workload: "b", RootfsRef: "/b"}},
+		{{Workload: "b", RootfsRef: "/b"}},
+		{{Workload: "a", RootfsRef: "/a2"}, {Workload: "b", RootfsRef: "/b"}},
+		nil,
+		nil,
+	} {
+		resp, err := c.SyncRegistry(context.Background(), &nodev1.SyncRegistryRequest{Entries: entries})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if int(resp.GetEntryCount()) != len(entries) || s.registry.count() != len(entries) || !s.RegistrySynced() || s.registry.isStale() {
+			t.Fatalf("full replay did not converge/open readiness: response=%v entries=%v", resp, entries)
+		}
+		select {
+		case <-changes:
+		default:
+			t.Fatal("live sync did not notify WatchNode")
+		}
+		loaded := newWorkloadRegistry(path)
+		loaded.loadCache()
+		if loaded.isSynced() || loaded.isStale() != (len(entries) > 0) || loaded.count() != len(entries) {
+			t.Fatal("persisted replay has wrong contents or boot readiness")
+		}
+		for _, want := range entries {
+			if got, ok := loaded.get(want.Workload); !ok || got.RootfsRef != want.RootfsRef {
+				t.Fatalf("persisted entry = %+v, %v; want %v", got, ok, want)
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(data, []byte("statefulBootImageRef")) || bytes.Contains(data, []byte("statefulVolumeDevice")) {
+			t.Fatalf("live sync re-persisted retired keys: %s", data)
+		}
 	}
 }
 
