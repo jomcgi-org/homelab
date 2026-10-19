@@ -587,7 +587,9 @@ no execution slot and still reconcile while capacity is full. A capacity-refused
 start stays ready for retry without pausing the receipt or requesting funding.
 Continuations and landing recovery use the same capacity projection. Landing
 recovery retains its request while waiting; its fixed deadline starts when
-execution reopens and cannot be extended by retries.
+execution reopens and cannot be extended by retries. An unstarted request does
+not block settlement after an external merge and verified rollout. A started
+recovery still requires its recorded round and independent exact-head approval.
 
 **Why.** Joe reversed pause-slot retention in #7163 after quiescent tasks waiting
 on a person filled the delivery lane. Execution capacity follows unresolved

@@ -4129,7 +4129,12 @@ def finish_task(
                 return {"ok": True, "state": "landing"}
         if outcome == "succeeded":
             barrier = landing_recovery_barrier(task_id, session=db)
-            if barrier is not None:
+            # A queued request has no recovery runs to supersede the approved
+            # delivery. Enforce its barrier only once execution has reopened.
+            if (
+                barrier is not None
+                and _landing_recovery_deadline(db, task_id) is not None
+            ):
                 review = (
                     db.exec(
                         select(SwarmNodeRun).where(

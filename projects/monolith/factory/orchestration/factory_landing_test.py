@@ -677,15 +677,11 @@ def test_recovery_is_bounded_across_new_settlements(db, monkeypatch):
     assert warned == [("t-1", 3)]
 
 
-@pytest.mark.parametrize("constraint", ["lane", "chart"])
-@pytest.mark.parametrize(
-    "wait_seconds", [0, controls.LANDING_RECOVERY_TIMEOUT_SECONDS + 60]
-)
-def test_recovery_respects_delivery_capacity(db, monkeypatch, constraint, wait_seconds):
+def recovery_at_capacity(db, monkeypatch, constraint, *, state="landing"):
     monkeypatch.setenv(
         "FACTORY_MAX_CONCURRENT_TASKS", "1" if constraint == "chart" else "2"
     )
-    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-1", 11, 3, state=state)
     delivered(db, "t-2", 12, 4)
     with Session(db) as session:
         row = session.exec(
@@ -695,24 +691,41 @@ def test_recovery_respects_delivery_capacity(db, monkeypatch, constraint, wait_s
         if constraint == "lane":
             control = session.get(FactoryControl, "factory")
             control.policy_json = json.dumps({**POLICY, "max_tasks": 1})
+        elif constraint == "repo":
+            control = session.get(FactoryControl, "factory")
+            control.policy_json = json.dumps(
+                {**POLICY, "repos": {"owner/repo": {"max_tasks": 1}}}
+            )
         session.add(row)
         session.commit()
-    calls = github(monkeypatch, pulls={3: {**pull(3), "mergeable": False}})
+    pulls = {3: {**pull(3), "mergeable": False}}
+    return pulls, github(monkeypatch, pulls=pulls)
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
+@pytest.mark.parametrize("state", ["landing", "succeeded"])
+@pytest.mark.parametrize(
+    "wait_seconds", [0, controls.LANDING_RECOVERY_TIMEOUT_SECONDS + 60]
+)
+def test_recovery_respects_delivery_capacity(
+    db, monkeypatch, constraint, state, wait_seconds
+):
+    _pulls, calls = recovery_at_capacity(db, monkeypatch, constraint, state=state)
     landing.landing_tick(POLICY)
-    assert receipt_state(db, "t-1") == "succeeded"
+    assert receipt_state(db, "t-1") == state
     requests = audits(db, "landing_recovery_requested", "t-1")
     assert len(requests) == 1
     with Session(db) as session:
         assert controls._landing_recovery_deadline(session, "t-1") is None
     assert calls["graphql"] == []
     landing.landing_tick(POLICY)
-    assert receipt_state(db, "t-1") == "succeeded"
+    assert receipt_state(db, "t-1") == state
     assert audits(db, "landing_recovery_requested", "t-1") == requests
     resumed_at = NOW + timedelta(seconds=wait_seconds)
     monkeypatch.setattr(controls, "_now", lambda: resumed_at)
     for _ in range(3):
         landing.landing_tick(POLICY)
-    assert receipt_state(db, "t-1") == "succeeded"
+    assert receipt_state(db, "t-1") == state
     assert audits(db, "landing_recovery_started", "t-1") == []
     with Session(db) as session, session.begin():
         controls._receipt(session, "t-2").task_paused = True
@@ -727,11 +740,145 @@ def test_recovery_respects_delivery_capacity(db, monkeypatch, constraint, wait_s
     assert controls.request_landing_recovery("t-1", 3, HEAD, "delivered_pr", "test")[
         "ok"
     ]
+    assert len(audits(db, "landing_recovery_started", "t-1")) == 1
+    assert controls.finish_task(
+        "t-1", "succeeded", "test", evidence={"head_sha": HEAD}
+    ) == {"ok": False, "reason": "landing_recovery_pending"}
     with Session(db) as session:
         assert controls._landing_recovery_deadline(session, "t-1") == deadline
     monkeypatch.setattr(controls, "_now", lambda: deadline)
     with Session(db) as session:
         assert controls._landing_recovery_expired(session, "t-1")
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
+@pytest.mark.parametrize(
+    "wait_seconds", [0, controls.LANDING_RECOVERY_TIMEOUT_SECONDS + 60]
+)
+def test_unstarted_recovery_allows_external_merge_settlement(
+    db, monkeypatch, constraint, wait_seconds
+):
+    pulls, calls = recovery_at_capacity(db, monkeypatch, constraint)
+    landing.landing_tick(POLICY)
+    requests = audits(db, "landing_recovery_requested", "t-1")
+    assert len(requests) == 1
+    assert requests[0]["deadline_at"] is None
+    assert controls.request_landing_recovery(
+        "t-1", 3, HEAD, "delivered_pr", "test"
+    ) == {
+        "ok": False,
+        "reason": "delivery_capacity",
+        "pending": True,
+    }
+    evidence = audits(db, "delivery_ready", "t-1")[0]["evidence"]
+    # The ordinary rollout gate still applies while recovery is queued.
+    assert controls.finish_task("t-1", "succeeded", "test", evidence=evidence) == {
+        "ok": True,
+        "state": "landing",
+    }
+    merged_at = NOW + timedelta(seconds=wait_seconds)
+    monkeypatch.setattr(controls, "_now", lambda: merged_at)
+    monkeypatch.setattr(landing, "_now", lambda: merged_at)
+    pulls[3] = pull(3, merged=True)
+    landing.landing_tick(POLICY)
+    assert len(audits(db, "merged", "t-1")) == 1
+    assert len(audits(db, "rollout_verified", "t-1")) == 1
+    assert receipt_state(db, "t-1") == "succeeded"
+    assert receipt_state(db, "t-2") == "admitted"
+    finished = audits(db, "finish_task", "t-1")
+    assert len(finished) == 1
+    assert finished[0]["evidence"] == evidence
+    with Session(db) as session:
+        assert session.get(SwarmTask, "t-1").settled_at is not None
+        assert controls._landing_recovery_deadline(session, "t-1") is None
+    for _ in range(2):
+        assert controls.finish_task("t-1", "succeeded", "test", evidence=evidence) == {
+            "ok": True,
+            "reason": None,
+        }
+        landing.landing_tick(POLICY)
+    assert audits(db, "finish_task", "t-1") == finished
+    assert audits(db, "landing_recovery_requested", "t-1") == requests
+    assert audits(db, "landing_recovery_started", "t-1") == []
+    assert calls["graphql"] == []
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
+def test_started_queued_recovery_requires_round_before_settlement(
+    db, monkeypatch, constraint
+):
+    recovery_at_capacity(db, monkeypatch, constraint)
+    landing.landing_tick(POLICY)
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "t-2").task_paused = True
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "admitted"
+    assert len(audits(db, "landing_recovery_started", "t-1")) == 1
+    barrier = controls.landing_recovery_barrier("t-1")
+    assert not barrier["round_recorded"]
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                SwarmNodeRun(
+                    task_id="t-1",
+                    node_key="correct_recovery",
+                    attempt=1,
+                    status="succeeded",
+                    session_id=101,
+                    head_sha=HEAD,
+                    outcome_json=json.dumps(
+                        {
+                            "value": {
+                                "status": "complete",
+                                "pr_number": 3,
+                                "head_sha": HEAD,
+                            }
+                        }
+                    ),
+                ),
+                SwarmNodeRun(
+                    task_id="t-1",
+                    node_key="review_recovery",
+                    attempt=1,
+                    status="succeeded",
+                    session_id=102,
+                    head_sha=HEAD,
+                    outcome_json=json.dumps(
+                        {
+                            "value": {
+                                "verdict": "approve",
+                                "pr_number": 3,
+                                "head_sha": HEAD,
+                            }
+                        }
+                    ),
+                ),
+            ]
+        )
+    evidence = {
+        "pr_url": "https://github.com/owner/repo/pull/3",
+        "head_sha": HEAD,
+        "state": "ready_for_review",
+        "review_session_id": 102,
+    }
+    for _ in range(2):
+        assert controls.finish_task("t-1", "succeeded", "test", evidence=evidence) == {
+            "ok": False,
+            "reason": "landing_recovery_pending",
+        }
+    with Session(db) as session, session.begin():
+        controls._audit(
+            session,
+            "factory:conductor",
+            "landing_recovery_round",
+            task_id="t-1",
+            request_id=barrier["request_id"],
+            round=1,
+        )
+    assert controls.finish_task("t-1", "succeeded", "test", evidence=evidence) == {
+        "ok": True,
+        "state": "landing",
+    }
 
 
 def test_conflict_disarms_holder_and_advances_next_delivery(db, monkeypatch):
