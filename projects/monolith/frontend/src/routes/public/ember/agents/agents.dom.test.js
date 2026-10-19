@@ -53,6 +53,11 @@ describe("agents technical-drawing production route", () => {
         target.querySelector(".md-nav, .ember-site, .scroller"),
       ).toBeNull();
       expect(target.querySelectorAll("h1")).toHaveLength(1);
+      expect(
+        target.querySelector('.site-index [aria-current="page"]'),
+      ).toBeNull();
+      for (const current of target.querySelectorAll('[aria-current="page"]'))
+        expect(current.textContent).toBe("agents");
       expect(target.querySelector("h1").textContent).toBe(
         "One microVM per agent session.",
       );

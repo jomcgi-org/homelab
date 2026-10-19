@@ -90,7 +90,7 @@
             <a href="#keep-going">Keep going</a>
           </div>
         </nav>
-        <SiteIndex here="engineering" />
+        <SiteIndex />
       </aside>
       <div class="content editions">
         <section class="edition" aria-labelledby="agents-title">

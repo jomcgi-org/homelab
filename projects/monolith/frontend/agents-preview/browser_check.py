@@ -135,6 +135,44 @@ def check(root, output, expected_sha):
                             normal_text = text
                         assert text == normal_text, "static paths lost content"
 
+                        # The footer uses text cells, not the sheet's link cells.
+                        # Check their real paint and the figure joins in every
+                        # viewport, scheme and script/motion mode before capture.
+                        layout = page.evaluate("""() => {
+                            const style = el => getComputedStyle(el);
+                            const figures = [...document.querySelectorAll('.agent-phase .prose > .fig')];
+                            const cells = [...document.querySelectorAll('#keep-going .ed-foot > span')];
+                            return {
+                                footerCells: cells.map(el => ({
+                                    padding: ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'].map(key => parseFloat(style(el)[key])),
+                                    divider: style(el).borderRightWidth,
+                                    dividerStyle: style(el).borderRightStyle,
+                                    dividerColor: style(el).borderRightColor,
+                                    frameColor: style(el.parentElement).borderTopColor
+                                })),
+                                figureCounter: style(document.querySelector('.agent-sheet .editions')).counterReset,
+                                panelCounters: [...document.querySelectorAll('.agent-phase .prose')].map(el => style(el).counterReset),
+                                figureJoins: figures.map(el => {
+                                    const previous = el.previousElementSibling;
+                                    const edge = previous ? previous.getBoundingClientRect().bottom : el.parentElement.getBoundingClientRect().top + parseFloat(style(el.parentElement).borderTopWidth);
+                                    return {gap: el.getBoundingClientRect().top - edge, topRule: style(el).borderTopWidth};
+                                })
+                            };
+                        }""")
+                        assert len(layout["footerCells"]) == 2, layout
+                        for cell in layout["footerCells"]:
+                            assert all(value > 0 for value in cell["padding"]), layout
+                            assert cell["divider"] == "1px", layout
+                            assert cell["dividerStyle"] == "solid", layout
+                            assert cell["dividerColor"] == cell["frameColor"], layout
+                        assert layout["figureCounter"] == "fig 0", layout
+                        assert layout["panelCounters"] == ["none"] * 5, layout
+                        assert len(layout["figureJoins"]) == 6, layout
+                        for join in layout["figureJoins"]:
+                            assert abs(join["gap"]) < 1, layout
+                            assert join["topRule"] == "0px", layout
+                        assert page.locator('[aria-current="page"]:visible').count() == 1
+
                         def geometry(
                             label, page=page, mode=mode, scheme=scheme, width=width
                         ):
@@ -175,6 +213,7 @@ def check(root, output, expected_sha):
                             )
 
                         geometry("opening")
+                        receipt["checks"][-1]["layout"] = layout
                         opening_paint = receipt["checks"][-1]["background"]
                         paints.add(opening_paint)
                         name = f"agents-{width}-{scheme}-{mode}"

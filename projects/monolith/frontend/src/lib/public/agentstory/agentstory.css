@@ -7,6 +7,32 @@
   scroll-margin-top: 5rem;
 }
 
+/* Keep the keyed figures numbered across all phase panels. */
+.agent-sheet .editions {
+  counter-reset: fig;
+}
+
+.agent-sheet .editions .prose {
+  counter-reset: none;
+}
+
+/* The body and preceding figure already supply each joining rule. */
+.agent-sheet .agent-phase .prose > .fig:first-child,
+.agent-sheet .agent-phase .prose > .fig + .fig {
+  margin-top: 0;
+  border-top: 0;
+}
+
+.agent-sheet .agent-phase .prose > .fig:not(:last-child) {
+  margin-bottom: 0;
+}
+
+/* The closing text cells use the same inset and divider as sheet links. */
+.agent-sheet .ed-foot > span {
+  padding: 0.6em 1rem;
+  border-right: 1px solid var(--stroke);
+}
+
 .agent-sheet .agent-messages,
 .agent-sheet .agent-calls {
   margin: 0;
