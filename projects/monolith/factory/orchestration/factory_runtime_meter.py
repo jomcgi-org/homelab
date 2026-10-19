@@ -330,13 +330,16 @@ def ingest(receipt_id, token, value):
                 else []
             )
         for current_owner in current_owners:
-            factory_pause.pause_locked(
+factory_pause.pause_locked(
                 db,
                 current_owner,
                 "factory:runtime-meter",
                 "objective_list_backstop"
                 if objective_exceeded
                 else reason or trips[0]["reason"],
+            )
+            controls.revoke_capacity_release(
+                db, current_owner, "factory:runtime-meter", "runtime_meter_pause"
             )
         stop = bool(reason or trips or active is None)
     # A failed external observation does not erase the committed trip. The
