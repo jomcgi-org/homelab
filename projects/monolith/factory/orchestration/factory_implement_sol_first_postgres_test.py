@@ -152,10 +152,23 @@ def test_only_implement_order_changes_with_one_audit_and_pinned_receipts(
     [
         {"repo": "another/repository"},
         {"generation": 15},
-        {"conductor_model": "opus"},
-        {"worker_model": "sol"},
-        {"reviewer_model": "astra"},
-        {"model_pools": {}},
+        {
+            "conductor_model": "opus",
+            "model_pools": {**POOLS, "conductor": ["opus", "astra", "sol"]},
+        },
+        {
+            "worker_model": "sol",
+            "model_pools": {**POOLS, "worker": ["sol", "astra", "spark", "sonnet"]},
+        },
+        {
+            "reviewer_model": "astra",
+            "model_pools": {**POOLS, "reviewer": ["astra", "opus", "sol"]},
+        },
+        {
+            "model_pools": {
+                role: pool for role, pool in POOLS.items() if role != "implement"
+            }
+        },
         {"model_pools": {**POOLS, "implement": ["astra", "spark", "sol", "sonnet"]}},
         {"model_pools": {**POOLS, "implement": ["sol", "astra", "spark", "sonnet"]}},
     ],
@@ -170,7 +183,7 @@ def test_different_operator_routing_is_not_overwritten(session, overrides):
 
 def test_unrelated_operator_customizations_are_preserved(session):
     before = _policy(
-        model_pools={**POOLS, "worker": ["spark", "astra"], "judge": ["opus"]},
+        model_pools={**POOLS, "worker": ["astra", "spark"], "judge": ["opus"]},
         role_effort={"implement": "xhigh", "funding": "max"},
         task_budget_usd=70,
         intake={"enabled": False, "max_per_day": 123},
