@@ -1,11 +1,11 @@
 {
   "lens": "logic",
-  "commit": "b1514fe38",
+  "commit": "11569bebd",
   "scope": {
     "summary": "EmberVM is a Firecracker microVM platform: an Elixir control plane admits and dispatches task, session, serving, and stateful workloads onto brick pods, each run by a privileged Go noded daemon that supervises guest VMs over vsock and dial-homes to register with the control plane.",
     "built": "task/session/serving/stateful/composite lifecycle managers, admission quota gate (fail-closed per-principal when a budget is configured), generation blessing (CP-issued pre-dispatch and checkpoint-abort self-heal via durable checkpoint_dispatched), delegated generation leases (BlessingLease, bounded and monotonic), orphan-destroy reconcile with an ACTIVATOR-origin adoption guard that runs before the destroy pass, S3 warmth GC that aborts the whole sweep on a partial listing, dial-home registration, brick-local egress credential injection scoped by egressTo, the shotter task-class guest (ADR embervm/035): a warm headless Chromium snapshot base behind an in-guest, image-baked, hard-allowlisted egress proxy, whose readiness is now gated on one real trial capture before /shim/ready flips, the noded gRPC control channel, authenticated by a static bearer token enabled in production (#4693); the inert Cilium ingress policy was removed in #5816 and supplies no network isolation, SigV4-authenticated access to the S3 artifact store enforced by the gateway (enableAuth: true), enabled in production (#4708); the surviving embervm identity is one credential shared by every brick and the control plane, the brick silence timeout (ADR embervm/037) bounding node-local authority (activator wakes, group wakes, blessing-lease self-advance) once control-plane contact goes stale, armed at 21600s in production and dev, the warmth ownership transition guard (#4962): every brick refreshes a .alive claim per warmth segment and startup GC reaps only unclaimed pre-heartbeat directories or claims older than WarmthStaleAfter, principal-artifact envelope encryption and capability-gated restore in noded, reader path unconditional, writer and enforcement armed in production and dev as of 2026-08 (ADR embervm/033, #4691; status updated 2026-08-23 (#5233))",
     "designed": "mTLS/SPIFFE certificate-based mutual transport auth for noded (#4693 delivered bearer-token authentication; the inert policy was removed in #5816), node-local activator for stateful/composite wake beyond cold boot (partially landed, stateful activator currently only cold-boots), audience-scoped guest token, request-scoped GitHub tool mediation replacing host-keyed injection (ADR 055)",
-    "note": "Policy-removal corrections for #5816 only; other findings retain their earlier review stamp."
+    "note": "Focused egress CA startup-recovery review for #7187; live recovery remains unverified. Policy-removal corrections retain the #5816 review and unrelated findings retain their earlier evidence."
   },
   "losses": [
     {
@@ -122,6 +122,15 @@
         "L.silent-incorrectness"
       ],
       "maturity": "built"
+    },
+    {
+      "key": "egress-ca-startup-latch",
+      "view": "physical",
+      "statement": "CA-dependent guest bootstrap and credential injection remain unavailable after a delayed optional Secret supplies a usable keypair because the sidecar retains its initial CA-load failure",
+      "losses": [
+        "L.liveness-loss"
+      ],
+      "maturity": "built"
     }
   ],
   "ucas": [
@@ -136,6 +145,18 @@
         "host-keyed-credential-overreach"
       ],
       "evidence": "projects/embervm/ARCHITECTURE.md:745"
+    },
+    {
+      "key": "egress-proxy.load_initial_ca.not-providing",
+      "view": "physical",
+      "control_action": "egress-proxy.load_initial_ca",
+      "guideword": "not-providing",
+      "condition": "withholding a new load after the initial failure outlives Secret publication; the repair retries on later CA-dependent requests after a five-second cooldown under a mutex and retains the first successful keypair, with live recovery still pending under #7187",
+      "severity": "high",
+      "hazards": [
+        "egress-ca-startup-latch"
+      ],
+      "evidence": "projects/firecracker/substrate/egress-proxy/cmd/swap.go:801-839; projects/firecracker/substrate/egress-proxy/cmd/main.go:299-310,414-428; #7187"
     }
   ],
   "unsafe_feedback": [
@@ -234,12 +255,25 @@
     {
       "item": "the noded gRPC control channel accepting BuildBase/Prime/Assign/Destroy/DeleteVolume/RestoreArtifact from any pod-network caller (formerly hazard open-node-control-channel)",
       "reason": "authenticated in production: EMBERVM_NODED_BEARER_TOKEN gates unaryAuthInterceptor and streamAuthInterceptor (noded/cmd/auth.go:49-75, noded/cmd/main.go:320-326), with bearerTokenSecret.enabled true in deploy/values.yaml (#4693). The inert Cilium policy was removed in #5816; bearer authentication does not provide network-level caller isolation."
+    },
+    {
+      "item": "temporary CA-dependent failure while an optional egress CA Secret is missing, partial, malformed or inside the initial-load retry cooldown",
+      "reason": "the loader returns no minter until the configured certificate and matching key parse successfully, permits another request-driven attempt after five seconds, and shares the first successful minter across concurrent callers; the guest CA response contains only the public certificate and plaintext injection remains independent (projects/firecracker/substrate/egress-proxy/cmd/swap.go:816-828,855-880,925-928; main.go:299-310,401-428)"
+    },
+    {
+      "item": "a successful initial CA recovery silently widening destination access or rotating running guests onto a new trust anchor",
+      "reason": "normal destinations pass route and credential resolution before requesting a minter; the reserved host serves only the public CA, and a loaded minter is returned without rereading replacement files for the process lifetime (projects/firecracker/substrate/egress-proxy/cmd/main.go:299-310,344-365,414-428; swap.go:816-828)"
+    },
+    {
+      "item": "retaining an optional egress CA volume during first certificate issuance",
+      "reason": "the optional volume is retained because a required Secret previously blocked the brick rollout while cert-manager issuance waited in the same ArgoCD sync; bounded request-driven initial-load recovery removes the permanent startup latch without restoring that dependency cycle (projects/embervm/chart/templates/_noded-pod.tpl:957-975; projects/embervm/ARCHITECTURE.md:1789-1802)"
     }
   ],
   "open_questions": [
     "How should a native-policy successor cover every noded listener, including the stateful/composite activator ranges (5400-5419), after #5816 removed the inert Cilium template? The historical 2026-08-22 omission dropped a cold wake to noded:5401 for 14 minutes; deleting that template supplies no replacement enforcement.",
     "Whether egress.internal.allowlist should become scoped per egress-enabled workload rather than global to the sidecar (ADR embervm/035 open question 1); shared-egress-allowlist-widening tracks the safety consequence of leaving it global.",
-    "Whether the store-credential-unscoped residual (a shared, bucket-wide S3 identity) should be re-scoped per principal now that the ADR embervm/033 rollout is armed end to end in production and dev (kekRoot, EMBERVM_ARTIFACT_ENCRYPTION, store.encrypt, requireRestoreCapability; #4691, status updated 2026-08-23 (#5233)): what survives of the residual is write/delete reach and key custody, since reads of encrypted warmth yield ciphertext."
+    "Whether the store-credential-unscoped residual (a shared, bucket-wide S3 identity) should be re-scoped per principal now that the ADR embervm/033 rollout is armed end to end in production and dev (kekRoot, EMBERVM_ARTIFACT_ENCRYPTION, store.encrypt, requireRestoreCapability; #4691, status updated 2026-08-23 (#5233)): what survives of the residual is write/delete reach and key custody, since reads of encrypted warmth yield ciphertext.",
+    "Before closing #7187, verify that a running sidecar recovers after delayed egress CA Secret projection and that S8 receives the recovered public CA. Successful loading intentionally does not rotate the CA; expiry, replacement and already-running guest trust remain outside this initial-load repair."
   ],
   "system_dir": "projects/embervm"
 }

@@ -1,6 +1,6 @@
 # STPA Control Analysis: embervm
 
-_logic @ b1514fe38 · security @ c05e43f66_
+_logic @ 11569bebd · security @ c05e43f66_
 
 _Auto-generated STPA safety model: unsafe states this system can reach and control actions that get it there. Single or multiple lenses: logic (mission failure), security (deliberate attack), governance (data safety)._
 
@@ -61,8 +61,12 @@ flowchart TD
     caller["External task/session/serving caller"]
     external-host["External destination (e.g. GitHub API)"]
   end
+  subgraph secret_delivery["secret_delivery"]
+    egress-ca-volume["Optional projected egress CA Secret"]
+  end
   control-plane -- "control-plane.grpc_command" --> noded
   egress-proxy -- "egress-proxy.inject_credential" --> external-host
+  egress-proxy -- "egress-proxy.load_initial_ca" --> egress-proxy
   node-envoy -- "node-envoy.dnat_route" --> guest-vm
   noded -- "noded.artifact_verb" --> s3-store
   noded -- "noded.refuse_if_silenced" --> noded
@@ -70,6 +74,7 @@ flowchart TD
   shotter-chromium -- "shotter-chromium.fetch_subresource" --> shotter-proxy
   shotter-proxy -- "shotter-proxy.forward_allowed" --> egress-proxy
   control-plane -. "contact signal behind the silence gate: a 2xx dial-home Register response and every successful WatchNode NodeStatus send refresh lastContact, which refuseIfSilenced compares against the 21600s bound" .-> noded
+  egress-ca-volume -. "Configured certificate and key files from the optional Secret; missing, partial or malformed pairs fail loading" .-> egress-proxy
   noded -. "dial-home registration {node, pod_uid, address, boot_id} + NodeStatus" .-> control-plane
   s3-store -. "fetched artifact bytes on RestoreArtifact" .-> noded
   shotter-guest-init -. "GET /shim/ready 200 (CDP /json/version answered and one real trial capture produced non-empty PNG bytes)" .-> noded
@@ -83,6 +88,7 @@ flowchart TD
 | `control-plane.grpc_command` | physical | gRPC lifecycle command (BuildBase, Prime, Assign, Destroy, DeleteVolume, RestoreArtifact) | `control-plane` → `noded` | built | projects/embervm/proto/embervm/node/v1/node.proto:57 |
 | `dispatcher.quota_gate` | logical | Gate quota on admission | `dispatcher` → `op-log` | built | projects/embervm/control/lib/embervm/dispatcher.ex:258 |
 | `egress-proxy.inject_credential` | physical | Inject credential into request | `egress-proxy` → `external-host` | built | projects/embervm/ARCHITECTURE.md:710 |
+| `egress-proxy.load_initial_ca` | physical | Retry initial CA load and retain the first successful keypair | `egress-proxy` → `egress-proxy` | built | projects/firecracker/substrate/egress-proxy/cmd/swap.go:801-839 |
 | `node-envoy.dnat_route` | physical | DNAT route to guest | `node-envoy` → `guest-vm` | built | projects/embervm/ARCHITECTURE.md:193 |
 | `noded.artifact_verb` | physical | Access artifact in store (get, put, delete, list, tag) | `noded` → `s3-store` | built | projects/embervm/proto/embervm/node/v1/node.proto:463 |
 | `noded.refuse_if_silenced` | physical | Refuse local authority if control-plane contact stale | `noded` → `noded` | built | projects/embervm/noded/server/server.go:619 |
@@ -101,7 +107,7 @@ flowchart TD
 
 - **Built:** task/session/serving/stateful/composite lifecycle managers, admission quota gate (fail-closed per-principal when a budget is configured), generation blessing (CP-issued pre-dispatch and checkpoint-abort self-heal via durable checkpoint_dispatched), delegated generation leases (BlessingLease, bounded and monotonic), orphan-destroy reconcile with an ACTIVATOR-origin adoption guard that runs before the destroy pass, S3 warmth GC that aborts the whole sweep on a partial listing, dial-home registration, brick-local egress credential injection scoped by egressTo, the shotter task-class guest (ADR embervm/035): a warm headless Chromium snapshot base behind an in-guest, image-baked, hard-allowlisted egress proxy, whose readiness is now gated on one real trial capture before /shim/ready flips, the noded gRPC control channel, authenticated by a static bearer token enabled in production (#4693); the inert Cilium ingress policy was removed in #5816 and supplies no network isolation, SigV4-authenticated access to the S3 artifact store enforced by the gateway (enableAuth: true), enabled in production (#4708); the surviving embervm identity is one credential shared by every brick and the control plane, the brick silence timeout (ADR embervm/037) bounding node-local authority (activator wakes, group wakes, blessing-lease self-advance) once control-plane contact goes stale, armed at 21600s in production and dev, the warmth ownership transition guard (#4962): every brick refreshes a .alive claim per warmth segment and startup GC reaps only unclaimed pre-heartbeat directories or claims older than WarmthStaleAfter, principal-artifact envelope encryption and capability-gated restore in noded, reader path unconditional, writer and enforcement armed in production and dev as of 2026-08 (ADR embervm/033, #4691; status updated 2026-08-23 (#5233))
 - **Designed-only:** mTLS/SPIFFE certificate-based mutual transport auth for noded (#4693 delivered bearer-token authentication; the inert policy was removed in #5816), node-local activator for stateful/composite wake beyond cold boot (partially landed, stateful activator currently only cold-boots), audience-scoped guest token, request-scoped GitHub tool mediation replacing host-keyed injection (ADR 055)
-- **Note:** Policy-removal corrections for #5816 only; other findings retain their earlier review stamp.
+- **Note:** Focused egress CA startup-recovery review for #7187; live recovery remains unverified. Policy-removal corrections retain the #5816 review and unrelated findings retain their earlier evidence.
 </details>
 
 ### Losses
@@ -119,6 +125,7 @@ flowchart TD
 
 | ID | View | Hazard (unsafe state) | → Losses | Maturity |
 |----|----|----|----|----|
+| `egress-ca-startup-latch` | physical | CA-dependent guest bootstrap and credential injection remain unavailable after a delayed optional Secret supplies a usable keypair because the sidecar retains its initial CA-load failure | L.liveness-loss | built |
 | `egress-workload-derivation-gap` | physical | the per-workload egress forwarder allowlist noded receives is a hand-written if-chain over named workloads in the chart template, not a true derivation, so a future task/session/stateful workload that enables egress but is not added to this chain gets no forwarder and dial-times-out inside the guest instead of a loud, diagnosable deny | L.liveness-loss | built |
 | `host-keyed-credential-overreach` | physical | host-keyed egress credential injection authorizes by destination host only, so a prompt-injected or compromised guest can shape any request to an allowlisted host and have the credential attached to it | L.secret-exposure, L.unauthorized-access | built |
 | `identity-hijack` | physical | an actor holding the shared noded ServiceAccount token can re-register an existing brick's (node, pod_uid) at an address it controls and become the dial-home source the control plane treats as authoritative for that brick | L.unauthorized-access, L.integrity-loss, L.provenance-loss | built |
@@ -134,6 +141,7 @@ flowchart TD
 | ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|----|
 | `egress-proxy.inject_credential.providing` | physical | `egress-proxy.inject_credential` | providing | the proxy injects a real credential into any request whose destination host is allowlisted, regardless of what the guest-originated request actually asks that host to do, so a prompt-injected guest can direct the credentialed call | medium | host-keyed-credential-overreach | projects/embervm/ARCHITECTURE.md:745 |
+| `egress-proxy.load_initial_ca.not-providing` | physical | `egress-proxy.load_initial_ca` | not-providing | withholding a new load after the initial failure outlives Secret publication; the repair retries on later CA-dependent requests after a five-second cooldown under a mutex and retains the first successful keypair, with live recovery still pending under #7187 | high | egress-ca-startup-latch | projects/firecracker/substrate/egress-proxy/cmd/swap.go:801-839; projects/firecracker/substrate/egress-proxy/cmd/main.go:299-310,414-428; #7187 |
 
 ### Unsafe feedback
 
@@ -146,18 +154,21 @@ flowchart TD
 | `warmth-fetch.unauthorized-source` | physical | `s3-store` → `noded`: fetched artifact bytes on RestoreArtifact | unauthorized-source | the gateway now enforces SigV4 (enableAuth: true) and rejects requests signed by no identity, but the embervm identity's access key is one credential shared by every brick and the control plane rather than scoped per principal, lineage, brick, workload, or generation, so an object noded restores as warmth may have been written by any brick holding that shared credential, not necessarily the legitimate owner of the lineage being restored; the finer per-principal binding (envelope encryption plus capability-gated restore) is built and enforced in production and dev (#5233 status update) | medium | store-credential-unscoped | projects/embervm/chart/templates/_noded-pod.tpl:353 |
 
 <details>
-<summary><b>Not UCAs</b>: 13 examined and rejected</summary>
+<summary><b>Not UCAs</b>: 16 examined and rejected</summary>
 
 - **a fleet-wide freeze of new session/serving/stateful placement during a genuine control-plane outage longer than the 6h brick silence bound (ADR embervm/037)**: a deliberate, accepted trade-off (ADR embervm/037 consequences): the gate only refuses NEW work, never banks or destroys anything, so live VMs keep running and held warmth stays intact; normal service resumes immediately once contact returns (noded/server/server.go:608-625), and 6h was sized specifically to exceed a routine control-plane roll
 - **a leaked Chromium CDP target accumulating across shotter invocations**: each invocation restores its own CoW clone that is destroyed after the response, so a leak cannot outlive one clone; within a clone, closeCDPTarget runs on every return path via defer immediately after target creation, including navigation and capture errors (projects/embervm/chart/templates/workload-shotter.yaml, guest-init/cmd/cdp.go:467-481)
 - **a redirect or subresource on a mapped page escaping the shotter-proxy allowlist**: the proxy is the only egress path (--proxy-server with loopback-only bypass, no direct-network fallback), so a redirect or a subresource fetch to an unmapped host issues a fresh CONNECT/absolute request through the same proxy, is re-parsed and refused per connection by handleConnection, and is checked by the same resolve() call as any other request, never trusted because it originated from an already-allowed page (projects/embervm/runtimes/shotter/guest-init/cmd/main.go:168-175, guest-init/cmd/proxy.go:293-313,391-405)
 - **a restored clone resuming a page or CDP target left over from a prior invocation**: createCDPTarget opens a fresh about:blank target per invocation specifically so an hours-later restore never inherits a stale page or target (projects/embervm/runtimes/shotter/guest-init/cmd/cdp.go:46-47)
+- **a successful initial CA recovery silently widening destination access or rotating running guests onto a new trust anchor**: normal destinations pass route and credential resolution before requesting a minter; the reserved host serves only the public CA, and a loaded minter is returned without rereading replacement files for the process lifetime (projects/firecracker/substrate/egress-proxy/cmd/main.go:299-310,344-365,414-428; swap.go:816-828)
 - **checkpoint-abort auto-bump producing an unblessed generation**: the resolve-timeout auto-abort lane (blessedGeneration: 0) is the ONLY case that produces it, and StatefulStore correctly quarantines it as a fail-closed signal rather than treating it as a bug (noded/server/stateful.go:605-610)
 - **no per-principal daily budget configured in the reference deployment**: spend is still bounded by admission caps and concurrency, not unbounded; cutoff is an admission action by design (invariant 4), and quota fails closed the moment a budget IS set (control/lib/embervm/dispatcher.ex:265-269, deploy/values.yaml)
 - **node-local activator on stateful defaults BlessedGeneration to 0 during control-plane absence**: a zero generation fails pairing and forces a cold boot rather than an incorrect relight, matching invariant 4's fail-open-to-cold-boot rule (noded/server/stateful_activator.go:361)
 - **orphan-destroy racing a live node-woken (ACTIVATOR-origin) stateful VM**: adopt_activator_stateful_vms runs on the same reconcile pass before the orphan-destroy loop, and the loop explicitly skips activator_origin? vms as belt-and-suspenders (control/lib/embervm/stateful_manager.ex:2031-2038)
+- **retaining an optional egress CA volume during first certificate issuance**: the optional volume is retained because a required Secret previously blocked the brick rollout while cert-manager issuance waited in the same ArgoCD sync; bounded request-driven initial-load recovery removes the permanent startup latch without restoring that dependency cycle (projects/embervm/chart/templates/_noded-pod.tpl:957-975; projects/embervm/ARCHITECTURE.md:1789-1802)
 - **shotter-proxy refusing every destination when /etc/shotter-egress.json is missing or malformed**: LoadProxyConfig returns a zero-value config on any read or parse error, and the zero value's nil maps make resolve() refuse everything; the failure mode is fail-closed and surfaces as a bounded per-request refusal, not a silent bypass (projects/embervm/runtimes/shotter/guest-init/cmd/proxy.go:78-99)
 - **shotter-proxy.forward_allowed checked against the requested top-level host instead of the actually-dialled destination**: resolve() applies the host mapping first and validates the resulting mapped destination against the allowlist for both CONNECT targets and Host-header-derived absolute-form requests, so the value checked and the value dialled are always the same one; a request for an unmapped or mismatched host fails resolve() before any vsock dial (projects/embervm/runtimes/shotter/guest-init/cmd/proxy.go:211-247)
+- **temporary CA-dependent failure while an optional egress CA Secret is missing, partial, malformed or inside the initial-load retry cooldown**: the loader returns no minter until the configured certificate and matching key parse successfully, permits another request-driven attempt after five seconds, and shares the first successful minter across concurrent callers; the guest CA response contains only the public certificate and plaintext injection remains independent (projects/firecracker/substrate/egress-proxy/cmd/swap.go:816-828,855-880,925-928; main.go:299-310,401-428)
 - **the S3 artifact-store gateway accepting anonymous, unsigned requests (formerly hazard anonymous-store-access)**: closed in production: SeaweedFS S3 auth is enabled (enableAuth: true, projects/platform/seaweedfs/values.yaml:181) with the embervm identity policy (s3-identities.json), so an unsigned request is now rejected at the gateway; the residual gap, that the surviving identity is shared fleet-wide rather than scoped per principal, is tracked separately as hazard store-credential-unscoped (#4708, closed)
 - **the brick silence gate firing while the control plane is actually alive, wrongly refusing activator wakes, group wakes, or blessing-lease self-advancement (ADR embervm/037 wrong-timing)**: rejected: lastContact advances only on authenticated control-plane contact through two independent channels, a 2xx dial-home POST on the roughly 30s jittered register loop (noded/server/register.go:96-98,198-203) and every successful WatchNode NodeStatus send on the 2s liveness interval (noded/server/server.go:70,1801), compared with time.Now's monotonic reading so an NTP step cannot arm or disarm the gate (noded/server/server.go:595-597); tripping it requires both channels to fail simultaneously for the full 21600s bound (deploy/values.yaml:195), which is itself the brick partition the gate exists to catch, and even a false trip is bounded refusal of NEW work with live VMs, banks, and held warmth untouched until contact returns
 - **the noded gRPC control channel accepting BuildBase/Prime/Assign/Destroy/DeleteVolume/RestoreArtifact from any pod-network caller (formerly hazard open-node-control-channel)**: authenticated in production: EMBERVM_NODED_BEARER_TOKEN gates unaryAuthInterceptor and streamAuthInterceptor (noded/cmd/auth.go:49-75, noded/cmd/main.go:320-326), with bearerTokenSecret.enabled true in deploy/values.yaml (#4693). The inert Cilium policy was removed in #5816; bearer authentication does not provide network-level caller isolation.
@@ -165,6 +176,7 @@ flowchart TD
 
 ### Open questions
 
+- Before closing #7187, verify that a running sidecar recovers after delayed egress CA Secret projection and that S8 receives the recovered public CA. Successful loading intentionally does not rotate the CA; expiry, replacement and already-running guest trust remain outside this initial-load repair.
 - How should a native-policy successor cover every noded listener, including the stateful/composite activator ranges (5400-5419), after #5816 removed the inert Cilium template? The historical 2026-08-22 omission dropped a cold wake to noded:5401 for 14 minutes; deleting that template supplies no replacement enforcement.
 - Whether egress.internal.allowlist should become scoped per egress-enabled workload rather than global to the sidecar (ADR embervm/035 open question 1); shared-egress-allowlist-widening tracks the safety consequence of leaving it global.
 - Whether the store-credential-unscoped residual (a shared, bucket-wide S3 identity) should be re-scoped per principal now that the ADR embervm/033 rollout is armed end to end in production and dev (kekRoot, EMBERVM_ARTIFACT_ENCRYPTION, store.encrypt, requireRestoreCapability; #4691, status updated 2026-08-23 (#5233)): what survives of the residual is write/delete reach and key custody, since reads of encrypted warmth yield ciphertext.
