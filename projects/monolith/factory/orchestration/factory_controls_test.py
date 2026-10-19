@@ -582,6 +582,35 @@ def test_waiting_capacity_requires_unresolved_start_evidence(
             assert controls.execution_slot_holders(policy, [candidate]) == [candidate]
 
 
+@pytest.mark.parametrize("paused", [False, True])
+def test_landing_hold_refuses_merge_conflict_recovery(db, policy, paused):
+    task = admitted(policy)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, task)
+        row.task_paused = paused
+        row.direction_json = '{"landing_hold":null}'
+    before = controls.task_snapshot(task)
+    with Session(db) as session:
+        audits_before = len(session.exec(select(FactoryAudit)).all())
+
+    assert controls.request_landing_recovery(
+        task, 3, "a" * 40, "delivered_pr", "factory:reconciler"
+    ) == {"ok": False, "reason": "receipt_landing_held"}
+
+    after = controls.task_snapshot(task)
+    for field in (
+        "state",
+        "task_paused",
+        "direction",
+        "deadline_at",
+        "policy",
+        "starts",
+    ):
+        assert after[field] == before[field]
+    with Session(db) as session:
+        assert len(session.exec(select(FactoryAudit)).all()) == audits_before
+
+
 def _capacity_pair(db, policy, monkeypatch, constraint, *, held=False):
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
     first = admitted(policy)
