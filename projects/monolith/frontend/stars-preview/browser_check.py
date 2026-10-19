@@ -15,7 +15,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def check(root, output):
+def check(root, output, chromium_path=None):
     output.mkdir(parents=True, exist_ok=True)
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), functools.partial(Handler, directory=str(root))
@@ -26,6 +26,7 @@ def check(root, output):
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
+                executable_path=chromium_path,
                 args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
             )
             for width in [390, 1440]:
@@ -172,5 +173,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--chromium", help="Optional local Chromium executable")
     args = parser.parse_args()
-    check(args.artifact.resolve(), args.output.resolve())
+    check(args.artifact.resolve(), args.output.resolve(), args.chromium)

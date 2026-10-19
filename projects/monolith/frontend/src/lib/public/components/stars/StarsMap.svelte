@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
+  import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
   import Button from "@homelab/design-system/components/Button.svelte";
   import {
     readMapPalette,
@@ -456,6 +457,9 @@
     (async () => {
       maplibregl = await import("maplibre-gl");
       if (destroyed) return;
+      // Vite must bundle the worker's shared imports too. The package-relative
+      // default URL otherwise points at a missing asset in a production build.
+      maplibregl.setWorkerUrl(workerUrl);
 
       map = new maplibregl.Map({
         container: mapContainer,

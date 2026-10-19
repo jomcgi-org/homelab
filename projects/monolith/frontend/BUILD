@@ -325,6 +325,7 @@ js_library(
         "test/profile-page.svelte.js",
         "test/profile-stores.js",
         "src/lib/global.css",
+        "src/lib/styles/shared/tokens.css",
         "src/lib/public/apps.js",
         "src/lib/public/seo.js",
         "src/lib/public/components/Nav.svelte",

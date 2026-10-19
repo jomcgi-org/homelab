@@ -1,6 +1,7 @@
 import { vi } from "vitest";
 
 export const instances = [];
+export const setWorkerUrl = vi.fn();
 export class Map {
   constructor({ container }) {
     this.canvas = document.createElement("canvas");

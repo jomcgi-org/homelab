@@ -73,8 +73,23 @@ export function applyMapPalette(map, palette) {
     const water = /water/i.test(`${layer["source-layer"] ?? ""} ${layer.id}`);
     const paint = (name, value) => map.setPaintProperty(layer.id, name, value);
     if (layer.type === "background") paint("background-color", palette.sheet);
-    if (layer.type === "fill")
+    if (layer.type === "fill") {
       paint("fill-color", water ? palette.water : palette.band);
+      if (layer.paint?.["fill-outline-color"])
+        paint("fill-outline-color", palette.stroke);
+    }
+    if (layer.type === "raster") {
+      // Low-zoom relief is raster. Keep its texture neutral and within the
+      // sheet's luminance range instead of leaving a bright map in dark mode.
+      const channels = palette.sheet
+        .match(/[\d.]+/g)
+        .slice(0, 3)
+        .map(Number);
+      const light = channels.reduce((sum, value) => sum + value, 0) / (3 * 255);
+      paint("raster-saturation", -1);
+      paint("raster-brightness-min", Math.max(0, light - 0.12));
+      paint("raster-brightness-max", Math.min(1, light + 0.12));
+    }
     if (layer.type === "fill-extrusion")
       paint("fill-extrusion-color", palette.band);
     if (layer.type === "line")
