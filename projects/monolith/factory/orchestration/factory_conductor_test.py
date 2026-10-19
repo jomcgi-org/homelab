@@ -1765,6 +1765,122 @@ def test_tick_admits_up_to_the_concurrency_limit(
     assert reconciled == []
 
 
+@pytest.mark.parametrize("waiting", ["paused", "held", "paused_and_held"])
+@pytest.mark.parametrize(
+    "blockers", [(), ("reserved",), ("uncertain",), ("reserved", "uncertain")]
+)
+def test_tick_admits_into_quiescent_waiting_slots(
+    feedback_db, monkeypatch, waiting, blockers
+):
+    from factory import dependency_gate
+    from factory.orchestration import (
+        agent_board_poll,
+        factory_controls as controls,
+        factory_intake as intake,
+        factory_intake_loop,
+        factory_landing,
+        factory_notify_policy,
+        factory_pr_lifecycle,
+        factory_problem_issues,
+        factory_reverts,
+        uncertain_tasks,
+        work_item_pointer,
+    )
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, policy = feedback_task(
+        issue_numbers=[7, 8, 9, 10, 11],
+        max_tasks={"delivery": 2, "advisory": 0},
+    )
+    for number in (8, 9, 10, 11):
+        intake.receive_issue(
+            "owner/repo",
+            number,
+            "Eligible distinct work",
+            "Acceptance",
+            f"https://github.com/owner/repo/issues/{number}",
+            "poller",
+        )
+    second = intake.admit_next("scheduler")
+    assert second["ok"]
+    waiting_ids = [task["id"], second["task_id"]]
+    for task_id in waiting_ids:
+        if waiting in ("paused", "paused_and_held"):
+            assert controls.set_control("pause_task", "operator", task_id=task_id)["ok"]
+    with Session(feedback_db) as db, db.begin():
+        if waiting in ("held", "paused_and_held"):
+            for task_id in waiting_ids:
+                controls._receipt(db, task_id).direction_json = '{"landing_hold":null}'
+        db.add_all(
+            [
+                FactoryStart(
+                    task_id=task_id,
+                    start_key="existing-work",
+                    actor="test",
+                    model="luna",
+                    max_cost_usd=1,
+                    status=state,
+                )
+                for task_id, state in zip(waiting_ids, blockers)
+            ]
+        )
+        for task_id, state in zip(waiting_ids, blockers):
+            if state == "uncertain":
+                controls._receipt(db, task_id).state = "uncertain"
+    before = controls.status()
+    assert len(before["active_tasks"]) == intake.concurrency_limit(policy) == 2
+    assert before["lanes"]["delivery"]["active"] == len(blockers)
+
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    for name in (
+        "revalidate_escalations",
+        "observe_reviewer_routing",
+        "_watch_progress",
+        "_supervise_cessation",
+        "_expire_task_deadline",
+        "ingest_eligible",
+    ):
+        monkeypatch.setattr(conductor, name, lambda *a, **kw: None)
+    for module, name in (
+        (dependency_gate, "tick"),
+        (factory_pr_lifecycle, "reconcile_tick"),
+        (factory_landing, "landing_tick"),
+        (factory_reverts, "revert_tick"),
+        (factory_problem_issues, "problem_issues_tick"),
+        (work_item_pointer, "sync_pointers"),
+        (factory_notify_policy, "digest_tick"),
+        (uncertain_tasks, "emit_uncertain_task_snapshot"),
+    ):
+        monkeypatch.setattr(module, name, lambda *a, **kw: None)
+    monkeypatch.setattr(agent_board_poll, "eligible_lanes", lambda lanes: lanes)
+    intake_calls = []
+    monkeypatch.setattr(
+        factory_intake_loop,
+        "intake_tick",
+        lambda *a, **kw: intake_calls.append(kw["lanes"]),
+    )
+    reconciled = []
+    monkeypatch.setattr(
+        conductor, "reconcile_task", lambda task_id, *a: reconciled.append(task_id)
+    )
+
+    conductor.tick()
+
+    after = controls.status()
+    assert after["lanes"]["delivery"]["active"] == 2
+    assert len(after["active_tasks"]) == 4 - len(blockers)
+    assert after["lanes"]["delivery"]["queued"] == 1 + len(blockers)
+    assert len(intake_calls) == int(len(blockers) < 2)
+    assert reconciled == waiting_ids
+    with Session(feedback_db) as db:
+        for task_id in waiting_ids:
+            assert (
+                controls.delivery_branch_owner(db, "owner/repo", f"factory/{task_id}")
+                == task_id
+            )
+
+
 def test_tick_polls_once_and_keeps_blocked_queued_lane_out_of_admission(monkeypatch):
     from factory.orchestration import (
         agent_board_poll,
@@ -1816,7 +1932,11 @@ def test_tick_polls_once_and_keeps_blocked_queued_lane_out_of_admission(monkeypa
     assert admission_lanes == [("advisory",), ("advisory",)]
 
 
-def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(monkeypatch):
+@pytest.mark.parametrize("waiting", [None, "paused", "held"])
+@pytest.mark.parametrize("accounting", [{}, {"unresolved_starts": None}])
+def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(
+    monkeypatch, waiting, accounting
+):
     import factory.orchestration.factory_controls as controls
     import factory.orchestration.factory_intake as intake
 
@@ -1828,7 +1948,16 @@ def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(monkeypatch
         lambda: {
             "state": "enabled",
             "policy": policy,
-            "active_tasks": [{"task_id": "t-1", "policy": policy}],
+            "active_tasks": [
+                {
+                    "task_id": "t-1",
+                    "state": "admitted",
+                    "policy": policy,
+                    "task_paused": waiting == "paused",
+                    "direction": {"landing_hold": None} if waiting == "held" else {},
+                    **accounting,
+                }
+            ],
         },
     )
     monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
@@ -1973,8 +2102,8 @@ def test_tick_isolates_a_failing_task_and_a_failing_ingest(monkeypatch):
             "state": "enabled",
             "policy": policy,
             "active_tasks": [
-                {"task_id": "t-poisoned", "policy": policy},
-                {"task_id": "t-healthy", "policy": policy},
+                {"task_id": "t-poisoned", "state": "admitted", "policy": policy},
+                {"task_id": "t-healthy", "state": "admitted", "policy": policy},
             ],
         },
     )
@@ -15156,7 +15285,7 @@ def test_the_window_is_observed_before_any_task_reconciles(monkeypatch):
         lambda: {
             "state": "enabled",
             "policy": policy,
-            "active_tasks": [{"task_id": "t-1", "policy": policy}],
+            "active_tasks": [{"task_id": "t-1", "state": "admitted", "policy": policy}],
         },
     )
     monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
@@ -22690,7 +22819,7 @@ def test_human_handoff_tick_keeps_cessation_supervision_without_deadline_escalat
     import factory.orchestration.factory_intake as intake
 
     policy = {"max_tasks": 1}
-    task = {"task_id": "t-human", "policy": policy}
+    task = {"task_id": "t-human", "state": "admitted", "policy": policy}
     monkeypatch.setattr(
         controls,
         "status",

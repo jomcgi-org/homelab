@@ -8352,7 +8352,11 @@ def _observe_human_ownership(task: dict) -> bool:
 
 def tick() -> None:
     from factory.orchestration import uncertain_tasks
-    from factory.orchestration.factory_controls import status, retry_capacity_releases
+    from factory.orchestration.factory_controls import (
+        execution_slot_holders,
+        retry_capacity_releases,
+        status,
+    )
     from factory.orchestration.factory_intake import admit_next
 
     # First, before any early return: the uncertain-task snapshot span must
@@ -8484,7 +8488,18 @@ def tick() -> None:
     from factory.orchestration.factory_intake import concurrency_limit
 
     limit = concurrency_limit(snapshot["policy"])
-    if len(active) >= limit:
+    # Receipt ownership outlives execution occupancy. Snapshot accounting must
+    # affirm zero unresolved starts before a waiting receipt releases its slot.
+    occupied = len(
+        execution_slot_holders(
+            snapshot["policy"],
+            active,
+            unresolved_task_ids={
+                task["task_id"] for task in active if task.get("unresolved_starts") != 0
+            },
+        )
+    )
+    if occupied >= limit:
         return
     try:
         from factory.orchestration.agent_board_poll import eligible_lanes
@@ -8504,12 +8519,12 @@ def tick() -> None:
             generation=snapshot["policy"].get("generation", 0),
             lanes=lanes,
         )
-        while len(active) < limit:
+        while occupied < limit:
             admitted = admit_next(ACTOR, lanes=lanes)
             if not admitted["ok"]:
                 break
             # A task admitted this tick is reconciled on the next one.
-            active.append(admitted)
+            occupied += 1
     except Exception:  # noqa: BLE001 - admission problems are logged, not fatal
         logger.exception("factory admission failed")
 
