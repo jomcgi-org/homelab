@@ -178,7 +178,7 @@
     z-index: 60;
     border: none;
     padding: 0;
-    background: rgba(10, 14, 20, 0.4);
+    background: color-mix(in srgb, var(--ink) 40%, transparent);
     cursor: default;
   }
 
@@ -191,9 +191,9 @@
     width: min(440px, 92vw);
     display: flex;
     flex-direction: column;
-    background: var(--grim-surface);
-    border-left: 1px solid var(--grim-line);
-    box-shadow: -12px 0 32px rgba(10, 14, 20, 0.2);
+    background: var(--sheet);
+    border-left: 1px solid var(--stroke);
+
     animation: src-slide-in 220ms ease-out;
   }
 
@@ -217,7 +217,7 @@
     align-items: flex-start;
     gap: 12px;
     padding: 20px 20px 16px;
-    border-bottom: 1px solid var(--grim-line);
+    border-bottom: 1px solid var(--stroke);
   }
 
   .src-head-text {
@@ -227,14 +227,14 @@
 
   .src-kind {
     display: inline-block;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--grim-on-accent);
-    background: var(--grim-accent);
-    border-radius: 4px;
+    color: var(--sheet);
+    background: var(--accent-ink);
+    border-radius: 0;
     padding: 2px 8px;
     margin-bottom: 8px;
   }
@@ -243,7 +243,7 @@
     margin: 0;
     font-size: 20px;
     line-height: 1.25;
-    color: var(--grim-ink);
+    color: var(--ink);
     overflow-wrap: break-word;
   }
 
@@ -256,10 +256,10 @@
     justify-content: center;
     font-size: 20px;
     line-height: 1;
-    border: 1px solid var(--grim-line);
-    border-radius: 8px;
-    background: var(--grim-surface);
-    color: var(--grim-ink);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
+    color: var(--ink);
     cursor: pointer;
     transition:
       background 120ms ease,
@@ -267,8 +267,8 @@
   }
 
   .src-close:hover {
-    background: var(--grim-accent-soft);
-    border-color: var(--grim-accent);
+    background: var(--band);
+    border-color: var(--accent-ink);
   }
 
   .src-body {
@@ -276,7 +276,7 @@
     min-height: 0;
     overflow-y: auto;
     padding: 20px;
-    background: var(--grim-paper);
+    background: var(--sheet);
   }
 
   .src-statblock :global(.statblock),
@@ -285,9 +285,9 @@
   }
 
   .src-status {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 12px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   .src-status-error {
@@ -295,10 +295,10 @@
   }
 
   .src-passage {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 15px;
     line-height: 1.65;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .src-passage p {
@@ -328,12 +328,12 @@
   .src-link {
     display: inline-block;
     margin-top: 16px;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--grim-accent);
+    color: var(--accent-ink);
     text-decoration: none;
   }
 

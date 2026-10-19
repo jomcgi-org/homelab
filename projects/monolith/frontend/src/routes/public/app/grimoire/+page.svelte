@@ -148,7 +148,7 @@
     align-items: baseline;
     gap: 10px;
     padding: 0 8px 8px;
-    border-bottom: 1px solid var(--grim-line);
+    border-bottom: 1px solid var(--stroke);
   }
 
   .gh .kind {
@@ -156,7 +156,7 @@
     font-size: 11px;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--grim-accent);
+    color: var(--accent-ink);
     font-weight: 700;
   }
 
@@ -164,13 +164,13 @@
     font-size: 11px;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   .block-lede {
     margin: 18px 8px 0;
     max-width: 68ch;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 14px;
     line-height: 1.6;
   }
@@ -185,9 +185,9 @@
   }
 
   .grant-card {
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 9px;
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 16px;
   }
 
@@ -198,7 +198,7 @@
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    border-radius: 4px;
+    border-radius: 0;
     padding: 3px 7px;
   }
 
@@ -213,8 +213,8 @@
   }
 
   .scope-name {
-    color: var(--grim-text-faint);
-    background: var(--grim-surface-2);
+    color: var(--ink-2);
+    background: var(--band);
   }
 
   .card-name {
@@ -234,32 +234,32 @@
   .card-stats {
     margin: 10px 0 0;
     font-size: 12.5px;
-    color: var(--grim-ink);
+    color: var(--ink);
     font-variant-numeric: tabular-nums;
   }
 
   .card-stats .dot,
   .card-body .dot {
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     margin: 0 6px;
   }
 
   .redacted,
   .redacted-run {
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     opacity: 0.55;
     letter-spacing: 0.05em;
   }
 
   .card-body {
     margin: 10px 0 0;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 12.5px;
     line-height: 1.55;
   }
 
   .card-body-faint {
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-style: italic;
   }
 
@@ -277,7 +277,7 @@
     gap: 16px;
     align-items: start;
     padding: 15px 8px;
-    border-bottom: 1px solid var(--grim-line-soft);
+    border-bottom: 1px solid var(--line);
   }
 
   .roadmap-row:last-child {
@@ -290,15 +290,15 @@
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    border-radius: 4px;
+    border-radius: 0;
     padding: 3px 7px;
     margin-top: 2px;
     white-space: nowrap;
   }
 
   .status-planned {
-    color: var(--grim-accent);
-    background: var(--grim-accent-soft);
+    color: var(--accent-ink);
+    background: var(--band);
   }
 
   .status-designed {
@@ -307,22 +307,22 @@
   }
 
   .status-long {
-    color: var(--grim-text-faint);
-    background: var(--grim-surface-2);
+    color: var(--ink-2);
+    background: var(--band);
   }
 
   .roadmap-title {
     display: block;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 16px;
     font-weight: 600;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .roadmap-body {
     display: block;
     margin-top: 4px;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 12.5px;
     line-height: 1.55;
   }
@@ -330,7 +330,7 @@
   .foot-note {
     margin: 48px 8px 0;
     max-width: 68ch;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-size: 12px;
     line-height: 1.6;
   }

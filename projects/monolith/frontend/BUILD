@@ -309,6 +309,54 @@ apko_image(
     tars = [":build_tar_public"],
 )
 
+js_library(
+    name = "grimoire_fixture_src",
+    srcs = [
+        "grimoire-preview/App.svelte",
+        "grimoire-preview/Route.svelte",
+        "grimoire-preview/browser_check.py",
+        "grimoire-preview/dom.test.js",
+        "grimoire-preview/fixtures.js",
+        "grimoire-preview/index.html",
+        "grimoire-preview/main.js",
+        "grimoire-preview/navigation.js",
+        "grimoire-preview/page.svelte.js",
+        "grimoire-preview/stores.js",
+        "grimoire-preview/vite.config.js",
+        "grimoire-preview/vitest.config.js",
+        "preview/fonts.css",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "test/app-environment-stub.js",
+    ],
+    deps = [
+        ":src",
+        ":node_modules/vitest",
+        "//:node_modules/happy-dom",
+        "//projects/design-system:pkg",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "grimoire_fixture_contract_test",
+    args = ["run", "--config", "grimoire-preview/vitest.config.js"],
+    chdir = package_name(),
+    data = [":grimoire_fixture_src"],
+)
+
+js_run_binary(
+    name = "grimoire_fixture_preview",
+    srcs = [":grimoire_fixture_src"],
+    args = ["build", "--config", "grimoire-preview/vite.config.js"],
+    chdir = package_name(),
+    out_dirs = ["grimoire-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "grimoire_fixture_preview_build_test",
+    targets = [":grimoire_fixture_preview"],
+)
+
 # Keep synthetic preview fixtures out of the production source/build closure.
 # The dedicated Actions job compiles these real route components and runs
 # Chromium. This independent contract target makes fixture edits participate

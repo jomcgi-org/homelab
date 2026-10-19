@@ -206,7 +206,7 @@
     font-size: 11px;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-weight: 600;
   }
 
@@ -214,13 +214,13 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 15px;
     font-weight: 600;
-    color: var(--grim-ink);
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 8px;
+    color: var(--ink);
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 8px 12px;
     cursor: pointer;
     max-width: 46vw;
@@ -232,8 +232,8 @@
   }
 
   .scope-button:focus-visible {
-    border-color: var(--grim-accent);
-    box-shadow: 0 0 0 3px var(--grim-accent-soft);
+    border-color: var(--accent-ink);
+
     outline: none;
   }
 
@@ -244,7 +244,7 @@
   }
 
   .chevron {
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-size: 11px;
     flex: none;
   }
@@ -255,10 +255,10 @@
     left: 0;
     z-index: 30;
     width: min(320px, 80vw);
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 10px;
-    box-shadow: 0 12px 32px rgba(20, 30, 50, 0.16);
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+
     padding: 6px;
   }
 
@@ -269,15 +269,15 @@
     margin-bottom: 4px;
     font-size: 13px;
     font-family: inherit;
-    color: var(--grim-ink);
-    background: var(--grim-surface-2);
-    border: 1px solid var(--grim-line);
-    border-radius: 7px;
+    color: var(--ink);
+    background: var(--band);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     outline: none;
   }
 
   .scope-filter:focus-visible {
-    border-color: var(--grim-accent);
+    border-color: var(--accent-ink);
   }
 
   .scope-list {
@@ -289,35 +289,35 @@
   }
 
   .scope-group-head {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 9.5px;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     padding: 8px 8px 3px;
   }
 
   .scope-option {
     padding: 7px 9px;
-    border-radius: 6px;
+    border-radius: 0;
     cursor: pointer;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 14px;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .scope-option.active {
-    background: var(--grim-accent-soft);
+    background: var(--band);
   }
 
   .scope-option.selected {
-    color: var(--grim-accent);
+    color: var(--accent-ink);
     font-weight: 600;
   }
 
   .scope-empty {
     padding: 10px 9px;
     font-size: 13px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 </style>

@@ -20,7 +20,7 @@
   // means the .grimoire token scope (normally established by the grimoire
   // +layout.svelte) isn't ambient here, so this page establishes it itself:
   // import theme.css and put the .grimoire class on its own root element.
-  // var(--font-mono) is used instead of the design-system.css var(--mono):
+  // var(--font-code) is used instead of the design-system.css var(--mono):
   // it resolves from the globally-loaded tokens.css (a system stack, no
   // webfont), so it renders correctly even without the public-tier layout
   // that this page has reset past.
@@ -30,7 +30,7 @@
   import { forkChatSession } from "$lib/public/grimoire/chat/admission.js";
   import { highlightMentions } from "$lib/public/grimoire/chat/mention-highlight.js";
   import { worldHref } from "$lib/public/grimoire/api.js";
-  import "$lib/grimoire/theme.css";
+  import GrimoireSheet from "$lib/public/grimoire/GrimoireSheet.svelte";
 
   let { data } = $props();
 
@@ -82,114 +82,106 @@
   />
 </svelte:head>
 
-<h1 class="sr-only">A shared conversation with the Grimoire</h1>
+<GrimoireSheet section="shared grimoire chat">
+  <h1 class="sr-only">A shared conversation with the Grimoire</h1>
+  <div class="share-app">
+    <section class="chat-box edition">
+      <div class="panel-head ed-head">
+        <span class="panel-tag">SHARED GRIMOIRE CHAT</span>
+        <span class="panel-readonly">READ-ONLY</span>
+        <span class="panel-spacer"></span>
+        {#if canFork && !forking}
+          <button
+            type="button"
+            class="bar-btn bar-btn-primary"
+            onclick={startFork}
+          >
+            CONTINUE THIS CHAT
+          </button>
+        {/if}
+        <a class="bar-btn" href="/app/grimoire/chat">ASK THE GRIMOIRE</a>
+      </div>
 
-<main class="share-app grimoire">
-  <header class="app-header">
-    <nav class="crumb" aria-label="Breadcrumb">
-      <a class="crumb-home" href="/"
-        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
-        ></a
-      >
-      <span class="crumb-sep">/</span>
-      <span class="crumb-name">shared grimoire chat</span>
-    </nav>
-  </header>
-
-  <section class="chat-box">
-    <div class="panel-head">
-      <span class="panel-tag">SHARED GRIMOIRE CHAT</span>
-      <span class="panel-readonly">READ-ONLY</span>
-      <span class="panel-spacer"></span>
-      {#if canFork && !forking}
-        <button
-          type="button"
-          class="bar-btn bar-btn-primary"
-          onclick={startFork}
-        >
-          CONTINUE THIS CHAT
-        </button>
-      {/if}
-      <a class="bar-btn" href="/app/grimoire/chat">ASK THE GRIMOIRE</a>
-    </div>
-
-    <div class="chat-transcript">
-      {#if data.messages.length === 0}
-        <p class="share-empty">This shared chat is empty.</p>
-      {:else}
-        {#each data.messages as m}
-          {#if m.role === "user"}
-            <article class="turn turn-user">
-              <div class="user-bubble">{m.content}</div>
-            </article>
-          {:else}
-            <article class="turn turn-bot">
-              <p class="bot-label">{BOT_LABEL}</p>
-              <div class="turn-card">
-                <div class="turn-md">
-                  {@html renderReply(m.content, m.touched)}
-                </div>
-                {#if m.touched && m.touched.length}
-                  <!-- The same GROUNDED IN set the live app shows, persisted on
+      <div class="chat-transcript">
+        {#if data.messages.length === 0}
+          <p class="share-empty">This shared chat is empty.</p>
+        {:else}
+          {#each data.messages as m}
+            {#if m.role === "user"}
+              <article class="turn turn-user">
+                <div class="user-bubble">{m.content}</div>
+              </article>
+            {:else}
+              <article class="turn turn-bot">
+                <p class="bot-label">{BOT_LABEL}</p>
+                <div class="turn-card">
+                  <div class="turn-md">
+                    {@html renderReply(m.content, m.touched)}
+                  </div>
+                  {#if m.touched && m.touched.length}
+                    <!-- The same GROUNDED IN set the live app shows, persisted on
                        the assistant turn and carried into the snapshot.
                        Entity touches link to the World page, same as the
                        live app; chunk touches stay plain (no drawer here in
                        a read-only snapshot). -->
-                  <div class="turn-touched">
-                    <span class="turn-touched-label">GROUNDED IN</span>
-                    {#each m.touched as n}
-                      {#if n.kind === "entity"}
-                        <a
-                          href={worldHref(n.id)}
-                          class="touched-chip touched-chip-entity"
-                          style="--chip-color: var(--grim-type-{TYPE_ALLOWLIST.test(
-                            n.entity_type ?? '',
-                          )
-                            ? n.entity_type
-                            : 'class'}, currentColor)"
-                        >
-                          {n.title || "untitled"}
-                        </a>
-                      {:else}
-                        <span class="touched-chip"
-                          >{n.title || "untitled passage"}</span
-                        >
-                      {/if}
-                    {/each}
-                  </div>
-                {/if}
-              </div>
-            </article>
-          {/if}
-        {/each}
-      {/if}
-    </div>
-
-    {#if forking}
-      <div class="fork-panel">
-        <p class="fork-eyebrow">CONTINUE THIS CHAT</p>
-        <p class="fork-copy">
-          Solve the puzzle to pick up this conversation in a fresh session. The
-          transcript above is carried over. No sign-in, no tracking beyond what
-          keeps the bots out.
-        </p>
-        <TurnstileGate
-          siteKey={data.turnstileSiteKey}
-          admit={(token) => forkChatSession(data.snapshotId, token)}
-          onAdmitted={onForked}
-        />
+                    <div class="turn-touched">
+                      <span class="turn-touched-label">GROUNDED IN</span>
+                      {#each m.touched as n}
+                        {#if n.kind === "entity"}
+                          <a
+                            href={worldHref(n.id)}
+                            class="touched-chip touched-chip-entity"
+                            style="--chip-color: var(--grim-type-{TYPE_ALLOWLIST.test(
+                              n.entity_type ?? '',
+                            )
+                              ? n.entity_type
+                              : 'class'}, currentColor)"
+                          >
+                            {n.title || "untitled"}
+                          </a>
+                        {:else}
+                          <span class="touched-chip"
+                            >{n.title || "untitled passage"}</span
+                          >
+                        {/if}
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </article>
+            {/if}
+          {/each}
+        {/if}
       </div>
-    {/if}
 
-    <div class="share-foot">
-      <p class="share-foot-copy">
-        A saved copy of a conversation with the Grimoire, a sage that answers
-        from my D&D sourcebooks.
-      </p>
-      <a class="share-cta" href="/app/grimoire/chat">Ask the Grimoire &rarr;</a>
-    </div>
-  </section>
-</main>
+      {#if forking}
+        <div class="fork-panel">
+          <p class="fork-eyebrow">CONTINUE THIS CHAT</p>
+          <p class="fork-copy">
+            Solve the puzzle to pick up this conversation in a fresh session.
+            The transcript above is carried over. No sign-in, no tracking beyond
+            what keeps the bots out.
+          </p>
+          <TurnstileGate
+            siteKey={data.turnstileSiteKey}
+            admit={(token) => forkChatSession(data.snapshotId, token)}
+            onAdmitted={onForked}
+          />
+        </div>
+      {/if}
+
+      <div class="share-foot">
+        <p class="share-foot-copy">
+          A saved copy of a conversation with the Grimoire, a sage that answers
+          from my D&D sourcebooks.
+        </p>
+        <a class="share-cta" href="/app/grimoire/chat"
+          >Ask the Grimoire &rarr;</a
+        >
+      </div>
+    </section>
+  </div>
+</GrimoireSheet>
 
 <style>
   .sr-only {
@@ -209,9 +201,9 @@
     max-width: 860px;
     margin: 0 auto;
     padding: 24px 18px 48px;
-    font-family: var(--font-mono);
-    color: var(--grim-ink);
-    background: var(--grim-paper);
+    font-family: var(--font-code);
+    color: var(--ink);
+    background: var(--sheet);
     min-height: 100vh;
   }
   .share-app *,
@@ -224,30 +216,30 @@
     margin-bottom: 16px;
   }
   .crumb {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 12px;
     letter-spacing: 0.04em;
   }
   .crumb-home {
-    color: var(--grim-ink);
+    color: var(--ink);
     text-decoration: none;
-    border-bottom: 2px solid var(--grim-accent);
+    border-bottom: 1px solid var(--accent-ink);
   }
   .crumb-arrow {
     margin-left: 1px;
   }
   .crumb-sep {
     margin: 0 6px;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
   .crumb-name {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .chat-box {
-    border: 1px solid var(--grim-line);
-    border-radius: 10px;
-    background: var(--grim-surface);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -258,43 +250,43 @@
     align-items: center;
     gap: 10px;
     padding: 12px 18px;
-    border-bottom: 1px solid var(--grim-line);
-    background: var(--grim-surface);
+    border-bottom: 1px solid var(--stroke);
+    background: var(--sheet);
   }
   .panel-tag {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.14em;
-    background: var(--grim-accent);
-    color: var(--grim-on-accent);
-    border-radius: 4px;
+    background: var(--accent-ink);
+    color: var(--sheet);
+    border-radius: 0;
     padding: 4px 10px;
   }
   .panel-readonly {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.12em;
-    color: var(--grim-text-dim);
-    background: var(--grim-surface-2);
-    border: 1px solid var(--grim-line);
-    border-radius: 4px;
+    color: var(--ink-2);
+    background: var(--band);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 2px 8px;
   }
   .panel-spacer {
     flex: 1;
   }
   .bar-btn {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.1em;
     padding: 6px 12px;
-    border: 1px solid var(--grim-line);
-    border-radius: 6px;
-    background: var(--grim-surface);
-    color: var(--grim-ink);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
+    color: var(--ink);
     text-decoration: none;
     cursor: pointer;
     transition:
@@ -302,20 +294,20 @@
       border-color 120ms ease;
   }
   .bar-btn:hover {
-    background: var(--grim-accent-soft);
-    border-color: var(--grim-accent);
+    background: var(--band);
+    border-color: var(--accent-ink);
   }
   /* The primary "continue this chat" action: filled with the grimoire accent
      so it reads as the main affordance next to the neutral "ask the
      grimoire" link. */
   .bar-btn-primary {
-    background: var(--grim-accent);
-    color: var(--grim-on-accent);
-    border-color: var(--grim-accent);
+    background: var(--accent-ink);
+    color: var(--sheet);
+    border-color: var(--accent-ink);
   }
   .bar-btn-primary:hover {
-    background: var(--grim-accent-strong);
-    border-color: var(--grim-accent-strong);
+    background: var(--accent-ink);
+    border-color: var(--accent-ink);
   }
 
   /* The fork gate panel: revealed under the transcript when a visitor opts to
@@ -325,20 +317,20 @@
     flex-direction: column;
     gap: 12px;
     padding: 18px 24px;
-    border-top: 1px solid var(--grim-line);
-    background: var(--grim-surface);
+    border-top: 1px solid var(--stroke);
+    background: var(--sheet);
   }
   .fork-eyebrow {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.16em;
     margin: 0;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
   .fork-copy {
     font-size: 13px;
     line-height: 1.6;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     max-width: 60ch;
     margin: 0;
   }
@@ -348,11 +340,11 @@
     display: flex;
     flex-direction: column;
     gap: 20px;
-    background: var(--grim-paper);
+    background: var(--sheet);
   }
   .share-empty {
     font-size: 13px;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .turn {
@@ -365,9 +357,9 @@
     justify-content: flex-end;
   }
   .user-bubble {
-    background: var(--grim-accent-soft);
-    border: 1px solid var(--grim-accent);
-    border-radius: 10px;
+    background: var(--band);
+    border: 1px solid var(--accent-ink);
+    border-radius: 0;
     padding: 11px 14px;
     font-size: 13px;
     line-height: 1.55;
@@ -381,23 +373,23 @@
   }
   .bot-label {
     display: inline-block;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.14em;
-    color: var(--grim-on-accent);
-    background: var(--grim-accent);
-    border-radius: 4px;
+    color: var(--sheet);
+    background: var(--accent-ink);
+    border-radius: 0;
     padding: 2px 8px;
     margin-bottom: 9px;
   }
   /* The reply card: a near-white surface on the parchment background so the
      ANSWER text has real contrast, matching the live chat app. */
   .turn-card {
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 12px;
-    box-shadow: 0 1px 2px rgba(20, 24, 32, 0.05);
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+
     padding: 16px 18px;
   }
   .turn-md {
@@ -412,7 +404,7 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     max-width: 100%;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   .turn-md :global(p) {
     margin: 0 0 9px;
@@ -434,16 +426,16 @@
     margin-bottom: 3px;
   }
   .turn-md :global(code) {
-    background: var(--grim-surface-2);
+    background: var(--band);
     padding: 1px 5px;
-    border: 1px solid var(--grim-line);
-    border-radius: 3px;
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     font-size: 12px;
   }
   .turn-md :global(pre) {
-    background: var(--grim-surface-2);
-    border: 1px solid var(--grim-line);
-    border-radius: 6px;
+    background: var(--band);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 10px 12px;
     margin: 9px 0;
     overflow-x: auto;
@@ -461,8 +453,8 @@
   .turn-md :global(blockquote) {
     margin: 9px 0;
     padding: 6px 12px;
-    border-left: 2px solid var(--grim-accent);
-    background: var(--grim-surface-2);
+    border-left: 1px solid var(--accent-ink);
+    background: var(--band);
   }
   .turn-md :global(table) {
     border-collapse: collapse;
@@ -472,16 +464,16 @@
   }
   .turn-md :global(th),
   .turn-md :global(td) {
-    border: 1px solid var(--grim-line);
+    border: 1px solid var(--stroke);
     padding: 4px 8px;
     text-align: left;
   }
   .turn-md :global(th) {
-    background: var(--grim-surface-2);
+    background: var(--band);
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 0.06em;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   /* Grounded entity mentions (highlightMentions): a visible, clickable link
      to the entity's World page, matching the live chat app. */
@@ -490,7 +482,7 @@
     text-decoration: underline;
     text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
-    border-radius: 4px;
+    border-radius: 0;
     padding: 0.5px 4px;
     margin: 0 -1px;
     background: color-mix(in srgb, currentColor 12%, transparent);
@@ -512,26 +504,26 @@
     gap: 7px;
     margin-top: 14px;
     padding-top: 10px;
-    border-top: 1px dashed var(--grim-line);
+    border-top: 1px dashed var(--stroke);
   }
   .turn-touched-label {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.14em;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
   .touched-chip {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 11px;
     padding: 3px 9px;
-    border-radius: 999px;
-    border: 1px solid var(--grim-line);
-    background: var(--grim-surface-2);
-    color: var(--grim-text-dim);
+    border-radius: 0;
+    border: 1px solid var(--stroke);
+    background: var(--band);
+    color: var(--ink-2);
     text-decoration: none;
     max-width: 100%;
     overflow: hidden;
@@ -543,32 +535,32 @@
       color 120ms ease;
   }
   .touched-chip-entity {
-    color: var(--chip-color, var(--grim-text-dim));
+    color: var(--chip-color, var(--ink-2));
     cursor: pointer;
   }
   .touched-chip-entity::before {
     content: "";
     width: 6px;
     height: 6px;
-    border-radius: 999px;
+    border-radius: 0;
     background: var(--chip-color, currentColor);
     flex-shrink: 0;
   }
   .touched-chip-entity:hover,
   .touched-chip-entity:focus-visible {
-    color: var(--chip-color, var(--grim-ink));
-    border-color: var(--chip-color, var(--grim-accent));
+    color: var(--chip-color, var(--ink));
+    border-color: var(--chip-color, var(--accent-ink));
     background: color-mix(
       in srgb,
-      var(--chip-color, var(--grim-accent)) 12%,
+      var(--chip-color, var(--accent-ink)) 12%,
       transparent
     );
   }
 
   .share-foot {
     padding: 16px 24px 20px;
-    border-top: 1px solid var(--grim-line);
-    background: var(--grim-surface);
+    border-top: 1px solid var(--stroke);
+    background: var(--sheet);
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -578,7 +570,7 @@
   .share-foot-copy {
     font-size: 12px;
     line-height: 1.55;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     max-width: 60ch;
     margin: 0;
   }
@@ -586,14 +578,14 @@
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.08em;
-    color: var(--grim-on-accent);
+    color: var(--sheet);
     text-decoration: none;
-    background: var(--grim-accent);
-    border-radius: 6px;
+    background: var(--accent-ink);
+    border-radius: 0;
     padding: 7px 12px;
     white-space: nowrap;
   }
   .share-cta:hover {
-    background: var(--grim-accent-strong);
+    background: var(--accent-ink);
   }
 </style>
