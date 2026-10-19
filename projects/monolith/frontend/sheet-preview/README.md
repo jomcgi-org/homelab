@@ -29,7 +29,8 @@ show the maintenance banner. Geometry assertions check
 horizontal page overflow and every iframe edge against the viewport. The
 artifact checks also mount the production maintenance banner, confirm that it
 makes the document taller than the viewport and verify computed body overflow
-stays hidden with no outer-page wheel scrolling. They retain the banner's
+stays hidden on load and after a wheel scroll, with the outer page at scrollY 0.
+The report retains both measurements. They retain the banner's
 existing offset above the full-height iframe. Both page overrides are checked
 again with the shared CSS rule loaded last, including the leaderboard trail's
 zero bottom margin. Both prefixed artifact paths run the same overflow checks

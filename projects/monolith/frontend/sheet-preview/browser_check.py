@@ -137,7 +137,11 @@ def artifact_checks(page, width, banner=False):
     assert frame.get_attribute("srcdoc") is None
     assert page.title() == "Artifact"
     assert page.locator(".md-nav, .chrome, .scheme, .frame, .spine").count() == 0
-    layout = geometry(page)
+    initial_layout = geometry(page)
+    assert (
+        initial_layout["bodyOverflowY"] == "hidden" and initial_layout["scrollY"] == 0
+    ), initial_layout
+    layout = initial_layout
     bounds = layout["iframe"]
     banner_bounds = (
         page.locator(".maintenance-banner").bounding_box() if banner else None
@@ -160,6 +164,11 @@ def artifact_checks(page, width, banner=False):
     assert layout["bodyOverflowY"] == "hidden" and layout["scrollY"] == 0, layout
     shared = shared_rule_last(page, "body:has(.td)")
     try:
+        shared_last_initial_layout = geometry(page)
+        assert (
+            shared_last_initial_layout["bodyOverflowY"] == "hidden"
+            and shared_last_initial_layout["scrollY"] == 0
+        ), shared_last_initial_layout
         page.mouse.wheel(0, HEIGHT)
         page.wait_for_timeout(200)
         shared_last_layout = geometry(page)
@@ -174,7 +183,9 @@ def artifact_checks(page, width, banner=False):
     assert page.evaluate("window.artifactRan === undefined")
     button = child.get_by_role("button", name="Count locally")
     result = {
+        "initial_layout": initial_layout,
         "layout": layout,
+        "shared_rule_last_initial_layout": shared_last_initial_layout,
         "shared_rule_last_layout": shared_last_layout,
         "button_focus": focus(page, button),
     }
