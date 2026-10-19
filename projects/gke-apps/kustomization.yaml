@@ -9,4 +9,5 @@ resources:
   - ./monolith-public
   - ./monolith-agents
   - ./inference
+  - ./loom
   - ./context-forge-gateway

@@ -1,5 +1,5 @@
-# Default-off: this directory is not registered in the hub kustomization.
-# #6605 verifies chart 0.2.0 and sha-e6ca13c images in ghcr before enabling it.
+# Registered by the #6605 activation PR, which requires the operator checks.
+# Keep the pinned chart and images together; worker activation is separate.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

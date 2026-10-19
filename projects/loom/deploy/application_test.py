@@ -1,4 +1,4 @@
-"""Guard Loom's staged hub Application, secret references and source paths."""
+"""Guard Loom's hub Application, secret references and source paths."""
 
 import copy
 import os
@@ -66,20 +66,10 @@ def assert_sources(app):
     }
 
 
-def assert_default_off(hub):
-    resources = hub["resources"]
-    assert not any(
-        Path(resource).as_posix().rstrip("/")
-        in {
-            "loom",
-            "loom/application.yaml",
-            "../loom/deploy",
-        }
-        for resource in resources
-    )
-    # Pin the complete existing root, including order. This prevents another
-    # spelling or an added component from silently enrolling the Application.
-    assert resources == [
+def assert_hub_registration(hub):
+    # Keep the complete hub root explicit, including the single Loom source.
+    # The Application itself owns the deploy manifests and chart values.
+    assert hub["resources"] == [
         "namespace-embervm.yaml",
         "./embervm",
         "./embervm-dev",
@@ -87,6 +77,7 @@ def assert_default_off(hub):
         "./monolith-public",
         "./monolith-agents",
         "./inference",
+        "./loom",
         "./context-forge-gateway",
     ]
     assert set(hub) == {"apiVersion", "kind", "resources"}
@@ -118,8 +109,8 @@ def test_sync_policy_matches_hub_gateway_with_literal_retry():
     }
 
 
-def test_hub_default_off():
-    assert_default_off(load(HUB))
+def test_hub_registers_loom_once():
+    assert_hub_registration(load(HUB))
 
 
 def test_repository_credential_item_is_in_argocd_with_repository_label():
@@ -190,14 +181,16 @@ def test_no_plaintext_credentials_in_repository_deployment_inputs():
     assert not (DEPLOY / "s3-credentials.yaml").exists()
 
 
-@pytest.mark.parametrize("mutation", ["edge_chart", "hub_enrollment"])
+@pytest.mark.parametrize("mutation", ["edge_chart", "hub_omission", "hub_duplicate"])
 def test_application_mutations_fail_acceptance(mutation):
     app = copy.deepcopy(load(APPLICATION))
     hub = copy.deepcopy(load(HUB))
     if mutation == "edge_chart":
         app["spec"]["sources"][0]["targetRevision"] = "0.0.0-edge"
+    elif mutation == "hub_omission":
+        hub["resources"].remove("./loom")
     else:
         hub["resources"].append("./loom")
     with pytest.raises(AssertionError):
         assert_sources(app)
-        assert_default_off(hub)
+        assert_hub_registration(hub)
