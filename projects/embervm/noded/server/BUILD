@@ -43,6 +43,7 @@ go_library(
         "//projects/embervm/noded/snapshotmeta",
         "//projects/embervm/noded/store",
         "//projects/embervm/noded/substrate",
+        "//projects/embervm/noded/unixsock",
         "//projects/embervm/noded/volume",
         "//projects/embervm/proto/embervm/node/v1:nodev1",
         "@org_golang_google_grpc//:grpc",

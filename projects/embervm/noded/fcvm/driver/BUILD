@@ -36,6 +36,7 @@ go_library(
         "//projects/embervm/noded/snapshotmeta",
         "//projects/embervm/noded/sparse",
         "//projects/embervm/noded/substrate",
+        "//projects/embervm/noded/unixsock",
         "//projects/embervm/noded/vsockproto",
         "@io_opentelemetry_go_otel//:otel",
     ] + select({

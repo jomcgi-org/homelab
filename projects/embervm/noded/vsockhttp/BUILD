@@ -5,7 +5,10 @@ go_library(
     srcs = ["transport.go"],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/vsockhttp",
     visibility = ["//projects/embervm/noded:__subpackages__"],
-    deps = ["//projects/embervm/noded/vsockproto"],
+    deps = [
+        "//projects/embervm/noded/unixsock",
+        "//projects/embervm/noded/vsockproto",
+    ],
 )
 
 go_test(

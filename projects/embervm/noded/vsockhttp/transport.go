@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
 
@@ -335,7 +336,7 @@ func (t *Transport) setClockAttempt(ctx context.Context, udsPath string, epochMs
 // mode it performs the Firecracker host-initiated vsock CONNECT handshake. With
 // directDial (test mode) it returns the raw UDS connection directly.
 func (t *Transport) dialConn(ctx context.Context, d *net.Dialer, udsPath string) (net.Conn, error) {
-	conn, err := d.DialContext(ctx, "unix", udsPath)
+	conn, err := unixsock.DialWith(ctx, d, udsPath)
 	if err != nil {
 		return nil, fmt.Errorf("vsockhttp: dial uds %s: %w", udsPath, err)
 	}
