@@ -58,9 +58,14 @@ passing through the autoformat author guard.
 
 ## 3. Images
 
-Application images are apko (`bazel/tools/oci/apko_image.bzl`) over Wolfi packages, non-root uid 65532, from an `apko.yaml` plus a committed `apko.lock.json`; 25 targets today. Two older shapes remain: `go_image` (four targets, distroless base) and one `py3_image` (ubuntu base). Every macro emits `{name}.push` (collected into the generated `//bazel/images:push_all` multirun), `{name}.info` (an `OciImageInfo` that `helm_images_values` deep-merges into the chart's `values.yaml` at package time, which is why no values file ever hand-pins a `@sha256:` digest), and for apko a `{name}_lock_test` that fails when the lock's config checksum no longer matches the YAML.
+Application images use apko (`bazel/tools/oci/apko_image.bzl`) over Wolfi packages, non-root uid 65532, from an `apko.yaml` plus a committed `apko.lock.json`. Two other shapes remain: `go_image` with a distroless base and `py3_image` with an Ubuntu or custom base. Every macro emits `{name}.push` (collected into the generated `//bazel/images:push_all` multirun), `{name}.info` (an `OciImageInfo` that `helm_images_values` deep-merges into the chart's `values.yaml` at package time, which is why no values file ever hand-pins a `@sha256:` digest), and for apko a `{name}_lock_test` that fails when the lock's config checksum no longer matches the YAML.
 
-**amd64, with one exception.** `apko_image` defaults `arm64 = True` and 24 of its 25 call sites pass `False`: all nodes and the RBE executor are amd64, no chart pins an arch, and the aarch64 half of a manifest had no consumer. The exception is `projects/embervm/noded/image`, which still builds an amd64 plus arm64 index through `multiarch_tars`. `go_image` and `py3_image` default to single-platform (`multi_platform = False`) and no caller overrides it. Re-adding an arch is `arm64 = True` plus per-arch `tars`; `arm64 = False` with `multiarch_tars` fails to push a layer blob at push time, so PR CI stays green and main's deploy is what breaks.
+**amd64, with one exception.** `apko_image` defaults `arm64 = True`; callers pass `False` except `projects/embervm/noded/image`, which builds an amd64 plus arm64 index through `multiarch_tars`. `go_image` and `py3_image` build one image, selecting Linux for the caller's CPU through their existing platform transitions. Linux CI selects amd64, and the default distroless and Ubuntu base pulls contain only amd64. A different CPU requires a matching custom base. Re-adding an apko arch is `arm64 = True` plus per-arch `tars`; `arm64 = False` with `multiarch_tars` fails to push a layer blob at push time, so PR CI stays green and main's deploy is what breaks.
+
+**Why.** No caller used the Go or Python multi-platform branches (#7081).
+Removing them preserves the single-platform image, load, push and digest
+targets. Python's `multiarch_tars` remains an accepted compatibility argument
+with no effect on that path; concrete layers belong in `tars`.
 
 Digests are reproducible: `.bazelrc` pins `SOURCE_DATE_EPOCH` to a constant so apko stops stamping a wall-clock `created` time, and `--stamp` is applied only by the push job, never by `--config=ci`, because a stamped graph turns every image's digest rule into a cache miss. On main, `bazel/images/push/push-changed.sh` builds everything, reads each image's content digest from `//bazel/images/digests:manifest`, and pushes only what the registry does not already hold; PR branches `bazel build` the images and push nothing.
 
@@ -176,7 +181,7 @@ has the full text.
 
 | ADR | Decision | Status | Disposition |
 |---|---|---|---|
-| tooling/001 | Distribute developer tools as a multi-arch OCI image pulled by `crane export`; no local Bazel; all execution remote | Implemented. `bazel/helm/render.sh`, `bazel/helm/lint.sh`, and the live ArgoCD diff are built; Claude-in-cluster convergence is unbuilt (#3914, #3915, #3916) | deleted |
+| tooling/001 | Distribute developer tools as a multi-arch OCI image pulled by `crane export`; no local Bazel; all execution remote | Implemented. `bazel/helm/render.sh` and `bazel/helm/lint.sh` remain; the unused per-Application live diff was removed in #7081. `check-application-drift.sh` remains the operational drift check. Claude-in-cluster convergence is unbuilt (#3914, #3915, #3916) | deleted |
 | tooling/002 | Copier template that scaffolds a new service | Draft, never executed; the current recipe is to copy `projects/monolith/deploy/` (#3918) | deleted |
 | tooling/003 | Generate the `homelab` CLI and Claude skills from the FastAPI OpenAPI spec | Deprecated; `tools/cli` stays hand-written | deleted |
 | tooling/004 | Scale the custom `bazel/ocaml` ruleset rather than adopt obazl: ppx first, a locked opam universe, dune translation, per-arch native toolchains | Superseded; the ruleset was removed in #6913 after #4777 left it purposeless | deleted |

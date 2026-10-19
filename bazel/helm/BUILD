@@ -7,11 +7,9 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(":generation_contract_test.bzl", "helm_admissibility_consumers_test")
 
 exports_files([
-    "argocd-live-diff.sh",
     "chart-admissibility-test.sh",
     "chart-version.sh",
     "check-missed-bump.sh",
-    "helm-assert-annotations.sh",
     "helm-template-test.sh",
     "lint.sh",
     "push.sh.tpl",
@@ -183,12 +181,6 @@ sh_test(
 )
 
 sh_test(
-    name = "argocd_live_diff_test",
-    srcs = ["argocd-live-diff_test.sh"],
-    data = [":argocd-live-diff.sh"],
-)
-
-sh_test(
     name = "check_missed_bump_test",
     srcs = ["check-missed-bump_test.sh"],
     data = [":check-missed-bump.sh"],
@@ -240,7 +232,6 @@ bzl_library(
         "defs.bzl",  # keep
         "images.bzl",  # keep
         "push.bzl",  # keep
-        "render.bzl",  # keep
         "test.bzl",  # keep
     ],
     visibility = ["//visibility:public"],

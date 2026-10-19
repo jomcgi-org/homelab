@@ -349,7 +349,6 @@ oci.pull(
     image = "gcr.io/distroless/base",
     platforms = [
         "linux/amd64",
-        "linux/arm64/v8",
     ],
 )
 use_repo(
@@ -357,7 +356,6 @@ use_repo(
     "custom_crane_crane_toolchains",  # Crane toolchains for apko_push
     "distroless_base",
     "distroless_base_linux_amd64",
-    "distroless_base_linux_arm64_v8",
 )
 
 oci.pull(
@@ -365,11 +363,10 @@ oci.pull(
     digest = "sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03",
     image = "ubuntu",
     platforms = [
-        "linux/arm64/v8",
         "linux/amd64",
     ],
 )
-use_repo(oci, "python_base", "python_base_linux_amd64", "python_base_linux_arm64_v8")
+use_repo(oci, "python_base", "python_base_linux_amd64")
 use_repo(oci, "custom_crane_regctl_toolchains")
 
 # PostgreSQL 16 + pgvector for e2e integration tests

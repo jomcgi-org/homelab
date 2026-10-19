@@ -37,9 +37,7 @@ func TestArgoCDLang_KnownDirectives(t *testing.T) {
 	expected := []string{
 		"argocd",
 		"argocd_enabled",
-		"argocd_generate_diff",
 		"argocd_generate_manifests",
-		"kubectl_context",
 	}
 
 	if len(directives) != len(expected) {

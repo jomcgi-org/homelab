@@ -1,6 +1,6 @@
 # rules_oci (homelab wrappers)
 
-Bazel macros for building OCI images (amd64 unless asked) and the `OciImageInfo` provider
+Bazel macros for building OCI images and the `OciImageInfo` provider
 that carries repository and tag metadata downstream to Helm chart packaging.
 
 All image rules produce a `{name}.info` target exposing `OciImageInfo`. That
@@ -23,9 +23,9 @@ load("//bazel/tools/oci:providers.bzl",           "OciImageInfo", "oci_image_inf
 
 | Symbol                | Kind     | File                      | Use                                                               |
 | --------------------- | -------- | ------------------------- | ----------------------------------------------------------------- |
-| `go_image`            | macro    | `go_image.bzl`            | amd64 OCI image from a Go binary (distroless base)                |
+| `go_image`            | macro    | `go_image.bzl`            | Single-platform OCI image from a Go binary (distroless base)      |
 | `apko_image`          | macro    | `apko_image.bzl`          | apko-based OCI image, optionally with extra tar layers            |
-| `py3_image`           | macro    | `py3_image.bzl`           | amd64 Python 3 image using `py_image_layer`                       |
+| `py3_image`           | macro    | `py3_image.bzl`           | Single-platform Python 3 image using `py_image_layer`             |
 | `OciImageInfo`        | provider | `providers.bzl`           | Provider carrying `repository` + `image_tags` files               |
 | `oci_image_info`      | rule     | `providers.bzl`           | Low-level rule that writes an `OciImageInfo` from raw strings     |
 
@@ -75,9 +75,9 @@ the tag is a registry-facing alias rather than the deployed reference.
 
 ## `go_image`
 
-Wraps a `go_binary` in a distroless OCI image. Builds the `amd64` image;
-`multi_platform = True` adds an `arm64` slice and combines both into an
-`oci_image_index`. No caller sets it.
+Wraps a `go_binary` in one distroless OCI image. The platform transition
+selects Linux for the caller's CPU, amd64 in Linux CI. The default base is
+pulled for amd64 only; another CPU needs a matching custom base.
 
 ```python
 # projects/example/api/BUILD
@@ -98,15 +98,13 @@ go_image(
 | `repository`     | `ghcr.io/jomcgi/homelab/{package_name}` | OCI registry repository URL                                           |
 | `extra_tars`     | `[]`                                    | Platform-independent tar layers added after the platform transition   |
 | `visibility`     | `["//bazel/images:__pkg__"]`            | Visibility of the `.push` target                                      |
-| `multi_platform` | `False`                                 | Build amd64 and arm64 slices and an index; the default is one amd64 image |
 
 Created targets:
 
 | Target         | Description                                                      |
 | -------------- | ---------------------------------------------------------------- |
-| `{name}`       | amd64 `oci_image` (an `oci_image_index` with `multi_platform`)   |
-| `{name}_amd64` | AMD64 image slice, only with `multi_platform`                    |
-| `{name}_arm64` | ARM64 image slice, only with `multi_platform`                    |
+| `{name}`       | Platform-selected image, with extra tars layered after the transition |
+| `{name}.digest` | Digest of the platform-selected image                          |
 | `{name}.load`  | Load the image into local Docker                                 |
 | `{name}.push`  | Push to the OCI registry (CI)                                    |
 | `{name}.info`  | `OciImageInfo` provider for `helm_chart`                         |
@@ -175,8 +173,10 @@ Created targets:
 
 ## `py3_image`
 
-Builds an amd64 Python 3 image using `py_image_layer` from
-`@aspect_rules_py`. Handles runfiles layout, `PYTHONPATH`, and a `/bin/bash`
+Builds one Python 3 image using `py_image_layer` from `@aspect_rules_py`.
+The platform transition selects Linux for the caller's CPU, amd64 in Linux
+CI. The default base is pulled for amd64 only; another CPU needs a matching
+custom base. Handles runfiles layout, `PYTHONPATH`, and a `/bin/bash`
 symlink layer automatically.
 
 ```python
@@ -204,20 +204,20 @@ py3_image(
 | `env`            | `{}`                                    | Additional environment variables (merged with auto-set `PYTHONPATH` etc) |
 | `workdir`        | workspace root (auto)                   | Container working directory                                              |
 | `base`           | `@python_base`                          | Base image                                                               |
-| `tars`           | `[]`                                    | Additional tar layers (both platforms)                                   |
-| `multiarch_tars` | `[]`                                    | Tar base names; macro appends `_amd64` / `_arm64` for each entry         |
+| `tars`           | `[]`                                    | Additional concrete tar layers                                          |
+| `multiarch_tars` | `[]`                                    | Compatibility argument; unused by the single-platform path, use `tars` |
 | `bash_symlink`   | `True`                                  | Add `/bin/bash -> /usr/bin/bash` symlink layer; set `False` for Wolfi    |
 | `repository`     | `ghcr.io/jomcgi/homelab/{package_name}` | OCI registry repository URL                                              |
 | `visibility`     | `["//bazel/images:__pkg__"]`            | Visibility of the `.push` target                                         |
-| `multi_platform` | `False`                                 | Build amd64 and arm64 slices and an index; no caller sets it             |
 
 Created targets:
 
 | Target               | Description                                       |
 | -------------------- | ------------------------------------------------- |
-| `{name}`             | amd64 image (an index with `multi_platform`)      |
+| `{name}`             | Platform-selected image                         |
+| `{name}.digest`      | Digest under the same transition as the image   |
 | `{name}.load`        | Load the image into local Docker                  |
-| `{name}.push`        | Push index to the OCI registry (CI)               |
+| `{name}.push`        | Push the image to the OCI registry (CI)          |
 | `{name}_config_test` | `sh_test` verifying Python runtime env is correct |
 | `{name}.info`        | `OciImageInfo` provider for `helm_chart`          |
 
@@ -249,10 +249,9 @@ the deploy-time `values.yaml` never needs manual image entries.
 
 ## Conventions
 
-- Images are amd64. `go_image` and `py3_image` default `multi_platform = False`;
-  `apko_image` defaults `arm64 = True` and callers pass `False` (noded is the
-  one index). Re-adding an arch is `arm64 = True` or `multi_platform = True`
-  plus per-arch tars.
+- Linux CI builds `go_image` and `py3_image` as single-platform amd64 images.
+  `apko_image` retains its separate `arm64` knob: callers pass `False` except
+  noded, which builds an amd64 plus arm64 index with per-arch tars.
 - All containers run as uid `65532` (nonroot). The distroless base enforces
   this; apko images should declare a non-root user in their config.
 - The `{name}.push` target is visible to `//bazel/images:__pkg__` by default,

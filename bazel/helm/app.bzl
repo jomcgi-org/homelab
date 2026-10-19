@@ -10,8 +10,6 @@ def argocd_app(
         namespace = "default",
         values_files = [],
         generate_manifests = True,
-        generate_diff = False,
-        application_name = None,
         tags = [],
         target_suffix = ""):
     """Declares an ArgoCD application overlay with template testing and manifest rendering.
@@ -20,7 +18,6 @@ def argocd_app(
     previously generated for each overlay directory. It creates:
     - A helm_template_test (always) to validate chart rendering
     - A render_manifests genrule (opt-in, default True) for pre-rendering
-    - A diff rule (opt-in, default False) for live ArgoCD diffs
 
     Args:
         name: Base name for generated targets
@@ -30,9 +27,8 @@ def argocd_app(
         namespace: Kubernetes namespace (default: "default")
         values_files: List of values file labels in order
         generate_manifests: If True, create render_manifests genrule (default: True)
-        generate_diff: If True, create live diff rule (default: False)
-        application_name: Live ArgoCD Application name. Required with generate_diff.
         tags: Additional tags for the template test
+        target_suffix: Suffix for template and manifest targets sharing a package
     """
     if release_name == None:
         release_name = name
@@ -114,53 +110,4 @@ def argocd_app(
             local = True,
             tags = ["manual"],
             visibility = ["//visibility:public"],
-        )
-
-    if generate_diff:
-        if application_name == None:
-            fail("application_name is required when generate_diff is enabled")
-
-        # Live ArgoCD diff (opt-in). A local render is a pre-flight check. The
-        # ArgoCD CLI regenerates from chart sources using the live Application.
-        chart_yaml = "//" + chart + ":Chart.yaml"
-        diff_data_list = [
-            chart_files,
-            chart_yaml,
-            "//" + chart + ":values.yaml",
-            "@multitool//tools/argocd",
-            "@multitool//tools/helm",
-            "@multitool//tools/op",
-        ] + values_files
-        diff_pkg = native.package_name()
-        diff_seen = {}
-        diff_data = []
-        for d in diff_data_list:
-            key = d
-            if not d.startswith("//") and not d.startswith("@") and not d.startswith(":"):
-                key = "//" + diff_pkg + ":" + d
-            elif d.startswith(":"):
-                key = "//" + diff_pkg + d
-            if key not in diff_seen:
-                diff_seen[key] = True
-                diff_data.append(d)
-
-        native.sh_binary(
-            name = "diff" + target_suffix,
-            srcs = ["//bazel/helm:argocd-live-diff.sh"],
-            data = diff_data,
-            env = {
-                "ARGOCD": "$(rootpath @multitool//tools/argocd)",
-                "ARGOCD_APP_NAME": application_name,
-                "CHART_FILE": "$(rootpath {})".format(chart_yaml),
-                "HELM": "$(rootpath @multitool//tools/helm)",
-                "NAMESPACE": namespace,
-                "OP": "$(rootpath @multitool//tools/op)",
-                "RELEASE_NAME": release_name,
-                # Newlines preserve values-file ordering without breaking paths
-                # that contain spaces. The runner resolves each path separately.
-                "VALUES_FILES": "\n".join([
-                    "$(rootpath {})".format(vf)
-                    for vf in values_files
-                ]),
-            },
         )
