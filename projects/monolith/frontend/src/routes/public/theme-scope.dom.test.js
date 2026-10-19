@@ -100,7 +100,7 @@ describe("rendered theme scopes", () => {
     expect(token(document.documentElement, "--accent")).toBe("#0066ff");
   });
 
-  it("keeps rendered Grimoire and Ember surfaces distinct inside the public scope", async () => {
+  it("keeps Grimoire and legacy Ember scoped while the Ember landing uses the sheet", async () => {
     mountInBody(PublicLayout, {
       data: { maintenanceBanner: null },
       children,
@@ -114,12 +114,18 @@ describe("rendered theme scopes", () => {
     await tick();
 
     const grimoire = grimoireTarget.querySelector(".grimoire");
-    const ember = emberTarget.querySelector(".ember-site");
+    const ember = emberTarget.querySelector(".td.sheet");
     expect(grimoire).not.toBeNull();
     expect(ember).not.toBeNull();
     expect(token(grimoire, "--grim-accent")).toBe("#33507a");
     expect(token(grimoire, "--accent")).toBe("#33507a");
-    expect(token(ember, "--em-ember")).toBe("#e0421a");
+    expect(token(ember, "--sheet")).toBe("#ffffff");
+    expect(token(ember, "--ink")).toBe("#26231c");
+    expect(emberTarget.querySelector(".ember-site")).toBeNull();
+    const legacyEmber = document.createElement("div");
+    legacyEmber.className = "ember-site";
+    document.body.append(legacyEmber);
+    expect(token(legacyEmber, "--em-ember")).toBe("#e0421a");
     expect(token(document.body, "--accent")).toBe("#ffde01");
   });
 });

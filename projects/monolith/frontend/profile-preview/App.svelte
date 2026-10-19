@@ -14,6 +14,8 @@
         "/public/cv": "cv",
         "/public/engineering": "engineering",
         "/public/ember": "ember",
+        "/public/ember/bazel": "bazel-fallback",
+        "/public/ember/postgres": "postgres-fallback",
         "/public/legacy-fixture": "legacy",
       }[routed] ?? "error";
     data = {
@@ -48,9 +50,15 @@
     if (
       next.origin !== location.origin ||
       next.hash ||
-      !["/", "/cv", "/engineering", "/ember", "/legacy-fixture"].includes(
-        next.pathname,
-      )
+      ![
+        "/",
+        "/cv",
+        "/engineering",
+        "/ember",
+        "/ember/bazel",
+        "/ember/postgres",
+        "/legacy-fixture",
+      ].includes(next.pathname)
     )
       return;
     event.preventDefault();
@@ -66,13 +74,19 @@
 />
 <div class="fixture-note">
   Synthetic repository preview, invented stats. No live acceptance.
+  {#if surface.endsWith("-fallback")}
+    {surface}: component fixture only. The real route redirects HTTP 308 to
+    /ember/firecracker#replay.
+  {/if}
 </div>
 <Route {surface} {data} />
 <nav class="fixture-links" aria-label="Fixture routes">
   <a href="/">Home fixture</a><a href="/cv">CV fixture</a><a href="/engineering"
     >Engineering fixture</a
-  ><a href="/ember">Legacy Ember fixture</a><a href="/legacy-fixture"
-    >Legacy Nav fixture</a
+  ><a href="/ember">Ember fixture</a><a href="/ember/bazel"
+    >Bazel fallback fixture</a
+  ><a href="/ember/postgres">Postgres fallback fixture</a><a
+    href="/legacy-fixture">Legacy Nav fixture</a
   >
 </nav>
 
