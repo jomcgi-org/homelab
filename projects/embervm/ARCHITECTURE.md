@@ -1984,12 +1984,15 @@ that existing serving path before polling can resume.
 
 The Codex sidecar excludes grants at 97 percent or explicit exhaustion, and
 never falls from a fresh usable tier into stale or exhausted quota after a
-token-fetch failure. The KG gate can therefore ignore exhausted accounts beside
-a fresh permitting account. Unknown inventory, malformed evidence, role floors
+token-fetch failure. With `SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION=true`, the
+KG gate can ignore exhausted accounts beside a fresh permitting account. Unknown inventory, malformed evidence, role floors
 and no fresh permitting account still defer. Cached sidecar observations age
-even while the broker is unavailable. Deploy the sidecar exclusion before the
-relaxed KG gate; during the opposite version skew, an old sidecar could still
-fall through to an account the new gate excluded.
+even while the broker is unavailable. The gate's compatibility setting defaults
+to false because monolith and EmberVM promote independently. First deploy and
+verify every sidecar's exclusion, then enable the setting through a separate
+monolith values change. Until that activation, reobserved exhaustion still
+vetoes KG admission, preserving the old conservative contract. Opposite version
+skew could let an old sidecar select an account the new gate excludes.
 
 **Account preference** (implemented, activation held): `grantPolicy: prefer-first`
 on a two-member Codex catalog pool chooses its first member whenever fresh usage
@@ -1997,6 +2000,12 @@ proves every reported window usable. The intended order is `[codex-b,
 codex-cluster]`. A fresh exhaustion report or the existing 60-second token-failure
 cooldown permits fallback to A. Stale, missing or invalid B telemetry pauses
 selection until another usage observation; it does not prove B exhausted.
+Before enabling that catalog policy, set `SWARM_CODEX_PREFERRED_GRANT=codex-b`
+on monolith together with the verified-sidecar compatibility setting. Preferred
+account admission requires current future-reset windows and refuses stale B,
+so it defers jobs before egress would deny them. If B's cached token has expired,
+quota observation needs ordinary token serving or operator recovery first;
+neither observation nor preference rotation initiates OAuth refresh as a probe.
 
 A can displace usable B only when both have fresh observations, all windows
 are below 97 percent, all durations and future resets are known, and A's longest

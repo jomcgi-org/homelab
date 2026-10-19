@@ -755,14 +755,14 @@ func (e *secretEntry) resolve() error {
 			fresh := false
 			for _, grant := range candidates {
 				view, ok := views[grant]
-				if bandFor(view, ok, now).band >= 0 && !grantStale(view, ok) && !e.broker.isDead(grant, now) {
+				if bandFor(view, ok, now).band >= 0 && !grantStale(view, ok) {
 					fresh = true
 				}
 			}
 			eligible := make([]string, 0, len(candidates))
 			for _, grant := range candidates {
 				view, ok := views[grant]
-				if bandFor(view, ok, now).band >= 0 && (!fresh || !grantStale(view, ok)) {
+				if bandFor(view, ok, now).band >= 0 && (!fresh || !grantStale(view, ok)) && !e.broker.isDead(grant, now) {
 					eligible = append(eligible, grant)
 				}
 			}

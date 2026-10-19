@@ -579,7 +579,8 @@ func TestCodexUsageHTTPGuards(t *testing.T) {
 	})
 	t.Run("timeouts", func(t *testing.T) {
 		r, _, _ := newUsageTest(t, 200, usageTestPayload(time.Now()))
-		r.tokens = usageDeadlineTokens{usageTokenSource: r.tokens, t: t}
+		deadlineTokens := &usageDeadlineTokens{usageTokenSource: r.tokens, t: t}
+		r.tokens = deadlineTokens
 		if codexUsageTick != time.Minute {
 			t.Fatal("usage tick changed")
 		}
@@ -594,6 +595,9 @@ func TestCodexUsageHTTPGuards(t *testing.T) {
 			return nil, errors.New("timeout")
 		})
 		r.refresh(context.Background(), "codex-b")
+		if !deadlineTokens.called {
+			t.Fatal("cached token deadline was not checked")
+		}
 	})
 	// Register includes the usage counter in the broker's registry.
 	t.Run("metric-registration", func(t *testing.T) {
@@ -620,10 +624,12 @@ func (f usageRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 type usageDeadlineTokens struct {
 	usageTokenSource
-	t *testing.T
+	t      *testing.T
+	called bool
 }
 
-func (s usageDeadlineTokens) GetAccessToken(name string, ctx context.Context) (string, time.Time, error) {
+func (s *usageDeadlineTokens) CachedAccessToken(name string, ctx context.Context) (string, time.Time, error) {
+	s.called = true
 	deadline, ok := ctx.Deadline()
 	if !ok || time.Until(deadline) > 10*time.Second {
 		s.t.Fatal("token request context has no usage deadline")

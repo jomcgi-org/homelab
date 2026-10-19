@@ -278,6 +278,8 @@ def _summarise_view(provider: str, value: dict) -> dict:
         "status": str(value.get("status", "unknown")),
         "age_seconds": (float(age_seconds) if age_usable else None),
         "windows_observed": isinstance(raw_windows, list) and bool(raw_windows),
+        "windows_expired": isinstance(raw_windows, list)
+        and any(isinstance(w, dict) and w.get("expired") is True for w in raw_windows),
         "windows": _active_windows(raw_windows),
         "headline_window": window_name if isinstance(window_name, str) else None,
         "headline_used_percent": (

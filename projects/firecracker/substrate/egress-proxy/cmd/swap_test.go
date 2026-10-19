@@ -1756,6 +1756,11 @@ func TestResolveDoesNotFallBackToExhaustedOrStaleGrant(t *testing.T) {
 		if len(requested) != 1 || requested[0] != "/grants/a/token" {
 			t.Fatalf("ineligible fallback requested: %v", requested)
 		}
+		// A's token cooldown must not make stale B eligible on the next
+		// connection while admission still sees A's fresh quota observation.
+		if err := e.resolve(); err == nil || len(requested) != 1 {
+			t.Fatalf("cooldown admitted an ineligible fallback: requests=%v err=%v", requested, err)
+		}
 		upstream.Close()
 	}
 }
