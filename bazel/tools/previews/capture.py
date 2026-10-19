@@ -261,3 +261,136 @@ def aggregate(root, output, names):
     finally:
         (output / "checks.json").write_text(json.dumps(results, indent=2) + "\n")
     assert len(results) == 2 * len(names), "aggregate matrix incomplete"
+
+
+def comparison(root, output, model):
+    """Check real comparison controls, source labels and preserved scroll."""
+    results = []
+    with serve(root) as base, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        for width, scheme in itertools.product((390, 1440), ("light", "dark")):
+            with checked_context(
+                browser, output, f"comparison-{width}-{scheme}", width, scheme
+            ) as page:
+                page.goto(base, wait_until="networkidle")
+                page.wait_for_function("document.body.dataset.ready")
+                assert page.locator("#head").inner_text() == model["head"]
+                assert page.locator("#baseline").inner_text() == model["baseline"]
+                assert page.locator("#suite option").count() == len(model["suites"])
+                # Decode every referenced PNG, including cases outside this
+                # control sample. A missing side is a build failure.
+                sources = sorted(
+                    {
+                        row[side]
+                        for row in model["rows"]
+                        for side in ("before", "after")
+                        if row[side]
+                    }
+                )
+                decoded = page.evaluate(
+                    "async sources=>{for(const src of sources){const image=new Image();image.src=src;await image.decode();if(!image.naturalWidth)throw Error(src)}return sources.length}",
+                    sources,
+                )
+                assert decoded == len(sources)
+
+                def select(identifier, value):
+                    previous = page.locator("body").get_attribute("data-ready")
+                    page.locator("#" + identifier).select_option(value)
+                    page.wait_for_function(
+                        "old=>document.body.dataset.ready!==old", arg=previous
+                    )
+
+                matched = next(
+                    (
+                        row
+                        for row in model["rows"]
+                        if row["before"]
+                        and row["width"] == 390
+                        and row["case"] in {"full", "overview-full"}
+                    ),
+                    None,
+                )
+                position = restored = None
+                if matched:
+                    select("suite", matched["suite"])
+                    select("case", matched["case"])
+                    select("width", str(matched["width"]))
+                    select("scheme", matched["scheme"])
+                    after = page.get_by_role("radio", name="After", exact=True)
+                    after.focus()
+                    position = page.locator("#viewport").evaluate(
+                        "e=>{e.scrollTop=Math.min(120,e.scrollHeight-e.clientHeight);window.scrollTo(0,40);return {top:e.scrollTop,left:e.scrollLeft,y:scrollY}}"
+                    )
+                    assert position["top"] > 0, (
+                        "position test needs a scrollable matched capture"
+                    )
+                    previous = page.locator("body").get_attribute("data-ready")
+                    page.keyboard.press("ArrowLeft")
+                    page.wait_for_function(
+                        "old=>document.body.dataset.ready!==old", arg=previous
+                    )
+                    assert page.get_by_role(
+                        "radio", name="Before", exact=True
+                    ).is_checked()
+                    assert (
+                        page.locator("#capture").get_attribute("src")
+                        == matched["before"]
+                    )
+                    restored = page.locator("#viewport").evaluate(
+                        "e=>({top:e.scrollTop,left:e.scrollLeft,y:scrollY})"
+                    )
+                    assert restored == position, (position, restored)
+                    previous = page.locator("body").get_attribute("data-ready")
+                    page.keyboard.press("ArrowRight")
+                    page.wait_for_function(
+                        "old=>document.body.dataset.ready!==old", arg=previous
+                    )
+                    assert (
+                        page.locator("#capture").get_attribute("src")
+                        == matched["after"]
+                    )
+                    assert (
+                        page.locator("#viewport").evaluate(
+                            "e=>({top:e.scrollTop,left:e.scrollLeft,y:scrollY})"
+                        )
+                        == position
+                    )
+                measure(page)
+                page.screenshot(
+                    path=str(output / f"comparison-{width}-{scheme}.png"),
+                    full_page=True,
+                )
+                unavailable = next(
+                    (row for row in model["rows"] if not row["before"]), None
+                )
+                if unavailable:
+                    select("suite", unavailable["suite"])
+                    select("case", unavailable["case"])
+                    select("width", str(unavailable["width"]))
+                    select("scheme", unavailable["scheme"])
+                    previous = page.locator("body").get_attribute("data-ready")
+                    page.get_by_role("radio", name="Before", exact=True).check()
+                    page.wait_for_function(
+                        "old=>document.body.dataset.ready!==old", arg=previous
+                    )
+                    assert page.locator("#capture").is_hidden()
+                    assert not page.locator("#capture").get_attribute("src")
+                    assert (
+                        "Before unavailable"
+                        in page.locator("#unavailable").inner_text()
+                    )
+                results.append(
+                    {
+                        "width": width,
+                        "browser_scheme": scheme,
+                        "decoded_images": decoded,
+                        "position": position,
+                        "restored_position": restored,
+                        "keyboard_toggle": matched is not None,
+                        "unavailable_checked": unavailable is not None,
+                        "status": "passed",
+                    }
+                )
+        browser.close()
+    (output / "checks.json").write_text(json.dumps(results, indent=2) + "\n")
+    assert len(results) == 4, "comparison browser matrix incomplete"
