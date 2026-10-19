@@ -187,6 +187,22 @@ defmodule Embervm.Router do
     handle_list_sessions(conn, name)
   end
 
+  post "/v1/sessions/:id/residency" do
+    handle_residency(conn, id, :submit)
+  end
+
+  get "/v1/sessions/:id/residency" do
+    handle_residency(conn, id, :list)
+  end
+
+  get "/v1/sessions/:id/residency/:operation_id" do
+    handle_residency(conn, id, {:get, operation_id})
+  end
+
+  delete "/v1/sessions/:id/residency/:operation_id" do
+    handle_residency(conn, id, {:cancel, operation_id})
+  end
+
   post "/v1/sessions/:id/invoke" do
     handle_session_invoke(conn, id)
   end
@@ -336,6 +352,10 @@ defmodule Embervm.Router do
     do: true
 
   defp session_token_route?(%Plug.Conn{method: "GET", path_info: ["v1", "sessions", _id]}), do: true
+  defp session_token_route?(%Plug.Conn{method: method, path_info: ["v1", "sessions", _id, "residency"]})
+      when method in ["POST", "GET"], do: true
+  defp session_token_route?(%Plug.Conn{method: method, path_info: ["v1", "sessions", _id, "residency", _operation_id]})
+      when method in ["GET", "DELETE"], do: true
   defp session_token_route?(_conn), do: false
 
   defp do_authenticate(conn) do
@@ -692,7 +712,8 @@ defmodule Embervm.Router do
       dispatch: dispatch_snapshot(),
       create_inflight: create_inflight,
       create_concurrency: create_concurrency,
-      create_saturated_denials: create_saturated_denials
+      create_saturated_denials: create_saturated_denials,
+      async_residency: residency_stats()
     })
   end
 
@@ -740,6 +761,14 @@ defmodule Embervm.Router do
     _ -> false
   catch
     _, _ -> false
+  end
+
+  defp residency_stats do
+    session_manager().residency_stats(session_manager_server())
+  rescue
+    _ -> %{available: false}
+  catch
+    _, _ -> %{available: false}
   end
 
   defp create_admission_stats do
@@ -1678,6 +1707,68 @@ defmodule Embervm.Router do
   # session token, so the hash compare fails). Proxies the guest request under the
   # task-envelope allow-list + 8 MiB cap via the SessionManager, and returns the
   # guest response VERBATIM including headers.
+  defp handle_residency(conn, session_id, action) do
+    # The same capability hash authenticates only its owning session, including
+    # terminal status/cancellation reads retained after the session expires.
+    with {:ok, token} <- bearer_token(conn),
+         {:ok, session} <- session_store().get(session_store_server(), session_id),
+         true <- Embervm.SessionId.verify_token(token, session.token_sha256) do
+      residency_action(conn, session, action)
+    else
+      _ -> send_json(conn, 403, %{error: "invalid session token", retryable: false})
+    end
+  end
+
+  defp residency_action(conn, session, :submit) do
+      with {:ok, body, conn} <- read_capped_body(conn),
+           {:ok, attrs} <- Jason.decode(body),
+           true <- is_map(attrs) and Map.keys(attrs) -- ["generation", "deadline", "task_deadline", "first_wait_at"] == [] do
+        limits = %{enabled: Application.get_env(:embervm, :async_residency_enabled, false), global: Application.get_env(:embervm, :residency_queue_limit, 1024),
+          principal: Application.get_env(:embervm, :residency_principal_limit, 128)}
+        result = session_store().residency_intent(session_store_server(), {:submit, session.session_id,
+          Map.put(attrs, "key", header_value(conn, "idempotency-key")), limits})
+        residency_response(conn, result, 202)
+      else
+        _ -> send_json(conn, 400, %{error: "invalid residency request", retryable: false})
+      end
+  end
+
+  defp residency_action(conn, session, :list) do
+    if key = header_value(conn, "idempotency-key") do
+      residency_response(conn, session_store().residency_intent(session_store_server(), {:lookup, session.session_id, key}), 200)
+    else
+      residency_list(conn, session)
+    end
+  end
+
+  defp residency_list(conn, session) do
+    conn = fetch_query_params(conn)
+    with {limit, ""} <- Integer.parse(conn.query_params["limit"] || "100"),
+         {offset, ""} <- Integer.parse(conn.query_params["offset"] || "0") do
+      residency_response(conn, session_store().residency_intent(session_store_server(), {:list, session.session_id, limit, offset}), 200)
+    else
+      _ -> send_json(conn, 400, %{error: "invalid pagination", retryable: false})
+    end
+  end
+
+  defp residency_action(conn, session, {action, id}) do
+    residency_response(conn, session_store().residency_intent(session_store_server(), {action, session.session_id, id}), 200)
+  end
+
+  defp residency_response(conn, {:ok, value}, status), do: send_json(conn, status, value)
+  defp residency_response(conn, {:error, reason}, _status) do
+    code = case reason do
+      :async_residency_unsupported -> 501
+      :not_found -> 404
+      :residency_queue_full -> 429
+      :unavailable -> 503
+      reason when reason in [:invalid_residency_request, :invalid_deadline] -> 400
+      reason when reason in [:idempotency_conflict, :already_consumed, :stale_generation] -> 409
+      _ -> 503
+    end
+    send_json(conn, code, %{error: if(is_atom(reason), do: to_string(reason), else: "unavailable"), retryable: code in [429, 503]})
+  end
+
   defp handle_session_invoke(conn, session_id) do
     # Restore the CALLER's trace context (the traceparent their httpx/OTel client
     # carried), then open the session-invoke ROOT span so `auth`, `queue_wait`,
@@ -1705,7 +1796,7 @@ defmodule Embervm.Router do
 
   defp do_handle_session_invoke(conn, session_id) do
     with {:ok, token} <- bearer_token(conn),
-         {:ok, session} <- verify_session_token_span(session_id, token) do
+         {:ok, session} <- verify_invoke_capability(conn, session_id, token) do
       Tracer.set_attributes(%{
         "ember.workload" => Map.get(session, :workload),
         "ember.principal" => Map.get(session, :principal),
@@ -1810,6 +1901,29 @@ defmodule Embervm.Router do
     })
   end
 
+  defp residency_headers(conn) do
+    case header_value(conn, "x-ember-residency-operation") do
+      nil -> nil
+      id -> %{operation_id: id, epoch: header_value(conn, "x-ember-residency-epoch")}
+    end
+  end
+
+  defp verify_invoke_capability(conn, session_id, token) do
+    if residency_headers(conn) do
+      # Authenticate the same capability even after expiry so the serialized
+      # handoff can return exact negative evidence. This never authorizes a
+      # guest call: the operation, lifetime and resident fences still apply.
+      with {:ok, session} <- session_store().get(session_store_server(), session_id),
+           true <- Embervm.SessionId.verify_token(token, session.token_sha256) do
+        {:ok, session}
+      else
+        _ -> {:error, :invalid_token}
+      end
+    else
+      verify_session_token_span(session_id, token)
+    end
+  end
+
   defp proxy_invoke(conn, session_id, authorized_session) do
     case read_capped_body(conn) do
       {:ok, body, conn} ->
@@ -1820,7 +1934,8 @@ defmodule Embervm.Router do
           path: guest_path(conn),
           headers: guest_headers(conn),
           body: body,
-          dispatch_id: header_value(conn, "x-ember-dispatch-id")
+          dispatch_id: header_value(conn, "x-ember-dispatch-id"),
+          residency: residency_headers(conn)
         }
 
         result =
@@ -1842,6 +1957,11 @@ defmodule Embervm.Router do
             conn
             |> put_resp_header(@invoke_outcome_header, "guest_response")
             |> send_guest_result(code, resp_body, headers)
+
+          {:error, {:not_dispatched, operation_id, dispatch_id, reason}} ->
+            conn |> put_resp_header(@invoke_outcome_header, "not_dispatched")
+            |> send_json(409, %{outcome: "not_dispatched", operation_id: operation_id,
+              dispatch_id: dispatch_id, session_id: session_id, reason: reason, retryable: true})
 
           {:error, {:gone, reason}} ->
             SessionTelemetry.mark_expected({:gone, reason})

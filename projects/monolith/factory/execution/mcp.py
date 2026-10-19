@@ -825,9 +825,13 @@ async def _execute_pending_message(session_id: int) -> None:
     from factory.orchestration.api import factory_session_allowed
 
     factory_row, _ = await asyncio.to_thread(_load_session, session_id)
-    if factory_row is not None and not await asyncio.to_thread(
+    allowed = factory_row is None or await asyncio.to_thread(
         factory_session_allowed, getattr(factory_row, "local_session_id", None)
-    ):
+    )
+    from factory.execution import capacity_wait
+    from factory.execution.transport import EmberResidencyNotDispatched
+
+    if not await capacity_wait.poll(session_id, _transport, allowed=allowed):
         return
     claim_owner = f"{_REPLICA_ID}:{uuid4()}"
     claimed_seq = await asyncio.to_thread(
@@ -1016,7 +1020,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 )
 
     async def _do_execute() -> None:
-        nonlocal release_cause, claimed_dispatch_count
+        nonlocal release_cause, claimed_dispatch_count, claim_released
         nonlocal probe_turn_persisted, probe_ember, probe_turn
         if _abort_stolen_executor("startup"):
             return
@@ -1100,6 +1104,9 @@ async def _execute_pending_message(session_id: int) -> None:
                 "dispatch_count": row.dispatch_count,
                 "invocation_record": invocation_record,
             }
+            residency = capacity_wait.handoff_context(row)
+            if residency is not None:
+                deliver_kwargs["residency"] = residency
             from factory.execution import result_receipts
 
             if result_receipts.required(
@@ -1153,6 +1160,19 @@ async def _execute_pending_message(session_id: int) -> None:
             if not await asyncio.to_thread(
                 factory_session_allowed, getattr(session_row, "local_session_id", None)
             ):
+                if residency is not None:
+                    claim_released = await capacity_wait.return_before_post(
+                        session_id,
+                        claimed_seq,
+                        claim_owner,
+                        row.dispatch_count,
+                        existing_ember.session_id,
+                        existing_ember.session_token,
+                        residency,
+                        _transport,
+                        invocation_record,
+                    )
+                    return
                 await asyncio.to_thread(
                     _mark_turn_error_sync,
                     session_id,
@@ -1176,10 +1196,20 @@ async def _execute_pending_message(session_id: int) -> None:
             if ember != existing_ember:
                 # Safety: re-persist for transports without on_create support
                 await asyncio.to_thread(_persist_ember_session, session_id, ember)
+        except EmberResidencyNotDispatched as exc:
+            claim_released = await asyncio.to_thread(
+                capacity_wait.resolve_not_dispatched,
+                session_id,
+                claimed_seq,
+                claim_owner,
+                claimed_dispatch_count,
+                exc.proof,
+                exc.receipt_id,
+            )
+            return
         except _ClaimStolen:
             return
         except EmberBrickGone as exc:
-            nonlocal claim_released
             if await _abort_stolen_executor_confirmed("brick_gone recovery"):
                 return
             # The retry grant below is only honoured while dispatch_count is
@@ -1228,6 +1258,19 @@ async def _execute_pending_message(session_id: int) -> None:
             return
         except EmberTurnNotInvoked as exc:
             if await _abort_stolen_executor_confirmed("not-invoked delivery error"):
+                return
+            if row.capacity_intent_json and row.capacity_state != "legacy_unsupported":
+                claim_released = await capacity_wait.return_before_post(
+                    session_id,
+                    claimed_seq,
+                    claim_owner,
+                    row.dispatch_count,
+                    existing_ember.session_id,
+                    existing_ember.session_token,
+                    capacity_wait.handoff_context(row),
+                    _transport,
+                    invocation_record,
+                )
                 return
             await asyncio.to_thread(
                 _mark_turn_error_sync,

@@ -98,6 +98,7 @@ defmodule Embervm.OpLog do
     # session_invoke_started is the durable pre-dispatch stamp; session_invoked
     # carries usage only (no request/response bodies) and upserts the same
     # (principal, day) usage projection tasks do, the D12.1 pattern.
+    :residency_changed,
     :session_created,
     :session_invoke_started,
     :session_invoked,
@@ -308,6 +309,7 @@ defmodule Embervm.OpLog do
   # SessionStore's boot/adoption rebuild (Task 5/8): the ETS hot set of sessions
   # is reconstructed from this exactly as the task index is from load_tasks/1. A
   # projection read, never the raw ops log.
+  @callback load_residency_intents(server()) :: {:ok, [map()]} | {:error, term()}
   @callback load_sessions(server()) :: {:ok, [map()]} | {:error, term()}
   # Loads every serving instance row from the durable `serving_instances`
   # projection (R3), for the future ServingStore's boot/adoption rebuild
