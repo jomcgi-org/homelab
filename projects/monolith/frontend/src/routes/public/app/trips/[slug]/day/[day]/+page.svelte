@@ -69,7 +69,7 @@
 
   // Smooth scrubbing: keep the CURRENT frame on screen until the next image has
   // actually decoded (instant when preloaded), so the photo never flashes its
-  // black cell between shots while an arrow is held. Only the latest target wins.
+  // empty cell between shots while an arrow is held. Only the latest target wins.
   let displayedSrc = $state(photos[current]?.imgDisplay ?? null);
   $effect(() => {
     const target = photo?.imgDisplay ?? null;
