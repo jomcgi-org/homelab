@@ -180,4 +180,17 @@ defmodule Embervm.ResidencyIntentTest do
     assert {:ok, %{turn_seq: 1, inflight_dispatch_id: "once"}} = SessionStore.get(store, ctx.session.session_id)
   end
 
+  test "terminal history is excluded from the bounded working set but remains replayable", ctx do
+    for i <- 1..120 do
+      attrs = Map.put(ctx.attrs, "key", "history-#{i}")
+      {:ok, intent} = SessionStore.residency_intent(ctx.store, {:submit, ctx.session.session_id, attrs, %{global: 2, principal: 2}})
+      {:ok, _} = SessionStore.residency_intent(ctx.store, {:cancel, ctx.session.session_id, intent["id"]})
+    end
+    {:ok, current} = submit(ctx)
+    assert {:ok, [^current]} = SessionStore.residency_intent(ctx.store, :working)
+    assert {:ok, %{"state" => "cancelled"}} = SessionStore.residency_intent(ctx.store, {:submit, ctx.session.session_id, Map.put(ctx.attrs, "key", "history-1"), %{global: 2, principal: 2}})
+    assert {:ok, %{total: 121, items: page}} = SessionStore.residency_intent(ctx.store, {:list, ctx.session.session_id, 100, 0})
+    assert length(page) == 100
+  end
+
 end

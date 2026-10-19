@@ -85,6 +85,7 @@ class FakeEmber:
         self.reason = "capacity"
         self.lose_enqueue = False
         self.unsupported = False
+        self.expected_dispatch_count = 0
 
     async def get_session(self, guest, token):
         assert guest == "guest" and token == "secret-capability"
@@ -99,8 +100,9 @@ class FakeEmber:
         row = pending(self.engine)
         context = json.loads(row.capacity_intent_json)
         assert row.claimed_by_replica is None
-        assert row.dispatch_count == 0
-        assert row.last_dispatch_at is None
+        assert row.dispatch_count == self.expected_dispatch_count
+        if self.expected_dispatch_count == 0:
+            assert row.last_dispatch_at is None
         assert token not in row.capacity_intent_json
         assert row.message_text not in row.capacity_intent_json
         self.calls.append((method, kwargs))
@@ -258,6 +260,8 @@ def test_handoff_clock_needs_exact_consumed_evidence(database, monkeypatch):
     assert asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
     assert store.claim_pending_message_for_session_sync(sid, "owner") == 1
     context = json.loads(pending(engine).capacity_intent_json)
+    assert capacity_wait._read(sid) is None
+    assert capacity_wait._read(sid, include_claimed=True)["context"] == context
     now = int(datetime.now(timezone.utc).timestamp() * 1000)
     response = {
         "id": context["operation_id"],
@@ -319,3 +323,78 @@ def test_pause_after_lost_enqueue_reattaches_by_read_and_cancels_only_interest(
     row = pending(engine)
     assert row.dispatch_count == 0 and row.claimed_by_replica is None
     assert json.loads(row.capacity_intent_json)["operation_id"]
+
+
+def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
+    database,
+):
+    engine, sid, deadline = database
+    ember = FakeEmber(engine, deadline)
+    ember.state = "ready"
+    assert asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
+    assert store.claim_pending_message_for_session_sync(sid, "first") == 1
+    original = json.loads(pending(engine).capacity_intent_json)
+    started = datetime.now(timezone.utc) - timedelta(seconds=30)
+    with Session(engine) as db:
+        row = db.exec(select(PendingMessage)).one()
+        row.capacity_started_at = started
+        db.add(row)
+        db.commit()
+    interrupted = transport.Turn(
+        result="checkpoint",
+        terminal_reason="interrupted_for_drain",
+        stop_reason="interrupted_for_drain",
+        is_error=False,
+        permission_denials=[],
+        num_turns=1,
+        session_id="cli",
+        usage={},
+        total_cost_usd=0.02,
+        duration_ms=2,
+        activities=[],
+    )
+    store.persist_turn_from_pending_sync(
+        sid,
+        1,
+        "private prompt",
+        interrupted,
+        "",
+        "recovering",
+        "cli",
+        "luna",
+        "first",
+        1,
+    )
+    ember.expected_dispatch_count = 1
+    ember.state, ember.reason, ember.generation = "queued", "capacity", 4
+    allow_poll(engine)
+    assert not asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
+    current = json.loads(pending(engine).capacity_intent_json)
+    assert current["operation_id"] != original["operation_id"]
+    assert current["key"] != original["key"]
+    assert current["generation"] == 4
+    for field in ("deadline", "task_deadline", "first_wait_at"):
+        assert current[field] == original[field]
+    with Session(engine) as db:
+        turn = store.get_turn(db, sid, 1)
+        assert json.loads(turn.usage_json)["retry_dispatch_count"] == 1
+        assert turn.cost_usd == 0.02
+    ember.state, ember.reason = "ready", "resident"
+    allow_poll(engine)
+    assert asyncio.run(capacity_wait.poll(sid, ember, allowed=True))
+    assert store.claim_pending_message_for_session_sync(sid, "second") == 1
+    # A definitive bank race does not erase the first invocation's execution bound.
+    proof = {
+        "outcome": "not_dispatched",
+        "operation_id": current["operation_id"],
+        "session_id": "guest",
+        "dispatch_id": exact_dispatch_id(sid, "guest", 1, "second", 2),
+        "reason": "residency_changed",
+    }
+    assert capacity_wait.resolve_not_dispatched(sid, 1, "second", 2, proof, None)
+    assert capacity_wait._utc(pending(engine).capacity_started_at) == started
+    assert pending(engine).dispatch_count == 1
+    with Session(engine) as db:
+        turn = store.get_turn(db, sid, 1)
+        assert json.loads(turn.usage_json)["retry_dispatch_count"] == 1
+        assert turn.cost_usd == 0.02

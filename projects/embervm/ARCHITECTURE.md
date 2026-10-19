@@ -912,8 +912,11 @@ and persists its wait reason/deadline on the pending turn. Existing session
 lifecycle telemetry supplies park/relight events. Terminal dedupe projections
 and their owning capability records are retained conservatively: this slice has
 no evidence that factory has dropped every reference, so automatic deletion of
-those projections is disabled. The existing bounded compactor continues for
-unrelated data. Retention changes need reference-release evidence before pruning.
+those projections is disabled. An indexed active/unresolved working set excludes
+settled history from periodic reconciliation, admission and claim scans; key lookup
+and queue sequence allocation do not scan terminal records. The existing bounded
+compactor continues for unrelated data. Retention changes need reference-release
+evidence before pruning.
 
 Enable and rollback order for a separately authorized canary:
 

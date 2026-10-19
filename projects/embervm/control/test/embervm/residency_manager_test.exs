@@ -5,7 +5,7 @@ defmodule Embervm.ResidencyManagerTest do
   alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{PrimeResponse, RestoreArtifactResponse}
 
-  defp stack do
+  defp stack(overrides \\ []) do
     n = System.unique_integer([:positive])
     path = Path.join(System.tmp_dir!(), "residency-manager-#{n}.db")
     on_exit(fn -> File.rm_rf!(path) end)
@@ -44,6 +44,7 @@ defmodule Embervm.ResidencyManagerTest do
       end,
       session_opts: [channel_fun: fn _ -> {:ok, :channel} end,
         assign_fun: fn _, _ -> send(test_pid, :unexpected_invoke); {:error, :unexpected} end]]
+    mgr_opts = Keyword.merge(mgr_opts, overrides)
     ctx = %{clock: clock, clock_fun: clock_fun, log: log, store: store, store_opts: store_opts,
       mgr_opts: mgr_opts, registry: registry, sup: sup, cap: cap, cat: cat, inflight: inflight}
     report(ctx, [])
@@ -204,4 +205,86 @@ defmodule Embervm.ResidencyManagerTest do
     refute_receive {:prime, _, _}
   end
 
+
+  test "known unissued dial failure releases capacity and can retry after repair" do
+    ctx = stack(channel_fun: fn _ -> {:error, :unreachable} end)
+    intent = enqueue(ctx, "dial-failure")
+    tick(ctx)
+    await(fn -> Enum.any?(intents(ctx), &(&1["reason"] == "restore_not_started")) end)
+    assert Inflight.pending_mib("node/pod", table: ctx.inflight) == 0
+    assert {:ok, %{"state" => "queued", "restore" => nil}} = SessionStore.residency_intent(ctx.store, {:get, intent["session_id"], intent["id"]})
+    refute_receive {:prime, _, _}
+    :sys.replace_state(ctx.mgr, &%{&1 | channel_fun: fn _ -> {:ok, :channel} end})
+    tick(ctx)
+    assert_receive {:prime, worker, _}
+    send(worker, {:finish, {:ok, %PrimeResponse{vm_id: "after-repair"}}})
+    await(fn -> Enum.any?(intents(ctx), &(&1["state"] == "ready")) end)
+  end
+
+  test "workspace authorization denial is permanent and never reserves a nonexistent VM" do
+    ctx = stack(restore_artifact_fun: fn _, _ -> {:error, %GRPC.RPCError{status: 7, message: "denied"}} end)
+    intent = enqueue(ctx, "denied-workspace")
+    tick(ctx)
+    await(fn -> Enum.any?(intents(ctx), &(&1["state"] == "failed")) end)
+    assert {:ok, %{"reason" => "workspace_authorization_or_lineage", "restore" => nil}} = SessionStore.residency_intent(ctx.store, {:get, intent["session_id"], intent["id"]})
+    assert Inflight.pending_mib("node/pod", table: ctx.inflight) == 0
+    refute_receive {:prime, _, _}
+    tick(ctx)
+    refute_receive {:prime, _, _}
+  end
+
+  test "ordinary reconciliation and expiry cannot steal a pending asynchronous relight" do
+    parent = self()
+    ctx = stack(relight_fun: fn _, _ ->
+      send(parent, {:relight, self()})
+      receive do {:finish, result} -> result end
+    end)
+    intent = enqueue(ctx, "banked-reconcile")
+    :ok = SessionStore.adopt_state(ctx.store, intent["session_id"], :running)
+    {:ok, _} = SessionStore.mark(ctx.store, intent["session_id"], :bank)
+    {:ok, _} = SessionStore.transition(ctx.store, intent["session_id"], :bank_ready, :session_banked,
+      %{snapshot_ref: "banked-snapshot", generation: 0}, %{snapshot_ref: "banked-snapshot"})
+    [fact] = NodeCapacity.all(ctx.cap)
+    snapshot = %{session_id: intent["session_id"], workload: "w", snapshot_ref: "banked-snapshot", size_bytes: 512, created_at_unix_ms: 0}
+    NodeCapacity.put(ctx.cap, "node/pod", %{fact | session_snapshots: [snapshot]})
+    tick(ctx)
+    assert_receive {:relight, worker}
+    SessionManager.reconcile(ctx.mgr)
+    assert {:ok, %{state: :relighting}} = SessionStore.get(ctx.store, intent["session_id"])
+    # Expiry removes demand while its exact physical outcome is unresolved.
+    Agent.update(ctx.clock, fn _ -> 4_000_001 end)
+    tick(ctx)
+    SessionManager.reconcile(ctx.mgr)
+    SessionManager.sweep(ctx.mgr)
+    assert {:ok, %{state: :relighting}} = SessionStore.get(ctx.store, intent["session_id"])
+    assert Inflight.pending_mib("node/pod", table: ctx.inflight) == 576
+    send(worker, {:finish, {:ok, %Embervm.Node.V1.RelightResponse{vm_id: "late-vm"}}})
+    await(fn -> Enum.any?(intents(ctx), &(&1["state"] == "expired")) end)
+    assert {:ok, %{state: :running, vm_id: "late-vm", turn_seq: 0}} = SessionStore.get(ctx.store, intent["session_id"])
+    refute_receive :unexpected_invoke
+  end
+
+  test "qualified cross-node recovery preserves verified workspace fingerprint" do
+    parent = self()
+    ctx = stack(cross_node_rejoin: true, restore_artifact_fun: fn _, req ->
+      send(parent, {:workspace_request, req})
+      {:ok, %RestoreArtifactResponse{content_fingerprint: req.expected_fingerprint}}
+    end)
+    intent = enqueue(ctx, "cross-node")
+    {:ok, session} = SessionStore.get(ctx.store, intent["session_id"])
+    captured = %{epoch: 0, volume_node_id: "node", lineage_id: session.lineage_id}
+    send(ctx.mgr, {:workspace_exported, session.session_id, captured, {:ok, %{content_fingerprint: "verified-export"}}})
+    :sys.get_state(ctx.mgr)
+    [fact] = NodeCapacity.all(ctx.cap)
+    :ets.delete_all_objects(ctx.cap)
+    NodeCapacity.put(ctx.cap, "target/pod", Map.merge(fact, %{node_id: "target", configured_id: "target", instance_id: "target/pod", store_reachable: true}))
+    tick(ctx)
+    assert_receive {:workspace_request, %{expected_fingerprint: "verified-export"}}
+    assert_receive {:prime, worker, _}
+    assert Inflight.pending_mib("target/pod", table: ctx.inflight) == 576
+    send(worker, {:finish, {:ok, %PrimeResponse{vm_id: "cross-node-vm"}}})
+    await(fn -> Enum.any?(intents(ctx), &(&1["state"] == "ready")) end)
+    assert {:ok, %{volume_node_id: "target", node_id: "target", turn_seq: 0}} = SessionStore.get(ctx.store, session.session_id)
+    refute_receive :unexpected_invoke
+  end
 end

@@ -142,6 +142,10 @@
         # ADR 006 protocol 2). Invoke lifecycle edges remain outside the focused
         # bank/relight and lineage-handoff protocols.
         ~w(session_invoke_started session_invoked)a ++
+        # Durable admission-only session demand, outside the VM adoption and
+        # bank/relight generation protocols. admission.tla maps its physical
+        # claims to the existing reserved-memory invariant; no prompt is queued.
+        ~w(residency_changed)a ++
         # Remaining R3 serving lifecycle kinds, out of scope. serving_destroying is the
         # ADR embervm/014 destroy-intent kind (see session_destroying).
         ~w(serving_unpublished serving_banked

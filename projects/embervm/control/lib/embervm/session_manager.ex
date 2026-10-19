@@ -3916,13 +3916,14 @@ defmodule Embervm.SessionManager do
   # :capacity with a brick on the volume node is headroom pressure (park), and
   # :capacity with no brick on the volume node means the node vanished, which
   # must fail fast rather than wait out a bound that cannot clear.
-  defp place_rejoin_brick(state, volume_node_id, session, entry, claim_ref) do
+  defp place_rejoin_brick(state, volume_node_id, session, entry, claim_ref, opts \\ []) do
     req = %Request{
       table: state.capacity_table,
+      bricks: Keyword.get(opts, :bricks),
       node_id: volume_node_id,
       workload: session.workload,
       key: session.workload,
-      need_mib: create_need_mib(entry),
+      need_mib: Keyword.get(opts, :need_mib, create_need_mib(entry)),
       base: {:ready, :snapshot_ref},
       record_demand: not Map.has_key?(state.pressure_waits, session.session_id),
       inflight: state.inflight_table
@@ -3937,10 +3938,15 @@ defmodule Embervm.SessionManager do
               end) ->
             # Keep the scheduler's need/base/key filters, then prefer a target
             # without a local (potentially stale) copy of this lineage.
-            candidates = Scheduler.place(%{req | node_id: nil, bricks: workspace_targets(state, session, volume_node_id)})
+            targets = workspace_targets(state, session, volume_node_id)
+            targets = if req.bricks, do: Enum.filter(targets, fn b -> Enum.any?(req.bricks, &(Brick.dial_id(&1) == Brick.dial_id(b))) end), else: targets
+            candidates = Scheduler.place(%{req | node_id: nil, bricks: targets})
             case Enum.sort_by(candidates, &reports_workspace?(state, &1, session)) do
               [] -> {:error, :capacity}
-              placed -> {:ok, placed}
+              placed ->
+                if Keyword.get(opts, :claim_fallback, false),
+                  do: Scheduler.place_and_claim(%{req | node_id: nil, bricks: placed}, claim_ref),
+                  else: {:ok, placed}
             end
 
           has_brick_on_volume_node?(state.capacity_table, volume_node_id) -> error
@@ -5539,7 +5545,8 @@ defmodule Embervm.SessionManager do
       # pending finish_bank's session_banked transition illegal (and silently lost).
       # On BOOT these maps are empty (fresh process), so boot adoption still fully
       # heals every limbo; only the periodic sweep is guarded.
-      Map.has_key?(state.banking, sid) or Map.has_key?(state.relighting, sid) ->
+      Map.has_key?(state.banking, sid) or Map.has_key?(state.relighting, sid) or
+          unresolved_residency_wake?(state, sid) ->
         state
 
       # The node reports a LIVE VM for this session: rebind it (residency + process),
@@ -6047,6 +6054,7 @@ defmodule Embervm.SessionManager do
     # creating session settles within a sweep and is expired on the next pass.
     |> Enum.filter(fn s -> s.state in [:running, :banked, :parked, :parking] end)
     |> Enum.filter(fn s -> is_integer(s.expires_at) and s.expires_at <= now end)
+    |> Enum.reject(&unresolved_residency_wake?(state, &1.session_id))
     |> Enum.reduce(state, fn session, acc -> expire_session(acc, session) end)
   end
 
@@ -6090,6 +6098,7 @@ defmodule Embervm.SessionManager do
   defp sweep_banked_ttl(state, now) do
     SessionStore.all(state.session_store)
     |> Enum.filter(&(&1.state in [:banked, :parked]))
+    |> Enum.reject(&unresolved_residency_wake?(state, &1.session_id))
     |> Enum.reduce(state, fn session, acc ->
       case fetch_session_workload(acc, session.workload) do
         {:ok, entry} ->
@@ -6144,6 +6153,7 @@ defmodule Embervm.SessionManager do
   defp banked_victims_on_node(state, node_id) do
     SessionStore.all(state.session_store)
     |> Enum.filter(fn s -> s.state == :banked and s.node_id == node_id end)
+    |> Enum.reject(&unresolved_residency_wake?(state, &1.session_id))
     |> Enum.sort_by(&(&1.last_invoke_at || 0), :asc)
   end
 
@@ -7295,16 +7305,17 @@ defmodule Embervm.SessionManager do
         restoring = Enum.filter(active, &(&1["state"] in ["admitting", "cancelling"]))
         queued = Enum.filter(active, &(&1["state"] == "queued"))
         facts = NodeCapacity.all(state.capacity_table)
+        {:ok, totals} = SessionStore.residency_intent(state.session_store, :totals)
         %{
           available: true,
           states: Enum.frequencies_by(active, & &1["state"]),
           reasons: Enum.frequencies_by(active, & &1["reason"]),
           oldest_queue_age_ms: Enum.map(queued, &max(state.clock.() - &1["first_wait_at"], 0)) |> Enum.max(fn -> 0 end),
-          uncertain: Enum.count(restoring, &(&1["reason"] == "unknown_restore_outcome")),
+          uncertain: Enum.count(restoring, &(&1["restore_unknown"] == true)),
           restore_concurrency: length(Enum.uniq_by(restoring, &get_in(&1, ["restore", "claim_id"]))),
           restore_limit: state.residency_restore_limit,
-          restore_attempts: Enum.sum(Enum.map(rows, & &1["attempt_epoch"])),
-          invocation_starts: Enum.count(rows, &(&1["state"] == "consumed")),
+          restore_attempts: totals.restore_attempts,
+          invocation_starts: totals.invocation_starts,
           resident_declared_mib: Enum.sum(Enum.map(facts, &(Map.get(&1, :mem_reserved_mib, 0) +
             Brick.charged_overhead_mib(&1) * Map.get(&1, :live_vms, 0)))),
           inflight_declared_mib: Enum.sum(Enum.map(facts, &Inflight.pending_mib(fact_dial_id(&1), table: state.inflight_table)))
@@ -7313,19 +7324,7 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp residency_rows(state) do
-    residency_pages(state.session_store, 0, [])
-  end
-
-  defp residency_pages(store, offset, acc) do
-    case SessionStore.residency_intent(store, {:list, nil, 100, offset}) do
-      {:ok, %{items: items, total: total}} ->
-        if offset + length(items) < total,
-          do: residency_pages(store, offset + length(items), acc ++ items),
-          else: {:ok, acc ++ items}
-      error -> error
-    end
-  end
+  defp residency_rows(state), do: SessionStore.residency_intent(state.session_store, :working)
 
   defp residency_tick(state) do
     case residency_rows(state) do
@@ -7579,14 +7578,12 @@ defmodule Embervm.SessionManager do
         state.monotonic_clock.() >= updated and state.monotonic_clock.() - updated <= state.fleet_freshness_window_ms
     end)
     restore_plan = if rejoin, do: :skip, else: restore_plan(state, session)
-    # No new placement policy: parked workspaces stay with their owner; banked
-    # snapshots use the same exact-instance lookup as synchronous relights.
+    # Reuse qualified workspace recovery and exact-instance snapshot lookup.
+    # Async placement additionally requires fresh reserved-memory evidence.
     target = if rejoin do
       if persistence_enabled_workload?(entry) do
-        req = %Request{bricks: safe_bricks, node_id: session.volume_node_id,
-          workload: session.workload, key: session.workload, need_mib: need_mib,
-          base: {:ready, :snapshot_ref}, inflight: state.inflight_table}
-        case Scheduler.place_and_claim(req, claim_ref) do
+        case place_rejoin_brick(state, session.volume_node_id, session, entry, claim_ref,
+          bricks: safe_bricks, need_mib: need_mib, claim_fallback: true) do
           {:ok, [brick | _]} -> {:ok, brick}
           error -> error
         end
@@ -7610,16 +7607,19 @@ defmodule Embervm.SessionManager do
         restore = %{"claim_id" => claim_id, "dial_id" => dial_id, "node_id" => brick.node_id,
           "charge_mib" => Brick.charge_mib(brick, need_mib), "vm_id" => nil,
           "kind" => if(rejoin, do: "rejoin", else: "relight")}
-        case residency_change(state, intent, %{"state" => "admitting", "reason" => "restore", "claim_reconciled" => false, "admitted_at" => state.clock.(), "restore" => restore, "attempt_epoch" => intent["attempt_epoch"] + 1}) do
+        case residency_change(state, intent, %{"state" => "admitting", "reason" => "restore", "claim_reconciled" => false, "restore_unknown" => false, "admitted_at" => state.clock.(), "restore" => restore, "attempt_epoch" => intent["attempt_epoch"] + 1}) do
           {:ok, admitted} ->
             Inflight.claim(dial_id, claim_ref, restore["charge_mib"], table: state.inflight_table, ttl_ms: :infinity)
-            _ = SessionStore.mark(state.session_store, session.session_id, :relight)
-            owner = self()
-            spawn(fn ->
-              outcome = perform_residency_wake(state, session, brick, entry, rejoin, restore_plan)
-              send(owner, {:residency_wake_done, admitted["id"], admitted["attempt_epoch"], restore, outcome})
-            end)
-            state |> record_wake(session.principal) |> Map.put(:residency_last_principal, session.principal)
+            case SessionStore.mark(state.session_store, session.session_id, :relight) do
+              {:ok, _} ->
+                owner = self()
+                spawn(fn ->
+                  outcome = run_residency_wake(state, session, brick, entry, rejoin, restore_plan)
+                  send(owner, {:residency_wake_done, admitted["id"], admitted["attempt_epoch"], restore, outcome})
+                end)
+                state |> record_wake(session.principal) |> Map.put(:residency_last_principal, session.principal)
+              _ -> finish_residency_wake(state, admitted["id"], admitted["attempt_epoch"], restore, {:not_started, :session_changed})
+            end
           _ ->
             # Persist may have committed despite a lost reply. Keep the claim
             # until the next durable read establishes its outcome.
@@ -7641,9 +7641,37 @@ defmodule Embervm.SessionManager do
     end
   end
 
+  # Mark at the actual VM RPC seam. Workspace/dial failures are not uncertain
+  # VM outcomes; an exception after this marker remains charged until proof.
+  defp run_residency_wake(state, session, brick, entry, rejoin, restore_plan) do
+    Process.put(:residency_vm_rpc_issued, false)
+    worker_state = %{state |
+      prime_fun: fn channel, request ->
+        Process.put(:residency_vm_rpc_issued, true)
+        state.prime_fun.(channel, request)
+      end,
+      relight_fun: fn channel, request ->
+        Process.put(:residency_vm_rpc_issued, true)
+        state.relight_fun.(channel, request)
+      end}
+    outcome = try do
+      perform_residency_wake(worker_state, session, brick, entry, rejoin, restore_plan)
+    rescue
+      _ -> {:error, :restore_crashed}
+    catch
+      _, _ -> {:error, :restore_crashed}
+    end
+    case outcome do
+      {:error, reason} -> if Process.get(:residency_vm_rpc_issued), do: outcome, else: {:not_started, reason}
+      other -> other
+    end
+  end
+
   defp perform_residency_wake(state, session, brick, entry, true, _restore_plan) do
     dial_id = Brick.dial_id(brick)
-    with {:ok, _} <- restore_session_workspace(state, dial_id, session.workload, session.lineage_id, session.principal, session.generation || 0),
+    expected = if brick.node_id != session.volume_node_id, do: workspace_evidence(state, session).fingerprint, else: ""
+    with {:ok, _} <- restore_session_workspace(state, dial_id, session.workload, session.lineage_id,
+           session.principal, session.generation || 0, expected, if(expected != "", do: brick.node_id, else: nil)),
          {:ok, vm_id} <- prime(state, dial_id, session.workload, get_in(brick, [:workloads, session.workload, :snapshot_ref]), entry, session.lineage_id) do
       {:ok, brick.node_id, vm_id, 0, dial_id}
     end
@@ -7690,6 +7718,13 @@ defmodule Embervm.SessionManager do
          true <- leader["attempt_epoch"] == epoch and leader["restore"] == restore and leader["state"] in ["admitting", "cancelling"] do
       interests = Enum.filter(rows, &(get_in(&1, ["restore", "claim_id"]) == restore["claim_id"] and &1["state"] in ["admitting", "cancelling"]))
       session_id = leader["session_id"]
+      # An issued VM RPC may have attached the workspace even if its reply was
+      # lost. Do not reuse an export from the previous attachment epoch.
+      state = case outcome do
+        {:not_started, _} -> state
+        {:error, reason} -> if pressure_denied?(reason), do: state, else: invalidate_workspace_evidence(state, session_id)
+        _ -> invalidate_workspace_evidence(state, session_id)
+      end
       case outcome do
         {:ok, node_id, vm_id, _ms, dial_id} ->
           # Persist the returned exact VM before lifecycle completion. A crash
@@ -7717,36 +7752,59 @@ defmodule Embervm.SessionManager do
           else
             state
           end
+        {:not_started, reason} ->
+          finish_unissued_residency_wake(state, interests, session_id, reason)
         {:error, reason} ->
           if pressure_denied?(reason) do
-            Inflight.release(restore["dial_id"], {:residency, restore["claim_id"]}, table: state.inflight_table)
-            _ = SessionStore.mark(state.session_store, session_id, wake_abort_event(state, session_id))
+            finish_unissued_residency_wake(state, interests, session_id, :capacity)
+          else
             for intent <- interests do
-              status = cond do
-                intent["state"] == "cancelling" -> intent["reason"]
-                state.clock.() >= intent["deadline"] -> "expired"
-                true -> "queued"
-              end
-              if status == "expired" and intent["state"] == "admitting" do
-                with {:ok, cancelling} <- residency_change(state, intent, %{"state" => "cancelling", "reason" => "expired"}),
-                  do: residency_change(state, cancelling, %{"state" => "expired"})
-              else
-                residency_change(state, intent, %{"state" => status, "reason" => if(status == "queued", do: "capacity", else: status), "restore" => nil})
-              end
+              residency_change(state, intent, %{"restore_unknown" => true,
+                "reason" => if(intent["state"] == "cancelling", do: intent["reason"], else: "unknown_restore_outcome")})
             end
+            state
           end
-          if not pressure_denied?(reason) do
-            for intent <- interests do
-              residency_change(state, intent, %{"reason" => if(intent["state"] == "cancelling", do: intent["reason"], else: "unknown_restore_outcome")})
-            end
-          end
-          # All other RPC errors are unknown until exact inventory/cessation
-          # proves otherwise. They retain both the restore slot and its charge.
-          state
         _ -> state
       end
     else
       _ -> state
     end
   end
+
+  defp finish_unissued_residency_wake(state, interests, session_id, reason) do
+    _ = SessionStore.mark(state.session_store, session_id, wake_abort_event(state, session_id))
+    permanent = residency_permanent_restore_error?(reason)
+    for intent <- interests do
+      status = cond do
+        intent["state"] == "cancelling" -> intent["reason"]
+        state.clock.() >= intent["deadline"] -> "expired"
+        permanent -> "failed"
+        true -> "queued"
+      end
+      label = cond do
+        status != "queued" and status != "failed" -> status
+        permanent -> "workspace_authorization_or_lineage"
+        reason == :capacity -> "capacity"
+        true -> "restore_not_started"
+      end
+      updates = %{"state" => status, "reason" => label, "restore" => nil, "restore_unknown" => false}
+      if status == "expired" and intent["state"] == "admitting" do
+        with {:ok, cancelling} <- residency_change(state, intent, %{"state" => "cancelling", "reason" => "expired"}),
+          do: residency_change(state, cancelling, updates)
+      else
+        residency_change(state, intent, updates)
+      end
+    end
+    # Commit the negative result before removing a durable physical claim.
+    case residency_rows(state) do
+      {:ok, rows} -> cleanup_residency_claims(state, rows)
+      _ -> :ok
+    end
+    state
+  end
+
+  defp residency_permanent_restore_error?(%GRPC.RPCError{status: status}) when status in [3, 7, 9, 16], do: true
+  defp residency_permanent_restore_error?(reason) when reason in [:invalid_lineage_id, :fingerprint_mismatch], do: true
+  defp residency_permanent_restore_error?(reason) when is_tuple(reason), do: reason |> Tuple.to_list() |> Enum.any?(&residency_permanent_restore_error?/1)
+  defp residency_permanent_restore_error?(_), do: false
 end
