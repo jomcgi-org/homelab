@@ -18,25 +18,38 @@ func TestNodeContractRetiredFieldsAndWireTags(t *testing.T) {
 		retired map[protoreflect.Name]protoreflect.FieldNumber
 		live    map[protoreflect.Name]protoreflect.FieldNumber
 	}{
-		{&nodev1.Trace{Workload: "w", TaskId: "t"},
+		{
+			&nodev1.Trace{Workload: "w", TaskId: "t"},
 			map[protoreflect.Name]protoreflect.FieldNumber{"correlation_id": 3},
-			map[protoreflect.Name]protoreflect.FieldNumber{"workload": 1, "task_id": 2}},
-		{&nodev1.BuildBaseRequest{ImageRef: "image", ReadyPath: "/ready"},
+			map[protoreflect.Name]protoreflect.FieldNumber{"workload": 1, "task_id": 2},
+		},
+		{
+			&nodev1.BuildBaseRequest{ImageRef: "image", ReadyPath: "/ready"},
 			map[protoreflect.Name]protoreflect.FieldNumber{"guest_port": 4},
-			map[protoreflect.Name]protoreflect.FieldNumber{"trace": 1, "image_ref": 2, "workload_revision": 3, "ready_path": 5, "resources": 6, "init_env": 7, "zip": 8, "serving": 9}},
-		{&nodev1.PrimeRequest{SnapshotRef: "base", LineageId: "lineage", VolumeMount: "/workspace", VolumeSizeBytes: 4096},
+			map[protoreflect.Name]protoreflect.FieldNumber{"trace": 1, "image_ref": 2, "workload_revision": 3, "ready_path": 5, "resources": 6, "init_env": 7, "zip": 8, "serving": 9},
+		},
+		{
+			&nodev1.PrimeRequest{SnapshotRef: "base", LineageId: "lineage", VolumeMount: "/workspace", VolumeSizeBytes: 4096},
 			map[protoreflect.Name]protoreflect.FieldNumber{"volume_disk_path": 3},
-			map[protoreflect.Name]protoreflect.FieldNumber{"trace": 1, "snapshot_ref": 2, "volume_mount": 4, "volume_size_bytes": 5, "lineage_id": 6}},
-		{&nodev1.SessionAssignRequest{VmId: "vm", SessionId: "session", LineageId: "lineage", DispatchId: "dispatch"},
+			map[protoreflect.Name]protoreflect.FieldNumber{"trace": 1, "snapshot_ref": 2, "volume_mount": 4, "volume_size_bytes": 5, "lineage_id": 6},
+		},
+		{
+			&nodev1.SessionAssignRequest{VmId: "vm", SessionId: "session", LineageId: "lineage", DispatchId: "dispatch"},
 			map[protoreflect.Name]protoreflect.FieldNumber{"volume_disk_path": 6},
-			map[protoreflect.Name]protoreflect.FieldNumber{"trace": 1, "vm_id": 2, "request": 3, "timeout_ms": 4, "session_id": 5, "volume_mount": 7, "volume_size_bytes": 8, "lineage_id": 9, "dispatch_id": 10}},
-		{&nodev1.RegistryEntry{Workload: "w", RootfsRef: "/rootfs", StatefulVolumeMount: "/data"},
+			map[protoreflect.Name]protoreflect.FieldNumber{"trace": 1, "vm_id": 2, "request": 3, "timeout_ms": 4, "session_id": 5, "volume_mount": 7, "volume_size_bytes": 8, "lineage_id": 9, "dispatch_id": 10},
+		},
+		{
+			&nodev1.RegistryEntry{Workload: "w", RootfsRef: "/rootfs", StatefulVolumeMount: "/data"},
 			map[protoreflect.Name]protoreflect.FieldNumber{"stateful_boot_image_ref": 13, "stateful_volume_device": 14},
-			map[protoreflect.Name]protoreflect.FieldNumber{"workload": 1, "image_digest": 2, "rootfs_ref": 3, "harness_init": 4, "sizing": 5, "image_ref": 6, "node_local_wake": 7, "serving_port": 8, "serving_health_path": 9, "stateful_listen_port": 10, "stateful_port": 11, "stateful_volume_mount": 12, "group_listen_port": 15, "group_member_plan": 16, "blessing_leases": 17}},
-		{&nodev1.StartStatefulRequest{BootImageRef: "base", BlessedGeneration: 42},
+			map[protoreflect.Name]protoreflect.FieldNumber{"workload": 1, "image_digest": 2, "rootfs_ref": 3, "harness_init": 4, "sizing": 5, "image_ref": 6, "node_local_wake": 7, "serving_port": 8, "serving_health_path": 9, "stateful_listen_port": 10, "stateful_port": 11, "stateful_volume_mount": 12, "group_listen_port": 15, "group_member_plan": 16, "blessing_leases": 17},
+		},
+		{
+			&nodev1.StartStatefulRequest{BootImageRef: "base", BlessedGeneration: 42},
 			map[protoreflect.Name]protoreflect.FieldNumber{"volume_device": 12},
-			map[protoreflect.Name]protoreflect.FieldNumber{"trace": 1, "mode": 2, "boot_image_ref": 3, "relight_snapshot_ref": 4, "port": 5, "volume_size_bytes": 6, "volume_mount": 7, "create_if_missing": 8, "resources": 9, "mmds_env": 10, "blessed_generation": 11}},
-		{&nodev1.NodeStatus{NodeId: "node", CpuVendor: "amd", BuildError: "diagnostic"},
+			map[protoreflect.Name]protoreflect.FieldNumber{"trace": 1, "mode": 2, "boot_image_ref": 3, "relight_snapshot_ref": 4, "port": 5, "volume_size_bytes": 6, "volume_mount": 7, "create_if_missing": 8, "resources": 9, "mmds_env": 10, "blessed_generation": 11},
+		},
+		{
+			&nodev1.NodeStatus{NodeId: "node", CpuVendor: "amd", BuildError: "diagnostic"},
 			map[protoreflect.Name]protoreflect.FieldNumber{"node_template_hash": 25},
 			map[protoreflect.Name]protoreflect.FieldNumber{
 				"node_id": 1, "workloads": 2, "mem_headroom_mib": 3, "cpu_headroom_millicores": 4,
@@ -52,7 +65,8 @@ func TestNodeContractRetiredFieldsAndWireTags(t *testing.T) {
 				"session_volumes_complete": 43, "admission_reported": 44, "mem_admittable_mib": 45,
 				"mem_inflight_mib": 46, "inflight_vms": 47, "admission_refusals": 48, "jailer_armed": 49,
 				"launch_modes": 50, "mem_inflight_placed_mib": 51, "inflight_placed_vms": 52,
-			}},
+			},
+		},
 	}
 	for _, tc := range cases {
 		d := tc.message.ProtoReflect().Descriptor()

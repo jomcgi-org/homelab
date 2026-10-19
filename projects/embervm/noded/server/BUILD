@@ -71,6 +71,7 @@ go_test(
         "guest_memory_test.go",
         "ids_test.go",
         "jail_preflight_test.go",
+        "node_contract_test.go",
         "pressure_test.go",
         "register_test.go",
         "registry_workload_test.go",
@@ -101,6 +102,9 @@ go_test(
         "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_grpc//status",
         "@org_golang_google_grpc//test/bufconn",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_x_sys//unix",
     ],
 )
