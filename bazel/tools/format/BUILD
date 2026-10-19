@@ -95,3 +95,6 @@ multirun(
 
 # Atlas migration checksum validator — used by sh_test targets in chart BUILD files
 exports_files(["validate-atlas-sum.sh"])
+
+# Real-helper regression coverage in helm_deps/check_helm_deps_test.py.
+exports_files(["sync-helm-deps.sh"])
