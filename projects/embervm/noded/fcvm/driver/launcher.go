@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 	"log/slog"
 	"net"
 	"os"
@@ -14,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 )
 
 const (

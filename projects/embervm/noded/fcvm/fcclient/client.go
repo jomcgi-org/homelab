@@ -13,11 +13,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 	"io"
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 )
 
 const defaultControlTimeout = 30 * time.Second
