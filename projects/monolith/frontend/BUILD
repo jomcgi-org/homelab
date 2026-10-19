@@ -316,15 +316,18 @@ apko_image(
 # Trips fixtures use the production route/layout/components with invented data.
 js_library(
     name = "trips_fixture_src",
-    srcs = glob(["trips-preview/**"], exclude = ["trips-preview/__pycache__/**"]) + [
+    srcs = glob(
+        ["trips-preview/**"],
+        exclude = ["trips-preview/__pycache__/**"],
+    ) + [
         "preview/fonts.css",
         "preview/fonts/OFL.txt",
         "preview/fonts/SchibstedGrotesk.ttf",
         "test/TripsRoute.svelte",
-        "test/trips-fixtures.js",
+        "test/app-environment-stub.js",
         "test/profile-page.svelte.js",
         "test/profile-stores.js",
-        "test/app-environment-stub.js",
+        "test/trips-fixtures.js",
     ],
     deps = [":src"],
 )
@@ -332,7 +335,11 @@ js_library(
 js_run_binary(
     name = "trips_fixture_preview",
     srcs = [":trips_fixture_src"],
-    args = ["build", "--config", "trips-preview/vite.config.js"],
+    args = [
+        "build",
+        "--config",
+        "trips-preview/vite.config.js",
+    ],
     chdir = package_name(),
     out_dirs = ["trips-fixture-preview"],
     tool = ":vite",

@@ -19,10 +19,16 @@ ROUTES = {
 }
 # Offline style with no glyphs, sprites or remote sources. Production route,
 # marker and control code still runs in MapLibre's real WebGL renderer.
-STYLE = {"version": 8, "sources": {}, "layers": [
-    {"id": "ground", "type": "background", "paint": {"background-color": "white"}},
-]}
-PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+STYLE = {
+    "version": 8,
+    "sources": {},
+    "layers": [
+        {"id": "ground", "type": "background", "paint": {"background-color": "white"}},
+    ],
+}
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -37,7 +43,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 def check(root, output, head):
     output.mkdir(parents=True, exist_ok=True)
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=str(root)))
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(Handler, directory=str(root))
+    )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_port}"
     results = []
@@ -47,8 +55,15 @@ def check(root, output, head):
             for surface, path in ROUTES.items():
                 for width in (390, 1440):
                     for scheme in ("light", "dark"):
-                        context = browser.new_context(viewport={"width": width, "height": 1000}, color_scheme=scheme, reduced_motion="reduce", service_workers="block")
-                        context.add_init_script(f"localStorage.setItem('td-theme', '{scheme}');")
+                        context = browser.new_context(
+                            viewport={"width": width, "height": 1000},
+                            color_scheme=scheme,
+                            reduced_motion="reduce",
+                            service_workers="block",
+                        )
+                        context.add_init_script(
+                            f"localStorage.setItem('td-theme', '{scheme}');"
+                        )
                         forbidden = []
                         errors = []
 
@@ -56,11 +71,21 @@ def check(root, output, head):
                             url = route.request.url
                             if url.startswith(base) and not url.endswith("favicon.svg"):
                                 route.continue_()
-                            elif url.endswith("favicon.svg") or url.startswith("https://fonts.googleapis.com/"):
+                            elif url.endswith("favicon.svg") or url.startswith(
+                                "https://fonts.googleapis.com/"
+                            ):
                                 route.fulfill(content_type="text/css", body="")
-                            elif url in ("https://tiles.openfreemap.org/styles/liberty", "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"):
-                                route.fulfill(content_type="application/json", body=json.dumps(STYLE))
-                            elif url.startswith("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/"):
+                            elif url in (
+                                "https://tiles.openfreemap.org/styles/liberty",
+                                "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+                            ):
+                                route.fulfill(
+                                    content_type="application/json",
+                                    body=json.dumps(STYLE),
+                                )
+                            elif url.startswith(
+                                "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/"
+                            ):
                                 route.fulfill(content_type="image/png", body=PNG)
                             else:
                                 forbidden.append(url)
@@ -70,53 +95,106 @@ def check(root, output, head):
                         page = context.new_page()
                         page.on("pageerror", lambda e: errors.append(str(e)))
                         name = f"{surface}-{width}-{scheme}"
-                        record = {"name": name, "path": path, "width": width, "scheme": scheme, "head": head}
+                        record = {
+                            "name": name,
+                            "path": path,
+                            "width": width,
+                            "scheme": scheme,
+                            "head": head,
+                        }
                         try:
                             page.goto(base + path, wait_until="networkidle")
                             page.evaluate("document.fonts.ready")
                             assert page.locator("main.td.sheet").count() == 1
                             assert page.locator("button.scheme").count() == 1
                             assert page.locator(".md-nav").count() == 0
-                            overflow = page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
+                            overflow = page.evaluate(
+                                "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+                            )
                             record["overflow_px"] = overflow
                             assert overflow <= 0, (name, overflow)
                             if surface in ("trip", "day"):
-                                assert page.locator("canvas.maplibregl-canvas").count() == 1
-                            page.screenshot(path=str(output / f"{name}.png"), full_page=True)
+                                assert (
+                                    page.locator("canvas.maplibregl-canvas").count()
+                                    == 1
+                                )
+                            page.screenshot(
+                                path=str(output / f"{name}.png"), full_page=True
+                            )
                             if surface == "timeline":
-                                page.get_by_role("button", name="Open photo 1", exact=True).focus()
+                                page.get_by_role(
+                                    "button", name="Open photo 1", exact=True
+                                ).focus()
                                 page.keyboard.press("Enter")
                                 page.get_by_role("dialog").wait_for()
-                                assert page.get_by_role("button", name="Close", exact=True).evaluate("e => e === document.activeElement")
+                                assert page.get_by_role(
+                                    "button", name="Close", exact=True
+                                ).evaluate("e => e === document.activeElement")
                                 page.keyboard.press("ArrowRight")
-                                assert page.get_by_role("dialog").get_by_role("img").get_attribute("alt") == "Photo 2 of 6"
+                                assert (
+                                    page.get_by_role("dialog")
+                                    .get_by_role("img")
+                                    .get_attribute("alt")
+                                    == "Photo 2 of 6"
+                                )
                                 page.screenshot(path=str(output / f"{name}-viewer.png"))
                                 page.keyboard.press("Escape")
-                                assert page.get_by_role("button", name="Open photo 1", exact=True).evaluate("e => e === document.activeElement")
-                                page.get_by_role("button", name="trail", exact=True).click()
+                                assert page.get_by_role(
+                                    "button", name="Open photo 1", exact=True
+                                ).evaluate("e => e === document.activeElement")
+                                page.get_by_role(
+                                    "button", name="trail", exact=True
+                                ).click()
                                 assert page.get_by_text("3 / 6 photos").count() == 1
-                                page.get_by_role("button", name="Map", exact=True).click()
+                                page.get_by_role(
+                                    "button", name="Map", exact=True
+                                ).click()
                                 page.wait_for_selector("canvas.maplibregl-canvas")
-                                page.screenshot(path=str(output / f"{name}-map.png"), full_page=True)
+                                page.screenshot(
+                                    path=str(output / f"{name}-map.png"), full_page=True
+                                )
                             if surface == "day":
-                                page.get_by_role("button", name="Zoom in", exact=True).click()
-                                page.get_by_role("button", name="Next photo", exact=True).click()
-                                page.get_by_role("button", name="View photo 2 fullscreen", exact=True).click()
+                                page.get_by_role(
+                                    "button", name="Zoom in", exact=True
+                                ).click()
+                                page.get_by_role(
+                                    "button", name="Next photo", exact=True
+                                ).click()
+                                page.get_by_role(
+                                    "button", name="View photo 2 fullscreen", exact=True
+                                ).click()
                                 page.keyboard.press("Escape")
                             page.locator("button.scheme").click()
-                            assert page.evaluate("document.documentElement.dataset.theme") != scheme
+                            assert (
+                                page.evaluate("document.documentElement.dataset.theme")
+                                != scheme
+                            )
                             if surface in ("trip", "day"):
-                                assert page.locator("canvas.maplibregl-canvas").count() == 1
+                                assert (
+                                    page.locator("canvas.maplibregl-canvas").count()
+                                    == 1
+                                )
                             assert not forbidden, forbidden
                             assert not errors, errors
                             record["passed"] = True
                         except Exception as error:
                             record["error"] = str(error)
-                            page.screenshot(path=str(output / f"{name}-failure.png"), full_page=True)
+                            page.screenshot(
+                                path=str(output / f"{name}-failure.png"), full_page=True
+                            )
                             raise
                         finally:
                             results.append(record)
-                            (output / "checks.json").write_text(json.dumps({"head": head, "limitations": "Invented route, synthetic image swatches, blank local basemap and DEM. Real WebGL controls; no actual-host or geographic tile acceptance.", "checks": results}, indent=2))
+                            (output / "checks.json").write_text(
+                                json.dumps(
+                                    {
+                                        "head": head,
+                                        "limitations": "Invented route, synthetic image swatches, blank local basemap and DEM. Real WebGL controls; no actual-host or geographic tile acceptance.",
+                                        "checks": results,
+                                    },
+                                    indent=2,
+                                )
+                            )
                             context.close()
             browser.close()
     finally:
