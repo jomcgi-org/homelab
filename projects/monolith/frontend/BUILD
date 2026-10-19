@@ -502,6 +502,7 @@ js_library(
     ],
     deps = [
         ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@homelab/design-system",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@sveltejs/vite-plugin-svelte",
         ":node_modules/svelte",
