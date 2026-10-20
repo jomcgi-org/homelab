@@ -14,7 +14,11 @@ filegroup(
         "charts/**/*",
         "templates/**/*",
     ]),
-    visibility = ["//projects/monolith:__pkg__"],
+    visibility = [
+        "//projects/monolith:__pkg__",
+        # The connector's chart test checks its route has a descriptor-cap entry.
+        "//projects/scotland-connector/chart:__pkg__",
+    ],
 )
 
 helm_chart(
