@@ -5,14 +5,9 @@ tranche. Spend no longer exhausts a node (#7161), so the only blocker left is a
 renewal requested with the same work evidence as the last one.
 """
 
-import hashlib
 import json
 
 from factory.orchestration import factory_controls as controls
-
-
-def digest(value):
-    return hashlib.sha256(controls._json(value).encode()).hexdigest()
 
 
 def progress(runs, through_run_id=None):
@@ -37,11 +32,11 @@ def progress(runs, through_run_id=None):
         elif value is None:
             value = artifact
         if isinstance(value, dict) and value:
-            evidence.add(digest({"artifact": value}))
+            evidence.add(controls.digest({"artifact": value}))
         head = run.get("head_sha")
         if head and head != run.get("base_sha"):
-            evidence.add(digest({"head_sha": head}))
-    return digest(sorted(evidence))
+            evidence.add(controls.digest({"head_sha": head}))
+    return controls.digest(sorted(evidence))
 
 
 def funding_blocker(db, task_id, runs):

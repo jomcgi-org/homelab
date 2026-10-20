@@ -594,6 +594,10 @@ def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def digest(value: object) -> str:
+    return hashlib.sha256(_json(value).encode()).hexdigest()
+
+
 def _text(value: object, name: str, limit: int = 256) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise ValueError(f"invalid {name}")
