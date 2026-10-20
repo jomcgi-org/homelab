@@ -182,6 +182,7 @@ def test_first_party_chart_exclusions_match_extracted_oci_names():
         "monolith",
         "monolith-public",
         "monolith-agents",
+        "scotland-connector",
         "context-forge",
         "inference",
         "oci-model-cache-operator",

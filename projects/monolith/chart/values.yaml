@@ -21,6 +21,7 @@ rbac:
       - kargo-monolith
       - kargo-monolith-agents
       - kargo-monolith-public
+      - kargo-scotland-connector
 
 backend:
   # Whether this deployment runs the leader-elected singletons (Discord bot,

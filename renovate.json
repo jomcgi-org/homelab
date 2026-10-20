@@ -106,6 +106,7 @@
         "ghcr.io/jomcgi/homelab/charts/monolith",
         "ghcr.io/jomcgi/homelab/charts/monolith-public",
         "ghcr.io/jomcgi/homelab/charts/monolith-agents",
+        "ghcr.io/jomcgi/homelab/charts/scotland-connector",
         "ghcr.io/jomcgi/homelab/charts/context-forge",
         "ghcr.io/jomcgi/homelab/charts/inference",
         "ghcr.io/jomcgi/homelab/charts/oci-model-cache-operator",

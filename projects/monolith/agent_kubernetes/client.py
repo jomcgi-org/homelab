@@ -43,6 +43,7 @@ KARGO_NAMESPACES = frozenset(
         "kargo-monolith",
         "kargo-monolith-agents",
         "kargo-monolith-public",
+        "kargo-scotland-connector",
     }
 )
 

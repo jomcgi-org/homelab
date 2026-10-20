@@ -435,6 +435,10 @@ cdHealth:
       kargo_namespace: kargo-monolith-agents
       chart_repo_suffix: /charts/monolith-agents
       chart_path: projects/monolith-agents/chart
+    - app: scotland-connector
+      kargo_namespace: kargo-scotland-connector
+      chart_repo_suffix: /charts/scotland-connector
+      chart_path: projects/scotland-connector/chart
 
 # Staged separately after repository acceptance. Keep cdHealth and
 # podRestartWatch on their existing settings while this writer stays off.
