@@ -98,6 +98,12 @@ at most 150 km, nights at most 7, coordinates (required) inside Scotland
 only. There is no listing endpoint.
 Coordinates are rounded to 0.01 degrees so equal questions share an ETag.
 
+**Why.** Queries take coordinates, with no place-name lookup. The calling
+assistant already knows where Glencoe or Skye is, to well within the search
+radius, and can search for anything obscure. A gazetteer here would be a
+dataset to license and maintain, and the 50-place seed it replaced answered
+"Skye" with nothing, which reads to a model as "not covered".
+
 Answers carry `Cache-Control: public, max-age=60, s-maxage=600,
 stale-while-revalidate=3600, stale-if-error=86400` plus
 `Cloudflare-CDN-Cache-Control: public, max-age=600, stale-while-revalidate=3600,
@@ -203,12 +209,6 @@ unit table are #7245.
 
 `walk_windows` is withheld until the walk corpus licensing is resolved
 (#7252).
-
-**Why.** Queries take coordinates, with no place-name lookup. The calling
-assistant already knows where Glencoe or Skye is, to well within the search
-radius, and can search for anything obscure. A gazetteer here would be a
-dataset to license and maintain, and the 50-place seed it replaced answered
-"Skye" with nothing, which reads to a model as "not covered".
 
 ## Direction
 
