@@ -365,7 +365,7 @@ promotion:
       chartRepo: oci://ghcr.io/jomcgi/homelab/charts/scotland-connector
       # Floor at the first published version, the hub Application's bootstrap
       # pin, so the first promotion is forward-only.
-      semverConstraint: ">=0.1.0"
+      semverConstraint: ">=0.1.3"
       discoveryLimit: 20
       appSourceRepo: ghcr.io/jomcgi/homelab/charts
       appSourceChart: scotland-connector
