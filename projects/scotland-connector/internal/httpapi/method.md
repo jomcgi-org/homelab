@@ -40,7 +40,13 @@ ground are usually colder and windier.
 
 A **good hour** is a daylight hour (between sunrise and sunset at the start)
 with at most 2 mm of rain and wind at most 80 km/h. Only good hours are
-listed; a missing daylight hour failed one of those limits.
+listed; within the forecast, a missing daylight hour failed one of those
+limits.
+
+**Coverage.** MET Norway's forecast is hourly for about two and a half days,
+so a query covers at most three days. Each day says whether the hourly
+forecast covers its daylight in full, in part, or not at all, and `doable`
+is null when the forecast does not reach far enough to decide.
 
 A day is **doable** when its good hours hold a run of at least 80% of the
 walk's estimated time, with one bad hour tolerated inside the run. Walks over

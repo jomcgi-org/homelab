@@ -168,3 +168,49 @@ func TestLocalDayUsesUKCivilDate(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestParseSkipsBadRowsButKeepsTheRest(t *testing.T) {
+	// The prod seed holds a 0 h walk; it must not take out every other walk.
+	ds := mustParse(t, snapshot(walkJSON("good", 57, -4, 3, 0), walkJSON("zero", 57, -4, 0, 0)))
+	if len(ds.Walks) != 1 || ds.Walks[0].ID != "good" || ds.Skipped != 1 {
+		t.Fatalf("walks %d skipped %d", len(ds.Walks), ds.Skipped)
+	}
+}
+
+func TestCoverageFollowsTheHourlyHorizon(t *testing.T) {
+	// fetched_at 06:20Z on 15 June, so the hourly horizon is 06:20Z on the
+	// 17th (07:20 BST): the 15th and 16th are full, the 17th partial, the
+	// 18th has no forecast.
+	ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 3, 0, 0, 1)))
+	if want := time.Date(2026, 6, 17, 6, 20, 0, 0, time.UTC); !ds.HourlyUntil.Equal(want) {
+		t.Fatalf("horizon %v", ds.HourlyUntil)
+	}
+	first := LocalDay(base)
+	for i, want := range []Coverage{CoverageFull, CoverageFull, CoveragePartial, CoverageNone} {
+		if got := ds.CoverageOf(first + int32(i)); got != want {
+			t.Errorf("day %d coverage %s, want %s", i, got, want)
+		}
+	}
+	// A later hour in the snapshot extends the horizon past the 48 h floor.
+	ds = mustParse(t, snapshot(walkJSON("w", 57, -4, 3, 0, 60)))
+	if want := base.Add(61 * time.Hour); !ds.HourlyUntil.Equal(want) {
+		t.Fatalf("horizon %v, want %v", ds.HourlyUntil, want)
+	}
+}
+
+func TestDaysBeyondTheForecastAreUndecided(t *testing.T) {
+	// A 3 h walk, good on day one only. Day three is partial with no slot
+	// yet, so it is undecided rather than "not doable".
+	ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 3, 0, 0, 1, 2, 3)))
+	res := ds.Windows(Query{Lat: 57, Lon: -4, RadiusKm: 10, Days: 3, Limit: 1, Now: base})
+	days := res[0].Days
+	if !days[0].Decided || !days[0].Doable || days[0].Coverage != CoverageFull {
+		t.Fatalf("day 1 = %+v", days[0])
+	}
+	if !days[1].Decided || days[1].Doable {
+		t.Fatalf("day 2, fully forecast and empty, is decided not doable: %+v", days[1])
+	}
+	if days[2].Coverage != CoveragePartial || days[2].Decided {
+		t.Fatalf("day 3 = %+v", days[2])
+	}
+}

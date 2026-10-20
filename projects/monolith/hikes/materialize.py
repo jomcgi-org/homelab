@@ -33,27 +33,46 @@ logger = logging.getLogger("monolith.hikes")
 SCHEMA_VERSION = 1
 
 
+# One stored hour as _load selects it: (walk_uuid, hour_time, temp_c,
+# precip_mm, wind_kmh, cloud_pct). Plain columns, not ORM objects: a refresh
+# holds tens of thousands of hours.
+HourRow = tuple[str, datetime, float, float, float, float]
+
+
+def _publishable(w: models.Walk) -> bool:
+    """A walk the connector can rank: named, linked and with a real duration.
+
+    The scrape can store a 0 h duration (the prod seed has one); the doable
+    rule needs a positive one, so such a walk is left out rather than
+    reported as doable in any good hour.
+    """
+    return bool(w.uuid and w.name and w.url) and w.duration_h > 0
+
+
 def build_payload(
     walks: list[models.Walk],
-    hours: list[models.WalkHour],
+    hours: list[HourRow],
     fetched_at: datetime | None,
     now: datetime,
 ) -> dict:
-    """The snapshot body: every walk, with its future viable hours in order.
+    """The snapshot body: every publishable walk, with its future viable hours.
 
     Each hour is ``[unix_seconds, temp_c, precip_mm, wind_kmh, cloud_pct]``,
     the tuple hikes.forecast.compute_windows emits. A stored hour is one that
     passed the viability ladder (daylight, precipitation, wind), so presence
-    means "good"; a missing daylight hour means bad weather.
+    means "good"; a missing daylight hour within the forecast means bad
+    weather.
     """
     cutoff = top_of_hour(now)
     by_walk: dict[str, list[list[float]]] = {}
-    for h in sorted(hours, key=lambda h: (h.walk_uuid, as_utc(h.hour_time))):
-        hour_time = as_utc(h.hour_time)
+    for walk_uuid, at, temp_c, precip_mm, wind_kmh, cloud_pct in sorted(
+        hours, key=lambda h: (h[0], as_utc(h[1]))
+    ):
+        hour_time = as_utc(at)
         if hour_time is None or hour_time < cutoff:
             continue
-        by_walk.setdefault(h.walk_uuid, []).append(
-            [int(hour_time.timestamp()), h.temp_c, h.precip_mm, h.wind_kmh, h.cloud_pct]
+        by_walk.setdefault(walk_uuid, []).append(
+            [int(hour_time.timestamp()), temp_c, precip_mm, wind_kmh, cloud_pct]
         )
     return {
         "schema_version": SCHEMA_VERSION,
@@ -72,15 +91,19 @@ def build_payload(
                 "hours": by_walk.get(w.uuid, []),
             }
             for w in sorted(walks, key=lambda w: w.uuid)
+            if _publishable(w)
         ],
     }
 
 
 def _load(session: Session, now: datetime) -> dict:
     walks = list(session.exec(select(models.Walk)).all())
+    h = models.WalkHour
     hours = list(
         session.exec(
-            select(models.WalkHour).where(models.WalkHour.hour_time >= top_of_hour(now))
+            select(
+                h.walk_uuid, h.hour_time, h.temp_c, h.precip_mm, h.wind_kmh, h.cloud_pct
+            ).where(h.hour_time >= top_of_hour(now))
         ).all()
     )
     fetched_at = session.exec(select(func.max(models.WalkHour.fetched_at))).one()
