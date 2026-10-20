@@ -7,7 +7,6 @@ cessation. The existing factory supervisor consumes exact durable Ember proof.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -29,10 +28,6 @@ MAX_CANCEL_REQUESTS = 2
 
 def enabled() -> bool:
     return os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() == "true"
-
-
-def _digest(value) -> str:
-    return hashlib.sha256(controls._json(value).encode()).hexdigest()
 
 
 def _requests(db: Session, task_id: str) -> list[dict]:
@@ -106,9 +101,9 @@ def _candidate(db, task_id, node_key, attempt, session_id):
         "run_id": run.id,
         "start_id": start.id,
         **session_identity,
-        "pin_sha256": _digest(pin),
+        "pin_sha256": controls.digest(pin),
     }
-    identity["identity_sha256"] = _digest(identity)
+    identity["identity_sha256"] = controls.digest(identity)
     return identity, pin, bool(pending)
 
 
