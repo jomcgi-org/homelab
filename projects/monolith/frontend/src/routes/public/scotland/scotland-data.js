@@ -10,10 +10,10 @@ export const METHOD_URL = `${BASE}/v1/method`;
 
 export const facts = [
   { k: "MCP", v: MCP_URL, code: true },
-  { k: "Tool", v: "dark_sky_windows", code: true },
+  { k: "Tools", v: "dark_sky_windows, walk_windows", code: true },
   { k: "Covers", v: "Scotland, mainland and islands" },
-  { k: "Forecast", v: "MET Norway, refreshed every three hours" },
-  { k: "Per call", v: "up to 10 sites, 150 km and 7 nights" },
+  { k: "Forecast", v: "MET Norway, refreshed every two to three hours" },
+  { k: "Per call", v: "up to 10 results, up to 7 days ahead" },
   { k: "Cost", v: "free, no sign-up or key" },
 ];
 
@@ -57,4 +57,9 @@ export const sources = [
   },
   { name: "OpenStreetMap", use: "road access", licence: "ODbL" },
   { name: "Natural Earth", use: "coastline", licence: "public domain" },
+  {
+    name: "Walkhighlands",
+    use: "walks, linked to their route pages",
+    licence: "linked, not reproduced",
+  },
 ];

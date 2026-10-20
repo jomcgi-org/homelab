@@ -28,6 +28,28 @@ calendar month over the Copernicus CERRA reanalysis record.
 **Distances** are great-circle approximations, accurate to well under 0.1 km
 within the 150 km radius cap.
 
+## Walk windows
+
+**Walks** are the Walkhighlands catalogue: name, start point, length, ascent
+and estimated time, with a link to the walk's page. The route, maps and
+descriptions stay on Walkhighlands; follow the link for them.
+
+**Forecast** is MET Norway's Locationforecast at each walk's start point,
+fetched every two hours. It is not a summit forecast: conditions on high
+ground are usually colder and windier.
+
+A **good hour** is a daylight hour (between sunrise and sunset at the start)
+with at most 2 mm of rain and wind at most 80 km/h. Only good hours are
+listed; a missing daylight hour failed one of those limits.
+
+A day is **doable** when its good hours hold a run of at least 80% of the
+walk's estimated time, with one bad hour tolerated inside the run. Walks over
+seven hours get two hours of credit for starting or finishing in the dark.
+Days are UK calendar days, starting today.
+
+**Ranking** is doable days, then the earliest doable day, then good hours,
+then distance from the requested point to the walk's start.
+
 ## Places
 
 Queries take coordinates. Pass the latitude and longitude of the place the

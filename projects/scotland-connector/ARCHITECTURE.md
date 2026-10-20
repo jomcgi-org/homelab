@@ -1,7 +1,8 @@
 # Scotland connector architecture
 
 A public, read-only, free API and MCP endpoint answering Scottish outdoor
-questions, starting with where and when the sky will be dark and clear.
+questions: where and when the sky will be dark and clear, and which walks
+fit the weather.
 Tracking issue: #7240. Deployed on the hub through Kargo
 (`projects/gke-apps/scotland-connector/`, pipeline `scotland-connector` in
 `projects/platform/kargo/values.yaml`), served publicly at
@@ -12,16 +13,18 @@ Tracking issue: #7240. Deployed on the hub through Kargo
 ```mermaid
 graph LR
     J["monolith stars-refresh<br/>(Argo, every 3h)"] -->|writes| R2["R2: stars/sites.json<br/>stars/history-map.json"]
+    H["monolith hikes-refresh-forecasts<br/>(Argo, every 2h)"] -->|writes| W["R2: stars/walks.json"]
     R2 -->|"conditional GET<br/>every 60s"| P["connector pods<br/>(in-memory index)"]
+    W -->|"conditional GET<br/>every 60s"| P
     C["Caller or assistant"] --> CF["Cloudflare edge<br/>(cache)"] --> E["Envoy Gateway<br/>(per-client limits)"] --> P
 ```
 
 One Go binary, `cmd/connector`, in its own `scotland-connector` namespace.
 It serves two surfaces on port 8080 and nothing else:
 
-- `GET /v1/dark-sky-windows`, `/v1/openapi.json` (the published contract)
-  and `/v1/method`.
-- `POST /mcp`: tool `dark_sky_windows`.
+- `GET /v1/dark-sky-windows`, `GET /v1/walk-windows`, `/v1/openapi.json`
+  (the published contract) and `/v1/method`.
+- `POST /mcp`: tools `dark_sky_windows` and `walk_windows`.
 
 Health (`/healthz`), readiness (`/readyz`) and Prometheus metrics
 (`/metrics`) are on an admin listener, port 9090, that no Service or route
@@ -82,6 +85,29 @@ MB, and change every three hours, so loading them into memory costs nothing to k
 sync. The cost is that the snapshot caps each site's hour list at 25, so
 later nights can be undercounted. Answers flag this as
 `forecast_hours_truncated`, and #7246 adds an uncapped snapshot.
+
+## Walks
+
+`walk_windows` reads `walks.json`, which the monolith's
+`hikes-refresh-forecasts` job writes to the same bucket every two hours
+(`projects/monolith/hikes/materialize.py`) after it stores new forecast
+hours. Each walk carries its Walkhighlands URL, start point, length, ascent,
+estimated time and the viable hours the hikes app already computes
+(daylight, at most 2 mm of rain, wind at most 80 km/h).
+`internal/walks` buckets those hours into UK days at load time and applies
+the hikes app's doable-day rule (`projects/monolith/hikes/router.py`); its
+tests replay the hikes router's cases. A separate `WalkStore` loads the
+object, so a missing or broken `walks.json` takes out `walk_windows` alone:
+readiness still depends only on the stars snapshot.
+
+**Why.** The walks come from Walkhighlands (decided on #7252). Answers carry
+facts and a link to each walk's page, never the route description, maps or
+GPX, so the route itself stays on Walkhighlands. The snapshot leaves out the
+scraped `summary` prose for the same reason.
+
+**Why.** Forecasts are at each walk's start, because that is what the hikes
+job fetches. Every answer says so in `meta.notes`, since summit conditions
+are colder and windier than the car park.
 
 ## Contract
 
@@ -207,8 +233,7 @@ unit table are #7245.
 
 ## Not here yet
 
-`walk_windows` is withheld until the walk corpus licensing is resolved
-(#7252).
+Aurora is #7256.
 
 ## Direction
 

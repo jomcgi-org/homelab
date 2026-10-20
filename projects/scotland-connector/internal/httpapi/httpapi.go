@@ -84,6 +84,7 @@ func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL
 	}
 	h := &Handler{svc: svc, meter: m, log: log, mux: http.NewServeMux(), specURL: publicBaseURL + "/v1/openapi.json"}
 	h.mux.HandleFunc("GET /v1/dark-sky-windows", h.darkSkyWindows)
+	h.mux.HandleFunc("GET /v1/walk-windows", h.walkWindows)
 	h.mux.HandleFunc("GET /v1/openapi.json", h.static(spec, "application/json"))
 	h.mux.HandleFunc("GET /v1/method", h.static(method, "text/markdown; charset=utf-8"))
 	h.mux.HandleFunc("/v1/", h.notFound)
@@ -134,6 +135,25 @@ func (h *Handler) darkSkyWindows(w http.ResponseWriter, r *http.Request) {
 		env, err = h.svc.DarkSkyWindows(p)
 	}
 	h.respond(w, r, "dark_sky_windows", start, env, err)
+}
+
+func (h *Handler) walkWindows(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	q := r.URL.Query()
+	var p connector.WalkWindowsParams
+	var err error
+	p.Lat, err = floatParam(q.Get("lat"), "lat", err)
+	p.Lon, err = floatParam(q.Get("lon"), "lon", err)
+	p.RadiusKm, err = floatParam(q.Get("radius_km"), "radius_km", err)
+	p.Days, err = intParam(q.Get("days"), "days", err)
+	p.Limit, err = intParam(q.Get("limit"), "limit", err)
+	p.MaxDurationH, err = floatParam(q.Get("max_duration_h"), "max_duration_h", err)
+	p.MaxAscentM, err = intParam(q.Get("max_ascent_m"), "max_ascent_m", err)
+	var env *connector.Envelope
+	if err == nil {
+		env, err = h.svc.WalkWindows(p)
+	}
+	h.respond(w, r, "walk_windows", start, env, err)
 }
 
 func floatParam(raw, name string, prev error) (*float64, error) {

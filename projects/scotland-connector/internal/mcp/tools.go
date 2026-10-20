@@ -55,6 +55,32 @@ var Tools = []Tool{
 }`),
 		Annotations: readOnly("Dark-sky windows near a place"),
 	},
+	{
+		Name:  "walk_windows",
+		Title: "Walk weather windows near a place",
+		Description: "Find Scottish hill and coastal walks near a point that fit a dry, calm daylight slot over the next few days. " +
+			"Use this when someone asks where or when to go walking or hillwalking in Scotland, or whether a walk is on this weekend. " +
+			"Ranks Walkhighlands walks by how many days have a long enough good-weather slot for the walk's estimated time " +
+			"(daylight, at most 2 mm rain and wind at most 80 km/h per hour, one bad hour tolerated), then the earliest such day, then distance. " +
+			"Each walk carries its Walkhighlands url, start point, length, ascent and time, and per day the best slot and the hourly weather. " +
+			"Weather is forecast at the walk's start, not on summits; send people to the url for the route. " +
+			"Give lat and lon in decimal degrees for the place the person means. Scotland only.",
+		InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "lat": {"type": "number", "minimum": 54.5, "maximum": 61.0, "description": "Latitude in decimal degrees."},
+    "lon": {"type": "number", "minimum": -9.0, "maximum": -0.5, "description": "Longitude in decimal degrees."},
+    "radius_km": {"type": "number", "minimum": 1, "maximum": 100, "default": 30, "description": "Search radius in km around the point, to each walk's start."},
+    "days": {"type": "integer", "minimum": 1, "maximum": 7, "default": 3, "description": "Days to cover, starting today (UK time)."},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5, "description": "How many walks to return."},
+    "max_duration_h": {"type": "number", "minimum": 0.5, "maximum": 24, "description": "Only walks whose estimated time is at most this many hours."},
+    "max_ascent_m": {"type": "integer", "minimum": 1, "maximum": 3000, "description": "Only walks with at most this much ascent, in metres."}
+  },
+  "required": ["lat", "lon"],
+  "additionalProperties": false
+}`),
+		Annotations: readOnly("Walk weather windows near a place"),
+	},
 }
 
 // call decodes arguments and runs the tool.
@@ -69,6 +95,12 @@ func call(svc *connector.Service, name string, args json.RawMessage) (*connector
 			return nil, err
 		}
 		return svc.DarkSkyWindows(p)
+	case "walk_windows":
+		var p connector.WalkWindowsParams
+		if err := strictDecode(args, &p); err != nil {
+			return nil, err
+		}
+		return svc.WalkWindows(p)
 	}
 	return nil, errUnknownTool
 }

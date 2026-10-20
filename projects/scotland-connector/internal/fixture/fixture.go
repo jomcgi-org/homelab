@@ -6,6 +6,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
 
 // Now is the fixture clock: mid-afternoon on 19 October 2026.
@@ -37,6 +38,32 @@ const History = `{"sites":[
  {"id":"scotland-0002","name":null,"lat":57.10,"lon":-3.90,"clear":[0,0,0,0,0,0,0,0,0,0,0,0],"dark":[0,0,0,0,0,0,0,0,0,0,0,0]}
 ]}`
 
+// Walks is a walks.json with two walks near Aviemore, both on 20 October:
+// a 3 h walk with six good hours and a 9 h walk that falls short.
+const Walks = `{"schema_version":1,"generated_at":"2026-10-19T14:30:00+00:00","fetched_at":"2026-10-19T14:20:00+00:00","walks":[
+ {"id":"wh-meall-a-bhuachaille","name":"Meall a' Bhuachaille","url":"https://www.walkhighlands.co.uk/cairngorms/meall-a-bhuachaille.shtml",
+  "lat":57.17,"lon":-3.67,"distance_km":7.5,"ascent_m":560,"duration_h":3,
+  "hours":[[1792483200,6.5,0.0,14,30],[1792486800,7.0,0.1,15,40],[1792490400,7.5,0.0,16,20],[1792494000,8.0,0.0,18,25],[1792497600,8.5,0.2,20,35],[1792501200,8.0,0.0,18,50]]},
+ {"id":"wh-cairn-gorm","name":"Cairn Gorm","url":"https://www.walkhighlands.co.uk/cairngorms/cairngorm.shtml",
+  "lat":57.13,"lon":-3.67,"distance_km":19,"ascent_m":1100,"duration_h":9,
+  "hours":[[1792483200,2.0,0.0,40,60],[1792486800,2.5,0.0,45,70]]}
+]}`
+
+// WalkSource serves a fixed walk dataset; nil means "not published yet".
+type WalkSource struct{ DS *walks.Dataset }
+
+// Current implements connector.WalksSource.
+func (s WalkSource) Current() *walks.Dataset { return s.DS }
+
+// WalkDataset parses the walk fixture.
+func WalkDataset() *walks.Dataset {
+	ds, err := walks.Parse([]byte(Walks), `"w1"`)
+	if err != nil {
+		panic(err)
+	}
+	return ds
+}
+
 // Source serves a fixed dataset; a nil dataset means "not loaded yet".
 type Source struct{ DS *stars.Dataset }
 
@@ -55,9 +82,9 @@ func Dataset() *stars.Dataset {
 // Service returns a service over the fixture at the fixture clock. Pass
 // loaded=false for one whose dataset has not arrived.
 func Service(loaded bool) *connector.Service {
-	src := Source{}
+	src, ws := Source{}, WalkSource{}
 	if loaded {
-		src.DS = Dataset()
+		src.DS, ws.DS = Dataset(), WalkDataset()
 	}
-	return &connector.Service{Data: src, MethodURL: "https://example.test/v1/method", Now: func() time.Time { return Now }}
+	return &connector.Service{Data: src, Walks: ws, MethodURL: "https://example.test/v1/method", Now: func() time.Time { return Now }}
 }

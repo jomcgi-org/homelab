@@ -83,7 +83,7 @@ func TestToolListAndAnnotations(t *testing.T) {
 			t.Errorf("%s: inputSchema %v", tool["name"], schema)
 		}
 	}
-	if strings.Join(names, ",") != "dark_sky_windows" {
+	if strings.Join(names, ",") != "dark_sky_windows,walk_windows" {
 		t.Fatalf("tools = %v", names)
 	}
 }
@@ -101,17 +101,33 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 		if err := json.Unmarshal(tool.InputSchema, &s); err != nil {
 			t.Fatalf("%s: %v", tool.Name, err)
 		}
-		if tool.Name != "dark_sky_windows" {
-			continue
+		caps := map[string]map[string][2]float64{
+			"dark_sky_windows": {
+				"radius_km": {connector.MaxRadiusKm, connector.DefaultRadiusKm},
+				"nights":    {connector.MaxNights, connector.DefaultNights},
+				"limit":     {connector.MaxLimit, connector.DefaultLimit},
+			},
+			"walk_windows": {
+				"radius_km": {connector.MaxWalkRadiusKm, connector.DefaultWalkRadiusKm},
+				"days":      {connector.MaxWalkDays, connector.DefaultWalkDays},
+				"limit":     {connector.MaxLimit, connector.DefaultLimit},
+			},
+		}[tool.Name]
+		if caps == nil {
+			t.Fatalf("%s: no caps pinned for this tool", tool.Name)
 		}
-		for name, want := range map[string][2]float64{
-			"radius_km": {connector.MaxRadiusKm, connector.DefaultRadiusKm},
-			"nights":    {connector.MaxNights, connector.DefaultNights},
-			"limit":     {connector.MaxLimit, connector.DefaultLimit},
-		} {
+		for name, want := range caps {
 			p := s.Properties[name]
 			if p.Maximum == nil || *p.Maximum != want[0] || p.Default == nil || *p.Default != want[1] {
 				t.Errorf("%s.%s = max %v default %v, code %v", tool.Name, name, p.Maximum, p.Default, want)
+			}
+		}
+		if tool.Name == "walk_windows" {
+			if p := s.Properties["max_duration_h"]; p.Maximum == nil || *p.Maximum != connector.MaxWalkDurationH {
+				t.Errorf("walk_windows.max_duration_h max = %v", p.Maximum)
+			}
+			if p := s.Properties["max_ascent_m"]; p.Maximum == nil || *p.Maximum != connector.MaxWalkAscentM {
+				t.Errorf("walk_windows.max_ascent_m max = %v", p.Maximum)
 			}
 		}
 		c := connector.Coverage
@@ -152,6 +168,20 @@ func TestModernToolCall(t *testing.T) {
 	}
 }
 
+func TestWalkToolCall(t *testing.T) {
+	code, _, r := post(t, handler(),
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"walk_windows","arguments":{"lat":57.19,"lon":-3.83,"days":2,"max_ascent_m":600},`+modernMeta+`}}`,
+		modern("tools/call", "walk_windows"))
+	if code != http.StatusOK || r.Error != nil || r.Result["isError"] != false {
+		t.Fatalf("status %d error %+v result %v", code, r.Error, r.Result)
+	}
+	data := r.Result["structuredContent"].(map[string]any)["data"].(map[string]any)
+	ws := data["walks"].([]any)
+	if len(ws) != 1 || !strings.HasPrefix(ws[0].(map[string]any)["url"].(string), "https://www.walkhighlands.co.uk/") {
+		t.Fatalf("walks %v", ws)
+	}
+}
+
 func TestToolErrorsAreResults(t *testing.T) {
 	h := handler()
 	for _, args := range []string{`{"limit":50,"lat":57.19,"lon":-3.83}`, `{"place":"Aviemore"}`, `{"lat":57.19}`, `{"lat":51.5,"lon":-0.1}`} {
@@ -163,8 +193,8 @@ func TestToolErrorsAreResults(t *testing.T) {
 		}
 	}
 	code, _, r := post(t, h,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"walk_windows","arguments":{},`+modernMeta+`}}`,
-		modern("tools/call", "walk_windows"))
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"aurora_windows","arguments":{},`+modernMeta+`}}`,
+		modern("tools/call", "aurora_windows"))
 	if code != http.StatusBadRequest || r.Error == nil || r.Error.Code != codeInvalidParams {
 		t.Fatalf("unknown tool: status %d error %+v", code, r.Error)
 	}
@@ -179,7 +209,7 @@ func TestModernHeaderValidation(t *testing.T) {
 	}{
 		"missing version header": {map[string]string{"Mcp-Method": "tools/call", "Mcp-Name": "dark_sky_windows"}, codeHeaderMismatch},
 		"method mismatch":        {modern("tools/list", "dark_sky_windows"), codeHeaderMismatch},
-		"name mismatch":          {modern("tools/call", "walk_windows"), codeHeaderMismatch},
+		"name mismatch":          {modern("tools/call", "aurora_windows"), codeHeaderMismatch},
 		"missing name":           {modern("tools/call", ""), codeHeaderMismatch},
 		"version mismatch":       {map[string]string{"MCP-Protocol-Version": "2025-11-25", "Mcp-Method": "tools/call", "Mcp-Name": "dark_sky_windows"}, codeHeaderMismatch},
 	}

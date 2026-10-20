@@ -75,6 +75,8 @@ spec:
               value: {{ .Values.config.sitesKey | quote }}
             - name: STARS_HISTORY_KEY
               value: {{ .Values.config.historyKey | quote }}
+            - name: STARS_WALKS_KEY
+              value: {{ .Values.config.walksKey | quote }}
             - name: REFRESH_INTERVAL
               value: {{ .Values.config.refreshInterval | quote }}
             - name: PUBLIC_BASE_URL
