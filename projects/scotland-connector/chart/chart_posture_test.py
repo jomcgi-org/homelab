@@ -65,8 +65,8 @@ def _rules(route: dict[str, Any]) -> list[tuple[str, str, dict[str, Any] | None]
 
 
 def test_configured_route_serves_under_scotland_on_the_apex() -> None:
-    # Rendered with the route on so this pins the configured hostname and
-    # prefix whether or not deploy/values.yaml has flipped it live yet.
+    # Rendered with the route forced on so this pins the configured hostname
+    # and prefix independently of the deploy toggle.
     docs = _render(["route.enabled=true"])
     route = _one(docs, "HTTPRoute")
     assert route["metadata"]["labels"]["ingress-tier"] == "public"

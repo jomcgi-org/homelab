@@ -151,7 +151,10 @@ answer any request.
   per-client limits keyed on `CF-Connecting-IP` in the shape
   `projects/monolith-public` proves (a fail-safe bucket for missing or
   malformed identities, a Distinct bucket per valid address), and Cloudflare
-  Worker subrequests denied. The shared assistant bucket is #7244.
+  Worker subrequests denied. The gateway raises the route's
+  `max_dynamic_descriptors` to 10,000 (`publicRateLimitRoutes` in
+  `projects/platform/cloudflare-gateway/values.yaml`) so busy client buckets
+  are not evicted. The shared assistant bucket is #7244.
 
 **Why.** The pods hold no state and start in seconds, so the cheapest
 protection against a burst is more pods, and the cheapest protection
@@ -183,7 +186,6 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
-| Gateway `max_dynamic_descriptors` patch for the connector route, live edge-cache check | #7243 | after the route is live |
 | Shared assistant rate-limit bucket and Envoy acceptance test | #7244 | not started |
 | Meter export to Honeycomb, unit price table | #7245 | not started |
 | Uncapped connector snapshot from the materializer | #7246 | not started |
