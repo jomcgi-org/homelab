@@ -14,6 +14,8 @@ go_library(
 go_test(
     name = "connector_test",
     srcs = ["connector_test.go"],
-    embed = [":connector"],
-    deps = ["//projects/scotland-connector/internal/fixture"],
+    deps = [
+        ":connector",
+        "//projects/scotland-connector/internal/fixture",
+    ],
 )

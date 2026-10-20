@@ -1,52 +1,328 @@
 [
-  {"name": "Edinburgh", "alt": ["Dùn Èideann"], "type": "city", "lat": 55.95, "lon": -3.19},
-  {"name": "Glasgow", "alt": ["Glaschu"], "type": "city", "lat": 55.86, "lon": -4.25},
-  {"name": "Aberdeen", "alt": ["Obar Dheathain"], "type": "city", "lat": 57.15, "lon": -2.09},
-  {"name": "Dundee", "alt": ["Dùn Dè"], "type": "city", "lat": 56.46, "lon": -2.97},
-  {"name": "Inverness", "alt": ["Inbhir Nis"], "type": "city", "lat": 57.48, "lon": -4.22},
-  {"name": "Perth", "alt": ["Peairt"], "type": "city", "lat": 56.40, "lon": -3.43},
-  {"name": "Stirling", "alt": ["Sruighlea"], "type": "city", "lat": 56.12, "lon": -3.94},
-  {"name": "Fort William", "alt": ["An Gearasdan"], "type": "town", "lat": 56.82, "lon": -5.11},
-  {"name": "Oban", "alt": ["An t-Òban"], "type": "town", "lat": 56.41, "lon": -5.47},
-  {"name": "Aviemore", "alt": ["An Aghaidh Mhòr"], "type": "town", "lat": 57.19, "lon": -3.83},
-  {"name": "Kingussie", "alt": ["Ceann a' Ghiuthsaich"], "type": "town", "lat": 57.08, "lon": -4.05},
-  {"name": "Pitlochry", "alt": ["Baile Chloichridh"], "type": "town", "lat": 56.70, "lon": -3.73},
-  {"name": "Ullapool", "alt": ["Ullapul"], "type": "town", "lat": 57.90, "lon": -5.16},
-  {"name": "Portree", "alt": ["Port Rìgh"], "type": "town", "lat": 57.41, "lon": -6.19},
-  {"name": "Thurso", "alt": ["Inbhir Theòrsa"], "type": "town", "lat": 58.59, "lon": -3.52},
-  {"name": "Wick", "alt": ["Inbhir Ùige"], "type": "town", "lat": 58.44, "lon": -3.09},
-  {"name": "Kirkwall", "alt": [], "type": "town", "lat": 58.98, "lon": -2.96},
-  {"name": "Lerwick", "alt": [], "type": "town", "lat": 60.15, "lon": -1.15},
-  {"name": "Stornoway", "alt": ["Steòrnabhagh"], "type": "town", "lat": 58.21, "lon": -6.39},
-  {"name": "Dumfries", "alt": ["Dùn Phris"], "type": "town", "lat": 55.07, "lon": -3.61},
-  {"name": "Newton Stewart", "alt": ["Baile Ùr nan Stiùbhartach"], "type": "town", "lat": 54.96, "lon": -4.48},
-  {"name": "Tomintoul", "alt": ["Tom an t-Sabhail"], "type": "village", "lat": 57.25, "lon": -3.38},
-  {"name": "Braemar", "alt": ["Bràigh Mhàrr"], "type": "village", "lat": 57.01, "lon": -3.40},
-  {"name": "Ballater", "alt": ["Bealadair"], "type": "village", "lat": 57.05, "lon": -3.04},
-  {"name": "Callander", "alt": ["Calasraid"], "type": "town", "lat": 56.24, "lon": -4.21},
-  {"name": "Crieff", "alt": ["Craoibh"], "type": "town", "lat": 56.37, "lon": -3.84},
-  {"name": "St Andrews", "alt": ["Saint Andrews", "Cill Rìmhinn"], "type": "town", "lat": 56.34, "lon": -2.80},
-  {"name": "Ayr", "alt": ["Inbhir Àir"], "type": "town", "lat": 55.46, "lon": -4.63},
-  {"name": "Peebles", "alt": ["Na Pùballan"], "type": "town", "lat": 55.65, "lon": -3.19},
-  {"name": "Hawick", "alt": [], "type": "town", "lat": 55.42, "lon": -2.79},
-  {"name": "Kelso", "alt": [], "type": "town", "lat": 55.60, "lon": -2.43},
-  {"name": "Moffat", "alt": ["Mofad"], "type": "town", "lat": 55.33, "lon": -3.44},
-  {"name": "Brodick", "alt": ["Breadhaig"], "type": "village", "lat": 55.58, "lon": -5.15},
-  {"name": "Campbeltown", "alt": ["Ceann Loch Chille Chiarain"], "type": "town", "lat": 55.43, "lon": -5.60},
-  {"name": "Tobermory", "alt": ["Tobar Mhoire"], "type": "town", "lat": 56.62, "lon": -6.07},
-  {"name": "Mallaig", "alt": ["Malaig"], "type": "village", "lat": 57.01, "lon": -5.83},
-  {"name": "Kyle of Lochalsh", "alt": ["Caol Loch Aillse"], "type": "village", "lat": 57.28, "lon": -5.71},
-  {"name": "Gairloch", "alt": ["Geàrrloch"], "type": "village", "lat": 57.73, "lon": -5.69},
-  {"name": "Applecross", "alt": ["A' Chomraich"], "type": "village", "lat": 57.43, "lon": -5.81},
-  {"name": "Lochinver", "alt": ["Loch an Inbhir"], "type": "village", "lat": 58.15, "lon": -5.24},
-  {"name": "Durness", "alt": ["Diùranais"], "type": "village", "lat": 58.57, "lon": -4.75},
-  {"name": "Tongue", "alt": ["Tunga"], "type": "village", "lat": 58.48, "lon": -4.42},
-  {"name": "Lairg", "alt": ["Luirg"], "type": "village", "lat": 58.02, "lon": -4.40},
-  {"name": "Dornoch", "alt": ["Dòrnach"], "type": "town", "lat": 57.88, "lon": -4.03},
-  {"name": "Elgin", "alt": ["Eilginn"], "type": "town", "lat": 57.65, "lon": -3.32},
-  {"name": "Nairn", "alt": ["Inbhir Narann"], "type": "town", "lat": 57.59, "lon": -3.87},
-  {"name": "Glencoe", "alt": ["Glen Coe", "A' Chàrnach"], "type": "village", "lat": 56.68, "lon": -5.10},
-  {"name": "Arinagour", "alt": ["Àirigh nan Gobhar", "Coll", "Isle of Coll"], "type": "village", "lat": 56.62, "lon": -6.52},
-  {"name": "Scarinish", "alt": ["Sgairinis", "Tiree", "Isle of Tiree"], "type": "village", "lat": 56.50, "lon": -6.80},
-  {"name": "Galloway Forest Park", "alt": ["Galloway Forest"], "type": "dark_sky_park", "lat": 55.10, "lon": -4.40}
+  {
+    "name": "Edinburgh",
+    "alt": ["Dùn Èideann"],
+    "type": "city",
+    "lat": 55.95,
+    "lon": -3.19
+  },
+  {
+    "name": "Glasgow",
+    "alt": ["Glaschu"],
+    "type": "city",
+    "lat": 55.86,
+    "lon": -4.25
+  },
+  {
+    "name": "Aberdeen",
+    "alt": ["Obar Dheathain"],
+    "type": "city",
+    "lat": 57.15,
+    "lon": -2.09
+  },
+  {
+    "name": "Dundee",
+    "alt": ["Dùn Dè"],
+    "type": "city",
+    "lat": 56.46,
+    "lon": -2.97
+  },
+  {
+    "name": "Inverness",
+    "alt": ["Inbhir Nis"],
+    "type": "city",
+    "lat": 57.48,
+    "lon": -4.22
+  },
+  {
+    "name": "Perth",
+    "alt": ["Peairt"],
+    "type": "city",
+    "lat": 56.4,
+    "lon": -3.43
+  },
+  {
+    "name": "Stirling",
+    "alt": ["Sruighlea"],
+    "type": "city",
+    "lat": 56.12,
+    "lon": -3.94
+  },
+  {
+    "name": "Fort William",
+    "alt": ["An Gearasdan"],
+    "type": "town",
+    "lat": 56.82,
+    "lon": -5.11
+  },
+  {
+    "name": "Oban",
+    "alt": ["An t-Òban"],
+    "type": "town",
+    "lat": 56.41,
+    "lon": -5.47
+  },
+  {
+    "name": "Aviemore",
+    "alt": ["An Aghaidh Mhòr"],
+    "type": "town",
+    "lat": 57.19,
+    "lon": -3.83
+  },
+  {
+    "name": "Kingussie",
+    "alt": ["Ceann a' Ghiuthsaich"],
+    "type": "town",
+    "lat": 57.08,
+    "lon": -4.05
+  },
+  {
+    "name": "Pitlochry",
+    "alt": ["Baile Chloichridh"],
+    "type": "town",
+    "lat": 56.7,
+    "lon": -3.73
+  },
+  {
+    "name": "Ullapool",
+    "alt": ["Ullapul"],
+    "type": "town",
+    "lat": 57.9,
+    "lon": -5.16
+  },
+  {
+    "name": "Portree",
+    "alt": ["Port Rìgh"],
+    "type": "town",
+    "lat": 57.41,
+    "lon": -6.19
+  },
+  {
+    "name": "Thurso",
+    "alt": ["Inbhir Theòrsa"],
+    "type": "town",
+    "lat": 58.59,
+    "lon": -3.52
+  },
+  {
+    "name": "Wick",
+    "alt": ["Inbhir Ùige"],
+    "type": "town",
+    "lat": 58.44,
+    "lon": -3.09
+  },
+  { "name": "Kirkwall", "alt": [], "type": "town", "lat": 58.98, "lon": -2.96 },
+  { "name": "Lerwick", "alt": [], "type": "town", "lat": 60.15, "lon": -1.15 },
+  {
+    "name": "Stornoway",
+    "alt": ["Steòrnabhagh"],
+    "type": "town",
+    "lat": 58.21,
+    "lon": -6.39
+  },
+  {
+    "name": "Dumfries",
+    "alt": ["Dùn Phris"],
+    "type": "town",
+    "lat": 55.07,
+    "lon": -3.61
+  },
+  {
+    "name": "Newton Stewart",
+    "alt": ["Baile Ùr nan Stiùbhartach"],
+    "type": "town",
+    "lat": 54.96,
+    "lon": -4.48
+  },
+  {
+    "name": "Tomintoul",
+    "alt": ["Tom an t-Sabhail"],
+    "type": "village",
+    "lat": 57.25,
+    "lon": -3.38
+  },
+  {
+    "name": "Braemar",
+    "alt": ["Bràigh Mhàrr"],
+    "type": "village",
+    "lat": 57.01,
+    "lon": -3.4
+  },
+  {
+    "name": "Ballater",
+    "alt": ["Bealadair"],
+    "type": "village",
+    "lat": 57.05,
+    "lon": -3.04
+  },
+  {
+    "name": "Callander",
+    "alt": ["Calasraid"],
+    "type": "town",
+    "lat": 56.24,
+    "lon": -4.21
+  },
+  {
+    "name": "Crieff",
+    "alt": ["Craoibh"],
+    "type": "town",
+    "lat": 56.37,
+    "lon": -3.84
+  },
+  {
+    "name": "St Andrews",
+    "alt": ["Saint Andrews", "Cill Rìmhinn"],
+    "type": "town",
+    "lat": 56.34,
+    "lon": -2.8
+  },
+  {
+    "name": "Ayr",
+    "alt": ["Inbhir Àir"],
+    "type": "town",
+    "lat": 55.46,
+    "lon": -4.63
+  },
+  {
+    "name": "Peebles",
+    "alt": ["Na Pùballan"],
+    "type": "town",
+    "lat": 55.65,
+    "lon": -3.19
+  },
+  { "name": "Hawick", "alt": [], "type": "town", "lat": 55.42, "lon": -2.79 },
+  { "name": "Kelso", "alt": [], "type": "town", "lat": 55.6, "lon": -2.43 },
+  {
+    "name": "Moffat",
+    "alt": ["Mofad"],
+    "type": "town",
+    "lat": 55.33,
+    "lon": -3.44
+  },
+  {
+    "name": "Brodick",
+    "alt": ["Breadhaig"],
+    "type": "village",
+    "lat": 55.58,
+    "lon": -5.15
+  },
+  {
+    "name": "Campbeltown",
+    "alt": ["Ceann Loch Chille Chiarain"],
+    "type": "town",
+    "lat": 55.43,
+    "lon": -5.6
+  },
+  {
+    "name": "Tobermory",
+    "alt": ["Tobar Mhoire"],
+    "type": "town",
+    "lat": 56.62,
+    "lon": -6.07
+  },
+  {
+    "name": "Mallaig",
+    "alt": ["Malaig"],
+    "type": "village",
+    "lat": 57.01,
+    "lon": -5.83
+  },
+  {
+    "name": "Kyle of Lochalsh",
+    "alt": ["Caol Loch Aillse"],
+    "type": "village",
+    "lat": 57.28,
+    "lon": -5.71
+  },
+  {
+    "name": "Gairloch",
+    "alt": ["Geàrrloch"],
+    "type": "village",
+    "lat": 57.73,
+    "lon": -5.69
+  },
+  {
+    "name": "Applecross",
+    "alt": ["A' Chomraich"],
+    "type": "village",
+    "lat": 57.43,
+    "lon": -5.81
+  },
+  {
+    "name": "Lochinver",
+    "alt": ["Loch an Inbhir"],
+    "type": "village",
+    "lat": 58.15,
+    "lon": -5.24
+  },
+  {
+    "name": "Durness",
+    "alt": ["Diùranais"],
+    "type": "village",
+    "lat": 58.57,
+    "lon": -4.75
+  },
+  {
+    "name": "Tongue",
+    "alt": ["Tunga"],
+    "type": "village",
+    "lat": 58.48,
+    "lon": -4.42
+  },
+  {
+    "name": "Lairg",
+    "alt": ["Luirg"],
+    "type": "village",
+    "lat": 58.02,
+    "lon": -4.4
+  },
+  {
+    "name": "Dornoch",
+    "alt": ["Dòrnach"],
+    "type": "town",
+    "lat": 57.88,
+    "lon": -4.03
+  },
+  {
+    "name": "Elgin",
+    "alt": ["Eilginn"],
+    "type": "town",
+    "lat": 57.65,
+    "lon": -3.32
+  },
+  {
+    "name": "Nairn",
+    "alt": ["Inbhir Narann"],
+    "type": "town",
+    "lat": 57.59,
+    "lon": -3.87
+  },
+  {
+    "name": "Glencoe",
+    "alt": ["Glen Coe", "A' Chàrnach"],
+    "type": "village",
+    "lat": 56.68,
+    "lon": -5.1
+  },
+  {
+    "name": "Arinagour",
+    "alt": ["Àirigh nan Gobhar", "Coll", "Isle of Coll"],
+    "type": "village",
+    "lat": 56.62,
+    "lon": -6.52
+  },
+  {
+    "name": "Scarinish",
+    "alt": ["Sgairinis", "Tiree", "Isle of Tiree"],
+    "type": "village",
+    "lat": 56.5,
+    "lon": -6.8
+  },
+  {
+    "name": "Galloway Forest Park",
+    "alt": ["Galloway Forest"],
+    "type": "dark_sky_park",
+    "lat": 55.1,
+    "lon": -4.4
+  }
 ]

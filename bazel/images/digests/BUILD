@@ -45,6 +45,7 @@ oci_digest_manifest(
         "//projects/monolith:stars_grid_apko_base.info": "//projects/monolith:stars_grid_apko_base.push",
         "//projects/monolith:stars_grid_image.info": "//projects/monolith:stars_grid_image.push",
         "//projects/operators/oci-model-cache:image.info": "//projects/operators/oci-model-cache:image.push",
+        "//projects/scotland-connector/image:image.info": "//projects/scotland-connector/image:image.push",
     },
     visibility = ["//visibility:public"],
 )

@@ -95,8 +95,10 @@ func TestNightOfUsesLocalEvening(t *testing.T) {
 
 func TestWindowsRanksAndBuckets(t *testing.T) {
 	ds := load(t)
-	q := WindowsQuery{Lat: 57.19, Lon: -3.83, RadiusKm: 60, Nights: 2, Limit: 5,
-		Now: time.Date(2026, 10, 19, 15, 20, 0, 0, time.UTC)}
+	q := WindowsQuery{
+		Lat: 57.19, Lon: -3.83, RadiusKm: 60, Nights: 2, Limit: 5,
+		Now: time.Date(2026, 10, 19, 15, 20, 0, 0, time.UTC),
+	}
 	got := ds.Windows(q)
 	if len(got) != 2 {
 		t.Fatalf("got %d windows, want 2 (Shetland is out of range)", len(got))

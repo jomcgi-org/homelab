@@ -61,6 +61,8 @@ multirun(
         "//projects/monolith:stars_grid_image.push",
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
         "//projects/operators/oci-model-cache:image.push",
+        "//projects/scotland-connector/chart:chart.push",
+        "//projects/scotland-connector/image:image.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],
@@ -80,6 +82,7 @@ multirun(
         "//projects/monolith-public/chart:chart.push",
         "//projects/monolith/chart:chart.push",
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
+        "//projects/scotland-connector/chart:chart.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],

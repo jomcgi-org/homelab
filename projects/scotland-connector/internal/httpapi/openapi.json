@@ -5,9 +5,11 @@
     "version": "v1",
     "summary": "Read-only answers to Scottish outdoor questions: where and when the sky will be dark and clear.",
     "description": "Narrow, question-shaped endpoints over forecast and climatology engines. Every response carries a provenance envelope (sources, attribution, forecast fetch time, method). Results and radius are capped; there is no bulk listing. Bulk extraction or redistribution of responses is not permitted.",
-    "license": {"name": "Responses carry the source licences named in meta.sources"}
+    "license": {
+      "name": "Responses carry the source licences named in meta.sources"
+    }
   },
-  "servers": [{"url": "/"}],
+  "servers": [{ "url": "/" }],
   "paths": {
     "/v1/places/resolve": {
       "get": {
@@ -15,12 +17,27 @@
         "summary": "Resolve a Scottish place name to coordinates",
         "description": "Free-text place name (English or Gaelic, accents optional) or a \"lat, lon\" pair to candidate coordinates and place type, best match first.",
         "parameters": [
-          {"name": "q", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 100}, "description": "Place name or \"lat, lon\"."}
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "description": "Place name or \"lat, lon\"."
+          }
         ],
         "responses": {
-          "200": {"description": "Candidates, best first (at most 5).", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolvePlaceResponse"}}}},
-          "304": {"description": "Not modified (If-None-Match matched)."},
-          "400": {"$ref": "#/components/responses/BadRequest"}
+          "200": {
+            "description": "Candidates, best first (at most 5).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvePlaceResponse"
+                }
+              }
+            }
+          },
+          "304": { "description": "Not modified (If-None-Match matched)." },
+          "400": { "$ref": "#/components/responses/BadRequest" }
         }
       }
     },
@@ -30,18 +47,70 @@
         "summary": "Best dark-sky sites near a place for the next few nights",
         "description": "Ranks dark-sky sites within radius_km of a point by forecast clear-dark hours (cloud < 10%, sun below -12 degrees) over the next `nights` nights, then by clear-twilight hours (sun below -10 degrees, the midsummer fallback), then darker light-pollution zone, then distance. Each site carries a per-night breakdown and its historical clear-sky odds for the month. Give either lat and lon, or place.",
         "parameters": [
-          {"name": "lat", "in": "query", "schema": {"type": "number", "minimum": 54.5, "maximum": 61.0}, "description": "Latitude, decimal degrees. Rounded to 0.01."},
-          {"name": "lon", "in": "query", "schema": {"type": "number", "minimum": -9.0, "maximum": -0.5}, "description": "Longitude, decimal degrees. Rounded to 0.01."},
-          {"name": "place", "in": "query", "schema": {"type": "string", "maxLength": 100}, "description": "Place name, resolved as /v1/places/resolve does; the best match is used and echoed in data.query.place."},
-          {"name": "radius_km", "in": "query", "schema": {"type": "number", "minimum": 1, "maximum": 150, "default": 50}},
-          {"name": "nights", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 7, "default": 3}, "description": "Nights to cover, starting tonight. A night runs from local noon to local noon and is named by its evening's date."},
-          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}}
+          {
+            "name": "lat",
+            "in": "query",
+            "schema": { "type": "number", "minimum": 54.5, "maximum": 61.0 },
+            "description": "Latitude, decimal degrees. Rounded to 0.01."
+          },
+          {
+            "name": "lon",
+            "in": "query",
+            "schema": { "type": "number", "minimum": -9.0, "maximum": -0.5 },
+            "description": "Longitude, decimal degrees. Rounded to 0.01."
+          },
+          {
+            "name": "place",
+            "in": "query",
+            "schema": { "type": "string", "maxLength": 100 },
+            "description": "Place name, resolved as /v1/places/resolve does; the best match is used and echoed in data.query.place."
+          },
+          {
+            "name": "radius_km",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 150,
+              "default": 50
+            }
+          },
+          {
+            "name": "nights",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 7,
+              "default": 3
+            },
+            "description": "Nights to cover, starting tonight. A night runs from local noon to local noon and is named by its evening's date."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 5
+            }
+          }
         ],
         "responses": {
-          "200": {"description": "Ranked sites.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DarkSkyWindowsResponse"}}}},
-          "304": {"description": "Not modified (If-None-Match matched)."},
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "503": {"$ref": "#/components/responses/Unavailable"}
+          "200": {
+            "description": "Ranked sites.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DarkSkyWindowsResponse"
+                }
+              }
+            }
+          },
+          "304": { "description": "Not modified (If-None-Match matched)." },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
     },
@@ -49,46 +118,91 @@
       "get": {
         "operationId": "method",
         "summary": "How the answers are computed",
-        "responses": {"200": {"description": "Method description.", "content": {"text/markdown": {"schema": {"type": "string"}}}}}
+        "responses": {
+          "200": {
+            "description": "Method description.",
+            "content": { "text/markdown": { "schema": { "type": "string" } } }
+          }
+        }
       }
     },
     "/v1/openapi.json": {
       "get": {
         "operationId": "openapi",
         "summary": "This document",
-        "responses": {"200": {"description": "OpenAPI 3.1 document.", "content": {"application/json": {"schema": {"type": "object"}}}}}
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1 document.",
+            "content": {
+              "application/json": { "schema": { "type": "object" } }
+            }
+          }
+        }
       }
     }
   },
   "components": {
     "responses": {
-      "BadRequest": {"description": "Invalid parameter.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
-      "Unavailable": {"description": "Forecast data not loaded yet.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+      "BadRequest": {
+        "description": "Invalid parameter.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "Forecast data not loaded yet.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
     },
     "schemas": {
       "Source": {
         "type": "object",
         "required": ["name", "attribution", "license", "url", "use"],
         "properties": {
-          "name": {"type": "string"},
-          "attribution": {"type": "string"},
-          "license": {"type": "string"},
-          "url": {"type": "string"},
-          "use": {"type": "string"}
+          "name": { "type": "string" },
+          "attribution": { "type": "string" },
+          "license": { "type": "string" },
+          "url": { "type": "string" },
+          "use": { "type": "string" }
         }
       },
       "Meta": {
         "type": "object",
-        "required": ["api_version", "generated_at", "as_of", "forecast_fetched_at", "data_version", "method_url", "sources"],
+        "required": [
+          "api_version",
+          "generated_at",
+          "as_of",
+          "forecast_fetched_at",
+          "data_version",
+          "method_url",
+          "sources"
+        ],
         "properties": {
-          "api_version": {"const": "v1"},
-          "generated_at": {"type": "string", "format": "date-time"},
-          "as_of": {"type": "string", "format": "date-time", "description": "Top of the hour the answer is computed for."},
-          "forecast_fetched_at": {"type": ["string", "null"], "format": "date-time", "description": "Newest MET Norway fetch in the snapshot."},
-          "data_version": {"type": "string"},
-          "method_url": {"type": "string"},
-          "sources": {"type": "array", "items": {"$ref": "#/components/schemas/Source"}},
-          "notes": {"type": "array", "items": {"type": "string"}}
+          "api_version": { "const": "v1" },
+          "generated_at": { "type": "string", "format": "date-time" },
+          "as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Top of the hour the answer is computed for."
+          },
+          "forecast_fetched_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Newest MET Norway fetch in the snapshot."
+          },
+          "data_version": { "type": "string" },
+          "method_url": { "type": "string" },
+          "sources": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Source" }
+          },
+          "notes": { "type": "array", "items": { "type": "string" } }
         }
       },
       "ErrorResponse": {
@@ -99,24 +213,40 @@
             "type": "object",
             "required": ["code", "message"],
             "properties": {
-              "code": {"enum": ["invalid_parameter", "unavailable", "not_found", "method_not_allowed"]},
-              "param": {"type": "string"},
-              "message": {"type": "string"}
+              "code": {
+                "enum": [
+                  "invalid_parameter",
+                  "unavailable",
+                  "not_found",
+                  "method_not_allowed"
+                ]
+              },
+              "param": { "type": "string" },
+              "message": { "type": "string" }
             }
           },
-          "meta": {"$ref": "#/components/schemas/Meta"}
+          "meta": { "$ref": "#/components/schemas/Meta" }
         }
       },
       "PlaceMatch": {
         "type": "object",
-        "required": ["name", "matched_name", "type", "lat", "lon", "confidence"],
+        "required": [
+          "name",
+          "matched_name",
+          "type",
+          "lat",
+          "lon",
+          "confidence"
+        ],
         "properties": {
-          "name": {"type": "string"},
-          "matched_name": {"type": "string"},
-          "type": {"enum": ["city", "town", "village", "dark_sky_park", "coordinates"]},
-          "lat": {"type": "number"},
-          "lon": {"type": "number"},
-          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+          "name": { "type": "string" },
+          "matched_name": { "type": "string" },
+          "type": {
+            "enum": ["city", "town", "village", "dark_sky_park", "coordinates"]
+          },
+          "lat": { "type": "number" },
+          "lon": { "type": "number" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
         }
       },
       "ResolvePlaceResponse": {
@@ -127,54 +257,95 @@
             "type": "object",
             "required": ["query", "matches"],
             "properties": {
-              "query": {"type": "string"},
-              "matches": {"type": "array", "maxItems": 5, "items": {"$ref": "#/components/schemas/PlaceMatch"}}
+              "query": { "type": "string" },
+              "matches": {
+                "type": "array",
+                "maxItems": 5,
+                "items": { "$ref": "#/components/schemas/PlaceMatch" }
+              }
             }
           },
-          "meta": {"$ref": "#/components/schemas/Meta"}
+          "meta": { "$ref": "#/components/schemas/Meta" }
         }
       },
       "Hour": {
         "type": "object",
         "required": ["time", "cloud_area_fraction", "dark"],
         "properties": {
-          "time": {"type": "string", "format": "date-time"},
-          "cloud_area_fraction": {"type": "number", "description": "Forecast cloud cover, percent."},
-          "dark": {"type": "boolean", "description": "Sun below -12 degrees; false means twilight (-12 to -10)."}
+          "time": { "type": "string", "format": "date-time" },
+          "cloud_area_fraction": {
+            "type": "number",
+            "description": "Forecast cloud cover, percent."
+          },
+          "dark": {
+            "type": "boolean",
+            "description": "Sun below -12 degrees; false means twilight (-12 to -10)."
+          }
         }
       },
       "Night": {
         "type": "object",
-        "required": ["night", "clear_dark_hours", "clear_twilight_hours", "hours"],
+        "required": [
+          "night",
+          "clear_dark_hours",
+          "clear_twilight_hours",
+          "hours"
+        ],
         "properties": {
-          "night": {"type": "string", "format": "date"},
-          "clear_dark_hours": {"type": "integer"},
-          "clear_twilight_hours": {"type": "integer"},
-          "hours": {"type": "array", "items": {"$ref": "#/components/schemas/Hour"}}
+          "night": { "type": "string", "format": "date" },
+          "clear_dark_hours": { "type": "integer" },
+          "clear_twilight_hours": { "type": "integer" },
+          "hours": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Hour" }
+          }
         }
       },
       "Site": {
         "type": "object",
-        "required": ["site_id", "lat", "lon", "distance_km", "altitude_m", "light_pollution_zone", "clear_dark_hours", "clear_twilight_hours", "forecast_hours_truncated", "nights", "climatology"],
+        "required": [
+          "site_id",
+          "lat",
+          "lon",
+          "distance_km",
+          "altitude_m",
+          "light_pollution_zone",
+          "clear_dark_hours",
+          "clear_twilight_hours",
+          "forecast_hours_truncated",
+          "nights",
+          "climatology"
+        ],
         "properties": {
-          "site_id": {"type": "string"},
-          "lat": {"type": "number"},
-          "lon": {"type": "number"},
-          "distance_km": {"type": "number"},
-          "altitude_m": {"type": "integer"},
-          "light_pollution_zone": {"type": "string"},
-          "clear_dark_hours": {"type": "integer"},
-          "clear_twilight_hours": {"type": "integer"},
-          "forecast_hours_truncated": {"type": "boolean"},
-          "nights": {"type": "array", "items": {"$ref": "#/components/schemas/Night"}},
+          "site_id": { "type": "string" },
+          "lat": { "type": "number" },
+          "lon": { "type": "number" },
+          "distance_km": { "type": "number" },
+          "altitude_m": { "type": "integer" },
+          "light_pollution_zone": { "type": "string" },
+          "clear_dark_hours": { "type": "integer" },
+          "clear_twilight_hours": { "type": "integer" },
+          "forecast_hours_truncated": { "type": "boolean" },
+          "nights": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Night" }
+          },
           "climatology": {
             "type": ["object", "null"],
-            "required": ["month", "clear_dark_hours", "dark_hours", "clear_sky_odds"],
+            "required": [
+              "month",
+              "clear_dark_hours",
+              "dark_hours",
+              "clear_sky_odds"
+            ],
             "properties": {
-              "month": {"type": "integer", "minimum": 1, "maximum": 12},
-              "clear_dark_hours": {"type": "integer"},
-              "dark_hours": {"type": "integer"},
-              "clear_sky_odds": {"type": ["number", "null"], "description": "Historical share of dark hours that were clear, this month."}
+              "month": { "type": "integer", "minimum": 1, "maximum": 12 },
+              "clear_dark_hours": { "type": "integer" },
+              "dark_hours": { "type": "integer" },
+              "clear_sky_odds": {
+                "type": ["number", "null"],
+                "description": "Historical share of dark hours that were clear, this month."
+              }
             }
           }
         }
@@ -191,20 +362,27 @@
                 "type": "object",
                 "required": ["lat", "lon", "radius_km", "nights", "limit"],
                 "properties": {
-                  "lat": {"type": "number"},
-                  "lon": {"type": "number"},
-                  "radius_km": {"type": "number"},
-                  "nights": {"type": "integer"},
-                  "limit": {"type": "integer"},
-                  "place": {"$ref": "#/components/schemas/PlaceMatch"}
+                  "lat": { "type": "number" },
+                  "lon": { "type": "number" },
+                  "radius_km": { "type": "number" },
+                  "nights": { "type": "integer" },
+                  "limit": { "type": "integer" },
+                  "place": { "$ref": "#/components/schemas/PlaceMatch" }
                 }
               },
-              "darkness_mode": {"enum": ["astronomical", "twilight", "none"]},
-              "nights": {"type": "array", "items": {"type": "string", "format": "date"}},
-              "sites": {"type": "array", "maxItems": 10, "items": {"$ref": "#/components/schemas/Site"}}
+              "darkness_mode": { "enum": ["astronomical", "twilight", "none"] },
+              "nights": {
+                "type": "array",
+                "items": { "type": "string", "format": "date" }
+              },
+              "sites": {
+                "type": "array",
+                "maxItems": 10,
+                "items": { "$ref": "#/components/schemas/Site" }
+              }
             }
           },
-          "meta": {"$ref": "#/components/schemas/Meta"}
+          "meta": { "$ref": "#/components/schemas/Meta" }
         }
       }
     }
