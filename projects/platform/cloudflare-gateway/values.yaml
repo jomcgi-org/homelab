@@ -53,6 +53,12 @@ gateway:
       routeNamespace: monolith-public
       routeName: monolith-public-functions
       maxDynamicDescriptors: 10000
+    # The public Scotland connector (jomcgi.dev/scotland), keyed per client
+    # the same way (projects/scotland-connector/chart/templates/httproute.yaml).
+    - suffix: scotland-connector
+      routeNamespace: scotland-connector
+      routeName: scotland-connector
+      maxDynamicDescriptors: 10000
 
 # --- Cloudflare Tunnel ---
 tunnel:

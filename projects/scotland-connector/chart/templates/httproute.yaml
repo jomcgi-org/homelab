@@ -77,8 +77,7 @@ spec:
 # second gives each valid address its own bucket. The regular expression stays
 # beside Distinct so a malformed value cannot mint a fresh bucket. The gateway
 # chart must also raise this route's max_dynamic_descriptors (its
-# publicRateLimitRoutes list) or Envoy's default of 20 evicts busy buckets;
-# that entry is NOT there yet and follows once the route is live (#7243).
+# publicRateLimitRoutes list) or Envoy's default of 20 evicts busy buckets.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: BackendTrafficPolicy
 metadata:
