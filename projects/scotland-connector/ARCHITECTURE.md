@@ -131,10 +131,12 @@ falls back to "no forecast" rather than "bad weather".
 
 `internal/astro` computes the moon's altitude and lit fraction from
 truncated lunar and solar series after Meeus; its tests hold it to PyEphem
-within 0.6 degrees and 0.01 (over 300 random Scottish samples the worst
-case was 0.52 degrees). The moon's sky position is computed once per hour
+within 0.4 degrees and 0.01 (over 300 random Scottish samples the worst
+case was 0.28 degrees). The moon's sky position is computed once per hour
 per query and shared across sites. Each night reports the lit fraction and
-moonless clear-dark hours, and `best_night` prefers moonless hours.
+moonless clear-dark hours. `best_night` weighs each clear-dark hour by the
+moon: a moonless hour counts 1 and a moonlit one 1 minus the lit fraction,
+so a long night under a thin crescent still beats one moonless hour.
 
 **Why.** Moonlight decides a stargazing night as much as cloud, and a
 computed moon needs no data source or licence. Site ranking stays on
@@ -152,8 +154,9 @@ attributed until its licence is confirmed (#7253).
 
 Caps live in `internal/connector` and are mirrored in `openapi.json` and the
 MCP input schemas; tests fail if any copy drifts. Results at most 10, radius
-at most 150 km, nights at most 7, coordinates (required) inside Scotland
-only. There is no listing endpoint.
+at most 150 km, nights at most 7, coordinates inside Scotland only
+(required, except that `walk_windows` also takes a `walk_name`). There is
+no listing endpoint.
 Coordinates are rounded to 0.01 degrees so equal questions share an ETag.
 
 **Why.** Queries take coordinates, with no place-name lookup. The calling

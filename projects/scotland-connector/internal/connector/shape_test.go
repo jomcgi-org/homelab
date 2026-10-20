@@ -8,6 +8,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 )
 
 func marshal(t *testing.T, v any) string {
@@ -165,5 +166,43 @@ func TestWalkName(t *testing.T) {
 		if _, err := svc.WalkWindows(p); !errors.As(err, &pe) {
 			t.Errorf("%s: err = %v, want ParamError", name, err)
 		}
+	}
+}
+
+func TestBestNightWeighsTheMoon(t *testing.T) {
+	crescent := stars.NightWindow{Night: "a", ClearDark: 8, ClearTwilight: 8, MoonlessDark: 0, MoonLit: 0.11}
+	oneMoonless := stars.NightWindow{Night: "b", ClearDark: 1, ClearTwilight: 1, MoonlessDark: 1, MoonLit: 0.5}
+	fullMoon := stars.NightWindow{Night: "c", ClearDark: 6, ClearTwilight: 6, MoonlessDark: 0, MoonLit: 1}
+	shortDark := stars.NightWindow{Night: "d", ClearDark: 3, ClearTwilight: 3, MoonlessDark: 3, MoonLit: 1}
+	if b := connector.BestNight([]stars.NightWindow{oneMoonless, crescent}); b.Night != "a" {
+		t.Fatalf("8 h under a thin crescent should beat 1 moonless hour, got %s", b.Night)
+	}
+	if b := connector.BestNight([]stars.NightWindow{fullMoon, shortDark}); b.Night != "d" {
+		t.Fatalf("3 moonless hours should beat 6 under a full moon, got %s", b.Night)
+	}
+	if connector.BestNight([]stars.NightWindow{{Night: "e"}}) != nil {
+		t.Fatal("a night with no clear hour is never best")
+	}
+}
+
+func TestWalksOutsideScotlandSaySo(t *testing.T) {
+	_, err := fixture.Service(true).WalkWindows(connector.WalkWindowsParams{Lat: f(51.5), Lon: f(-0.1)})
+	var pe *connector.ParamError
+	if !errors.As(err, &pe) || !strings.Contains(pe.Message, "outside Scotland") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestEmptyOptionalStringsAreAbsent(t *testing.T) {
+	svc := fixture.Service(true)
+	if _, err := svc.WalkWindows(connector.WalkWindowsParams{Lat: f(57.19), Lon: f(-3.83), WalkName: str(""), Date: str(" ")}); err != nil {
+		t.Fatalf("empty walk_name and date: %v", err)
+	}
+	if _, err := svc.DarkSkyWindows(connector.DarkSkyParams{Lat: f(57.19), Lon: f(-3.83), Night: str(""), Nights: i(2)}); err != nil {
+		t.Fatalf("empty night: %v", err)
+	}
+	// The cap counts characters: 100 accented letters are 200 bytes.
+	if _, err := svc.WalkWindows(connector.WalkWindowsParams{WalkName: str(strings.Repeat("ù", connector.MaxNameLength))}); err != nil {
+		t.Fatalf("100-character name: %v", err)
 	}
 }

@@ -220,7 +220,7 @@ func TestNameMatching(t *testing.T) {
 		strings.Replace(walkJSON("bn", 56.79, -5.0, 8, 1350, 0, 1, 2), `"Walk bn"`, `"Ben Nevis by the Mountain Path"`, 1),
 		strings.Replace(walkJSON("cmd", 56.80, -4.99, 10, 1500, 0, 1, 2), `"Walk cmd"`, `"Carn Mor Dearg Arête and Ben Nevis"`, 1),
 		strings.Replace(walkJSON("dd", 56.78, -5.07, 3.5, 314, 0, 1, 2, 3), `"Walk dd"`, `"Dùn Deardail fort, Glen Nevis"`, 1),
-		strings.Replace(walkJSON("sc", 56.9, -5.3, 5, 800), `"Walk sc"`, `"Stob Coire a' Chearcaill"`, 1),
+		strings.Replace(walkJSON("sc", 56.9, -5.3, 5, 800), `"Walk sc"`, `"Stob Coire a'Chearcaill"`, 1),
 	))
 	for _, c := range []struct {
 		query string
@@ -230,7 +230,9 @@ func TestNameMatching(t *testing.T) {
 		{"nevis", "dd,bn,cmd"},  // a word prefix anywhere; then weather ranks
 		{"dun deardail", "dd"},  // accents fold
 		{"Carn Mor Dearg Arete", "cmd"},
-		{"stob coire a chearcaill", "sc"}, // apostrophes join
+		{"stob coire a chearcaill", "sc"}, // apostrophes separate words
+		{"a'chearcaill", "sc"},            // with or without a space after
+		{"Dun Deardail", "dd"},
 		{"ben lomond", ""},
 	} {
 		res := ds.Windows(Query{Name: Normalize(c.query), Days: 1, Limit: 10, Now: base})
@@ -245,6 +247,13 @@ func TestNameMatching(t *testing.T) {
 	// A name query with a point still applies the radius.
 	if res := ds.Windows(Query{HasPoint: true, Lat: 56.9, Lon: -5.3, RadiusKm: 5, Name: "stob", Days: 1, Limit: 10, Now: base}); len(res) != 1 {
 		t.Fatalf("name plus radius = %d walks", len(res))
+	}
+}
+
+func TestNormalizeFoldsDecomposedAccents(t *testing.T) {
+	// "Dùn" with a combining grave accent (U+0300) rather than a precomposed ù.
+	if got := Normalize("Du\u0300n Deardail’s fort"); got != "dun deardail s fort" {
+		t.Fatalf("got %q", got)
 	}
 }
 

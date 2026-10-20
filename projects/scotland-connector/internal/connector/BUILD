@@ -24,5 +24,6 @@ go_test(
     deps = [
         ":connector",
         "//projects/scotland-connector/internal/fixture",
+        "//projects/scotland-connector/internal/stars",
     ],
 )

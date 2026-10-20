@@ -79,7 +79,9 @@ func MoonAt(t time.Time) Moon {
 // (degrees, east positive), without atmospheric refraction.
 func (m Moon) Altitude(lat, lon float64) float64 {
 	phi := rad * lat
-	h := rad*(280.16+360.9856235*m.d) + rad*lon - m.eq.ra
+	// Greenwich mean sidereal time (Meeus 12.4, linear term), plus the
+	// longitude, less the right ascension.
+	h := rad*(280.46061837+360.98564736629*m.d) + rad*lon - m.eq.ra
 	alt := math.Asin(math.Sin(phi)*math.Sin(m.eq.dec) + math.Cos(phi)*math.Cos(m.eq.dec)*math.Cos(h))
 	// Parallax: from the surface the moon sits lower than from the centre.
 	alt -= math.Asin(earthRadius / m.eq.dist * math.Cos(alt))
