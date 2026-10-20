@@ -3,7 +3,7 @@
   "info": {
     "title": "Scotland outdoors API",
     "version": "v1",
-    "summary": "Read-only answers to Scottish outdoor questions: where and when the sky will be dark and clear.",
+    "summary": "Read-only answers to Scottish outdoor questions: where and when the sky will be dark and clear, and which walks fit the weather.",
     "description": "Narrow, question-shaped endpoints over forecast and climatology engines. Every response carries a provenance envelope (sources, attribution, forecast fetch time, method). Results and radius are capped; there is no bulk listing. Bulk extraction or redistribution of responses is not permitted.",
     "license": {
       "name": "Responses carry the source licences named in meta.sources"
@@ -70,6 +70,87 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DarkSkyWindowsResponse"
+                }
+              }
+            }
+          },
+          "304": { "description": "Not modified (If-None-Match matched)." },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/walk-windows": {
+      "get": {
+        "operationId": "walk_windows",
+        "summary": "Walks near a place that fit the weather over the next few days",
+        "description": "Ranks Walkhighlands walks whose start is within radius_km of a point by how many of the next `days` days hold a good-weather slot long enough for the walk's estimated time: daylight hours with at most 2 mm of rain and wind at most 80 km/h, one bad hour tolerated, and two hours of credit for walks over seven hours. Then by the earliest such day, then good hours, then distance. Weather is forecast at each walk's start. Each walk links to its Walkhighlands page, which has the route.",
+        "parameters": [
+          {
+            "name": "lat",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "number", "minimum": 54.5, "maximum": 61.0 },
+            "description": "Latitude, decimal degrees. Rounded to 0.01."
+          },
+          {
+            "name": "lon",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "number", "minimum": -9.0, "maximum": -0.5 },
+            "description": "Longitude, decimal degrees. Rounded to 0.01."
+          },
+          {
+            "name": "radius_km",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 7,
+              "default": 3
+            },
+            "description": "Days to cover, starting today (UK time)."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 5
+            }
+          },
+          {
+            "name": "max_duration_h",
+            "in": "query",
+            "schema": { "type": "number", "minimum": 0.5, "maximum": 24 },
+            "description": "Only walks whose estimated time is at most this many hours."
+          },
+          {
+            "name": "max_ascent_m",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 3000 },
+            "description": "Only walks with at most this much ascent, in metres."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ranked walks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalkWindowsResponse"
                 }
               }
             }
@@ -304,6 +385,110 @@
                 "type": "array",
                 "maxItems": 10,
                 "items": { "$ref": "#/components/schemas/Site" }
+              }
+            }
+          },
+          "meta": { "$ref": "#/components/schemas/Meta" }
+        }
+      },
+      "WalkHour": {
+        "type": "object",
+        "required": ["time", "temp_c", "precip_mm", "wind_kmh", "cloud_pct"],
+        "properties": {
+          "time": { "type": "string", "format": "date-time" },
+          "temp_c": { "type": "number" },
+          "precip_mm": { "type": "number" },
+          "wind_kmh": { "type": "number" },
+          "cloud_pct": { "type": "number" }
+        }
+      },
+      "WalkDay": {
+        "type": "object",
+        "required": ["date", "doable", "good_hours", "best_slot", "hours"],
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "doable": { "type": "boolean" },
+          "good_hours": { "type": "integer" },
+          "best_slot": {
+            "type": ["object", "null"],
+            "required": ["start", "end", "good_hours"],
+            "properties": {
+              "start": { "type": "string", "format": "date-time" },
+              "end": { "type": "string", "format": "date-time" },
+              "good_hours": { "type": "integer" }
+            }
+          },
+          "hours": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/WalkHour" }
+          }
+        }
+      },
+      "Walk": {
+        "type": "object",
+        "required": [
+          "walk_id",
+          "name",
+          "url",
+          "start_lat",
+          "start_lon",
+          "from_point_km",
+          "length_km",
+          "ascent_m",
+          "duration_h",
+          "doable_days",
+          "days"
+        ],
+        "properties": {
+          "walk_id": { "type": "string" },
+          "name": { "type": "string" },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The walk's Walkhighlands page, with the route."
+          },
+          "start_lat": { "type": "number" },
+          "start_lon": { "type": "number" },
+          "from_point_km": { "type": "number" },
+          "length_km": { "type": "number" },
+          "ascent_m": { "type": "integer" },
+          "duration_h": { "type": "number" },
+          "doable_days": { "type": "integer" },
+          "days": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/WalkDay" }
+          }
+        }
+      },
+      "WalkWindowsResponse": {
+        "type": "object",
+        "required": ["data", "meta"],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["query", "days", "walks"],
+            "properties": {
+              "query": {
+                "type": "object",
+                "required": ["lat", "lon", "radius_km", "days", "limit"],
+                "properties": {
+                  "lat": { "type": "number" },
+                  "lon": { "type": "number" },
+                  "radius_km": { "type": "number" },
+                  "days": { "type": "integer" },
+                  "limit": { "type": "integer" },
+                  "max_duration_h": { "type": "number" },
+                  "max_ascent_m": { "type": "integer" }
+                }
+              },
+              "days": {
+                "type": "array",
+                "items": { "type": "string", "format": "date" }
+              },
+              "walks": {
+                "type": "array",
+                "maxItems": 10,
+                "items": { "$ref": "#/components/schemas/Walk" }
               }
             }
           },

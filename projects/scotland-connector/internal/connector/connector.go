@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
 
 // APIVersion is the path prefix and the envelope's api_version.
@@ -29,6 +30,13 @@ const (
 	MaxNights       = 7
 	DefaultLimit    = 5
 	MaxLimit        = 10
+
+	DefaultWalkRadiusKm = 30
+	MaxWalkRadiusKm     = 100
+	DefaultWalkDays     = 3
+	MaxWalkDays         = 7
+	MaxWalkDurationH    = 24
+	MaxWalkAscentM      = 3000
 )
 
 // Coverage is the bounding box the connector answers for: mainland Scotland,
@@ -57,9 +65,15 @@ type DatasetSource interface {
 	Current() *stars.Dataset
 }
 
+// WalksSource is the walk store.
+type WalksSource interface {
+	Current() *walks.Dataset
+}
+
 // Service answers queries.
 type Service struct {
-	Data DatasetSource
+	Data  DatasetSource
+	Walks WalksSource
 	// MethodURL is published in every envelope.
 	MethodURL string
 	Now       func() time.Time
@@ -229,17 +243,24 @@ func round(v float64, places int) float64 {
 	return math.Round(v*p) / p
 }
 
+// coordinates validates a required point inside Coverage and rounds it to
+// about 1 km: finer than any answer, and it makes equal questions equal.
+func coordinates(lat, lon *float64) (float64, float64, error) {
+	if lat == nil || lon == nil {
+		return 0, 0, &ParamError{"lat", "lat and lon (decimal degrees) are required"}
+	}
+	if math.IsNaN(*lat) || math.IsNaN(*lon) || !InCoverage(*lat, *lon) {
+		return 0, 0, &ParamError{"lat", "coordinates are outside Scotland, the area this service covers"}
+	}
+	return round(*lat, 2), round(*lon, 2), nil
+}
+
 func darkSkyQuery(p DarkSkyParams) (DarkSkyQuery, error) {
 	q := DarkSkyQuery{RadiusKm: DefaultRadiusKm, Nights: DefaultNights, Limit: DefaultLimit}
-	if p.Lat == nil || p.Lon == nil {
-		return q, &ParamError{"lat", "lat and lon (decimal degrees) are required"}
+	var err error
+	if q.Lat, q.Lon, err = coordinates(p.Lat, p.Lon); err != nil {
+		return q, err
 	}
-	q.Lat, q.Lon = *p.Lat, *p.Lon
-	if math.IsNaN(q.Lat) || math.IsNaN(q.Lon) || !InCoverage(q.Lat, q.Lon) {
-		return q, &ParamError{"lat", "coordinates are outside Scotland, the area this service covers"}
-	}
-	// About 1 km: finer than any answer and it makes equal questions equal.
-	q.Lat, q.Lon = round(q.Lat, 2), round(q.Lon, 2)
 
 	if p.RadiusKm != nil {
 		r := *p.RadiusKm

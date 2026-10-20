@@ -9,5 +9,6 @@ go_library(
     deps = [
         "//projects/scotland-connector/internal/connector",
         "//projects/scotland-connector/internal/stars",
+        "//projects/scotland-connector/internal/walks",
     ],
 )

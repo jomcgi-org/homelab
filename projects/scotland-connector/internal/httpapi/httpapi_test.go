@@ -61,6 +61,8 @@ func TestEnvelopeContract(t *testing.T) {
 	for _, url := range []string{
 		"/v1/dark-sky-windows?lat=57.19&lon=-3.83",
 		"/v1/dark-sky-windows?lat=57.19&lon=-3.83&radius_km=80&nights=7&limit=10",
+		"/v1/walk-windows?lat=57.19&lon=-3.83",
+		"/v1/walk-windows?lat=57.19&lon=-3.83&radius_km=100&days=7&limit=10&max_duration_h=4.5&max_ascent_m=800",
 	} {
 		rec, body := get(t, h, url)
 		if rec.Code != http.StatusOK {
@@ -98,6 +100,11 @@ func TestCapsAreEnforced(t *testing.T) {
 		"/v1/dark-sky-windows?lat=51.5&lon=-0.12",
 		"/v1/dark-sky-windows?lat=57.19",
 		"/v1/dark-sky-windows?place=Aviemore",
+		"/v1/walk-windows?lat=57.19",
+		"/v1/walk-windows?lat=57&lon=-3.8&days=8",
+		"/v1/walk-windows?lat=57&lon=-3.8&radius_km=101",
+		"/v1/walk-windows?lat=57&lon=-3.8&max_ascent_m=lots",
+		"/v1/walk-windows?lat=57&lon=-3.8&max_duration_h=0",
 	} {
 		rec, body := get(t, h, url)
 		errObj, _ := body["error"].(map[string]any)
@@ -159,30 +166,45 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			t.Errorf("spec path %s is not served", path)
 		}
 	}
-	want := map[string][3]float64{ // min, max, default
-		"radius_km": {1, connector.MaxRadiusKm, connector.DefaultRadiusKm},
-		"nights":    {1, connector.MaxNights, connector.DefaultNights},
-		"limit":     {1, connector.MaxLimit, connector.DefaultLimit},
+	caps := map[string]map[string][3]float64{ // min, max, default
+		"/v1/dark-sky-windows": {
+			"radius_km": {1, connector.MaxRadiusKm, connector.DefaultRadiusKm},
+			"nights":    {1, connector.MaxNights, connector.DefaultNights},
+			"limit":     {1, connector.MaxLimit, connector.DefaultLimit},
+		},
+		"/v1/walk-windows": {
+			"radius_km": {1, connector.MaxWalkRadiusKm, connector.DefaultWalkRadiusKm},
+			"days":      {1, connector.MaxWalkDays, connector.DefaultWalkDays},
+			"limit":     {1, connector.MaxLimit, connector.DefaultLimit},
+		},
 	}
-	c := connector.Coverage
-	bounds := map[string][2]float64{"lat": {c.MinLat, c.MaxLat}, "lon": {c.MinLon, c.MaxLon}}
-	for _, p := range spec.Paths["/v1/dark-sky-windows"]["get"].Parameters {
-		if w, ok := want[p.Name]; ok {
-			s := p.Schema
-			if s.Minimum == nil || s.Maximum == nil || s.Default == nil || *s.Minimum != w[0] || *s.Maximum != w[1] || *s.Default != w[2] {
-				t.Errorf("spec %s = %+v, code %v", p.Name, s, w)
+	for path, want := range caps {
+		c := connector.Coverage
+		bounds := map[string][2]float64{"lat": {c.MinLat, c.MaxLat}, "lon": {c.MinLon, c.MaxLon}}
+		for _, p := range spec.Paths[path]["get"].Parameters {
+			if w, ok := want[p.Name]; ok {
+				s := p.Schema
+				if s.Minimum == nil || s.Maximum == nil || s.Default == nil || *s.Minimum != w[0] || *s.Maximum != w[1] || *s.Default != w[2] {
+					t.Errorf("%s spec %s = %+v, code %v", path, p.Name, s, w)
+				}
+				delete(want, p.Name)
 			}
-			delete(want, p.Name)
-		}
-		if b, ok := bounds[p.Name]; ok {
-			s := p.Schema
-			if !p.Required || s.Minimum == nil || s.Maximum == nil || *s.Minimum != b[0] || *s.Maximum != b[1] {
-				t.Errorf("spec %s = required %v %+v, coverage %v", p.Name, p.Required, s, b)
+			if b, ok := bounds[p.Name]; ok {
+				s := p.Schema
+				if !p.Required || s.Minimum == nil || s.Maximum == nil || *s.Minimum != b[0] || *s.Maximum != b[1] {
+					t.Errorf("%s spec %s = required %v %+v, coverage %v", path, p.Name, p.Required, s, b)
+				}
+				delete(bounds, p.Name)
 			}
-			delete(bounds, p.Name)
+			if path == "/v1/walk-windows" && p.Name == "max_duration_h" && (p.Schema.Maximum == nil || *p.Schema.Maximum != connector.MaxWalkDurationH) {
+				t.Errorf("spec max_duration_h = %+v", p.Schema)
+			}
+			if path == "/v1/walk-windows" && p.Name == "max_ascent_m" && (p.Schema.Maximum == nil || *p.Schema.Maximum != connector.MaxWalkAscentM) {
+				t.Errorf("spec max_ascent_m = %+v", p.Schema)
+			}
 		}
-	}
-	if len(want) != 0 || len(bounds) != 0 {
-		t.Errorf("spec lacks parameters %v %v", want, bounds)
+		if len(want) != 0 || len(bounds) != 0 {
+			t.Errorf("%s spec lacks parameters %v %v", path, want, bounds)
+		}
 	}
 }

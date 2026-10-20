@@ -34,6 +34,7 @@ type config struct {
 	r2Endpoint, r2Region           string
 	r2Creds                        r2.Credentials
 	bucket, sitesKey, historyKey   string
+	walksKey                       string
 	refreshInterval, shutdownGrace time.Duration
 	publicBaseURL, version         string
 	allowedOrigins                 []string
@@ -56,6 +57,7 @@ func loadConfig() (config, error) {
 		bucket:         env("STARS_BUCKET", "stars"),
 		sitesKey:       env("STARS_SITES_KEY", "sites.json"),
 		historyKey:     env("STARS_HISTORY_KEY", "history-map.json"),
+		walksKey:       env("STARS_WALKS_KEY", "walks.json"),
 		publicBaseURL:  strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
 		version:        env("SERVICE_VERSION", "dev"),
 		allowedOrigins: strings.Split(env("MCP_ALLOWED_ORIGINS", "https://claude.ai,https://claude.com,https://chatgpt.com"), ","),
@@ -81,10 +83,12 @@ func main() {
 	}
 }
 
-// app is the wired service: the public and admin handlers over one store.
+// app is the wired service: the public and admin handlers over the stars
+// store (which gates readiness) and the optional walk store.
 type app struct {
 	public, admin http.Handler
 	store         *store.Store
+	walks         *store.WalkStore
 	draining      *atomic.Bool
 }
 
@@ -108,7 +112,8 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		return -1
 	}))
 
-	svc := &connector.Service{Data: st, MethodURL: cfg.publicBaseURL + "/v1/method", Now: time.Now}
+	ws := store.NewWalks(cfg.bucket, cfg.walksKey, cfg.refreshInterval, client, log)
+	svc := &connector.Service{Data: st, Walks: ws, MethodURL: cfg.publicBaseURL + "/v1/method", Now: time.Now}
 	info := mcp.ServerInfo{Name: "scotland-connector", Title: "Scotland outdoors", Version: cfg.version}
 
 	api, err := httpapi.New(svc, m, log, cfg.publicBaseURL)
@@ -144,12 +149,15 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		if ds != nil {
 			body["sites"], body["data_version"], body["forecast_fetched_at"] = len(ds.Sites), ds.Version, ds.FetchedAt
 		}
+		if wd := ws.Current(); wd != nil {
+			body["walks"], body["walks_version"] = len(wd.Walks), wd.Version
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(body)
 	})
 	admin.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	return &app{public: public, admin: admin, store: st, draining: draining}, nil
+	return &app{public: public, admin: admin, store: st, walks: ws, draining: draining}, nil
 }
 
 // loadUntilReady retries the first load with backoff, then polls forever.
@@ -204,6 +212,7 @@ func run(log *slog.Logger) error {
 	}
 
 	go a.loadUntilReady(ctx, log)
+	go a.walks.Run(ctx)
 	log.Info("connector listening", "public", cfg.listenAddr, "admin", cfg.adminAddr, "version", cfg.version)
 
 	select {

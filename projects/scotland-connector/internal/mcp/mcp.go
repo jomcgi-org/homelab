@@ -73,7 +73,8 @@ type Handler struct {
 
 // Instructions are returned by server/discover and initialize.
 const Instructions = "Read-only answers to Scottish outdoor questions from forecast and climatology data. " +
-	"Use dark_sky_windows for where and when to stargaze, with the coordinates of the place the person means. " +
+	"Use dark_sky_windows for where and when to stargaze and walk_windows for which walks fit the weather, " +
+	"with the coordinates of the place the person means. " +
 	"Every result carries meta.sources: credit them when you present the data."
 
 // New builds the handler. allowedOrigins lists the browser origins accepted;
