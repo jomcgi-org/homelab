@@ -26,3 +26,11 @@ go_test(
         "@com_github_prometheus_client_golang//prometheus",
     ],
 )
+
+# method.md is served by the API and also indexed with the repo docs (#6446).
+# See //projects/monolith:repo_docs_srcs.
+filegroup(
+    name = "repo_docs",
+    srcs = ["method.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)

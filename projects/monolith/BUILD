@@ -247,6 +247,7 @@ filegroup(
         "//projects/platform/kyverno:repo_docs",
         "//projects/platform/renovate:repo_docs",
         "//projects/platform/spire:repo_docs",
+        "//projects/scotland-connector/internal/httpapi:repo_docs",
     ],
     visibility = ["//projects/monolith/frontend:__pkg__"],
 )
