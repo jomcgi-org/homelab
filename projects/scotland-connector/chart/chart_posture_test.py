@@ -64,8 +64,10 @@ def _rules(route: dict[str, Any]) -> list[tuple[str, str, dict[str, Any] | None]
     return out
 
 
-def test_deployed_values_serve_under_scotland_on_the_apex() -> None:
-    docs = _render()
+def test_configured_route_serves_under_scotland_on_the_apex() -> None:
+    # Rendered with the route on so this pins the configured hostname and
+    # prefix whether or not deploy/values.yaml has flipped it live yet.
+    docs = _render(["route.enabled=true"])
     route = _one(docs, "HTTPRoute")
     assert route["metadata"]["labels"]["ingress-tier"] == "public"
     assert route["spec"]["hostnames"] == ["jomcgi.dev"]
@@ -98,7 +100,7 @@ def test_route_without_a_prefix_serves_the_root_paths() -> None:
 
 
 def test_route_backends_are_only_the_public_service_port() -> None:
-    docs = _render()
+    docs = _render(["route.enabled=true"])
     service = _one(docs, "Service")
     for rule in _one(docs, "HTTPRoute")["spec"]["rules"]:
         (backend,) = rule["backendRefs"]

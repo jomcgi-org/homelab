@@ -121,9 +121,21 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 	if err != nil {
 		return nil, err
 	}
-	public := http.NewServeMux()
-	public.Handle("/v1/", api)
-	public.Handle("/mcp", mcp.New(svc, m, log, info, cfg.allowedOrigins))
+	mcpHandler := mcp.New(svc, m, log, info, cfg.allowedOrigins)
+	// A plain dispatch rather than a ServeMux: the mux answers "/v1" and
+	// unclean paths with a 301 to a root-relative Location, which behind a
+	// prefix-stripping route (jomcgi.dev/scotland) sends the client out of
+	// the prefix. The API handler 404s those paths itself.
+	public := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch p := r.URL.Path; {
+		case p == "/mcp":
+			mcpHandler.ServeHTTP(w, r)
+		case p == "/v1" || strings.HasPrefix(p, "/v1/"):
+			api.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
 
 	draining := new(atomic.Bool)
 	admin := http.NewServeMux()

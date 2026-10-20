@@ -88,6 +88,19 @@ func TestAppServesFromR2Snapshots(t *testing.T) {
 		t.Fatalf("mcp: %d %s", rec.Code, rec.Body)
 	}
 
+	// Paths ServeMux would 301 to a root-relative Location (escaping a
+	// prefix-stripping route) are answered in place instead.
+	for _, p := range []string{"/v1", "/v1//dark-sky-windows", "/v1/./method"} {
+		rec = httptest.NewRecorder()
+		a.public.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusNotFound || rec.Header().Get("Location") != "" {
+			t.Fatalf("%s: %d Location %q", p, rec.Code, rec.Header().Get("Location"))
+		}
+		if !strings.Contains(rec.Body.String(), "https://example.test/v1/openapi.json") {
+			t.Fatalf("%s: 404 hint %s", p, rec.Body)
+		}
+	}
+
 	// Admin paths are not on the public mux.
 	rec = httptest.NewRecorder()
 	a.public.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))

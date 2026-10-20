@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,6 +69,8 @@ type Handler struct {
 	meter *meter.Meter
 	log   *slog.Logger
 	mux   *http.ServeMux
+	// specURL is where the published OpenAPI document lives, for 404 hints.
+	specURL string
 }
 
 // New wires the routes. publicBaseURL is where clients reach the API (for
@@ -79,7 +82,7 @@ func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{svc: svc, meter: m, log: log, mux: http.NewServeMux()}
+	h := &Handler{svc: svc, meter: m, log: log, mux: http.NewServeMux(), specURL: publicBaseURL + "/v1/openapi.json"}
 	h.mux.HandleFunc("GET /v1/places/resolve", h.resolvePlace)
 	h.mux.HandleFunc("GET /v1/dark-sky-windows", h.darkSkyWindows)
 	h.mux.HandleFunc("GET /v1/openapi.json", h.static(spec, "application/json"))
@@ -108,6 +111,12 @@ func specWithServer(spec []byte, baseURL string) ([]byte, error) {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// ServeMux would 301 an unclean path to a root-relative Location, which
+	// escapes a prefix-stripping route; answer those with the JSON 404.
+	if p := r.URL.Path; p == "/v1" || p != path.Clean(p) {
+		h.notFound(w, r)
+		return
+	}
 	h.mux.ServeHTTP(w, r)
 }
 
@@ -225,7 +234,7 @@ func (h *Handler) static(body []byte, contentType string) http.HandlerFunc {
 func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
 	var body errorBody
 	body.Meta = connector.Meta{APIVersion: connector.APIVersion, GeneratedAt: time.Now().UTC().Format(time.RFC3339), MethodURL: h.svc.MethodURL, Sources: []connector.Source{}}
-	body.Error.Code, body.Error.Message = "not_found", "no such endpoint; see /v1/openapi.json"
+	body.Error.Code, body.Error.Message = "not_found", "no such endpoint; see "+h.specURL
 	cacheControlError.set(w.Header())
 	writeJSON(w, http.StatusNotFound, body)
 }
