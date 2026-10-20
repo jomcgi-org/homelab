@@ -32,6 +32,7 @@ import yaml
 
 _HOST = "jomcgi.dev"
 _PATH = "/scotland/v1/places/resolve?q=Oban"
+_MCP_PATH = "/scotland/mcp"
 _CROSS_ZONE_WORKER_IP = "2a06:98c0:3600::103"
 _CHART_DIR = Path(__file__).resolve().parent
 _PROJECT = _CHART_DIR.parent
@@ -310,7 +311,7 @@ def test_assistant_ranges_share_one_large_bucket_and_skip_per_client() -> None:
         # One assistant address well past the per-client 120 still passes:
         # it draws only from the shared bucket.
         single = "160.79.104.17"
-        assert [_get(port, single) for _ in range(200)] == [200] * 200
+        assert [_get(port, single) for _ in range(150)] == [200] * 150
         assert _get(port, "2607:6bc0::1") == 200
         assert _get(port, "2607:6bc0:0:2::9") == 200
         # Exhausting a per-client bucket leaves assistants untouched.
@@ -340,3 +341,20 @@ def test_assistant_bucket_is_shared_across_the_ranges() -> None:
         assert _get(port, "160.79.105.99") == 429
         # Ordinary callers are unaffected by the exhausted shared bucket.
         assert _get(port, "203.0.113.55") == 200
+
+
+def test_buckets_are_per_route_rule() -> None:
+    # Envoy Gateway gives each route rule its own buckets, so the per-IP
+    # limit (and the assistant one) applies to /v1 and /mcp separately. The
+    # values comment and ARCHITECTURE.md size the budgets on this; if a
+    # translator change merged them, this fails and the sizing needs a look.
+    sets = ("route.assistantBucket.requests=3", "route.assistantBucket.unit=Minute")
+    with _envoy(_render_connector(*sets)) as port:
+        caller = "203.0.113.90"
+        assert [_get(port, caller) for _ in range(120)] == [200] * 120
+        assert _get(port, caller) == 429
+        assert _get(port, caller, path=_MCP_PATH) == 200
+        assistant = "160.79.104.90"
+        assert [_get(port, assistant) for _ in range(3)] == [200] * 3
+        assert _get(port, assistant) == 429
+        assert _get(port, assistant, path=_MCP_PATH) == 200

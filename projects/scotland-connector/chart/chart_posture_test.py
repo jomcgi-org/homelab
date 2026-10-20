@@ -259,3 +259,10 @@ def test_gateway_raises_the_routes_descriptor_cap() -> None:
     ]
     assert len(entries) == 1, "no publicRateLimitRoutes entry for this route"
     assert entries[0]["maxDynamicDescriptors"] >= 10000
+
+
+def test_rate_limit_rules_cannot_mix_units() -> None:
+    # Envoy Gateway 1.8.3 drops the route's whole local rate limit, silently,
+    # when its rules use different units; the template must refuse that.
+    with pytest.raises(RuntimeError, match="must equal route.rateLimit.unit"):
+        _render(["route.enabled=true", "route.assistantBucket.unit=Second"])
