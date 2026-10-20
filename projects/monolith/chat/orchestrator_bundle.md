@@ -123,5 +123,6 @@ Top-level projects/ directories:
 - operators
 - platform
 - platform-gke
+- scotland-connector
 - sextant
 - shared
