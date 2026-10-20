@@ -123,17 +123,9 @@ func main() {
 	defer closeBroker()
 	secrets := loadSecretsWithBrokerClient(logger, brokerURL, brokerHTTPClient(transport, 10*time.Second))
 	quotaReporter := newQuotaReporterWithClient(brokerURL, logger, brokerHTTPClient(transport, 5*time.Second))
-	var minter *caMinter
+	var caSource *caMinterSource
 	if caCert, caKey := os.Getenv("EGRESS_CA_CERT_FILE"), os.Getenv("EGRESS_CA_KEY_FILE"); caCert != "" && caKey != "" && len(secrets) > 0 {
-		m, err := newCAMinter(caCert, caKey)
-		if err != nil {
-			logger.Error("egress CA load failed; TLS-MITM inject lane disabled", "err", err)
-		} else {
-			minter = m
-		}
-	}
-	if len(secrets) > 0 {
-		logger.Info("credential injection enabled", "secrets", len(secrets), "tlsMitmLane", minter != nil)
+		caSource = &caMinterSource{certFile: caCert, keyFile: caKey}
 	}
 
 	p := &proxy{
@@ -145,10 +137,13 @@ func main() {
 		secrets:              secrets,
 		brokerURL:            brokerURL,
 		quotaReporter:        quotaReporter,
-		minter:               minter,
+		caSource:             caSource,
 		mirrorAddr:           os.Getenv("EGRESS_GIT_MIRROR_ADDR"),
 		logger:               logger,
 		conns:                make(chan struct{}, maxConns),
+	}
+	if len(secrets) > 0 {
+		logger.Info("credential injection enabled", "secrets", len(secrets), "tlsMitmLane", p.currentMinter() != nil)
 	}
 	if p.mirrorAddr != "" {
 		logger.Info("git mirror lane enabled", "reserved_host", mirrorReservedHost, "dial", p.mirrorAddr)
@@ -221,9 +216,9 @@ type proxy struct {
 	// quotaReporter asynchronously sends response-header observations to the
 	// token broker. It is nil when reporting is disabled.
 	quotaReporter *quotaReporter
-	// minter mints leaf certs from the egress CA for TLS termination; nil disables
-	// the TLS-MITM lane (the plaintext inject lane does not need it).
-	minter *caMinter
+	// caSource retries an initially unavailable optional CA, then retains the
+	// first valid keypair. Nil disables TLS-MITM; plaintext needs no CA.
+	caSource *caMinterSource
 	// mirrorAddr is the loopback git-mirror listener behind mirrorReservedHost;
 	// empty disables the mirror seam entirely.
 	mirrorAddr string
@@ -302,11 +297,12 @@ func (p *proxy) handle(client net.Conn) {
 	// impersonate. Fetching rather than baking also means a CA rotation does not
 	// require rebuilding the fleet's guest base.
 	if host == caFetchHost {
-		if p.minter == nil {
+		minter := p.currentMinter()
+		if minter == nil {
 			p.logger.Warn("egress: CA fetch requested but no CA is loaded", "dest", dest)
 			return
 		}
-		if _, err := client.Write(p.minter.caCertPEM()); err != nil {
+		if _, err := client.Write(minter.caCertPEM()); err != nil {
 			p.logger.Warn("egress: CA fetch write failed", "err", err)
 			return
 		}
@@ -415,11 +411,13 @@ func (p *proxy) handle(client net.Conn) {
 			_ = client.SetReadDeadline(time.Time{})
 			p.swapPlaintext(br, client, tlsAddr, host, sec)
 			return
-		case p.minter != nil:
-			p.logger.Info("egress allowed (inject, tls)", "dest", dest, "dial", dialAddr)
-			_ = client.SetReadDeadline(time.Time{})
-			p.terminateAndSwap(br, client, dialAddr, host, sec)
-			return
+		default:
+			if minter := p.currentMinter(); minter != nil {
+				p.logger.Info("egress allowed (inject, tls)", "dest", dest, "dial", dialAddr)
+				_ = client.SetReadDeadline(time.Time{})
+				p.terminateAndSwap(br, client, dialAddr, host, sec, minter)
+				return
+			}
 		}
 		// TLS to a secret host with no CA loaded. Expected on the plaintext lane: the
 		// claude CLI redirects only its API client to http://, and still reaches

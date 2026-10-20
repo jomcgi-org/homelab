@@ -1,7 +1,7 @@
 {
   "system": "embervm",
   "system_dir": "projects/embervm",
-  "commit": "b1514fe38",
+  "commit": "11569bebd",
   "nodes": [
     {
       "key": "dispatcher",
@@ -121,6 +121,14 @@
       "view": "physical",
       "layer": "external",
       "maturity": "built"
+    },
+    {
+      "key": "egress-ca-volume",
+      "label": "Optional projected egress CA Secret",
+      "view": "physical",
+      "layer": "secret_delivery",
+      "maturity": "built",
+      "evidence": "projects/embervm/chart/templates/_noded-pod.tpl:957-975"
     }
   ],
   "control_actions": [
@@ -231,6 +239,15 @@
       "to": "egress-proxy",
       "maturity": "built",
       "evidence": "projects/embervm/runtimes/shotter/guest-init/cmd/proxy.go:391-405"
+    },
+    {
+      "key": "egress-proxy.load_initial_ca",
+      "label": "Retry initial CA load and retain the first successful keypair",
+      "view": "physical",
+      "from": "egress-proxy",
+      "to": "egress-proxy",
+      "maturity": "built",
+      "evidence": "projects/firecracker/substrate/egress-proxy/cmd/swap.go:801-839"
     }
   ],
   "feedback": [
@@ -269,6 +286,12 @@
       "from": "shotter-guest-init",
       "to": "noded",
       "signal": "GET /shim/ready 200 (CDP /json/version answered and one real trial capture produced non-empty PNG bytes)"
+    },
+    {
+      "view": "physical",
+      "from": "egress-ca-volume",
+      "to": "egress-proxy",
+      "signal": "Configured certificate and key files from the optional Secret; missing, partial or malformed pairs fail loading"
     }
   ]
 }
