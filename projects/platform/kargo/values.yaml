@@ -359,6 +359,29 @@ promotion:
           application: monolith-public
           upstream: []
           autoPromotion: true
+    - name: scotland-connector
+      warehouse: scotland-connector-chart
+      project: kargo-scotland-connector
+      chartRepo: oci://ghcr.io/jomcgi/homelab/charts/scotland-connector
+      # Floor at the first published version, the hub Application's bootstrap
+      # pin, so the first promotion is forward-only.
+      semverConstraint: ">=0.1.0"
+      discoveryLimit: 20
+      appSourceRepo: ghcr.io/jomcgi/homelab/charts
+      appSourceChart: scotland-connector
+      desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/scotland-connector').Version }}"
+      # UNMEASURED, like monolith-public's, and generous for the same reason:
+      # undershooting fails a healthy roll. A pod is ready after two R2 GETs and
+      # the rollout surges one pod at a time over a floor of two, so a healthy
+      # roll should take well under a minute. Replace with a measured number
+      # once a few promotions have run.
+      waitTimeout: 10m0s
+      stages:
+        # Prod only: no dev Application exists on this cluster.
+        - name: prod
+          application: scotland-connector
+          upstream: []
+          autoPromotion: true
 
 
 # Private-tier ingress: https://private.jomcgi.dev/app/kargo
