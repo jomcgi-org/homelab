@@ -132,6 +132,36 @@ func TestWindowsRanksAndBuckets(t *testing.T) {
 	}
 }
 
+// From the morning cutover, "tonight" is the coming evening, not the night
+// that just ended.
+func TestFirstNightRollsOverInTheMorning(t *testing.T) {
+	cases := map[string]string{
+		"2026-11-10T02:00:00Z": "2026-11-09", // still the night in progress
+		"2026-11-10T08:59:00Z": "2026-11-09",
+		"2026-11-10T09:00:00Z": "2026-11-10", // GMT: cutover at 09:00 local
+		"2026-11-10T15:00:00Z": "2026-11-10",
+		"2026-07-10T07:59:00Z": "2026-07-09", // BST: 08:59 local
+		"2026-07-10T08:00:00Z": "2026-07-10",
+	}
+	for in, want := range cases {
+		ts, _ := time.Parse(time.RFC3339, in)
+		if got := NightName(FirstNight(ts)); got != want {
+			t.Errorf("FirstNight(%s) = %s, want %s", in, got, want)
+		}
+	}
+
+	ds, err := Parse([]byte(`{"sites":[{"id":"a","lat":57.2,"lon":-3.8,"clear_dark_hours":2,"clear_twilight_hours":2,"best_hours":[
+		{"time":"2026-11-10T19:00:00Z","cloud_area_fraction":1,"dark":true},
+		{"time":"2026-11-10T22:00:00Z","cloud_area_fraction":1,"dark":true}]}]}`), []byte(`{"sites":[]}`), "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := ds.Windows(WindowsQuery{Lat: 57.2, Lon: -3.8, RadiusKm: 10, Nights: 1, Limit: 5, Now: time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)})
+	if len(got) != 1 || got[0].ClearDark != 2 || got[0].Nights[0].Night != "2026-11-10" {
+		t.Fatalf("morning query for tonight = %+v", got)
+	}
+}
+
 func TestWithinMatchesBruteForce(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(`{"sites":[`)
@@ -151,19 +181,39 @@ func TestWithinMatchesBruteForce(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range [][3]float64{{57.19, -3.83, 150}, {60.15, -1.15, 80}, {54.9, -4.4, 25}, {58.2, -6.39, 1}} {
+		cosQ := math.Cos(p[0] * math.Pi / 180)
 		got := len(ds.Within(p[0], p[1], p[2]))
 		want := 0
 		for _, s := range ds.Sites {
-			if DistanceKm(p[0], p[1], s.Lat, s.Lon) <= p[2] {
+			f := FastDistanceKm(p[0], p[1], cosQ, s.Lat, s.Lon, s.cosLat)
+			if f <= p[2] {
 				want++
 			}
-			if d, f := DistanceKm(p[0], p[1], s.Lat, s.Lon), FastDistanceKm(p[0], p[1], math.Cos(p[0]*math.Pi/180), s.Lat, s.Lon, s.cosLat); d < 160 && math.Abs(d-f) > 0.05 {
+			if d := DistanceKm(p[0], p[1], s.Lat, s.Lon); d < 160 && math.Abs(d-f) > 0.05 {
 				t.Fatalf("fast distance off by %.3f km at %.1f km", d-f, d)
 			}
 		}
-		// The two metrics may disagree on a site sitting on the boundary.
-		if math.Abs(float64(got-want)) > 2 {
+		if got != want {
 			t.Errorf("Within(%v) = %d, brute force %d", p, got, want)
+		}
+	}
+}
+
+// A site just inside a small radius, due east across a cell edge, must not be
+// lost to the grid's bounding box.
+func TestWithinKeepsEdgeSitesAtSmallRadius(t *testing.T) {
+	cos := math.Cos(57 * math.Pi / 180)
+	east := 0.9995 / (kmPerDegLat * cos) // 0.9995 km due east, in degrees
+	// Sweep the query so the site steps across the -3.75 cell edge.
+	for i := 0; i < 2000; i++ {
+		lon := -3.75 - east - 0.0001 + float64(i)*1e-7
+		siteLon := lon + east
+		ds, err := Parse([]byte(fmt.Sprintf(`{"sites":[{"id":"a","lat":57,"lon":%.9f}]}`, siteLon)), []byte(`{"sites":[]}`), "v")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(ds.Within(57, lon, 1)); got != 1 {
+			t.Fatalf("query at lon %.5f dropped a site 0.9995 km east", lon)
 		}
 	}
 }

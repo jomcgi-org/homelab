@@ -48,7 +48,7 @@ var Tools = []Tool{
     "lon": {"type": "number", "minimum": -9.0, "maximum": -0.5, "description": "Longitude in decimal degrees."},
     "place": {"type": "string", "maxLength": 100, "description": "Scottish place name, used instead of lat and lon, for example \"Aviemore\" or \"Inbhir Nis\"."},
     "radius_km": {"type": "number", "minimum": 1, "maximum": 150, "default": 50, "description": "Search radius in km."},
-    "nights": {"type": "integer", "minimum": 1, "maximum": 7, "default": 3, "description": "Nights to cover, starting tonight."},
+    "nights": {"type": "integer", "minimum": 1, "maximum": 7, "default": 3, "description": "Nights to cover, starting tonight (from 09:00 local, the coming evening)."},
     "limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5, "description": "How many sites to return."}
   },
   "additionalProperties": false

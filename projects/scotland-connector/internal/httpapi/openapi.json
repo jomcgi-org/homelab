@@ -84,7 +84,7 @@
               "maximum": 7,
               "default": 3
             },
-            "description": "Nights to cover, starting tonight. A night runs from local noon to local noon and is named by its evening's date."
+            "description": "Nights to cover, starting tonight: the night in progress until 09:00 local, then the coming evening's. A night runs from local noon to local noon and is named by its evening's date."
           },
           {
             "name": "limit",

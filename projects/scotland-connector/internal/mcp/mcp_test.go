@@ -259,8 +259,17 @@ func TestTransportGuards(t *testing.T) {
 	if code, _, r := post(t, h, `[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]`, nil); code != http.StatusBadRequest || r.Error.Code != codeInvalidRequest {
 		t.Errorf("batch: status %d", code)
 	}
-	if code, _, r := post(t, h, `{not json`, nil); code != http.StatusBadRequest || r.Error.Code != codeParse {
-		t.Errorf("parse error: status %d", code)
+	if code, _, r := post(t, h, `{not json`, nil); code != http.StatusBadRequest || r.Error.Code != codeParse || string(r.ID) != "null" {
+		t.Errorf("parse error: status %d id %s", code, r.ID)
+	}
+	for _, id := range []string{`null`, `true`, `{}`, `[1]`} {
+		code, _, r := post(t, h, `{"jsonrpc":"2.0","id":`+id+`,"method":"tools/list"}`, nil)
+		if code != http.StatusBadRequest || r.Error == nil || r.Error.Code != codeInvalidRequest || string(r.ID) != "null" {
+			t.Errorf("id %s: status %d reply %+v", id, code, r)
+		}
+	}
+	if code, _, r := post(t, h, `{"jsonrpc":"2.0","id":-7,"method":"ping"}`, nil); code != http.StatusOK || string(r.ID) != "-7" {
+		t.Errorf("numeric id: status %d id %s", code, r.ID)
 	}
 	if code, _, _ := post(t, h, `{"jsonrpc":"2.0","id":1,"method":"x","params":{"pad":"`+strings.Repeat("a", maxBody)+`"}}`, nil); code != http.StatusRequestEntityTooLarge {
 		t.Errorf("oversized: status %d", code)

@@ -16,7 +16,8 @@ light-pollution zones (pristine, excellent, rural).
 refreshed hourly. Hours already past are dropped at the top of each hour.
 
 **Nights** run from local noon to local noon (Europe/London) and are named by
-the date of their evening.
+the date of their evening. "Tonight" is the night in progress until 09:00
+local and the coming evening's after that.
 
 **Ranking** is clear-dark hours over the requested nights, then clear-twilight
 hours, then darker light-pollution zone, then distance.

@@ -68,11 +68,12 @@ func (d *Dataset) Within(lat, lon, radiusKm float64) []Candidate {
 // visit calls fn for every site within radiusKm of (lat, lon) without
 // allocating.
 func (d *Dataset) visit(lat, lon, radiusKm float64, fn func(*Site, float64)) {
-	dLat := radiusKm / 111.0
-	// Widen the longitude span by the cosine at the pole-ward edge of the
-	// box so the box always contains the circle.
+	// The box must contain every point FastDistanceKm puts inside the
+	// radius, so it uses the same degree length and the cosine at the
+	// pole-ward edge (the smallest), padded by 1% against rounding.
+	dLat := 1.01 * radiusKm / kmPerDegLat
 	edge := math.Min(89.9, math.Abs(lat)+dLat)
-	dLon := radiusKm / (111.320 * math.Cos(edge*math.Pi/180))
+	dLon := 1.01 * radiusKm / (kmPerDegLat * math.Cos(edge*math.Pi/180))
 	lo, hi := keyFor(lat-dLat, lon-dLon), keyFor(lat+dLat, lon+dLon)
 	cosQ := math.Cos(lat * math.Pi / 180)
 	for la := lo.lat; la <= hi.lat; la++ {

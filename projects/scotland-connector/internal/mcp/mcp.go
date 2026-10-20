@@ -101,9 +101,11 @@ type rpcError struct {
 	Data    any    `json:"data,omitempty"`
 }
 
+// response always carries id: JSON-RPC requires "id": null when the request's
+// id could not be read, and a nil RawMessage marshals as null.
 type response struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
+	ID      json.RawMessage `json:"id"`
 	Result  any             `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
 }
@@ -145,13 +147,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.JSONRPC != "2.0" || req.Method == "" {
-		h.write(w, http.StatusBadRequest, response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeInvalidRequest, Message: "not a JSON-RPC 2.0 request"}})
+		h.write(w, http.StatusBadRequest, response{JSONRPC: "2.0", ID: validID(req.ID), Error: &rpcError{Code: codeInvalidRequest, Message: "not a JSON-RPC 2.0 request"}})
 		return
 	}
-	if len(req.ID) == 0 || string(req.ID) == "null" {
+	if req.ID == nil {
 		// A notification (notifications/initialized from legacy clients is
 		// the only one expected). Accept and ignore: there is no state.
 		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if validID(req.ID) == nil {
+		// MCP forbids a null id, and JSON-RPC ids are strings or numbers.
+		h.write(w, http.StatusBadRequest, response{JSONRPC: "2.0", Error: &rpcError{Code: codeInvalidRequest, Message: "id must be a string or a number"}})
 		return
 	}
 
@@ -236,6 +243,27 @@ func negotiate(r *http.Request, req request) (era, int, *rpcError) {
 		}
 	}
 	return era{modern: true, version: version}, 0, nil
+}
+
+// validID returns the id if it is a JSON string or number, else nil (which
+// a response renders as null).
+func validID(id json.RawMessage) json.RawMessage {
+	if len(id) == 0 {
+		return nil
+	}
+	switch c := id[0]; {
+	case c == '"':
+		var s string
+		if json.Unmarshal(id, &s) == nil {
+			return id
+		}
+	case c == '-' || (c >= '0' && c <= '9'):
+		var n json.Number
+		if json.Unmarshal(id, &n) == nil {
+			return id
+		}
+	}
+	return nil
 }
 
 func unsupported(requested string) *rpcError {

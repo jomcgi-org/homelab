@@ -53,10 +53,14 @@ Readiness means a dataset has loaded. Failing readiness on staleness would
 take every pod out at once during an R2 outage and turn stale answers into
 no answers. Freshness is reported instead, in
 `meta.forecast_fetched_at` and the `scotland_connector_forecast_age_seconds`
-gauge.
+gauge. Nothing collects that gauge yet (the hub runs no scraper for pod
+metrics); the Honeycomb export in #7245 is what turns it into an alert.
 
 Night bucketing (Europe/London, noon to noon) is computed per hour at parse
-time, and queries keep a bounded top-k rather than sorting every candidate.
+time. "Tonight" is the night in progress until 09:00 local, after the last
+possible Scottish twilight-dark hour, and the coming evening's after that,
+so a morning query never leads with a night that has already ended. Queries
+keep a bounded top-k rather than sorting every candidate.
 Distances use a mid-latitude equirectangular approximation with
 precomputed cosines, which within the 150 km cap is well under 0.1 km from
 haversine. A worst-case query (150 km, 7 nights, 10 results) over a grid
@@ -145,7 +149,8 @@ class and outcome. Client class comes from `CF-Connecting-IP` against
 Anthropic's published MCP egress ranges, then User-Agent for OpenAI, else
 `direct`; a malformed identity is `unknown`. The class is a label, never an
 authorization input. Edge cache hits never reach the origin, so the hit
-ratio is Cloudflare's to report. Export to Honeycomb and the zero-priced
+ratio is Cloudflare's to report. The counters are exposed on the admin port
+only and nothing collects them yet: export to Honeycomb and the zero-priced
 unit table are #7245.
 
 ## Not here yet
