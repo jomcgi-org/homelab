@@ -29,6 +29,10 @@ def _walk(uuid, **over):
     return Walk(**fields)
 
 
+def _row(uuid, at):
+    return (uuid, at, 8.0, 0.1, 20.0, 40.0)
+
+
 def _hour(uuid, at, fetched=NOW):
     return WalkHour(
         walk_uuid=uuid,
@@ -42,16 +46,18 @@ def _hour(uuid, at, fetched=NOW):
 
 
 def test_payload_keeps_future_hours_in_order_and_no_prose():
-    walks = [_walk("b"), _walk("a")]
+    walks = [_walk("b"), _walk("a"), _walk("zero", duration_h=0.0)]
     hours = [
-        _hour("a", TOP + timedelta(hours=2)),
-        _hour("a", TOP),
-        _hour("a", TOP - timedelta(hours=1)),  # elapsed
+        _row("a", TOP + timedelta(hours=2)),
+        _row("a", TOP),
+        _row("a", TOP - timedelta(hours=1)),  # elapsed
+        _row("zero", TOP),
     ]
     payload = materialize.build_payload(walks, hours, NOW, NOW)
 
     assert payload["schema_version"] == materialize.SCHEMA_VERSION
     assert payload["fetched_at"] == NOW.isoformat()
+    # The 0 h walk (a real scrape value) is not publishable.
     assert [w["id"] for w in payload["walks"]] == ["a", "b"]
     a, b = payload["walks"]
     assert [h[0] for h in a["hours"]] == [

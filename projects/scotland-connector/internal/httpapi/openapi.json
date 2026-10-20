@@ -116,10 +116,10 @@
             "schema": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 7,
+              "maximum": 3,
               "default": 3
             },
-            "description": "Days to cover, starting today (UK time)."
+            "description": "Days to cover, starting today (UK time). The hourly forecast reaches about two and a half days."
           },
           {
             "name": "limit",
@@ -404,10 +404,24 @@
       },
       "WalkDay": {
         "type": "object",
-        "required": ["date", "doable", "good_hours", "best_slot", "hours"],
+        "required": [
+          "date",
+          "forecast_coverage",
+          "doable",
+          "good_hours",
+          "best_slot",
+          "hours"
+        ],
         "properties": {
           "date": { "type": "string", "format": "date" },
-          "doable": { "type": "boolean" },
+          "forecast_coverage": {
+            "enum": ["full", "partial", "none"],
+            "description": "How much of the day's daylight the hourly forecast covers."
+          },
+          "doable": {
+            "type": ["boolean", "null"],
+            "description": "Null when the forecast does not reach far enough to decide."
+          },
           "good_hours": { "type": "integer" },
           "best_slot": {
             "type": ["object", "null"],

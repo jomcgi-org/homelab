@@ -33,8 +33,10 @@ const (
 
 	DefaultWalkRadiusKm = 30
 	MaxWalkRadiusKm     = 100
+	// Walk days stop at three: MET Norway's hourly forecast reaches about two
+	// and a half days, and the hikes job keeps hourly steps only.
 	DefaultWalkDays     = 3
-	MaxWalkDays         = 7
+	MaxWalkDays         = 3
 	MaxWalkDurationH    = 24
 	MaxWalkAscentM      = 3000
 )

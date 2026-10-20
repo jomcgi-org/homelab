@@ -113,6 +113,15 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 	}))
 
 	ws := store.NewWalks(cfg.bucket, cfg.walksKey, cfg.refreshInterval, client, log)
+	reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "scotland_connector_walks_forecast_age_seconds",
+		Help: "Seconds since the newest MET Norway fetch in the live walk snapshot.",
+	}, func() float64 {
+		if wd := ws.Current(); wd != nil && !wd.FetchedAt.IsZero() {
+			return time.Since(wd.FetchedAt).Seconds()
+		}
+		return -1
+	}))
 	svc := &connector.Service{Data: st, Walks: ws, MethodURL: cfg.publicBaseURL + "/v1/method", Now: time.Now}
 	info := mcp.ServerInfo{Name: "scotland-connector", Title: "Scotland outdoors", Version: cfg.version}
 

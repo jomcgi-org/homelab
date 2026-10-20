@@ -30,6 +30,19 @@ const (
 
 const kmPerDegLat = 111.195
 
+// minHourlyHorizon is how far past the fetch MET Norway's hourly forecast is
+// always taken to reach. Locationforecast is hourly for about two and a half
+// days, then 6-hourly, and the hikes job keeps hourly steps only; 48 h stays
+// under that for any model run the fetch could have seen.
+const minHourlyHorizon = 48 * time.Hour
+
+// Daylight bounds for coverage, in UK local time: no Scottish sunrise is
+// earlier than 04:00 or sunset later than 23:00.
+const (
+	daylightStartHour = 4
+	daylightEndHour   = 23
+)
+
 var london = mustLoad("Europe/London")
 
 func mustLoad(name string) *time.Location {
@@ -82,6 +95,13 @@ type Dataset struct {
 	Walks     []Walk
 	FetchedAt time.Time
 	Version   string
+	// HourlyUntil is how far the hourly forecast is known to reach: the later
+	// of FetchedAt plus minHourlyHorizon and the end of the latest hour in the
+	// snapshot. Both are lower bounds, so hours before it that are missing
+	// failed the weather limits; hours after it were never forecast.
+	HourlyUntil time.Time
+	// Skipped counts snapshot rows left out for missing fields.
+	Skipped int
 }
 
 type doc struct {
@@ -120,9 +140,12 @@ func Parse(body []byte, version string) (*Dataset, error) {
 		}
 		ds.FetchedAt = t.UTC()
 	}
+	var latest int64
 	for _, w := range d.Walks {
-		if w.ID == "" || w.Name == "" || w.URL == "" || w.DurationH <= 0 {
-			return nil, fmt.Errorf("walks: walk %q is missing an id, name, url or duration", w.ID)
+		// One bad row must not take out every walk: skip it and count it.
+		if w.ID == "" || w.Name == "" || w.URL == "" || !(w.DurationH > 0) {
+			ds.Skipped++
+			continue
 		}
 		out := Walk{
 			ID: w.ID, Name: w.Name, URL: w.URL, Lat: w.Lat, Lon: w.Lon,
@@ -140,11 +163,48 @@ func Parse(body []byte, version string) (*Dataset, error) {
 				Unix: at.Unix(), Day: LocalDay(at),
 				TempC: float32(h[1]), PrecipMM: float32(h[2]), WindKmh: float32(h[3]), CloudPct: float32(h[4]),
 			}
+			latest = max(latest, at.Unix())
 		}
 		sort.Slice(out.Hours, func(i, j int) bool { return out.Hours[i].Unix < out.Hours[j].Unix })
 		ds.Walks = append(ds.Walks, out)
 	}
+	if len(ds.Walks) == 0 {
+		return nil, fmt.Errorf("walks: no usable walks in %d rows", len(d.Walks))
+	}
+	if !ds.FetchedAt.IsZero() {
+		ds.HourlyUntil = ds.FetchedAt.Add(minHourlyHorizon)
+	}
+	if latest > 0 {
+		if end := time.Unix(latest, 0).UTC().Add(time.Hour); end.After(ds.HourlyUntil) {
+			ds.HourlyUntil = end
+		}
+	}
 	return ds, nil
+}
+
+// Coverage says how much of a day's daylight the hourly forecast reaches.
+type Coverage string
+
+const (
+	CoverageFull    Coverage = "full"
+	CoveragePartial Coverage = "partial"
+	CoverageNone    Coverage = "none"
+)
+
+func localHour(day int32, hour int) time.Time {
+	y, m, d := time.Unix(int64(day)*86400, 0).UTC().Date()
+	return time.Date(y, m, d, hour, 0, 0, 0, london)
+}
+
+// CoverageOf is how much of day's daylight lies before the hourly horizon.
+func (d *Dataset) CoverageOf(day int32) Coverage {
+	switch {
+	case !d.HourlyUntil.Before(localHour(day, daylightEndHour)):
+		return CoverageFull
+	case !d.HourlyUntil.After(localHour(day, daylightStartHour)):
+		return CoverageNone
+	}
+	return CoveragePartial
 }
 
 // Query is one walk_windows question; the connector validates it.
@@ -178,9 +238,13 @@ type Run struct {
 	GoodHours  int
 }
 
-// Day is one day at one walk.
+// Day is one day at one walk. Decided is false when the forecast does not
+// reach far enough to say: no coverage, or partial coverage without a slot
+// long enough yet. Doable is only meaningful when Decided.
 type Day struct {
 	Day       int32
+	Coverage  Coverage
+	Decided   bool
 	Doable    bool
 	GoodHours int
 	Best      *Run
@@ -259,6 +323,10 @@ func (d *Dataset) Windows(q Query) []Result {
 	last := first + int32(q.Days) - 1
 	cutoff := q.Now.Truncate(time.Hour).Unix()
 	cosQ := math.Cos(q.Lat * math.Pi / 180)
+	coverage := make([]Coverage, q.Days)
+	for i := range coverage {
+		coverage[i] = d.CoverageOf(first + int32(i))
+	}
 	var out []Result
 	for i := range d.Walks {
 		w := &d.Walks[i]
@@ -284,6 +352,8 @@ func (d *Dataset) Windows(q Query) []Result {
 				dayHours = dayHours[1:]
 			}
 			dw := w.day(day, dayHours)
+			dw.Coverage = coverage[day-first]
+			dw.Decided = dw.Coverage == CoverageFull || dw.Doable
 			if dw.Doable {
 				r.DoableDays++
 				if day < r.firstOK {

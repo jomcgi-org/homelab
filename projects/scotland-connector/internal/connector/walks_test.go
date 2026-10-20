@@ -27,11 +27,11 @@ func TestWalkWindows(t *testing.T) {
 		t.Fatalf("top = %+v", top)
 	}
 	day := top.Days[1]
-	if day.Date != "2026-10-20" || !day.Doable || day.GoodHours != 6 || len(day.Hours) != 6 ||
+	if day.Date != "2026-10-20" || day.ForecastCoverage != "full" || day.Doable == nil || !*day.Doable || day.GoodHours != 6 || len(day.Hours) != 6 ||
 		day.BestSlot == nil || day.BestSlot.Start != "2026-10-20T08:00:00Z" || day.BestSlot.End != "2026-10-20T14:00:00Z" {
 		t.Fatalf("day = %+v", day)
 	}
-	if long := res.Walks[1]; long.DoableDays != 0 || long.Days[1].GoodHours != 2 || long.Days[1].Doable {
+	if long := res.Walks[1]; long.DoableDays != 0 || long.Days[1].GoodHours != 2 || long.Days[1].Doable == nil || *long.Days[1].Doable {
 		t.Fatalf("a 9 h walk with 2 good hours is not doable: %+v", long)
 	}
 
@@ -39,7 +39,7 @@ func TestWalkWindows(t *testing.T) {
 	if m.ForecastFetchedAt == nil || *m.ForecastFetchedAt != "2026-10-19T14:20:00Z" || m.DataVersion != `"w1"` || len(m.Sources) != 2 {
 		t.Fatalf("meta = %+v", m)
 	}
-	if !strings.Contains(strings.Join(m.Notes, " "), "start point") {
+	if notes := strings.Join(m.Notes, " "); !strings.Contains(notes, "start point") || !strings.Contains(notes, "forecast_coverage") {
 		t.Fatalf("notes must say the forecast is at the start: %v", m.Notes)
 	}
 	body, _ := json.Marshal(env)
@@ -101,5 +101,18 @@ func TestWalkWindowsBeforePublish(t *testing.T) {
 	// Stars keep answering without walks.
 	if _, err := svc.DarkSkyWindows(connector.DarkSkyParams{Lat: f(57.19), Lon: f(-3.83)}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWalkDayBeyondTheForecastIsNull(t *testing.T) {
+	// The fixture was fetched at 14:20Z on the 19th, so the hourly forecast
+	// reaches 14:20Z on the 21st: that day is partial with no slot yet.
+	env, err := fixture.Service(true).WalkWindows(connector.WalkWindowsParams{Lat: f(57.19), Lon: f(-3.83), Days: i(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(env.Data.(connector.WalkWindowsResult).Walks[0].Days[2])
+	if !strings.Contains(string(body), `"date":"2026-10-21","forecast_coverage":"partial","doable":null`) {
+		t.Fatalf("day 3 = %s", body)
 	}
 }

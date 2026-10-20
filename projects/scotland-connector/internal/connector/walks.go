@@ -23,7 +23,7 @@ var (
 	sourceWalkhighlands = Source{
 		Name:        "Walkhighlands",
 		Attribution: "Walk listings from Walkhighlands; follow each walk's url for the route",
-		License:     "Linked, not reproduced: routes and descriptions stay on walkhighlands.co.uk",
+		License:     "Routes and descriptions stay on walkhighlands.co.uk; each walk links to its page",
 		URL:         "https://www.walkhighlands.co.uk/",
 		Use:         "walk names, start points, length, ascent and estimated time",
 	}
@@ -33,7 +33,8 @@ var (
 // walk starts and the snapshot only keeps hours that passed the limits.
 var walkNotes = []string{
 	"Weather is forecast at each walk's start point, not along the route or on summits.",
-	"Listed hours are daylight hours with at most 2 mm of rain and wind at most 80 km/h; a missing daylight hour failed those limits.",
+	"Listed hours are daylight hours with at most 2 mm of rain and wind at most 80 km/h; within the forecast, a missing daylight hour failed those limits.",
+	"The hourly forecast reaches about two and a half days: forecast_coverage says how much of each day it covers, and doable is null when it cannot be decided yet.",
 	"Follow each walk's url for the route, maps and safety notes.",
 }
 
@@ -75,13 +76,15 @@ type WalkSlotOut struct {
 	GoodHours int    `json:"good_hours"`
 }
 
-// WalkDayOut is one day at one walk.
+// WalkDayOut is one day at one walk. Doable is null when the forecast does
+// not reach far enough to decide.
 type WalkDayOut struct {
-	Date      string        `json:"date"`
-	Doable    bool          `json:"doable"`
-	GoodHours int           `json:"good_hours"`
-	BestSlot  *WalkSlotOut  `json:"best_slot"`
-	Hours     []WalkHourOut `json:"hours"`
+	Date             string        `json:"date"`
+	ForecastCoverage string        `json:"forecast_coverage"`
+	Doable           *bool         `json:"doable"`
+	GoodHours        int           `json:"good_hours"`
+	BestSlot         *WalkSlotOut  `json:"best_slot"`
+	Hours            []WalkHourOut `json:"hours"`
 }
 
 // WalkOut is one ranked walk.
@@ -181,7 +184,11 @@ func (s *Service) WalkWindows(p WalkWindowsParams) (*Envelope, error) {
 			DoableDays: r.DoableDays, Days: make([]WalkDayOut, len(r.Days)),
 		}
 		for i, d := range r.Days {
-			do := WalkDayOut{Date: walks.DayName(d.Day), Doable: d.Doable, GoodHours: d.GoodHours, Hours: make([]WalkHourOut, len(d.Hours))}
+			do := WalkDayOut{Date: walks.DayName(d.Day), ForecastCoverage: string(d.Coverage), GoodHours: d.GoodHours, Hours: make([]WalkHourOut, len(d.Hours))}
+			if d.Decided {
+				doable := d.Doable
+				do.Doable = &doable
+			}
 			if d.Best != nil {
 				do.BestSlot = &WalkSlotOut{Start: d.Best.Start.Format(time.RFC3339), End: d.Best.End.Format(time.RFC3339), GoodHours: d.Best.GoodHours}
 			}

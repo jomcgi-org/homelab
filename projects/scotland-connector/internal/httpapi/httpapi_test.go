@@ -62,7 +62,7 @@ func TestEnvelopeContract(t *testing.T) {
 		"/v1/dark-sky-windows?lat=57.19&lon=-3.83",
 		"/v1/dark-sky-windows?lat=57.19&lon=-3.83&radius_km=80&nights=7&limit=10",
 		"/v1/walk-windows?lat=57.19&lon=-3.83",
-		"/v1/walk-windows?lat=57.19&lon=-3.83&radius_km=100&days=7&limit=10&max_duration_h=4.5&max_ascent_m=800",
+		"/v1/walk-windows?lat=57.19&lon=-3.83&radius_km=100&days=3&limit=10&max_duration_h=4.5&max_ascent_m=800",
 	} {
 		rec, body := get(t, h, url)
 		if rec.Code != http.StatusOK {
@@ -101,7 +101,7 @@ func TestCapsAreEnforced(t *testing.T) {
 		"/v1/dark-sky-windows?lat=57.19",
 		"/v1/dark-sky-windows?place=Aviemore",
 		"/v1/walk-windows?lat=57.19",
-		"/v1/walk-windows?lat=57&lon=-3.8&days=8",
+		"/v1/walk-windows?lat=57&lon=-3.8&days=4",
 		"/v1/walk-windows?lat=57&lon=-3.8&radius_km=101",
 		"/v1/walk-windows?lat=57&lon=-3.8&max_ascent_m=lots",
 		"/v1/walk-windows?lat=57&lon=-3.8&max_duration_h=0",

@@ -13,7 +13,10 @@ export const facts = [
   { k: "Tools", v: "dark_sky_windows, walk_windows", code: true },
   { k: "Covers", v: "Scotland, mainland and islands" },
   { k: "Forecast", v: "MET Norway, refreshed every two to three hours" },
-  { k: "Per call", v: "up to 10 results, up to 7 days ahead" },
+  {
+    k: "Per call",
+    v: "up to 10 results, 7 nights of stars or 3 days of walks",
+  },
   { k: "Cost", v: "free, no sign-up or key" },
 ];
 
@@ -59,7 +62,7 @@ export const sources = [
   { name: "Natural Earth", use: "coastline", licence: "public domain" },
   {
     name: "Walkhighlands",
-    use: "walks, linked to their route pages",
-    licence: "linked, not reproduced",
+    use: "walk listings",
+    licence: "routes stay on Walkhighlands; each walk links to its page",
   },
 ];

@@ -98,7 +98,10 @@ estimated time and the viable hours the hikes app already computes
 the hikes app's doable-day rule (`projects/monolith/hikes/router.py`); its
 tests replay the hikes router's cases. A separate `WalkStore` loads the
 object, so a missing or broken `walks.json` takes out `walk_windows` alone:
-readiness still depends only on the stars snapshot.
+readiness still depends only on the stars snapshot. A row missing a name,
+URL or positive duration is skipped, never fatal: the scrape has stored a
+0 h walk. `scotland_connector_walks_forecast_age_seconds` reports the
+snapshot's age.
 
 **Why.** The walks come from Walkhighlands (decided on #7252). Answers carry
 facts and a link to each walk's page, never the route description, maps or
@@ -108,6 +111,14 @@ scraped `summary` prose for the same reason.
 **Why.** Forecasts are at each walk's start, because that is what the hikes
 job fetches. Every answer says so in `meta.notes`, since summit conditions
 are colder and windier than the car park.
+
+**Why.** Queries stop at three days and each day carries
+`forecast_coverage`. The hikes job keeps MET Norway's hourly steps only,
+which reach about two and a half days, so a later day has no hours at all.
+Reporting it as not doable would tell an assistant the weather is bad when
+there is no forecast. The horizon is the later of the fetch plus 48 hours
+and the last hour in the snapshot, both lower bounds, and a stale snapshot
+falls back to "no forecast" rather than "bad weather".
 
 ## Contract
 
