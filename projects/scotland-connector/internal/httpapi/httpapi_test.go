@@ -16,7 +16,26 @@ import (
 )
 
 func handler(loaded bool) *Handler {
-	return New(fixture.Service(loaded), meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h, err := New(fixture.Service(loaded), meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func TestOpenAPIServerIsThePublicBaseURL(t *testing.T) {
+	h, err := New(fixture.Service(true), meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)), "https://jomcgi.dev/scotland")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, body := get(t, h, "/v1/openapi.json")
+	servers, _ := body["servers"].([]any)
+	if len(servers) != 1 || servers[0].(map[string]any)["url"] != "https://jomcgi.dev/scotland" {
+		t.Fatalf("servers = %v", body["servers"])
+	}
+	if _, ok := body["paths"].(map[string]any)["/v1/dark-sky-windows"]; !ok {
+		t.Fatal("rewritten document lost its paths")
+	}
 }
 
 func get(t *testing.T, h http.Handler, url string, hdr ...string) (*httptest.ResponseRecorder, map[string]any) {
@@ -48,7 +67,12 @@ func TestEnvelopeContract(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: status %d: %s", url, rec.Code, rec.Body)
 		}
-		if rec.Header().Get("Cache-Control") != CacheControl || rec.Header().Get("ETag") == "" {
+		if rec.Header().Get("Cache-Control") != CacheControl.browser || rec.Header().Get("ETag") == "" {
+			t.Fatalf("%s: cache headers %v", url, rec.Header())
+		}
+		// Cloudflare reads its own header first; s-maxage there would disable
+		// the stale directives, so the edge lifetime must arrive as max-age.
+		if edge := rec.Header().Get("Cloudflare-CDN-Cache-Control"); edge != CacheControl.edge || strings.Contains(edge, "s-maxage") {
 			t.Fatalf("%s: cache headers %v", url, rec.Header())
 		}
 		if _, ok := body["data"]; !ok {
@@ -96,7 +120,8 @@ func TestConditionalGet(t *testing.T) {
 
 func TestUnavailableIsNotCached(t *testing.T) {
 	rec, body := get(t, handler(false), "/v1/dark-sky-windows?place=Aviemore")
-	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Cache-Control") != "no-store" || body["error"] == nil {
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Cache-Control") != "no-store" ||
+		rec.Header().Get("Cloudflare-CDN-Cache-Control") != "no-store" || body["error"] == nil {
 		t.Fatalf("status %d headers %v", rec.Code, rec.Header())
 	}
 }

@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -23,18 +24,41 @@ var openAPI []byte
 //go:embed method.md
 var method []byte
 
-// CacheControl for answers: forecasts move hourly, so the edge holds an
-// answer for ten minutes, may serve it stale for an hour while revalidating,
-// and keeps answering for a day if the origin is down. Browsers revalidate
-// after a minute.
-const CacheControl = "public, max-age=60, s-maxage=600, stale-while-revalidate=3600, stale-if-error=86400"
+// Cache policies, each a pair: Cache-Control for browsers and other shared
+// caches, and Cloudflare-CDN-Cache-Control for the edge. Cloudflare treats
+// s-maxage as proxy-revalidate, which disables the stale directives, so the
+// edge lifetime goes to Cloudflare as max-age in its own higher-precedence
+// header (the public-tier cache contract, docs/runbooks/public-tier-checklist.md).
+type cachePolicy struct{ browser, edge string }
 
-// cacheControlStatic is for the spec and the method page, which change only
-// with a deploy.
-const cacheControlStatic = "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400, stale-if-error=604800"
+var (
+	// CacheControl for answers: forecasts move hourly, so the edge holds an
+	// answer for ten minutes, may serve it stale for an hour while
+	// revalidating, and keeps answering for a day if the origin is down.
+	// Browsers revalidate after a minute.
+	CacheControl = cachePolicy{
+		browser: "public, max-age=60, s-maxage=600, stale-while-revalidate=3600, stale-if-error=86400",
+		edge:    "public, max-age=600, stale-while-revalidate=3600, stale-if-error=86400",
+	}
+	// cacheControlStatic is for the spec and the method page, which change
+	// only with a deploy.
+	cacheControlStatic = cachePolicy{
+		browser: "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400, stale-if-error=604800",
+		edge:    "public, max-age=3600, stale-while-revalidate=86400, stale-if-error=604800",
+	}
+	// cacheControlError lets the edge absorb repeated bad requests briefly.
+	cacheControlError = cachePolicy{
+		browser: "public, max-age=60, s-maxage=60",
+		edge:    "public, max-age=60",
+	}
+	// noStore is for answers that must not be cached anywhere.
+	noStore = cachePolicy{browser: "no-store", edge: "no-store"}
+)
 
-// cacheControlError lets the edge absorb repeated bad requests briefly.
-const cacheControlError = "public, max-age=60, s-maxage=60"
+func (p cachePolicy) set(h http.Header) {
+	h.Set("Cache-Control", p.browser)
+	h.Set("Cloudflare-CDN-Cache-Control", p.edge)
+}
 
 const surface = "api"
 
@@ -46,15 +70,39 @@ type Handler struct {
 	mux   *http.ServeMux
 }
 
-// New wires the routes.
-func New(svc *connector.Service, m *meter.Meter, log *slog.Logger) *Handler {
+// New wires the routes. publicBaseURL is where clients reach the API (for
+// example https://jomcgi.dev/scotland behind a prefix-stripping route); the
+// published OpenAPI document names it as its server so generated clients
+// call the right paths. Empty keeps the document's relative "/".
+func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL string) (*Handler, error) {
+	spec, err := specWithServer(openAPI, publicBaseURL)
+	if err != nil {
+		return nil, err
+	}
 	h := &Handler{svc: svc, meter: m, log: log, mux: http.NewServeMux()}
 	h.mux.HandleFunc("GET /v1/places/resolve", h.resolvePlace)
 	h.mux.HandleFunc("GET /v1/dark-sky-windows", h.darkSkyWindows)
-	h.mux.HandleFunc("GET /v1/openapi.json", h.static(openAPI, "application/json"))
+	h.mux.HandleFunc("GET /v1/openapi.json", h.static(spec, "application/json"))
 	h.mux.HandleFunc("GET /v1/method", h.static(method, "text/markdown; charset=utf-8"))
 	h.mux.HandleFunc("/v1/", h.notFound)
-	return h
+	return h, nil
+}
+
+// specWithServer rewrites the document's servers list to the public base URL.
+func specWithServer(spec []byte, baseURL string) ([]byte, error) {
+	if baseURL == "" {
+		return spec, nil
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(spec, &doc); err != nil {
+		return nil, fmt.Errorf("httpapi: parse openapi.json: %w", err)
+	}
+	servers, err := json.Marshal([]map[string]string{{"url": baseURL}})
+	if err != nil {
+		return nil, err
+	}
+	doc["servers"] = servers
+	return json.Marshal(doc)
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -127,16 +175,16 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, tool string, s
 		switch {
 		case errors.As(err, &pe):
 			body.Error.Code, body.Error.Param, body.Error.Message = "invalid_parameter", pe.Param, pe.Message
-			w.Header().Set("Cache-Control", cacheControlError)
+			cacheControlError.set(w.Header())
 		case errors.Is(err, connector.ErrUnavailable):
 			status, outcome = http.StatusServiceUnavailable, "unavailable"
 			body.Error.Code, body.Error.Message = "unavailable", "forecast data is loading; retry shortly"
-			w.Header().Set("Cache-Control", "no-store")
+			noStore.set(w.Header())
 			w.Header().Set("Retry-After", "30")
 		default:
 			status, outcome = http.StatusInternalServerError, "error"
 			body.Error.Code, body.Error.Message = "internal", "internal error"
-			w.Header().Set("Cache-Control", "no-store")
+			noStore.set(w.Header())
 			h.log.Error("api call failed", "tool", tool, "err", err)
 		}
 		writeJSON(w, status, body)
@@ -144,7 +192,7 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, tool string, s
 		return
 	}
 
-	w.Header().Set("Cache-Control", CacheControl)
+	CacheControl.set(w.Header())
 	w.Header().Set("ETag", env.ETag)
 	if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, env.ETag) {
 		w.WriteHeader(http.StatusNotModified)
@@ -168,7 +216,7 @@ func etagMatches(header, etag string) bool {
 func (h *Handler) static(body []byte, contentType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Cache-Control", cacheControlStatic)
+		cacheControlStatic.set(w.Header())
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		_, _ = w.Write(body)
 	}
@@ -178,7 +226,7 @@ func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
 	var body errorBody
 	body.Meta = connector.Meta{APIVersion: connector.APIVersion, GeneratedAt: time.Now().UTC().Format(time.RFC3339), MethodURL: h.svc.MethodURL, Sources: []connector.Source{}}
 	body.Error.Code, body.Error.Message = "not_found", "no such endpoint; see /v1/openapi.json"
-	w.Header().Set("Cache-Control", cacheControlError)
+	cacheControlError.set(w.Header())
 	writeJSON(w, http.StatusNotFound, body)
 }
 

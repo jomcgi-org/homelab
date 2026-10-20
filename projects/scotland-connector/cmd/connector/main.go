@@ -117,8 +117,12 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 	svc := &connector.Service{Data: st, Places: gaz, MethodURL: cfg.publicBaseURL + "/v1/method", Now: time.Now}
 	info := mcp.ServerInfo{Name: "scotland-connector", Title: "Scotland outdoors", Version: cfg.version}
 
+	api, err := httpapi.New(svc, m, log, cfg.publicBaseURL)
+	if err != nil {
+		return nil, err
+	}
 	public := http.NewServeMux()
-	public.Handle("/v1/", httpapi.New(svc, m, log))
+	public.Handle("/v1/", api)
 	public.Handle("/mcp", mcp.New(svc, m, log, info, cfg.allowedOrigins))
 
 	draining := new(atomic.Bool)

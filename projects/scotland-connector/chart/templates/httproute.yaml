@@ -2,8 +2,15 @@
 {{- if not .Values.route.hostname }}
 {{- fail "route.hostname is required when route.enabled" }}
 {{- end }}
-# The connector's public surface: the versioned API and the MCP endpoint.
-# Nothing else on the pod is routable, and the admin port has no Service.
+{{- $prefix := trimSuffix "/" .Values.route.pathPrefix }}
+{{- if and $prefix (not (hasPrefix "/" $prefix)) }}
+{{- fail "route.pathPrefix must start with /" }}
+{{- end }}
+# The connector's public surface: the versioned API and the MCP endpoint,
+# under route.pathPrefix on a shared hostname. Each rule strips the prefix,
+# so the service always sees /v1/... and /mcp. Nothing else on the pod is
+# routable, and the admin port has no Service. These matches are longer than
+# a co-tenant's catch-all "/", so they win under Gateway API precedence.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -24,10 +31,35 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /v1/
+            value: {{ printf "%s/v1" $prefix | quote }}
+      {{- if $prefix }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /v1
+      {{- end }}
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ include "scotland-connector.fullname" . }}
+          port: {{ .Values.service.port }}
+          weight: 1
+      timeouts:
+        request: 10s
+    - matches:
         - path:
             type: Exact
-            value: /mcp
+            value: {{ printf "%s/mcp" $prefix | quote }}
+      {{- if $prefix }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /mcp
+      {{- end }}
       backendRefs:
         - group: ""
           kind: Service
