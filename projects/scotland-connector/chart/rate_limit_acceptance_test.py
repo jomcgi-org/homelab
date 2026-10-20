@@ -31,7 +31,7 @@ from pathlib import Path
 import yaml
 
 _HOST = "jomcgi.dev"
-_PATH = "/scotland/v1/places/resolve?q=Oban"
+_PATH = "/scotland/v1/dark-sky-windows?lat=56.41&lon=-5.47"
 _MCP_PATH = "/scotland/mcp"
 _CROSS_ZONE_WORKER_IP = "2a06:98c0:3600::103"
 _CHART_DIR = Path(__file__).resolve().parent

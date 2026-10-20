@@ -11,7 +11,7 @@ Tracking issue: #7240. Deployed on the hub through Kargo
 
 ```mermaid
 graph LR
-    J["monolith stars-refresh<br/>(Argo, hourly)"] -->|writes| R2["R2: stars/sites.json<br/>stars/history-map.json"]
+    J["monolith stars-refresh<br/>(Argo, every 3h)"] -->|writes| R2["R2: stars/sites.json<br/>stars/history-map.json"]
     R2 -->|"conditional GET<br/>every 60s"| P["connector pods<br/>(in-memory index)"]
     C["Caller or assistant"] --> CF["Cloudflare edge<br/>(cache)"] --> E["Envoy Gateway<br/>(per-client limits)"] --> P
 ```
@@ -19,9 +19,9 @@ graph LR
 One Go binary, `cmd/connector`, in its own `scotland-connector` namespace.
 It serves two surfaces on port 8080 and nothing else:
 
-- `GET /v1/dark-sky-windows`, `GET /v1/places/resolve`, `/v1/openapi.json`
-  (the published contract) and `/v1/method`.
-- `POST /mcp`: tools `dark_sky_windows` and `resolve_place`.
+- `GET /v1/dark-sky-windows`, `/v1/openapi.json` (the published contract)
+  and `/v1/method`.
+- `POST /mcp`: tool `dark_sky_windows`.
 
 Health (`/healthz`), readiness (`/readyz`) and Prometheus metrics
 (`/metrics`) are on an admin listener, port 9090, that no Service or route
@@ -78,7 +78,7 @@ three times the real site density runs in about 0.6 ms on one core
 **Why.** Reading Postgres would put a database credential and an egress path
 to CNPG in the namespace that takes public traffic, and make the database's
 load a function of the replica count. The snapshots already exist, are a few
-MB, and change hourly, so loading them into memory costs nothing to keep in
+MB, and change every three hours, so loading them into memory costs nothing to keep in
 sync. The cost is that the snapshot caps each site's hour list at 25, so
 later nights can be undercounted. Answers flag this as
 `forecast_hours_truncated`, and #7246 adds an uncapped snapshot.
@@ -94,8 +94,8 @@ attributed until its licence is confirmed (#7253).
 
 Caps live in `internal/connector` and are mirrored in `openapi.json` and the
 MCP input schemas; tests fail if any copy drifts. Results at most 10, radius
-at most 150 km, nights at most 7, queries at most 100 characters,
-coordinates inside Scotland only. There is no listing endpoint.
+at most 150 km, nights at most 7, coordinates (required) inside Scotland
+only. There is no listing endpoint.
 Coordinates are rounded to 0.01 degrees so equal questions share an ETag.
 
 Answers carry `Cache-Control: public, max-age=60, s-maxage=600,
@@ -202,18 +202,21 @@ unit table are #7245.
 ## Not here yet
 
 `walk_windows` is withheld until the walk corpus licensing is resolved
-(#7252). `resolve_place` runs on a curated seed of about 50 places
-(`internal/places/seed.json`, approximate centroids); the full gazetteer is
-#7247.
+(#7252).
+
+**Why.** Queries take coordinates, with no place-name lookup. The calling
+assistant already knows where Glencoe or Skye is, to well within the search
+radius, and can search for anything obscure. A gazetteer here would be a
+dataset to license and maintain, and the 50-place seed it replaced answered
+"Skye" with nothing, which reads to a model as "not covered".
 
 ## Direction
 
 Decided and not yet built, each with the issue that tracks it. A row leaves
 this table when the work ships or the issue closes without it.
 
-| Direction | Tracks | State |
-| --- | --- | --- |
-| Meter export to Honeycomb, unit price table | #7245 | not started |
-| Uncapped connector snapshot from the materializer | #7246 | not started |
-| Full gazetteer from an open dataset | #7247 | not started |
-| Egress NetworkPolicy enabled | #7248 | staged off |
+| Direction                                         | Tracks | State       |
+| ------------------------------------------------- | ------ | ----------- |
+| Meter export to Honeycomb, unit price table       | #7245  | not started |
+| Uncapped connector snapshot from the materializer | #7246  | not started |
+| Egress NetworkPolicy enabled                      | #7248  | staged off  |

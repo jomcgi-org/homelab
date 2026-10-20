@@ -2,6 +2,7 @@ package connector_test
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
@@ -13,12 +14,12 @@ func i(v int) *int         { return &v }
 
 func TestDarkSkyWindows(t *testing.T) {
 	svc := fixture.Service(true)
-	env, err := svc.DarkSkyWindows(connector.DarkSkyParams{Place: "Aviemore", Nights: i(2)})
+	env, err := svc.DarkSkyWindows(connector.DarkSkyParams{Lat: f(57.19), Lon: f(-3.83), Nights: i(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	res := env.Data.(connector.DarkSkyResult)
-	if res.Query.Place == nil || res.Query.Place.Name != "Aviemore" || res.Query.RadiusKm != connector.DefaultRadiusKm || res.Query.Limit != connector.DefaultLimit {
+	if res.Query.Lat != 57.19 || res.Query.Lon != -3.83 || res.Query.RadiusKm != connector.DefaultRadiusKm || res.Query.Limit != connector.DefaultLimit {
 		t.Fatalf("query echo = %+v", res.Query)
 	}
 	if len(res.Nights) != 2 || res.Nights[0] != "2026-10-19" || res.Nights[1] != "2026-10-20" {
@@ -78,16 +79,16 @@ func TestDarkSkyWindowsETagIsCanonical(t *testing.T) {
 func TestDarkSkyWindowsCaps(t *testing.T) {
 	svc := fixture.Service(true)
 	bad := map[string]connector.DarkSkyParams{
-		"lat":       {Lon: f(-3.8)},
-		"place":     {Place: "Aviemore", Lat: f(57), Lon: f(-3)},
-		"london":    {Lat: f(51.5), Lon: f(-0.12)},
-		"radius":    {Lat: f(57), Lon: f(-3.8), RadiusKm: f(connector.MaxRadiusKm + 1)},
-		"radius0":   {Lat: f(57), Lon: f(-3.8), RadiusKm: f(0)},
-		"nights":    {Lat: f(57), Lon: f(-3.8), Nights: i(connector.MaxNights + 1)},
-		"limit":     {Lat: f(57), Lon: f(-3.8), Limit: i(connector.MaxLimit + 1)},
-		"limit0":    {Lat: f(57), Lon: f(-3.8), Limit: i(0)},
-		"unknown":   {Place: "Gotham"},
-		"long name": {Place: string(make([]byte, connector.MaxQueryLength+1))},
+		"lat":     {Lon: f(-3.8)},
+		"lon":     {Lat: f(57)},
+		"none":    {},
+		"nan":     {Lat: f(math.NaN()), Lon: f(-3.8)},
+		"london":  {Lat: f(51.5), Lon: f(-0.12)},
+		"radius":  {Lat: f(57), Lon: f(-3.8), RadiusKm: f(connector.MaxRadiusKm + 1)},
+		"radius0": {Lat: f(57), Lon: f(-3.8), RadiusKm: f(0)},
+		"nights":  {Lat: f(57), Lon: f(-3.8), Nights: i(connector.MaxNights + 1)},
+		"limit":   {Lat: f(57), Lon: f(-3.8), Limit: i(connector.MaxLimit + 1)},
+		"limit0":  {Lat: f(57), Lon: f(-3.8), Limit: i(0)},
 	}
 	for name, p := range bad {
 		var pe *connector.ParamError
@@ -105,29 +106,7 @@ func TestDarkSkyWindowsCaps(t *testing.T) {
 }
 
 func TestDarkSkyWindowsBeforeLoad(t *testing.T) {
-	if _, err := fixture.Service(false).DarkSkyWindows(connector.DarkSkyParams{Place: "Aviemore"}); !errors.Is(err, connector.ErrUnavailable) {
+	if _, err := fixture.Service(false).DarkSkyWindows(connector.DarkSkyParams{Lat: f(57.19), Lon: f(-3.83)}); !errors.Is(err, connector.ErrUnavailable) {
 		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestResolvePlace(t *testing.T) {
-	svc := fixture.Service(false) // the gazetteer needs no forecast data
-	env, err := svc.ResolvePlace(connector.ResolvePlaceParams{Query: "Inbhir Nis"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res := env.Data.(connector.ResolvePlaceResult)
-	if len(res.Matches) == 0 || res.Matches[0].Name != "Inverness" || res.Matches[0].MatchedName != "Inbhir Nis" {
-		t.Fatalf("matches = %+v", res.Matches)
-	}
-	env, err = svc.ResolvePlace(connector.ResolvePlaceParams{Query: "Gotham"})
-	if err != nil || len(env.Data.(connector.ResolvePlaceResult).Matches) != 0 || len(env.Meta.Notes) == 0 {
-		t.Fatalf("no-match = %+v, %v", env, err)
-	}
-	for _, q := range []string{"", "51.5, -0.12", string(make([]byte, connector.MaxQueryLength+1))} {
-		var pe *connector.ParamError
-		if _, err := svc.ResolvePlace(connector.ResolvePlaceParams{Query: q}); !errors.As(err, &pe) {
-			t.Errorf("ResolvePlace(%q) err = %v", q, err)
-		}
 	}
 }

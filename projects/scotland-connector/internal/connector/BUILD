@@ -6,7 +6,6 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/scotland-connector/internal/connector",
     visibility = ["//projects/scotland-connector:__subpackages__"],
     deps = [
-        "//projects/scotland-connector/internal/places",
         "//projects/scotland-connector/internal/stars",
     ],
 )

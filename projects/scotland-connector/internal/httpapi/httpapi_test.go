@@ -59,9 +59,8 @@ func get(t *testing.T, h http.Handler, url string, hdr ...string) (*httptest.Res
 func TestEnvelopeContract(t *testing.T) {
 	h := handler(true)
 	for _, url := range []string{
-		"/v1/dark-sky-windows?place=Aviemore",
+		"/v1/dark-sky-windows?lat=57.19&lon=-3.83",
 		"/v1/dark-sky-windows?lat=57.19&lon=-3.83&radius_km=80&nights=7&limit=10",
-		"/v1/places/resolve?q=Aviemore",
 	} {
 		rec, body := get(t, h, url)
 		if rec.Code != http.StatusOK {
@@ -97,8 +96,8 @@ func TestCapsAreEnforced(t *testing.T) {
 		"/v1/dark-sky-windows?lat=57&lon=-3.8&limit=ten",
 		"/v1/dark-sky-windows?lat=north&lon=-3.8",
 		"/v1/dark-sky-windows?lat=51.5&lon=-0.12",
-		"/v1/places/resolve",
-		"/v1/places/resolve?q=" + strings.Repeat("a", connector.MaxQueryLength+1),
+		"/v1/dark-sky-windows?lat=57.19",
+		"/v1/dark-sky-windows?place=Aviemore",
 	} {
 		rec, body := get(t, h, url)
 		errObj, _ := body["error"].(map[string]any)
@@ -110,16 +109,16 @@ func TestCapsAreEnforced(t *testing.T) {
 
 func TestConditionalGet(t *testing.T) {
 	h := handler(true)
-	rec, _ := get(t, h, "/v1/dark-sky-windows?place=Aviemore")
+	rec, _ := get(t, h, "/v1/dark-sky-windows?lat=57.19&lon=-3.83")
 	tag := rec.Header().Get("ETag")
-	rec, _ = get(t, h, "/v1/dark-sky-windows?place=Aviemore", "If-None-Match", `"other", W/`+tag)
+	rec, _ = get(t, h, "/v1/dark-sky-windows?lat=57.19&lon=-3.83", "If-None-Match", `"other", W/`+tag)
 	if rec.Code != http.StatusNotModified || rec.Body.Len() != 0 {
 		t.Fatalf("conditional GET = %d", rec.Code)
 	}
 }
 
 func TestUnavailableIsNotCached(t *testing.T) {
-	rec, body := get(t, handler(false), "/v1/dark-sky-windows?place=Aviemore")
+	rec, body := get(t, handler(false), "/v1/dark-sky-windows?lat=57.19&lon=-3.83")
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Cache-Control") != "no-store" ||
 		rec.Header().Get("Cloudflare-CDN-Cache-Control") != "no-store" || body["error"] == nil {
 		t.Fatalf("status %d headers %v", rec.Code, rec.Header())
@@ -140,12 +139,12 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 		Paths map[string]map[string]struct {
 			OperationID string `json:"operationId"`
 			Parameters  []struct {
-				Name   string `json:"name"`
-				Schema struct {
-					Minimum   *float64 `json:"minimum"`
-					Maximum   *float64 `json:"maximum"`
-					Default   *float64 `json:"default"`
-					MaxLength *int     `json:"maxLength"`
+				Name     string `json:"name"`
+				Required bool   `json:"required"`
+				Schema   struct {
+					Minimum *float64 `json:"minimum"`
+					Maximum *float64 `json:"maximum"`
+					Default *float64 `json:"default"`
 				} `json:"schema"`
 			} `json:"parameters"`
 		} `json:"paths"`
@@ -155,7 +154,7 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 	}
 	h := handler(true)
 	for path := range spec.Paths {
-		rec, _ := get(t, h, path+"?place=Aviemore&q=Aviemore")
+		rec, _ := get(t, h, path+"?lat=57.19&lon=-3.83")
 		if rec.Code == http.StatusNotFound {
 			t.Errorf("spec path %s is not served", path)
 		}
@@ -165,6 +164,8 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 		"nights":    {1, connector.MaxNights, connector.DefaultNights},
 		"limit":     {1, connector.MaxLimit, connector.DefaultLimit},
 	}
+	c := connector.Coverage
+	bounds := map[string][2]float64{"lat": {c.MinLat, c.MaxLat}, "lon": {c.MinLon, c.MaxLon}}
 	for _, p := range spec.Paths["/v1/dark-sky-windows"]["get"].Parameters {
 		if w, ok := want[p.Name]; ok {
 			s := p.Schema
@@ -173,11 +174,15 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			}
 			delete(want, p.Name)
 		}
-		if p.Name == "place" && (p.Schema.MaxLength == nil || *p.Schema.MaxLength != connector.MaxQueryLength) {
-			t.Errorf("spec place maxLength = %v", p.Schema.MaxLength)
+		if b, ok := bounds[p.Name]; ok {
+			s := p.Schema
+			if !p.Required || s.Minimum == nil || s.Maximum == nil || *s.Minimum != b[0] || *s.Maximum != b[1] {
+				t.Errorf("spec %s = required %v %+v, coverage %v", p.Name, p.Required, s, b)
+			}
+			delete(bounds, p.Name)
 		}
 	}
-	if len(want) != 0 {
-		t.Errorf("spec lacks parameters %v", want)
+	if len(want) != 0 || len(bounds) != 0 {
+		t.Errorf("spec lacks parameters %v %v", want, bounds)
 	}
 }

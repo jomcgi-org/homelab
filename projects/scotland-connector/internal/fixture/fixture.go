@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
-	"github.com/jomcgi/homelab/projects/scotland-connector/internal/places"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 )
 
@@ -56,13 +55,9 @@ func Dataset() *stars.Dataset {
 // Service returns a service over the fixture at the fixture clock. Pass
 // loaded=false for one whose dataset has not arrived.
 func Service(loaded bool) *connector.Service {
-	gaz, err := places.Seed()
-	if err != nil {
-		panic(err)
-	}
 	src := Source{}
 	if loaded {
 		src.DS = Dataset()
 	}
-	return &connector.Service{Data: src, Places: gaz, MethodURL: "https://example.test/v1/method", Now: func() time.Time { return Now }}
+	return &connector.Service{Data: src, MethodURL: "https://example.test/v1/method", Now: func() time.Time { return Now }}
 }

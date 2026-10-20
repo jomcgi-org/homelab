@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/scotland-connector/internal/places"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 )
 
@@ -30,9 +29,17 @@ const (
 	MaxNights       = 7
 	DefaultLimit    = 5
 	MaxLimit        = 10
-	MaxPlaceResults = 5
-	MaxQueryLength  = 100
 )
+
+// Coverage is the bounding box the connector answers for: mainland Scotland,
+// the Hebrides, Orkney and Shetland. openapi.json and the MCP input schema
+// carry the same bounds.
+var Coverage = struct{ MinLat, MaxLat, MinLon, MaxLon float64 }{54.5, 61.0, -9.0, -0.5}
+
+// InCoverage reports whether a coordinate is inside Coverage.
+func InCoverage(lat, lon float64) bool {
+	return lat >= Coverage.MinLat && lat <= Coverage.MaxLat && lon >= Coverage.MinLon && lon <= Coverage.MaxLon
+}
 
 // ErrUnavailable means no dataset has loaded yet.
 var ErrUnavailable = errors.New("connector: forecast data not loaded yet")
@@ -52,8 +59,7 @@ type DatasetSource interface {
 
 // Service answers queries.
 type Service struct {
-	Data   DatasetSource
-	Places *places.Gazetteer
+	Data DatasetSource
 	// MethodURL is published in every envelope.
 	MethodURL string
 	Now       func() time.Time
@@ -151,63 +157,6 @@ func etag(parts ...string) string {
 	return `"` + hex.EncodeToString(sum[:12]) + `"`
 }
 
-// --- resolve_place ---
-
-// ResolvePlaceParams are the resolve_place inputs.
-type ResolvePlaceParams struct {
-	Query string `json:"query"`
-}
-
-// PlaceMatch is one resolve_place candidate.
-type PlaceMatch struct {
-	Name        string  `json:"name"`
-	MatchedName string  `json:"matched_name"`
-	Type        string  `json:"type"`
-	Lat         float64 `json:"lat"`
-	Lon         float64 `json:"lon"`
-	Confidence  float64 `json:"confidence"`
-}
-
-// ResolvePlaceResult is resolve_place's data.
-type ResolvePlaceResult struct {
-	Query   string       `json:"query"`
-	Matches []PlaceMatch `json:"matches"`
-}
-
-// ResolvePlace turns free text into candidate coordinates.
-func (s *Service) ResolvePlace(p ResolvePlaceParams) (*Envelope, error) {
-	q := strings.TrimSpace(p.Query)
-	if q == "" {
-		return nil, &ParamError{"query", "required: a Scottish place name, or \"lat, lon\""}
-	}
-	if len(q) > MaxQueryLength {
-		return nil, &ParamError{"query", fmt.Sprintf("at most %d characters", MaxQueryLength)}
-	}
-	now := s.Now()
-	res := ResolvePlaceResult{Query: q, Matches: []PlaceMatch{}}
-	for _, m := range s.Places.Resolve(q, MaxPlaceResults) {
-		if m.Type == "coordinates" && !places.InCoverage(m.Lat, m.Lon) {
-			return nil, &ParamError{"query", "coordinates are outside Scotland, the area this service covers"}
-		}
-		res.Matches = append(res.Matches, PlaceMatch{
-			Name: m.Name, MatchedName: m.MatchedName, Type: m.Type,
-			Lat: m.Lat, Lon: m.Lon, Confidence: m.Confidence,
-		})
-	}
-	meta := s.meta(nil, now, nil)
-	meta.Sources = []Source{}
-	meta.DataVersion = "gazetteer-seed"
-	if len(res.Matches) == 0 {
-		meta.Notes = append(meta.Notes, "No match in the gazetteer. Pass coordinates directly to dark_sky_windows as lat and lon.")
-	}
-	return &Envelope{
-		Data:    res,
-		Meta:    meta,
-		ETag:    etag("resolve_place", meta.DataVersion, meta.AsOf, places.Normalize(q)),
-		Results: len(res.Matches),
-	}, nil
-}
-
 // --- dark_sky_windows ---
 
 // DarkSkyParams are the dark_sky_windows inputs. Pointers distinguish
@@ -215,7 +164,6 @@ func (s *Service) ResolvePlace(p ResolvePlaceParams) (*Envelope, error) {
 type DarkSkyParams struct {
 	Lat      *float64 `json:"lat,omitempty"`
 	Lon      *float64 `json:"lon,omitempty"`
-	Place    string   `json:"place,omitempty"`
 	RadiusKm *float64 `json:"radius_km,omitempty"`
 	Nights   *int     `json:"nights,omitempty"`
 	Limit    *int     `json:"limit,omitempty"`
@@ -223,12 +171,11 @@ type DarkSkyParams struct {
 
 // DarkSkyQuery echoes the canonical inputs actually used.
 type DarkSkyQuery struct {
-	Lat      float64     `json:"lat"`
-	Lon      float64     `json:"lon"`
-	RadiusKm float64     `json:"radius_km"`
-	Nights   int         `json:"nights"`
-	Limit    int         `json:"limit"`
-	Place    *PlaceMatch `json:"place,omitempty"`
+	Lat      float64 `json:"lat"`
+	Lon      float64 `json:"lon"`
+	RadiusKm float64 `json:"radius_km"`
+	Nights   int     `json:"nights"`
+	Limit    int     `json:"limit"`
 }
 
 // HourOut is one clear hour.
@@ -282,29 +229,13 @@ func round(v float64, places int) float64 {
 	return math.Round(v*p) / p
 }
 
-func (s *Service) darkSkyQuery(p DarkSkyParams) (DarkSkyQuery, error) {
+func darkSkyQuery(p DarkSkyParams) (DarkSkyQuery, error) {
 	q := DarkSkyQuery{RadiusKm: DefaultRadiusKm, Nights: DefaultNights, Limit: DefaultLimit}
-	place := strings.TrimSpace(p.Place)
-	switch {
-	case place != "" && (p.Lat != nil || p.Lon != nil):
-		return q, &ParamError{"place", "pass either place or lat and lon, not both"}
-	case place != "":
-		if len(place) > MaxQueryLength {
-			return q, &ParamError{"place", fmt.Sprintf("at most %d characters", MaxQueryLength)}
-		}
-		ms := s.Places.Resolve(place, 1)
-		if len(ms) == 0 {
-			return q, &ParamError{"place", "unknown place; pass lat and lon instead"}
-		}
-		m := ms[0]
-		q.Lat, q.Lon = m.Lat, m.Lon
-		q.Place = &PlaceMatch{Name: m.Name, MatchedName: m.MatchedName, Type: m.Type, Lat: m.Lat, Lon: m.Lon, Confidence: m.Confidence}
-	case p.Lat == nil || p.Lon == nil:
-		return q, &ParamError{"lat", "lat and lon (decimal degrees) or place is required"}
-	default:
-		q.Lat, q.Lon = *p.Lat, *p.Lon
+	if p.Lat == nil || p.Lon == nil {
+		return q, &ParamError{"lat", "lat and lon (decimal degrees) are required"}
 	}
-	if math.IsNaN(q.Lat) || math.IsNaN(q.Lon) || !places.InCoverage(q.Lat, q.Lon) {
+	q.Lat, q.Lon = *p.Lat, *p.Lon
+	if math.IsNaN(q.Lat) || math.IsNaN(q.Lon) || !InCoverage(q.Lat, q.Lon) {
 		return q, &ParamError{"lat", "coordinates are outside Scotland, the area this service covers"}
 	}
 	// About 1 km: finer than any answer and it makes equal questions equal.
@@ -334,7 +265,7 @@ func (s *Service) darkSkyQuery(p DarkSkyParams) (DarkSkyQuery, error) {
 
 // DarkSkyWindows ranks dark-sky sites near a point for the next few nights.
 func (s *Service) DarkSkyWindows(p DarkSkyParams) (*Envelope, error) {
-	q, err := s.darkSkyQuery(p)
+	q, err := darkSkyQuery(p)
 	if err != nil {
 		return nil, err
 	}
@@ -392,14 +323,10 @@ func (s *Service) DarkSkyWindows(p DarkSkyParams) (*Envelope, error) {
 		strconv.FormatFloat(q.Lat, 'f', 2, 64), strconv.FormatFloat(q.Lon, 'f', 2, 64),
 		strconv.FormatFloat(q.RadiusKm, 'f', 1, 64), strconv.Itoa(q.Nights), strconv.Itoa(q.Limit),
 	}, ",")
-	placeKey := ""
-	if q.Place != nil {
-		placeKey = q.Place.Name
-	}
 	return &Envelope{
 		Data:    res,
 		Meta:    meta,
-		ETag:    etag("dark_sky_windows", ds.Version, meta.AsOf, key, placeKey),
+		ETag:    etag("dark_sky_windows", ds.Version, meta.AsOf, key),
 		Results: len(res.Sites),
 	}, nil
 }

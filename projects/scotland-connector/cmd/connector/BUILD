@@ -10,7 +10,6 @@ go_library(
         "//projects/scotland-connector/internal/httpapi",
         "//projects/scotland-connector/internal/mcp",
         "//projects/scotland-connector/internal/meter",
-        "//projects/scotland-connector/internal/places",
         "//projects/scotland-connector/internal/r2",
         "//projects/scotland-connector/internal/store",
         "@com_github_prometheus_client_golang//prometheus",
