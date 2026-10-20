@@ -108,6 +108,9 @@ spec:
       connectTimeout: 1s
   {{- $header := .Values.route.clientIdentity.clientHeader.name }}
   {{- $assistant := .Values.route.assistantBucket }}
+  {{- if and $assistant.enabled (ne $assistant.unit .Values.route.rateLimit.unit) }}
+  {{- fail "route.assistantBucket.unit must equal route.rateLimit.unit: Envoy Gateway drops the whole local rate limit when rules mix units" }}
+  {{- end }}
   rateLimit:
     type: Local
     local:

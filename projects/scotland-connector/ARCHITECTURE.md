@@ -156,7 +156,14 @@ answer any request.
   `projects/platform/cloudflare-gateway/values.yaml`) so busy client buckets
   are not evicted.
 - Assistant egress gets one shared bucket (`route.assistantBucket`, 12,000
-  a minute per Envoy replica, two replicas on the hub). Connector calls come
+  a minute). Envoy Gateway keeps separate buckets per route rule
+  (`/scotland/v1` and `/scotland/mcp` each) and per Envoy replica (two on
+  the hub), so MCP calls alone can reach 24,000 a minute, about 400 a second
+  on average; the per-IP and fail-safe buckets split the same way. Buckets
+  refill once a minute, so a full budget can arrive as a burst. All rules
+  must share one unit: Envoy Gateway 1.8.3 silently drops the route's whole
+  local rate limit when they mix units, which the acceptance test caught and
+  the template now refuses to render. Connector calls come
   from the assistant's servers, so a per-IP limit would make every user of
   Claude share a 120-a-minute budget per Anthropic address. Addresses in
   Anthropic's published ranges (160.79.104.0/23, 2607:6bc0::/48) match the
@@ -169,8 +176,9 @@ answer any request.
 
 **Why.** A worst-case query costs about 0.6 ms of one core and the default
 one about 0.15 ms (measured through the HTTP handler on a production-sized
-grid), so even the full assistant budget across both Envoy replicas, about
-400 requests a second, is a fraction of one core. The ceiling is the shared
+grid), so the full assistant MCP budget across both Envoy replicas, about
+400 requests a second on average, is a fraction of one core; a burst of the
+whole minute's budget queues briefly rather than failing. The ceiling is the shared
 hub (one core node, two Envoy replicas, the tunnel), not this service, and
 REST answers are edge-cached; MCP calls are POSTs and always reach the
 origin.
