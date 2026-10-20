@@ -257,3 +257,31 @@ func BenchmarkWindows(b *testing.B) {
 		ds.Windows(q)
 	}
 }
+
+func TestMoonlessHoursFollowTheMoon(t *testing.T) {
+	// Two clear-dark hours at Aviemore on the night of the 20th: at 22:00Z the
+	// 71%-lit moon is 13 deg up, at 03:00Z it has set (ephem: -19 deg). Only
+	// the second is moonless.
+	ds, err := Parse([]byte(`{"sites":[{"id":"a","lat":57.19,"lon":-3.83,"clear_dark_hours":2,"clear_twilight_hours":2,"best_hours":[
+	  {"time":"2026-10-20T22:00:00+00:00","cloud_area_fraction":1,"dark":true},
+	  {"time":"2026-10-21T03:00:00+00:00","cloud_area_fraction":1,"dark":true}]}]}`), []byte(`{"sites":[]}`), "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 15, 0, 0, 0, time.UTC)
+	w := ds.Windows(WindowsQuery{Lat: 57.19, Lon: -3.83, RadiusKm: 5, Nights: 1, Limit: 1, Now: now})[0]
+	n := w.Nights[0]
+	if n.ClearDark != 2 || n.MoonlessDark != 1 || w.MoonlessDark != 1 {
+		t.Fatalf("night %+v", n)
+	}
+	if n.MoonAlt[0] < 10 || n.MoonAlt[1] > -15 {
+		t.Fatalf("moon altitudes %v", n.MoonAlt)
+	}
+	if n.MoonLit < 0.65 || n.MoonLit > 0.8 {
+		t.Fatalf("moon lit %.2f", n.MoonLit)
+	}
+	// Asking for that night by date gives the same night.
+	if got := ds.Windows(WindowsQuery{Lat: 57.19, Lon: -3.83, RadiusKm: 5, Nights: 1, Limit: 1, Night: NightDay(now.Add(6 * time.Hour)), Now: now}); got[0].Nights[0].Night != "2026-10-20" {
+		t.Fatalf("night = %s", got[0].Nights[0].Night)
+	}
+}

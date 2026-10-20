@@ -7,10 +7,10 @@ package connector
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 	"time"
 
@@ -39,7 +39,52 @@ const (
 	MaxWalkDays      = 3
 	MaxWalkDurationH = 24
 	MaxWalkAscentM   = 3000
+	MaxNameLength    = 100
 )
+
+// Detail levels. Summary answers lead with the best night or slot and leave
+// out the hourly arrays, which are most of an answer's size.
+const (
+	DetailSummary = "summary"
+	DetailHours   = "hours"
+)
+
+func detail(p *string) (string, error) {
+	if p == nil || *p == "" || *p == DetailSummary {
+		return DetailSummary, nil
+	}
+	if *p == DetailHours {
+		return DetailHours, nil
+	}
+	return "", &ParamError{"detail", `"summary" or "hours"`}
+}
+
+func dayName(day int32) string { return time.Unix(int64(day)*86400, 0).UTC().Format("2006-01-02") }
+
+// parseDay reads a YYYY-MM-DD date as days since 1970-01-01 and keeps it
+// within [lo, hi].
+func parseDay(param, raw string, lo, hi int32) (int32, error) {
+	msg := fmt.Sprintf("a date from %s to %s (YYYY-MM-DD)", dayName(lo), dayName(hi))
+	t, err := time.Parse("2006-01-02", strings.TrimSpace(raw))
+	if err != nil {
+		return 0, &ParamError{param, msg}
+	}
+	day := int32(t.Unix() / 86400)
+	if day < lo || day > hi {
+		return 0, &ParamError{param, msg}
+	}
+	return day, nil
+}
+
+// canonical is the ETag key for a query echo: its JSON, whose field order is
+// fixed and whose values are already rounded, so equal questions match.
+func canonical(q any) string {
+	b, err := json.Marshal(q)
+	if err != nil {
+		panic(err) // query echoes are plain structs
+	}
+	return string(b)
+}
 
 // Coverage is the bounding box the connector answers for: mainland Scotland,
 // the Hebrides, Orkney and Shetland. openapi.json and the MCP input schema
@@ -181,8 +226,10 @@ type DarkSkyParams struct {
 	Lat      *float64 `json:"lat,omitempty"`
 	Lon      *float64 `json:"lon,omitempty"`
 	RadiusKm *float64 `json:"radius_km,omitempty"`
+	Night    *string  `json:"night,omitempty"`
 	Nights   *int     `json:"nights,omitempty"`
 	Limit    *int     `json:"limit,omitempty"`
+	Detail   *string  `json:"detail,omitempty"`
 }
 
 // DarkSkyQuery echoes the canonical inputs actually used.
@@ -190,8 +237,10 @@ type DarkSkyQuery struct {
 	Lat      float64 `json:"lat"`
 	Lon      float64 `json:"lon"`
 	RadiusKm float64 `json:"radius_km"`
+	Night    string  `json:"night,omitempty"`
 	Nights   int     `json:"nights"`
 	Limit    int     `json:"limit"`
+	Detail   string  `json:"detail"`
 }
 
 // HourOut is one clear hour.
@@ -199,14 +248,20 @@ type HourOut struct {
 	Time              string  `json:"time"`
 	CloudAreaFraction float32 `json:"cloud_area_fraction"`
 	Dark              bool    `json:"dark"`
+	MoonAltitudeDeg   float32 `json:"moon_altitude_deg"`
 }
 
-// NightOut is one night at one site.
+// NightOut is one night at one site. ClearFrom and ClearUntil bound its clear
+// hours, which may have gaps; Hours only come with detail=hours.
 type NightOut struct {
-	Night         string    `json:"night"`
-	ClearDark     int       `json:"clear_dark_hours"`
-	ClearTwilight int       `json:"clear_twilight_hours"`
-	Hours         []HourOut `json:"hours"`
+	Night            string     `json:"night"`
+	ClearDark        int        `json:"clear_dark_hours"`
+	ClearTwilight    int        `json:"clear_twilight_hours"`
+	MoonlessDark     int        `json:"moonless_clear_dark_hours"`
+	MoonIllumination float64    `json:"moon_illumination"`
+	ClearFrom        *string    `json:"clear_from"`
+	ClearUntil       *string    `json:"clear_until"`
+	Hours            *[]HourOut `json:"hours,omitempty"`
 }
 
 // ClimateOut is the site's historical month.
@@ -227,7 +282,9 @@ type SiteOut struct {
 	LightPollution string      `json:"light_pollution_zone"`
 	ClearDark      int         `json:"clear_dark_hours"`
 	ClearTwilight  int         `json:"clear_twilight_hours"`
+	MoonlessDark   int         `json:"moonless_clear_dark_hours"`
 	HoursTruncated bool        `json:"forecast_hours_truncated"`
+	BestNight      *NightOut   `json:"best_night"`
 	Nights         []NightOut  `json:"nights"`
 	Climatology    *ClimateOut `json:"climatology"`
 }
@@ -257,8 +314,26 @@ func coordinates(lat, lon *float64) (float64, float64, error) {
 	return round(*lat, 2), round(*lon, 2), nil
 }
 
-func darkSkyQuery(p DarkSkyParams) (DarkSkyQuery, error) {
-	q := DarkSkyQuery{RadiusKm: DefaultRadiusKm, Nights: DefaultNights, Limit: DefaultLimit}
+func darkSkyQuery(p DarkSkyParams, now time.Time) (q DarkSkyQuery, night int32, err error) {
+	q = DarkSkyQuery{RadiusKm: DefaultRadiusKm, Nights: DefaultNights, Limit: DefaultLimit}
+	if q.Detail, err = detail(p.Detail); err != nil {
+		return q, 0, err
+	}
+	if p.Night != nil {
+		if p.Nights != nil {
+			return q, 0, &ParamError{"night", "pass night or nights, not both"}
+		}
+		first := stars.FirstNight(now)
+		if night, err = parseDay("night", *p.Night, first, first+MaxNights-1); err != nil {
+			return q, 0, err
+		}
+		q.Night, q.Nights = dayName(night), 1
+	}
+	q2, err := darkSkyCaps(p, q)
+	return q2, night, err
+}
+
+func darkSkyCaps(p DarkSkyParams, q DarkSkyQuery) (DarkSkyQuery, error) {
 	var err error
 	if q.Lat, q.Lon, err = coordinates(p.Lat, p.Lon); err != nil {
 		return q, err
@@ -271,7 +346,7 @@ func darkSkyQuery(p DarkSkyParams) (DarkSkyQuery, error) {
 		}
 		q.RadiusKm = round(r, 1)
 	}
-	if p.Nights != nil {
+	if p.Nights != nil && p.Night == nil {
 		if *p.Nights < 1 || *p.Nights > MaxNights {
 			return q, &ParamError{"nights", fmt.Sprintf("between 1 and %d", MaxNights)}
 		}
@@ -286,9 +361,55 @@ func darkSkyQuery(p DarkSkyParams) (DarkSkyQuery, error) {
 	return q, nil
 }
 
-// DarkSkyWindows ranks dark-sky sites near a point for the next few nights.
+func nightOut(n stars.NightWindow, hours bool) NightOut {
+	no := NightOut{
+		Night: n.Night, ClearDark: n.ClearDark, ClearTwilight: n.ClearTwilight,
+		MoonlessDark: n.MoonlessDark, MoonIllumination: round(n.MoonLit, 2),
+	}
+	if len(n.Hours) > 0 {
+		from := rfc3339(n.Hours[0].Unix)
+		until := rfc3339(n.Hours[len(n.Hours)-1].Unix + 3600)
+		no.ClearFrom, no.ClearUntil = &from, &until
+	}
+	if hours {
+		out := make([]HourOut, len(n.Hours))
+		for j, h := range n.Hours {
+			out[j] = HourOut{
+				Time:              rfc3339(h.Unix),
+				CloudAreaFraction: h.Cloud,
+				Dark:              h.Dark,
+				MoonAltitudeDeg:   float32(round(float64(n.MoonAlt[j]), 1)),
+			}
+		}
+		no.Hours = &out
+	}
+	return no
+}
+
+// bestNight is the night to go: most moonless clear-dark hours, then most
+// clear-dark, then most clear-twilight (the midsummer fallback), earliest
+// first. Nil when no night has a clear hour.
+func bestNight(nights []stars.NightWindow) *stars.NightWindow {
+	var best *stars.NightWindow
+	for i := range nights {
+		n := &nights[i]
+		if n.ClearTwilight == 0 {
+			continue
+		}
+		if best == nil || n.MoonlessDark > best.MoonlessDark ||
+			(n.MoonlessDark == best.MoonlessDark && (n.ClearDark > best.ClearDark ||
+				(n.ClearDark == best.ClearDark && n.ClearTwilight > best.ClearTwilight))) {
+			best = n
+		}
+	}
+	return best
+}
+
+// DarkSkyWindows ranks dark-sky sites near a point for the next few nights,
+// or for one named night.
 func (s *Service) DarkSkyWindows(p DarkSkyParams) (*Envelope, error) {
-	q, err := darkSkyQuery(p)
+	now := s.Now()
+	q, night, err := darkSkyQuery(p, now)
 	if err != nil {
 		return nil, err
 	}
@@ -296,8 +417,8 @@ func (s *Service) DarkSkyWindows(p DarkSkyParams) (*Envelope, error) {
 	if ds == nil {
 		return nil, ErrUnavailable
 	}
-	now := s.Now()
-	wq := stars.WindowsQuery{Lat: q.Lat, Lon: q.Lon, RadiusKm: q.RadiusKm, Nights: q.Nights, Limit: q.Limit, Now: now}
+	hours := q.Detail == DetailHours
+	wq := stars.WindowsQuery{Lat: q.Lat, Lon: q.Lon, RadiusKm: q.RadiusKm, Nights: q.Nights, Limit: q.Limit, Night: night, Now: now}
 	res := DarkSkyResult{Query: q, DarknessMode: ds.Darkness, Nights: wq.NightNames(), Sites: []SiteOut{}}
 	truncated := false
 	for _, w := range ds.Windows(wq) {
@@ -310,20 +431,17 @@ func (s *Service) DarkSkyWindows(p DarkSkyParams) (*Envelope, error) {
 			LightPollution: w.Site.LPZone,
 			ClearDark:      w.ClearDark,
 			ClearTwilight:  w.ClearTwilight,
+			MoonlessDark:   w.MoonlessDark,
 			HoursTruncated: w.Site.Truncated(),
 			Nights:         make([]NightOut, len(w.Nights)),
 		}
 		truncated = truncated || out.HoursTruncated
 		for i, n := range w.Nights {
-			no := NightOut{Night: n.Night, ClearDark: n.ClearDark, ClearTwilight: n.ClearTwilight, Hours: make([]HourOut, len(n.Hours))}
-			for j, h := range n.Hours {
-				no.Hours[j] = HourOut{
-					Time:              time.Unix(h.Unix, 0).UTC().Format(time.RFC3339),
-					CloudAreaFraction: h.Cloud,
-					Dark:              h.Dark,
-				}
-			}
-			out.Nights[i] = no
+			out.Nights[i] = nightOut(n, hours)
+		}
+		if b := bestNight(w.Nights); b != nil {
+			bn := nightOut(*b, false)
+			out.BestNight = &bn
 		}
 		if c := w.Climate; c != nil {
 			co := &ClimateOut{Month: c.Month, ClearDark: c.ClearDark, Dark: c.Dark}
@@ -336,20 +454,18 @@ func (s *Service) DarkSkyWindows(p DarkSkyParams) (*Envelope, error) {
 		res.Sites = append(res.Sites, out)
 	}
 	meta := s.meta(ds, now, []Source{sourceMET, sourceCERRA, sourceOSM, sourceNaturalEarth})
+	meta.Notes = append(meta.Notes,
+		"best_night is each site's night with the most moonless clear-dark hours (moon below the horizon or under 10% lit); pass detail=hours for each clear hour with the moon's altitude.")
 	if truncated {
 		meta.Notes = append(meta.Notes, "Some sites have more clear hours than the snapshot lists; their later nights may be undercounted (forecast_hours_truncated).")
 	}
 	if len(res.Sites) == 0 {
 		meta.Notes = append(meta.Notes, "No dark-sky sites within the radius. Try a larger radius_km.")
 	}
-	key := strings.Join([]string{
-		strconv.FormatFloat(q.Lat, 'f', 2, 64), strconv.FormatFloat(q.Lon, 'f', 2, 64),
-		strconv.FormatFloat(q.RadiusKm, 'f', 1, 64), strconv.Itoa(q.Nights), strconv.Itoa(q.Limit),
-	}, ",")
 	return &Envelope{
 		Data:    res,
 		Meta:    meta,
-		ETag:    etag("dark_sky_windows", ds.Version, meta.AsOf, key),
+		ETag:    etag("dark_sky_windows", ds.Version, meta.AsOf, canonical(q)),
 		Results: len(res.Sites),
 	}, nil
 }

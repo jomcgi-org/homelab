@@ -129,7 +129,7 @@ func TestWindowsRanksFiltersAndDropsElapsedHours(t *testing.T) {
 		// Too long for the filter below.
 		walkJSON("long", 57.00, -4.01, 9, 1200, 3, 4, 5, 6, 7, 8),
 	))
-	q := Query{Lat: 57.0, Lon: -4.0, RadiusKm: 30, Days: 2, Limit: 10, MaxDurationH: 8, Now: now}
+	q := Query{HasPoint: true, Lat: 57.0, Lon: -4.0, RadiusKm: 30, Days: 2, Limit: 10, MaxDurationH: 8, Now: now}
 	res := ds.Windows(q)
 	var ids []string
 	for _, r := range res {
@@ -202,7 +202,7 @@ func TestDaysBeyondTheForecastAreUndecided(t *testing.T) {
 	// A 3 h walk, good on day one only. Day three is partial with no slot
 	// yet, so it is undecided rather than "not doable".
 	ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 3, 0, 0, 1, 2, 3)))
-	res := ds.Windows(Query{Lat: 57, Lon: -4, RadiusKm: 10, Days: 3, Limit: 1, Now: base})
+	res := ds.Windows(Query{HasPoint: true, Lat: 57, Lon: -4, RadiusKm: 10, Days: 3, Limit: 1, Now: base})
 	days := res[0].Days
 	if !days[0].Decided || !days[0].Doable || days[0].Coverage != CoverageFull {
 		t.Fatalf("day 1 = %+v", days[0])
@@ -212,5 +212,52 @@ func TestDaysBeyondTheForecastAreUndecided(t *testing.T) {
 	}
 	if days[2].Coverage != CoveragePartial || days[2].Decided {
 		t.Fatalf("day 3 = %+v", days[2])
+	}
+}
+
+func TestNameMatching(t *testing.T) {
+	ds := mustParse(t, snapshot(
+		strings.Replace(walkJSON("bn", 56.79, -5.0, 8, 1350, 0, 1, 2), `"Walk bn"`, `"Ben Nevis by the Mountain Path"`, 1),
+		strings.Replace(walkJSON("cmd", 56.80, -4.99, 10, 1500, 0, 1, 2), `"Walk cmd"`, `"Carn Mor Dearg Arête and Ben Nevis"`, 1),
+		strings.Replace(walkJSON("dd", 56.78, -5.07, 3.5, 314, 0, 1, 2, 3), `"Walk dd"`, `"Dùn Deardail fort, Glen Nevis"`, 1),
+		strings.Replace(walkJSON("sc", 56.9, -5.3, 5, 800), `"Walk sc"`, `"Stob Coire a' Chearcaill"`, 1),
+	))
+	for _, c := range []struct {
+		query string
+		want  string
+	}{
+		{"Ben Nevis", "bn,cmd"}, // the name that starts with the query first
+		{"nevis", "dd,bn,cmd"},  // a word prefix anywhere; then weather ranks
+		{"dun deardail", "dd"},  // accents fold
+		{"Carn Mor Dearg Arete", "cmd"},
+		{"stob coire a chearcaill", "sc"}, // apostrophes join
+		{"ben lomond", ""},
+	} {
+		res := ds.Windows(Query{Name: Normalize(c.query), Days: 1, Limit: 10, Now: base})
+		var ids []string
+		for _, r := range res {
+			ids = append(ids, r.Walk.ID)
+		}
+		if strings.Join(ids, ",") != c.want {
+			t.Errorf("%q matched %v, want %s", c.query, ids, c.want)
+		}
+	}
+	// A name query with a point still applies the radius.
+	if res := ds.Windows(Query{HasPoint: true, Lat: 56.9, Lon: -5.3, RadiusKm: 5, Name: "stob", Days: 1, Limit: 10, Now: base}); len(res) != 1 {
+		t.Fatalf("name plus radius = %d walks", len(res))
+	}
+}
+
+func TestDateSelectsOneDayAndSlotStats(t *testing.T) {
+	ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 3, 0, 24, 25, 26, 27)))
+	tomorrow := LocalDay(base) + 1
+	res := ds.Windows(Query{HasPoint: true, Lat: 57, Lon: -4, RadiusKm: 5, Days: 1, Date: tomorrow, Limit: 1, Now: base})
+	if len(res[0].Days) != 1 || res[0].Days[0].Day != tomorrow || !res[0].Days[0].Doable {
+		t.Fatalf("days = %+v", res[0].Days)
+	}
+	best, ok := res[0].FirstDoable()
+	if !ok || best.Best.GoodHours != 4 || best.Best.MaxWindKmh != 18 || best.Best.MinTempC != 9.5 ||
+		best.Best.TotalPrecipMM < 0.79 || best.Best.TotalPrecipMM > 0.81 {
+		t.Fatalf("best = %+v", best.Best)
 	}
 }
