@@ -62,6 +62,8 @@ func TestEnvelopeContract(t *testing.T) {
 		"/v1/dark-sky-windows?lat=57.19&lon=-3.83",
 		"/v1/dark-sky-windows?lat=57.19&lon=-3.83&radius_km=80&nights=7&limit=10",
 		"/v1/walk-windows?lat=57.19&lon=-3.83",
+		"/v1/walk-windows?walk_name=cairn+gorm&date=2026-10-20&detail=hours",
+		"/v1/dark-sky-windows?lat=57.19&lon=-3.83&night=2026-10-20&detail=hours",
 		"/v1/walk-windows?lat=57.19&lon=-3.83&radius_km=100&days=3&limit=10&max_duration_h=4.5&max_ascent_m=800",
 	} {
 		rec, body := get(t, h, url)
@@ -105,6 +107,11 @@ func TestCapsAreEnforced(t *testing.T) {
 		"/v1/walk-windows?lat=57&lon=-3.8&radius_km=101",
 		"/v1/walk-windows?lat=57&lon=-3.8&max_ascent_m=lots",
 		"/v1/walk-windows?lat=57&lon=-3.8&max_duration_h=0",
+		"/v1/walk-windows?walk_name=",
+		"/v1/walk-windows?walk_name=cairn&radius_km=10",
+		"/v1/walk-windows?lat=57&lon=-3.8&date=tomorrow",
+		"/v1/walk-windows?lat=57&lon=-3.8&detail=all",
+		"/v1/dark-sky-windows?lat=57&lon=-3.8&night=2026-10-20&nights=2",
 	} {
 		rec, body := get(t, h, url)
 		errObj, _ := body["error"].(map[string]any)
@@ -149,9 +156,10 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 				Name     string `json:"name"`
 				Required bool   `json:"required"`
 				Schema   struct {
-					Minimum *float64 `json:"minimum"`
-					Maximum *float64 `json:"maximum"`
-					Default *float64 `json:"default"`
+					Minimum   *float64 `json:"minimum"`
+					Maximum   *float64 `json:"maximum"`
+					Default   any      `json:"default"`
+					MaxLength *int     `json:"maxLength"`
 				} `json:"schema"`
 			} `json:"parameters"`
 		} `json:"paths"`
@@ -184,14 +192,15 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 		for _, p := range spec.Paths[path]["get"].Parameters {
 			if w, ok := want[p.Name]; ok {
 				s := p.Schema
-				if s.Minimum == nil || s.Maximum == nil || s.Default == nil || *s.Minimum != w[0] || *s.Maximum != w[1] || *s.Default != w[2] {
+				if def, ok := s.Default.(float64); s.Minimum == nil || s.Maximum == nil || !ok || *s.Minimum != w[0] || *s.Maximum != w[1] || def != w[2] {
 					t.Errorf("%s spec %s = %+v, code %v", path, p.Name, s, w)
 				}
 				delete(want, p.Name)
 			}
 			if b, ok := bounds[p.Name]; ok {
 				s := p.Schema
-				if !p.Required || s.Minimum == nil || s.Maximum == nil || *s.Minimum != b[0] || *s.Maximum != b[1] {
+				// The walk path also answers by walk_name, so its point is optional.
+				if p.Required != (path == "/v1/dark-sky-windows") || s.Minimum == nil || s.Maximum == nil || *s.Minimum != b[0] || *s.Maximum != b[1] {
 					t.Errorf("%s spec %s = required %v %+v, coverage %v", path, p.Name, p.Required, s, b)
 				}
 				delete(bounds, p.Name)
@@ -201,6 +210,12 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			}
 			if path == "/v1/walk-windows" && p.Name == "max_ascent_m" && (p.Schema.Maximum == nil || *p.Schema.Maximum != connector.MaxWalkAscentM) {
 				t.Errorf("spec max_ascent_m = %+v", p.Schema)
+			}
+			if p.Name == "walk_name" && (p.Schema.MaxLength == nil || *p.Schema.MaxLength != connector.MaxNameLength) {
+				t.Errorf("spec walk_name = %+v", p.Schema)
+			}
+			if p.Name == "detail" && p.Schema.Default != connector.DetailSummary {
+				t.Errorf("%s spec detail default = %v", path, p.Schema.Default)
 			}
 		}
 		if len(want) != 0 || len(bounds) != 0 {

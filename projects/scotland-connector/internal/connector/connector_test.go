@@ -11,10 +11,11 @@ import (
 
 func f(v float64) *float64 { return &v }
 func i(v int) *int         { return &v }
+func str(v string) *string { return &v }
 
 func TestDarkSkyWindows(t *testing.T) {
 	svc := fixture.Service(true)
-	env, err := svc.DarkSkyWindows(connector.DarkSkyParams{Lat: f(57.19), Lon: f(-3.83), Nights: i(2)})
+	env, err := svc.DarkSkyWindows(connector.DarkSkyParams{Lat: f(57.19), Lon: f(-3.83), Nights: i(2), Detail: str("hours")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +33,7 @@ func TestDarkSkyWindows(t *testing.T) {
 	if top.SiteID != "scotland-0001" || top.ClearDark != 3 || top.ClearTwilight != 4 {
 		t.Fatalf("top = %+v", top)
 	}
-	if top.Nights[0].ClearDark != 2 || top.Nights[1].ClearDark != 1 || top.Nights[1].ClearTwilight != 2 || len(top.Nights[0].Hours) != 2 {
+	if top.Nights[0].ClearDark != 2 || top.Nights[1].ClearDark != 1 || top.Nights[1].ClearTwilight != 2 || top.Nights[0].Hours == nil || len(*top.Nights[0].Hours) != 2 {
 		t.Fatalf("top nights = %+v", top.Nights)
 	}
 	if c := top.Climatology; c == nil || c.Month != 10 || c.ClearSkyOdds == nil || *c.ClearSkyOdds != 0.25 {

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 	_ "time/tzdata" // the image ships no zoneinfo; days are UK calendar dates
 )
@@ -88,6 +89,8 @@ type Walk struct {
 	cosLat     float64
 	required   float64
 	shoulderHr int
+	nameTokens []string
+	nameKey    string
 }
 
 // Dataset is one parsed snapshot.
@@ -153,7 +156,9 @@ func Parse(body []byte, version string) (*Dataset, error) {
 			Hours:    make([]Hour, len(w.Hours)),
 			cosLat:   math.Cos(w.Lat * math.Pi / 180),
 			required: durationGoodHourFraction * w.DurationH,
+			nameKey:  Normalize(w.Name),
 		}
+		out.nameTokens = strings.Fields(out.nameKey)
 		if w.DurationH > longWalkHours {
 			out.shoulderHr = darkShoulderHours
 		}
@@ -209,17 +214,86 @@ func (d *Dataset) CoverageOf(day int32) Coverage {
 
 // Query is one walk_windows question; the connector validates it.
 type Query struct {
+	// HasPoint is false for a name-only search, which has no radius and no
+	// distances.
+	HasPoint     bool
 	Lat, Lon     float64
 	RadiusKm     float64
 	Days         int
 	Limit        int
 	MaxDurationH float64 // 0 means no limit
 	MaxAscentM   int     // 0 means no limit
-	Now          time.Time
+	// Date, when set, is the one day asked about (a LocalDay); Days is then 1.
+	Date int32
+	// Name, when set, keeps only walks whose name matches (see Match).
+	Name string
+	Now  time.Time
 }
 
-// FirstDay is the query's first day: today in UK time.
-func (q Query) FirstDay() int32 { return LocalDay(q.Now) }
+// FirstDay is the query's first day: Date, or today in UK time.
+func (q Query) FirstDay() int32 {
+	if q.Date != 0 {
+		return q.Date
+	}
+	return LocalDay(q.Now)
+}
+
+// folds maps the accented letters used in Scottish and Gaelic walk names to
+// their plain forms, so "Dun Deardail" finds "Dùn Deardail".
+var folds = strings.NewReplacer(
+	"à", "a", "á", "a", "â", "a", "ä", "a", "è", "e", "é", "e", "ê", "e", "ë", "e",
+	"ì", "i", "í", "i", "î", "i", "ï", "i", "ò", "o", "ó", "o", "ô", "o", "ö", "o",
+	"ù", "u", "ú", "u", "û", "u", "ü", "u", "ç", "c", "’", "'",
+)
+
+// Normalize lowercases, folds accents and turns everything but letters and
+// digits into single spaces.
+func Normalize(s string) string {
+	s = folds.Replace(strings.ToLower(s))
+	var b strings.Builder
+	space := true
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			space = false
+		case r == '\'':
+			// Apostrophes join: "a' Chearcaill" and "a Chearcaill" both match.
+		default:
+			if !space {
+				b.WriteByte(' ')
+				space = true
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// Match scores a walk name against a normalized query: 0 is no match, 1 is
+// every query word starting a word of the name, 2 is the name starting with
+// the whole query ("ben nevis" against "Ben Nevis by the Mountain Path").
+func (w *Walk) Match(query string) int {
+	q := strings.Fields(query)
+	if len(q) == 0 {
+		return 0
+	}
+	for _, t := range q {
+		found := false
+		for _, n := range w.nameTokens {
+			if strings.HasPrefix(n, t) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return 0
+		}
+	}
+	if strings.HasPrefix(w.nameKey, query) {
+		return 2
+	}
+	return 1
+}
 
 // DayNames lists the covered days.
 func (q Query) DayNames() []string {
@@ -231,11 +305,16 @@ func (q Query) DayNames() []string {
 	return out
 }
 
-// Run is the best slot on one day: its first and last good hour and how many
-// good hours it holds (a tolerated bad hour inside it is not counted).
+// Run is the best slot on one day: its first and last good hour, how many
+// good hours it holds (a tolerated bad hour inside it is not counted), and
+// the weather across those good hours.
 type Run struct {
-	Start, End time.Time
-	GoodHours  int
+	Start, End    time.Time
+	GoodHours     int
+	MaxWindKmh    float32
+	TotalPrecipMM float32
+	MinTempC      float32
+	MaxTempC      float32
 }
 
 // Day is one day at one walk. Decided is false when the forecast does not
@@ -253,8 +332,11 @@ type Day struct {
 
 // Result is one ranked walk.
 type Result struct {
-	Walk       *Walk
+	Walk *Walk
+	// DistanceKm is from the query point; meaningless without HasPoint.
 	DistanceKm float64
+	// NameScore is Match's score for a name query, else 0.
+	NameScore  int
 	DoableDays int
 	Days       []Day
 	firstOK    int32
@@ -295,12 +377,35 @@ func (w *Walk) day(day int32, hours []Hour) Day {
 	if n == 0 {
 		return d
 	}
-	d.Best = &Run{Start: time.Unix(hours[s].Unix, 0).UTC(), End: time.Unix(hours[e].Unix, 0).UTC().Add(time.Hour), GoodHours: n}
+	r := &Run{
+		Start: time.Unix(hours[s].Unix, 0).UTC(), End: time.Unix(hours[e].Unix, 0).UTC().Add(time.Hour), GoodHours: n,
+		MinTempC: hours[s].TempC, MaxTempC: hours[s].TempC,
+	}
+	for _, h := range hours[s : e+1] {
+		r.MaxWindKmh = max(r.MaxWindKmh, h.WindKmh)
+		r.TotalPrecipMM += h.PrecipMM
+		r.MinTempC = min(r.MinTempC, h.TempC)
+		r.MaxTempC = max(r.MaxTempC, h.TempC)
+	}
+	d.Best = r
 	d.Doable = float64(n+w.shoulderHr) >= w.required-requirementEpsilon
 	return d
 }
 
+// FirstDoable is the earliest doable day, if any.
+func (r *Result) FirstDoable() (Day, bool) {
+	for _, d := range r.Days {
+		if d.Doable {
+			return d, true
+		}
+	}
+	return Day{}, false
+}
+
 func better(a, b *Result) bool {
+	if a.NameScore != b.NameScore {
+		return a.NameScore > b.NameScore
+	}
 	if a.DoableDays != b.DoableDays {
 		return a.DoableDays > b.DoableDays
 	}
@@ -336,13 +441,22 @@ func (d *Dataset) Windows(q Query) []Result {
 		if q.MaxAscentM > 0 && w.AscentM > q.MaxAscentM {
 			continue
 		}
-		dy := (w.Lat - q.Lat) * kmPerDegLat
-		dx := (w.Lon - q.Lon) * kmPerDegLat * (cosQ + w.cosLat) / 2
-		dist := math.Sqrt(dx*dx + dy*dy)
-		if dist > q.RadiusKm {
-			continue
+		score := 0
+		if q.Name != "" {
+			if score = w.Match(q.Name); score == 0 {
+				continue
+			}
 		}
-		r := Result{Walk: w, DistanceKm: dist, Days: make([]Day, 0, q.Days), firstOK: math.MaxInt32}
+		var dist float64
+		if q.HasPoint {
+			dy := (w.Lat - q.Lat) * kmPerDegLat
+			dx := (w.Lon - q.Lon) * kmPerDegLat * (cosQ + w.cosLat) / 2
+			dist = math.Sqrt(dx*dx + dy*dy)
+			if dist > q.RadiusKm {
+				continue
+			}
+		}
+		r := Result{Walk: w, DistanceKm: dist, NameScore: score, Days: make([]Day, 0, q.Days), firstOK: math.MaxInt32}
 		hours := w.Hours
 		for day := first; day <= last; day++ {
 			lo := sort.Search(len(hours), func(j int) bool { return hours[j].Day >= day })

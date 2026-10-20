@@ -11,12 +11,12 @@ import (
 )
 
 func TestWalkWindows(t *testing.T) {
-	env, err := fixture.Service(true).WalkWindows(connector.WalkWindowsParams{Lat: f(57.19), Lon: f(-3.83), Days: i(2)})
+	env, err := fixture.Service(true).WalkWindows(connector.WalkWindowsParams{Lat: f(57.19), Lon: f(-3.83), Days: i(2), Detail: str("hours")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	res := env.Data.(connector.WalkWindowsResult)
-	if strings.Join(res.Days, ",") != "2026-10-19,2026-10-20" || res.Query.RadiusKm != connector.DefaultWalkRadiusKm {
+	if strings.Join(res.Days, ",") != "2026-10-19,2026-10-20" || res.Query.RadiusKm == nil || *res.Query.RadiusKm != connector.DefaultWalkRadiusKm {
 		t.Fatalf("days %v query %+v", res.Days, res.Query)
 	}
 	if len(res.Walks) != 2 || env.Results != 2 {
@@ -27,7 +27,7 @@ func TestWalkWindows(t *testing.T) {
 		t.Fatalf("top = %+v", top)
 	}
 	day := top.Days[1]
-	if day.Date != "2026-10-20" || day.ForecastCoverage != "full" || day.Doable == nil || !*day.Doable || day.GoodHours != 6 || len(day.Hours) != 6 ||
+	if day.Date != "2026-10-20" || day.ForecastCoverage != "full" || day.Doable == nil || !*day.Doable || day.GoodHours != 6 || day.Hours == nil || len(*day.Hours) != 6 ||
 		day.BestSlot == nil || day.BestSlot.Start != "2026-10-20T08:00:00Z" || day.BestSlot.End != "2026-10-20T14:00:00Z" {
 		t.Fatalf("day = %+v", day)
 	}

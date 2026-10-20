@@ -71,12 +71,14 @@
             <p>
               Give it a point in Scotland and it ranks the road-accessible
               dark-sky sites nearby by forecast clear, dark hours over the next
-              few nights (up to seven), with the hours themselves and how often
-              each site has been clear in this month in past years.
+              few nights (up to seven), picks the night the moon is out of the
+              way, and says how often each site has been clear in this month in
+              past years.
             </p>
             <p>
               For walks it ranks Walkhighlands routes near the point by the days
               a dry, calm daylight slot fits the walk, and links to each route.
+              Ask about a walk by name or a particular day.
             </p>
           </div>
           <dl class="spec">

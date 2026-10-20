@@ -4,6 +4,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
 	_ "time/tzdata" // the image ships no zoneinfo; nights are Scottish local dates
 )
 
@@ -39,17 +41,31 @@ type WindowsQuery struct {
 	RadiusKm float64
 	Nights   int
 	Limit    int
+	// Night, when set, is the one night asked about (a NightDay); Nights is
+	// then 1. Zero means the nights from tonight.
+	Night int32
 	// Now is the query clock. Hours before the top of its hour are dropped,
 	// matching the monolith's read-time filter.
 	Now time.Time
 }
+
+// MoonlessMaxLit is the lit fraction below which the moon does not count:
+// a thin crescent barely brightens the sky.
+const MoonlessMaxLit = 0.1
 
 // NightWindow is one night's clear hours at a site.
 type NightWindow struct {
 	Night         string
 	ClearDark     int
 	ClearTwilight int
-	Hours         []Hour
+	// MoonlessDark counts clear-dark hours with the moon below the horizon
+	// or less than MoonlessMaxLit lit.
+	MoonlessDark int
+	// MoonLit is the moon's lit fraction at local midnight of the night.
+	MoonLit float64
+	Hours   []Hour
+	// MoonAlt is the moon's altitude in degrees at each of Hours.
+	MoonAlt []float32
 }
 
 // Climate is a site's climatology for one calendar month.
@@ -66,6 +82,7 @@ type Window struct {
 	ClearDark     int
 	ClearTwilight int
 	Nights        []NightWindow
+	MoonlessDark  int
 	Climate       *Climate
 }
 
@@ -96,9 +113,17 @@ func FirstNight(now time.Time) int32 {
 	return NightDay(now.Add(12*time.Hour - morningCutover))
 }
 
+// First is the query's first night.
+func (q WindowsQuery) First() int32 {
+	if q.Night != 0 {
+		return q.Night
+	}
+	return FirstNight(q.Now)
+}
+
 // NightNames lists the nights a query covers, starting with tonight.
 func (q WindowsQuery) NightNames() []string {
-	first := FirstNight(q.Now)
+	first := q.First()
 	names := make([]string, q.Nights)
 	for i := range names {
 		names[i] = NightName(first + int32(i))
@@ -129,7 +154,7 @@ func better(a, b *Window) bool {
 // nights, in the order defined by better.
 func (d *Dataset) Windows(q WindowsQuery) []Window {
 	names := q.NightNames()
-	first := FirstNight(q.Now)
+	first := q.First()
 	last := first + int32(q.Nights)
 	cutoff := q.Now.UTC().Truncate(time.Hour).Unix()
 	month := int(time.Unix(int64(first)*86400, 0).UTC().Month())
@@ -166,12 +191,22 @@ func (d *Dataset) Windows(q WindowsQuery) []Window {
 	})
 	windows := top
 
-	// Only the returned few pay for the per-night breakdown.
+	// The moon's phase is the same for every site; its altitude is not.
+	moonLit := make([]float64, len(names))
+	for j := range moonLit {
+		y, m, dd := time.Unix(int64(first+int32(j)+1)*86400, 0).UTC().Date()
+		moonLit[j] = astro.MoonAt(time.Date(y, m, dd, 0, 0, 0, 0, london)).Lit
+	}
+
+	// Only the returned few pay for the per-night breakdown, and they share
+	// one moon position per hour.
+	moons := map[int64]astro.Moon{}
 	for i := range windows {
 		w := &windows[i]
 		w.Nights = make([]NightWindow, len(names))
 		for j, n := range names {
 			w.Nights[j].Night = n
+			w.Nights[j].MoonLit = moonLit[j]
 		}
 		for _, h := range w.Site.Hours {
 			if h.Unix < cutoff || h.Night < first || h.Night >= last {
@@ -179,10 +214,21 @@ func (d *Dataset) Windows(q WindowsQuery) []Window {
 			}
 			nw := &w.Nights[h.Night-first]
 			nw.ClearTwilight++
+			moon, ok := moons[h.Unix]
+			if !ok {
+				moon = astro.MoonAt(time.Unix(h.Unix, 0))
+				moons[h.Unix] = moon
+			}
+			alt := moon.Altitude(w.Site.Lat, w.Site.Lon)
 			if h.Dark {
 				nw.ClearDark++
+				if alt < 0 || moon.Lit < MoonlessMaxLit {
+					nw.MoonlessDark++
+					w.MoonlessDark++
+				}
 			}
 			nw.Hours = append(nw.Hours, h)
+			nw.MoonAlt = append(nw.MoonAlt, float32(alt))
 		}
 		if w.Site.HasClimate {
 			w.Climate = &Climate{Month: month, ClearDark: w.Site.ClimateClear[month-1], Dark: w.Site.ClimateDark[month-1]}

@@ -75,8 +75,8 @@ keep a bounded top-k rather than sorting every candidate.
 Distances use a mid-latitude equirectangular approximation with
 precomputed cosines, which within the 150 km cap is well under 0.1 km from
 haversine. A worst-case query (150 km, 7 nights, 10 results) over a grid
-three times the real site density runs in about 0.6 ms on one core
-(`BenchmarkWindows`).
+three times the real site density runs in about 0.8 ms on one core
+(`BenchmarkWindows`), 0.1 ms of it the moon.
 
 **Why.** Reading Postgres would put a database credential and an egress path
 to CNPG in the namespace that takes public traffic, and make the database's
@@ -108,6 +108,13 @@ facts and a link to each walk's page, never the route description, maps or
 GPX, so the route itself stays on Walkhighlands. The snapshot leaves out the
 scraped `summary` prose for the same reason.
 
+**Why.** Answers lead with `best` (walks) and `best_night` (dark skies) and
+leave out hourly arrays unless `detail=hours`: an assistant asked "where and
+when" needs the answer first, and the hourly arrays were most of a walk
+answer (about 70% of its bytes). `walk_name` and `date` (`night` for dark
+skies) take the questions people ask, "is Ben Nevis on Saturday", without
+the assistant guessing coordinates or counting days.
+
 **Why.** Forecasts are at each walk's start, because that is what the hikes
 job fetches. Every answer says so in `meta.notes`, since summit conditions
 are colder and windier than the car park.
@@ -119,6 +126,20 @@ Reporting it as not doable would tell an assistant the weather is bad when
 there is no forecast. The horizon is the later of the fetch plus 48 hours
 and the last hour in the snapshot, both lower bounds, and a stale snapshot
 falls back to "no forecast" rather than "bad weather".
+
+## Moon
+
+`internal/astro` computes the moon's altitude and lit fraction from
+truncated lunar and solar series after Meeus; its tests hold it to PyEphem
+within 0.6 degrees and 0.01 (over 300 random Scottish samples the worst
+case was 0.52 degrees). The moon's sky position is computed once per hour
+per query and shared across sites. Each night reports the lit fraction and
+moonless clear-dark hours, and `best_night` prefers moonless hours.
+
+**Why.** Moonlight decides a stargazing night as much as cloud, and a
+computed moon needs no data source or licence. Site ranking stays on
+clear-dark hours: the moon is nearly the same for every site in a query, so
+it chooses the night, not the place.
 
 ## Contract
 
@@ -217,9 +238,9 @@ answer any request.
   `internal/meter`'s list. OpenAI publishes no comparable list yet; its
   traffic is per-IP.
 
-**Why.** A worst-case query costs about 0.6 ms of one core and the default
-one about 0.15 ms (measured through the HTTP handler on a production-sized
-grid), so the full assistant MCP budget across both Envoy replicas, about
+**Why.** A worst-case query costs about 0.8 ms of one core and the default
+one about 0.2 ms (measured through the HTTP handler on a production-sized
+grid before the moon added about 13%), so the full assistant MCP budget across both Envoy replicas, about
 400 requests a second on average, is a fraction of one core; a burst of the
 whole minute's budget queues briefly rather than failing. The ceiling is the shared
 hub (one core node, two Envoy replicas, the tunnel), not this service, and

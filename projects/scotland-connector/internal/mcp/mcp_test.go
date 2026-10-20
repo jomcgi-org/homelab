@@ -92,11 +92,16 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 	for _, tool := range Tools {
 		var s struct {
 			Properties map[string]struct {
-				Minimum *float64 `json:"minimum"`
-				Maximum *float64 `json:"maximum"`
-				Default *float64 `json:"default"`
+				Minimum   *float64 `json:"minimum"`
+				Maximum   *float64 `json:"maximum"`
+				Default   any      `json:"default"`
+				MaxLength *int     `json:"maxLength"`
+				Enum      []string `json:"enum"`
 			} `json:"properties"`
 			Required []string `json:"required"`
+			AnyOf    []struct {
+				Required []string `json:"required"`
+			} `json:"anyOf"`
 		}
 		if err := json.Unmarshal(tool.InputSchema, &s); err != nil {
 			t.Fatalf("%s: %v", tool.Name, err)
@@ -118,7 +123,7 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 		}
 		for name, want := range caps {
 			p := s.Properties[name]
-			if p.Maximum == nil || *p.Maximum != want[0] || p.Default == nil || *p.Default != want[1] {
+			if def, ok := p.Default.(float64); p.Maximum == nil || *p.Maximum != want[0] || !ok || def != want[1] {
 				t.Errorf("%s.%s = max %v default %v, code %v", tool.Name, name, p.Maximum, p.Default, want)
 			}
 		}
@@ -137,8 +142,21 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 				t.Errorf("%s.%s = min %v max %v, coverage %v", tool.Name, name, p.Minimum, p.Maximum, b)
 			}
 		}
-		if strings.Join(s.Required, ",") != "lat,lon" {
-			t.Errorf("%s required = %v", tool.Name, s.Required)
+		if d := s.Properties["detail"]; strings.Join(d.Enum, ",") != connector.DetailSummary+","+connector.DetailHours || d.Default != connector.DetailSummary {
+			t.Errorf("%s detail = %+v", tool.Name, d)
+		}
+		switch tool.Name {
+		case "dark_sky_windows":
+			if strings.Join(s.Required, ",") != "lat,lon" {
+				t.Errorf("%s required = %v", tool.Name, s.Required)
+			}
+		case "walk_windows":
+			if len(s.Required) != 0 || len(s.AnyOf) != 2 || strings.Join(s.AnyOf[0].Required, ",") != "lat,lon" || strings.Join(s.AnyOf[1].Required, ",") != "walk_name" {
+				t.Errorf("%s needs lat+lon or walk_name: %+v %+v", tool.Name, s.Required, s.AnyOf)
+			}
+			if p := s.Properties["walk_name"]; p.MaxLength == nil || *p.MaxLength != connector.MaxNameLength {
+				t.Errorf("walk_name maxLength = %v", p.MaxLength)
+			}
 		}
 	}
 }

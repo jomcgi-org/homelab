@@ -15,7 +15,7 @@
       "get": {
         "operationId": "dark_sky_windows",
         "summary": "Best dark-sky sites near a place for the next few nights",
-        "description": "Ranks dark-sky sites within radius_km of a point by forecast clear-dark hours (cloud < 10%, sun below -12 degrees) over the next `nights` nights, then by clear-twilight hours (sun below -10 degrees, the midsummer fallback), then darker light-pollution zone, then distance. Each site carries a per-night breakdown and its historical clear-sky odds for the month. Give the coordinates of the place the caller means.",
+        "description": "Ranks dark-sky sites within radius_km of a point by forecast clear-dark hours (cloud < 10%, sun below -12 degrees) over the next `nights` nights, then by clear-twilight hours (sun below -10 degrees, the midsummer fallback), then darker light-pollution zone, then distance. Each site carries a per-night breakdown and its historical clear-sky odds for the month. Give the coordinates of the place the caller means. Each site leads with best_night, the night with the most moonless clear-dark hours (moon below the horizon or under 10% lit).",
         "parameters": [
           {
             "name": "lat",
@@ -42,6 +42,12 @@
             }
           },
           {
+            "name": "night",
+            "in": "query",
+            "schema": { "type": "string", "format": "date" },
+            "description": "One night to ask about, named by its evening's date, within the next 7 nights. Use instead of nights."
+          },
+          {
             "name": "nights",
             "in": "query",
             "schema": {
@@ -61,6 +67,16 @@
               "maximum": 10,
               "default": 5
             }
+          },
+          {
+            "name": "detail",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["summary", "hours"],
+              "default": "summary"
+            },
+            "description": "summary (the default) leads with the best night or slot and leaves out hourly arrays; hours adds them."
           }
         ],
         "responses": {
@@ -84,21 +100,25 @@
       "get": {
         "operationId": "walk_windows",
         "summary": "Walks near a place that fit the weather over the next few days",
-        "description": "Ranks Walkhighlands walks whose start is within radius_km of a point by how many of the next `days` days hold a good-weather slot long enough for the walk's estimated time: daylight hours with at most 2 mm of rain and wind at most 80 km/h, one bad hour tolerated, and two hours of credit for walks over seven hours. Then by the earliest such day, then good hours, then distance. Weather is forecast at each walk's start. Each walk links to its Walkhighlands page, which has the route.",
+        "description": "Ranks Walkhighlands walks whose start is within radius_km of a point, or whose name matches walk_name, by how many of the next `days` days hold a good-weather slot long enough for the walk's estimated time: daylight hours with at most 2 mm of rain and wind at most 80 km/h, one bad hour tolerated, and two hours of credit for walks over seven hours. Then by the earliest such day, then good hours, then distance. Weather is forecast at each walk's start. Each walk links to its Walkhighlands page, which has the route. Each walk leads with best, its earliest doable day and slot.",
         "parameters": [
           {
             "name": "lat",
             "in": "query",
-            "required": true,
             "schema": { "type": "number", "minimum": 54.5, "maximum": 61.0 },
-            "description": "Latitude, decimal degrees. Rounded to 0.01."
+            "description": "Latitude, decimal degrees. Rounded to 0.01. Required unless walk_name is given."
           },
           {
             "name": "lon",
             "in": "query",
-            "required": true,
             "schema": { "type": "number", "minimum": -9.0, "maximum": -0.5 },
-            "description": "Longitude, decimal degrees. Rounded to 0.01."
+            "description": "Longitude, decimal degrees. Rounded to 0.01. Required unless walk_name is given."
+          },
+          {
+            "name": "walk_name",
+            "in": "query",
+            "schema": { "type": "string", "maxLength": 100 },
+            "description": "Words from a Walkhighlands walk name, for example Ben Nevis; accents optional. Without lat and lon, searches every walk."
           },
           {
             "name": "radius_km",
@@ -108,7 +128,14 @@
               "minimum": 1,
               "maximum": 100,
               "default": 30
-            }
+            },
+            "description": "Needs lat and lon."
+          },
+          {
+            "name": "date",
+            "in": "query",
+            "schema": { "type": "string", "format": "date" },
+            "description": "One UK day to ask about, up to 13 days ahead. Days past the hourly forecast come back with forecast_coverage none. Use instead of days."
           },
           {
             "name": "days",
@@ -142,6 +169,16 @@
             "in": "query",
             "schema": { "type": "integer", "minimum": 1, "maximum": 3000 },
             "description": "Only walks with at most this much ascent, in metres."
+          },
+          {
+            "name": "detail",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["summary", "hours"],
+              "default": "summary"
+            },
+            "description": "summary (the default) leads with the best night or slot and leaves out hourly arrays; hours adds them."
           }
         ],
         "responses": {
@@ -149,9 +186,7 @@
             "description": "Ranked walks.",
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WalkWindowsResponse"
-                }
+                "schema": { "$ref": "#/components/schemas/WalkWindowsResponse" }
               }
             }
           },
@@ -277,7 +312,12 @@
       },
       "Hour": {
         "type": "object",
-        "required": ["time", "cloud_area_fraction", "dark"],
+        "required": [
+          "time",
+          "cloud_area_fraction",
+          "dark",
+          "moon_altitude_deg"
+        ],
         "properties": {
           "time": { "type": "string", "format": "date-time" },
           "cloud_area_fraction": {
@@ -287,6 +327,10 @@
           "dark": {
             "type": "boolean",
             "description": "Sun below -12 degrees; false means twilight (-12 to -10)."
+          },
+          "moon_altitude_deg": {
+            "type": "number",
+            "description": "The moon's altitude at the site; below zero it is set."
           }
         }
       },
@@ -296,15 +340,39 @@
           "night",
           "clear_dark_hours",
           "clear_twilight_hours",
-          "hours"
+          "moonless_clear_dark_hours",
+          "moon_illumination",
+          "clear_from",
+          "clear_until"
         ],
         "properties": {
           "night": { "type": "string", "format": "date" },
           "clear_dark_hours": { "type": "integer" },
           "clear_twilight_hours": { "type": "integer" },
+          "moonless_clear_dark_hours": {
+            "type": "integer",
+            "description": "Clear-dark hours with the moon below the horizon or under 10% lit."
+          },
+          "moon_illumination": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Lit fraction of the moon at local midnight."
+          },
+          "clear_from": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Start of the first clear hour."
+          },
+          "clear_until": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "End of the last clear hour; the hours between may have gaps."
+          },
           "hours": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/Hour" }
+            "items": { "$ref": "#/components/schemas/Hour" },
+            "description": "Only with detail=hours."
           }
         }
       },
@@ -319,7 +387,9 @@
           "light_pollution_zone",
           "clear_dark_hours",
           "clear_twilight_hours",
+          "moonless_clear_dark_hours",
           "forecast_hours_truncated",
+          "best_night",
           "nights",
           "climatology"
         ],
@@ -332,7 +402,15 @@
           "light_pollution_zone": { "type": "string" },
           "clear_dark_hours": { "type": "integer" },
           "clear_twilight_hours": { "type": "integer" },
+          "moonless_clear_dark_hours": { "type": "integer" },
           "forecast_hours_truncated": { "type": "boolean" },
+          "best_night": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/Night" },
+              { "type": "null" }
+            ],
+            "description": "The night with the most moonless clear-dark hours, then clear-dark, then clear-twilight; null if none is clear."
+          },
           "nights": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/Night" }
@@ -367,13 +445,22 @@
             "properties": {
               "query": {
                 "type": "object",
-                "required": ["lat", "lon", "radius_km", "nights", "limit"],
+                "required": [
+                  "lat",
+                  "lon",
+                  "radius_km",
+                  "nights",
+                  "limit",
+                  "detail"
+                ],
                 "properties": {
                   "lat": { "type": "number" },
                   "lon": { "type": "number" },
                   "radius_km": { "type": "number" },
                   "nights": { "type": "integer" },
-                  "limit": { "type": "integer" }
+                  "limit": { "type": "integer" },
+                  "night": { "type": "string", "format": "date" },
+                  "detail": { "enum": ["summary", "hours"] }
                 }
               },
               "darkness_mode": { "enum": ["astronomical", "twilight", "none"] },
@@ -409,8 +496,7 @@
           "forecast_coverage",
           "doable",
           "good_hours",
-          "best_slot",
-          "hours"
+          "best_slot"
         ],
         "properties": {
           "date": { "type": "string", "format": "date" },
@@ -424,17 +510,15 @@
           },
           "good_hours": { "type": "integer" },
           "best_slot": {
-            "type": ["object", "null"],
-            "required": ["start", "end", "good_hours"],
-            "properties": {
-              "start": { "type": "string", "format": "date-time" },
-              "end": { "type": "string", "format": "date-time" },
-              "good_hours": { "type": "integer" }
-            }
+            "oneOf": [
+              { "$ref": "#/components/schemas/WalkSlot" },
+              { "type": "null" }
+            ]
           },
           "hours": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/WalkHour" }
+            "items": { "$ref": "#/components/schemas/WalkHour" },
+            "description": "Only with detail=hours."
           }
         }
       },
@@ -446,11 +530,11 @@
           "url",
           "start_lat",
           "start_lon",
-          "from_point_km",
           "length_km",
           "ascent_m",
           "duration_h",
           "doable_days",
+          "best",
           "days"
         ],
         "properties": {
@@ -463,11 +547,32 @@
           },
           "start_lat": { "type": "number" },
           "start_lon": { "type": "number" },
-          "from_point_km": { "type": "number" },
+          "from_point_km": {
+            "type": "number",
+            "description": "Only when lat and lon were given."
+          },
           "length_km": { "type": "number" },
           "ascent_m": { "type": "integer" },
           "duration_h": { "type": "number" },
           "doable_days": { "type": "integer" },
+          "best": {
+            "oneOf": [
+              {
+                "allOf": [
+                  { "$ref": "#/components/schemas/WalkSlot" },
+                  {
+                    "type": "object",
+                    "required": ["date"],
+                    "properties": {
+                      "date": { "type": "string", "format": "date" }
+                    }
+                  }
+                ]
+              },
+              { "type": "null" }
+            ],
+            "description": "The earliest doable day and its slot; null if none."
+          },
           "days": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/WalkDay" }
@@ -484,15 +589,18 @@
             "properties": {
               "query": {
                 "type": "object",
-                "required": ["lat", "lon", "radius_km", "days", "limit"],
+                "required": ["days", "limit", "detail"],
                 "properties": {
                   "lat": { "type": "number" },
                   "lon": { "type": "number" },
+                  "walk_name": { "type": "string" },
                   "radius_km": { "type": "number" },
+                  "date": { "type": "string", "format": "date" },
                   "days": { "type": "integer" },
                   "limit": { "type": "integer" },
                   "max_duration_h": { "type": "number" },
-                  "max_ascent_m": { "type": "integer" }
+                  "max_ascent_m": { "type": "integer" },
+                  "detail": { "enum": ["summary", "hours"] }
                 }
               },
               "days": {
@@ -507,6 +615,27 @@
             }
           },
           "meta": { "$ref": "#/components/schemas/Meta" }
+        }
+      },
+      "WalkSlot": {
+        "type": "object",
+        "required": [
+          "start",
+          "end",
+          "good_hours",
+          "max_wind_kmh",
+          "total_precip_mm",
+          "min_temp_c",
+          "max_temp_c"
+        ],
+        "properties": {
+          "start": { "type": "string", "format": "date-time" },
+          "end": { "type": "string", "format": "date-time" },
+          "good_hours": { "type": "integer" },
+          "max_wind_kmh": { "type": "number" },
+          "total_precip_mm": { "type": "number" },
+          "min_temp_c": { "type": "number" },
+          "max_temp_c": { "type": "number" }
         }
       }
     }

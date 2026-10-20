@@ -22,6 +22,17 @@ local and the coming evening's after that.
 **Ranking** is clear-dark hours over the requested nights, then clear-twilight
 hours, then darker light-pollution zone, then distance.
 
+**The moon.** Each night carries the moon's lit fraction at local midnight,
+and each clear hour (with `detail=hours`) the moon's altitude at the site. A
+clear-dark hour is **moonless** when the moon is below the horizon or under
+10% lit. Positions come from truncated lunar and solar series after Meeus
+(Astronomical Algorithms), within about half a degree of a full ephemeris.
+
+**Best night** is the night with the most moonless clear-dark hours, then the
+most clear-dark hours, then the most clear-twilight hours, earliest first.
+`clear_from` and `clear_until` bound a night's clear hours, which may have
+gaps.
+
 **Clear-sky odds** are the share of dark hours that were clear in that
 calendar month over the Copernicus CERRA reanalysis record.
 
@@ -55,6 +66,21 @@ Days are UK calendar days, starting today.
 
 **Ranking** is doable days, then the earliest doable day, then good hours,
 then distance from the requested point to the walk's start.
+
+**By name.** `walk_name` matches Walkhighlands walk names, ignoring case,
+accents and apostrophes: every word given must start a word of the name. A
+name that starts with the whole query ranks first. Without `lat` and `lon`
+every walk is searched.
+
+**Best** is a walk's earliest doable day, with its slot and the highest wind,
+total rain and temperature range across the slot's good hours. `date` asks
+about one day up to 13 days ahead; past the hourly forecast that day comes
+back with `forecast_coverage` `none`.
+
+## Detail
+
+Answers lead with the best night or slot and leave out hourly arrays.
+`detail=hours` adds every clear hour (dark skies) or good hour (walks).
 
 ## Places
 

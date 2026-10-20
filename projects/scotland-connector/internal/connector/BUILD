@@ -18,6 +18,7 @@ go_test(
     name = "connector_test",
     srcs = [
         "connector_test.go",
+        "shape_test.go",
         "walks_test.go",
     ],
     deps = [

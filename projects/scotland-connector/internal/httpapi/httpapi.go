@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -130,6 +131,7 @@ func (h *Handler) darkSkyWindows(w http.ResponseWriter, r *http.Request) {
 	p.RadiusKm, err = floatParam(q.Get("radius_km"), "radius_km", err)
 	p.Nights, err = intParam(q.Get("nights"), "nights", err)
 	p.Limit, err = intParam(q.Get("limit"), "limit", err)
+	p.Night, p.Detail = strParam(q, "night"), strParam(q, "detail")
 	var env *connector.Envelope
 	if err == nil {
 		env, err = h.svc.DarkSkyWindows(p)
@@ -149,11 +151,21 @@ func (h *Handler) walkWindows(w http.ResponseWriter, r *http.Request) {
 	p.Limit, err = intParam(q.Get("limit"), "limit", err)
 	p.MaxDurationH, err = floatParam(q.Get("max_duration_h"), "max_duration_h", err)
 	p.MaxAscentM, err = intParam(q.Get("max_ascent_m"), "max_ascent_m", err)
+	p.WalkName, p.Date, p.Detail = strParam(q, "walk_name"), strParam(q, "date"), strParam(q, "detail")
 	var env *connector.Envelope
 	if err == nil {
 		env, err = h.svc.WalkWindows(p)
 	}
 	h.respond(w, r, "walk_windows", start, env, err)
+}
+
+// strParam is nil for an absent parameter, so the service applies its default.
+func strParam(q url.Values, name string) *string {
+	if !q.Has(name) {
+		return nil
+	}
+	v := q.Get(name)
+	return &v
 }
 
 func floatParam(raw, name string, prev error) (*float64, error) {
