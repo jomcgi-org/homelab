@@ -14,7 +14,8 @@ pillow>=12.2.0
 # `Update Python requirements` is filtered to `files: pyproject\.toml$`, so a
 # floor raised here stays inert until `bazel run //bazel/requirements:runtime`
 # and `:requirements.all` are run by hand.
-aiohttp>=3.14.3
+# GHSA-2g87-pp6c-29x5 and GHSA-5wr8-gcqf-gqf3 are fixed in 3.14.4.
+aiohttp>=3.14.4
 authlib>=1.6.12
 cryptography>=50.0.0
 idna>=3.15
