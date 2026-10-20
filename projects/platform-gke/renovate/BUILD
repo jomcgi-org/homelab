@@ -1,4 +1,4 @@
-# The chart package owns GKE rendering and the focused migration contract test.
+# The chart package owns hub rendering and its deployment contract test.
 # Keep this package as data-only so Gazelle does not create a duplicate render.
 # gazelle:argocd disabled
 filegroup(

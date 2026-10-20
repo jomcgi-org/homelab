@@ -38,17 +38,26 @@ argocd_app(
     ],
 )
 
-# The generic Helm template target proves only that each overlay is valid YAML.
-# This focused test pins the migration's single-writer staging contract across
-# the chart, both cluster Applications, enrollment, and this build graph.
 py_test(
-    name = "migration_staging_test",
-    srcs = ["migration_staging_test.py"],
+    name = "dependency_policy_test",
+    srcs = ["dependency_policy_test.py"],
+    args = ["$(rootpath dependency_policy_test.py)"],
+    data = [
+        "templates/apko-lock-script.yaml",
+        "//:renovate.json",
+    ],
+)
+
+# Pin effective suspension, credential references and the hub enrollment path.
+py_test(
+    name = "hub_deployment_test",
+    srcs = ["hub_deployment_test.py"],
+    # The chart filegroup includes sibling tests; collect only this suite.
+    args = ["$(rootpath hub_deployment_test.py)"],
     data = [
         "BUILD",
         ":chart",
-        "//:renovate.json",
-        "//projects:renovate_enrollment_manifests",
+        "//projects:hub_renovate_enrollment_manifests",
         "//projects/platform-gke/renovate:manifests",
         "@multitool//tools/helm",
     ],

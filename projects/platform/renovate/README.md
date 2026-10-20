@@ -1,25 +1,26 @@
 # Renovate
 
-Renovate runs as a daily Argo `CronWorkflow` in `monolith-workflows`. The home
-cluster remains the active writer while the GKE hub deployment is staged. The
-hub Application loads `values.yaml` and then `values-gke.yaml`, which renders
-both the Renovate scan and apko lock maintenance CronWorkflows with
-`spec.suspend: true`. Merging that enrollment creates no second scheduled
-writer. The home Application still loads only `values.yaml`, so its existing
-writers remain active until the operator-controlled cutover.
+The GKE hub is the sole intended deployment for Renovate and apko lock
+maintenance in `monolith-workflows`. Both schedules are presently suspended:
+the hub Application loads `values.yaml` followed by `values-gke.yaml`, which
+sets both effective `spec.suspend` values to `true`.
 
-The repository configuration keeps ordinary dependency PR creation inside the
-Monday maintenance window. Running the workflow daily means one transient
-failure does not delay updates for a full week.
+Issue #7068 removes the retired home enrollment and cutover scaffolding while
+keeping the hub default-off. Credential and identity verification, enablement,
+and scheduled-run acceptance remain outstanding. Enablement overlaps #7001
+and needs separately authorized ownership reconciliation before either flag
+changes. This repository cleanup does not establish that dependency updates run.
 
 ## GitHub credential
 
-Before merging this deployment, create a secure-note item named
-`renovate-github` in the `k8s-homelab` 1Password vault. Add a concealed field
-named `RENOVATE_TOKEN` containing a fine-grained token for the dedicated bot
-identity, scoped only to `jomcgi/homelab`.
+`templates/onepassworditem.yaml` declares a `OnePasswordItem` named
+`renovate-github` at `vaults/k8s-homelab/items/renovate-github`. Both
+CronWorkflow templates consume the `RENOVATE_TOKEN` key of the
+`renovate-github` Secret through `secretKeyRef`. The apko script uses that token
+for Git and the GitHub API. There is no App-token minting implementation here.
 
-The token needs these repository permissions:
+The intended, unverified repository permission contract for the dedicated
+identity is:
 
 - Contents: read and write
 - Commit statuses: read and write
@@ -27,22 +28,29 @@ The token needs these repository permissions:
 - Pull requests: read and write
 - Workflows: read and write
 
-It also needs read-only organization member access. Workflow permission lets the
-GitHub Actions manager update checked-in workflows.
+Read-only organization member access is also required. Workflows write lets
+the GitHub Actions manager update checked-in workflows.
 
-The 1Password Operator materializes the item as the `renovate-github` Secret.
-Renovate reads only its `RENOVATE_TOKEN` field.
+The Renovate template and apko script still target `jomcgi/homelab`; the hub
+Application reads configuration from `jomcgi-org/homelab`. A separately
+authorized operator must verify Secret materialization and the dedicated
+GitHub bot/App identity's intended repository access without disclosing Secret
+contents. This cleanup neither verifies nor changes those credentials or
+external-account settings.
 
 ## Operations
 
-The schedule is 04:00 America/Vancouver every day. Concurrent runs are
+The configured Renovate schedule is 04:00 America/Vancouver every day.
+`renovate.json` limits ordinary PR creation to before 06:00 on Monday in the
+same timezone; vulnerability alerts have an any-time exception. Both hub
+schedules remain suspended. When enabled, concurrent runs are
 forbidden, each run has a two-hour deadline, failed runs retry twice, successful
 pods are removed promptly, and failed workflow state remains available for one
 day.
 
-The main Renovate scan requests and limits memory at 4 GiB. The repository has
-more than 500 extracted dependencies, and a 2 GiB limit was repeatedly killed
-during registry metadata resolution.
+The main Renovate scan requests and limits memory at 4 GiB. Scans of more than
+500 extracted dependencies were repeatedly OOM-killed at a 2 GiB limit during
+registry metadata resolution.
 
 Package lifecycle scripts and plugins are disabled. Two repository-owned
 maintenance commands are explicitly allowlisted: wrapper chart version bumps
@@ -55,65 +63,46 @@ Auto-merge and platform auto-merge are disabled for every update type in
 creation grants no merge authority; dependency updates require adversarial
 review and separately authorized merging.
 
-Monolith stages `factory/dependency-evidence` off by default. It compares
-independent assessments against server-fetched PR and queue-base evidence,
-including file blobs, dependency changes and open advisories. Bot identities
-and `renovate/` branches force evidence without granting approval. See the
-activation checklist in `projects/monolith/factory/orchestration/FACTORY.md`:
-dedicated App token delivery, explicit enablement, PR/merge-group canaries,
-App-pinned ruleset 9180009, stale/advisory refusal, unapproved auto-merge refusal,
-BuildBuddy same-repository credential isolation and a dedicated Renovate author.
-The author intake list stays empty and factory dependency landing stays refused.
-No credentials, account settings or deployed flags are changed here. Existing
-PRs with auto-merge armed need a separate operator audit.
+Factory dependency intake has its own activation checklist in
+`projects/monolith/factory/orchestration/FACTORY.md`. This cleanup does not
+enable dependency landing or change its approval requirements.
 
-## GKE staged cutover
+## Repository checks
 
-Repository preflight is non-writing. Render the home chart with `values.yaml`,
-the hub chart with `values.yaml` followed by `values-gke.yaml`, and the future
-home cutover state with `values.yaml` followed by
-`values-home-suspend.yaml`. The focused `migration_staging_test.py` asserts the
-effective `spec.suspend` values, not just the overlay filenames. An operator may
-also inspect the hub Application, its suspended CronWorkflows, and the existing
-`OnePasswordItem` and Secret materialization. Those checks do not establish
-that either writer can complete its GitHub work.
+`hub_deployment_test.py` follows the configured hub root to the Renovate
+Application, checks the values overlay order, and renders both effective hub
+suspension flags and the existing credential references. The base render with
+`values.yaml` remains a build input without a deployment enrollment.
+`dependency_policy_test.py` preserves chart exclusions, upstream eligibility,
+manager labels, and the unconditional auto-merge prohibitions.
 
-The live handoff is deliberately separate from this staged merge:
+Linux renders and CI provide repository evidence only.
 
-1. Confirm the hub Application is healthy, both hub CronWorkflows are suspended,
-   and the home CronWorkflows remain active. Inspect both clusters for active
-   Workflows and wait for every run to finish. Setting `suspend` does not stop a
-   Workflow that is already running.
-2. During the staged overlap, audit both clusters' workflow history and confirm
-   that no hub writer fired. The hub's effective suspended values make this a
-   bounded staging check, not evidence that its GitHub writes work and not a
-   claim of exactly-once execution.
-3. At the operator-controlled cutover, make a reviewed repository change that
-   adds `values-home-suspend.yaml` after `values.yaml` in the home
-   `application.yaml`. Wait for the home Application to reconcile, wait for any
-   already-active home Workflow to finish, and verify both home CronWorkflows
-   remain suspended. Keep both hub CronWorkflows suspended throughout this step.
-4. Only after the home suspension is effective, make a separate reviewed change
-   that sets both fields in `values-gke.yaml` to `false`. After the hub
-   reconciles, wait for the scheduled hub Renovate scan to complete and surface
-   its result and for scheduled hub apko maintenance to complete and open or
-   update its maintenance PR. Manual rendering, sync, or suspension checks are
-   not substitutes for those scheduled writing checks. Keep Renovate dashboard
-   issue #4493 open.
+## Outstanding acceptance
 
-If hub verification fails, restore both hub fields to `true` and wait for any
-active hub Workflow to finish before removing the home overlay in another
-reviewed change. This ordering always establishes one suspended side before
-enabling the other; it does not terminate in-flight work.
+Keep #7068 open until separately authorized operational work records:
 
-Issue #6247 retains the operational acceptance for the scheduled hub scan, the
-scheduled apko maintenance PR, and the duplicate-writer audit plus durable home
-suspension. The home enrollment stays in place until that acceptance is complete
-and any later home-cluster retirement is separately authorized.
+- Ownership reconciliation with #7001, identifying which reviewed PR owns the
+  suspension flip, and current evidence of no retired home or competing writer.
+  Record active runs and any limits in available workflow history.
+- Hub `renovate` Application health, `renovate-github` OnePasswordItem sync and
+  Secret materialization, and dedicated GitHub identity verification without
+  disclosing credentials.
+- A subsequent reviewed enablement and verified rollout with both effective
+  hub `spec.suspend` values `false` and no competing or overlapping writer.
+- A successful scheduled Renovate scan and resulting dependency PR evidence
+  under the dedicated identity during the configured Monday PR window.
+- A successful scheduled apko maintenance run and its PR, with auto-merge
+  still disabled. Record workflow identities, timestamps, and PR evidence for
+  both scheduled runs.
+
+Changing `suspend` does not terminate an already-running Workflow. No live
+acceptance check is established by this cleanup.
 
 ## apko lock maintenance
 
-A second CronWorkflow runs at 01:00 America/Vancouver each Monday. It regenerates
+A second CronWorkflow is configured for 01:00 America/Vancouver each Monday
+and is also suspended on the hub. When enabled, it regenerates
 every committed `apko.lock.json` on Linux through the repository's pinned
 `rules_apko` toolchain, runs the committed-artifact generators, and maintains a
 single `renovate/apko-lock-maintenance` PR. The script opens or updates the PR
