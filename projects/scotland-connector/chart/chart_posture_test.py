@@ -23,6 +23,11 @@ _MONOLITH_PUBLIC_VALUES = Path(
         _CHART_DIR.parent.parent / "monolith-public" / "chart" / "values.yaml",
     )
 )
+# Carried by :gateway_test_inputs, so it sits at the same relative path in
+# Bazel runfiles as in the repository.
+_GATEWAY_VALUES = (
+    _CHART_DIR.parent.parent / "platform" / "cloudflare-gateway" / "values.yaml"
+)
 _ROUTE_ON = ["route.enabled=true", "route.hostname=connector.example.test"]
 
 
@@ -231,3 +236,19 @@ def test_hpa_owns_replicas_with_a_floor_of_two() -> None:
         == _one(docs, "Deployment")["metadata"]["name"]
     )
     assert _one(docs, "PodDisruptionBudget")["spec"]["maxUnavailable"] == 1
+
+
+def test_gateway_raises_the_routes_descriptor_cap() -> None:
+    # The per-client limit only holds if the gateway raises this route's
+    # max_dynamic_descriptors; Envoy Gateway accepts a patch whose jsonPath
+    # matches nothing, so a renamed route would silently fall back to 20.
+    route = _one(_render(["route.enabled=true"]), "HTTPRoute")
+    gateway = yaml.safe_load(_GATEWAY_VALUES.read_text())
+    entries = [
+        e
+        for e in gateway["gateway"]["publicRateLimitRoutes"]
+        if e["routeNamespace"] == route["metadata"]["namespace"]
+        and e["routeName"] == route["metadata"]["name"]
+    ]
+    assert len(entries) == 1, "no publicRateLimitRoutes entry for this route"
+    assert entries[0]["maxDynamicDescriptors"] >= 10000
