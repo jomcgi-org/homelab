@@ -243,11 +243,13 @@ func (q Query) FirstDay() int32 {
 var folds = strings.NewReplacer(
 	"à", "a", "á", "a", "â", "a", "ä", "a", "è", "e", "é", "e", "ê", "e", "ë", "e",
 	"ì", "i", "í", "i", "î", "i", "ï", "i", "ò", "o", "ó", "o", "ô", "o", "ö", "o",
-	"ù", "u", "ú", "u", "û", "u", "ü", "u", "ç", "c", "’", "'",
+	"ù", "u", "ú", "u", "û", "u", "ü", "u", "ç", "c", "ß", "ss", "ø", "o", "æ", "ae",
 )
 
 // Normalize lowercases, folds accents and turns everything but letters and
-// digits into single spaces.
+// digits into single spaces. Apostrophes separate words, so "a'Chearcaill"
+// and "a' Chearcaill" both read "a chearcaill"; combining accents (a name
+// stored decomposed) are dropped.
 func Normalize(s string) string {
 	s = folds.Replace(strings.ToLower(s))
 	var b strings.Builder
@@ -257,8 +259,8 @@ func Normalize(s string) string {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 			b.WriteRune(r)
 			space = false
-		case r == '\'':
-			// Apostrophes join: "a' Chearcaill" and "a Chearcaill" both match.
+		case r >= 0x0300 && r <= 0x036f:
+			// A combining accent: keep the letter it marks, drop the mark.
 		default:
 			if !space {
 				b.WriteByte(' ')

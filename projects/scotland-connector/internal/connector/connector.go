@@ -40,6 +40,9 @@ const (
 	MaxWalkDurationH = 24
 	MaxWalkAscentM   = 3000
 	MaxNameLength    = 100
+	// MaxWalkDateAhead is how far ahead a walk date may be asked about. Days
+	// past the hourly forecast come back with forecast_coverage "none".
+	MaxWalkDateAhead = 13
 )
 
 // Detail levels. Summary answers lead with the best night or slot and leave
@@ -319,7 +322,7 @@ func darkSkyQuery(p DarkSkyParams, now time.Time) (q DarkSkyQuery, night int32, 
 	if q.Detail, err = detail(p.Detail); err != nil {
 		return q, 0, err
 	}
-	if p.Night != nil {
+	if p.Night != nil && strings.TrimSpace(*p.Night) != "" {
 		if p.Nights != nil {
 			return q, 0, &ParamError{"night", "pass night or nights, not both"}
 		}
@@ -346,7 +349,7 @@ func darkSkyCaps(p DarkSkyParams, q DarkSkyQuery) (DarkSkyQuery, error) {
 		}
 		q.RadiusKm = round(r, 1)
 	}
-	if p.Nights != nil && p.Night == nil {
+	if p.Nights != nil && q.Night == "" {
 		if *p.Nights < 1 || *p.Nights > MaxNights {
 			return q, &ParamError{"nights", fmt.Sprintf("between 1 and %d", MaxNights)}
 		}
@@ -386,19 +389,29 @@ func nightOut(n stars.NightWindow, hours bool) NightOut {
 	return no
 }
 
-// bestNight is the night to go: most moonless clear-dark hours, then most
-// clear-dark, then most clear-twilight (the midsummer fallback), earliest
-// first. Nil when no night has a clear hour.
-func bestNight(nights []stars.NightWindow) *stars.NightWindow {
+// darkScore weighs a night's clear-dark hours by the moon: a moonless hour
+// counts 1 and a moonlit one 1 minus the moon's lit fraction, so a long
+// clear night under a thin crescent beats one moonless hour, and a short
+// moonless night beats a long one under a full moon.
+func darkScore(n *stars.NightWindow) float64 {
+	return float64(n.MoonlessDark) + float64(n.ClearDark-n.MoonlessDark)*(1-n.MoonLit)
+}
+
+// BestNight is the night to go: the highest darkScore, then most
+// clear-twilight hours (the midsummer fallback), earliest first. Nil when no
+// night has a clear hour.
+func BestNight(nights []stars.NightWindow) *stars.NightWindow {
 	var best *stars.NightWindow
 	for i := range nights {
 		n := &nights[i]
 		if n.ClearTwilight == 0 {
 			continue
 		}
-		if best == nil || n.MoonlessDark > best.MoonlessDark ||
-			(n.MoonlessDark == best.MoonlessDark && (n.ClearDark > best.ClearDark ||
-				(n.ClearDark == best.ClearDark && n.ClearTwilight > best.ClearTwilight))) {
+		if best == nil {
+			best = n
+			continue
+		}
+		if a, b := darkScore(n), darkScore(best); a > b+1e-9 || (math.Abs(a-b) <= 1e-9 && n.ClearTwilight > best.ClearTwilight) {
 			best = n
 		}
 	}
@@ -439,7 +452,7 @@ func (s *Service) DarkSkyWindows(p DarkSkyParams) (*Envelope, error) {
 		for i, n := range w.Nights {
 			out.Nights[i] = nightOut(n, hours)
 		}
-		if b := bestNight(w.Nights); b != nil {
+		if b := BestNight(w.Nights); b != nil {
 			bn := nightOut(*b, false)
 			out.BestNight = &bn
 		}
@@ -455,7 +468,7 @@ func (s *Service) DarkSkyWindows(p DarkSkyParams) (*Envelope, error) {
 	}
 	meta := s.meta(ds, now, []Source{sourceMET, sourceCERRA, sourceOSM, sourceNaturalEarth})
 	meta.Notes = append(meta.Notes,
-		"best_night is each site's night with the most moonless clear-dark hours (moon below the horizon or under 10% lit); pass detail=hours for each clear hour with the moon's altitude.")
+		"best_night is each site's darkest clear night: clear-dark hours with the moon set count fully, moonlit ones by how little of the moon is lit. Pass detail=hours for each clear hour with the moon's altitude.")
 	if truncated {
 		meta.Notes = append(meta.Notes, "Some sites have more clear hours than the snapshot lists; their later nights may be undercounted (forecast_hours_truncated).")
 	}

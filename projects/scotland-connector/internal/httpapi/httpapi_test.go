@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -153,9 +154,10 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 		Paths map[string]map[string]struct {
 			OperationID string `json:"operationId"`
 			Parameters  []struct {
-				Name     string `json:"name"`
-				Required bool   `json:"required"`
-				Schema   struct {
+				Name        string `json:"name"`
+				Required    bool   `json:"required"`
+				Description string `json:"description"`
+				Schema      struct {
 					Minimum   *float64 `json:"minimum"`
 					Maximum   *float64 `json:"maximum"`
 					Default   any      `json:"default"`
@@ -213,6 +215,12 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			}
 			if p.Name == "walk_name" && (p.Schema.MaxLength == nil || *p.Schema.MaxLength != connector.MaxNameLength) {
 				t.Errorf("spec walk_name = %+v", p.Schema)
+			}
+			if p.Name == "date" && !strings.Contains(p.Description, fmt.Sprintf("up to %d days ahead", connector.MaxWalkDateAhead)) {
+				t.Errorf("spec date description %q does not match the code's window", p.Description)
+			}
+			if p.Name == "night" && !strings.Contains(p.Description, fmt.Sprintf("within the next %d nights", connector.MaxNights)) {
+				t.Errorf("spec night description %q does not match the code's window", p.Description)
 			}
 			if p.Name == "detail" && p.Schema.Default != connector.DetailSummary {
 				t.Errorf("%s spec detail default = %v", path, p.Schema.Default)

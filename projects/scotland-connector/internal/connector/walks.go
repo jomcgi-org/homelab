@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
@@ -126,10 +127,6 @@ type WalkWindowsResult struct {
 	Walks []WalkOut `json:"walks"`
 }
 
-// walkDateAhead is how far ahead a date may be asked about. Days past the
-// hourly forecast come back with forecast_coverage "none".
-const walkDateAhead = 13
-
 type walkPlan struct {
 	out   WalkQuery
 	query walks.Query
@@ -139,9 +136,9 @@ type walkPlan struct {
 func walkQuery(p WalkWindowsParams, now time.Time) (walkPlan, error) {
 	plan := walkPlan{out: WalkQuery{Days: DefaultWalkDays, Limit: DefaultLimit}}
 	q := &plan.out
-	if p.WalkName != nil {
+	if p.WalkName != nil && strings.TrimSpace(*p.WalkName) != "" {
 		name := strings.TrimSpace(*p.WalkName)
-		if len(name) > MaxNameLength {
+		if utf8.RuneCountInString(name) > MaxNameLength {
 			return plan, &ParamError{"walk_name", fmt.Sprintf("at most %d characters", MaxNameLength)}
 		}
 		if plan.query.Name = walks.Normalize(name); plan.query.Name == "" {
@@ -150,11 +147,11 @@ func walkQuery(p WalkWindowsParams, now time.Time) (walkPlan, error) {
 		q.WalkName = name
 	}
 	if p.Lat != nil || p.Lon != nil || plan.query.Name == "" {
+		if p.Lat == nil && p.Lon == nil {
+			return plan, &ParamError{"lat", "lat and lon (decimal degrees) are required, or a walk_name"}
+		}
 		lat, lon, err := coordinates(p.Lat, p.Lon)
 		if err != nil {
-			if plan.query.Name == "" {
-				err = &ParamError{"lat", "lat and lon (decimal degrees) are required, or a walk_name"}
-			}
 			return plan, err
 		}
 		radius := float64(DefaultWalkRadiusKm)
@@ -171,11 +168,11 @@ func walkQuery(p WalkWindowsParams, now time.Time) (walkPlan, error) {
 		return plan, &ParamError{"radius_km", "needs lat and lon"}
 	}
 	today := walks.LocalDay(now)
-	if p.Date != nil {
+	if p.Date != nil && strings.TrimSpace(*p.Date) != "" {
 		if p.Days != nil {
 			return plan, &ParamError{"date", "pass date or days, not both"}
 		}
-		day, err := parseDay("date", *p.Date, today, today+walkDateAhead)
+		day, err := parseDay("date", *p.Date, today, today+MaxWalkDateAhead)
 		if err != nil {
 			return plan, err
 		}

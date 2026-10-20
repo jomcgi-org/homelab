@@ -39,8 +39,8 @@ var Tools = []Tool{
 			"Use this when someone asks where or when to go stargazing, see the Milky Way, or find dark, clear skies in Scotland, " +
 			"or whether a particular night (night=YYYY-MM-DD) will be any good. " +
 			"Ranks dark-sky sites (road-accessible, in the darkest light-pollution zones) by forecast clear-dark hours " +
-			"(cloud under 10%, sun more than 12 degrees below the horizon). Each site leads with best_night: the night with the most " +
-			"moonless clear-dark hours (moon below the horizon or under 10% lit), with its clear window and the moon's illumination; " +
+			"(cloud under 10%, sun more than 12 degrees below the horizon). Each site leads with best_night: its darkest clear night, " +
+			"counting clear-dark hours with the moon set in full and moonlit ones by how little of the moon is lit, with its clear window and the moon's illumination; " +
 			"then a short per-night breakdown and the site's historical clear-sky odds for the month. " +
 			"Pass detail=hours only if you need every clear hour with the moon's altitude. " +
 			"In midsummer, when Scotland gets no full darkness, clear_twilight_hours are the darkest available. " +
@@ -68,12 +68,13 @@ var Tools = []Tool{
 			"Use this when someone asks where to go walking or hillwalking in Scotland, whether a day suits a walk " +
 			"(date=YYYY-MM-DD, for example the coming Saturday), or whether a named walk is on (walk_name, for example \"Ben Nevis\"). " +
 			"Ranks Walkhighlands walks by how many days have a good-weather slot long enough for the walk's estimated time " +
-			"(daylight, at most 2 mm rain and wind at most 80 km/h per hour, one bad hour tolerated), then the earliest such day, then distance. " +
+			"(daylight, at most 2 mm rain and wind at most 80 km/h per hour, one bad hour tolerated), then the earliest such day, then distance; " +
+			"with a walk_name, names that start with it come first. " +
 			"Each walk leads with best: its earliest doable day and slot with the wind, rain and temperature in it, " +
 			"then its Walkhighlands url, start point, length, ascent and time, and a short per-day summary. " +
 			"Each day says how much of it the hourly forecast covers (about two and a half days ahead); doable is null when it cannot decide. " +
 			"Weather is forecast at the walk's start, not on summits; send people to the url for the route. " +
-			"Give lat and lon in decimal degrees, or a walk_name, or both. Scotland only.",
+			"Give lat and lon in decimal degrees, or a walk_name, or both: one of them is required. Scotland only.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -88,7 +89,6 @@ var Tools = []Tool{
     "max_ascent_m": {"type": "integer", "minimum": 1, "maximum": 3000, "description": "Only walks with at most this much ascent, in metres."},
     "detail": {"type": "string", "enum": ["summary", "hours"], "default": "summary", "description": "summary leads with best; hours adds the hourly weather."}
   },
-  "anyOf": [{"required": ["lat", "lon"]}, {"required": ["walk_name"]}],
   "additionalProperties": false
 }`),
 		Annotations: readOnly("Walk weather windows"),

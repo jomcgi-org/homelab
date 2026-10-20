@@ -7,7 +7,7 @@ import (
 )
 
 // Reference values from PyEphem 4.x (topocentric, no refraction). Over 300
-// random Scottish times and places the worst error was 0.52 deg in altitude
+// random Scottish times and places the worst error was 0.28 deg in altitude
 // and 0.003 in illumination.
 var reference = []struct {
 	place    string
@@ -45,7 +45,7 @@ func TestMoonMatchesEphem(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := MoonAltitude(at, r.lat, r.lon); math.Abs(got-r.alt) > 0.6 {
+		if got := MoonAltitude(at, r.lat, r.lon); math.Abs(got-r.alt) > 0.4 {
 			t.Errorf("%s %s altitude %.2f, ephem %.2f", r.place, r.at, got, r.alt)
 		}
 		if got := MoonIllumination(at); math.Abs(got-r.lit) > 0.01 {

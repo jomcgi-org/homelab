@@ -15,7 +15,7 @@
       "get": {
         "operationId": "dark_sky_windows",
         "summary": "Best dark-sky sites near a place for the next few nights",
-        "description": "Ranks dark-sky sites within radius_km of a point by forecast clear-dark hours (cloud < 10%, sun below -12 degrees) over the next `nights` nights, then by clear-twilight hours (sun below -10 degrees, the midsummer fallback), then darker light-pollution zone, then distance. Each site carries a per-night breakdown and its historical clear-sky odds for the month. Give the coordinates of the place the caller means. Each site leads with best_night, the night with the most moonless clear-dark hours (moon below the horizon or under 10% lit).",
+        "description": "Ranks dark-sky sites within radius_km of a point by forecast clear-dark hours (cloud < 10%, sun below -12 degrees) over the next `nights` nights, then by clear-twilight hours (sun below -10 degrees, the midsummer fallback), then darker light-pollution zone, then distance. Each site carries a per-night breakdown and its historical clear-sky odds for the month. Give the coordinates of the place the caller means. Each site leads with best_night, its darkest clear night: clear-dark hours with the moon set count fully, moonlit ones by how little of the moon is lit.",
         "parameters": [
           {
             "name": "lat",
@@ -372,7 +372,7 @@
           "hours": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/Hour" },
-            "description": "Only with detail=hours."
+            "description": "Only with detail=hours, and only in nights (never in best_night)."
           }
         }
       },
@@ -409,7 +409,7 @@
               { "$ref": "#/components/schemas/Night" },
               { "type": "null" }
             ],
-            "description": "The night with the most moonless clear-dark hours, then clear-dark, then clear-twilight; null if none is clear."
+            "description": "The night with the most moon-weighted clear-dark hours, then clear-twilight; null if none is clear. Never carries hours."
           },
           "nights": {
             "type": "array",

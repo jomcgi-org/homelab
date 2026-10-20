@@ -26,10 +26,12 @@ hours, then darker light-pollution zone, then distance.
 and each clear hour (with `detail=hours`) the moon's altitude at the site. A
 clear-dark hour is **moonless** when the moon is below the horizon or under
 10% lit. Positions come from truncated lunar and solar series after Meeus
-(Astronomical Algorithms), within about half a degree of a full ephemeris.
+(Astronomical Algorithms), within about a third of a degree of a full
+ephemeris.
 
-**Best night** is the night with the most moonless clear-dark hours, then the
-most clear-dark hours, then the most clear-twilight hours, earliest first.
+**Best night** is the night with the most moon-weighted clear-dark hours: a
+moonless hour counts 1, a moonlit one 1 minus the moon's lit fraction. Ties
+go to the most clear-twilight hours, then the earliest night.
 `clear_from` and `clear_until` bound a night's clear hours, which may have
 gaps.
 
@@ -84,9 +86,9 @@ Answers lead with the best night or slot and leave out hourly arrays.
 
 ## Places
 
-Queries take coordinates. Pass the latitude and longitude of the place the
-person means; they are rounded to 0.01 degrees (about 1 km), and anything
-outside Scotland is refused.
+Queries take coordinates, and walks also take a `walk_name`. Pass the
+latitude and longitude of the place the person means; they are rounded to
+0.01 degrees (about 1 km), and anything outside Scotland is refused.
 
 ## Freshness
 

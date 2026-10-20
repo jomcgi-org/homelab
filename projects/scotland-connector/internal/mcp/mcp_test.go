@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -92,11 +93,12 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 	for _, tool := range Tools {
 		var s struct {
 			Properties map[string]struct {
-				Minimum   *float64 `json:"minimum"`
-				Maximum   *float64 `json:"maximum"`
-				Default   any      `json:"default"`
-				MaxLength *int     `json:"maxLength"`
-				Enum      []string `json:"enum"`
+				Minimum     *float64 `json:"minimum"`
+				Maximum     *float64 `json:"maximum"`
+				Default     any      `json:"default"`
+				MaxLength   *int     `json:"maxLength"`
+				Enum        []string `json:"enum"`
+				Description string   `json:"description"`
 			} `json:"properties"`
 			Required []string `json:"required"`
 			AnyOf    []struct {
@@ -150,12 +152,20 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 			if strings.Join(s.Required, ",") != "lat,lon" {
 				t.Errorf("%s required = %v", tool.Name, s.Required)
 			}
+			if d := s.Properties["night"].Description; !strings.Contains(d, fmt.Sprintf("within the next %d nights", connector.MaxNights)) {
+				t.Errorf("dark_sky_windows.night description %q does not match the code's window", d)
+			}
 		case "walk_windows":
-			if len(s.Required) != 0 || len(s.AnyOf) != 2 || strings.Join(s.AnyOf[0].Required, ",") != "lat,lon" || strings.Join(s.AnyOf[1].Required, ",") != "walk_name" {
-				t.Errorf("%s needs lat+lon or walk_name: %+v %+v", tool.Name, s.Required, s.AnyOf)
+			// lat+lon or walk_name is enforced in code: the Messages API
+			// rejects a combinator at the root of a tool's input schema.
+			if len(s.Required) != 0 || len(s.AnyOf) != 0 {
+				t.Errorf("%s: no root required or anyOf: %+v %+v", tool.Name, s.Required, s.AnyOf)
 			}
 			if p := s.Properties["walk_name"]; p.MaxLength == nil || *p.MaxLength != connector.MaxNameLength {
 				t.Errorf("walk_name maxLength = %v", p.MaxLength)
+			}
+			if d := s.Properties["date"].Description; !strings.Contains(d, fmt.Sprintf("up to %d days ahead", connector.MaxWalkDateAhead)) {
+				t.Errorf("walk_windows.date description %q does not match the code's window", d)
 			}
 		}
 	}
