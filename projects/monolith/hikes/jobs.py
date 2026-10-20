@@ -1,7 +1,8 @@
 """Scheduled job handlers for the hikes domain.
 
 scrape_walks_handler runs the weekly WalkHighlands scrape and
-refresh_forecasts_handler the 6-hourly met.no window refresh. In both, the
+refresh_forecasts_handler the 2-hourly met.no window refresh, which then
+materializes the connector snapshot (hikes.materialize). In both, the
 network phase runs in the async handler and the synchronous Session I/O is
 delegated to a worker thread (asyncio.to_thread) so it never blocks the event
 loop, mirroring ships.retention / ships.ingest. The scheduler passes a
@@ -17,6 +18,7 @@ from sqlmodel import Session, delete, select
 
 from hikes import models
 from hikes.forecast import fetch_all_windows
+from hikes.materialize import materialize_handler
 from hikes.walkhighlands import Walk as ScrapedWalk
 from hikes.walkhighlands import fetch_all_walks
 from shared.forecast_freshness import top_of_hour
@@ -212,7 +214,7 @@ def _run_prune() -> int:
 
 
 async def refresh_forecasts_handler(session: Session) -> datetime | None:
-    """6-hourly met.no refresh: recompute viable hiking windows per walk.
+    """2-hourly met.no refresh: recompute viable hiking windows per walk.
 
     Loads the coordinate corpus, runs the whole network phase, then
     wholesale-replaces each fetched walk's typed walk_hours rows in one
@@ -235,6 +237,8 @@ async def refresh_forecasts_handler(session: Session) -> datetime | None:
         len(windows_by_uuid),
         total_hours,
     )
+    # The connector's snapshot (walks.json in R2); a no-op without S3 env.
+    await materialize_handler()
     return None
 
 

@@ -721,6 +721,7 @@ jobs:
       replaces: hikes.refresh_forecasts
       args: ["hikes-refresh-forecasts"]
       schedule: "20 */2 * * *" # every 2h (was 7200s)
+      s3: true # refresh also materializes walks.json for the Scotland connector
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 1800
       suspend: false
@@ -2091,6 +2092,9 @@ stars:
   sitesKey: "sites.json"
   mapKey: "map.json"
   historyMapKey: "history-map.json"
+  # Written by hikes-refresh-forecasts for the Scotland connector, which reads
+  # this bucket with its own read-only key (hikes/materialize.py).
+  walksKey: "walks.json"
   onepassword:
     itemPath: "vaults/k8s-homelab/items/r2-s3-credentials"
   # Dedicated near-static geospatial computation. The production overlay

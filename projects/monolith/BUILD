@@ -1028,6 +1028,7 @@ py_library(
         ":pkg_scheduler",
         ":pkg_shared",
         "@pip//beautifulsoup4",
+        "@pip//boto3",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
@@ -7372,6 +7373,19 @@ py_test(
     deps = [
         ":pkg_hikes",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "hikes_materialize_test",
+    srcs = ["hikes/materialize_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        ":pkg_hikes",
+        ":pkg_shared",
+        "@pip//pytest",
+        "@pip//sqlmodel",
     ],
 )
 
