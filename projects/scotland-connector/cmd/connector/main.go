@@ -22,7 +22,6 @@ import (
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/httpapi"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/mcp"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/meter"
-	"github.com/jomcgi/homelab/projects/scotland-connector/internal/places"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/r2"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/store"
 	"github.com/prometheus/client_golang/prometheus"
@@ -94,11 +93,6 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 	if err != nil {
 		return nil, err
 	}
-	gaz, err := places.Seed()
-	if err != nil {
-		return nil, err
-	}
-
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	m := meter.New(reg)
@@ -114,7 +108,7 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		return -1
 	}))
 
-	svc := &connector.Service{Data: st, Places: gaz, MethodURL: cfg.publicBaseURL + "/v1/method", Now: time.Now}
+	svc := &connector.Service{Data: st, MethodURL: cfg.publicBaseURL + "/v1/method", Now: time.Now}
 	info := mcp.ServerInfo{Name: "scotland-connector", Title: "Scotland outdoors", Version: cfg.version}
 
 	api, err := httpapi.New(svc, m, log, cfg.publicBaseURL)

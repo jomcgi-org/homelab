@@ -83,7 +83,7 @@ func TestToolListAndAnnotations(t *testing.T) {
 			t.Errorf("%s: inputSchema %v", tool["name"], schema)
 		}
 	}
-	if strings.Join(names, ",") != "dark_sky_windows,resolve_place" {
+	if strings.Join(names, ",") != "dark_sky_windows" {
 		t.Fatalf("tools = %v", names)
 	}
 }
@@ -92,10 +92,11 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 	for _, tool := range Tools {
 		var s struct {
 			Properties map[string]struct {
-				Maximum   *float64 `json:"maximum"`
-				Default   *float64 `json:"default"`
-				MaxLength *int     `json:"maxLength"`
+				Minimum *float64 `json:"minimum"`
+				Maximum *float64 `json:"maximum"`
+				Default *float64 `json:"default"`
 			} `json:"properties"`
+			Required []string `json:"required"`
 		}
 		if err := json.Unmarshal(tool.InputSchema, &s); err != nil {
 			t.Fatalf("%s: %v", tool.Name, err)
@@ -113,12 +114,22 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 				t.Errorf("%s.%s = max %v default %v, code %v", tool.Name, name, p.Maximum, p.Default, want)
 			}
 		}
+		c := connector.Coverage
+		for name, b := range map[string][2]float64{"lat": {c.MinLat, c.MaxLat}, "lon": {c.MinLon, c.MaxLon}} {
+			p := s.Properties[name]
+			if p.Minimum == nil || p.Maximum == nil || *p.Minimum != b[0] || *p.Maximum != b[1] {
+				t.Errorf("%s.%s = min %v max %v, coverage %v", tool.Name, name, p.Minimum, p.Maximum, b)
+			}
+		}
+		if strings.Join(s.Required, ",") != "lat,lon" {
+			t.Errorf("%s required = %v", tool.Name, s.Required)
+		}
 	}
 }
 
 func TestModernToolCall(t *testing.T) {
 	code, hdr, r := post(t, handler(),
-		`{"jsonrpc":"2.0","id":"a","method":"tools/call","params":{"name":"dark_sky_windows","arguments":{"place":"Aviemore","nights":2},`+modernMeta+`}}`,
+		`{"jsonrpc":"2.0","id":"a","method":"tools/call","params":{"name":"dark_sky_windows","arguments":{"lat":57.19,"lon":-3.83,"nights":2},`+modernMeta+`}}`,
 		modern("tools/call", "dark_sky_windows"))
 	if code != http.StatusOK || r.Error != nil || string(r.ID) != `"a"` {
 		t.Fatalf("status %d error %+v", code, r.Error)
@@ -143,7 +154,7 @@ func TestModernToolCall(t *testing.T) {
 
 func TestToolErrorsAreResults(t *testing.T) {
 	h := handler()
-	for _, args := range []string{`{"limit":50,"place":"Aviemore"}`, `{"palce":"Aviemore"}`, `{"lat":51.5,"lon":-0.1}`} {
+	for _, args := range []string{`{"limit":50,"lat":57.19,"lon":-3.83}`, `{"place":"Aviemore"}`, `{"lat":57.19}`, `{"lat":51.5,"lon":-0.1}`} {
 		code, _, r := post(t, h,
 			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dark_sky_windows","arguments":`+args+`,`+modernMeta+`}}`,
 			modern("tools/call", "dark_sky_windows"))
@@ -161,16 +172,16 @@ func TestToolErrorsAreResults(t *testing.T) {
 
 func TestModernHeaderValidation(t *testing.T) {
 	h := handler()
-	call := `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"resolve_place","arguments":{"query":"Oban"},` + modernMeta + `}}`
+	call := `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"dark_sky_windows","arguments":{"lat":56.41,"lon":-5.47},` + modernMeta + `}}`
 	cases := map[string]struct {
 		hdr  map[string]string
 		code int
 	}{
-		"missing version header": {map[string]string{"Mcp-Method": "tools/call", "Mcp-Name": "resolve_place"}, codeHeaderMismatch},
-		"method mismatch":        {modern("tools/list", "resolve_place"), codeHeaderMismatch},
-		"name mismatch":          {modern("tools/call", "dark_sky_windows"), codeHeaderMismatch},
+		"missing version header": {map[string]string{"Mcp-Method": "tools/call", "Mcp-Name": "dark_sky_windows"}, codeHeaderMismatch},
+		"method mismatch":        {modern("tools/list", "dark_sky_windows"), codeHeaderMismatch},
+		"name mismatch":          {modern("tools/call", "walk_windows"), codeHeaderMismatch},
 		"missing name":           {modern("tools/call", ""), codeHeaderMismatch},
-		"version mismatch":       {map[string]string{"MCP-Protocol-Version": "2025-11-25", "Mcp-Method": "tools/call", "Mcp-Name": "resolve_place"}, codeHeaderMismatch},
+		"version mismatch":       {map[string]string{"MCP-Protocol-Version": "2025-11-25", "Mcp-Method": "tools/call", "Mcp-Name": "dark_sky_windows"}, codeHeaderMismatch},
 	}
 	for name, c := range cases {
 		code, _, r := post(t, h, call, c.hdr)
@@ -179,7 +190,7 @@ func TestModernHeaderValidation(t *testing.T) {
 		}
 	}
 	// Base64-sentinel Mcp-Name decodes before comparison.
-	if code, _, r := post(t, h, call, modern("tools/call", "=?base64?cmVzb2x2ZV9wbGFjZQ==?=")); code != http.StatusOK || r.Error != nil {
+	if code, _, r := post(t, h, call, modern("tools/call", "=?base64?ZGFya19za3lfd2luZG93cw==?=")); code != http.StatusOK || r.Error != nil {
 		t.Errorf("base64 name: status %d error %+v", code, r.Error)
 	}
 }
@@ -230,7 +241,7 @@ func TestLegacyClient(t *testing.T) {
 	if code != http.StatusOK || len(r.Result["tools"].([]any)) != len(Tools) || r.Result["resultType"] != nil {
 		t.Fatalf("legacy tools/list: status %d result %v", code, r.Result)
 	}
-	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"resolve_place","arguments":{"query":"Oban"}}}`, map[string]string{"MCP-Protocol-Version": "2025-11-25"})
+	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dark_sky_windows","arguments":{"lat":56.41,"lon":-5.47}}}`, map[string]string{"MCP-Protocol-Version": "2025-11-25"})
 	if code != http.StatusOK || r.Result["isError"] != false {
 		t.Fatalf("legacy tools/call: status %d result %v", code, r.Result)
 	}

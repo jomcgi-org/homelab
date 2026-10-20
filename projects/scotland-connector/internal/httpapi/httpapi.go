@@ -83,7 +83,6 @@ func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL
 		return nil, err
 	}
 	h := &Handler{svc: svc, meter: m, log: log, mux: http.NewServeMux(), specURL: publicBaseURL + "/v1/openapi.json"}
-	h.mux.HandleFunc("GET /v1/places/resolve", h.resolvePlace)
 	h.mux.HandleFunc("GET /v1/dark-sky-windows", h.darkSkyWindows)
 	h.mux.HandleFunc("GET /v1/openapi.json", h.static(spec, "application/json"))
 	h.mux.HandleFunc("GET /v1/method", h.static(method, "text/markdown; charset=utf-8"))
@@ -120,16 +119,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
-func (h *Handler) resolvePlace(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	env, err := h.svc.ResolvePlace(connector.ResolvePlaceParams{Query: r.URL.Query().Get("q")})
-	h.respond(w, r, "resolve_place", start, env, err)
-}
-
 func (h *Handler) darkSkyWindows(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	q := r.URL.Query()
-	p := connector.DarkSkyParams{Place: q.Get("place")}
+	var p connector.DarkSkyParams
 	var err error
 	p.Lat, err = floatParam(q.Get("lat"), "lat", err)
 	p.Lon, err = floatParam(q.Get("lon"), "lon", err)

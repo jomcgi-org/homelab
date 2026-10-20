@@ -30,13 +30,13 @@ within the 150 km radius cap.
 
 ## Places
 
-Place names resolve against a small curated gazetteer of Scottish towns,
-villages and dark-sky places, with Gaelic names where in common use.
-Coordinates are approximate centroids. Pass coordinates directly when you
-have them.
+Queries take coordinates. Pass the latitude and longitude of the place the
+person means; they are rounded to 0.01 degrees (about 1 km), and anything
+outside Scotland is refused.
 
 ## Freshness
 
+Forecasts are fetched from MET Norway every three hours.
 `meta.forecast_fetched_at` is the newest MET Norway fetch in the data;
 `meta.as_of` is the hour the answer is computed for. Answers are cached at the
 edge for a few minutes and served stale if the origin is unavailable.
