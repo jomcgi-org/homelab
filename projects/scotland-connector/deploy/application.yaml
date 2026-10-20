@@ -1,7 +1,7 @@
 # Publication metadata for chart-version write-back, in the monolith-public
-# pattern. This file deploys nothing; the hub Application under
-# projects/gke-apps/scotland-connector/ is added once the first chart version
-# is published, with Kargo owning promotion (#7242).
+# pattern. This file deploys nothing; the hub deploys
+# projects/gke-apps/scotland-connector/application.yaml, whose pin is a floor
+# that Kargo promotes past.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

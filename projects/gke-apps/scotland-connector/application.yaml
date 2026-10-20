@@ -1,0 +1,57 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: scotland-connector
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Kargo will not update an Application that has not named the Stage allowed
+    # to touch it. Without this the promotion errors with "is not authorized"
+    # and the pin never moves.
+    kargo.akuity.io/authorized-stage: kargo-scotland-connector:prod
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: scotland-connector
+      # Kargo owns the live hub revision. This git pin is a manually maintained
+      # bootstrap/revert floor; chart-version write-back does not advance it.
+      targetRevision: 0.1.0
+      helm:
+        releaseName: scotland-connector
+        valueFiles:
+          - $values/projects/scotland-connector/deploy/values.yaml
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+  # The HPA owns the live replica count and the chart renders `replicas:`, so
+  # without this ArgoCD reads every scale-out as drift and selfHeal scales it
+  # straight back. Scoped to the one Deployment, as for monolith-public-web.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: scotland-connector
+      namespace: scotland-connector
+      jsonPointers:
+        - /spec/replicas
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: scotland-connector
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # Suppressing the diff is not the same as not applying the value: without
+      # this ArgoCD keeps stamping the rendered replicas back on every sync and
+      # the HPA's scale-out is undone within a sync interval.
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

@@ -8,5 +8,6 @@ resources:
   - ./monolith
   - ./monolith-public
   - ./monolith-agents
+  - ./scotland-connector
   - ./inference
   - ./context-forge-gateway

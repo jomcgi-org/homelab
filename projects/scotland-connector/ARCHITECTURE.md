@@ -2,9 +2,10 @@
 
 A public, read-only, free API and MCP endpoint answering Scottish outdoor
 questions, starting with where and when the sky will be dark and clear.
-Tracking issue: #7240. Current as of the first chart (0.1.0): built, not yet
-registered on the hub (#7242), public route off until the hostname is chosen
-(#7243).
+Tracking issue: #7240. Deployed on the hub through Kargo
+(`projects/gke-apps/scotland-connector/`, pipeline `scotland-connector` in
+`projects/platform/kargo/values.yaml`); public route off until the hostname
+is chosen (#7243).
 
 ## Shape
 
@@ -167,7 +168,6 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
-| Hub Application with Kargo promotion | #7242 | after the first chart publish |
 | Product name, hostname, public route, Cloudflare cache rule | #7243 | decision for Joe |
 | Shared assistant rate-limit bucket and Envoy acceptance test | #7244 | not started |
 | Meter export to Honeycomb, unit price table | #7245 | not started |
