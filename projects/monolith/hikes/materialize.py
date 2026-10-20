@@ -34,7 +34,7 @@ SCHEMA_VERSION = 1
 
 
 # One stored hour as _load selects it: (walk_uuid, hour_time, temp_c,
-# precip_mm, wind_kmh, cloud_pct). Plain columns, not ORM objects: a refresh
+# precip_mm, wind_kmh, cloud_pct). Plain columns keep it light: a refresh
 # holds tens of thousands of hours.
 HourRow = tuple[str, datetime, float, float, float, float]
 
