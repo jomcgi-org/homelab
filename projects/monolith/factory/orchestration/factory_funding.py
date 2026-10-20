@@ -1,7 +1,6 @@
 """The funding judge allocates bounded work leases against one issue budget."""
 
 from datetime import datetime, timedelta
-import hashlib
 import json
 import math
 
@@ -71,10 +70,6 @@ class _BudgetApprovalRequired(Exception):
     """A valid proposal needs an explicit operator budget amendment."""
 
 
-def _digest(value):
-    return hashlib.sha256(controls._json(value).encode()).hexdigest()
-
-
 def _issue(task):
     from factory.orchestration.factory_conductor import github_get
 
@@ -83,7 +78,7 @@ def _issue(task):
 
 
 def _runs_digest(runs, excluded=None):
-    return _digest(
+    return controls.digest(
         [
             {k: r.get(k) for k in ("id", "status", "accounted_cost_usd", "head_sha")}
             for r in runs
@@ -464,9 +459,9 @@ def request(task, reason, *, recover=False):
             "start_key": f"factory-node:{task['id']}:{node_key}:1",
             "deadline_at": deadline.isoformat(),
             "revision": revision + 1,
-            "policy_sha256": _digest(policy),
+            "policy_sha256": controls.digest(policy),
             "runs_sha256": _runs_digest(runs),
-            "issue_sha256": _digest(issue),
+            "issue_sha256": controls.digest(issue),
             "trigger": reason,
             "model": judge,
         }
@@ -588,8 +583,9 @@ def settle(task, run, request):
                     graph.node_runs(task["id"], session=db), request["node_key"]
                 )
                 != request["runs_sha256"]
-                or _digest(effective_policy(db, row)) != request["policy_sha256"]
-                or _digest(issue) != request["issue_sha256"]
+                or controls.digest(effective_policy(db, row))
+                != request["policy_sha256"]
+                or controls.digest(issue) != request["issue_sha256"]
             ):
                 raise ValueError("funding evidence changed")
             # deadline_at bounds admission, not settlement. Queueing and durable
