@@ -92,8 +92,10 @@ config:
   # Public origin the API is served from, for meta.method_url. Empty renders
   # a relative /v1/method.
   publicBaseURL: ""
-  # Browser origins the MCP endpoint accepts. Server-side connectors send no
-  # Origin and always pass.
+  # Origins /mcp does not refuse. This is the spec's DNS-rebinding guard and
+  # works only as a deny filter: /mcp sends no CORS headers and answers
+  # OPTIONS with 405, so a browser cannot call it from these origins either.
+  # Server-side connectors (Claude.ai, ChatGPT) send no Origin and pass.
   mcpAllowedOrigins:
     - https://claude.ai
     - https://claude.com

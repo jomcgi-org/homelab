@@ -203,7 +203,7 @@ func (s *Service) ResolvePlace(p ResolvePlaceParams) (*Envelope, error) {
 	return &Envelope{
 		Data:    res,
 		Meta:    meta,
-		ETag:    etag("resolve_place", meta.DataVersion, places.Normalize(q)),
+		ETag:    etag("resolve_place", meta.DataVersion, meta.AsOf, places.Normalize(q)),
 		Results: len(res.Matches),
 	}, nil
 }

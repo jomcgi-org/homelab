@@ -83,9 +83,22 @@ func lpRank(zone string) int {
 	}
 }
 
+// morningCutover is how long after local midnight the previous night stops
+// being "tonight" for a query. No Scottish site has a twilight-dark hour (sun
+// below -10 deg) after about 08:10 local, even at midwinter in Shetland, so
+// from 09:00 the night still in progress has nothing left to offer and the
+// coming evening is the first night asked about.
+const morningCutover = 9 * time.Hour
+
+// FirstNight is the first night a query starting at now covers: the night in
+// progress until the morning cutover, then the coming evening's.
+func FirstNight(now time.Time) int32 {
+	return NightDay(now.Add(12*time.Hour - morningCutover))
+}
+
 // NightNames lists the nights a query covers, starting with tonight.
 func (q WindowsQuery) NightNames() []string {
-	first := NightDay(q.Now)
+	first := FirstNight(q.Now)
 	names := make([]string, q.Nights)
 	for i := range names {
 		names[i] = NightName(first + int32(i))
@@ -116,7 +129,8 @@ func better(a, b *Window) bool {
 // nights, in the order defined by better.
 func (d *Dataset) Windows(q WindowsQuery) []Window {
 	names := q.NightNames()
-	first, last := NightDay(q.Now), NightDay(q.Now)+int32(q.Nights)
+	first := FirstNight(q.Now)
+	last := first + int32(q.Nights)
 	cutoff := q.Now.UTC().Truncate(time.Hour).Unix()
 	month := int(time.Unix(int64(first)*86400, 0).UTC().Month())
 
