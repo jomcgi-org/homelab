@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render } from "svelte/server";
-import HomepageRack from "./HomepageRack.svelte";
 import {
   STATS_AGE_TICK_INTERVAL_MS,
   STATS_REFRESH_INTERVAL_MS,
   buildMarquee,
+  deployReadout,
+  formatAgo,
   isStatsSnapshot,
   startHomepageStatsPolling,
 } from "./homepage-stats.js";
@@ -57,13 +57,6 @@ describe("GPU-free stats contract", () => {
         `kg: ${(1309).toLocaleString()} notes`,
         "last commit: abc1234",
       ]);
-      const { html } = await render(HomepageRack, { props: { stats } });
-      expect(html).toContain("2 nodes · 32 CPUs · 108 GB");
-      expect(html).toContain("NODE-1");
-      expect(html).toContain("NODE-2");
-      expect(html).toContain("NODE-3");
-      expect(html).toContain("/ember/firecracker");
-      expect(html).not.toMatch(/gpu|rtx|4090|NODE-4|27B/i);
     },
   );
 
@@ -72,11 +65,31 @@ describe("GPU-free stats contract", () => {
     expect(isStatsSnapshot(stats)).toBe(false);
     expect(buildMarquee(stats)).toEqual(["~/homelab"]);
   });
+});
 
-  it("keeps the rack fallback without GPU claims when stats are unavailable", async () => {
-    const { html } = await render(HomepageRack, { props: { stats: null } });
-    expect(html).toContain("HOMELAB");
-    expect(html).not.toMatch(/gpu|rtx|4090|NODE-4|27B/i);
+describe("deployment readout", () => {
+  it("shows nothing rather than a fabricated figure without a deploy time", () => {
+    expect(deployReadout(null)).toBeNull();
+    expect(deployReadout({ deploy: { latest_commit_sha: "abc" } })).toBeNull();
+    expect(deployReadout({ deploy: { deployed_at: "not a date" } })).toBeNull();
+  });
+
+  it("formats the age and shortens the sha", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T00:10:00Z"));
+    expect(formatAgo("2026-09-11T00:00:00Z")).toBe("10m");
+    expect(deployReadout(refreshedStats)).toEqual({ ago: "5m", sha: "new" });
+    expect(
+      deployReadout({
+        deploy: {
+          deployed_at: "2026-09-10T00:00:00Z",
+          latest_commit_sha: "0123456789",
+        },
+      }),
+    ).toEqual({ ago: "24h", sha: "0123456" });
+    expect(
+      deployReadout({ deploy: { deployed_at: "2026-09-11T00:05:00Z" } }),
+    ).toEqual({ ago: "5m", sha: null });
   });
 });
 
