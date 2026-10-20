@@ -18,7 +18,7 @@ spec:
       chart: scotland-connector
       # Kargo owns the live hub revision. This git pin is a manually maintained
       # bootstrap/revert floor; chart-version write-back does not advance it.
-      targetRevision: 0.1.0
+      targetRevision: 0.1.3
       helm:
         releaseName: scotland-connector
         valueFiles:
