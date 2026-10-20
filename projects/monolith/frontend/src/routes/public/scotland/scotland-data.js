@@ -29,7 +29,7 @@ export const setups = [
   {
     id: "claude",
     label: "Claude",
-    how: "Settings, Connectors, Add custom connector, then paste the MCP URL.",
+    how: "Settings, Connectors, Add custom connector, then paste the MCP URL. On Team and Enterprise plans an owner adds it first, in the organisation's connector settings.",
   },
   {
     id: "claude-code",

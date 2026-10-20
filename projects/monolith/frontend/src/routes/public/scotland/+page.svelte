@@ -69,8 +69,8 @@
             <p>
               Give it a point in Scotland and it ranks the road-accessible
               dark-sky sites nearby by forecast clear, dark hours over the next
-              seven nights, with the hours themselves and each site's odds of a
-              clear night this month.
+              few nights (up to seven), with the hours themselves and how often
+              each site has been clear in this month in past years.
             </p>
           </div>
           <dl class="spec">

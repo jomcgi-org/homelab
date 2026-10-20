@@ -1,5 +1,5 @@
 # Public Scotland connector. Every request is answered from memory; the only
-# dependency is two R2 objects the monolith's stars-refresh job writes hourly,
+# dependency is two R2 objects the monolith's stars-refresh job writes every three hours,
 # polled with conditional GETs. Pods are stateless and identical, so the HPA
 # can add and remove them freely.
 

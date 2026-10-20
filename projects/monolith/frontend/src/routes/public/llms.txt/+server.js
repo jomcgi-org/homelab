@@ -23,7 +23,7 @@ const INTRO = `# Joe McGinley
 
 ## Scotland connector
 
-- [Scotland connector](${PUBLIC_BASE}/scotland): free, read-only MCP server and REST API that ranks road-accessible dark-sky sites in Scotland by forecast clear, dark hours over the next seven nights. Pass coordinates; no sign-up or key.
+- [Scotland connector](${PUBLIC_BASE}/scotland): free, read-only MCP server and REST API that ranks road-accessible dark-sky sites in Scotland by forecast clear, dark hours over the next few nights (up to seven). Pass coordinates; no sign-up or key.
 - MCP endpoint: ${PUBLIC_BASE}/scotland/mcp (Streamable HTTP, tool \`dark_sky_windows\`)
 - [OpenAPI spec](${PUBLIC_BASE}/scotland/v1/openapi.json): the REST contract
 - [Method](${PUBLIC_BASE}/scotland/v1/method): how windows are scored, and the data sources to credit

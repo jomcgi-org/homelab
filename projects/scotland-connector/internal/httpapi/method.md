@@ -13,7 +13,7 @@ of a drivable road (OpenStreetMap) and fall in the three darkest
 light-pollution zones (pristine, excellent, rural).
 
 **Forecast** cloud cover is MET Norway's Locationforecast for each site,
-refreshed hourly. Hours already past are dropped at the top of each hour.
+fetched every three hours. Hours already past are dropped at the top of each hour.
 
 **Nights** run from local noon to local noon (Europe/London) and are named by
 the date of their evening. "Tonight" is the night in progress until 09:00
@@ -36,7 +36,6 @@ outside Scotland is refused.
 
 ## Freshness
 
-Forecasts are fetched from MET Norway every three hours.
 `meta.forecast_fetched_at` is the newest MET Norway fetch in the data;
 `meta.as_of` is the hour the answer is computed for. Answers are cached at the
 edge for a few minutes and served stale if the origin is unavailable.
