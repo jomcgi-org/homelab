@@ -51,3 +51,32 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+py_test(
+    name = "rate_limit_acceptance_test",
+    srcs = ["rate_limit_acceptance_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/platform/cloudflare-gateway:gateway_test_inputs",
+        "//projects/scotland-connector/deploy:deploy_values",
+        "//projects/scotland-connector/internal/meter:meter_source",
+        "@envoy_gateway_egctl//:binary",
+        "@envoy_proxy_test_bin//:binary",
+        "@multitool//tools/helm",
+    ] + glob(["templates/**/*"]),
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/scotland-connector/deploy:deploy_values)",
+        "EGCTL_BIN": "$(rootpath @envoy_gateway_egctl//:binary)",
+        "ENVOY_BIN": "$(rootpath @envoy_proxy_test_bin//:binary)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)

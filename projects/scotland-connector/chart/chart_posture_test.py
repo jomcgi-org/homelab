@@ -116,13 +116,20 @@ def test_route_backends_are_only_the_public_service_port() -> None:
 def test_route_carries_per_client_limits_and_worker_denies() -> None:
     docs = _render(_ROUTE_ON)
     policy = _one(docs, "BackendTrafficPolicy")
-    fallback, per_client = policy["spec"]["rateLimit"]["local"]["rules"]
+    fallback, assistant, per_client = policy["spec"]["rateLimit"]["local"]["rules"]
     assert "clientSelectors" not in fallback
+    # One shared bucket for the assistant ranges: no Distinct.
+    (assistant_match,) = assistant["clientSelectors"][0]["headers"]
+    assert assistant_match["type"] == "RegularExpression"
+    assert assistant["limit"]["requests"] > per_client["limit"]["requests"]
     headers = per_client["clientSelectors"][0]["headers"]
-    assert [(h["name"], h["type"]) for h in headers] == [
-        ("CF-Connecting-IP", "Distinct"),
-        ("CF-Connecting-IP", "RegularExpression"),
+    assert [(h["name"], h["type"], h.get("invert", False)) for h in headers] == [
+        ("CF-Connecting-IP", "Distinct", False),
+        ("CF-Connecting-IP", "RegularExpression", False),
+        ("CF-Connecting-IP", "RegularExpression", True),
     ]
+    # The per-client rule excludes exactly the shared bucket's addresses.
+    assert headers[2]["value"] == assistant_match["value"]
     # The identity pattern is the one monolith-public's Envoy acceptance test
     # proves; a copy that drifts from it is untested.
     monolith_public = yaml.safe_load(_MONOLITH_PUBLIC_VALUES.read_text())

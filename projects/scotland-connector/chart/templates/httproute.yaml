@@ -106,6 +106,8 @@ spec:
   timeout:
     tcp:
       connectTimeout: 1s
+  {{- $header := .Values.route.clientIdentity.clientHeader.name }}
+  {{- $assistant := .Values.route.assistantBucket }}
   rateLimit:
     type: Local
     local:
@@ -113,13 +115,34 @@ spec:
         - limit:
             requests: {{ .Values.route.rateLimit.requests }}
             unit: {{ .Values.route.rateLimit.unit }}
+        {{- if $assistant.enabled }}
+        # One shared bucket for every address in the assistant ranges (no
+        # Distinct, so all of them count against the same budget).
         - clientSelectors:
             - headers:
-                - name: {{ .Values.route.clientIdentity.clientHeader.name | quote }}
+                - name: {{ $header | quote }}
+                  type: RegularExpression
+                  value: {{ $assistant.pattern | quote }}
+          limit:
+            requests: {{ $assistant.requests }}
+            unit: {{ $assistant.unit }}
+        {{- end }}
+        - clientSelectors:
+            - headers:
+                - name: {{ $header | quote }}
                   type: Distinct
-                - name: {{ .Values.route.clientIdentity.clientHeader.name | quote }}
+                - name: {{ $header | quote }}
                   type: RegularExpression
                   value: {{ .Values.route.clientIdentity.clientHeader.valuePattern | quote }}
+                {{- if $assistant.enabled }}
+                # Assistant addresses are excluded here, or every request
+                # would also spend a per-IP bucket and the shared budget
+                # could never be reached.
+                - name: {{ $header | quote }}
+                  type: RegularExpression
+                  value: {{ $assistant.pattern | quote }}
+                  invert: true
+                {{- end }}
           limit:
             requests: {{ .Values.route.rateLimit.requests }}
             unit: {{ .Values.route.rateLimit.unit }}

@@ -25,7 +25,8 @@ const (
 
 // anthropicRanges are Anthropic's published egress ranges for outbound MCP
 // calls (platform.claude.com/docs/en/api/ip-addresses). Re-check the page
-// when changing them; the Envoy assistant bucket (#7244) must match.
+// when changing them; the Envoy assistant bucket (route.assistantBucket in
+// the chart) must match, and its acceptance test checks that it does.
 var anthropicRanges = []netip.Prefix{
 	netip.MustParsePrefix("160.79.104.0/23"),
 	netip.MustParsePrefix("2607:6bc0::/48"),

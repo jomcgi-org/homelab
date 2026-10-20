@@ -154,7 +154,26 @@ answer any request.
   Worker subrequests denied. The gateway raises the route's
   `max_dynamic_descriptors` to 10,000 (`publicRateLimitRoutes` in
   `projects/platform/cloudflare-gateway/values.yaml`) so busy client buckets
-  are not evicted. The shared assistant bucket is #7244.
+  are not evicted.
+- Assistant egress gets one shared bucket (`route.assistantBucket`, 12,000
+  a minute per Envoy replica, two replicas on the hub). Connector calls come
+  from the assistant's servers, so a per-IP limit would make every user of
+  Claude share a 120-a-minute budget per Anthropic address. Addresses in
+  Anthropic's published ranges (160.79.104.0/23, 2607:6bc0::/48) match the
+  shared bucket and are excluded from the per-IP rule with an inverted
+  match, so they never spend both. `rate_limit_acceptance_test.py` proves all
+  four buckets (per-IP, shared assistant, fail-safe, Worker deny) against the
+  pinned Envoy Gateway translator and Envoy, and keeps the pattern equal to
+  `internal/meter`'s list. OpenAI publishes no comparable list yet; its
+  traffic is per-IP.
+
+**Why.** A worst-case query costs about 0.6 ms of one core and the default
+one about 0.15 ms (measured through the HTTP handler on a production-sized
+grid), so even the full assistant budget across both Envoy replicas, about
+400 requests a second, is a fraction of one core. The ceiling is the shared
+hub (one core node, two Envoy replicas, the tunnel), not this service, and
+REST answers are edge-cached; MCP calls are POSTs and always reach the
+origin.
 
 **Why.** The pods hold no state and start in seconds, so the cheapest
 protection against a burst is more pods, and the cheapest protection
@@ -186,7 +205,6 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
-| Shared assistant rate-limit bucket and Envoy acceptance test | #7244 | not started |
 | Meter export to Honeycomb, unit price table | #7245 | not started |
 | Uncapped connector snapshot from the materializer | #7246 | not started |
 | Full gazetteer from an open dataset | #7247 | not started |

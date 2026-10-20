@@ -163,3 +163,17 @@ route:
   rateLimit:
     requests: 120
     unit: Minute
+  # Connector calls from an assistant arrive from the assistant's servers,
+  # not the user's, so per-IP limits would make every user of that assistant
+  # share one small bucket. Addresses matching this pattern draw from one
+  # large shared bucket instead, and never from the per-IP one. The pattern
+  # is Anthropic's published outbound MCP ranges, 160.79.104.0/23 and
+  # 2607:6bc0::/48 (platform.claude.com/docs/en/api/ip-addresses), written
+  # for the canonical text form Cloudflare sends; the chart's acceptance
+  # test keeps it equal to internal/meter's list. Local rate limits count per
+  # Envoy replica (two on the hub), so the gateway-wide budget is twice this.
+  assistantBucket:
+    enabled: true
+    pattern: '^(?:160\.79\.10[45]\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|(?i:2607:6bc0:(?:0{1,4})?:[0-9a-f:]*))$'
+    requests: 12000
+    unit: Minute

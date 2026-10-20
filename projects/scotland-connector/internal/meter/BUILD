@@ -17,3 +17,11 @@ go_test(
         "@com_github_prometheus_client_golang//prometheus/testutil",
     ],
 )
+
+# Read by the chart's rate-limit acceptance test, which keeps the Envoy
+# assistant-bucket pattern equal to the ranges here.
+filegroup(
+    name = "meter_source",
+    srcs = ["meter.go"],
+    visibility = ["//projects/scotland-connector/chart:__pkg__"],
+)
