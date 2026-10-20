@@ -14,6 +14,8 @@ dependencies = [
 
 [tool.uv]
 package = false
+# GHSA-6q48-6c7w-9gw2: exclude the compromised emSign trust anchor.
+constraint-dependencies = ["certifi>=2026.10.19"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
