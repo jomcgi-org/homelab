@@ -20,6 +20,13 @@ const INTRO = `# Joe McGinley
 - [CV](${PUBLIC_BASE}/cv): full work history and project case studies
 - [Notes](${PUBLIC_BASE}/app/notes): browse my public knowledge graph
 - [Home](${PUBLIC_BASE}/): overview and homelab status
+
+## Scotland connector
+
+- [Scotland connector](${PUBLIC_BASE}/scotland): free, read-only MCP server and REST API that ranks road-accessible dark-sky sites in Scotland by forecast clear, dark hours over the next seven nights. Pass coordinates; no sign-up or key.
+- MCP endpoint: ${PUBLIC_BASE}/scotland/mcp (Streamable HTTP, tool \`dark_sky_windows\`)
+- [OpenAPI spec](${PUBLIC_BASE}/scotland/v1/openapi.json): the REST contract
+- [Method](${PUBLIC_BASE}/scotland/v1/method): how windows are scored, and the data sources to credit
 `;
 
 const ELSEWHERE = `## Elsewhere
