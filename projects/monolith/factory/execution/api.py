@@ -21,7 +21,7 @@ from factory.execution.reconciliation import (
     read_bound_zero_turn_factory_attempt as read_bound_zero_turn_factory_attempt,
     read_drained_lost_factory_attempt as read_drained_lost_factory_attempt,
     read_interrupted_factory_continuation as read_interrupted_factory_continuation,
-    read_factory_dispatch as read_factory_dispatch,
+    read_factory_dispatch as _read_factory_dispatch,
     read_interrupted_retry_not_invoked_factory_attempt as read_interrupted_retry_not_invoked_factory_attempt,
     read_lost_before_guest_factory_attempt as read_lost_before_guest_factory_attempt,
     read_never_dispatched_factory_attempt as read_never_dispatched_factory_attempt,
@@ -57,6 +57,15 @@ _EXECUTION_EXPORTS = frozenset(
         "session_id_for_thread",
     }
 )
+
+
+def read_factory_dispatch(db, pin: dict, session_id: int) -> dict:
+    # Keep the durable DBOS step identity and checkpoint ordering unchanged.
+    # The observer uses its own session before this read starts a transaction.
+    from factory.execution.capacity_wait import observe_handoff
+
+    observe_handoff(session_id, engine=db.get_bind())
+    return _read_factory_dispatch(db, pin, session_id)
 
 
 def lock_capacity_pool(session) -> None:

@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/big"
 	"net"
 	"net/http"
@@ -71,11 +72,12 @@ type tokenBroker struct {
 	// grantQuotaTTL so choosing a grant per connection costs nothing on the
 	// relay path. A failed read keeps the previous views; no views at all
 	// means every grant is unobserved and the pool order decides.
-	viewsMu       sync.Mutex
-	views         map[string]grantQuotaView
-	viewsFetched  time.Time
-	viewsFetching bool
-	dead          map[string]time.Time
+	viewsMu         sync.Mutex
+	views           map[string]grantQuotaView
+	viewsObservedAt time.Time
+	viewsFetched    time.Time
+	viewsFetching   bool
+	dead            map[string]time.Time
 }
 
 const grantQuotaTTL = 30 * time.Second
@@ -84,16 +86,19 @@ const grantQuotaTTL = 30 * time.Second
 // ranker needs. Windows carry the broker's expired flag so a lapsed window
 // never counts against a grant.
 type grantQuotaView struct {
-	Observed   bool    `json:"observed"`
-	Exhausted  bool    `json:"exhausted"`
-	Provider   string  `json:"provider"`
-	AgeSeconds float64 `json:"age_seconds"`
-	Windows    []struct {
-		Name        string  `json:"name"`
-		UsedPercent float64 `json:"used_percent"`
-		ResetsAt    string  `json:"resets_at"`
-		Expired     bool    `json:"expired"`
-	} `json:"windows"`
+	Observed   bool               `json:"observed"`
+	Exhausted  bool               `json:"exhausted"`
+	Provider   string             `json:"provider"`
+	AgeSeconds float64            `json:"age_seconds"`
+	Windows    []grantQuotaWindow `json:"windows"`
+}
+
+type grantQuotaWindow struct {
+	Name          string  `json:"name"`
+	WindowMinutes int     `json:"window_minutes"`
+	UsedPercent   float64 `json:"used_percent"`
+	ResetsAt      string  `json:"resets_at"`
+	Expired       bool    `json:"expired"`
 }
 
 // grantViews returns the broker's per-grant quota views, refreshing at most
@@ -108,7 +113,7 @@ func (b *tokenBroker) grantViews(now time.Time) map[string]grantQuotaView {
 	}
 	b.viewsMu.Lock()
 	if b.viewsFetching || (b.views != nil && now.Sub(b.viewsFetched) < grantQuotaTTL) {
-		views := b.views
+		views := b.agedViews(now)
 		b.viewsMu.Unlock()
 		return views
 	}
@@ -123,10 +128,28 @@ func (b *tokenBroker) grantViews(now time.Time) map[string]grantQuotaView {
 	b.viewsFetched = now
 	if fetched != nil {
 		b.views = fetched
+		b.viewsObservedAt = now
 	} else if b.views == nil {
 		b.views = map[string]grantQuotaView{}
 	}
-	return b.views
+	return b.agedViews(now)
+}
+
+// Called under viewsMu. Failed fetches must age retained observations rather
+// than make the same ten-second-old view look fresh indefinitely.
+func (b *tokenBroker) agedViews(now time.Time) map[string]grantQuotaView {
+	if b.views == nil || b.viewsObservedAt.IsZero() {
+		return b.views
+	}
+	elapsed := math.Max(0, now.Sub(b.viewsObservedAt).Seconds())
+	views := make(map[string]grantQuotaView, len(b.views))
+	for grant, view := range b.views {
+		if view.AgeSeconds >= 0 && !math.IsNaN(view.AgeSeconds) && !math.IsInf(view.AgeSeconds, 0) {
+			view.AgeSeconds += elapsed
+		}
+		views[grant] = view
+	}
+	return views
 }
 
 func (b *tokenBroker) fetchGrantViews() map[string]grantQuotaView {
@@ -202,6 +225,9 @@ const grantExhaustionStaleAfter = 15 * time.Minute
 // tie a stale grant with arbitrarily old evidence against the admitted one.
 const grantStaleAfter = 15 * time.Minute
 
+// Keep the default factory admission ceiling and sidecar eligibility aligned.
+const grantExhaustedPercent = 97
+
 // grantStale reports whether a grant observation is too old to steer the
 // ranking. Unobserved grants and ones with an unreadable age are not stale:
 // the former must serve to be observed at all, and the latter cannot prove
@@ -257,6 +283,12 @@ func bandFor(view grantQuotaView, ok bool, now time.Time) grantBand {
 			if reset.After(now) && (soonestFuture.IsZero() || reset.Before(soonestFuture)) {
 				soonestFuture = reset
 			}
+		}
+		if hasReset && !reset.After(now) {
+			continue
+		}
+		if view.Provider == "codex" && window.UsedPercent >= grantExhaustedPercent && (hasReset || view.AgeSeconds <= grantStaleAfter.Seconds()) {
+			return grantBand{band: -1, resetsAt: reset}
 		}
 		left := 100 - window.UsedPercent
 		if !found || left < remaining {
@@ -372,6 +404,75 @@ func rankGrants(pool []string, views map[string]grantQuotaView, current string, 
 		}
 	}
 	return kept
+}
+
+// freshGrantUsable deliberately requires a current observation of every window.
+// A passed reset is not evidence of restored quota, and missing telemetry is not
+// evidence that the preferred account is exhausted.
+func freshGrantUsable(view grantQuotaView, now time.Time) bool {
+	if !view.Observed || math.IsNaN(view.AgeSeconds) || math.IsInf(view.AgeSeconds, 0) || view.AgeSeconds < 0 || view.AgeSeconds > grantStaleAfter.Seconds() || view.Exhausted || len(view.Windows) == 0 {
+		return false
+	}
+	for _, window := range view.Windows {
+		reset, err := time.Parse(time.RFC3339, window.ResetsAt)
+		if window.Expired || err != nil || !reset.After(now) || math.IsNaN(window.UsedPercent) || math.IsInf(window.UsedPercent, 0) || window.UsedPercent < 0 || window.UsedPercent >= grantExhaustedPercent {
+			return false
+		}
+	}
+	return true
+}
+
+// budgetExpiry uses the longest reported window, never a short-window reset
+// against a still-live weekly budget. Unknown durations disable the override.
+func budgetExpiry(view grantQuotaView) (time.Time, time.Duration) {
+	longest, reset, remaining := 0, time.Time{}, 100.0
+	for _, window := range view.Windows {
+		if window.WindowMinutes <= 0 {
+			return time.Time{}, 0
+		}
+		remaining = math.Min(remaining, 100-window.UsedPercent)
+		if window.WindowMinutes > longest {
+			longest = window.WindowMinutes
+			reset, _ = time.Parse(time.RFC3339, window.ResetsAt)
+		}
+	}
+	// Uniform consumption is a conservative expiry signal, not a throughput
+	// estimate or a comparison of the two subscriptions' absolute capacities.
+	horizon := time.Duration(float64(longest) * float64(time.Minute) * remaining / 100)
+	if horizon > grantPerishableWindow {
+		horizon = grantPerishableWindow
+	}
+	return reset, horizon
+}
+
+// preferFirstGrants is an explicit catalog opt-in. Pool order is policy, not a
+// quota-band tie breaker: B returns to first place as soon as fresh usage proves
+// it usable. Stale or unknown B telemetry does not authorize spending A.
+func preferFirstGrants(pool []string, views map[string]grantQuotaView, now time.Time, isDead func(string, time.Time) bool) []string {
+	if len(pool) != 2 {
+		return nil
+	}
+	preferred, fallback := pool[0], pool[1]
+	dead := func(name string) bool { return isDead != nil && isDead(name, now) }
+	firstOK := !dead(preferred) && freshGrantUsable(views[preferred], now)
+	secondOK := !dead(fallback) && freshGrantUsable(views[fallback], now)
+	if firstOK {
+		if !secondOK {
+			return []string{preferred}
+		}
+		firstReset, _ := budgetExpiry(views[preferred])
+		secondReset, horizon := budgetExpiry(views[fallback])
+		if !firstReset.IsZero() && !secondReset.IsZero() && secondReset.Before(firstReset) && secondReset.After(now) && !secondReset.After(now.Add(horizon)) {
+			return []string{fallback, preferred}
+		}
+		return []string{preferred, fallback}
+	}
+	first := views[preferred]
+	verifiedExhausted := first.Observed && first.AgeSeconds >= 0 && first.AgeSeconds <= grantStaleAfter.Seconds() && bandFor(first, true, now).band < 0
+	if secondOK && (dead(preferred) || verifiedExhausted) {
+		return []string{fallback}
+	}
+	return nil
 }
 
 // better is a strict total order so the stable sort keeps pool order among
@@ -536,6 +637,9 @@ type secretEntry struct {
 	// active grant per connection (rankGrants) and BrokerGrant then names it.
 	// Exactly one of env, brokerGrant or brokerGrants is set.
 	BrokerGrants []string `json:"brokerGrants"`
+	// GrantPolicy applies to the whole shared sidecar catalog, not a guest role.
+	// Empty retains band ranking; prefer-first requires exactly two Codex grants.
+	GrantPolicy string `json:"grantPolicy"`
 	// QuotaProvider enables response-header observation for this entry. Empty
 	// preserves the existing relay path without quota work.
 	QuotaProvider string   `json:"quotaProvider"`
@@ -641,9 +745,31 @@ func (e *secretEntry) resolve() error {
 	current := e.activeGrant()
 	candidates := []string{current}
 	if len(e.BrokerGrants) > 1 {
-		candidates = rankGrants(e.BrokerGrants, e.broker.grantViews(now), current, now, e.broker.isDead)
+		views := e.broker.grantViews(now)
+		if e.GrantPolicy == "prefer-first" {
+			candidates = preferFirstGrants(e.BrokerGrants, views, now, e.broker.isDead)
+		} else {
+			candidates = rankGrants(e.BrokerGrants, views, current, now, e.broker.isDead)
+			// Admission may rely on the fresh usable tier. A failed token fetch
+			// must not silently fall through to stale or exhausted quota.
+			fresh := false
+			for _, grant := range candidates {
+				view, ok := views[grant]
+				if bandFor(view, ok, now).band >= 0 && !grantStale(view, ok) {
+					fresh = true
+				}
+			}
+			eligible := make([]string, 0, len(candidates))
+			for _, grant := range candidates {
+				view, ok := views[grant]
+				if bandFor(view, ok, now).band >= 0 && (!fresh || !grantStale(view, ok)) && !e.broker.isDead(grant, now) {
+					eligible = append(eligible, grant)
+				}
+			}
+			candidates = eligible
+		}
 	}
-	var lastErr error
+	lastErr := fmt.Errorf("no eligible grant with usable quota")
 	for _, grant := range candidates {
 		token, expiresAt, err := e.broker.token(grant)
 		if err != nil {
@@ -743,6 +869,11 @@ func loadSecretsWithBrokerClient(logger *slog.Logger, brokerURL string, client *
 				exitFn(1)
 				return nil
 			}
+		}
+		if e.GrantPolicy != "" && (e.GrantPolicy != "prefer-first" || len(e.BrokerGrants) != 2 || e.BrokerGrants[0] == e.BrokerGrants[1] || e.QuotaProvider != "codex") {
+			logger.Error("invalid grantPolicy: prefer-first requires two distinct Codex grants; refusing to start")
+			exitFn(1)
+			return nil
 		}
 		if len(e.BrokerGrants) > 0 {
 			// The pool's first member is the preference until quota says

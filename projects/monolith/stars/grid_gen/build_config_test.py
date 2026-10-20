@@ -1,5 +1,6 @@
 """Static checks for the grid image's dependency and runtime isolation."""
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -84,7 +85,40 @@ def test_grid_runtime_image_is_amd64_only_and_non_root():
     assert "arm64 = False" in image
     final_image = _named_target(build, "stars_grid_image")
     assert 'base = ":stars_grid_apko_base"' in final_image
-    assert "multi_platform = False" in final_image
+    assert final_image.startswith("py3_image(")
+    assert "bash_symlink = False" in final_image
+
+    # Verify the wrapper's surviving path: one image inheriting the apko user,
+    # with the public image and its digest both selecting Linux AMD64 in CI.
+    macro = ast.parse(
+        (MONOLITH.parents[1] / "bazel/tools/oci/py3_image.bzl").read_text()
+    )
+    calls = [
+        node
+        for node in ast.walk(macro)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    images = [call for call in calls if call.func.id == "oci_image"]
+    assert len(images) == 1
+    image_attrs = {kw.arg: kw.value for kw in images[0].keywords}
+    assert isinstance(image_attrs["base"], ast.Name)
+    assert image_attrs["base"].id == "base"
+    assert "user" not in image_attrs  # Preserve uid 65532 from the custom base.
+    assert not any(call.func.id == "oci_image_index" for call in calls)
+    transitions = [
+        call for call in calls if call.func.id == "platform_transition_filegroup"
+    ]
+    assert len(transitions) == 2
+    for transition in transitions:
+        attrs = {kw.arg: kw.value for kw in transition.keywords}
+        selection = attrs["target_platform"]
+        assert isinstance(selection, ast.Call)
+        assert isinstance(selection.func, ast.Name)
+        assert selection.func.id == "select"
+        platforms = ast.literal_eval(selection.args[0])
+        assert platforms["@platforms//cpu:x86_64"] == (
+            "//bazel/tools/platforms:linux_x86_64"
+        )
 
 
 def test_grid_runtime_contains_native_cpp_library_on_both_architectures():

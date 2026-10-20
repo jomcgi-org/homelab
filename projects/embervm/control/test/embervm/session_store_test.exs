@@ -97,12 +97,14 @@ defmodule Embervm.SessionStoreTest do
   defmodule RejectInvokeStartOpLog do
     def append(_op_log, %{kind: :session_invoke_started}), do: {:error, :injected_write_failure}
     def append(op_log, op), do: SQLite.append(op_log, op)
+    def load_residency_intents(op_log), do: SQLite.load_residency_intents(op_log)
     def load_sessions(op_log), do: SQLite.load_sessions(op_log)
   end
 
   defmodule RejectInvokeCompletionOpLog do
     def append(_op_log, %{kind: :session_invoked}), do: {:error, :injected_write_failure}
     def append(op_log, op), do: SQLite.append(op_log, op)
+    def load_residency_intents(op_log), do: SQLite.load_residency_intents(op_log)
     def load_sessions(op_log), do: SQLite.load_sessions(op_log)
   end
 
@@ -220,6 +222,7 @@ defmodule Embervm.SessionStoreTest do
   defmodule RejectCreateOpLog do
     def append(_op_log, %{kind: :session_created}), do: {:error, :injected_write_failure}
     def append(op_log, op), do: SQLite.append(op_log, op)
+    def load_residency_intents(op_log), do: SQLite.load_residency_intents(op_log)
     def load_sessions(op_log), do: SQLite.load_sessions(op_log)
   end
 
@@ -723,6 +726,7 @@ defmodule Embervm.SessionStoreTest do
 
     def append(op_log, op), do: SQLite.append(op_log, op)
 
+    def load_residency_intents(op_log), do: SQLite.load_residency_intents(op_log)
     def load_sessions(op_log), do: SQLite.load_sessions(op_log)
   end
 

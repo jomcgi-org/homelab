@@ -173,13 +173,21 @@ defmodule Embervm.BaseBuilderTest do
 
   test "a valid admission drives BuildBase and writes a built base into status" do
     agent = start_recorder()
+    test_pid = self()
 
-    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1", "sha256:abc")} end
+    build_fun = fn :fake_channel, req ->
+      send(test_pid, {:image_request, req})
+      {:ok, resp("snap1", "sha256:abc")}
+    end
 
     builder =
       start_builder(status_writer: recording_status_writer(agent), build_fun: build_fun)
 
     :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_receive {:image_request, req}, 1_000
+    refute Map.has_key?(req, :guest_port)
+    assert req.image_ref == "imgA"
 
     assert_eventually(fn ->
       case latest(agent, "w") do
@@ -505,6 +513,7 @@ defmodule Embervm.BaseBuilderTest do
 
     assert_receive {:req, req}, 1_000
     # The image lane's top-level image_ref is empty; source is the ZipSource.
+    refute Map.has_key?(req, :guest_port)
     assert req.image_ref in [nil, ""]
     assert {:zip, %ZipSource{} = zip} = req.source
     assert zip.runtime_image_ref == "ghcr.io/runtimes/python:pinned"

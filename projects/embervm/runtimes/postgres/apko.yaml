@@ -8,7 +8,8 @@ contents:
     - ca-certificates-bundle
     # PostgreSQL 16 server + client (initdb, postgres, createdb, psql, pg_ctl).
     # Wolfi ships versioned package names; 16 is the current stable line. If a
-    # future bump is needed, change here and re-run format to regenerate the lock.
+    # future bump is needed, change here and regenerate the lock with:
+    # ./bazel/tools/format/update-apko-locks.sh projects/embervm/runtimes/postgres/apko.yaml
     # The binaries land under /usr/bin (symlinked from the versioned libexec dir);
     # the guest-init PATH default (cmdline.go setDefaultEnv) also includes
     # /usr/libexec/postgresql to cover the versioned layout.

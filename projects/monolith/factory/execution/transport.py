@@ -97,6 +97,15 @@ class EmberTurnNotInvoked(EmberVMTransportError):
     """
 
 
+class EmberResidencyNotDispatched(EmberVMTransportError):
+    """Authenticated exact-operation proof that the physical POST never ran."""
+
+    def __init__(self, proof: dict, receipt_id: str | None):
+        super().__init__("Residency changed before invoke handoff")
+        self.proof = proof
+        self.receipt_id = receipt_id
+
+
 class EmberControlPlaneUnavailable(EmberVMTransportError):
     """The invoke connection to the EmberVM control plane was lost.
 
@@ -880,6 +889,7 @@ class ShimTransport(Protocol):
         admission_check: Callable[[], Awaitable[None]] | None = None,
         receipt_claim_owner: str | None = None,
         invocation_record: dict | None = None,
+        residency: dict | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -1302,7 +1312,9 @@ class EmberVmShimTransport:
                 reason="control_plane_unavailable",
             ) from exc
 
-    async def get_session(self, ember_session_id: str) -> dict:
+    async def get_session(
+        self, ember_session_id: str, session_token: str | None = None
+    ) -> dict:
         """Read one control plane session by its EmberVM session id (management auth).
 
         This is the exact-session read behind the reaper confirmation step:
@@ -1324,7 +1336,11 @@ class EmberVmShimTransport:
             raise EmberVMTransportError("EMBERVM_URL is not configured")
 
         url = f"{EMBERVM_URL}/v1/sessions/{ember_session_id}"
-        headers = auth_headers()
+        headers = (
+            {"Authorization": f"Bearer {session_token}"}
+            if session_token
+            else auth_headers()
+        )
         # Same short bound as list_sessions: a status read must fail fast,
         # never inherit the twelve-hour invoke budget.
         timeout = httpx.Timeout(
@@ -1361,6 +1377,29 @@ class EmberVmShimTransport:
                 exc,
             )
             raise EmberVMTransportError(str(exc)) from exc
+
+    async def residency_request(
+        self,
+        guest_id: str,
+        token: str,
+        method: str,
+        *,
+        operation_id: str | None = None,
+        key: str | None = None,
+        payload: dict | None = None,
+    ) -> dict:
+        url = f"{EMBERVM_URL}/v1/sessions/{guest_id}/residency"
+        if operation_id is not None:
+            url += f"/{operation_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+        if key is not None:
+            headers["Idempotency-Key"] = key
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(10, connect=SUBMIT_CONNECT_TIMEOUT)
+        ) as client:
+            response = await client.request(method, url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
 
     async def prewarm_session(
         self,
@@ -1423,6 +1462,7 @@ class EmberVmShimTransport:
         admission_check: Callable[[], Awaitable[None]] | None = None,
         receipt_claim_owner: str | None = None,
         invocation_record: dict | None = None,
+        residency: dict | None = None,
     ) -> tuple[Turn, EmberSession]:
         # Set None explicitly for unrelated deliveries, including a nested
         # delivery started in a factory callback. Always restore the caller's
@@ -1431,7 +1471,9 @@ class EmberVmShimTransport:
         from factory.execution.store import rollout_handoff_enabled
 
         invocation = _DeliveryInvocation(
-            observer_record=invocation_record if rollout_handoff_enabled() else None
+            observer_record=invocation_record
+            if rollout_handoff_enabled() or residency is not None
+            else None
         )
         invocation_token = _delivery_invocation.set(invocation)
         try:
@@ -1469,6 +1511,7 @@ class EmberVmShimTransport:
                     claim_owner=claim_owner,
                     dispatch_count=dispatch_count,
                     receipt_claim_owner=receipt_claim_owner,
+                    residency=residency,
                 )
                 if turn.terminal_reason is not None:
                     span.set_attribute("agent.terminal_reason", turn.terminal_reason)
@@ -1510,6 +1553,7 @@ class EmberVmShimTransport:
         claim_owner: str | None = None,
         dispatch_count: int = 0,
         receipt_claim_owner: str | None = None,
+        residency: dict | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -1626,6 +1670,9 @@ class EmberVmShimTransport:
             }
             if dispatch_id is not None:
                 headers["X-Ember-Dispatch-Id"] = dispatch_id
+            if residency is not None:
+                headers["X-Ember-Residency-Operation"] = residency["operation_id"]
+                headers["X-Ember-Residency-Epoch"] = residency["residency_epoch"]
             try:
                 await _check_delivery_admission()
                 receipt = None
@@ -1660,7 +1707,7 @@ class EmberVmShimTransport:
                     async with httpx.AsyncClient(timeout=timeout) as client:
                         from factory.execution.store import rollout_handoff_enabled
 
-                        if rollout_handoff_enabled():
+                        if rollout_handoff_enabled() or residency is not None:
                             # Receipt preparation yields after the admission
                             # check above. Fence a shutdown in that window too.
                             await _check_delivery_admission()
@@ -1676,6 +1723,23 @@ class EmberVmShimTransport:
                         response = await client.post(
                             url, content=body.encode(), headers=headers
                         )
+                        if (
+                            residency is not None
+                            and response.status_code == 409
+                            and response.headers.get(INVOKE_OUTCOME_HEADER)
+                            == "not_dispatched"
+                        ):
+                            proof = response.json()
+                            if (
+                                proof.get("outcome") == "not_dispatched"
+                                and proof.get("session_id") == current.session_id
+                                and proof.get("dispatch_id") == dispatch_id
+                                and proof.get("operation_id")
+                                == residency["operation_id"]
+                            ):
+                                raise EmberResidencyNotDispatched(
+                                    proof, receipt["id"] if receipt else None
+                                )
                         brick_gone = _brick_gone_from_response(response)
                         if brick_gone is not None:
                             logger.warning(
@@ -1762,13 +1826,20 @@ class EmberVmShimTransport:
                 raise EmberVMTransportError(str(exc)) from exc
 
         try:
-            turn = await _invoke_with_retryable_backoff(
-                lambda: invoke(ember, cli_session_id)
-            )
+            # Once an intent exists, transport failures are not permission to
+            # repeat a POST or replace its session. The exact receipt owns it.
+            if residency is not None:
+                turn = await invoke(ember, cli_session_id)
+            else:
+                turn = await _invoke_with_retryable_backoff(
+                    lambda: invoke(ember, cli_session_id)
+                )
             if workspace_recovery is not None:
                 turn = turn._replace(workspace_recovery=workspace_recovery)
             return turn, ember
         except EmberBrickGone as exc:
+            if residency is not None:
+                raise
             # Import at runtime to avoid the store -> transport type import
             # cycle. This is the existing pending-message dispatch bound, not
             # a second recovery counter.

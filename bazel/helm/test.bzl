@@ -34,47 +34,6 @@ def helm_template_test(name, chart, release_name, namespace, values_files, chart
         **kwargs
     )
 
-def helm_annotation_test(name, chart, chart_files, release_name, namespace, annotations, set = [], **kwargs):
-    """Creates a test that renders a Helm chart and asserts pod template annotations are present.
-
-    This test renders the chart with helm template and checks that specific
-    key=value annotations appear in the pod template metadata. Useful for
-    asserting Linkerd, sidecar, or other required annotations are set by default.
-
-    Args:
-        name: Name of the test target
-        chart: Path to chart directory (e.g., "projects/cluster_agents/deploy")
-        chart_files: Label for chart's filegroup (e.g., ":chart")
-        release_name: Helm release name
-        namespace: Kubernetes namespace for rendering
-        annotations: List of "KEY:VALUE" strings to assert in the rendered output
-        set: Optional list of "K=V" strings forwarded as --set flags to helm template,
-             allowing the chart to be rendered with non-default values
-             (e.g., ["imagePullSecret.enabled=true", "priorityClassName=system-cluster-critical"]).
-        **kwargs: Additional arguments passed to sh_test
-    """
-
-    # Build interleaved --set K=V args from the set list
-    set_args = []
-    for kv in set:
-        set_args += ["--set", kv]
-
-    sh_test(
-        name = name,
-        srcs = ["//bazel/helm:helm-assert-annotations.sh"],
-        args = [
-            "$(rootpath @multitool//tools/helm)",
-            release_name,
-            chart,
-            namespace,
-        ] + set_args + annotations,
-        data = [
-            "@multitool//tools/helm",
-            chart_files,
-        ],
-        **kwargs
-    )
-
 def helm_lint_test(name, chart_path = None, extra_values = [], **kwargs):
     """Creates a test that runs helm lint on a chart.
 

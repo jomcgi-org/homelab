@@ -202,6 +202,7 @@ def test_agents_tier_has_exact_restricted_read_rbac(documents: list[dict]) -> No
         "kargo-monolith",
         "kargo-monolith-agents",
         "kargo-monolith-public",
+        "kargo-scotland-connector",
     }
     assert all(
         role["rules"]

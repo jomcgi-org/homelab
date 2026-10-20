@@ -21,6 +21,7 @@ rbac:
       - kargo-monolith
       - kargo-monolith-agents
       - kargo-monolith-public
+      - kargo-scotland-connector
 
 backend:
   # Whether this deployment runs the leader-elected singletons (Discord bot,
@@ -161,6 +162,9 @@ agents:
     # response observers. Requires resultReceiptsEnabled and response loss
     # recovery for adoption; other turns receive a bounded five-second grace.
     rolloutHandoffEnabled: false
+    # Existing-session capacity waits only; no new-session credential bootstrap.
+    # Roll back the producer before withdrawing Ember admission support.
+    asyncResidencyEnabled: false
     # Resume, rather than settle, a held turn whose guest a brick drain
     # interrupted on exactly this dispatch (the guest parked with an
     # interrupted_turn naming it). The live node workflow turns the hold into
@@ -717,6 +721,7 @@ jobs:
       replaces: hikes.refresh_forecasts
       args: ["hikes-refresh-forecasts"]
       schedule: "20 */2 * * *" # every 2h (was 7200s)
+      s3: true # refresh also materializes walks.json for the Scotland connector
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 1800
       suspend: false
@@ -1932,6 +1937,12 @@ swarm:
   # Concurrent Codex dispatches. Three concurrent dispatches have been killed
   # before, so this stays at 2 until there is evidence it can go higher.
   codexConcurrency: 2
+  # Enable only after every EmberVM sidecar excludes exhausted/stale fallback.
+  # Independent chart promotion keeps the compatibility gate off initially.
+  codexExhaustedGrantExclusion: false
+  # Set codex-b before activating the sidecar's shared prefer-first policy,
+  # after accepting its scope for interactive guests. Empty retains the gate.
+  codexPreferredGrant: ""
   # Per-class, per-role floors on REMAINING quota percent (#5974). A role
   # below its floor is walled for that class and spills through its model
   # pool while a role with a lower floor keeps drawing, so the last slice of
@@ -2081,6 +2092,9 @@ stars:
   sitesKey: "sites.json"
   mapKey: "map.json"
   historyMapKey: "history-map.json"
+  # Written by hikes-refresh-forecasts for the Scotland connector, which reads
+  # this bucket with its own read-only key (hikes/materialize.py).
+  walksKey: "walks.json"
   onepassword:
     itemPath: "vaults/k8s-homelab/items/r2-s3-credentials"
   # Dedicated near-static geospatial computation. The production overlay

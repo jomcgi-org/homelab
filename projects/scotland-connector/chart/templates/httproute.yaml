@@ -1,0 +1,184 @@
+{{- if .Values.route.enabled }}
+{{- if not .Values.route.hostname }}
+{{- fail "route.hostname is required when route.enabled" }}
+{{- end }}
+{{- $prefix := trimSuffix "/" .Values.route.pathPrefix }}
+{{- if and $prefix (not (hasPrefix "/" $prefix)) }}
+{{- fail "route.pathPrefix must start with /" }}
+{{- end }}
+# The connector's public surface: the versioned API and the MCP endpoint,
+# under route.pathPrefix on a shared hostname. Each rule strips the prefix,
+# so the service always sees /v1/... and /mcp. Nothing else on the pod is
+# routable, and the admin port has no Service. These matches are longer than
+# a co-tenant's catch-all "/", so they win under Gateway API precedence.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "scotland-connector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    ingress-tier: {{ .Values.route.tier }}
+    {{- include "scotland-connector.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .Values.route.gateway.name }}
+      namespace: {{ .Values.route.gateway.namespace }}
+  hostnames:
+    - {{ .Values.route.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ printf "%s/v1" $prefix | quote }}
+      {{- if $prefix }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /v1
+      {{- end }}
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ include "scotland-connector.fullname" . }}
+          port: {{ .Values.service.port }}
+          weight: 1
+      timeouts:
+        request: 10s
+    - matches:
+        - path:
+            type: Exact
+            value: {{ printf "%s/mcp" $prefix | quote }}
+      {{- if $prefix }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /mcp
+      {{- end }}
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ include "scotland-connector.fullname" . }}
+          port: {{ .Values.service.port }}
+          weight: 1
+      timeouts:
+        request: 10s
+---
+# Per-client limits keyed on CF-Connecting-IP, in the shape the monolith-public
+# functions route uses and public_faas_rate_limit_test.py exercises against a
+# real Envoy: the first, selector-less rule is a fail-safe bucket that only a
+# missing or malformed identity draws from (Envoy Gateway sets
+# always_consume_default_token_bucket=false for descriptor rules), and the
+# second gives each valid address its own bucket. The regular expression stays
+# beside Distinct so a malformed value cannot mint a fresh bucket. The gateway
+# chart must also raise this route's max_dynamic_descriptors (its
+# publicRateLimitRoutes list) or Envoy's default of 20 evicts busy buckets.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "scotland-connector.fullname" . }}-rate-limit
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scotland-connector.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "scotland-connector.fullname" . }}
+  # Every call is a read, so a retry on a request that never reached a pod
+  # is always safe.
+  retry:
+    numRetries: 2
+    retryOn:
+      triggers:
+        - connect-failure
+        - reset-before-request
+        - refused-stream
+    perRetry:
+      backOff:
+        baseInterval: 25ms
+        maxInterval: 100ms
+  timeout:
+    tcp:
+      connectTimeout: 1s
+  {{- $header := .Values.route.clientIdentity.clientHeader.name }}
+  {{- $assistant := .Values.route.assistantBucket }}
+  {{- if and $assistant.enabled (ne $assistant.unit .Values.route.rateLimit.unit) }}
+  {{- fail "route.assistantBucket.unit must equal route.rateLimit.unit: Envoy Gateway drops the whole local rate limit when rules mix units" }}
+  {{- end }}
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - limit:
+            requests: {{ .Values.route.rateLimit.requests }}
+            unit: {{ .Values.route.rateLimit.unit }}
+        {{- if $assistant.enabled }}
+        # One shared bucket for every address in the assistant ranges (no
+        # Distinct, so all of them count against the same budget).
+        - clientSelectors:
+            - headers:
+                - name: {{ $header | quote }}
+                  type: RegularExpression
+                  value: {{ $assistant.pattern | quote }}
+          limit:
+            requests: {{ $assistant.requests }}
+            unit: {{ $assistant.unit }}
+        {{- end }}
+        - clientSelectors:
+            - headers:
+                - name: {{ $header | quote }}
+                  type: Distinct
+                - name: {{ $header | quote }}
+                  type: RegularExpression
+                  value: {{ .Values.route.clientIdentity.clientHeader.valuePattern | quote }}
+                {{- if $assistant.enabled }}
+                # Assistant addresses are excluded here, or every request
+                # would also spend a per-IP bucket and the shared budget
+                # could never be reached.
+                - name: {{ $header | quote }}
+                  type: RegularExpression
+                  value: {{ $assistant.pattern | quote }}
+                  invert: true
+                {{- end }}
+          limit:
+            requests: {{ .Values.route.rateLimit.requests }}
+            unit: {{ .Values.route.rateLimit.unit }}
+---
+# Cloudflare Workers can set CF-Connecting-IP, so their subrequests are refused
+# rather than trusted as a client identity.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "scotland-connector.fullname" . }}-origin
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scotland-connector.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "scotland-connector.fullname" . }}
+  authorization:
+    defaultAction: Allow
+    rules:
+      - name: deny-same-zone-workers
+        action: Deny
+        principal:
+          headers:
+            - name: CF-Worker
+              values:
+                - {{ .Values.route.clientIdentity.cloudflareZone | quote }}
+      - name: deny-cross-zone-workers
+        action: Deny
+        principal:
+          headers:
+            - name: {{ .Values.route.clientIdentity.clientHeader.name | quote }}
+              values:
+                - {{ .Values.route.clientIdentity.crossZoneWorkerAddress | quote }}
+{{- end }}

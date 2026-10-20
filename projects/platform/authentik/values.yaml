@@ -17,10 +17,6 @@ platformManagement:
 # requires Ember's object-authorization matrix to land before SSO is admitted.
 
 authentik:
-  # Storage class for the wrapper-owned CloudNativePG additionalObject.
-  cnpg:
-    storage:
-      storageClass: longhorn
   # Custom blueprints from ../blueprints/, rendered into a ConfigMap by
   # templates/blueprints-configmap.yaml. The chart discovers every key ending
   # in `.yaml` and authentik's worker applies them, so groups, policy bindings
@@ -85,7 +81,7 @@ authentik:
             name: authentik-pg-app
             key: password
   server:
-    # WINDOW: stopped for the cutover.
+    # The base leaves replicas at zero; values-gke.yaml sets the hub count.
     replicas: 0
     # The chart ships a 3s timeout for the httpGet /-/health/live/ and
     # /-/health/ready/ probes on the server. On 2026-09-22 the kubelet
@@ -138,7 +134,7 @@ authentik:
             name: cloudflare-ingress
             namespace: envoy-gateway-system
   worker:
-    # WINDOW: stopped for the cutover.
+    # The base leaves replicas at zero; values-gke.yaml sets the hub count.
     replicas: 0
     # The worker's probes are exec (`ak healthcheck`), which boots Django and
     # checks the database, unlike the server's fast httpGet probes. The chart
@@ -212,7 +208,7 @@ cnpg:
   database: authentik
   owner: authentik
   monitoring:
-    enablePodMonitor: true
+    enablePodMonitor: false
   bootstrap:
     recovery: null
   externalClusters: []

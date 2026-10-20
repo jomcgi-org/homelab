@@ -3646,7 +3646,10 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # Review floors and the correction/re-review reserve add about 430
     # characters: a planner must include those server costs even when its
     # requested review budget is smaller. Allow 500 for that funding contract.
-    assert len(prompt) < 23_000
+    # #6992 follow-up makes the Sol-first override exception actionable and
+    # distinguishes schema/state/protocol migrations from routine UI work.
+    # Allow 800 characters for this admission contract.
+    assert len(prompt) < 23_800
     assert (task, nodes, runs) == before
 
 
@@ -10878,6 +10881,251 @@ def test_machine_verified_task_still_uses_pool_selection(feedback_db, monkeypatc
     assert calls[1] == ("worker", policy)
 
 
+def implementation_exception():
+    return {
+        "category": "migration",
+        "risk": "Concurrent readers can observe partially migrated durable schema state",
+        "why_default_insufficient": "Requires reasoning across protocol versions and rollback invariants together",
+    }
+
+
+def sol_first_task(**overrides):
+    return feedback_task(
+        allowed_models=["astra", "sol", "spark", "sonnet", "opus"],
+        conductor_model="astra",
+        worker_model="astra",
+        reviewer_model="opus",
+        model_pools={"implement": ["sol", "astra", "spark", "sonnet"]},
+        role_effort={"implement": "medium"},
+        **overrides,
+    )
+
+
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"model": "astra", "effort": "xhigh"},
+        {"model": "astra"},
+        {"effort": "xhigh"},
+        {
+            "model": "astra",
+            "implementation_exception": {
+                "category": "migration",
+                "risk": "UI page renames",
+                "why_default_insufficient": "Many files",
+            },
+        },
+    ],
+)
+def test_sol_first_routine_override_refused_without_changing_graph(
+    feedback_db, monkeypatch, action, overrides
+):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    task, policy = sol_first_task()
+    source = plan_edit("pages", "implement", **overrides)
+    decision = (
+        source
+        if action == "add_node"
+        else {
+            "action": "plan",
+            "reason": "UI page migration",
+            "edits": [source],
+        }
+    )
+    before = conductor.graph.load_graph(task["id"])
+    revision = conductor.graph.current_version(task["id"])
+    preview = conductor.preview_decision(
+        task["id"], decision, expected_revision=revision
+    )
+    assert not preview["ok"]
+    conductor._apply_decision(task, policy, decision, "test:sol-override", [])
+    assert conductor.graph.load_graph(task["id"]) == before
+    assert conductor.graph.current_version(task["id"]) == revision
+
+
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+@pytest.mark.parametrize("model", [None, "sol", "astra", "opus"])
+def test_sol_first_admission_routes_or_preserves_justified_exception(
+    feedback_db, monkeypatch, action, model
+):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    task, policy = sol_first_task()
+    overrides = {} if model is None else {"model": model}
+    if model in ("astra", "opus"):
+        overrides.update(
+            effort="xhigh", implementation_exception=implementation_exception()
+        )
+    source = plan_edit("work", "implement", **overrides)
+    decision = (
+        source
+        if action == "add_node"
+        else {
+            "action": "plan",
+            "reason": "deliver",
+            "edits": [source],
+        }
+    )
+    revision = conductor.graph.current_version(task["id"])
+    preview = conductor.preview_decision(
+        task["id"], decision, expected_revision=revision
+    )
+    assert preview["ok"], preview
+    conductor._apply_decision(task, policy, decision, "test:sol-admission", [])
+    node = conductor.graph.load_graph(task["id"])[0]
+    assert node["model"] == (model or "sol")
+    assert model_pool.effort_for(node["node_key"], policy, node.get("effort")) == (
+        "xhigh" if model in ("astra", "opus") else "medium"
+    )
+    if model in ("astra", "opus"):
+        assert (
+            "Concurrent readers" in preview["projection"]["edits"][0]["stated_reason"]
+        )
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_: "main")
+    dispatched = dispatch_next(task, policy, "implement_work")
+    assert dispatched["pin"]["model"] == (model or "sol")
+    assert dispatched["pin"]["effort"] == (
+        "xhigh" if model in ("astra", "opus") else "medium"
+    )
+
+
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+def test_sol_first_explicit_sol_uses_snapshot_quota_fallback(
+    feedback_db, monkeypatch, action
+):
+    from factory.orchestration import model_pool
+
+    task, policy = sol_first_task()
+    # Use the real selector with all Codex models walled, as in production.
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: {"codex": {"headline_used_percent": 100, "age_seconds": 0}},
+    )
+    source = plan_edit("work", "implement", model="sol")
+    decision = (
+        source
+        if action == "add_node"
+        else {
+            "action": "plan",
+            "reason": "deliver",
+            "edits": [source],
+        }
+    )
+    snapshot = conductor._decision_snapshot(task["id"], policy, decision=decision)
+    assert "implement" in snapshot.model_choices
+    assert snapshot.model_choices["implement"]["model"] != "sol"
+    projection = conductor.project_decision(task, policy, decision, snapshot)
+    assert projection.refusal is None
+    assert (
+        projection.prepared[0]["model"] == snapshot.model_choices["implement"]["model"]
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides, expected_model, expected_effort",
+    [({}, "sol", "medium"), ({"model": "astra", "effort": "xhigh"}, "astra", "xhigh")],
+)
+def test_sol_first_implementation_pool_accepts_accountable_exceptions(
+    feedback_db, monkeypatch, overrides, expected_model, expected_effort
+):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    task, policy = feedback_task(
+        allowed_models=["astra", "sol", "spark", "sonnet", "opus"],
+        conductor_model="astra",
+        worker_model="astra",
+        reviewer_model="opus",
+        model_pools={
+            "worker": ["astra", "sol", "spark", "sonnet"],
+            "implement": ["sol", "astra", "spark", "sonnet"],
+        },
+        role_effort={"implement": "medium"},
+    )
+    if overrides:
+        overrides["implementation_exception"] = implementation_exception()
+    edit = plan_edit("work", "implement", **overrides)
+    prepared = conductor._prepare_add(task, policy, edit)
+    assert prepared["model"] == expected_model
+    assert (
+        model_pool.effort_for("implement_work", policy, prepared["effort"])
+        == expected_effort
+    )
+    investigate = conductor._prepare_add(task, policy, plan_edit("look", "investigate"))
+    assert investigate["model"] == "astra"
+
+
+@pytest.mark.parametrize("role", ["investigate", "integrate", "review"])
+def test_sol_first_exception_rule_does_not_change_other_roles(feedback_db, role):
+    task, policy = sol_first_task()
+    model = "opus" if role == "review" else "astra"
+    prepared = conductor._prepare_add(
+        task, policy, plan_edit("other", role, model=model, effort="xhigh")
+    )
+    assert prepared["model"] == model and prepared["effort"] == "xhigh"
+
+
+def test_sol_first_exception_rule_preserves_judgment_floor(feedback_db):
+    task, policy = sol_first_task(task_class="judgment-analysis")
+    policy = {**policy, "model_pools": {**policy["model_pools"], "conductor": ["opus"]}}
+    prepared = conductor._prepare_add(task, policy, plan_edit("work", "implement"))
+    assert prepared["model"] == "opus"
+    with pytest.raises(conductor._EditRefused) as exc:
+        conductor._prepare_add(
+            task,
+            policy,
+            plan_edit(
+                "cheap",
+                "implement",
+                model="sol",
+                implementation_exception=implementation_exception(),
+            ),
+        )
+    assert exc.value.code == "below_judgment_floor"
+
+
+def test_sol_first_historical_astra_node_and_running_pin_are_unchanged(
+    feedback_db, monkeypatch
+):
+    task, policy = sol_first_task()
+    # An old graph pin remains runnable after admission policy changes.
+    assert conductor._add(
+        task,
+        policy,
+        "implement_historical",
+        "Existing UI page migration",
+        [],
+        "astra",
+        "test:historical",
+        "Historical planner choice",
+        effort="xhigh",
+    ).ok
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_: "main")
+    first = dispatch_next(task, policy, "implement_historical")
+    assert first["pin"]["model"] == "astra"
+    assert first["pin"]["effort"] == "xhigh"
+    before = conductor.graph.node_runs(task["id"])
+    source = plan_edit("routine", "implement")
+    conductor._apply_decision(task, policy, source, "test:new-routine", before)
+    after = conductor.graph.node_runs(task["id"])
+    assert after == before
+    assert (
+        next(
+            n
+            for n in conductor.graph.load_graph(task["id"])
+            if n["node_key"] == "implement_historical"
+        )["model"]
+        == "astra"
+    )
+
+
 def test_planner_prompt_names_only_the_judgment_floor(feedback_db):
     task, _policy = feedback_task()
     judgment = conductor.planner_prompt(task, [], [], task_class="judgment-analysis")
@@ -12432,6 +12680,49 @@ def test_a_failed_correction_opens_the_next_round_against_the_same_review(
     )
 
 
+@pytest.mark.parametrize("reason", ["guest_cessation_confirmed", "artifact_missing"])
+@pytest.mark.parametrize("rounds", [1, 2])
+def test_failed_rereview_preserves_delivered_correction_and_names_review_failure(
+    feedback_db, monkeypatch, reason, rounds
+):
+    """A lost verdict is no evidence that the delivered correction needs rewriting."""
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_TWO}}
+    )
+    task, policy = reviewed_task(rounds=rounds)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_feedback_node(
+        task,
+        "correct_1",
+        {
+            "status": "complete",
+            "summary": "Delivered the requested correction",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+    run_feedback_node(task, "review_1", {}, status="failed", reason=reason)
+    history = conductor.graph.node_runs(task["id"])
+    assert (
+        conductor._failed_round(
+            task["id"],
+            conductor.graph.load_graph(task["id"]),
+            conductor.graph.node_runs(task["id"]),
+        )
+        is None
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_2" not in nodes and "review_2" not in nodes
+    deviation = node_planner_context(nodes["conductor_1"])["deviation"]
+    assert deviation["code"] == "node_failed"
+    assert deviation["node_key"] == "review_1"
+    assert conductor._review_rounds_used(task["id"]) == 1
+    assert conductor.graph.node_runs(task["id"]) == history
+
+
 def test_a_delivered_reopened_round_does_not_name_the_failed_one(
     feedback_db, monkeypatch
 ):
@@ -13086,33 +13377,6 @@ def test_a_delivering_round_keeps_its_re_review(feedback_db):
     conductor.reconcile_task(task["id"], policy, object())
     keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
     assert {"correct_1", "review_1", "correct_2", "review_2"} <= keys
-
-
-def test_a_re_review_that_settled_without_a_verdict_opens_the_next_round(
-    feedback_db, monkeypatch
-):
-    monkeypatch.setattr(
-        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_TWO}}
-    )
-    task, policy = reviewed_task(rounds=2)
-    conductor.reconcile_task(task["id"], policy, object())
-    run_feedback_node(
-        task,
-        "correct_1",
-        {
-            "status": "complete",
-            "summary": "Applied round 1",
-            "pr_number": 21,
-            "head_sha": HEAD_TWO,
-        },
-        head=HEAD_TWO,
-    )
-    fail_round_node(task, "review_1")
-
-    conductor.reconcile_task(task["id"], policy, object())
-    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
-    assert {"correct_2", "review_2"} <= keys
-    assert not any(key.startswith("conductor_") for key in keys)
 
 
 def test_a_failed_final_round_reaches_the_planner_as_exhausted(feedback_db):
@@ -17390,8 +17654,11 @@ def test_productive_extensions_preserve_original_policy(feedback_db, monkeypatch
     )["ok"]
     settle_funding(task, funding_decision())
     after = controls.task_snapshot(task["id"])
-    assert after["policy"]["task_budget_usd"] == 20
-    assert conductor.graph.budget_snapshot(task["id"])["task_budget_usd"] == 20
+    assert after["policy"]["task_budget_usd"] == policy["task_budget_usd"]
+    assert (
+        conductor.graph.budget_snapshot(task["id"])["task_budget_usd"]
+        == policy["task_budget_usd"]
+    )
     assert after["policy"]["max_task_turns_hard"] == before["turns_used"] + 4
     with Session(conductor.get_engine()) as db:
         assert json.loads(controls._receipt(db, task["id"]).policy_json) == policy
@@ -17409,7 +17676,10 @@ def test_productive_extensions_preserve_original_policy(feedback_db, monkeypatch
         task,
         funding_decision(task_budget_usd=25, additional_work_turns=3, action="steer"),
     )
-    assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 25
+    assert (
+        controls.task_snapshot(task["id"])["policy"]["task_budget_usd"]
+        == policy["task_budget_usd"]
+    )
     with controls._read_session() as db:
         assert funding.amendment(db, task["id"])["next_plan"].startswith("Correct")
 
@@ -17499,7 +17769,7 @@ def test_bookkeeping_without_new_evidence_cannot_renew_funding(
     assert not funding.request(task, "Same blocker, no new work evidence")
     snapshot = controls.task_snapshot(task["id"])
     assert snapshot["task_paused"]
-    assert snapshot["policy"]["task_budget_usd"] == 20
+    assert snapshot["policy"]["task_budget_usd"] == policy["task_budget_usd"]
     with controls._read_session() as db:
         assert funding.pending(db, task["id"]) is None
         blocked = funding.latest(db, task["id"], "allocation_recovery_required")
@@ -17610,10 +17880,10 @@ def test_funding_settles_against_a_spent_node_allocation(feedback_db, monkeypatc
 
     task, _ = exhausted_allocation_task(monkeypatch, "review_retirement_audit", 10)
     assert funding.request(task, "Request against the spent review allocation")
-    settle_funding(task, funding_decision(task_budget_usd=60))
+    settle_funding(task, funding_decision(task_budget_usd=50))
     snapshot = controls.task_snapshot(task["id"])
     assert not snapshot["task_paused"]
-    assert snapshot["policy"]["task_budget_usd"] == 60
+    assert snapshot["policy"]["task_budget_usd"] == 50
     with controls._read_session() as db:
         assert funding.amendment(db, task["id"]) is not None
         assert funding.pending(db, task["id"]) is None
@@ -17750,6 +18020,161 @@ def test_spent_allocation_needs_no_operator_recovery_and_keeps_its_charges(
     assert conductor.graph.budget_snapshot(task["id"])["accounted_cost_usd"] == 4
 
 
+@pytest.mark.parametrize("action", ["continue", "steer"])
+@pytest.mark.parametrize("creation_enabled", [False, True])
+def test_funding_increase_requires_operator_amendment(
+    feedback_db, monkeypatch, action, creation_enabled
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "Assess the next tranche")
+    monkeypatch.setenv(
+        "FACTORY_CONDUCTOR_FUNDING_ENABLED", str(creation_enabled).lower()
+    )
+    before = controls.task_snapshot(task["id"])
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    run_feedback_node(
+        task,
+        request["node_key"],
+        funding_decision(action=action, task_budget_usd=policy["task_budget_usd"] + 10),
+    )
+    task = conductor._task(task["id"])
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    after = controls.task_snapshot(task["id"])
+    assert after["task_paused"]
+    assert after["state"] == "admitted"
+    assert after["policy"] == before["policy"]
+    assert after["allowance"] == before["allowance"]
+    assert after["committed_cost_usd"] >= before["committed_cost_usd"]
+    with controls._read_session() as db:
+        assert funding.amendment(db, task["id"]) is None
+        assert funding.pending(db, task["id"]) is None
+        settled = funding.latest(db, task["id"], "funding_review_settled")
+        approval = funding.latest(db, task["id"], "funding_budget_approval_required")
+        assert settled["refusal"] is None
+        assert settled["budget_approval_required"] == {
+            "approved_task_budget_usd": policy["task_budget_usd"],
+            "proposed_task_budget_usd": policy["task_budget_usd"] + 10,
+        }
+        assert approval["request_id"] == settled["request_id"]
+        assert json.loads(controls._receipt(db, task["id"]).policy_json) == policy
+        settled_id = settled["audit_id"]
+    # Durable replay of the completed review cannot grant or charge it again.
+    funding.settle(task, conductor.graph.node_runs(task["id"])[-1], request)
+    with controls._read_session() as db:
+        assert (
+            funding.latest(db, task["id"], "funding_review_settled")["audit_id"]
+            == settled_id
+        )
+        assert funding.amendment(db, task["id"]) is None
+
+
+@pytest.mark.parametrize("charged", [5.0, 100.0])
+def test_funding_reports_spend_without_raising_approved_budget(
+    feedback_db, monkeypatch, charged
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, policy = funding_task(monkeypatch)
+    with Session(feedback_db) as db:
+        start = db.exec(
+            select(FactoryStart).where(FactoryStart.task_id == task["id"])
+        ).first()
+        start.cost_usd = charged
+        db.add(start)
+        db.commit()
+    assert funding.request(task, "Renew within the approved envelope")
+    before = controls.task_snapshot(task["id"])
+    settle_funding(task, funding_decision(task_budget_usd=20))
+    after = controls.task_snapshot(task["id"])
+    assert not after["task_paused"]
+    assert after["policy"]["task_budget_usd"] == policy["task_budget_usd"]
+    assert after["policy"]["max_task_turns_hard"] > policy["max_task_turns_hard"]
+    assert after["committed_cost_usd"] >= before["committed_cost_usd"] >= charged
+    with controls._read_session() as db:
+        grant = funding.amendment(db, task["id"])
+        assert grant["requested_task_budget_usd"] == 20
+        assert grant["granted_task_budget_usd"] == policy["task_budget_usd"]
+        assert grant["committed_cost_usd"] == after["committed_cost_usd"]
+        assert (
+            funding.latest(db, task["id"], "funding_budget_approval_required") is None
+        )
+
+
+@pytest.mark.parametrize("approved", [45.0, 50.0, 250.0])
+def test_operator_amendment_is_the_budget_increase_authority(
+    feedback_db, monkeypatch, approved
+):
+    from sqlmodel import SQLModel
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    feedback_db.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        feedback_db, tables=[AgentSession.__table__, PendingMessage.__table__]
+    )
+    task, original_policy = funding_task(monkeypatch)
+    proposed = max(50.0, approved)
+    assert funding.request(task, "Assess the next tranche")
+    settle_funding(task, funding_decision(task_budget_usd=proposed))
+    before = controls.task_snapshot(task["id"])
+    assert before["task_paused"]
+    history = conductor.graph.node_runs(task["id"])
+    with controls._read_session() as db:
+        receipt_id = controls._receipt(db, task["id"]).id
+    overlay = {"task_budget_usd": approved}
+    proposal = amendments.preview(receipt_id, overlay, "Approve this exact budget")
+    applied = amendments.apply(
+        receipt_id,
+        overlay,
+        "Approve this exact budget",
+        actor="operator",
+        request_key="approve-budget",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    assert applied["stays_paused"]
+    assert conductor.graph.node_runs(task["id"]) == history
+    amended = controls.task_snapshot(task["id"])
+    assert amended["policy"]["task_budget_usd"] == approved
+    assert amended["committed_cost_usd"] == before["committed_cost_usd"]
+    with controls._read_session() as db:
+        operator_grant = funding.amendment(db, task["id"])
+        assert operator_grant["grant_kind"] == "exact_operator_amendment"
+    controls.set_control("resume_task", "operator", task_id=task["id"])
+    task = conductor._task(task["id"])
+    assert funding.request(task, "Reassess against the approved budget")
+    settle_funding(task, funding_decision(task_budget_usd=proposed))
+    after = controls.task_snapshot(task["id"])
+    assert after["task_id"] == task["id"]
+    assert after["policy"]["task_budget_usd"] == approved
+    assert after["task_paused"] == (approved < proposed)
+    with controls._read_session() as db:
+        grant = funding.amendment(db, task["id"])
+        if approved < proposed:
+            assert grant["audit_id"] == operator_grant["audit_id"]
+            assert (
+                after["policy"]["max_task_turns_hard"]
+                == original_policy["max_task_turns_hard"]
+            )
+        else:
+            assert grant["audit_id"] > operator_grant["audit_id"]
+            assert grant["granted_task_budget_usd"] == approved
+
+
 @pytest.mark.parametrize(
     "judge_pool, expected",
     [(None, "opus"), (["astra"], "astra")],
@@ -17781,7 +18206,10 @@ def test_funding_review_runs_on_the_policy_judge_and_applies(
         settled = funding.latest(db, task["id"], "funding_review_settled")
         assert settled["refusal"] is None
         assert funding.amendment(db, task["id"]) is not None
-    assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 20
+    assert (
+        controls.task_snapshot(task["id"])["policy"]["task_budget_usd"]
+        == policy["task_budget_usd"]
+    )
 
 
 def test_funding_judge_schema_accepts_a_task_budget_past_the_old_ceiling():
@@ -17914,7 +18342,9 @@ def test_completed_funding_review_settles_after_admission_deadline(
             assert settled["refusal"] == "funding evidence changed"
         else:
             assert grant["source_run_id"] == run["id"]
-            assert grant["policy_overlay"]["task_budget_usd"] == 20
+            assert (
+                grant["policy_overlay"]["task_budget_usd"] == policy["task_budget_usd"]
+            )
             assert settled["refusal"] is None
     if changed_issue:
         assert controls.task_snapshot(task["id"])["policy"] == policy
@@ -17960,7 +18390,10 @@ def test_oversight_has_graph_and_start_headroom_after_task_budget_exhaustion(
         db.commit()
     assert funding.request(task, "Budget exhausted")
     settle_funding(task, funding_decision())
-    assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 20
+    assert (
+        controls.task_snapshot(task["id"])["policy"]["task_budget_usd"]
+        == policy["task_budget_usd"]
+    )
 
 
 def test_expired_unstarted_funding_review_is_retired_and_never_runs_normally(
@@ -21022,10 +21455,19 @@ def test_an_escalated_attempt_stays_on_its_rung_when_the_pool_is_spent(
     assert third["pin"]["escalated_from"] == "spark"
 
 
-def test_a_correction_escalates_after_changes_requested(feedback_db, monkeypatch):
+@pytest.mark.parametrize(
+    "pool, initial, escalated",
+    [
+        (["spark", "sol", "astra"], "spark", "sol"),
+        (["sol", "astra", "spark"], "sol", "astra"),
+    ],
+)
+def test_a_correction_escalates_after_changes_requested(
+    feedback_db, monkeypatch, pool, initial, escalated
+):
     head = "a" * 40
-    task, policy = escalation_task(monkeypatch, pool=["spark", "sol", "astra"])
-    complete_feedback_node(task, policy, "implement_work", {}, model="spark", head=head)
+    task, policy = escalation_task(monkeypatch, pool=pool)
+    complete_feedback_node(task, policy, "implement_work", {}, model=initial, head=head)
     complete_feedback_node(
         task,
         policy,
@@ -21042,7 +21484,7 @@ def test_a_correction_escalates_after_changes_requested(feedback_db, monkeypatch
     nodes, runs = graph_state(task["id"])
     review_run = next(run for run in runs if run["node_key"] == "review_work")
     model, _ = conductor._correction_model(nodes, runs, review_run, policy)
-    assert model == "spark"
+    assert model == initial
     assert conductor._add(
         task,
         policy,
@@ -21055,10 +21497,10 @@ def test_a_correction_escalates_after_changes_requested(feedback_db, monkeypatch
         max_attempts=1,
     ).ok
     run = dispatch_next(task, policy, "correct_1")
-    assert run["pin"]["model"] == "sol"
-    assert run["pin"]["escalated_from"] == "spark"
+    assert run["pin"]["model"] == escalated
+    assert run["pin"]["escalated_from"] == initial
     assert run["pin"]["escalation_reason"] == "changes_requested"
-    assert stored_model(feedback_db, run["id"]) == "sol"
+    assert stored_model(feedback_db, run["id"]) == escalated
 
 
 def test_the_correction_model_reads_the_escalated_pin():
@@ -22531,7 +22973,8 @@ def test_planner_defaults_to_one_implementation_and_atomic_repair():
         "Initial investigation must name its uncertainty and the decision enabled"
         in charter
     )
-    assert "Set effort to xhigh before dispatch for non-trivial work" in charter
+    assert "implementation_exception object" in charter
+    assert "UI/design migrations" in charter
     assert "Do not spend a planner session per cleanup edit" in charter
     assert "retained history and server correction/re-review reserves" in charter
     assert "Review must run in a separate session from every implementer" in charter

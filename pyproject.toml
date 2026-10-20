@@ -45,12 +45,12 @@ dependencies = [
     "opentelemetry-exporter-otlp~=1.22",
     # AIS ingest dependencies
     "websockets>=15.0",
-    "certifi",  # CA certificates for SSL in minimal containers
+    "certifi>=2026.10.19",  # GHSA-6q48-6c7w-9gw2; CA bundle for minimal containers
     # Stargazer geospatial dependencies
     "rasterio~=1.3",
     "geopandas>=0.14",
     "shapely~=2.0",
-    "pillow>=12.1.1",
+    "pillow>=13.0.0",
     "astral~=3.2",
     "networkx~=3.0",
     # XML parsing with XXE protection

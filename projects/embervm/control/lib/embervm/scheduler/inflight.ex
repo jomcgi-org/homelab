@@ -130,7 +130,7 @@ defmodule Embervm.Scheduler.Inflight do
 
     safe(fn ->
       sweep_expired(table, now)
-      :ets.insert(table, {{dial_id, ref}, max(mem_mib, 0), now + ttl, nil})
+      :ets.insert(table, {{dial_id, ref}, max(mem_mib, 0), if(ttl == :infinity, do: :infinity, else: now + ttl), nil})
     end)
 
     :ok

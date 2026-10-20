@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "scotland-connector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scotland-connector.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "scotland-connector.selectorLabels" . | nindent 4 }}
+  # Only the public port. Health and metrics stay on the pod's admin port,
+  # which no Service and no route exposes.
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP

@@ -110,7 +110,7 @@ multiarch_http_file(
     extract_path = "kubeconform",
 )
 
-# Atlas, Cilium, and CloudNativePG do not ship their CRDs in the local wrapper
+# Atlas and CloudNativePG do not ship their CRDs in the local wrapper
 # chart renders. Pin the exact operator-version CRDs as inputs, then convert
 # them to the same offline kubeconform schema layout inside the test.
 http_file(
@@ -118,13 +118,6 @@ http_file(
     downloaded_file_path = "atlasmigration.yaml",
     sha256 = "c8cc6727acbabe224073d9d4b8b2e4f4d9c9cb67bae069d3b9122b7184e61b92",
     urls = ["https://raw.githubusercontent.com/ariga/atlas-operator/v0.7.28/config/crd/bases/db.atlasgo.io_atlasmigrations.yaml"],
-)
-
-http_file(
-    name = "cilium_network_policy_crd_1_20_0",
-    downloaded_file_path = "ciliumnetworkpolicy.yaml",
-    sha256 = "62c6de8f358da125b94468d39187edb1cea157d79503fdc50ccec8a6aaa79a76",
-    urls = ["https://raw.githubusercontent.com/cilium/cilium/v1.20.0/pkg/k8s/apis/cilium.io/client/crds/v2/ciliumnetworkpolicies.yaml"],
 )
 
 http_file(
@@ -163,9 +156,6 @@ use_repo(
     "multitool.argocd.linux_arm64",
     "multitool.argocd.linux_x86_64",
     "multitool.argocd.macos_arm64",
-    "multitool.atlas.linux_arm64",
-    "multitool.atlas.linux_x86_64",
-    "multitool.atlas.macos_arm64",
     "multitool.bb.linux_arm64",
     "multitool.bb.linux_x86_64",
     "multitool.bb.macos_arm64",
@@ -181,9 +171,6 @@ use_repo(
     "multitool.crane.linux_arm64",
     "multitool.crane.linux_x86_64",
     "multitool.crane.macos_arm64",
-    "multitool.dyff.linux_arm64",
-    "multitool.dyff.linux_x86_64",
-    "multitool.dyff.macos_arm64",
     "multitool.gh.linux_arm64",
     "multitool.gh.linux_x86_64",
     "multitool.gh.macos_arm64",
@@ -208,9 +195,6 @@ use_repo(
     "multitool.shfmt.linux_arm64",
     "multitool.shfmt.linux_x86_64",
     "multitool.shfmt.macos_arm64",
-    "multitool.yq.linux_arm64",
-    "multitool.yq.linux_x86_64",
-    "multitool.yq.macos_arm64",
 )
 
 #########################
@@ -279,14 +263,13 @@ npm.npm_translate_lock(
 use_repo(npm, "npm")
 
 # Node.js toolchain - required for production builds (monolith frontend vite build)
-# Toolchains are registered for all platforms to support cross-platform container builds
+# Expose the Linux and macOS arm64 repos packaged by node_tar.bzl.
 node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
 node.toolchain(node_version = "22.22.0")
 use_repo(
     node,
     "nodejs_toolchains",
-    # Explicit repos for cross-platform builds
-    "nodejs_darwin_amd64",
+    # Explicit repos for linux/amd64, linux/arm64 and darwin/arm64 tool images.
     "nodejs_darwin_arm64",
     "nodejs_linux_amd64",
     "nodejs_linux_arm64",
@@ -349,7 +332,6 @@ oci.pull(
     image = "gcr.io/distroless/base",
     platforms = [
         "linux/amd64",
-        "linux/arm64/v8",
     ],
 )
 use_repo(
@@ -357,9 +339,9 @@ use_repo(
     "custom_crane_crane_toolchains",  # Crane toolchains for apko_push
     "distroless_base",
     "distroless_base_linux_amd64",
-    "distroless_base_linux_arm64_v8",
 )
 
+# monolith_domain_images uses this base for both amd64 and arm64 images.
 oci.pull(
     name = "python_base",
     digest = "sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03",
@@ -454,6 +436,10 @@ apko.translate_lock(
     lock = "//projects/embervm/tokenbroker/image:apko.lock.json",
 )
 apko.translate_lock(
+    name = "scotland_connector_lock",
+    lock = "//projects/scotland-connector/image:apko.lock.json",
+)
+apko.translate_lock(
     name = "embervm_conformance_lock",
     lock = "//projects/embervm/conformance:apko.lock.json",
 )
@@ -485,7 +471,7 @@ apko.translate_lock(
     name = "embervm_runtime_pi_lock",
     lock = "//projects/embervm/runtimes/pi:apko.lock.json",
 )
-use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "shotter_lock", "stars_grid_apko_lock")
+use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
@@ -609,16 +595,6 @@ multiarch_http_file(
     arm64_sha256 = "d7aedc8565ed47b6231badb80b09f034e389c5f2b1c2ac2c55406f7c661d8b88",
     arm64_url = "https://github.com/bazelbuild/bazel/releases/download/7.4.1/bazel-7.4.1-linux-arm64",
     binary_name = "bazel",
-    package_dir = "/usr/local/bin",
-)
-
-multiarch_http_file(
-    name = "bb",
-    amd64_sha256 = "54282799c6c2e4ca4e2589d8c9c23b7e7caa3a6faa87a53a06cbe990a353550e",
-    amd64_url = "https://github.com/buildbuddy-io/bazel/releases/download/5.0.321/bazel-5.0.321-linux-x86_64",
-    arm64_sha256 = "0d81fe62e060d6b8a862f1ea553afc571bba2aa2cbbff97c59ada3ea20b7d2bb",
-    arm64_url = "https://github.com/buildbuddy-io/bazel/releases/download/5.0.321/bazel-5.0.321-linux-arm64",
-    binary_name = "bb",
     package_dir = "/usr/local/bin",
 )
 

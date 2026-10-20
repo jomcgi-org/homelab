@@ -357,10 +357,12 @@ dispatch pins. The planner builds the whole DAG at plan time through one `plan`
 decision whose edits apply atomically under a single expected revision, the
 reconciler dispatches each ready node as its own pinned unit, and a review that
 returns `changes_requested` opens a correction and re-review pair the engine
-appends itself, bounded by the policy's `max_review_rounds` (default 2). A round
-that fails is reopened the same way, against the same reviewed head and
-findings, with the failed round counted against the bound. The
-planner is called back only for a named deviation: no plan applied yet, a node
+appends itself, bounded by the policy's `max_review_rounds` (default 2). A failed
+correction is reopened against the same reviewed head and findings, with the
+failed round counted against the bound. A failed re-review leaves the delivered
+correction intact and returns the missing review evidence to the planner as a
+named deviation. It cannot open another implementation against older findings.
+The planner is called back only for a named deviation: no plan applied yet, a node
 that failed or escalated with no runnable retry, review rounds spent, a fan-in
 the engine could not open, or a settled graph with no verified delivery.
 
@@ -728,7 +730,12 @@ reason. Those same two refusals are why the engine, not the planner, reopens a
 round that failed: a `correct_<n>` whose guest ended its turn without pushing
 leaves a node the planner may not name and, because it has a run, may not
 discard either, so handing that back to the planner asked it for an edit no
-edit could express and the task only paused. Delivery stays with the planner because `verify_delivery` is the gate a
+edit could express and the task only paused. This applies to failed corrections,
+not to re-reviews that failed to return a verdict: a lost or invalid verdict
+supplies no new findings against the corrected head, and mechanically replaying
+the earlier findings wastes another implementation and review round. Existing
+result adoption and cessation fences still own unknown invocation outcomes.
+Delivery stays with the planner because `verify_delivery` is the gate a
 completion claim has to pass, and an exhausted loop returns to the planner with
 the evidence instead of failing the task (#5419).
 
@@ -762,9 +769,17 @@ failure surface.
 (see: /projects/monolith/chart/values.yaml)
 
 **Why.** KG admission stays fail-closed on unconfirmed Codex capacity: the gate
-needs at least one fresh permitting grant observation, and a stale grant is
-unselectable rather than unconfirmed because the egress ranker tries fresh
-usable grants before stale ones. That alone still wedges an all-stale pool,
+needs at least one fresh permitting grant observation. Stale and exhausted
+Codex grants cannot be selected beside fresh usable quota, including when token
+fetch fails. After verifying that sidecar behavior on every brick, enable
+`SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION=true` to stop exhausted accounts vetoing
+a healthy account. It defaults off for safe independent chart promotion.
+Before activating the sidecar's `prefer-first` policy, also set
+`SWARM_CODEX_PREFERRED_GRANT=codex-b`: stale B and passed or unknown window
+resets then defer admission, matching the stricter account selector.
+Unknown or malformed evidence
+and role floors still veto admission. Exhausted grants are reobserved without
+inference to discover early manual resets. That alone still wedges an all-stale pool,
 since the deferral stops the very traffic that would refresh an observation.
 The tokenbroker's inference-free usage refresher is the primary source of
 Codex grant freshness, including parked grants. The Codex probe is the
@@ -2029,6 +2044,7 @@ this table when the work ships or the issue closes without it.
 | Remove dormant scheduler registration while retaining rows and Argo run-now compatibility | section 4, batch execution | #7021 | repository removal; later table retirement and CronWorkflow-native listing need separate scope |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Every public, private and friends surface renders in the technical-drawing language; the brutalist, ember and grimoire stylesheets retire with their last consumer | section 8, visual language | #7016 | foundation, `/engineering`, `/docs` and the root error page shipped; home, cv, the apps, the private and friends tiers remain |
+| Sol-first planner implementation follows pool routing and role effort, with structured complex-work overrides | The factory conductor, implementation admission | #6992 | admission fix staged; merge and deployment held for operator confirmation |
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
 | Retire the household gateway and its exclusively owned schema, retaining shared data | section 5, Household gateway retired | #6915 | repository retirement staged; merge, rollout, migration and shared-job acceptance remain |
 | Platform invitations create Authentik-linked platform users; application grants and campaign membership remain separate, with reusable HTTP/MCP management commands | [Platform enrollment and access](auth/architecture.md) | #6858 | design recorded; API, enrollment binding, permissions and MCP implementation remain unbuilt; signup remains disabled |
@@ -2189,6 +2205,17 @@ Astra for more planning and difficult work (#6983). Restore that routing for
 new admissions while preserving Sol's routine implementation role, Opus's
 independent review role, task bounds and pinned receipts. Available quota is
 capacity for useful delivery, not permission to repeat a stalled funding loop.
+
+**Why.** Routine planner implementation follows the pinned implementation pool
+and role effort. For new non-judgment implementation admissions with a Sol-first
+pool, omitted models and explicit `sol` requests use quota-aware selection.
+Another allowed model or effort above the role floor requires a structured
+complex-work exception naming the risk and why the default is insufficient
+(#6992). UI migrations, refactors and renames alone do not justify it. Validation
+checks the declaration's structure and substantive length; its truth remains a
+review responsibility. Other roles and operator pool orders retain their routing.
+Recorded graph and run pins, running sessions, retries and engine-owned correction
+rounds retain their existing behavior.
 
 One logical Conductor per operator sits above every per-task Planner and drain
 lane. It runs in a replaceable fenced EmberVM session, on Astra since policy
@@ -2571,6 +2598,24 @@ plus turn, planner-turn, attempt and deadline limits. The funding judge stays on
 because it renews leases, deadlines and turn ceilings, and successive automatic
 grants still require new work evidence: useful investigation counts, while
 planner and funding turns alone do not. Historical charges remain recorded.
+
+Automatic funding may renew turn, planner, review and lease bounds within the
+current approved task budget. The judge proposes a budget; it cannot approve an
+increase. Settlement compares that proposal, including any recorded deficit,
+with the effective budget under the existing control and task locks. A higher
+proposal settles the review and pauses the same active receipt with
+`funding_budget_approval_required`, without a funding overlay or new allowance.
+The operator can use the existing exact-receipt amendment preview/apply, then
+explicitly resume. A smaller amendment does not authorize a larger proposal.
+Dispatch-refusal grants and their validated inherited source audits keep their
+existing operator authority. Existing grants and charged history are preserved.
+
+**Why approval is separate from accounting.** A recovered invocation can report
+charges above the approved budget. Those charges remain visible, but neither
+that report nor an automatic judge proposal is authority to increase the
+budget. An automatic tranche retains the existing approved budget even when
+the judge estimates less. This adds no fixed dollar ceiling or runtime cost
+cutoff and does not change graph or dispatch admission.
 
 An operator may also select sticky `nonrenewable_recovery=true` and bound the
 remaining planning attempts with `max_planner_turns`. This uses the same

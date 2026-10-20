@@ -1,17 +1,17 @@
-load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 
+# The standalone CRD schema command needs only its existing binary. File mode
+# generates main-module binaries without a duplicate package-wide library.
+# gazelle:python_generation_mode file
 # gazelle:exclude **/*.bzl
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(":generation_contract_test.bzl", "helm_admissibility_consumers_test")
 
 exports_files([
-    "argocd-live-diff.sh",
     "chart-admissibility-test.sh",
     "chart-version.sh",
     "check-missed-bump.sh",
-    "helm-assert-annotations.sh",
     "helm-template-test.sh",
     "lint.sh",
     "push.sh.tpl",
@@ -26,7 +26,6 @@ MANIFEST_SETS = [
     "//projects/gke-apps/loom:application.yaml",
     "//projects/gke-apps/loom:argocd-repo-cred.yaml",
     "//projects/loom/deploy:cnpg-cluster.yaml",
-    "//projects/loom/deploy:cnpg-metrics-service.yaml",
     "//projects/loom/deploy:cnpg-scheduledbackup.yaml",
     "//projects/loom/deploy:httproute.yaml",
     "//projects/loom/deploy:image-pull-secret.yaml",
@@ -52,6 +51,7 @@ MANIFEST_SETS = [
     "//projects/monolith/deploy:manifests_gke/all.yaml",
     "//projects/monolith/dev/deploy:manifests/all.yaml",
     "//projects/operators/oci-model-cache/deploy:manifests/all.yaml",
+    "//projects/scotland-connector/deploy:manifests/all.yaml",
     # Platform charts rendered by argocd_app. The plain `manifests` target is
     # the chart's default-values render (the home overlay until #6914 retired
     # it); `manifests_gke` is the hub overlay.
@@ -60,10 +60,8 @@ MANIFEST_SETS = [
     "//projects/platform/argo-workflows:manifests_gke/all.yaml",
     "//projects/platform/argocd:manifests/all.yaml",
     "//projects/platform/argocd:manifests_gke/all.yaml",
-    "//projects/platform/authentik:manifests/all.yaml",
     "//projects/platform/authentik:manifests_gke/all.yaml",
     "//projects/platform/cert-manager:manifests/all.yaml",
-    "//projects/platform/cert-manager:manifests_gke/all.yaml",
     "//projects/platform/cloudflare-gateway:manifests/all.yaml",
     "//projects/platform/cloudflare-gateway:manifests_gke/all.yaml",
     "//projects/platform/kargo:manifests/all.yaml",
@@ -87,6 +85,7 @@ SKIPPED_MANIFEST_SETS = {
     "projects/embervm/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/monolith/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/platform/atlas-operator/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
+    "projects/platform/authentik": "Hub-only chart; rendered with its hub overlay by :manifests_gke.",
     "projects/platform/cf-ingress-library": "Library chart, which renders nothing.",
     "projects/platform/cloudnative-pg/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
     "projects/shared/helm/homelab-library": "Library chart, which renders nothing.",
@@ -124,7 +123,6 @@ sh_test(
 # hermetic inputs.
 EXTERNAL_CRD_SOURCES = [
     "@atlasmigration_crd_0_7_28//file",
-    "@cilium_network_policy_crd_1_20_0//file",
     "@cloudnative_pg_cluster_crd_1_30_0//file",
     "@cloudnative_pg_database_crd_1_30_0//file",
     "@cloudnative_pg_scheduled_backup_crd_1_30_0//file",
@@ -184,12 +182,6 @@ sh_test(
 )
 
 sh_test(
-    name = "argocd_live_diff_test",
-    srcs = ["argocd-live-diff_test.sh"],
-    data = [":argocd-live-diff.sh"],
-)
-
-sh_test(
     name = "check_missed_bump_test",
     srcs = ["check-missed-bump_test.sh"],
     data = [":check-missed-bump.sh"],
@@ -241,7 +233,6 @@ bzl_library(
         "defs.bzl",  # keep
         "images.bzl",  # keep
         "push.bzl",  # keep
-        "render.bzl",  # keep
         "test.bzl",  # keep
     ],
     visibility = ["//visibility:public"],
@@ -250,13 +241,6 @@ bzl_library(
         "@bazel_skylib//lib:paths",  # keep
         "@rules_shell//shell:rules_bzl",  # keep
     ],
-)
-
-py_library(
-    name = "helm",
-    srcs = ["crd-schemas.py"],
-    visibility = ["//:__subpackages__"],
-    deps = ["@pip//pyyaml"],
 )
 
 # Markdown read by the monolith doc-manifest genrules (#6446). See

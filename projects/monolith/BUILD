@@ -247,6 +247,7 @@ filegroup(
         "//projects/platform/kyverno:repo_docs",
         "//projects/platform/renovate:repo_docs",
         "//projects/platform/spire:repo_docs",
+        "//projects/scotland-connector/internal/httpapi:repo_docs",
     ],
     visibility = ["//projects/monolith/frontend:__pkg__"],
 )
@@ -1027,6 +1028,7 @@ py_library(
         ":pkg_scheduler",
         ":pkg_shared",
         "@pip//beautifulsoup4",
+        "@pip//boto3",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
@@ -1755,7 +1757,6 @@ py3_image(
         "PYTHONPATH": "/projects/monolith/stars_grid_job.runfiles/_main:/projects/monolith/stars_grid_job.runfiles/_main/projects/monolith",
     },
     main = "stars/grid_gen/job.py",
-    multi_platform = False,
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/stars-grid",
 )
 
@@ -5020,6 +5021,18 @@ bdd_test(
     ],
 )
 
+# The daily admission cap migration must preserve all other policy and accounting.
+bdd_test(
+    name = "swarm_factory_daily_admission_limit_postgres_test",
+    srcs = ["factory/orchestration/factory_daily_admission_limit_postgres_test.py"],
+)
+
+# Only the new-admission implementation pool changes in this guarded migration.
+bdd_test(
+    name = "swarm_factory_implement_sol_first_postgres_test",
+    srcs = ["factory/orchestration/factory_implement_sol_first_postgres_test.py"],
+)
+
 # Hand-registered real-PostgreSQL coverage for the no-new-notes pending
 # provenance write: the atom_raw_provenance_pending partial unique index
 # only exists in Postgres, so a SQLite test cannot prove the retry is
@@ -5748,6 +5761,18 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_capacity_wait_test",
+    srcs = ["factory/execution/capacity_wait_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7352,6 +7377,19 @@ py_test(
 )
 
 py_test(
+    name = "hikes_materialize_test",
+    srcs = ["hikes/materialize_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        ":pkg_hikes",
+        ":pkg_shared",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "hikes_router_test",
     srcs = ["hikes/router_test.py"],
     imports = ["."],
@@ -7773,6 +7811,7 @@ py_test(
         "BUILD",
         "stars/grid_gen/apko.lock.json",
         "stars/grid_gen/apko.yaml",
+        "//bazel/tools/oci:py3_image",
     ],
     imports = ["stars/grid_gen"],
     deps = ["@pip//pytest"],

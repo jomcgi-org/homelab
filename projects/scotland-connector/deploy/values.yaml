@@ -1,0 +1,29 @@
+# Hub production values for the public Scotland connector. There is one
+# cluster, so there is no values-gke.yaml overlay.
+
+config:
+  # Cloudflare R2 account endpoint, the one the monolith's stars-refresh job
+  # writes stars/sites.json and stars/history-map.json to.
+  r2Endpoint: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+  # Where the route below serves the API; method_url and the OpenAPI servers
+  # entry are built from it.
+  publicBaseURL: https://jomcgi.dev/scotland
+
+r2Credentials:
+  onepassword:
+    # The existing read-only R2 token monolith-public already uses for the
+    # same stars objects. A token scoped to the stars bucket alone would be
+    # tighter; it needs a new R2 token and 1Password item.
+    itemPath: vaults/k8s-homelab/items/r2-s3-public-read
+
+route:
+  # The public apex under /scotland (#7243): jomcgi.dev/scotland/mcp and
+  # jomcgi.dev/scotland/v1/... The apex already resolves through the tunnel
+  # and its Cloudflare cache rule honours the API's Cache-Control.
+  #
+  # These values deploy from git HEAD while Kargo sets the chart version, so
+  # a chart below 0.3.1 (which ignores pathPrefix) would serve this route on
+  # bare /v1 and /mcp. Keep that in mind before lowering the Kargo pin.
+  enabled: true
+  hostname: jomcgi.dev
+  pathPrefix: /scotland

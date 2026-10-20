@@ -5,10 +5,11 @@ test, or `helm lint`.
 
 STALE TARBALL. A consuming chart vendors its `file://` dependencies as committed
 `charts/*.tgz`, and `helm_chart` globs `**/*`, so the committed tarball is what
-Bazel packages and ships. `sync-helm-deps.sh` rebuilds it only when the library
-*version* changes, never on content. Editing a library template without bumping
-the library version therefore leaves the fix in the source while the stale
-tarball deploys: clean diff, green CI, nothing rolls.
+Bazel packages and ships. `ci regen` runs `sync-helm-deps.sh` when Chart.yaml,
+Chart.lock or charts/*.tgz changes. The sync script checks both dependency
+versions and content drift. After a library-template-only edit, run the script
+directly to refresh the vendored tarballs without changing the chart version.
+This check rejects stale tarballs in CI.
 
 BARE TAG. `helm_images_values` injects `repository`, `tag` and `digest` for
 every image in a `helm_chart(images = {...})` map. The tag is build-timestamped
@@ -21,8 +22,8 @@ latent in two more charts (PR #4681).
 Runs against the full working tree from the CI format step, because a sandboxed
 bazel test cannot list projects/* on RBE. The pure logic is pinned by
 check_helm_deps_test.py. Deliberately no `helm` dependency: the CI format runner
-does not have the helm CLI, which is why sync-helm-deps.sh is local-only and
-why this check has to compare tarballs by hand.
+does not have the helm CLI. Dependency sync belongs to the local `ci regen`
+path; this check compares tarballs read-only in CI.
 """
 
 from __future__ import annotations

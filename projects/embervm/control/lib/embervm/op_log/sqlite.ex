@@ -193,6 +193,18 @@ defmodule Embervm.OpLog.SQLite do
     # durable lineage_id (added additively, see migrate_sessions_lineage_id/1);
     # reads COALESCE it to session_id, which is what it always equalled anyway.
     """
+    CREATE TABLE IF NOT EXISTS residency_intents (
+      id TEXT PRIMARY KEY,
+      principal TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      record_json TEXT NOT NULL,
+      UNIQUE (principal, idempotency_key)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
       lineage_id TEXT,
@@ -648,6 +660,11 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   @impl Embervm.OpLog
+  def load_residency_intents(server \\ __MODULE__) do
+    Embervm.OpLog.safe_server_call(server, :load_residency_intents, @single_query_call_timeout_ms)
+  end
+
+  @impl Embervm.OpLog
   def load_key_epochs(server \\ __MODULE__) do
     Embervm.OpLog.safe_server_call(server, :load_key_epochs, @single_query_call_timeout_ms)
   end
@@ -814,6 +831,10 @@ defmodule Embervm.OpLog.SQLite do
     {:reply, do_load_volume_blessing(state.conn), state}
   end
 
+  def handle_call(:load_residency_intents, _from, state) do
+    {:reply, do_load_residency_intents(state.conn), state}
+  end
+
   def handle_call(:load_key_epochs, _from, state) do
     {:reply, do_load_key_epochs(state.conn), state}
   end
@@ -939,6 +960,7 @@ defmodule Embervm.OpLog.SQLite do
     :vm_destroyed,
     :quota_enforced,
     :drain,
+    :residency_changed,
     :session_created,
     :session_invoke_started,
     :session_invoked,
@@ -1147,6 +1169,10 @@ defmodule Embervm.OpLog.SQLite do
   # session_created inserts the lineage-bearing row; bank/relight/invoke update
   # the relevant columns; the terminal kinds set a terminal state + reason.
 
+  defp project(conn, %Op{kind: :residency_changed} = op, _seq) do
+    project_residency(conn, op.payload[:residency_intent])
+  end
+
   defp project(conn, %Op{kind: :session_created} = op, _seq) do
     payload = op.payload
 
@@ -1269,7 +1295,7 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- Sqlite3.bind(stmt, [Map.get(op.payload, :turn_seq, 0), op.ts, Map.get(op.payload, :dispatch_id), op.ts, op.ts, op.ts, op.session_id]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
-      :ok
+      project_residency(conn, op.payload[:residency_intent])
     end
   end
 
@@ -3047,6 +3073,32 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  defp project_residency(_conn, nil), do: :ok
+  defp project_residency(conn, intent) do
+    sql = "INSERT INTO residency_intents (id, principal, idempotency_key, session_id, state, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at, record_json=excluded.record_json"
+    params = [intent["id"], intent["principal"], intent["key"], intent["session_id"], intent["state"], intent["updated_at"], Jason.encode!(intent)]
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, params),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt), do: :ok
+  end
+
+  defp do_load_residency_intents(conn) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, "SELECT record_json FROM residency_intents ORDER BY id") do
+      result = collect_residency_intents(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      result
+    end
+  end
+
+  defp collect_residency_intents(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, [json]} -> collect_residency_intents(conn, stmt, [Jason.decode!(json) | acc])
+      :done -> {:ok, Enum.reverse(acc)}
+      error -> error
+    end
+  end
+
   defp do_load_key_epochs(conn) do
     sql = "SELECT principal, current_epoch, min_epoch, updated_at FROM key_epochs"
 
@@ -3445,7 +3497,7 @@ defmodule Embervm.OpLog.SQLite do
 
     sql = """
     DELETE FROM sessions WHERE rowid IN (
-      SELECT rowid FROM sessions WHERE state IN (#{placeholders}) AND updated_at < ? LIMIT ?
+      SELECT rowid FROM sessions WHERE NOT EXISTS (SELECT 1 FROM residency_intents ri WHERE ri.session_id = sessions.session_id) AND state IN (#{placeholders}) AND updated_at < ? LIMIT ?
     )
     """
 
@@ -3629,6 +3681,7 @@ defmodule Embervm.OpLog.SQLite do
     WHERE ts >= ?
        OR task_id IN (SELECT task_id FROM tasks WHERE state IN (#{live_placeholders}))
        OR session_id IN (SELECT session_id FROM sessions WHERE state IN (#{session_live_placeholders}))
+       OR session_id IN (SELECT session_id FROM residency_intents WHERE state IN ('queued', 'admitting', 'ready', 'cancelling') OR (json_type(record_json, '$.restore') = 'object' AND COALESCE(json_extract(record_json, '$.claim_reconciled'), 0) != 1))
        OR serving_instance_id IN (
             SELECT instance_id FROM serving_instances WHERE state IN (#{serving_live_placeholders})
           )

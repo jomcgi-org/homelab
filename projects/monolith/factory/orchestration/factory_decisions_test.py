@@ -2191,7 +2191,9 @@ def test_funding_grant_uses_the_recorded_turn_deficit(db, monkeypatch):
     assert grant["policy_overlay"]["max_task_turns_hard"] == 8
 
 
-def test_deficit_grant_past_the_old_objective_ceiling_is_granted(db, monkeypatch):
+def test_deficit_past_the_old_objective_ceiling_requires_budget_approval(
+    db, monkeypatch
+):
     task, _policy = envelope_task()
     add_spent_turns(db, task)
     conductor._reject_decision(
@@ -2227,15 +2229,19 @@ def test_deficit_grant_past_the_old_objective_ceiling_is_granted(db, monkeypatch
     assert funding.request(task, "Fund the recorded deficit")
     with controls._read_session() as session:
         request = funding.pending(session, task["id"])
-    # Ten dollars already committed on the objective plus a $195 task budget
-    # passes the old $200 line: the figure is recorded, never refused (#7161).
+    # A valid proposal has no fixed $200 cap, but a higher task budget needs
+    # operator approval rather than an automatic grant.
     settle_funding_request(task, request, funding_decision(task_budget_usd=195.0))
     with controls._read_session() as session:
         grant = funding.amendment(session, task["id"])
         settled = funding.latest(session, task["id"], "funding_review_settled")
     assert settled["refusal"] is None
-    assert grant["policy_overlay"]["task_budget_usd"] == 195.0
-    assert grant["policy_overlay"]["max_task_turns_hard"] == 8
+    assert grant is None
+    assert settled["budget_approval_required"] == {
+        "approved_task_budget_usd": 30.0,
+        "proposed_task_budget_usd": 195.0,
+    }
+    assert controls.task_snapshot(task["id"])["task_paused"]
 
 
 def test_refused_eight_turn_plan_is_funded_without_a_third_refusal(db, monkeypatch):
@@ -2375,24 +2381,24 @@ def test_a_repeated_deficit_goes_to_the_merit_judge_not_a_person(db, monkeypatch
     assert "money already spent is a reason to finish" in node["prompt"]
     assert '"pull_request": 6546' in node["prompt"]
 
-    # The judge asks for more dollars than the old ceiling: dollars are
-    # recorded, never capped (#7161), and the verdict, with its reasoning, is
-    # on the audit.
+    # The judge may propose more than the old fixed ceiling. That valid
+    # assessment is recorded, but it cannot approve its own budget increase.
     settle_funding_request(
         task,
         request,
         funding_decision(task_budget_usd=95.0, assessment=ASSESSMENT),
     )
     grant = _grant(task)
-    assert grant["policy_overlay"]["task_budget_usd"] == 95.0
-    assert grant["requested_task_budget_usd"] == 95.0
-    assert grant["granted_task_budget_usd"] == 95.0
-    assert grant["assessment"] == ASSESSMENT
-    assert grant["merit_ceiling"]["ceiling_usd"] == 60.0
+    assert grant is None
+    assert _settled(task)["budget_approval_required"] == {
+        "approved_task_budget_usd": 30.0,
+        "proposed_task_budget_usd": 95.0,
+    }
     assert _settled(task)["assessment"] == ASSESSMENT
+    assert controls.task_snapshot(task["id"])["task_paused"]
 
 
-def test_a_judge_figure_below_the_deficit_is_raised_to_the_need(db, monkeypatch):
+def test_a_judge_figure_below_the_deficit_still_needs_budget_approval(db, monkeypatch):
     task, policy = envelope_task()
     deficit = {"usd": {"allowed": 30.0, "needed": 31.2}}
     assert _repeated_deficit(monkeypatch, task, policy, deficit) == []
@@ -2401,7 +2407,12 @@ def test_a_judge_figure_below_the_deficit_is_raised_to_the_need(db, monkeypatch)
         _pending(task),
         funding_decision(task_budget_usd=30.0, assessment=ASSESSMENT),
     )
-    assert _grant(task)["policy_overlay"]["task_budget_usd"] == 31.2
+    assert _grant(task) is None
+    assert _settled(task)["budget_approval_required"] == {
+        "approved_task_budget_usd": 30.0,
+        "proposed_task_budget_usd": 31.2,
+    }
+    assert controls.task_snapshot(task["id"])["task_paused"]
 
 
 def test_a_deficit_past_the_turn_ceiling_asks_a_person(db, monkeypatch):
@@ -2429,7 +2440,11 @@ def test_a_dollar_deficit_past_the_old_ceiling_goes_to_the_judge(db, monkeypatch
     settle_funding_request(
         task, request, funding_decision(task_budget_usd=30.0, assessment=ASSESSMENT)
     )
-    assert _grant(task)["policy_overlay"]["task_budget_usd"] == 61.0
+    assert _grant(task) is None
+    assert (
+        _settled(task)["budget_approval_required"]["proposed_task_budget_usd"] == 61.0
+    )
+    assert controls.task_snapshot(task["id"])["task_paused"]
 
 
 def test_a_judge_that_doubts_the_work_escalates_to_a_person(db, monkeypatch):

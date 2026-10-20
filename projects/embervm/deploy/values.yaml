@@ -672,10 +672,12 @@ egress:
         - "chatgpt.com"
       # The subscription grants supply short-lived tokens. If the broker is
       # absent or unavailable, the sidecar fails closed and denies this host.
-      # Two Codex accounts are pooled (#5974): the sidecar picks per
-      # connection by remaining quota. Both grants were device-logged before
-      # pooling; an unlogged member is skipped with a cooldown, not fatal.
-      brokerGrants: ["codex-cluster", "codex-b"]
+      # This pool serves factory and interactive guests on every brick.
+      # Prefer fresh usable B, falling back to A on verified exhaustion or
+      # token failure, with the reset-aware expiry override from #7231.
+      # Activate only after the matching monolith admission settings verify.
+      brokerGrants: ["codex-b", "codex-cluster"]
+      grantPolicy: prefer-first
       claimHeader: "chatgpt-account-id"
       claimPath: "https://api.openai.com/auth.chatgpt_account_id"
       # The CLI's rmcp connector client sends no Authorization header at all

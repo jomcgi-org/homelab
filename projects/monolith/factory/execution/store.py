@@ -2045,6 +2045,14 @@ def _recovery_candidate_predicate(cutoff: datetime, now: datetime):
     old_lane_head_exists = exists().where(
         head.id == _lane_head_id(AgentSession.id),
         head.created_at <= cutoff,
+        # Durable capacity demand can outlive the zombie threshold without
+        # ever starting an invocation. A stale claimed attempt still requires
+        # the existing conservative recovery path.
+        or_(
+            head.capacity_intent_json.is_(None),
+            head.capacity_state == "legacy_unsupported",
+            head.claimed_by_replica.isnot(None),
+        ),
     )
     return and_(
         AgentSession.status == "running",
@@ -2070,7 +2078,16 @@ def _hung_claim_candidate_predicate(
         head.claimed_at.isnot(None),
         head.claimed_at > live_claim_cutoff,
         head.last_dispatch_at.isnot(None),
-        head.last_dispatch_at < cutoff,
+        or_(
+            and_(
+                or_(
+                    head.capacity_intent_json.is_(None),
+                    head.capacity_state == "legacy_unsupported",
+                ),
+                head.last_dispatch_at < cutoff,
+            ),
+            head.capacity_started_at < cutoff,
+        ),
     )
     clauses = [
         AgentSession.status == "running",
@@ -2592,6 +2609,35 @@ def claim_pending_message_for_session_sync(
         ).first()
         if pending is None or pending.claimed_by_replica is not None:
             return None
+        from factory.execution import capacity_wait
+
+        if pending.capacity_intent_json and pending.capacity_state not in {
+            "ready",
+            "legacy_unsupported",
+        }:
+            return None
+        capacity_context = capacity_wait.handoff_context(pending)
+        if capacity_context is not None:
+            from factory.execution.constants import exact_dispatch_id
+
+            capacity_context["claimed_dispatch_count"] = pending.dispatch_count + 1
+            capacity_context["claimed_dispatch_id"] = exact_dispatch_id(
+                session_id,
+                row.ember_session_id,
+                pending.seq,
+                replica_id,
+                pending.dispatch_count + 1,
+            )
+            capacity_context["claim_snapshot"] = {
+                "capacity_started_at": pending.capacity_started_at.isoformat()
+                if pending.capacity_started_at
+                else None,
+                "dispatch_count": pending.dispatch_count,
+                "last_dispatch_at": pending.last_dispatch_at.isoformat()
+                if pending.last_dispatch_at
+                else None,
+                "retry_usage": None,
+            }
         previous = get_turn(session, session_id, pending.seq)
         retry_usage = None
         if _attempted(pending):
@@ -2609,6 +2655,11 @@ def claim_pending_message_for_session_sync(
             # when the new start does not fit. No retry grant was consumed.
             session.commit()
             return None
+        if capacity_context is not None:
+            capacity_context["claim_snapshot"]["retry_usage"] = (
+                previous.usage_json if previous else None
+            )
+            pending.capacity_intent_json = json.dumps(capacity_context)
         if retry_usage is not None:
             retry_usage.pop("retry_dispatch_count")
             previous.usage_json = json.dumps(retry_usage)

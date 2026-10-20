@@ -17,6 +17,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 )
 
 const defaultControlTimeout = 30 * time.Second
@@ -39,8 +41,7 @@ func New(socketPath string) *Client {
 func newWithControlTimeout(socketPath string, controlTimeout time.Duration) *Client {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", socketPath)
+			return unixsock.Dial(ctx, socketPath)
 		},
 	}
 	client := &Client{

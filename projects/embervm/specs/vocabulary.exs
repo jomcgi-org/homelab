@@ -58,10 +58,9 @@
         # adoption.
         ~w(EvictArtifact ListArtifacts ArchiveVolume)a ++
         # Artifact-decoupling Phase 2: control-plane -> daemon workload-registry
-        # push verbs (SyncRegistry converges the pushed set; Register/Deregister
-        # are the incremental forms). They deliver node-side image identity, not
-        # VM lifecycle or adoption, so they are outside the adoption TLA model.
-        ~w(SyncRegistry RegisterWorkload DeregisterWorkload)a
+        # push (SyncRegistry converges the full pushed set). It delivers image
+        # identity, not VM lifecycle or adoption, so it is outside the adoption TLA model.
+        ~w(SyncRegistry)a
     # BuildBase (R0): the once-per-image base bake. The spec abstracts the pool as
     # an inexhaustible id supply (RecycleId) and never models base builds, so it is
     # excluded even though it is an R0 verb.
@@ -143,6 +142,10 @@
         # ADR 006 protocol 2). Invoke lifecycle edges remain outside the focused
         # bank/relight and lineage-handoff protocols.
         ~w(session_invoke_started session_invoked)a ++
+        # Durable admission-only session demand, outside the VM adoption and
+        # bank/relight generation protocols. admission.tla maps its physical
+        # claims to the existing reserved-memory invariant; no prompt is queued.
+        ~w(residency_changed)a ++
         # Remaining R3 serving lifecycle kinds, out of scope. serving_destroying is the
         # ADR embervm/014 destroy-intent kind (see session_destroying).
         ~w(serving_unpublished serving_banked

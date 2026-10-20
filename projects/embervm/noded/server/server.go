@@ -1468,7 +1468,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if readyPath == "" {
 		readyPath = defaultReadyPath
 	}
-	volumeDiskPath := req.GetVolumeDiskPath()
+	var volumeDiskPath string
 	if req.GetLineageId() != "" {
 		// Guard like every other volume RPC does: a nil manager here would be a
 		// nil-pointer panic inside the handler, which reaches the caller as an
@@ -2401,8 +2401,7 @@ func (s *Server) evictGroupMemberSnapshot(ref string) (*nodev1.EvictSnapshotResp
 // pushed set (entries absent are dropped, entries present are added-or-updated),
 // marks the registry synced (clearing the readiness gate), and clears any stale
 // boot-cache mark. Idempotent under replay. The control plane calls this once per
-// (re)connect after the adoption handshake so a daemon that missed incremental
-// pushes while disconnected re-converges to truth.
+// (re)connect and periodically so a disconnected daemon re-converges to truth.
 func (s *Server) SyncRegistry(_ context.Context, req *nodev1.SyncRegistryRequest) (*nodev1.SyncRegistryResponse, error) {
 	entries := make([]workloadEntry, 0, len(req.GetEntries()))
 	for _, e := range req.GetEntries() {
@@ -2428,31 +2427,8 @@ func (s *Server) SyncRegistry(_ context.Context, req *nodev1.SyncRegistryRequest
 	return &nodev1.SyncRegistryResponse{EntryCount: uint32(n)}, nil
 }
 
-// RegisterWorkload adds-or-updates one registry entry incrementally. It does not
-// clear the readiness gate (only a full SyncRegistry is the authoritative replay
-// the gate waits for). Idempotent.
-func (s *Server) RegisterWorkload(_ context.Context, req *nodev1.RegisterWorkloadRequest) (*nodev1.RegisterWorkloadResponse, error) {
-	entry := req.GetEntry()
-	if entry == nil || entry.GetWorkload() == "" {
-		return nil, status.Error(codes.InvalidArgument, "noded: entry.workload required")
-	}
-	n := s.registry.register(entryFromProto(entry))
-	s.reconcileServingImagesFromDisk()
-	s.signalChange()
-	return &nodev1.RegisterWorkloadResponse{EntryCount: uint32(n)}, nil
-}
-
-// DeregisterWorkload removes one registry entry by workload name. Idempotent on
-// an absent workload.
-func (s *Server) DeregisterWorkload(_ context.Context, req *nodev1.DeregisterWorkloadRequest) (*nodev1.DeregisterWorkloadResponse, error) {
-	n := s.registry.deregister(req.GetWorkload())
-	s.reconcileServingImagesFromDisk()
-	s.signalChange()
-	return &nodev1.DeregisterWorkloadResponse{EntryCount: uint32(n)}, nil
-}
-
 // RegistrySynced reports whether the daemon has received its registry replay
-// (the readiness gate: traffic never reaches a pod with an empty registry). The
+// (the readiness gate: traffic never reaches a pod before its first live sync). The
 // daemon entrypoint's /readyz probe reads it.
 func (s *Server) RegistrySynced() bool {
 	return s.registry.isSynced()
@@ -2472,7 +2448,7 @@ func (s *Server) SlotCeiling() int {
 
 // ---- Node status -----------------------------------------------------------
 
-// GetNodeStatus is the unary snapshot of the capacity facts WatchNode streams.
+// GetNodeStatus is a test-only unary snapshot of the facts WatchNode streams.
 func (s *Server) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequest) (*nodev1.NodeStatus, error) {
 	ns := s.nodeStatus()
 	// Echo the caller's node_id when it set one, for its own correlation.

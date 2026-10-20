@@ -295,6 +295,10 @@ metaSpark:
 # documented in factory/orchestration/FACTORY.md under "Review publisher".
 swarm:
   enabled: true
+  # Requires the compatible sidecar exclusion from #7231 on every brick.
+  # Defer stale preferred-account work before enabling B-first egress.
+  codexExhaustedGrantExclusion: true
+  codexPreferredGrant: codex-b
   # Webhook stays homelab-only: the legacy repository value in the chart is
   # ingested, and no extra repos are configured until the staged
   # weave-hand/loom operator migration in FACTORY.md sets this.
@@ -431,6 +435,10 @@ cdHealth:
       kargo_namespace: kargo-monolith-agents
       chart_repo_suffix: /charts/monolith-agents
       chart_path: projects/monolith-agents/chart
+    - app: scotland-connector
+      kargo_namespace: kargo-scotland-connector
+      chart_repo_suffix: /charts/scotland-connector
+      chart_path: projects/scotland-connector/chart
 
 # Staged separately after repository acceptance. Keep cdHealth and
 # podRestartWatch on their existing settings while this writer stays off.

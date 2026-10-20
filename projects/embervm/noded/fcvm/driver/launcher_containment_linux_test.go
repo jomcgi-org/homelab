@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -486,4 +487,50 @@ func lastNSpid(t *testing.T, pid int) string {
 	}
 	t.Fatalf("no NSpid line for pid %d", pid)
 	return ""
+}
+
+// TestWaitForSocketReachesALongJailAlias pins the 2026-10-19 embervm-dev jailer
+// preflight failure: the host alias of a jailed VMM's API socket was 110 bytes,
+// past sockaddr_un's 108, so every dial failed with EINVAL and the readiness
+// wait reported "not ready after 10s" against a socket Firecracker had bound.
+// The alias is a symlink into the jail root, exactly as prepareJail stages it.
+func TestWaitForSocketReachesALongJailAlias(t *testing.T) {
+	tmp := shortTempDir(t)
+	root := filepath.Join(tmp, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", filepath.Join(root, "api.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	aliasDir := tmp
+	for len(filepath.Join(aliasDir, "api.sock")) < 110 {
+		aliasDir = filepath.Join(aliasDir, "jail-preflight-run-0ae63e3b46511ffb")
+	}
+	if err := os.MkdirAll(aliasDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(aliasDir, "api.sock")
+	if err := os.Symlink(filepath.Join(root, "api.sock"), alias); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := net.Dial("unix", alias); err == nil {
+		c.Close()
+		t.Fatalf("a plain dial of the %d-byte alias succeeded; the test is not past sun_path", len(alias))
+	}
+	if err := waitForSocketOrExit(context.Background(), alias, 2*time.Second, nil); err != nil {
+		t.Fatalf("waitForSocketOrExit(%d-byte alias): %v", len(alias), err)
+	}
 }

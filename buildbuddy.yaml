@@ -400,8 +400,9 @@ actions:
               # build-timestamped tag (push-changed.sh skips content-identical
               # images, so that tag is often never pushed: ImagePullBackOff).
               # Read-only here on purpose: sync-helm-deps.sh needs the helm CLI,
-              # which this runner does not have, so CI reports and the human
-              # fixes locally. Pure logic pinned by a bazel test.
+              # which this runner does not have. Sync locally with ci regen
+              # for chart metadata changes, or run the script directly for
+              # library-template-only edits. Pure logic pinned by a bazel test.
               python3 ./bazel/tools/format/helm_deps/check_helm_deps.py
 
               if git diff --exit-code; then
@@ -410,7 +411,7 @@ actions:
                 # Main is read-only after publish. Never send an unreviewed
                 # formatting commit directly to the default branch.
                 echo "ERROR: Code not formatted or BUILD files out of sync."
-                echo "Run 'format' locally to fix."
+                echo "Run 'ci lint' and 'ci regen' on a PR branch; its Format stage auto-commits BUILD changes."
                 git --no-pager diff
                 exit 1
               else

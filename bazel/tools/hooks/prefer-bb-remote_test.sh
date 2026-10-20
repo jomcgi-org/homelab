@@ -3,7 +3,7 @@
 #
 # The hook:
 #   - Reads JSON from stdin with .tool_input.command
-#   - Exits 0 when the command is allowed (bb, git, format, no-bazel, etc.)
+#   - Exits 0 when the command is allowed (bb, git, ci, no-bazel, etc.)
 #   - Exits 2 and prints BLOCKED to stderr for direct bazel/bazelisk invocations
 #
 # This test mocks jq via a minimal Python3 stub placed earlier on PATH so
@@ -157,14 +157,14 @@ run_test "git_commit_mentioning_bazel_allowed" \
 	'{"tool_input":{"command":"git commit -m \"fix bazel build\""}}' \
 	0 ""
 
-# 7. format command (legacy) → allowed
-run_test "format_command_allowed" \
-	'{"tool_input":{"command":"format"}}' \
+# 7. Bare unified gate is allowed
+run_test "bare_ci_allowed" \
+	'{"tool_input":{"command":"ci"}}' \
 	0 ""
 
-# 8. format with flags → allowed
-run_test "format_with_flags_allowed" \
-	'{"tool_input":{"command":"format --check"}}' \
+# 8. Absolute-path gate with a Bazel directory exercises the explicit allowance
+run_test "absolute_ci_allowed" \
+	'{"tool_input":{"command":"/workspace/bazel/tools/ci/ci test"}}' \
 	0 ""
 
 # 8b. unified `ci` gate → allowed (may appear with bazel in script path only)
@@ -198,7 +198,7 @@ run_test "empty_json_allowed" \
 # 13. Chained repo-relative script path under bazel/ → allowed (not a bazel
 # invocation; the block patterns require "bazel " with a trailing space)
 run_test "chained_bazel_dir_script_allowed" \
-	'{"tool_input":{"command":"cd /tmp/claude-worktrees/wt && bazel/tools/format/fast-format.sh"}}' \
+	'{"tool_input":{"command":"cd /tmp/claude-worktrees/wt && bazel/tools/format/run-generators.sh"}}' \
 	0 ""
 
 # 14. Semicolon-chained repo-relative script path under bazel/ → allowed

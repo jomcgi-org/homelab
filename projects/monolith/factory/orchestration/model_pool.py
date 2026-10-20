@@ -417,6 +417,42 @@ def _grant_stale_note(view: dict) -> str | None:
     return f"stale_observation age {age:g}"
 
 
+def exhausted_grant_exclusion_enabled() -> bool:
+    """Activate only after every sidecar enforces the matching serving rule.
+
+    Monolith and EmberVM promote independently. Default off keeps old sidecars
+    from serving an account the new admission gate has excluded.
+    """
+    return os.environ.get("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "").lower() == "true"
+
+
+def _sidecar_exhausted(view: dict, now: datetime | None) -> bool:
+    """Only positive Codex exhaustion which the sidecar excludes from serving.
+
+    Keep 97 aligned with grantExhaustedPercent. A lower configurable gate
+    threshold or a role floor cannot exclude an account the sidecar might use.
+    Unknown/malformed observations keep their existing admission veto.
+    """
+    if grant_observation_state(view) != "fresh":
+        return False
+    windows = view.get("windows")
+    if not isinstance(windows, list):
+        return False
+    exhausted = view.get("exhausted") is True and not windows
+    for window in windows:
+        if not isinstance(window, dict) or window.get("usable") is not True:
+            return False
+        reset = window.get("resets_at")
+        passed = reset_passed(reset, now)
+        if reset not in (None, "") and passed is None:
+            return False
+        if passed is not True and (
+            window["used_percent"] >= 97.0 or view.get("exhausted") is True
+        ):
+            exhausted = True
+    return exhausted
+
+
 def confirmed_availability(
     model: str,
     quota: dict,
@@ -431,11 +467,10 @@ def confirmed_availability(
     When multiple account grants are configured, admission needs at least one
     fresh permitting observation, and every fresh account is evaluated as a
     whole, so windows from different accounts are never combined to
-    manufacture room. A merely idle (stale) grant is unselectable rather than
-    unconfirmed: the egress ranker tries fresh usable grants before stale
-    ones, so it neither permits nor vetoes admission. Unknown or exhausted
-    capacity still defers: unobserved grants, unusable inventories, and fresh
-    evidence of exhaustion all veto, as does a pool with no fresh grant left.
+    manufacture room. Stale and exhausted Codex grants cannot be selected
+    beside a fresh usable grant, even on token-fetch failure, so they neither
+    permit nor veto admission. Unknown observations, malformed inventories,
+    role floors and pools with no fresh permitting account still defer.
     """
     family = family_for(model)
     if family is None:
@@ -450,6 +485,18 @@ def confirmed_availability(
         return False, "unobserved"
 
     grant_views = summary.get("grant_views")
+    preferred = (
+        os.environ.get("SWARM_CODEX_PREFERRED_GRANT", "").strip()
+        if provider == "codex"
+        else ""
+    )
+    if preferred and (
+        not isinstance(grant_views, list)
+        or not any(
+            isinstance(v, dict) and v.get("grant") == preferred for v in grant_views
+        )
+    ):
+        return False, "preferred_grant_unobserved"
     if (not isinstance(grant_views, list) or not grant_views) and summary.get(
         "observed"
     ) is not True:
@@ -462,6 +509,7 @@ def confirmed_availability(
         reasons = []
         skipped = []
         evaluated = 0
+        exhausted_reasons = []
         for view in grant_views:
             if not isinstance(view, dict):
                 reasons.append("grant_inventory_unusable")
@@ -474,8 +522,36 @@ def confirmed_availability(
                 continue
             note = _grant_stale_note(view)
             if note is not None:
-                skipped.append(f"grant {grant} {note}" if grant else note)
+                notes = reasons if preferred and grant == preferred else skipped
+                notes.append(f"grant {grant} {note}" if grant else note)
                 continue
+            if (
+                provider == "codex"
+                and exhausted_grant_exclusion_enabled()
+                and _sidecar_exhausted(view, now)
+            ):
+                _, reason = _confirmed_view_availability(
+                    view, provider=provider, role=role, now=now
+                )
+                exhausted_reasons.append(f"grant {grant} {reason}" if grant else reason)
+                continue
+            if preferred:
+                # prefer-first requires new usage after every reported reset.
+                # Retain expiry evidence stripped by the general quota summary.
+                windows = view.get("windows")
+                if (
+                    view.get("windows_expired")
+                    or not isinstance(windows, list)
+                    or not windows
+                    or any(
+                        not isinstance(w, dict)
+                        or w.get("usable") is not True
+                        or reset_passed(w.get("resets_at"), now) is not False
+                        for w in windows
+                    )
+                ):
+                    reasons.append(f"grant {grant} current_windows_unconfirmed")
+                    continue
             evaluated += 1
             ok, reason = _confirmed_view_availability(
                 view, provider=provider, role=role, now=now
@@ -485,8 +561,8 @@ def confirmed_availability(
         if reasons:
             return False, "; ".join(reasons)
         if evaluated == 0:
-            return False, "; ".join(skipped)
-        if skipped:
+            return False, "; ".join(exhausted_reasons or skipped)
+        if skipped or exhausted_reasons:
             return True, "confirmed_available"
         return True, "all_grants_confirmed_available"
     if summary.get("observed") is not True:
@@ -509,7 +585,7 @@ def rollup_grants(
     non-exhausted grant (its used percent, reset time and age) and is exhausted
     only when every reporting grant is. The attached complete, provider-scoped
     inventory validity lets confirmed KG admission apply its stricter
-    all-accounts rule without changing ordinary routing.
+    eligible-accounts rule without changing ordinary routing.
     """
     validity = grant_inventory_validity or {}
     merged = {

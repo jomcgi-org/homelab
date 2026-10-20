@@ -521,6 +521,7 @@ _KARGO_PROJECT_NAMESPACES = [
     "kargo-monolith",
     "kargo-monolith-agents",
     "kargo-monolith-public",
+    "kargo-scotland-connector",
 ]
 _RBAC_KINDS = {"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"}
 
@@ -997,6 +998,7 @@ _S3_JOB_ENV = _SHARED_ENV + [
     "STARS_SITES_S3_KEY",
     "STARS_MAP_S3_KEY",
     "STARS_HISTORY_MAP_S3_KEY",
+    "HIKES_WALKS_S3_KEY",
 ]
 _BACKEND_SHARED_ENV = _SHARED_ENV + [
     "STARS_GRID_S3_BUCKET",
@@ -1207,6 +1209,7 @@ def test_shared_s3_probe_jobs_positive_then_omission(tmp_path):
     assert s3_env["AWS_REGION"].get("value") == _DEFAULT_S3_REGION
     assert s3_env["STARS_GRID_S3_BUCKET"].get("value") == "stars"
     assert s3_env["STARS_SITES_S3_KEY"].get("value") == "sites.json"
+    assert s3_env["HIKES_WALKS_S3_KEY"].get("value") == "walks.json"
     assert s3_env["PROBE_KEEP"].get("value") == "kept"
     assert "DATABASE_URL" in s3_env
     grimoire_env = _env_by_name(
@@ -1460,10 +1463,16 @@ def test_codex_synthetic_uses_release_derived_internal_api():
 
 
 @pytest.mark.parametrize("environment", ["prod", "gke"])
-def test_cd_health_renders_all_four_kargo_production_mappings(environment, renders):
+def test_cd_health_renders_every_kargo_production_mapping(environment, renders):
     env = _env_by_name(_deployment_backend_env(renders[environment]))
     apps = json.loads(env["CD_HEALTH_KARGO_APPS"]["value"])
-    names = ("monolith", "embervm", "monolith-public", "monolith-agents")
+    names = (
+        "monolith",
+        "embervm",
+        "monolith-public",
+        "monolith-agents",
+        "scotland-connector",
+    )
     assert apps == [
         {
             "app": name,

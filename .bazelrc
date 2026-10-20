@@ -1,5 +1,4 @@
 import %workspace%/bazel/tools/preset.bazelrc
-try-import %workspace%/bazel/tools/java17.bazelrc
 
 ### YOUR PROJECT SPECIFIC OPTIONS GO HERE ###
 
@@ -58,11 +57,6 @@ common --workspace_status_command=./bazel/tools/workspace_status.sh
 # varying value would move every image's digest on every build and reintroduce
 # the churn. Tools that ignore SOURCE_DATE_EPOCH are unaffected.
 common --action_env=SOURCE_DATE_EPOCH=0
-
-# Release config for backwards compatibility
-common:release --stamp --workspace_status_command=./bazel/tools/workspace_status.sh
-
-common:lint --aspects=//bazel/tools/lint:linters.bzl%shellcheck,//bazel/tools/lint:linters.bzl%eslint,//bazel/tools/lint:linters.bzl%ruff
 
 # =============================================================================
 # Test Configuration
@@ -147,7 +141,7 @@ build:ci --bes_backend=grpcs://remote.buildbuddy.io
 # For manual auth, set API key via --remote_header in user.bazelrc
 try-import %workspace%/bazel/remote.bazelrc
 
-# Load any settings & overrides specific to the current user from `.aspect/bazelrc/user.bazelrc`.
+# Load any settings & overrides specific to the current user from `user.bazelrc`.
 # This file should appear in `.gitignore` so that settings are not shared with team members. This
 # should be last statement in this config so the user configuration is able to overwrite flags from
 # this file. See https://bazel.build/configure/best-practices#bazelrc-file.

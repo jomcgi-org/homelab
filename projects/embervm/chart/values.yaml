@@ -383,6 +383,13 @@ dispatcher:
 
 # Session-process tuning (control-plane env).
 session:
+  # Repository preparation only. Activation requires separately accepted memory
+  # admission evidence (#6965). Readers/reconciliation remain on when disabled.
+  asyncResidency:
+    enabled: false
+    queueLimit: 1024
+    principalLimit: 128
+    restoreLimit: 2
   # Invoke wall-clock watchdog margin (#4434), in ms. A session invoke's gRPC
   # deadline is a header the SERVER enforces, so on an orphaned channel (#4419)
   # nothing fires and the invoke worker wedges forever, pinning the session's
@@ -2161,6 +2168,8 @@ egress:
   #
   #   - header: Authorization                      # a POOL of grants, more than one
   #     valuePrefix: "Bearer "                     # account on the same provider. The
+  #     grantPolicy: prefer-first                 # optional: exactly two Codex grants;
+  #                                              # applies to every guest on the brick.
   #     brokerGrants: [codex-a, codex-b]           # sidecar picks the active grant per
   #     egressTo: [chatgpt.com]                    # connection by remaining quota in
   #     quotaProvider: codex                       # 25% bands with hysteresis (see

@@ -840,6 +840,149 @@ the closed broad cleanup programme is not a prerequisite.
 
 ---
 
+### Durable capacity waits for existing sessions
+
+Issue #7210 adds two default-off gates: Ember's
+`session.asyncResidency.enabled` and factory's
+`agents.sessions.asyncResidencyEnabled`. Existing synchronous clients retain
+their current behavior. New-session capability bootstrap remains separate.
+
+Factory owns logical work, prompts, dependencies, review, quota, costs and
+attempts. Ember stores demand for resident capacity using its existing op-log
+and Postgres/SQLite projections. The session capability authenticates
+`POST /v1/sessions/:id/residency`, paginated GETs and DELETE of an operation.
+POST supplies `Idempotency-Key`, `generation`, `deadline`, `task_deadline` and
+`first_wait_at`, with times in Unix milliseconds. A replay returns the original
+operation. A different fingerprint conflicts. Neither tokens nor prompts enter
+the operation record. The deadline is bounded by both task and session expiry.
+
+`queued` owns no additional VM reservation. `admitting` references one exact
+brick restore claim; interests for the same session share it. `ready` records
+the current generation, VM and brick incarnation. `cancelling` retains an
+unresolved restore while dropping demand. `consumed` records the winning invoke
+handoff; execution completion still belongs to the existing dispatch record.
+Cancellation of consumed demand returns `already_consumed`. Other terminal
+states are `cancelled`, `expired` and `failed`. Cancellation never destroys a
+shared session.
+
+An opted-in invoke carries `X-Ember-Residency-Operation`,
+`X-Ember-Residency-Epoch` and the existing exact dispatch ID. SessionStore writes
+the consumed operation and `session_invoke_started` in the same transaction
+before SessionAssign. Cancellation, deadline and the current resident tuple
+are checked at that boundary. A bank winner returns exact `not_dispatched`
+evidence under the reserved `X-Ember-Invoke-Outcome` header. Guest responses
+cannot supply that origin marker. A lost handoff response stays uncertain; a
+consumed operation never authorizes replay, including a crash before the RPC.
+
+**Why.** A capacity wait can outlive an HTTP caller or a process. The durable
+pending turn retains the prompt and logical permit while the residency operation
+retains placement demand. Factory polls without claiming an executor, advancing
+a dispatch counter, preparing a receipt or starting its execution clock. It
+rechecks controls and shared admission before POST. Only a proven unused POST
+can unwind provisional receipt and retry bookkeeping. Unknown outcomes retain
+existing receipt recovery and cost reservations.
+
+Admission requires a fresh brick report with reserved declared-memory admission
+and a positive budget. #6965 owns enabling that prerequisite. Wakes use the
+existing scheduler and final noded admission, charging the greater of declared
+and snapshot memory plus existing overhead. The finite restore cap defaults to
+two; queue caps default to 1024 globally and 128 per principal. A bounded scan
+of the capped queue rotates principals and preserves FIFO age while bypassing
+requests that do not fit. `no_fitting_class`, `capacity` and
+`safe_memory_unavailable` are distinct observations. Existing wake-rate limits,
+lineage and workload limits remain in effect. No memory request, CPU ratio or
+jailer setting changes here.
+
+A lost restore keeps its exact claim without a lease timeout. Restart rebuilds
+claims before considering queued work. A known returned VM can be adopted from
+its exact inventory; an anonymous Prime with a lost response is never guessed
+or repeated. It stays fenced until existing exact-incarnation cessation evidence
+resolves it. Resident reporting or committed checkpoint plus confirmed teardown
+acknowledges the claim durably before it is released. The existing idle-bank
+lifecycle manages VMs after demand is cancelled.
+
+Status is available on the capability-scoped operation and under
+`/v1/nodes.async_residency`: state/reason counts, oldest queued age, unknown
+restores, restore concurrency/limit, declared resident/in-flight MiB, restore
+attempts and consumed handoffs. `[:embervm, :residency, :decision]` emits bounded
+state/reason labels and wait/restore durations. Structured logs carry operation
+and session IDs; those IDs are excluded from metric labels. Factory emits
+`factory.capacity_wait.transitions` and `factory.capacity_wait.invocation_starts`
+and persists its wait reason/deadline on the pending turn. Existing session
+lifecycle telemetry supplies park/relight events. Terminal dedupe projections
+and their owning capability records are retained conservatively: this slice has
+no evidence that factory has dropped every reference, so automatic deletion of
+those projections is disabled. An indexed active/unresolved working set excludes
+settled history from periodic reconciliation, admission and claim scans; key lookup
+and queue sequence allocation do not scan terminal records. The existing bounded
+compactor continues for unrelated data. Retention changes need reference-release
+evidence before pruning.
+
+Enable and rollback order for a separately authorized canary:
+
+1. Publish and verify chart/image provenance and Kargo's live revision. Satisfy
+   #6965's safe-memory prerequisites. Apply the additive factory migration and
+   deploy readers/reconcilers with both producers disabled.
+2. Enable Ember admission in dev with finite caps, then enable the factory
+   producer. A first authoritative unsupported response permits legacy fallback.
+   An ambiguous enqueue or an accepted operation never falls back. Older
+   control planes without a typed unsupported response remain fenced until
+   upgraded. There is no production activation in #7210 preparation.
+3. Roll back the factory producer first, then stop new Ember admissions. Keep
+   operation readers, cancellation and reconciliation running until durable
+   backlog and unknown restores resolve. Replays of accepted keys still work
+   with admission disabled. Do not roll back to a binary that cannot read the
+   operation projection while any accepted work remains.
+
+The canary uses the same fixed workload before and after, with more logical
+sessions than resident slots. Record completed work per hour and native completed
+turns; resident GiB-hours and resident-memory-seconds per completed turn; queue
+latency distributions; restore duration, failures and churn; physical denials;
+and declared resident plus in-flight peak memory. Include failed and unfinished
+work in the denominator and report external Spot/preemption events separately.
+Missing telemetry or no traffic is UNKNOWN. Stop on duplicate dispatch, lost
+lineage, workload-induced OOM, unplanned eviction or a resident budget breach.
+Queueing can trade responsiveness for utilization; it supplies no promised
+throughput or cost improvement. #6781 retains its separate measured experiment.
+
+### Cooperative active parking is a separate step
+
+QoS, execution substrate and lifecycle are independent dimensions. Asynchronous
+work can be high priority and can be unsafe to park. #6256 owns the existing
+interrupt/flush/bank continuation; #6564 owns exact-turn Stop validation. A
+follow-on runtime contract should reuse session, lineage and exact-dispatch
+identities: request yield with a reason and deadline; receive `not_safe` or an
+acknowledgement naming a flushed checkpoint; reclaim only after actual VM
+cessation; resume that identity. Cancellation remains a separate operation.
+This issue implements durable demand for existing idle-session wakes.
+
+The completion contract needs separate evidence at each boundary:
+
+| Boundary | Required evidence and owner |
+| --- | --- |
+| Turn settled | Runtime confirms provider output, tools and follow-ups for the exact dispatch have reconciled. A quiet socket or heartbeat is insufficient. |
+| Checkpoint safe | Runtime acknowledges a flushed checkpoint and its session/lineage/dispatch identity, or returns `not_safe`. |
+| Residency released | Ember confirms the exact VM has ceased and its physical accounting has transferred or released. Lowering a reservation alone reclaims no memory. |
+| Logical run complete | Factory confirms task dependencies, final artifacts and review outcomes have settled. A completed turn may still require another turn. |
+
+#6256's dependent contract needs tests for tool/follow-up activity after provider
+output, unsafe yield, checkpoint acknowledgement lost around a crash, delayed
+VM exit, cancellation during yield, exact-identity resume and final task
+completion after multiple turns. A density experiment must show actual resident
+memory falling after cessation and fitting queued work progressing within the
+same resident-plus-restore budget. Queue acceptance and an idle heartbeat prove
+none of these completion boundaries. Guest ballooning or another way to shrink a
+running VM requires separately supported backend work and measurement; this
+slice assumes neither ballooning nor reclaim from low observed RSS.
+
+The follow-on must preserve current CPU, RAM, disk, process and output limits.
+Separate active execution leases from queued/parked time, keep cumulative
+accounting across resumes, distinguish semantic progress from heartbeats and
+bound repeated park/restore churn. Missing a safe-yield deadline leads to
+controlled containment and an uncertain outcome, never blind replay. Numerical
+limits, CPU sizing (#6966), security policy, jailer activation (#6965) and the
+human-wait delivery-slot work (#7163/#7180) remain with their owners.
+
 ## 5. The invariants
 
 These are the rules everything else rests on. Every design change is judged
@@ -1228,11 +1371,12 @@ lowest-priority pod) before node; and unsatisfiable demand (no class fits, or
 class and pool headroom are both exhausted) becomes one signaled capacity
 condition on `/health` and Workload status, held with hysteresis, rather
 than a retry at request frequency (today only the `:fleet_full` 503 exists).
-Pressure shedding is **Built, disarmed** (#5521): a brick sheds its
+Pressure shedding is **Built** (#5521): a brick sheds its
 least-recently-active idle guests via the existing bank paths once its
 observed memory crosses `statefulSweeper.pressureBanking.highWaterFraction`
 (0.85), with hysteresis back to the low-water mark (0.70) before shedding
-stops; the lane is off in every deployment pending live verification.
+stops. Production Git values enable the lane. This is configuration evidence,
+not a new observation of a live rollout.
 `homelab-preemptible` (-9, platform chart) replaces `homelab-disposable`
 (-1000) on GKE bricks specifically so a Pending brick stays visible to the
 cluster autoscaler's scale-up (above its -10 expendable-pods cutoff) while
@@ -1826,14 +1970,61 @@ account for long stretches and each account burns down in quarter steps)
 for no cross-service plumbing, and the occasional cache miss on a flip is
 cheaper than that plumbing. See #5974.
 
-**Why.** The broker holds every grant's token, so it can refresh an unused
-pooled Codex grant without a guest session. Its optional refresher reads
-`GET /wham/usage` without inference, through the cached `GetAccessToken`
-path, and leaves the sidecar ranker unchanged. The hub refresh age is 600
-seconds, below the gate's 900-second freshness bound and the ranker's
-15-minute bound. Known exhausted grants wait for their reset, and
-window-less rejections wait 15 minutes: refreshing those observations
-early would keep the KG gate's fresh-exhaustion veto active. See #6637.
+**Why.** The broker observes every pooled Codex grant with `GET /wham/usage`,
+including exhausted grants. The hub refresh age is 600 seconds; a one-minute
+tick starts at most one request per grant per refresh interval, with a ten-second
+timeout, no redirects, and a 64 KiB body limit. A manual reset can precede the
+reported reset by days. Waiting until that timestamp latched B at 100 percent.
+Usage polling reads only an existing access token with more than a minute left;
+it never rotates OAuth credentials or sends inference. Missing/expired tokens,
+authorization failures (401/403), transport failures and malformed usage retain
+the previous quota observation without extending its freshness. Ordinary token
+serving still owns OAuth refresh. An idle grant with an expired token needs
+that existing serving path before polling can resume.
+
+The Codex sidecar excludes grants at 97 percent or explicit exhaustion, and
+never falls from a fresh usable tier into stale or exhausted quota after a
+token-fetch failure. With `SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION=true`, the
+KG gate can ignore exhausted accounts beside a fresh permitting account. Unknown inventory, malformed evidence, role floors
+and no fresh permitting account still defer. Cached sidecar observations age
+even while the broker is unavailable. The gate's compatibility setting defaults
+to false because monolith and EmberVM promote independently. First deploy and
+verify every sidecar's exclusion, then enable the setting through a separate
+monolith values change (`swarm.codexExhaustedGrantExclusion: true`). Until that activation, reobserved exhaustion still
+vetoes KG admission, preserving the old conservative contract. Opposite version
+skew could let an old sidecar select an account the new gate excludes.
+
+**Account preference** (enabled on the hub for factory and interactive guests): `grantPolicy: prefer-first`
+on a two-member Codex catalog pool chooses its first member whenever fresh usage
+proves every reported window usable. The hub order is `[codex-b,
+codex-cluster]`. A fresh exhaustion report or the existing 60-second token-failure
+cooldown permits fallback to A. Stale, missing or invalid B telemetry pauses
+selection until another usage observation; it does not prove B exhausted.
+Before enabling that catalog policy, set `SWARM_CODEX_PREFERRED_GRANT=codex-b`
+on monolith using `swarm.codexPreferredGrant: codex-b`, together with the
+verified-sidecar compatibility setting. Preferred
+account admission requires current future-reset windows and refuses stale B,
+so it defers jobs before egress would deny them. If B's cached token has expired,
+quota observation needs ordinary token serving or operator recovery first;
+neither observation nor preference rotation initiates OAuth refresh as a probe.
+
+A can displace usable B only when both have fresh observations, all windows
+are below 97 percent, all durations and future resets are known, and A's longest
+window resets before B's. Its remaining time must be at most
+`min(12 hours, longest window duration * minimum remaining fraction across windows)`.
+This uses reported headroom and time without assuming account capacities or
+subscription weights. A short-window reset alone cannot preempt B's weekly
+budget. Once the condition stops holding, B wins again regardless of the
+previously selected account. Provider and model routing are separate.
+
+**Why.** The shared sidecar receives only a destination preamble, and its broker
+SPIFFE identity identifies noded rather than a factory session. Enabling the
+policy in the current deployment would affect every Codex guest on that brick,
+including interactive guests. Joe accepted that shared scope on 2026-10-19, and the hub enables B-first
+for both factory and interactive guests after compatible sidecars and admission
+settings are verified. Factory-specific selection would require trusted workload
+metadata. Guest-supplied headers are not an account authorization boundary.
+No credentials, access rules or identity plumbing change here.
 
 **Why.** Quota responses include advisory pacing against the longest reported
 window, with remaining daily budget and the reported next reset of a shorter
@@ -2231,6 +2422,11 @@ scratch, and an external durable store as the minimum deployment contract.
 
 ## 12. Direction
 
+- #7210: durable existing-session residency demand and factory capacity waits,
+  default-off preparation; dev operational acceptance and production activation
+  remain separately authorized.
+
+
 Decided and not yet built, each with the issue that tracks it. A row leaves
 this table when the work ships or the issue closes without it.
 
@@ -2289,7 +2485,7 @@ has the full text.
 | embervm/036 | Platform KEK custody derived in the control plane's key service | Accepted, Built | deleted |
 | embervm/037 | Brick silence timeout | Draft, Built and armed at 21600 s (#5073) | deleted |
 | embervm/038 | Image-lane serving fresh boot | Draft, Built | deleted |
-| embervm/039 | Fair-share brick resources, blast-radius ladder, capacity as a signal | Accepted; 75% memory requests Built, reversed to equal limits where reserved admission is armed (#4185, #6965); shedding Built and disarmed; jailer Built and staged (#5255, #6965); signal Decided direction | deleted |
+| embervm/039 | Fair-share brick resources, blast-radius ladder, capacity as a signal | Accepted; 75% memory requests Built, reversed to equal limits where reserved admission is armed (#4185, #6965); shedding Built and configured on in production; jailer Built and staged (#5255, #6965); signal Decided direction | deleted |
 | embervm/040 | Anchor-loss recovery, preemption budget split | Accepted; restore-onto-peer Built, preemption watcher Built and disarmed | deleted |
 | embervm/041 | SPIFFE workload identity on self-hosted SPIRE | Accepted; phases 0 and 1 done, phase 2 in flight (#5706) | deleted |
 | embervm/042 | Brick class ceilings move on denial pressure | Accepted, built; hub dev canary staged, live acceptance pending (#5505) | deleted |

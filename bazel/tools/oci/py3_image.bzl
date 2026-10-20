@@ -1,15 +1,15 @@
-"py_image - multi-platform Python OCI images"
+"py3_image - single-platform Python OCI images"
 
 load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@aspect_rules_py//py:defs.bzl", "py_image_layer")
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_load", "oci_push")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/tools/oci:providers.bzl", "oci_image_info")
 
-def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}, workdir = None, base = "@python_base", tars = [], multiarch_tars = [], bash_symlink = True, repository = None, visibility = ["//bazel/images:__pkg__"], multi_platform = False):
-    """Create a multi-platform Python 3 image from a Python binary.
+def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}, workdir = None, base = "@python_base", tars = [], bash_symlink = True, repository = None, visibility = ["//bazel/images:__pkg__"]):
+    """Create a Python 3 image for the caller's CPU (amd64 in Linux CI).
 
     Args:
         name: The name of the image.
@@ -23,9 +23,6 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
         workdir: The working directory to set in the image.
         base: The base image to use for the image.
         tars: Additional tar layers to include in the image (e.g., extra binaries or config).
-        multiarch_tars: Optional list of multiarch tar base names. For each base name, py3_image
-                       will use {base}_amd64 and {base}_arm64 targets.
-                       Example: ["@some_cli//:tar"] uses @some_cli//:tar_amd64 and @some_cli//:tar_arm64
         bash_symlink: Create /bin/bash -> /usr/bin/bash symlink layer. Set to False for bases
                      where /bin is a symlink to /usr/bin (e.g., Wolfi apko images), as the
                      layer would shadow the /bin symlink and break /bin/* resolution.
@@ -33,9 +30,6 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
                    Defaults to "ghcr.io/jomcgi/homelab/{package_name}".
         visibility: Visibility of the generated .push target. Defaults to ["//bazel/images:__pkg__"]
                    to allow access from the auto-generated //images:push_all multirun.
-        multi_platform: Build for both amd64 and arm64. Defaults to False: every
-            node is amd64 and no chart pins an arch, so the arm64 half had no
-            consumer and doubled every layer tar and image action on each change.
     """
     binary = native.package_relative_label(binary)
     binary_path = "{}{}/{}".format(root, binary.package, binary.name)
@@ -73,130 +67,43 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
         )
         extra_tars.append(name + "_srcs")
 
-    extra_tars_amd64 = list(extra_tars)
-    extra_tars_arm64 = list(extra_tars)
-    for tar_base in multiarch_tars:
-        extra_tars_amd64.append(tar_base + "_amd64")
-        extra_tars_arm64.append(tar_base + "_arm64")
+    oci_image(
+        name = name + "_image",
+        base = base,
+        tars = py_image_layer(
+            name = name + "_layers",
+            binary = binary,
+            root = root,
+            layer_groups = layer_groups,
+        ) + extra_tars,
+        entrypoint = [binary_path],
+        env = env,
+        workdir = workdir or workspace_root,
+    )
+    platform_transition_filegroup(
+        name = name,
+        srcs = [name + "_image"],
+        target_platform = select({
+            "@platforms//cpu:arm64": "//bazel/tools/platforms:linux_aarch64",
+            "@platforms//cpu:x86_64": "//bazel/tools/platforms:linux_x86_64",
+        }),
+    )
 
-    if multi_platform:
-        # Build AMD64 image.
-        #
-        # tags = ["manual"]: this target and the transitioned filegroup below
-        # are the same work in two configurations, and `bazel test //...`
-        # expands to both, so each base was assembled twice. `manual` removes
-        # it from wildcard expansion only; the filegroup still depends on it.
-        # Same defect as apko_image.bzl, though cheaper here because oci_image
-        # is remotely executable where the apko action is `no-remote-exec`.
-        oci_image(
-            name = name + "_base_amd64",
-            tags = ["manual"],
-            base = base,
-            tars = py_image_layer(
-                name = name + "_layers_amd64",
-                binary = binary,
-                root = root,
-                layer_groups = layer_groups,
-            ) + extra_tars_amd64,
-            entrypoint = [binary_path],
-            env = env,
-            workdir = workdir or workspace_root,
-        )
-        platform_transition_filegroup(
-            name = name + "_amd64",
-            srcs = [name + "_base_amd64"],
-            target_platform = "//bazel/tools/platforms:linux_x86_64",
-        )
-
-        # Build ARM64 image. See the amd64 base above for why this is manual.
-        oci_image(
-            name = name + "_base_arm64",
-            tags = ["manual"],
-            base = base,
-            tars = py_image_layer(
-                name = name + "_layers_arm64",
-                binary = binary,
-                root = root,
-                layer_groups = layer_groups,
-            ) + extra_tars_arm64,
-            entrypoint = [binary_path],
-            env = env,
-            workdir = workdir or workspace_root,
-        )
-        platform_transition_filegroup(
-            name = name + "_arm64",
-            srcs = [name + "_base_arm64"],
-            target_platform = "//bazel/tools/platforms:linux_aarch64",
-        )
-
-        # Create multi-platform index
-        oci_image_index(
-            name = name,
-            images = [
-                name + "_amd64",
-                name + "_arm64",
-            ],
-        )
-
-        # Load uses host platform
-        platform_transition_filegroup(
-            name = name + "_platform",
-            srcs = select({
-                "@platforms//cpu:arm64": [name + "_base_arm64"],
-                "@platforms//cpu:x86_64": [name + "_base_amd64"],
-            }),
-            target_platform = select({
-                "@platforms//cpu:arm64": "//bazel/tools/platforms:linux_aarch64",
-                "@platforms//cpu:x86_64": "//bazel/tools/platforms:linux_x86_64",
-            }),
-        )
-        oci_load(
-            name = name + ".load",
-            image = name + "_platform",
-            repo_tags = [native.package_name() + ":latest"],
-        )
-    else:
-        # Single platform build (legacy)
-        oci_image(
-            name = name + "_image",
-            base = base,
-            tars = py_image_layer(
-                name = name + "_layers",
-                binary = binary,
-                root = root,
-                layer_groups = layer_groups,
-            ) + extra_tars,
-            entrypoint = [binary_path],
-            env = env,
-            workdir = workdir or workspace_root,
-        )
-        platform_transition_filegroup(
-            name = name,
-            srcs = [name + "_image"],
-            target_platform = select({
-                "@platforms//cpu:arm64": "//bazel/tools/platforms:linux_aarch64",
-                "@platforms//cpu:x86_64": "//bazel/tools/platforms:linux_x86_64",
-            }),
-        )
-
-        # rules_oci declares `:{name}.digest` implicitly on oci_image and
-        # oci_image_index, which is what helm_images_values and the digest
-        # manifest read. A filegroup has no such output, so surface the
-        # image's digest under the SAME transition the push target uses;
-        # pinning an untransitioned digest would name an image nobody pushed.
-        platform_transition_filegroup(
-            name = name + ".digest",
-            srcs = [name + "_image.digest"],
-            target_platform = select({
-                "@platforms//cpu:arm64": "//bazel/tools/platforms:linux_aarch64",
-                "@platforms//cpu:x86_64": "//bazel/tools/platforms:linux_x86_64",
-            }),
-        )
-        oci_load(
-            name = name + ".load",
-            image = name,
-            repo_tags = [native.package_name() + ":latest"],
-        )
+    # A filegroup has no `.digest` output. Surface the image's digest under
+    # the same transition the push target uses for Helm and the manifest.
+    platform_transition_filegroup(
+        name = name + ".digest",
+        srcs = [name + "_image.digest"],
+        target_platform = select({
+            "@platforms//cpu:arm64": "//bazel/tools/platforms:linux_aarch64",
+            "@platforms//cpu:x86_64": "//bazel/tools/platforms:linux_x86_64",
+        }),
+    )
+    oci_load(
+        name = name + ".load",
+        image = name,
+        repo_tags = [native.package_name() + ":latest"],
+    )
 
     # One tag per push: the timestamped build tag, which is also what helm
     # values read via `head -1`. A second branch-name tag used to be applied
@@ -216,21 +123,18 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
     )
 
     # Verify image config has correct Python runtime environment.
-    # Tests one platform (amd64) since the config is identical across architectures.
     sh_test(
         name = name + "_config_test",
         srcs = ["//bazel/tools/oci:verify-py3-image.sh"],
-        args = ["$(rootpath {})".format(
-            name + "_base_amd64" if multi_platform else name + "_image",
-        )],
-        data = [name + "_base_amd64" if multi_platform else name + "_image"],
+        args = ["$(rootpath {})".format(name + "_image")],
+        data = [name + "_image"],
     )
 
-    # Push uses the index for multi-platform, or platform-specific for single platform
+    # Push the same platform-specific image used by .load.
     _repository = repository if repository else "ghcr.io/jomcgi/homelab/" + native.package_name()
     oci_push(
         name = name + ".push",
-        image = name if multi_platform else name,
+        image = name,
         repository = _repository,
         remote_tags = name + "_stamped_tags",
         visibility = visibility,

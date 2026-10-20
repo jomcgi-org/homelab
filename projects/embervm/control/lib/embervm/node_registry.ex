@@ -2451,7 +2451,7 @@ defmodule Embervm.NodeRegistry do
         serving = entry[:serving] || %{}
         # Stateful boot params (ADR embervm/018 Phase 2): the L4 activator binds and
         # resolves by listen_port, health-gates the guest port, and threads the mount.
-        # boot_image_ref and volume_device stay noded-local (the daemon resolves the
+        # Boot-image and volume resolution stay noded-local (the daemon resolves the
         # base from its own inventory and the volume from local disk, exactly as the
         # serving activator resolves its image), so they are NOT pushed here.
         stateful = entry[:stateful] || %{}

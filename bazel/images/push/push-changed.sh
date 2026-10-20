@@ -200,7 +200,7 @@ UNCOVERED=$(_multirun_labels push_all |
 	grep -Fxv -f "$COVERED" || true)
 if [ -n "$UNCOVERED" ]; then
 	echo "  WARNING: these images are in push_all but not in the digest manifest;" >&2
-	echo "           pushing them unconditionally. Re-run 'format' to regenerate." >&2
+	echo "           pushing them unconditionally. Run './bazel/images/generate-push-all.sh' to regenerate." >&2
 	while IFS= read -r label; do
 		[ -n "$label" ] || continue
 		echo "  push  $label  (not in manifest)"
