@@ -136,9 +136,8 @@ networkPolicy:
       - 240.0.0.0/4
 
 route:
-  # Off until a hostname is chosen (#7243): the product name and its hostname
-  # are an open decision, and a new hostname also needs its Cloudflare tunnel
-  # public hostname set outside this repo.
+  # Off by default: a render without a chosen hostname and prefix must not
+  # claim paths on a shared Gateway. deploy/values.yaml turns it on.
   enabled: false
   hostname: ""
   # Path the connector lives under on a shared hostname, for example

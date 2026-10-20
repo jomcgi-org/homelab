@@ -17,9 +17,16 @@ r2Credentials:
     itemPath: vaults/k8s-homelab/items/r2-s3-public-read
 
 route:
-  # On the public apex under /scotland (#7243): jomcgi.dev/scotland/mcp and
+  # The public apex under /scotland (#7243): jomcgi.dev/scotland/mcp and
   # jomcgi.dev/scotland/v1/... The apex already resolves through the tunnel
   # and its Cloudflare cache rule honours the API's Cache-Control.
-  enabled: true
+  #
+  # Still off: these values deploy from git HEAD while Kargo sets the chart
+  # version, so flipping this in the change that adds pathPrefix would hand
+  # the live chart (which ignores pathPrefix) a route on bare /v1 and /mcp
+  # until the new chart is promoted. Turn on only once a chart with
+  # pathPrefix support is live (docs/runbooks/argocd-outofsync.md, multi-app
+  # rollout ordering).
+  enabled: false
   hostname: jomcgi.dev
   pathPrefix: /scotland
