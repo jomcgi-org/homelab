@@ -998,6 +998,7 @@ _S3_JOB_ENV = _SHARED_ENV + [
     "STARS_SITES_S3_KEY",
     "STARS_MAP_S3_KEY",
     "STARS_HISTORY_MAP_S3_KEY",
+    "HIKES_WALKS_S3_KEY",
 ]
 _BACKEND_SHARED_ENV = _SHARED_ENV + [
     "STARS_GRID_S3_BUCKET",
@@ -1208,6 +1209,7 @@ def test_shared_s3_probe_jobs_positive_then_omission(tmp_path):
     assert s3_env["AWS_REGION"].get("value") == _DEFAULT_S3_REGION
     assert s3_env["STARS_GRID_S3_BUCKET"].get("value") == "stars"
     assert s3_env["STARS_SITES_S3_KEY"].get("value") == "sites.json"
+    assert s3_env["HIKES_WALKS_S3_KEY"].get("value") == "walks.json"
     assert s3_env["PROBE_KEEP"].get("value") == "kept"
     assert "DATABASE_URL" in s3_env
     grimoire_env = _env_by_name(
