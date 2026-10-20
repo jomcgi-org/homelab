@@ -1,7 +1,6 @@
-# Pillow floor. open-gopro[gui] (since removed) capped pillow at <12; the
-# floor stays as the CVE remediation for the pillow>=12.1.1 line pyproject.toml
-# names directly.
-pillow>=12.2.0
+# GHSA-v9pv-5gc8-w2m6 and GHSA-5x8w-8jj5-q52h are fixed in 13.0.0.
+# Keep the override aligned with the direct dependency security floor.
+pillow>=13.0.0
 
 # --- Security floors (Dependabot CVE remediation, 2026-07-11; last swept
 # 2026-08-09) ---
