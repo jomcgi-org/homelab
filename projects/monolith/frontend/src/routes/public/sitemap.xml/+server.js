@@ -12,6 +12,7 @@ const PAGES = [
   { path: "/docs", priority: "0.8" },
   // /blog is deliberately unlisted until the first post is published.
   { path: "/app/notes", priority: "0.7" },
+  { path: "/scotland", priority: "0.7" },
 ];
 
 export function GET() {
