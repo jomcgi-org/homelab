@@ -29,7 +29,7 @@ export function buildMarquee(stats) {
   return items;
 }
 
-function formatAgo(iso) {
+export function formatAgo(iso) {
   const then = Date.parse(iso);
   if (!Number.isFinite(then)) return null;
   const minutes = Math.max(0, Math.round((Date.now() - then) / 60_000));
@@ -37,6 +37,20 @@ function formatAgo(iso) {
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours}h`;
   return `${Math.round(hours / 24)}d`;
+}
+
+/** The nameplate's deployment readout: how long ago the live commit went
+ *  out and its short sha, or null when the deploy source is unavailable so
+ *  the plate shows nothing rather than a fabricated figure. */
+export function deployReadout(stats) {
+  const d = stats?.deploy;
+  if (!d?.deployed_at) return null;
+  const ago = formatAgo(d.deployed_at);
+  if (!ago) return null;
+  return {
+    ago,
+    sha: d.latest_commit_sha ? String(d.latest_commit_sha).slice(0, 7) : null,
+  };
 }
 
 export function isStatsSnapshot(value) {
