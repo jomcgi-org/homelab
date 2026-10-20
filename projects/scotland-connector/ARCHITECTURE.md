@@ -4,10 +4,8 @@ A public, read-only, free API and MCP endpoint answering Scottish outdoor
 questions, starting with where and when the sky will be dark and clear.
 Tracking issue: #7240. Deployed on the hub through Kargo
 (`projects/gke-apps/scotland-connector/`, pipeline `scotland-connector` in
-`projects/platform/kargo/values.yaml`). Its public route,
-`https://jomcgi.dev/scotland/mcp` and `https://jomcgi.dev/scotland/v1/...`,
-is configured and turns on once a chart that strips the prefix is live
-(#7243).
+`projects/platform/kargo/values.yaml`), served publicly at
+`https://jomcgi.dev/scotland/mcp` and `https://jomcgi.dev/scotland/v1/...`.
 
 ## Shape
 

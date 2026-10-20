@@ -21,12 +21,9 @@ route:
   # jomcgi.dev/scotland/v1/... The apex already resolves through the tunnel
   # and its Cloudflare cache rule honours the API's Cache-Control.
   #
-  # Still off: these values deploy from git HEAD while Kargo sets the chart
-  # version, so flipping this in the change that adds pathPrefix would hand
-  # the live chart (which ignores pathPrefix) a route on bare /v1 and /mcp
-  # until the new chart is promoted. Turn on only once a chart with
-  # pathPrefix support is live (docs/runbooks/argocd-outofsync.md, multi-app
-  # rollout ordering).
-  enabled: false
+  # These values deploy from git HEAD while Kargo sets the chart version, so
+  # a chart below 0.3.1 (which ignores pathPrefix) would serve this route on
+  # bare /v1 and /mcp. Keep that in mind before lowering the Kargo pin.
+  enabled: true
   hostname: jomcgi.dev
   pathPrefix: /scotland
