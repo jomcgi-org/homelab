@@ -31,6 +31,10 @@ def render(enabled):
             str(CHART),
             "--set",
             f"grimoireLinkEnrollment.enabled={str(enabled).lower()}",
+            # Exercise the legacy flow in isolation; production uses the
+            # mutually exclusive platform possession flow.
+            "--set",
+            "platformEnrollment.enabled=false",
         ],
         check=False,
         capture_output=True,
