@@ -14,6 +14,7 @@ import (
 	"math"
 	"sort"
 	"time"
+	_ "time/tzdata" // the image ships no zoneinfo; days are UK calendar dates
 )
 
 // SchemaVersion is the walks.json shape this package reads.
