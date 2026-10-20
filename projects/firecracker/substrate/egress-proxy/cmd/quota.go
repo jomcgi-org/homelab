@@ -58,8 +58,9 @@ func parseCodexQuota(h http.Header, statusCode int, now time.Time) (QuotaObserva
 			continue
 		}
 		window := Window{Name: name, UsedPercent: used}
+		// Zero metadata does not establish a real window for an unused slot.
 		hasWindowMinutes := false
-		if minutes, err := strconv.Atoi(strings.TrimSpace(h.Get(prefix + "window-minutes"))); err == nil && minutes >= 0 {
+		if minutes, err := strconv.Atoi(strings.TrimSpace(h.Get(prefix + "window-minutes"))); err == nil && minutes > 0 {
 			window.WindowMinutes = minutes
 			hasWindowMinutes = true
 		}
@@ -161,7 +162,7 @@ func parseFiniteFloat(raw string) (float64, bool) {
 
 func parseEpochReset(raw string) (string, bool) {
 	seconds, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-	if err != nil {
+	if err != nil || seconds <= 0 {
 		return "", false
 	}
 	return time.Unix(seconds, 0).UTC().Format(time.RFC3339), true

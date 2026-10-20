@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -56,6 +57,24 @@ func TestParseCodexQuota(t *testing.T) {
 			name:       "placeholder-only response is not an observation",
 			headers:    http.Header{"X-Codex-Secondary-Used-Percent": []string{"0"}},
 			statusCode: http.StatusOK, wantOK: false,
+		},
+		{
+			name: "explicit zero metadata alone is not an observation",
+			headers: http.Header{
+				"X-Codex-Secondary-Used-Percent":   []string{"0"},
+				"X-Codex-Secondary-Window-Minutes": []string{"0"},
+				"X-Codex-Secondary-Reset-At":       []string{"0"},
+			},
+			statusCode: http.StatusOK, wantOK: false,
+		},
+		{
+			name: "zero metadata cannot erase a rejection",
+			headers: http.Header{
+				"X-Codex-Secondary-Used-Percent":   []string{"0"},
+				"X-Codex-Secondary-Window-Minutes": []string{"0"},
+				"X-Codex-Secondary-Reset-At":       []string{"0"},
+			},
+			statusCode: http.StatusTooManyRequests, wantOK: true, wantStatus: "rejected",
 		},
 		{
 			name:       "nonzero secondary without metadata is preserved",
@@ -125,6 +144,65 @@ func TestParseCodexQuota(t *testing.T) {
 			}
 			if tt.name == "429 with reached type" && obs.ReachedType != "primary" {
 				t.Errorf("reached_type = %q", obs.ReachedType)
+			}
+		})
+	}
+}
+
+func TestCodexQuotaNormalizationPreservesGrantEligibility(t *testing.T) {
+	now := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	reset := func(after time.Duration) string { return fmt.Sprint(now.Add(after).Unix()) }
+	tests := []struct {
+		name        string
+		secondary   map[string]string
+		wantWindows int
+		wantGrants  string
+	}{
+		{"absent secondary", nil, 1, "b,a"},
+		{"zero usage without metadata", map[string]string{"used-percent": "0"}, 1, "b,a"},
+		{"zero duration", map[string]string{"used-percent": "0", "window-minutes": "0"}, 1, "b,a"},
+		{"zero reset", map[string]string{"used-percent": "0", "reset-at": "0"}, 1, "b,a"},
+		{"all zero metadata", map[string]string{"used-percent": "0", "window-minutes": "0", "reset-at": "0"}, 1, "b,a"},
+		{"real zero-use window", map[string]string{"used-percent": "0", "window-minutes": "300", "reset-at": reset(time.Hour)}, 2, "b,a"},
+		{"exhausted secondary", map[string]string{"used-percent": "100", "window-minutes": "300", "reset-at": reset(time.Hour)}, 2, "a"},
+		{"secondary at existing cutoff", map[string]string{"used-percent": "97", "window-minutes": "300", "reset-at": reset(time.Hour)}, 2, "a"},
+		{"nonzero incomplete secondary", map[string]string{"used-percent": "3.5"}, 2, ""},
+		{"real duration without reset", map[string]string{"used-percent": "0", "window-minutes": "300"}, 2, ""},
+		{"elapsed real reset", map[string]string{"used-percent": "0", "window-minutes": "300", "reset-at": reset(-time.Hour)}, 2, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := http.Header{
+				"X-Codex-Primary-Used-Percent":   []string{"3"},
+				"X-Codex-Primary-Window-Minutes": []string{"10080"},
+				"X-Codex-Primary-Reset-At":       []string{reset(7 * 24 * time.Hour)},
+			}
+			for name, value := range tt.secondary {
+				headers.Set("X-Codex-Secondary-"+name, value)
+			}
+			observation, ok := parseCodexQuota(headers, http.StatusOK, now)
+			if !ok || len(observation.Windows) != tt.wantWindows {
+				t.Fatalf("observation = %#v, want %d windows", observation, tt.wantWindows)
+			}
+			// Use the shared JSON window contract consumed by the grant selector.
+			data, err := json.Marshal(observation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var preferred grantQuotaView
+			if err := json.Unmarshal(data, &preferred); err != nil {
+				t.Fatal(err)
+			}
+			preferred.Observed = true
+			views := map[string]grantQuotaView{
+				"b": preferred,
+				"a": {
+					Observed: true, Provider: "codex",
+					Windows: []grantQuotaWindow{{Name: "primary", UsedPercent: 34, WindowMinutes: 10080, ResetsAt: now.Add(6 * 24 * time.Hour).Format(time.RFC3339)}},
+				},
+			}
+			if grants := preferFirstGrants([]string{"b", "a"}, views, now, nil); strings.Join(grants, ",") != tt.wantGrants {
+				t.Fatalf("eligible grants = %v, want %q", grants, tt.wantGrants)
 			}
 		})
 	}
