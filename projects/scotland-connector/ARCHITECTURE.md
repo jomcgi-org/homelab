@@ -4,8 +4,8 @@ A public, read-only, free API and MCP endpoint answering Scottish outdoor
 questions, starting with where and when the sky will be dark and clear.
 Tracking issue: #7240. Deployed on the hub through Kargo
 (`projects/gke-apps/scotland-connector/`, pipeline `scotland-connector` in
-`projects/platform/kargo/values.yaml`); public route off until the hostname
-is chosen (#7243).
+`projects/platform/kargo/values.yaml`), served publicly at
+`https://jomcgi.dev/scotland/mcp` and `https://jomcgi.dev/scotland/v1/...`.
 
 ## Shape
 
@@ -31,6 +31,13 @@ Both surfaces call the same `internal/connector` functions, which validate
 parameters, apply the caps, query the dataset and wrap the answer in the
 provenance envelope. `internal/httpapi` and `internal/mcp` only translate
 transport.
+
+**Why.** A path on the apex rather than its own hostname: the apex already
+resolves through the tunnel and carries the Cloudflare cache rule, so going
+public needed no DNS or dashboard change, at the cost of one prefix
+(`/scotland`) that is part of every connector URL and so cannot move once
+published. The public-tier rule that the apex has no `/api` concerns
+`monolith-public`'s own backend; this is a separate service on its own route.
 
 **Why.** A separate service rather than more routes on `monolith-public`: the
 connector takes unauthenticated traffic whose volume is set by assistants,
@@ -92,8 +99,13 @@ coordinates inside Scotland only. There is no listing endpoint.
 Coordinates are rounded to 0.01 degrees so equal questions share an ETag.
 
 Answers carry `Cache-Control: public, max-age=60, s-maxage=600,
-stale-while-revalidate=3600, stale-if-error=86400` and a strong ETag over
-the dataset version, the as-of hour and the canonical parameters.
+stale-while-revalidate=3600, stale-if-error=86400` plus
+`Cloudflare-CDN-Cache-Control: public, max-age=600, stale-while-revalidate=3600,
+stale-if-error=86400`, and a strong ETag over the dataset version, the as-of
+hour and the canonical parameters. The second header follows the public-tier
+cache contract (`docs/runbooks/public-tier-checklist.md`): Cloudflare treats
+`s-maxage` as `proxy-revalidate`, which would switch off serving stale through
+an origin outage, so the edge lifetime reaches it as `max-age`.
 
 ## MCP: dual-era and stateless
 
@@ -132,7 +144,10 @@ answer any request.
 - HPA 2 to 10 on container CPU at 60%, scaling up by up to 100% every 30
   seconds and down by one pod a minute; PDB `maxUnavailable: 1`; replicas
   spread across nodes. A new pod is ready after two R2 GETs.
-- The route (`route.enabled`, off) matches only `/v1/` and `/mcp`, with
+- The route shares the `jomcgi.dev` apex with `monolith-public` under
+  `route.pathPrefix` `/scotland`: it matches only `/scotland/v1` and
+  `/scotland/mcp`, rewrites each back to `/v1` and `/mcp`, and wins over the
+  apex catch-all `/` by Gateway API longest-path precedence. It carries
   per-client limits keyed on `CF-Connecting-IP` in the shape
   `projects/monolith-public` proves (a fail-safe bucket for missing or
   malformed identities, a Distinct bucket per valid address), and Cloudflare
@@ -168,7 +183,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
-| Product name, hostname, public route, Cloudflare cache rule | #7243 | decision for Joe |
+| Gateway `max_dynamic_descriptors` patch for the connector route, live edge-cache check | #7243 | after the route is live |
 | Shared assistant rate-limit bucket and Envoy acceptance test | #7244 | not started |
 | Meter export to Honeycomb, unit price table | #7245 | not started |
 | Uncapped connector snapshot from the materializer | #7246 | not started |

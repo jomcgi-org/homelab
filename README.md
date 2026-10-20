@@ -13,7 +13,7 @@ Personal monorepo. Dev tooling and deployment for my projects.
 - [**Sextant**](projects/sextant/): code generator that turns YAML state-machine specs into type-safe Go for operators. Invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.
 - [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against. One namespaced vocabulary, three deliberately distinct themes (neobrutalist, ember, Grimoire) that override it inside their own scope class. Rationale in [the platform architecture](projects/platform/ARCHITECTURE.md#decision-history).
 - [**oom-inference**](projects/oom-inference/): Rust inference engine for mixture-of-experts models bigger than memory. Serves a 125B model from a 24 GB GPU by tiering experts across VRAM, pinned RAM and NVMe. See its [architecture](projects/oom-inference/docs/dev/architecture.md).
-- [**Scotland connector**](projects/scotland-connector/): Go service answering Scottish dark-sky questions over a read-only REST API and an authless MCP endpoint, from an in-memory copy of the stargazing forecast. Not public yet. See its [architecture](projects/scotland-connector/ARCHITECTURE.md).
+- [**Scotland connector**](projects/scotland-connector/): Go service answering Scottish dark-sky questions over a read-only REST API and an authless MCP endpoint, from an in-memory copy of the stargazing forecast, at `jomcgi.dev/scotland/mcp`. See its [architecture](projects/scotland-connector/ARCHITECTURE.md).
 - [**Build system**](bazel/): custom Bazel rules for Helm and OCI images. All builds run remotely via BuildBuddy RBE.
 
 ## Applications

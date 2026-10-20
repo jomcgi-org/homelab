@@ -5,6 +5,9 @@ config:
   # Cloudflare R2 account endpoint, the one the monolith's stars-refresh job
   # writes stars/sites.json and stars/history-map.json to.
   r2Endpoint: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+  # Where the route below serves the API; method_url and the OpenAPI servers
+  # entry are built from it.
+  publicBaseURL: https://jomcgi.dev/scotland
 
 r2Credentials:
   onepassword:
@@ -14,6 +17,9 @@ r2Credentials:
     itemPath: vaults/k8s-homelab/items/r2-s3-public-read
 
 route:
-  # Off until the product name and hostname are chosen (#7243), and the
-  # hostname's Cloudflare tunnel public hostname exists.
-  enabled: false
+  # On the public apex under /scotland (#7243): jomcgi.dev/scotland/mcp and
+  # jomcgi.dev/scotland/v1/... The apex already resolves through the tunnel
+  # and its Cloudflare cache rule honours the API's Cache-Control.
+  enabled: true
+  hostname: jomcgi.dev
+  pathPrefix: /scotland

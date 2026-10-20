@@ -141,6 +141,10 @@ route:
   # public hostname set outside this repo.
   enabled: false
   hostname: ""
+  # Path the connector lives under on a shared hostname, for example
+  # /scotland on jomcgi.dev; empty serves /v1/ and /mcp at the root. Keep
+  # config.publicBaseURL in step: it is what the API reports as its own URL.
+  pathPrefix: ""
   tier: public
   gateway:
     name: cloudflare-ingress

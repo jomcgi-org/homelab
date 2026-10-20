@@ -51,34 +51,59 @@ def _one(docs: list[dict[str, Any]], kind: str) -> dict[str, Any]:
     return found[0]
 
 
-def test_deployed_values_keep_the_route_off_until_a_hostname_is_chosen() -> None:
-    kinds = {d["kind"] for d in _render()}
-    assert "HTTPRoute" not in kinds
-    assert {
-        "Namespace",
-        "Deployment",
-        "Service",
-        "NetworkPolicy",
-        "HorizontalPodAutoscaler",
-        "PodDisruptionBudget",
-        "OnePasswordItem",
-    } <= kinds
+def _rules(route: dict[str, Any]) -> list[tuple[str, str, dict[str, Any] | None]]:
+    """(match type, match value, rewrite path or None) per rule."""
+    out = []
+    for rule in route["spec"]["rules"]:
+        (match,) = rule["matches"]
+        rewrite = None
+        for f in rule.get("filters", []):
+            if f["type"] == "URLRewrite":
+                rewrite = f["urlRewrite"]["path"]
+        out.append((match["path"]["type"], match["path"]["value"], rewrite))
+    return out
 
 
-def test_route_exposes_only_the_api_and_mcp_paths() -> None:
-    docs = _render(_ROUTE_ON)
+def test_deployed_values_serve_under_scotland_on_the_apex() -> None:
+    docs = _render()
     route = _one(docs, "HTTPRoute")
     assert route["metadata"]["labels"]["ingress-tier"] == "public"
-    assert route["spec"]["hostnames"] == ["connector.example.test"]
-    (rule,) = route["spec"]["rules"]
-    assert rule["matches"] == [
-        {"path": {"type": "PathPrefix", "value": "/v1/"}},
-        {"path": {"type": "Exact", "value": "/mcp"}},
+    assert route["spec"]["hostnames"] == ["jomcgi.dev"]
+    # Only the API and MCP paths, each stripped back to what the service serves.
+    assert _rules(route) == [
+        (
+            "PathPrefix",
+            "/scotland/v1",
+            {"type": "ReplacePrefixMatch", "replacePrefixMatch": "/v1"},
+        ),
+        (
+            "Exact",
+            "/scotland/mcp",
+            {"type": "ReplaceFullPath", "replaceFullPath": "/mcp"},
+        ),
     ]
+    # The URL the API reports as its own must be where the route serves it.
+    container = _one(docs, "Deployment")["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    assert env["PUBLIC_BASE_URL"] == "https://jomcgi.dev/scotland"
+
+
+def test_route_without_a_prefix_serves_the_root_paths() -> None:
+    docs = _render(_ROUTE_ON + ["route.pathPrefix="])
+    route = _one(docs, "HTTPRoute")
+    assert route["spec"]["hostnames"] == ["connector.example.test"]
+    assert _rules(route) == [("PathPrefix", "/v1", None), ("Exact", "/mcp", None)]
+    with pytest.raises(RuntimeError, match="pathPrefix must start with /"):
+        _render(_ROUTE_ON + ["route.pathPrefix=scotland"])
+
+
+def test_route_backends_are_only_the_public_service_port() -> None:
+    docs = _render()
     service = _one(docs, "Service")
-    (backend,) = rule["backendRefs"]
-    assert backend["name"] == service["metadata"]["name"]
-    assert backend["port"] == service["spec"]["ports"][0]["port"]
+    for rule in _one(docs, "HTTPRoute")["spec"]["rules"]:
+        (backend,) = rule["backendRefs"]
+        assert backend["name"] == service["metadata"]["name"]
+        assert backend["port"] == service["spec"]["ports"][0]["port"]
 
 
 def test_route_carries_per_client_limits_and_worker_denies() -> None:
