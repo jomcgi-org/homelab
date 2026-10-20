@@ -521,6 +521,7 @@ _KARGO_PROJECT_NAMESPACES = [
     "kargo-monolith",
     "kargo-monolith-agents",
     "kargo-monolith-public",
+    "kargo-scotland-connector",
 ]
 _RBAC_KINDS = {"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"}
 
@@ -1460,10 +1461,16 @@ def test_codex_synthetic_uses_release_derived_internal_api():
 
 
 @pytest.mark.parametrize("environment", ["prod", "gke"])
-def test_cd_health_renders_all_four_kargo_production_mappings(environment, renders):
+def test_cd_health_renders_every_kargo_production_mapping(environment, renders):
     env = _env_by_name(_deployment_backend_env(renders[environment]))
     apps = json.loads(env["CD_HEALTH_KARGO_APPS"]["value"])
-    names = ("monolith", "embervm", "monolith-public", "monolith-agents")
+    names = (
+        "monolith",
+        "embervm",
+        "monolith-public",
+        "monolith-agents",
+        "scotland-connector",
+    )
     assert apps == [
         {
             "app": name,
