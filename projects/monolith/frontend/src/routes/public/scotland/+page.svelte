@@ -71,8 +71,8 @@
             <p>
               Plan: give it a place in Scotland and a few days, and for each day
               it suggests the Walkhighlands walks that fit the weather and the
-              best nearby dark-sky site for the night, each with go, marginal or
-              no and the reason, plus sunrise, sunset and the moon.
+              best nearby dark-sky site for the night, each with go or marginal
+              and the reason, plus sunrise, sunset and the moon.
             </p>
             <p>
               Check: name a walk and a day, or a place and a night, and it says

@@ -13,7 +13,8 @@ func TestNightVerdicts(t *testing.T) {
 	// and 21st are full, the 22nd partial and the 23rd beyond.
 	ds := &Dataset{HourlyUntil: time.Date(2026, 10, 22, 20, 0, 0, 0, time.UTC)}
 	night := NightDay(time.Date(2026, 10, 20, 22, 0, 0, 0, time.UTC))
-	hour := Hour{Unix: time.Date(2026, 10, 20, 20, 0, 0, 0, time.UTC).Unix()}
+	hour := Hour{Unix: time.Date(2026, 10, 20, 20, 0, 0, 0, time.UTC).Unix(), Dark: true}
+	early := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	for _, c := range []struct {
 		name  string
 		n     NightWindow
@@ -29,12 +30,12 @@ func TestNightVerdicts(t *testing.T) {
 		{"partial", NightWindow{}, night + 2, verdict.Unknown, "reaches only Thu 21:00"},
 		{"beyond", NightWindow{}, night + 3, verdict.Unknown, "Beyond the hourly forecast"},
 	} {
-		a := ds.AssessNight(&Site{}, &c.n, c.night, &Climate{Month: 10, ClearDark: 30, Dark: 120})
+		a := ds.AssessNight(&Site{}, &c.n, c.night, early, &Climate{Month: 10, ClearDark: 30, Dark: 120})
 		if a.Verdict != c.want || !strings.Contains(a.Why, c.why) {
 			t.Errorf("%s: %s %q", c.name, a.Verdict, a.Why)
 		}
 	}
-	if a := ds.AssessNight(&Site{}, &NightWindow{}, night+3, &Climate{Month: 10, ClearDark: 30, Dark: 120}); !strings.Contains(a.Why, "In October about 25% of dark hours here are clear") {
+	if a := ds.AssessNight(&Site{}, &NightWindow{}, night+3, early, &Climate{Month: 10, ClearDark: 30, Dark: 120}); !strings.Contains(a.Why, "In October about 25% of dark hours here are clear") {
 		t.Errorf("beyond the forecast quotes the climate: %q", a.Why)
 	}
 }
@@ -45,8 +46,9 @@ func TestHourlyUntilFromSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A listed hour past fetch plus 48 h extends the horizon to its end.
-	if want := time.Date(2026, 10, 23, 3, 0, 0, 0, time.UTC); !ds.HourlyUntil.Equal(want) {
+	// The stars job keeps MET Norway's 6-hourly tail, so a listed hour past
+	// fetch plus 48 h is not hourly forecast and leaves the horizon alone.
+	if want := time.Date(2026, 10, 22, 14, 0, 0, 0, time.UTC); !ds.HourlyUntil.Equal(want) {
 		t.Fatalf("horizon %v", ds.HourlyUntil)
 	}
 }
@@ -57,16 +59,64 @@ func TestTruncatedSiteIsUnknownPastItsList(t *testing.T) {
 	ds := &Dataset{HourlyUntil: time.Date(2026, 10, 22, 20, 0, 0, 0, time.UTC)}
 	night := NightDay(time.Date(2026, 10, 20, 22, 0, 0, 0, time.UTC))
 	last := Hour{Unix: time.Date(2026, 10, 20, 23, 0, 0, 0, time.UTC).Unix()}
+	early := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	site := &Site{ClearTwilight: 40, Hours: []Hour{last}}
-	if a := ds.AssessNight(site, &NightWindow{}, night+1, nil); a.Verdict != verdict.Unknown || !strings.Contains(a.Why, "only up to Wed 01:00") {
+	if a := ds.AssessNight(site, &NightWindow{}, night+1, early, nil); a.Verdict != verdict.Unknown || !strings.Contains(a.Why, "only up to Wed 01:00") {
 		t.Fatalf("after the list: %s %q", a.Verdict, a.Why)
 	}
 	// A go stands: the dropped hours could only add to it.
-	if a := ds.AssessNight(site, &NightWindow{ClearDark: 4, ClearTwilight: 4, MoonlessDark: 4}, night, nil); a.Verdict != verdict.Go {
+	if a := ds.AssessNight(site, &NightWindow{ClearDark: 4, ClearTwilight: 4, MoonlessDark: 4}, night, early, nil); a.Verdict != verdict.Go {
 		t.Fatalf("go on a capped site: %s %q", a.Verdict, a.Why)
 	}
 	// A whole list is believed.
-	if a := ds.AssessNight(&Site{ClearTwilight: 1, Hours: []Hour{last}}, &NightWindow{}, night+1, nil); a.Verdict != verdict.No {
+	if a := ds.AssessNight(&Site{ClearTwilight: 1, Hours: []Hour{last}}, &NightWindow{}, night+1, early, nil); a.Verdict != verdict.No {
 		t.Fatalf("whole list: %s %q", a.Verdict, a.Why)
+	}
+}
+
+// The why and the clear window name the dark hours, not the twilight
+// before them, and a night in progress does not claim "all night".
+func TestNightWording(t *testing.T) {
+	ds := &Dataset{HourlyUntil: time.Date(2026, 10, 22, 20, 0, 0, 0, time.UTC)}
+	night := NightDay(time.Date(2026, 10, 20, 22, 0, 0, 0, time.UTC))
+	twilight := Hour{Unix: time.Date(2026, 10, 20, 18, 0, 0, 0, time.UTC).Unix()}
+	dark := Hour{Unix: time.Date(2026, 10, 20, 22, 0, 0, 0, time.UTC).Unix(), Dark: true}
+	n := NightWindow{ClearDark: 1, ClearTwilight: 2, Hours: []Hour{twilight, dark}}
+	a := ds.AssessNight(&Site{}, &n, night, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC), nil)
+	if !strings.Contains(a.Why, "from 23:00") {
+		t.Errorf("why %q names the twilight hour", a.Why)
+	}
+	from, _ := n.ClearFrom()
+	until, _ := n.ClearUntil()
+	if !from.Equal(time.Unix(dark.Unix, 0)) || !until.Equal(time.Unix(dark.Unix+3600, 0)) {
+		t.Errorf("clear window %v to %v", from, until)
+	}
+	tw := NightWindow{ClearTwilight: 1, Hours: []Hour{twilight}}
+	if from, ok := tw.ClearFrom(); !ok || !from.Equal(time.Unix(twilight.Unix, 0)) {
+		t.Errorf("twilight-only clear_from %v", from)
+	}
+	late := time.Date(2026, 10, 20, 23, 30, 0, 0, time.UTC)
+	if a := ds.AssessNight(&Site{}, &NightWindow{}, night, late, nil); a.Verdict != verdict.No || a.Why != "No clear hour left tonight." {
+		t.Errorf("night in progress: %s %q", a.Verdict, a.Why)
+	}
+}
+
+func TestCappedNear(t *testing.T) {
+	ds, err := Parse([]byte(`{"fetched_at":"2026-10-20T14:00:00+00:00","sites":[
+	  {"id":"capped","lat":57.0,"lon":-4.0,"clear_dark_hours":30,"clear_twilight_hours":30,"best_hours":[{"time":"2026-10-20T23:00:00+00:00","cloud_area_fraction":1,"dark":true}]},
+	  {"id":"whole","lat":57.01,"lon":-4.0,"clear_dark_hours":1,"clear_twilight_hours":1,"best_hours":[{"time":"2026-10-20T23:00:00+00:00","cloud_area_fraction":1,"dark":true}]}]}`), []byte(`{"sites":[]}`), "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	night := NightDay(time.Date(2026, 10, 20, 22, 0, 0, 0, time.UTC))
+	if s := ds.CappedNear(57.01, -4.0, 5, night+1); s == nil || s.ID != "capped" {
+		t.Fatalf("capped near = %+v", s)
+	}
+	// The night its list covers is counted in full.
+	if s := ds.CappedNear(57.01, -4.0, 5, night-1); s != nil {
+		t.Fatalf("an earlier night = %+v", s.ID)
+	}
+	if s := ds.CappedNear(58, -4.0, 5, night+1); s != nil {
+		t.Fatalf("out of range = %+v", s.ID)
 	}
 }

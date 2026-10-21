@@ -332,6 +332,10 @@ type Day struct {
 	GoodHours int
 	Best      *Run
 	Hours     []Hour
+	// Now is the instant the day was assessed at, and Started reports that
+	// some of its good hours had already begun then and were dropped.
+	Now     time.Time
+	Started bool
 }
 
 // longestRun is _longest_good_run: the longest run of good hours allowing
@@ -363,24 +367,34 @@ func longestRun(hours []Hour) (count, start, end int) {
 }
 
 // dayAt is the walk's assessed day: its good hours from cutoff (a Unix
-// time, the top of the current hour) on, and whether it can be decided.
+// time, the next top of the hour) on, and whether it can be decided.
 func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage) Day {
 	hours := w.Hours
 	lo := sort.Search(len(hours), func(j int) bool { return hours[j].Day >= day })
 	hi := sort.Search(len(hours), func(j int) bool { return hours[j].Day > day })
 	dayHours := hours[lo:hi]
+	started := len(dayHours) > 0 && dayHours[0].Unix < cutoff
 	for len(dayHours) > 0 && dayHours[0].Unix < cutoff {
 		dayHours = dayHours[1:]
 	}
 	d := w.day(day, dayHours)
+	d.Started = started
 	d.Coverage = coverage
 	d.Decided = coverage == CoverageFull || d.Doable
 	return d
 }
 
-// DayFor is one walk's assessed day as of now.
+// DayFor is one walk's assessed day as of now. Only hours that have not
+// begun count: an hour already under way is not a full good hour left, and
+// counting it would offer a start window in the past.
 func (d *Dataset) DayFor(w *Walk, day int32, now time.Time) Day {
-	return w.dayAt(day, now.Truncate(time.Hour).Unix(), d.CoverageOf(day))
+	cutoff := now.Truncate(time.Hour)
+	if cutoff.Before(now) {
+		cutoff = cutoff.Add(time.Hour)
+	}
+	dw := w.dayAt(day, cutoff.Unix(), d.CoverageOf(day))
+	dw.Now = now
+	return dw
 }
 
 // ByID is the walk with id, or nil.

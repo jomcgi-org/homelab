@@ -54,15 +54,20 @@ type Site struct {
 // Truncated reports whether the materializer capped this site's hour list.
 func (s *Site) Truncated() bool { return s.ClearTwilight > len(s.Hours) }
 
+// hourlyHorizon is how far past a fetch MET Norway's forecast is known to be
+// hourly: a lower bound on its two and a half days.
+const hourlyHorizon = 48 * time.Hour
+
 // Dataset is one consistent pair of snapshots plus its spatial index.
 type Dataset struct {
 	Sites []Site
 	// FetchedAt is the newest MET Norway fetch time across the snapshot.
 	FetchedAt time.Time
-	// HourlyUntil is how far the hourly forecast is known to reach: the later
-	// of FetchedAt plus 48 hours and the end of the latest hour listed. MET
-	// Norway is hourly for about two and a half days and 6-hourly after, so
-	// nights past this are sampled too thinly to judge.
+	// HourlyUntil is how far the hourly forecast is known to reach: FetchedAt
+	// plus hourlyHorizon. MET Norway is hourly for about two and a half days
+	// and 6-hourly after, and the stars job keeps the 6-hourly tail, so a
+	// listed hour says nothing about the horizon: nights past it are sampled
+	// too thinly to judge.
 	HourlyUntil time.Time
 	// Darkness is the snapshot-wide mode: astronomical, twilight or none.
 	Darkness string
@@ -167,14 +172,7 @@ func Parse(sitesJSON, historyJSON []byte, version string) (*Dataset, error) {
 	}
 	ds.index = newGrid(ds.Sites)
 	if !ds.FetchedAt.IsZero() {
-		ds.HourlyUntil = ds.FetchedAt.Add(48 * time.Hour)
-	}
-	for i := range ds.Sites {
-		if h := ds.Sites[i].Hours; len(h) > 0 {
-			if end := time.Unix(h[len(h)-1].Unix, 0).UTC().Add(time.Hour); end.After(ds.HourlyUntil) {
-				ds.HourlyUntil = end
-			}
-		}
+		ds.HourlyUntil = ds.FetchedAt.Add(hourlyHorizon)
 	}
 	return ds, nil
 }

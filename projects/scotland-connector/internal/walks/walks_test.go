@@ -113,19 +113,19 @@ func TestParseRejectsBadSnapshots(t *testing.T) {
 }
 
 func TestDayForDropsElapsedHours(t *testing.T) {
-	// Now is 10:30 BST on day one; base is 08:00 BST. The hour in progress
-	// (10:00, offset 2) is kept, as the hikes read filter does, so offsets 0
-	// and 1 have elapsed.
+	// Now is 10:30 BST on day one; base is 08:00 BST. Offsets 0 and 1 have
+	// elapsed and the hour under way (10:00, offset 2) is not a full hour
+	// left, so the day starts at 11:00.
 	now := base.Add(2*time.Hour + 30*time.Minute)
 	ds := mustParse(t, snapshot(
-		// Doable today (5 good hours left for a 4 h walk) and tomorrow.
+		// Doable today (4 good hours left for a 4 h walk) and tomorrow.
 		walkJSON("both", 57.00, -4.00, 4, 600, 0, 1, 2, 3, 4, 5, 6, 24, 25, 26, 27),
 		// Today's good hours have all elapsed: not doable.
 		walkJSON("elapsed", 57.02, -4.00, 2, 100, 0, 1),
 	))
 	today := LocalDay(now)
 	d := ds.DayFor(ds.ByID("both"), today, now)
-	if d.GoodHours != 5 || !d.Doable || d.Hours[0].Unix != base.Add(2*time.Hour).Unix() {
+	if d.GoodHours != 4 || !d.Doable || !d.Started || d.Hours[0].Unix != base.Add(3*time.Hour).Unix() {
 		t.Fatalf("today = %+v", d)
 	}
 	if d := ds.DayFor(ds.ByID("both"), today+1, now); !d.Doable || d.GoodHours != 4 {

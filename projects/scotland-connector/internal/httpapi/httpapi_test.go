@@ -173,6 +173,8 @@ func TestCapsAreEnforced(t *testing.T) {
 		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm","colour":"red"}]}`,
 		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm"}],"extra":1}`,
 		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm"}]} {}`,
+		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm"}]}]`,
+		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm"}]}}`,
 		`{"items":[{"activity":"walk","date":"2026-10-20"}]}`,
 		`{"items":[{"activity":"stargaze","date":"2026-10-20","lat":"57"}]}`,
 		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"` + strings.Repeat("a", maxCheckBody) + `"}]}`,
@@ -199,9 +201,15 @@ func TestCheckPreflight(t *testing.T) {
 		!strings.Contains(hdr.Get("Access-Control-Allow-Methods"), "POST") || !strings.EqualFold(hdr.Get("Access-Control-Allow-Headers"), "content-type") {
 		t.Fatalf("preflight %d %v", rec.Code, hdr)
 	}
-	// GET on check, and POST on plan, are not routes.
-	if rec, _ := get(t, handler(true), "/v1/check"); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("GET /v1/check = %d", rec.Code)
+	// A wrong method on a real endpoint says so, and which methods to use.
+	if rec, body := get(t, handler(true), "/v1/check"); rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "POST, OPTIONS" ||
+		body["error"].(map[string]any)["code"] != "method_not_allowed" {
+		t.Fatalf("GET /v1/check = %d %v", rec.Code, rec.Header())
+	}
+	post := httptest.NewRecorder()
+	handler(true).ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/v1/plan", strings.NewReader("{}")))
+	if post.Code != http.StatusMethodNotAllowed || post.Header().Get("Allow") != "GET" {
+		t.Fatalf("POST /v1/plan = %d %v", post.Code, post.Header())
 	}
 }
 

@@ -76,7 +76,7 @@ func moonPhrase(n *NightWindow) string {
 
 // AssessNight gives the verdict for one site on one night. climate, when
 // known, is quoted for nights past the forecast.
-func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, climate *Climate) NightAssessment {
+func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, now time.Time, climate *Climate) NightAssessment {
 	a := NightAssessment{Coverage: d.NightCoverage(night)}
 	if a.Coverage == CoverageNone {
 		a.Verdict, a.Why = verdict.Unknown, "Beyond the hourly forecast, which reaches "+localDay(d.HourlyUntil)+"."
@@ -88,8 +88,8 @@ func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, climate *
 	}
 	score := DarkScore(n)
 	from := ""
-	if len(n.Hours) > 0 {
-		from = " from " + time.Unix(n.Hours[0].Unix, 0).In(london).Format("15:04")
+	if first, ok := n.ClearFrom(); ok {
+		from = " from " + first.In(london).Format("15:04")
 	}
 	switch {
 	case score >= goodScore:
@@ -103,6 +103,9 @@ func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, climate *
 		// night past the last listed hour reads as fewer than it has.
 		a.Verdict = verdict.Unknown
 		a.Why = "The data lists this site's clear hours only up to " + localDay(site.listedUntil()) + "; the rest of the night is not counted yet."
+	case n.ClearTwilight == 0 && now.After(localHour(night, nightStartHour)):
+		// Earlier hours have been dropped, so "all night" would overstate.
+		a.Verdict, a.Why = verdict.No, "No clear hour left tonight."
 	case n.ClearTwilight == 0:
 		a.Verdict, a.Why = verdict.No, "Cloudy all night."
 	case n.ClearDark == 0:
@@ -116,6 +119,45 @@ func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, climate *
 		a.Why = fmt.Sprintf("%s%s, but %s.", hours(n.ClearDark, "clear dark hour"), from, moonPhrase(n))
 	}
 	return a
+}
+
+// ClearFrom is when the night's clear spell starts: its first clear-dark
+// hour, or its first clear-twilight hour when none is dark.
+func (n *NightWindow) ClearFrom() (time.Time, bool) {
+	for _, h := range n.Hours {
+		if h.Dark || n.ClearDark == 0 {
+			return time.Unix(h.Unix, 0), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// ClearUntil is the end of the night's last clear-dark hour, or of its last
+// clear-twilight hour when none is dark.
+func (n *NightWindow) ClearUntil() (time.Time, bool) {
+	for i := len(n.Hours) - 1; i >= 0; i-- {
+		if h := n.Hours[i]; h.Dark || n.ClearDark == 0 {
+			return time.Unix(h.Unix+3600, 0), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// CappedNear is the nearest site within radiusKm whose capped hour list
+// ends before night does, so that its verdict for night is unknown however
+// few hours it lists; nil when there is none. Windows ranks sites on listed
+// counts and can pass such a site over: by being capped it is among the
+// clearest.
+func (d *Dataset) CappedNear(lat, lon, radiusKm float64, night int32) *Site {
+	end := localHour(night+1, nightEndHour)
+	var best *Site
+	bestKm := 0.0
+	d.visit(lat, lon, radiusKm, func(s *Site, km float64) {
+		if s.Truncated() && s.listedUntil().Before(end) && (best == nil || km < bestKm || km == bestKm && s.ID < best.ID) {
+			best, bestKm = s, km
+		}
+	})
+	return best
 }
 
 // listedUntil is the end of the site's last listed hour.

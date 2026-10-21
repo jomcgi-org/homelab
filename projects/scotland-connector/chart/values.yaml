@@ -89,8 +89,8 @@ config:
   sitesKey: sites.json
   historyKey: history-map.json
   # Written by the monolith's hikes-refresh-forecasts job. Optional: until it
-  # exists a plan or check that covers walks answers 503, and stargazing is
-  # unaffected.
+  # exists a walks-only plan or check answers 503, and one that also covers
+  # stargazing answers that part with a note for the walks.
   walksKey: walks.json
   refreshInterval: 60s
   # Public origin the API is served from, for meta.method_url. Empty renders
