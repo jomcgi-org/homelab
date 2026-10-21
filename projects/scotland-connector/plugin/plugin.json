@@ -27,7 +27,11 @@
           "Which walks near Aviemore suit the weather this weekend?",
           "Is Ben Nevis on for Saturday, and if not, which day is better?",
           "Where is the best stargazing near Inverness this week?"
-        ]
+        ],
+        "logo": "./assets/icon.png",
+        "logoDark": "./assets/icon-dark.png",
+        "composerIcon": "./assets/icon.png",
+        "composerIconDark": "./assets/icon-dark.png"
       }
     }
   }
