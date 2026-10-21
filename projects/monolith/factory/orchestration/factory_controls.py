@@ -21,6 +21,7 @@ from sqlalchemy import or_, update
 from sqlmodel import Session, select
 
 from core.db import get_engine
+from core.jsonio import loads_or
 from factory.orchestration.factory_models import (
     DEFAULT_TASK_CLASS,
     FactoryAudit,
@@ -600,6 +601,11 @@ def _json(value: object) -> str:
 
 def digest(value: object) -> str:
     return hashlib.sha256(_json(value).encode()).hexdigest()
+
+
+def audit_detail(row) -> dict:
+    value = loads_or(row.detail_json, {})
+    return value if isinstance(value, dict) else {}
 
 
 def _text(value: object, name: str, limit: int = 256) -> str:

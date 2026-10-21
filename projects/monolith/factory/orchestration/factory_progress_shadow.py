@@ -189,14 +189,6 @@ def price_projection(
     }
 
 
-def _detail(row):
-    try:
-        value = json.loads(row.detail_json)
-    except (ValueError, TypeError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def snapshot(db, receipt, policy):
     """Use the existing objective owner across generations and readmissions."""
     task_ids = objective_task_ids(db, receipt)
@@ -253,18 +245,18 @@ def snapshot(db, receipt, policy):
         .order_by(FactoryAudit.id)
     ).all()
     supervision = sum(
-        _amount(_detail(row).get("cost_usd")) or 0
+        _amount(controls.audit_detail(row).get("cost_usd")) or 0
         for row in audits
         if row.action == "watchdog_assessed"
     )
     unpriced_supervision = sum(
         row.action == "watchdog_assessed"
-        and _amount(_detail(row).get("cost_usd")) is None
+        and _amount(controls.audit_detail(row).get("cost_usd")) is None
         for row in audits
     )
     facts = []
     for row in audits:
-        detail = _detail(row)
+        detail = controls.audit_detail(row)
         code = detail.get("refusal_code")
         if (
             row.task_id == receipt.task_id
@@ -331,7 +323,10 @@ def observe(db, receipt, policy):
         )
         .order_by(FactoryAudit.id.desc())
     ).first()
-    if previous is None or _detail(previous).get("fingerprint") != fingerprint:
+    if (
+        previous is None
+        or controls.audit_detail(previous).get("fingerprint") != fingerprint
+    ):
         db.add(
             FactoryAudit(
                 actor="factory:progress-shadow",
