@@ -138,6 +138,24 @@ def _load_coords() -> list[tuple[str, float, float]]:
         )
 
 
+_EXTRA_COLUMNS = (
+    "gust_kmh",
+    "precip_max_mm",
+    "rain_chance_pct",
+    "thunder_chance_pct",
+    "fog_pct",
+    "low_cloud_pct",
+)
+
+
+def _extras(window: list) -> dict:
+    """The complete-forecast columns of an hour tuple, None past its end."""
+    return {
+        name: window[5 + i] if len(window) > 5 + i else None
+        for i, name in enumerate(_EXTRA_COLUMNS)
+    }
+
+
 def _write_walk_hours(
     session: Session, windows_by_uuid: dict[str, list], now: datetime
 ) -> int:
@@ -146,12 +164,13 @@ def _write_walk_hours(
     One bulk delete of the fetched walks' existing hours, then one add_all of
     the new typed rows, so there is no per-iteration session.add. Walks absent
     from ``windows_by_uuid`` (failed fetch) are untouched: stale beats empty.
-    A walk present with an empty window list correctly ends up with no hours
-    (its fetch succeeded but yielded nothing viable).
+    A walk present with an empty list correctly ends up with no hours (its
+    fetch succeeded but yielded no daylight hours in range).
 
-    Each window tuple is [ts_unix, temp_c, precip_mm, wind_kmh, cloud_pct] as
-    emitted by hikes.forecast.compute_windows; the unix timestamp becomes the
-    tz-aware UTC hour_time.
+    Each tuple is a hikes.forecast.HOUR_FIELDS row as compute_hours emits it,
+    every daylight hour good or not; a five-field window tuple leaves the
+    complete-forecast columns null. The unix timestamp becomes the tz-aware
+    UTC hour_time.
     """
     walk_uuids = list(windows_by_uuid.keys())
     session.execute(
@@ -165,6 +184,7 @@ def _write_walk_hours(
             precip_mm=window[2],
             wind_kmh=window[3],
             cloud_pct=window[4],
+            **_extras(window),
             fetched_at=now,
         )
         for walk_uuid, windows in windows_by_uuid.items()

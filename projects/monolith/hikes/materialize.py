@@ -7,8 +7,9 @@ same way it reads the stars snapshot. Walks live beside the stars objects
 because the connector's read-only R2 token already reads that bucket.
 
 The snapshot carries facts and links only: name, WalkHighlands URL, start
-coordinates, distance, ascent and estimated duration, plus our own viable
-weather hours. The scraped ``summary`` prose is deliberately left out; the
+coordinates, distance, ascent and estimated duration, plus every daylight
+forecast hour at the start, good or not, so the connector can judge an hour
+by the caller's own limits. The scraped ``summary`` prose is deliberately left out; the
 connector links to WalkHighlands for the route itself (#7252).
 """
 
@@ -29,14 +30,29 @@ from hikes import models
 logger = logging.getLogger("monolith.hikes")
 
 # Bump when the payload shape changes incompatibly; the connector refuses a
-# version it does not know rather than misreading it.
-SCHEMA_VERSION = 1
+# version it does not know rather than misreading it. v2: every daylight hour
+# (v1 held viable hours only), each hour with the complete forecast's extras.
+SCHEMA_VERSION = 2
 
+# The stored columns each hour carries after its unix time, in wire order:
+# hikes.forecast.HOUR_FIELDS without the time.
+_HOUR_COLUMNS = (
+    "temp_c",
+    "precip_mm",
+    "wind_kmh",
+    "cloud_pct",
+    "gust_kmh",
+    "precip_max_mm",
+    "rain_chance_pct",
+    "thunder_chance_pct",
+    "fog_pct",
+    "low_cloud_pct",
+)
 
-# One stored hour as _load selects it: (walk_uuid, hour_time, temp_c,
-# precip_mm, wind_kmh, cloud_pct). Plain columns keep it light: a refresh
-# holds tens of thousands of hours.
-HourRow = tuple[str, datetime, float, float, float, float]
+# One stored hour as _load selects it: (walk_uuid, hour_time, then
+# _HOUR_COLUMNS). Plain columns keep it light: a refresh holds tens of
+# thousands of hours.
+HourRow = tuple
 
 
 def _publishable(w: models.Walk) -> bool:
@@ -55,25 +71,20 @@ def build_payload(
     fetched_at: datetime | None,
     now: datetime,
 ) -> dict:
-    """The snapshot body: every publishable walk, with its future viable hours.
+    """The snapshot body: every publishable walk, with its future daylight hours.
 
-    Each hour is ``[unix_seconds, temp_c, precip_mm, wind_kmh, cloud_pct]``,
-    the tuple hikes.forecast.compute_windows emits. A stored hour is one that
-    passed the viability ladder (daylight, precipitation, wind), so presence
-    means "good"; a missing daylight hour within the forecast means bad
-    weather.
+    Each hour is ``[unix_seconds, *_HOUR_COLUMNS]``, the hikes.forecast
+    HOUR_FIELDS tuple, with null for a value met.no left out or a row stored
+    before its column existed. Every daylight hour is present, good or not:
+    the connector applies the viability rule (or the caller's limits) itself.
     """
     cutoff = top_of_hour(now)
     by_walk: dict[str, list[list[float]]] = {}
-    for walk_uuid, at, temp_c, precip_mm, wind_kmh, cloud_pct in sorted(
-        hours, key=lambda h: (h[0], as_utc(h[1]))
-    ):
+    for walk_uuid, at, *values in sorted(hours, key=lambda h: (h[0], as_utc(h[1]))):
         hour_time = as_utc(at)
         if hour_time is None or hour_time < cutoff:
             continue
-        by_walk.setdefault(walk_uuid, []).append(
-            [int(hour_time.timestamp()), temp_c, precip_mm, wind_kmh, cloud_pct]
-        )
+        by_walk.setdefault(walk_uuid, []).append([int(hour_time.timestamp()), *values])
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": iso(now),
@@ -102,7 +113,9 @@ def _load(session: Session, now: datetime) -> dict:
     hours = list(
         session.exec(
             select(
-                h.walk_uuid, h.hour_time, h.temp_c, h.precip_mm, h.wind_kmh, h.cloud_pct
+                h.walk_uuid,
+                h.hour_time,
+                *(getattr(h, name) for name in _HOUR_COLUMNS),
             ).where(h.hour_time >= top_of_hour(now))
         ).all()
     )

@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, delete, select
 from sqlmodel.pool import StaticPool
 
 from core.db import get_session
@@ -337,3 +337,35 @@ class TestDoableDays:
 
     def test_no_hours_not_doable(self):
         assert _doable_days([], 3.0) == []
+
+
+class TestStoredBadHours:
+    """The job stores every daylight hour; the planner counts the viable ones."""
+
+    def test_non_viable_hours_are_not_windows(self, client, session):
+        _seed_walks(session)
+        session.add_all(
+            [_hour(BEN, H1 + timedelta(hours=k), precip_mm=3.0) for k in range(12, 14)]
+            + [_hour(BEN, H1 + timedelta(hours=14), wind_kmh=80.28)]
+            + [_hour(BEN, H1 + timedelta(hours=15), wind_kmh=79.92)]
+        )
+        session.commit()
+        body = client.get(f"/api/hikes/walks/{BEN}").json()
+        times = [w[0] for w in body["windows"]]
+        assert int((H1 + timedelta(hours=12)).timestamp()) not in times
+        assert int((H1 + timedelta(hours=14)).timestamp()) not in times
+        # 79.92 km/h is viable and comes back as the legacy whole km/h.
+        last = body["windows"][-1]
+        assert last[0] == int((H1 + timedelta(hours=15)).timestamp())
+        assert last[3] == 80
+
+    def test_bad_hours_do_not_make_a_day_doable(self, client, session):
+        _seed_walks(session)
+        for walk in session.exec(select(Walk)).all():
+            session.exec(delete(WalkHour).where(WalkHour.walk_uuid == walk.uuid))
+        session.add_all(
+            [_hour(BEN, H1 + timedelta(hours=k), precip_mm=5.0) for k in range(10)]
+        )
+        session.commit()
+        walks = {w["uuid"]: w for w in client.get("/api/hikes/walks").json()["walks"]}
+        assert walks[BEN]["viable_days"] == []

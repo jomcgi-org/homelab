@@ -43,4 +43,14 @@ class WalkHour(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fa
     precip_mm: float
     wind_kmh: float
     cloud_pct: float
+    # From the complete forecast; None when met.no leaves them out or for
+    # rows written before the columns existed. Every daylight hour is stored,
+    # so readers that want the hikes app's good hours filter on
+    # hikes.forecast.is_viable.
+    gust_kmh: float | None = None
+    precip_max_mm: float | None = None
+    rain_chance_pct: float | None = None
+    thunder_chance_pct: float | None = None
+    fog_pct: float | None = None
+    low_cloud_pct: float | None = None
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
