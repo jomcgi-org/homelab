@@ -276,8 +276,13 @@ func TestTonightAfterMidnight(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := env.Data.(connector.PlanResult)
-	if res.Query.From != "2026-10-19" || res.Days[0].Walks != nil || !strings.Contains(res.Days[0].WalkNote, "This day is over") {
+	// It still covers three days of walks: today and the two after.
+	if res.Query.From != "2026-10-19" || res.Query.To != "2026-10-22" || res.Days[0].Walks != nil || !strings.Contains(res.Days[0].WalkNote, "This day is over") {
 		t.Fatalf("plan = %+v", res.Query)
+	}
+	// A walk-only plan cannot start on a night it does not plan.
+	if _, err := svc.Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-19")}); err == nil {
+		t.Fatal("a walk-only plan accepted yesterday")
 	}
 	env, err = svc.Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}})
 	if err != nil || env.Data.(connector.PlanResult).Query.From != "2026-10-20" {
@@ -303,7 +308,7 @@ func TestCappedSiteOutsideTheTopIsStillUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if note := env.Data.(connector.PlanResult).Days[0].StarNote; !strings.Contains(note, "not counted yet") {
+	if note := env.Data.(connector.PlanResult).Days[0].StarNote; !strings.HasPrefix(note, "At site capped, 8.9 km away:") || !strings.Contains(note, "not counted yet") {
 		t.Fatalf("plan note = %q", note)
 	}
 	env, err = svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-20", Lat: f(57.0), Lon: f(-3.8)}}})

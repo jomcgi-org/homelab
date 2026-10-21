@@ -113,9 +113,9 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 		a.StartFrom = a.StartBy
 	}
 	// A walk that needs more than the slot starts before it, but never
-	// before now.
-	if a.StartFrom.Before(d.Now) {
-		a.StartFrom = d.Now.Truncate(time.Minute)
+	// before the first hour that counts.
+	if a.StartFrom.Before(d.From) {
+		a.StartFrom = d.From
 	}
 	if a.StartBy.Before(a.StartFrom) {
 		a.StartBy = a.StartFrom
