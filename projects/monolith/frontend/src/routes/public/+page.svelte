@@ -244,11 +244,12 @@
     <div class="deck">
       <div
         class="portrait"
-        bind:this={portEl}
         role="img"
         aria-label="Joe, a greyscale print behind a perforated grille, cut into strips that scatter when you move"
       >
-        <canvas bind:this={canvasEl}></canvas>
+        <div class="print" bind:this={portEl}>
+          <canvas bind:this={canvasEl}></canvas>
+        </div>
         <div class="holes"></div>
       </div>
 
@@ -342,6 +343,9 @@
     --glass-dim: #8f957f; /* nosemgrep: svelte-hardcoded-color-in-style */
     padding: 1.6rem clamp(1rem, 4vw, 3rem) 4rem;
     font-variant-numeric: tabular-nums;
+    /* The keys and the switch give their own press feedback; the browser's
+       tap highlight (a blue box on Android) would paint over it. */
+    -webkit-tap-highlight-color: transparent;
   }
 
   .unit {
@@ -518,7 +522,6 @@
      material. The holes are a mask, so the plate costs no image. */
   .portrait {
     position: relative;
-    container-type: inline-size;
     aspect-ratio: 3 / 4;
     background: var(--panel);
     overflow: hidden;
@@ -526,16 +529,22 @@
     border: 1px solid var(--edge);
     touch-action: pan-y;
   }
-  /* Out of flow, so the canvas's pixel size can never feed back into the
-     portrait's box (size() sets it from that box). */
-  .portrait canvas {
+  /* The print is the 3:4 picture the engine draws into; it fills the frame
+     except on a tall phone, where the frame is wider than the picture and
+     the grille runs on either side. The canvas is out of flow, so its pixel
+     size can never feed back into the box size() measures. */
+  .print {
+    position: absolute;
+    inset: 0;
+  }
+  .print canvas {
     position: absolute;
     inset: 0;
     display: block;
     width: 100%;
     height: 100%;
   }
-  .portrait:global(.neg) canvas {
+  .print:global(.neg) canvas {
     filter: invert(1);
   }
   .holes {
@@ -779,24 +788,35 @@
     /* The portrait and the keypad share the deck. The deck is a size
        container, so the portrait can be as tall as the deck allows while
        leaving the keypad a floor wide enough for three caps and their
-       legends (8.7rem, plus the 0.8rem gap); its width follows from the
-       3:4 ratio. The deck's own floor is the keypad's height; spare height
-       on a tall phone sits evenly above and below the pair. */
+       legends (8.7rem, plus the gap); its width follows from the 3:4
+       ratio. The deck's own floor is the keypad's height. */
     .deck {
       flex: 1 1 0;
       min-height: 13rem;
-      container-type: size;
+      container: deck / size;
       display: flex;
+      flex-wrap: wrap;
       gap: 0.8rem;
       align-items: center;
+      align-content: center;
     }
+    /* Side by side, the grille frame runs the deck's full height and the
+       picture stands on its floor (the cut-out's shoulders meet the frame),
+       so spare height is headroom in the grille, not empty housing; the
+       keypad stands on the same line. The width leaves the keypad its floor and is capped at
+       18rem (a 24rem tall picture) for a small tablet; 13.5rem by 18rem
+       where container units are missing (Safari 15). */
     .portrait {
       flex: none;
-      /* 14rem where container units are missing (Safari 15); 24rem caps a
-         small tablet's portrait so the keypad keeps its share. */
-      height: 14rem;
-      height: min(100cqh, (100cqw - 9.5rem) * 4 / 3, 24rem);
-      width: auto;
+      aspect-ratio: auto;
+      width: 13.5rem;
+      width: min(100cqw - 9.6rem, 18rem, 75cqh);
+      height: 18rem;
+      height: 100cqh;
+    }
+    .print {
+      inset: auto 0 0;
+      aspect-ratio: 3 / 4;
     }
     .right {
       display: contents;
@@ -810,8 +830,9 @@
       /* As tall as the portrait beside it, never below the keypad's own
          height, so the keys spread over the picture's height and a tall
          phone centres the pair rather than stretching the keys apart. */
-      height: 14rem;
-      height: min(100cqh, max(13rem, min((100cqw - 9.5rem) * 4 / 3, 24rem)));
+      height: 18rem;
+      height: min(100cqh, max(13rem, min((100cqw - 9.6rem) * 4 / 3, 24rem)));
+      align-self: end;
       justify-content: stretch;
       align-content: stretch;
       align-items: center;
@@ -838,21 +859,47 @@
        (clamped, so a long title still cannot push the sentence out) and
        the sentence wraps beneath it. */
     /* The desktop pitch is right at desktop size; a phone-sized portrait
-       gets a finer grille, in container units of its width, so the face
-       still reads through roughly 70 columns of holes. */
+       gets a finer grille so the face still reads through. */
     .holes {
       -webkit-mask: radial-gradient(
           circle at center,
-          transparent 0 0.52cqw,
-          #000 0.64cqw
+          transparent 0 1px,
+          #000 1.25px
         )
-        0 0 / 1.45cqw 1.45cqw;
-      mask: radial-gradient(
-          circle at center,
-          transparent 0 0.52cqw,
-          #000 0.64cqw
-        )
-        0 0 / 1.45cqw 1.45cqw;
+        0 0 / 2.8px 2.8px;
+      mask: radial-gradient(circle at center, transparent 0 1px, #000 1.25px) 0
+        0 / 2.8px 2.8px;
+    }
+    /* A deck taller than 4:3 (a tall phone) stacks: the grille spans the
+       unit's width above the keypad, the picture centred behind it at the
+       height the keypad leaves, which is then at least as tall as it would
+       be side by side. The deck wraps, so each part taking the full width
+       is what stacks them. */
+    @container deck (max-aspect-ratio: 3 / 4) {
+      .portrait {
+        width: 100%;
+        height: calc(100cqh - 13.8rem);
+        aspect-ratio: auto;
+      }
+      .print {
+        inset: 0 auto 0 50%;
+        height: 100%;
+        aspect-ratio: 3 / 4;
+        transform: translateX(-50%);
+      }
+      .pad {
+        flex: none;
+        width: 100%;
+        max-width: none;
+        height: 13rem;
+      }
+      .key .cap {
+        width: 2.9rem;
+        height: 2.9rem;
+      }
+      .key .legend {
+        font-size: 0.62rem;
+      }
     }
     /* Nothing reads out at this width (readout() checks PHONE_QUERY), so
        the glass can fit the name instead of reserving room for a readout
