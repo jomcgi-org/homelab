@@ -2,10 +2,11 @@ package walks
 
 import (
 	"fmt"
-	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 )
 
 // base is 08:00 BST on 15 June 2026, the hikes router tests' UNIT_BASE day.
