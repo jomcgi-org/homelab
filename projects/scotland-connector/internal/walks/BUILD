@@ -8,7 +8,10 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/scotland-connector/internal/walks",
     visibility = ["//projects/scotland-connector:__subpackages__"],
-    deps = ["//projects/scotland-connector/internal/verdict"],
+    deps = [
+        "//projects/scotland-connector/internal/astro",
+        "//projects/scotland-connector/internal/verdict",
+    ],
 )
 
 go_test(

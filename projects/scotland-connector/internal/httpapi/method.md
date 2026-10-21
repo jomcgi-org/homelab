@@ -44,10 +44,12 @@ before the slot is found, so they change the verdict, the start window, the
 other days and the walks offered nearby. They can only tighten: the data
 holds no hour wetter or windier than the defaults. Each limit rounds to the
 data's 0.1 in its strict direction (a maximum down, a minimum up), so
-rounding never admits an hour the caller ruled out. An hour the limits turn
-away is daylight, so a long walk's dark credit does not cover it: when both
-edges of the slot are such hours the credit is void, and when only the hour
-before is, the walk starts with the slot and finishes in the dark.
+rounding never admits an hour the caller ruled out. Under limits the hours
+beside a slot are often daylight the person ruled out, so a long walk's
+dark credit counts only on a side of the slot that meets real darkness
+(before sunrise or after sunset at the start): with neither, the walk does
+not fit, and with only the far side, it starts with the slot and finishes in
+the dark.
 
 The **slot** is the day's longest run of good hours, with one bad hour
 tolerated inside it. A walk **fits** when the slot holds at least 80% of its

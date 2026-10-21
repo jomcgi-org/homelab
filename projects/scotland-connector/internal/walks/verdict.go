@@ -118,11 +118,10 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 	a.StartFrom = b.Start
 	a.StartBy = b.End.Add(-time.Duration(w.DurationH * float64(time.Hour))).Truncate(time.Minute)
 	if a.StartBy.Before(a.StartFrom) {
-		// It needs more than the slot: start early in the dark, unless the
-		// hour before is daylight the limits ruled out, when it starts with
-		// the slot and finishes in the dark.
+		// It needs more than the slot: start early, unless its dark credit
+		// can only be spent after the slot (see limitedEdges).
 		a.StartFrom = a.StartBy
-		if d.NoEarlyStart {
+		if o == darkShoulder && d.DarkLateOnly {
 			a.StartFrom, a.StartBy = b.Start, b.Start
 		}
 	}
