@@ -1,12 +1,19 @@
 """met.no forecast fetch and viable-window computation.
 
 Ported from projects/hikes/update_forecast/update.py with fetch split from
-the pure logic: fetch_forecast hits locationforecast/2.0/compact, parse_hourly
-flattens the timeseries, and compute_windows applies the viability ladder
-(past hours, 7-day horizon, real per-coordinate daylight gate, precip > 2.0 mm,
-wind > 80 km/h) and emits the compact window tuples
-[timestamp, temp_c, precip_mm, wind_kmh, cloud_pct] with the original
-rounding rules so the stored windows match the old bundle format exactly.
+the pure logic: fetch_forecast hits locationforecast/2.0/complete, parse_hourly
+flattens the timeseries, compute_hours keeps every future daylight hour
+(past hours, 7-day horizon, real per-coordinate daylight gate) as an hour
+tuple (see HOUR_FIELDS), and compute_windows applies the viability rule
+(precip > 2.0 mm or wind > 80 km/h is not viable) and emits the compact
+window tuples [timestamp, temp_c, precip_mm, wind_kmh, cloud_pct] with the
+original rounding rules so the windows match the old bundle format exactly.
+
+Every daylight hour is stored, good or not, so the Scotland connector can
+judge an hour by the caller's own limits; the hikes app filters on
+is_viable when it reads. Wind and gusts are stored in km/h to two decimals:
+met.no gives m/s to one decimal, so the stored value is exact and the read
+filter matches the raw viability rule at the 80 km/h boundary.
 
 The one intentional change from the legacy logic: the daylight gate. The old
 code kept a fixed 07:00-19:00 UTC band, which is wrong both ways in Scotland
@@ -25,7 +32,7 @@ import httpx
 
 logger = logging.getLogger("monolith.hikes")
 
-FORECAST_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+FORECAST_URL = "https://api.met.no/weatherapi/locationforecast/2.0/complete"
 # met.no requires an identifying User-Agent.
 USER_AGENT = "jomcgi.dev/app/hikes (https://github.com/jomcgi/homelab)"
 TIMEOUT_SECS = 30.0
@@ -124,7 +131,7 @@ def is_daylight(dt: datetime, lat: float, lon: float) -> bool:
 async def fetch_forecast(
     client: httpx.AsyncClient, lat: float, lon: float
 ) -> dict | None:
-    """Fetch the compact location forecast for one coordinate pair.
+    """Fetch the complete location forecast for one coordinate pair.
 
     Returns None on any error (logged); the caller treats a missing forecast
     as "keep the previous windows".
@@ -165,6 +172,7 @@ def parse_hourly(forecast_json: dict | None) -> list[dict]:
         if not next_1_hours:
             continue
 
+        next_details = next_1_hours.get("details", {})
         hourly_data.append(
             {
                 "time": time_str,
@@ -172,44 +180,68 @@ def parse_hourly(forecast_json: dict | None) -> list[dict]:
                 "wind_speed_ms": instant.get("wind_speed"),
                 # Coerce a present-but-null precipitation_amount to 0 so the
                 # downstream `> threshold` comparison never sees None.
-                "precipitation_mm": next_1_hours.get("details", {}).get(
-                    "precipitation_amount", 0
-                )
-                or 0,
+                "precipitation_mm": next_details.get("precipitation_amount", 0) or 0,
                 "cloud_area_fraction": instant.get("cloud_area_fraction"),
+                # The complete forecast's extras; None when absent.
+                "wind_gust_ms": instant.get("wind_speed_of_gust"),
+                "precipitation_max_mm": next_details.get("precipitation_amount_max"),
+                "rain_chance_pct": next_details.get("probability_of_precipitation"),
+                "thunder_chance_pct": next_details.get("probability_of_thunder"),
+                "fog_pct": instant.get("fog_area_fraction"),
+                "low_cloud_pct": instant.get("cloud_area_fraction_low"),
             }
         )
 
     return hourly_data
 
 
-def _is_weather_viable(weather: dict) -> bool:
-    """Viability thresholds: precip > 2.0 mm or wind > 80 km/h is not viable."""
-    precip = weather.get("precipitation_mm", 0)
-    wind_ms = weather.get("wind_speed_ms", 0)
-    wind_kmh = wind_ms * 3.6 if wind_ms is not None else 0
-
-    if precip > MAX_PRECIPITATION_MM:
-        return False
-    if wind_kmh > MAX_WIND_KMH:
-        return False
-    return True
+def is_viable(precip_mm: float, wind_kmh: float) -> bool:
+    """The viability rule on stored values (see the module docstring)."""
+    return precip_mm <= MAX_PRECIPITATION_MM and wind_kmh <= MAX_WIND_KMH
 
 
-def compute_windows(
+# compute_hours tuple layout. The first five match the window tuple; the
+# rest come from the complete forecast and are None when absent.
+HOUR_FIELDS = (
+    "ts",
+    "temp_c",
+    "precip_mm",
+    "wind_kmh",
+    "cloud_pct",
+    "gust_kmh",
+    "precip_max_mm",
+    "rain_chance_pct",
+    "thunder_chance_pct",
+    "fog_pct",
+    "low_cloud_pct",
+)
+
+
+def _kmh(ms: float | None) -> float | None:
+    """m/s to km/h, two decimals: exact for met.no's one-decimal m/s."""
+    return None if ms is None else round(ms * 3.6, 2)
+
+
+def _opt(value: float | None, ndigits: int = 0) -> float | None:
+    if value is None:
+        return None
+    return round(value, ndigits) if ndigits else round(value)
+
+
+def compute_hours(
     hourly: list[dict], now: datetime, lat: float, lon: float
 ) -> list[list]:
-    """Compute viable hiking windows from hourly forecast data. Pure.
+    """Every future daylight hour of the forecast, good or not. Pure.
 
     Filter ladder: skip past hours, skip beyond now + 7 days, skip hours
     outside the walk's real daylight (sunrise to sunset at lat/lon for that UTC
-    date, via is_daylight), skip non-viable weather. Emits [timestamp, temp_c,
-    precip_mm, wind_kmh, cloud_pct] with the original rounding and None-default
-    rules. The daylight gate is the one deliberate divergence from the legacy
-    fixed 07:00-19:00 band (see the module docstring).
+    date, via is_daylight). Emits HOUR_FIELDS tuples with the original
+    rounding and None-default rules for the first five fields, except wind,
+    which is km/h to two decimals so is_viable on the stored value equals the
+    raw rule.
     """
     horizon = now + timedelta(days=FORECAST_HORIZON_DAYS)
-    windows: list[list] = []
+    hours: list[list] = []
 
     for weather in hourly:
         dt = datetime.fromisoformat(weather["time"])
@@ -220,27 +252,52 @@ def compute_windows(
             continue
         if not is_daylight(dt, lat, lon):
             continue
-        if not _is_weather_viable(weather):
-            continue
 
-        timestamp = int(dt.timestamp())
         temp_c = round(weather["temp_c"], 1) if weather["temp_c"] is not None else 0
         precip_mm = (
             round(weather["precipitation_mm"], 1)
             if weather["precipitation_mm"] > 0
             else 0
         )
-        wind_ms = weather["wind_speed_ms"] or 0
-        wind_kmh = round(wind_ms * 3.6)
         cloud_pct = (
             round(weather["cloud_area_fraction"])
             if weather["cloud_area_fraction"] is not None
             else 50
         )
+        hours.append(
+            [
+                int(dt.timestamp()),
+                temp_c,
+                precip_mm,
+                _kmh(weather["wind_speed_ms"] or 0),
+                cloud_pct,
+                _kmh(weather.get("wind_gust_ms")),
+                _opt(weather.get("precipitation_max_mm"), 1),
+                _opt(weather.get("rain_chance_pct")),
+                _opt(weather.get("thunder_chance_pct")),
+                _opt(weather.get("fog_pct")),
+                _opt(weather.get("low_cloud_pct")),
+            ]
+        )
 
-        windows.append([timestamp, temp_c, precip_mm, wind_kmh, cloud_pct])
+    return hours
 
-    return windows
+
+def compute_windows(
+    hourly: list[dict], now: datetime, lat: float, lon: float
+) -> list[list]:
+    """Compute viable hiking windows from hourly forecast data. Pure.
+
+    compute_hours' daylight hours that pass is_viable, as the legacy
+    [timestamp, temp_c, precip_mm, wind_kmh, cloud_pct] tuple with wind
+    rounded to whole km/h. The daylight gate is the one deliberate divergence
+    from the legacy fixed 07:00-19:00 band (see the module docstring).
+    """
+    return [
+        [h[0], h[1], h[2], round(h[3]), h[4]]
+        for h in compute_hours(hourly, now, lat, lon)
+        if is_viable(h[2], h[3])
+    ]
 
 
 async def fetch_all_windows(
@@ -248,7 +305,7 @@ async def fetch_all_windows(
     walks: list[tuple[str, float, float]],
     now: datetime,
 ) -> dict[str, list]:
-    """Fetch forecasts for all walks and compute their viable windows.
+    """Fetch forecasts for all walks and compute their daylight hours.
 
     Bounded concurrency (semaphore of 10). Walks whose fetch failed are
     absent from the returned dict, not mapped to an empty list, so the
@@ -263,7 +320,7 @@ async def fetch_all_windows(
         if forecast is None:
             return
         try:
-            windows = compute_windows(parse_hourly(forecast), now, lat, lon)
+            windows = compute_hours(parse_hourly(forecast), now, lat, lon)
         except Exception:
             # A single malformed forecast must not abort the whole refresh;
             # this walk stays absent from results and keeps its prior windows.

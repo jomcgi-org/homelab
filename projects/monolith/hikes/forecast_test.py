@@ -10,7 +10,15 @@ divergence: it now follows real sunrise/sunset at the walk's coordinates
 
 from datetime import datetime, timedelta, timezone
 
-from hikes.forecast import compute_windows, is_daylight, parse_hourly, sun_times
+from hikes.forecast import (
+    HOUR_FIELDS,
+    compute_hours,
+    compute_windows,
+    is_daylight,
+    is_viable,
+    parse_hourly,
+    sun_times,
+)
 
 NOW = datetime(2026, 6, 13, 12, 0, tzinfo=timezone.utc)
 LAT = 56.7969
@@ -159,6 +167,12 @@ class TestParseHourly:
                 "wind_speed_ms": 3.4,
                 "precipitation_mm": 0.3,
                 "cloud_area_fraction": 75.0,
+                "wind_gust_ms": None,
+                "precipitation_max_mm": None,
+                "rain_chance_pct": None,
+                "thunder_chance_pct": None,
+                "fog_pct": None,
+                "low_cloud_pct": None,
             }
         ]
 
@@ -223,3 +237,76 @@ class TestSunTimes:
         # UTC reads as daylight.
         midnight_sun = datetime(2026, 6, 21, 2, tzinfo=timezone.utc)
         assert is_daylight(midnight_sun, 78.0, 16.0) is True
+
+
+class TestCompleteForecast:
+    """compute_hours keeps every daylight hour with the complete forecast's
+    extras, so the connector can apply the caller's own limits."""
+
+    def _complete(self, **instant_extra):
+        details = {
+            "air_temperature": 7.4,
+            "wind_speed": 22.3,
+            "cloud_area_fraction": 90.0,
+        }
+        details.update(instant_extra)
+        return {
+            "properties": {
+                "timeseries": [
+                    {
+                        "time": VIABLE_TIME,
+                        "data": {
+                            "instant": {"details": details},
+                            "next_1_hours": {
+                                "details": {
+                                    "precipitation_amount": 3.4,
+                                    "precipitation_amount_max": 5.12,
+                                    "probability_of_precipitation": 87.6,
+                                    "probability_of_thunder": 2.0,
+                                }
+                            },
+                        },
+                    }
+                ]
+            }
+        }
+
+    def test_keeps_non_viable_daylight_hours_with_extras(self):
+        forecast = self._complete(
+            wind_speed_of_gust=31.1, fog_area_fraction=0.0, cloud_area_fraction_low=62.3
+        )
+        hours = compute_hours(parse_hourly(forecast), NOW, LAT, LON)
+        assert len(hours) == 1
+        h = dict(zip(HOUR_FIELDS, hours[0]))
+        # 3.4 mm and 80.28 km/h fail the viability rule but are kept.
+        assert h["precip_mm"] == 3.4
+        assert h["wind_kmh"] == 80.28
+        assert h["gust_kmh"] == 111.96
+        assert h["precip_max_mm"] == 5.1
+        assert h["rain_chance_pct"] == 88
+        assert h["thunder_chance_pct"] == 2
+        assert h["fog_pct"] == 0
+        assert h["low_cloud_pct"] == 62
+        assert not is_viable(h["precip_mm"], h["wind_kmh"])
+        # compute_windows still emits viable hours only, in the legacy shape.
+        assert compute_windows(parse_hourly(forecast), NOW, LAT, LON) == []
+
+    def test_missing_extras_are_none(self):
+        hours = compute_hours(parse_hourly(self._complete()), NOW, LAT, LON)
+        h = dict(zip(HOUR_FIELDS, hours[0]))
+        assert h["gust_kmh"] is None
+        assert h["fog_pct"] is None
+        assert h["low_cloud_pct"] is None
+
+    def test_night_hours_are_dropped(self):
+        forecast = self._complete()
+        forecast["properties"]["timeseries"][0]["time"] = "2026-06-14T01:00:00Z"
+        assert compute_hours(parse_hourly(forecast), NOW, LAT, LON) == []
+
+    def test_viability_on_stored_wind_matches_the_raw_rule(self):
+        # 22.2 m/s is 79.92 km/h (viable), 22.3 m/s is 80.28 km/h (not): both
+        # round to 80, so wind is stored to two decimals.
+        assert is_viable(0, round(22.2 * 3.6, 2))
+        assert not is_viable(0, round(22.3 * 3.6, 2))
+        assert is_viable(2.0, 0)
+        assert not is_viable(2.1, 0)
