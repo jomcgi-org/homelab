@@ -147,10 +147,11 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 		bad := "one wet or windy hour"
 		if len(d.GapFails) > 0 {
 			bad = "one " + failWords(d.GapFails) + " hour"
-			// The weather sums cover the good hours, not the bad one.
-			if slices.Contains(d.GapFails, "rain") || slices.Contains(d.GapFails, "rain_chance") {
-				weather = strings.Replace(weather, ", dry", ", otherwise dry", 1)
-			}
+		}
+		// The weather sums cover the good hours, not the bad one: when that
+		// hour is known to be wet, "dry" holds only for the rest.
+		if Known(d.GapRainMM) && d.GapRainMM >= WetMM {
+			weather = strings.Replace(weather, ", dry", ", otherwise dry", 1)
 		}
 		a.Why = fmt.Sprintf("Fits with %s mid-walk: %s to %s, %s.", bad, local(b.Start), local(b.End), weather)
 	case windyStart:

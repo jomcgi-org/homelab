@@ -45,8 +45,8 @@ chance of rain and temperature have no default limit. The limits apply
 before the slot is found, so they change the verdict, the start window, the
 other days and the walks offered nearby. Loosening, and limits on gusts and
 the chance of rain, need forecast data that carries every daylight hour; on
-data that holds the default good hours only, a looser limit finds no extra
-hours and a gust or rain-chance limit is refused as not available yet. An
+data that holds the default good hours only, such a limit is refused as not
+available yet rather than silently ignored. An
 unknown gust or chance of rain fails no limit. Each limit rounds to the
 data's 0.1 in its strict direction (a maximum down, a minimum up), so
 rounding never admits an hour the caller ruled out. Under limits the hours

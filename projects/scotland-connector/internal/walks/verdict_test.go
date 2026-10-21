@@ -227,3 +227,23 @@ func TestLimitsAndTheDarkShoulder(t *testing.T) {
 		t.Fatalf("cold gap = %+v", a)
 	}
 }
+
+// A bad hour turned away for wind but wet too keeps "otherwise dry".
+func TestOtherwiseDryWhateverTheGapFailed(t *testing.T) {
+	// Good hours dry and calm (10 km/h); 09:00Z is windy (40 km/h) and wet.
+	var hours []string
+	for o := 0; o < 5; o++ {
+		wind, rain := 10, 0.0
+		if o == 2 {
+			wind, rain = 40, 1.8
+		}
+		hours = append(hours, fmt.Sprintf("[%d,9.5,%g,%d,40]", base.Add(time.Duration(o)*time.Hour).Unix(), rain, wind))
+	}
+	ds := mustParse(t, snapshot(`{"id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":9,"ascent_m":300,"duration_h":4,"hours":[`+strings.Join(hours, ",")+`]}`))
+	w := &ds.Walks[0]
+	f := func(v float64) *float64 { return &v }
+	a := w.Assess(ds.DayWithin(w, LocalDay(base), base, Limits{MaxWindKmh: f(30)}), ds.HourlyUntil)
+	if a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "one windy hour") || !strings.Contains(a.Why, "otherwise dry") {
+		t.Fatalf("assess = %+v", a)
+	}
+}

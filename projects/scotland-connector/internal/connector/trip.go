@@ -254,9 +254,9 @@ func walkOption(ds *walks.Dataset, w *walks.Walk, day int32, now time.Time, ask 
 // WeatherLimits change what counts as a good walking hour from the default
 // (at most 2 mm of rain and wind at most 80 km/h in an hour): drier, calmer,
 // less gusty, less likely to rain or milder, or wetter and windier when the
-// person will put up with it. Loosening needs forecast data that carries
-// every daylight hour; on data that holds good hours only, a looser limit
-// finds no extra hours.
+// person will put up with it. Loosening, gusts and the chance of rain need
+// forecast data that carries every daylight hour; on data that holds good
+// hours only they are refused (needsComplete).
 type WeatherLimits struct {
 	MaxRainMMH       *float64 `json:"max_rain_mm_h,omitempty"`
 	MaxWindKmh       *float64 `json:"max_wind_kmh,omitempty"`
@@ -314,16 +314,23 @@ func weatherLimits(l WeatherLimits) (WeatherLimits, error) {
 }
 
 // needsComplete is the error for limits the walk data cannot apply yet:
-// gusts and the chance of rain arrive with the version 2 snapshot.
+// gusts, the chance of rain and hours past the defaults arrive with the
+// version 2 snapshot.
 func (l WeatherLimits) needsComplete(ds *walks.Dataset) error {
 	if ds == nil || ds.Complete || !l.walks().NeedsComplete() {
 		return nil
 	}
-	param := "max_gust_kmh"
-	if l.MaxGustKmh == nil {
-		param = "max_rain_chance_pct"
+	param, what := "max_gust_kmh", "gusts"
+	switch {
+	case l.MaxGustKmh != nil:
+	case l.MaxRainChancePct != nil:
+		param, what = "max_rain_chance_pct", "the chance of rain"
+	case l.MaxRainMMH != nil && *l.MaxRainMMH > walks.DefaultMaxPrecipMM:
+		param, what = "max_rain_mm_h", fmt.Sprintf("hours wetter than %g mm", walks.DefaultMaxPrecipMM)
+	default:
+		param, what = "max_wind_kmh", fmt.Sprintf("hours windier than %g km/h", walks.DefaultMaxWindKmh)
 	}
-	return &ParamError{param, "not available yet: the walk forecast data does not carry gusts or the chance of rain"}
+	return &ParamError{param, "not available yet: the walk forecast data does not carry " + what}
 }
 
 func (l WeatherLimits) walks() walks.Limits {

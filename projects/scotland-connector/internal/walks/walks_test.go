@@ -2,6 +2,7 @@ package walks
 
 import (
 	"fmt"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 	"strings"
 	"testing"
 	"time"
@@ -100,7 +101,6 @@ func TestParseRejectsBadSnapshots(t *testing.T) {
 		"future schema":  `{"schema_version":3,"walks":[` + walkJSON("a", 57, -4, 3, 0) + `]}`,
 		"v1 row as v2":   `{"schema_version":2,"walks":[` + walkJSON("a", 57, -4, 3, 0, 0) + `]}`,
 		"v2 row as v1":   `{"schema_version":1,"walks":[{"id":"a","name":"A","url":"u","duration_h":3,"hours":[[1781506800,9,0,10,20,15,0,5,0,0,10]]}]}`,
-		"null time":      `{"schema_version":1,"walks":[{"id":"a","name":"A","url":"u","duration_h":3,"hours":[[null,9,0,10,20]]}]}`,
 		"no walks":       `{"schema_version":1,"walks":[]}`,
 		"missing url":    `{"schema_version":1,"walks":[{"id":"a","name":"A","duration_h":3}]}`,
 		"bad fetched_at": `{"schema_version":1,"fetched_at":"yesterday","walks":[` + walkJSON("a", 57, -4, 3, 0) + `]}`,
@@ -296,7 +296,8 @@ func TestParseV2AndTheDefaultTest(t *testing.T) {
 	f := func(v float64) *float64 { return &v }
 	// Loosened to 4 mm, the wet hour counts: the slot runs 07:00Z to 12:00Z
 	// with the windy hour as its one bad hour.
-	if d := ds.DayWithin(w, day, base, Limits{MaxPrecipMM: f(4)}); d.GoodHours != 4 || !d.Limited || d.Best.GoodHours != 4 || len(d.GapFails) != 1 || d.GapFails[0] != "wind" {
+	// Loosening rules no hour out, so the day is not "limited".
+	if d := ds.DayWithin(w, day, base, Limits{MaxPrecipMM: f(4)}); d.GoodHours != 4 || d.Limited || d.Best.GoodHours != 4 || len(d.GapFails) != 1 || d.GapFails[0] != "wind" {
 		t.Fatalf("loosened = %+v %+v", d, d.Best)
 	}
 	// Gusts and rain chance limit only where they are known.
@@ -308,5 +309,64 @@ func TestParseV2AndTheDefaultTest(t *testing.T) {
 	}
 	if !(Limits{MaxGustKmh: f(1)}).NeedsComplete() || (Limits{MaxPrecipMM: f(1)}).NeedsComplete() {
 		t.Fatal("NeedsComplete")
+	}
+}
+
+// One hour row without a time is skipped and counted; the rest of the walk
+// and the snapshot stand.
+func TestParseSkipsAnHourWithoutATime(t *testing.T) {
+	ds := mustParse(t, `{"schema_version":1,"walks":[{"id":"a","name":"A","url":"u","duration_h":3,"hours":[[null,9,0,10,20],[1781506800,9,0,10,20]]}]}`)
+	if ds.SkippedHours != 1 || len(ds.Walks[0].Hours) != 1 {
+		t.Fatalf("skipped %d, hours %d", ds.SkippedHours, len(ds.Walks[0].Hours))
+	}
+}
+
+// v2Day builds a version 2 walk whose hours (offsets from base) carry the
+// given rain, every other hour of the day absent.
+func v2Day(t *testing.T, duration float64, rain map[int]float64) *Dataset {
+	t.Helper()
+	var hours []string
+	for o := -6; o < 18; o++ {
+		if r, ok := rain[o]; ok {
+			hours = append(hours, fmt.Sprintf("[%d,9.5,%g,10,40,20,%g,10,0,null,30]", base.Add(time.Duration(o)*time.Hour).Unix(), r, r))
+		}
+	}
+	return mustParse(t, `{"schema_version":2,"fetched_at":"2026-06-15T06:20:00+00:00","walks":[`+
+		fmt.Sprintf(`{"id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":20,"ascent_m":900,"duration_h":%g,"hours":[%s]}`, duration, strings.Join(hours, ","))+`]}`)
+}
+
+// Loosening adds good hours and rules none out, so it cannot take away the
+// dark credit the default rule grants.
+func TestLooseningKeepsTheDarkCredit(t *testing.T) {
+	// A 10 h walk: wet (5 mm) 03:00Z to 20:00Z except dry 09:00Z to 14:00Z,
+	// and 3 mm at 19:00Z, which a 4 mm limit lets in far from the slot.
+	rain := map[int]float64{}
+	for o := -4; o <= 13; o++ {
+		rain[o] = 5
+	}
+	for o := 2; o <= 7; o++ {
+		rain[o] = 0
+	}
+	rain[12] = 3
+	ds := v2Day(t, 10, rain)
+	w := &ds.Walks[0]
+	day := LocalDay(base)
+	f := func(v float64) *float64 { return &v }
+	def := w.Assess(ds.DayFor(w, day, base.Add(-5*time.Hour)), ds.HourlyUntil)
+	loose := w.Assess(ds.DayWithin(w, day, base.Add(-5*time.Hour), Limits{MaxPrecipMM: f(4)}), ds.HourlyUntil)
+	if def.Verdict != verdict.Marginal || loose != def {
+		t.Fatalf("default %+v, loosened %+v", def, loose)
+	}
+}
+
+// Asked later today with loosened limits, "left today" follows the caller's
+// good hours: 07:00Z (3 mm) was good under 4 mm and has passed.
+func TestLeftTodayFollowsTheCallersHours(t *testing.T) {
+	ds := v2Day(t, 3, map[int]float64{0: 3, 1: 5})
+	w := &ds.Walks[0]
+	f := func(v float64) *float64 { return &v }
+	a := w.Assess(ds.DayWithin(w, LocalDay(base), base.Add(30*time.Minute), Limits{MaxPrecipMM: f(4)}), ds.HourlyUntil)
+	if a.Verdict != verdict.No || !strings.Contains(a.Why, "left today") {
+		t.Fatalf("assess = %+v", a)
 	}
 }

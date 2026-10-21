@@ -157,8 +157,10 @@ the hours that pass the hikes app's test (at most 2 mm of rain, wind at most
 80 km/h); version 2 holds every daylight hour with gusts, the forecast's
 upper rain amount, the chance of rain and of thunder, fog and low cloud, so
 limits can loosen as well as tighten and a bad hour's weather is known. The
-connector reads both: the version 2 producer ships after it, and a gust or
-rain-chance limit on version 1 data is refused as not available yet.
+connector reads both: the version 2 producer ships after it, and a looser,
+gust or rain-chance limit on version 1 data is refused as not available yet.
+Only a tightening limit makes a day "limited" for the dark-credit rule:
+loosening rules no daylight out.
 `internal/walks` buckets those hours into UK days at load time and applies
 the hikes app's doable-day rule (`projects/monolith/hikes/router.py`); its
 tests replay the hikes router's cases. A separate `WalkStore` loads the

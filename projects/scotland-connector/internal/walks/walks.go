@@ -124,11 +124,14 @@ type Dataset struct {
 	Version   string
 	// HourlyUntil is how far the hourly forecast is known to reach: the later
 	// of FetchedAt plus minHourlyHorizon and the end of the latest hour in the
-	// snapshot. Both are lower bounds, so hours before it that are missing
-	// failed the weather limits; hours after it were never forecast.
+	// snapshot. Both are lower bounds, so a daylight hour before it that is
+	// missing failed the default test (version 1) or was never in the data;
+	// hours after it were never forecast.
 	HourlyUntil time.Time
-	// Skipped counts snapshot rows left out for missing fields.
-	Skipped int
+	// Skipped counts snapshot rows left out for missing fields, and
+	// SkippedHours hour rows left out for a missing time.
+	Skipped      int
+	SkippedHours int
 	// Complete reports a version 2 snapshot: every daylight hour is present,
 	// with gusts and the chance of rain, so limits can loosen the default
 	// test and a bad hour's weather is known.
@@ -203,10 +206,15 @@ func Parse(body []byte, version string) (*Dataset, error) {
 		}
 		out.Hours = out.Hours[:0]
 		for _, h := range w.Hours {
-			// An hour without a time is unusable; a short or long row is a
-			// shape this reader does not know.
-			if len(h) != width || h[0] == nil {
+			// A row of the wrong width is the wrong schema, which would
+			// misread every walk, so it rejects the snapshot. An hour without
+			// a time is one bad row: it is skipped and counted.
+			if len(h) != width {
 				return nil, fmt.Errorf("walks: walk %s: an hour has %d fields, want %d", w.ID, len(h), width)
+			}
+			if h[0] == nil {
+				ds.SkippedHours++
+				continue
 			}
 			at := time.Unix(int64(*h[0]), 0)
 			v := func(i int, missing float32) float32 {
@@ -215,10 +223,12 @@ func Parse(body []byte, version string) (*Dataset, error) {
 				}
 				return float32(*h[i])
 			}
-			// Version 1 coerced missing core values to 0 before storing.
+			// The hikes job never stores a null core value (it reads a missing
+			// temperature, rain or wind as 0 and cloud as 50); a null here
+			// gets the same reading.
 			out.Hours = append(out.Hours, Hour{
 				Unix: at.Unix(), Day: LocalDay(at),
-				TempC: v(1, 0), PrecipMM: v(2, 0), WindKmh: v(3, 0), CloudPct: v(4, 0),
+				TempC: v(1, 0), PrecipMM: v(2, 0), WindKmh: v(3, 0), CloudPct: v(4, 50),
 				GustKmh: v(5, nan), PrecipMaxMM: v(6, nan), RainChancePct: v(7, nan),
 				ThunderChancePct: v(8, nan), FogPct: v(9, nan), LowCloudPct: v(10, nan),
 			})
@@ -406,15 +416,18 @@ type Day struct {
 	// hour is not in the data.
 	DarkLateOnly bool
 	GapFails     []string
+	// GapRainMM is the bad hour's rain when the data has the hour, else NaN.
+	GapRainMM float32
 	// Test is the good-hour test the day was assessed with.
 	Test Test
 }
 
-// gapFails is what made the slot's one bad hour bad, when the data has it.
-func (w *Walk) gapFails(d *Day) []string {
+// gapFails is what made the slot's one bad hour bad, and its rain, when the
+// data has the hour.
+func (w *Walk) gapFails(d *Day) ([]string, float32) {
 	r := d.Best
 	if int(r.End.Sub(r.Start)/time.Hour) == r.GoodHours {
-		return nil // no bad hour inside
+		return nil, nan // no bad hour inside
 	}
 	// Hours are time-ordered: the gap is the first hour of the run that the
 	// good hours skip.
@@ -430,10 +443,10 @@ func (w *Walk) gapFails(d *Day) []string {
 	}
 	for _, h := range d.All {
 		if h.Unix == t {
-			return d.Test.Fails(h)
+			return d.Test.Fails(h), h.PrecipMM
 		}
 	}
-	return nil
+	return nil, nan
 }
 
 // limitedEdges keeps the dark-shoulder credit honest under limits. Without
@@ -467,7 +480,8 @@ func (w *Walk) limitedEdges(d *Day, from time.Time) {
 // DefaultMaxPrecipMM of rain and DefaultMaxWindKmh of wind, the hikes app's):
 // for a caller who wants it drier, calmer or milder, or will put up with
 // more. A nil field keeps the default. On a version 1 snapshot, which holds
-// good hours only, a limit looser than the default finds no extra hours.
+// good hours only, a limit looser than the default would find no extra hours,
+// so callers refuse it there (NeedsComplete).
 type Limits struct {
 	MaxPrecipMM, MaxWindKmh, MaxGustKmh, MaxRainChancePct, MinTempC *float64
 }
@@ -484,8 +498,14 @@ func (l Limits) Active() bool {
 	return l.MaxPrecipMM != nil || l.MaxWindKmh != nil || l.MaxGustKmh != nil || l.MaxRainChancePct != nil || l.MinTempC != nil
 }
 
-// NeedsComplete reports limits on fields only a version 2 snapshot has.
-func (l Limits) NeedsComplete() bool { return l.MaxGustKmh != nil || l.MaxRainChancePct != nil }
+// NeedsComplete reports limits only a version 2 snapshot can apply: on gusts
+// or the chance of rain, or looser than the default, since version 1 holds no
+// hour that fails the default.
+func (l Limits) NeedsComplete() bool {
+	return l.MaxGustKmh != nil || l.MaxRainChancePct != nil ||
+		l.MaxPrecipMM != nil && *l.MaxPrecipMM > DefaultMaxPrecipMM ||
+		l.MaxWindKmh != nil && *l.MaxWindKmh > DefaultMaxWindKmh
+}
 
 // Test is a good-hour test: the defaults with the caller's limits applied.
 type Test struct {
@@ -595,8 +615,6 @@ func longestRun(hours []Hour) (count, start, end int) {
 	return best, bestStart, bestEnd
 }
 
-// dayAt is the walk's assessed day: its good hours from cutoff (a Unix
-// time, the next top of the hour) on, and whether it can be decided.
 // dayHours is the part of hours (time-ordered) on day from cutoff on, and
 // whether any of the day's hours were before cutoff.
 func dayHours(hours []Hour, day int32, cutoff int64) ([]Hour, bool) {
@@ -606,28 +624,49 @@ func dayHours(hours []Hour, day int32, cutoff int64) ([]Hour, bool) {
 	return hours[lo+from : hi], from > 0
 }
 
+// dayAt is the walk's assessed day: its good hours from cutoff (a Unix
+// time, the next top of the hour) on, and whether it can be decided.
 func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage, lim Limits) Day {
 	all, _ := dayHours(w.Hours, day, cutoff)
 	// The default test leaves a version 1 day as it is; a version 2 day
 	// loses the hours that fail it.
 	def, started := dayHours(w.good, day, cutoff)
 	good, test := def, DefaultTest
+	limited := false
 	if lim.Active() {
 		test = lim.Test()
 		good = test.filter(all)
+		// Started asks about the caller's good hours, not the default's.
+		dayAll, _ := dayHours(w.Hours, day, 0)
+		started = false
+		for _, h := range dayAll {
+			if h.Unix < cutoff && test.Good(h) {
+				started = true
+				break
+			}
+		}
+		// Limited when the limits rule out an hour the default allows:
+		// only then is there daylight the person turned away. Loosening
+		// adds hours and rules none out, and a limit at the default changes
+		// nothing, so neither changes the answer's rules.
+		for _, h := range def {
+			if !test.Good(h) {
+				limited = true
+				break
+			}
+		}
 	}
 	d := w.day(day, good)
 	d.All = all
 	d.Test = test
 	d.Started = started
-	// Limited only when the limits changed which hours are good: a limit at
-	// the default changes nothing, so the answer must not change either.
-	d.Limited = !sameHours(good, def)
+	d.Limited = limited
 	if d.Limited && d.Best != nil {
 		w.limitedEdges(&d, time.Unix(cutoff, 0))
 	}
+	d.GapRainMM = nan
 	if d.Best != nil {
-		d.GapFails = w.gapFails(&d)
+		d.GapFails, d.GapRainMM = w.gapFails(&d)
 	}
 	d.Coverage = coverage
 	d.Decided = coverage == CoverageFull || d.Doable
