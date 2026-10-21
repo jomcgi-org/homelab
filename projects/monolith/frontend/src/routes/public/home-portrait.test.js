@@ -11,6 +11,8 @@ import {
   hexToRgb,
   inkRamp,
   nextGap,
+  stripSeed,
+  STRIPS,
 } from "./home-portrait.js";
 
 describe("portrait tone ramps", () => {
@@ -81,6 +83,19 @@ describe("glitch clock", () => {
   it("draws gaps from an exponential distribution above a floor", () => {
     expect(nextGap(1000, () => 0)).toBe(60);
     expect(nextGap(1000, () => 1 - Math.exp(-1))).toBeCloseTo(1060, 5);
+  });
+});
+
+describe("strip seeds", () => {
+  it("are stable and sit in [0, 1) for every strip, so scatter is symmetric", () => {
+    const seeds = Array.from({ length: STRIPS }, (_, i) => stripSeed(i));
+    for (const r of seeds) {
+      expect(r).toBeGreaterThanOrEqual(0);
+      expect(r).toBeLessThan(1);
+    }
+    expect(seeds.filter((r) => r < 0.5).length).toBeGreaterThan(STRIPS / 4);
+    expect(seeds.filter((r) => r >= 0.5).length).toBeGreaterThan(STRIPS / 4);
+    expect(stripSeed(7)).toBe(stripSeed(7));
   });
 });
 

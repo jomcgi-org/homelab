@@ -20,48 +20,65 @@
   const deploy = $derived(deployReadout(stats));
   const posts = $derived(data.posts ?? []);
 
-  // One line per key, in the visitor's register. The apps registry is the
-  // source for the app keys so a new app lands here with one edit there.
+  // One line per key, in the visitor's register. The app keys are looked up
+  // in the apps registry by slug, so a slug that leaves the registry drops
+  // its key here rather than failing the page. The notes line carries the
+  // live fact count when the stats snapshot has one.
   const APP_LINES = {
-    notes: "Ask my notes: a knowledge graph of 27 651 of them.",
+    notes: "Ask my notes: a knowledge graph over all of them.",
     grimoire: "A D&D campaign manager built on grants.",
     ships: "Every ship off Scotland right now, from live AIS.",
     stars: "Where the sky will be dark and clear tonight.",
     hikes: "Scottish hill walks, planned by day and weather.",
-    trips: "A dash camera turned into a browseable journey.",
+    trips: "A dash-mounted GoPro turned into a browseable journey.",
   };
   const ORDER = ["notes", "grimoire", "ships", "stars", "hikes", "trips"];
-  const keys = [
-    {
-      href: "/slop/factory",
-      legend: "software factory",
-      primary: true,
-      big: "Slop factory",
-      small:
-        "Agents doing platform work on this cluster, live. Tag one in Discord and it answers.",
-    },
-    {
-      href: "/cv",
-      legend: "cv",
-      big: "CV",
-      small: "Ten years, underwriting to platform engineering.",
-    },
-    {
-      href: "/docs",
-      legend: "docs",
-      big: "Docs",
-      small: "How this is built: cluster, build, agents.",
-    },
-    ...ORDER.map((slug) => {
-      const app = apps.find((a) => a.slug === slug);
-      return {
-        href: app.href,
-        legend: slug,
-        big: app.label,
-        small: APP_LINES[slug] ?? app.desc,
-      };
-    }),
-  ];
+  const keys = $derived.by(() => {
+    const facts = stats?.knowledge?.facts;
+    const lines = {
+      ...APP_LINES,
+      ...(facts != null
+        ? {
+            notes: `Ask my notes: a knowledge graph of ${facts.toLocaleString("en-GB")} of them.`,
+          }
+        : {}),
+    };
+    return [
+      {
+        href: "/slop/factory",
+        legend: "software factory",
+        primary: true,
+        big: "Slop factory",
+        small:
+          "Agents doing platform work on this cluster, live. Tag one in Discord and it answers.",
+      },
+      {
+        href: "/cv",
+        legend: "cv",
+        big: "CV",
+        small: "Ten years, underwriting to platform engineering.",
+      },
+      {
+        href: "/docs",
+        legend: "docs",
+        big: "Docs",
+        small: "How this is built: cluster, build, agents.",
+      },
+      ...ORDER.flatMap((slug) => {
+        const app = apps.find((a) => a.slug === slug);
+        return app
+          ? [
+              {
+                href: app.href,
+                legend: slug,
+                big: app.label,
+                small: lines[slug] ?? app.desc,
+              },
+            ]
+          : [];
+      }),
+    ];
+  });
 
   // What the display is reading out: a key, a post, or nothing (the name).
   let reading = $state(null);
@@ -354,7 +371,7 @@
     /* Fixed: one big line and one small line, so a readout never resizes
        the unit. The rest-state sub line runs the full width to stay on one
        line at desktop widths. */
-    height: 5.9rem;
+    height: 6.3rem;
     display: grid;
     align-content: start;
     gap: 0.4rem;
@@ -366,6 +383,11 @@
     line-height: 1.12;
     letter-spacing: -0.024em;
     margin: 0;
+    /* One line, always: a long post title is cut with an ellipsis rather
+       than wrapping and pushing the sentence out of the box. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .glass .small {
     font-size: 0.98rem;

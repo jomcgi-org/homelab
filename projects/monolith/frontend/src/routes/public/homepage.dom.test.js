@@ -145,6 +145,28 @@ describe("homepage unit", () => {
     );
   });
 
+  it("reads the live fact count into the notes line and never a stale figure", async () => {
+    instance = mount(Homepage, {
+      target,
+      props: { data: { stats: { knowledge: { facts: 31204 } }, posts: [] } },
+    });
+    await tick();
+    hover(target.querySelector('nav[aria-label="Site"] a[href="/app/notes"]'));
+    await tick();
+    expect(target.querySelector(".glass .small").textContent).toContain(
+      "31,204",
+    );
+    await unmount(instance);
+    instance = mount(Homepage, {
+      target,
+      props: { data: { stats: null, posts: [] } },
+    });
+    await tick();
+    hover(target.querySelector('nav[aria-label="Site"] a[href="/app/notes"]'));
+    await tick();
+    expect(target.querySelector(".glass .small").textContent).not.toMatch(/\d/);
+  });
+
   it("omits the writing legends when nothing is published", async () => {
     instance = mount(Homepage, {
       target,

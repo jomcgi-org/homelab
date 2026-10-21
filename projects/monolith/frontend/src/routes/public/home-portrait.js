@@ -46,6 +46,14 @@ export const STRIPS = 56;
 export const RESTLESS_AFTER_S = 3;
 export const BORED_AFTER_S = 30;
 
+/** A stable per-strip seed in [0, 1): the hashed sine is signed, so it is
+ *  wrapped rather than truncated, which kept a quarter of the strips
+ *  leaning one way. */
+export function stripSeed(i) {
+  const x = (Math.sin(i * 12.9898) * 43758.5453) % 1;
+  return ((x % 1) + 1) % 1;
+}
+
 export function hexToRgb(hex) {
   return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
 }
@@ -163,7 +171,7 @@ export function createPortrait({
     dy: 0,
     vx: 0,
     vy: 0,
-    r: (Math.sin(i * 12.9898) * 43758.5453) % 1,
+    r: stripSeed(i),
     hold: 0,
     hx: 0,
     hy: 0,
@@ -240,7 +248,9 @@ export function createPortrait({
 
   function draw(t) {
     if (!W) size();
-    if (!img.complete || !W) return;
+    // A missing or failed image draws nothing; the plate stays blank rather
+    // than throwing on every frame.
+    if (!img.complete || !img.naturalWidth || !W) return;
     tone();
     const r = host.getBoundingClientRect();
     const px = V.x - r.left;
@@ -477,6 +487,7 @@ export function createPortrait({
     V.lastMove = Date.now();
   };
   const onPortraitDown = () => {
+    if (reduceMotion) return;
     scatter = Math.max(scatter, 70);
     host.classList.add("neg");
     setTimeout(() => host.classList.remove("neg"), 110);
@@ -496,8 +507,13 @@ export function createPortrait({
   host.addEventListener("pointerdown", onPortraitDown);
 
   img.onload = () => {
+    if (!alive) return;
     size();
     tone();
+  };
+  img.onerror = () => {
+    // Nothing to print: the loop keeps running so a later retry could
+    // land, but draw() stays a no-op without a usable image.
   };
   img.src = src;
   raf = requestAnimationFrame(frame);
@@ -506,6 +522,8 @@ export function createPortrait({
   return {
     destroy() {
       alive = false;
+      img.onload = null;
+      img.onerror = null;
       cancelAnimationFrame(raf);
       clearTimeout(glitchTimer);
       window.removeEventListener("pointermove", onMove);
