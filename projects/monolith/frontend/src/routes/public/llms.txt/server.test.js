@@ -29,6 +29,7 @@ describe("/public/llms.txt", () => {
       "https://jomcgi.dev/scotland/mcp ",
       "https://jomcgi.dev/scotland/v1/openapi.json",
       "https://jomcgi.dev/scotland/v1/method",
+      "https://jomcgi.dev/scotland/marketplace.json",
       "https://jomcgi.dev/scotland/privacy",
       "https://jomcgi.dev/scotland/terms",
       "https://jomcgi.dev/scotland/support",

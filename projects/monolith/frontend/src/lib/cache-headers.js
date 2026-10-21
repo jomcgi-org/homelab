@@ -160,6 +160,11 @@ export const FACTORY_GOALS_CACHE_CONTROL = `public, max-age=0, s-maxage=1800, st
 // and 304s cheaply when neither data nor build moved.
 export const DOCS_CACHE_CONTROL = `public, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 
+// /scotland/marketplace.json: the Claude Code plugin catalog is fixed per
+// build and fetched only when someone adds or refreshes the marketplace, so
+// an hour at the edge is plenty; browsers revalidate.
+export const MARKETPLACE_CACHE_CONTROL = `public, max-age=0, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
+
 // These app data endpoints (SSR-fetched JSON) all carry `max-age=0` so the
 // BROWSER revalidates every load instead of holding a stale copy. Without an
 // explicit max-age, Cloudflare injects a zone Browser-Cache-TTL (~1 h), which
