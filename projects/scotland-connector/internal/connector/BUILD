@@ -20,10 +20,15 @@ go_library(
 
 go_test(
     name = "connector_test",
-    srcs = ["connector_test.go"],
+    srcs = [
+        "bench_test.go",
+        "connector_test.go",
+    ],
     deps = [
         ":connector",
         "//projects/scotland-connector/internal/fixture",
+        "//projects/scotland-connector/internal/stars",
         "//projects/scotland-connector/internal/verdict",
+        "//projects/scotland-connector/internal/walks",
     ],
 )

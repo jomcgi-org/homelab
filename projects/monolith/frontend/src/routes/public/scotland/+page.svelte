@@ -69,16 +69,15 @@
               Ask your assistant what to do outdoors, and whether it is on.
             </h1>
             <p>
-              Plan: give it a place in Scotland and a few days, and for each
-              day it suggests the Walkhighlands walks that fit the weather and
-              the best nearby dark-sky site for the night, each with go,
-              marginal or no and the reason, plus sunrise, sunset and the moon.
+              Plan: give it a place in Scotland and a few days, and for each day
+              it suggests the Walkhighlands walks that fit the weather and the
+              best nearby dark-sky site for the night, each with go, marginal or
+              no and the reason, plus sunrise, sunset and the moon.
             </p>
             <p>
               Check: name a walk and a day, or a place and a night, and it says
-              whether it is on, when to start, which other days suit it and
-              what is better nearby. Each walk links to its route on
-              Walkhighlands.
+              whether it is on, when to start, which other days suit it and what
+              is better nearby. Each walk links to its route on Walkhighlands.
             </p>
           </div>
           <dl class="spec">
