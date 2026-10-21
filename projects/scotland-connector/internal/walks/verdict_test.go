@@ -203,6 +203,24 @@ func TestLimitsAndTheDarkShoulder(t *testing.T) {
 	if a := assess(ds, base, warm); a.Verdict != verdict.Go || !a.StartFrom.Equal(base) {
 		t.Fatalf("short walk = %+v", a)
 	}
+	// Just after dawn today the early dark is past: at 03:40Z, warm 04:00Z
+	// to 08:00Z and cold after, the credit has nowhere to go.
+	ds = tempWalk(t, 8, temps([2]int{2, 5}, [2]int{-3, 1}))
+	if a := assess(ds, base.Add(-3*time.Hour-20*time.Minute), warm); a.Verdict != verdict.No {
+		t.Fatalf("after dawn = %+v", a)
+	}
+	// Limits that turn no hour away change nothing, even where the stricter
+	// rule would: good hours 06:00Z, 08:00Z to 12:00Z and 14:00Z.
+	ds = tempWalk(t, 8, map[int]float64{-1: 10, 1: 10, 2: 10, 3: 10, 4: 10, 5: 10, 7: 10})
+	none := assess(ds, base.Add(-2*time.Hour), Limits{})
+	for _, lim := range []Limits{{MaxWindKmh: f(80)}, {MaxPrecipMM: f(2)}, {MinTempC: f(-30)}} {
+		if a := assess(ds, base.Add(-2*time.Hour), lim); a != none {
+			t.Errorf("default-valued %+v: %+v, want %+v", lim, a, none)
+		}
+	}
+	if none.Verdict != verdict.Marginal {
+		t.Fatalf("no limits = %+v", none)
+	}
 	// A cold hour mid-walk is the slot's one bad hour, and the why says so.
 	ds = tempWalk(t, 3, map[int]float64{0: 10, 1: 10, 2: 3, 3: 10})
 	if a := assess(ds, base, warm); a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "one hour outside the limits") {
