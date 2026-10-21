@@ -37,12 +37,17 @@ A **good hour** is a daylight hour (between sunrise and sunset at the start)
 with at most 2 mm of rain and wind at most 80 km/h. 2 mm in an hour is light
 rain, so by default a good hour may be drizzly.
 
-**Weather limits.** `max_rain_mm_h`, `max_wind_kmh` and `min_temp_c`, on
-plan and check, tighten what counts as a good hour to what the person will
-put up with: `max_rain_mm_h=0` asks for dry hours only. The limits apply
+**Weather limits.** `max_rain_mm_h`, `max_wind_kmh`, `max_gust_kmh`,
+`max_rain_chance_pct` and `min_temp_c`, on plan and check, change what counts
+as a good hour to what the person will put up with: `max_rain_mm_h=0` asks
+for dry hours only, and `max_rain_mm_h=4` accepts wetter ones. Gusts, the
+chance of rain and temperature have no default limit. The limits apply
 before the slot is found, so they change the verdict, the start window, the
-other days and the walks offered nearby. They can only tighten: the data
-holds no hour wetter or windier than the defaults. Each limit rounds to the
+other days and the walks offered nearby. Loosening, and limits on gusts and
+the chance of rain, need forecast data that carries every daylight hour; on
+data that holds the default good hours only, a looser limit finds no extra
+hours and a gust or rain-chance limit is refused as not available yet. An
+unknown gust or chance of rain fails no limit. Each limit rounds to the
 data's 0.1 in its strict direction (a maximum down, a minimum up), so
 rounding never admits an hour the caller ruled out. Under limits the hours
 beside a slot are often daylight the person ruled out, so a long walk's
@@ -69,12 +74,15 @@ in the past.
 `start_from` and `start_by` bound the start time that keeps the walk inside
 the slot. The slot carries its highest wind, total rain, wettest hour
 (`max_rain_mm_h`), `wet_hours` (good hours with at least 0.1 mm of rain) and
-temperature range across its good hours, so an agent can tell a dry slot
-from a drizzly one. A check also returns the checked walk's slot hour by
-hour (`hours`): rain, wind, temperature and cloud for each good hour. The
-one bad hour a slot may hold is `good: false`; it keeps its weather, with
-`outside_limits: true`, when the caller's limits turned it away, and has
-none when it failed the defaults, since the data stores no such hour.
+temperature range across its good hours, and their strongest gust and
+highest chance of rain and of thunder where the data has them, so an agent
+can tell a dry, calm slot from a drizzly, gusty one. A check also returns the
+checked walk's slot hour by hour (`hours`): rain and its upper estimate, the
+chance of rain and of thunder, wind and gusts, temperature, cloud, low cloud
+and fog, each where the forecast gives it. The one bad hour a slot may hold
+is `good: false` with `fails` naming what it failed (`rain`, `wind`, `gust`,
+`rain_chance`, `cold`); on data that holds good hours only, a bad hour that
+failed the defaults has no weather.
 
 **In a plan**, walks whose start is within `radius_km` of the point, and
 that pass the filters on estimated time (`min_duration_h`,

@@ -377,8 +377,8 @@ func TestWeatherLimits(t *testing.T) {
 	// The hour turned away keeps its known weather, so an agent can see it
 	// was drizzle, and the why names it.
 	gap := dry.Walk.Slot.Hours[1]
-	if dry.Verdict != verdict.Marginal || dry.Walk.Slot.WetHours != 0 || gap.Good || !gap.OutsideLimits || gap.RainMM == nil || *gap.RainMM != 0.1 ||
-		!strings.Contains(dry.Why, "one hour outside the limits") || !strings.Contains(dry.Why, "otherwise dry") {
+	if dry.Verdict != verdict.Marginal || dry.Walk.Slot.WetHours != 0 || gap.Good || len(gap.Fails) != 1 || gap.Fails[0] != "rain" || gap.RainMM == nil || *gap.RainMM != 0.1 ||
+		!strings.Contains(dry.Why, "one wet hour") || !strings.Contains(dry.Why, "otherwise dry") {
 		t.Fatalf("dry = %+v %+v", dry, gap)
 	}
 	if res.Limits == nil || *res.Limits.MaxRainMMH != 0 {
@@ -432,7 +432,7 @@ func TestWeatherLimits(t *testing.T) {
 		t.Errorf("stargaze-only limits echo: %v", err)
 	}
 	for param, l := range map[string]connector.WeatherLimits{
-		"max_rain_mm_h": {MaxRainMMH: f(2.5)},
+		"max_rain_mm_h": {MaxRainMMH: f(10.5)},
 		"max_wind_kmh":  {MaxWindKmh: f(-1)},
 		"min_temp_c":    {MinTempC: f(31)},
 	} {
@@ -443,6 +443,103 @@ func TestWeatherLimits(t *testing.T) {
 		if _, err := fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: l}); !errors.As(err, &perr) || perr.Param != param {
 			t.Errorf("plan %s: %v", param, err)
 		}
+	}
+}
+
+// v2Walks is a version 2 walk snapshot: one 3 h walk near Aviemore whose
+// daylight on 20 October runs 08:00Z to 15:00Z, every hour present. 10:00Z
+// and 11:00Z are wet (3 mm), 13:00Z is gusty, and the chance of rain is high
+// from noon.
+func v2Walks(t *testing.T) *walks.Dataset {
+	t.Helper()
+	var hours []string
+	for i := 0; i < 8; i++ {
+		rain, gust, chance := 0.0, 30, 10
+		if i == 2 || i == 3 {
+			rain = 3
+		}
+		if i == 5 {
+			gust = 70
+		}
+		if i >= 4 {
+			chance = 60
+		}
+		hours = append(hours, fmt.Sprintf("[%d,8,%g,20,50,%d,%g,%d,5,null,40]", 1792483200+i*3600, rain, gust, rain*1.5, chance))
+	}
+	body := `{"schema_version":2,"fetched_at":"2026-10-19T14:20:00+00:00","walks":[` +
+		`{"id":"wet","name":"Wet Walk","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57.17,"lon":-3.67,"distance_km":9,"ascent_m":400,"duration_h":3,"hours":[` + strings.Join(hours, ",") + `]}]}`
+	ds, err := walks.Parse([]byte(body), "w2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ds
+}
+
+// With every daylight hour in the data, limits loosen as well as tighten,
+// gusts and the chance of rain can be limited, and a slot's hours carry their
+// full weather and what a bad hour failed.
+func TestV2WeatherLimits(t *testing.T) {
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: v2Walks(t)}
+	walk := connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkID: "wet"}
+	run := func(l connector.WeatherLimits) connector.CheckResultItem {
+		t.Helper()
+		env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{walk}, WeatherLimits: l})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return env.Data.(connector.CheckResult).Items[0]
+	}
+	// Defaults: the 3 mm hours are bad, leaving 12:00Z to 16:00Z.
+	def := run(connector.WeatherLimits{})
+	if def.Verdict != verdict.Go || def.Walk.Slot.Start != "2026-10-20T12:00:00Z" || def.Walk.Slot.MaxGustKmh == nil || *def.Walk.Slot.MaxGustKmh != 70 ||
+		def.Walk.Slot.MaxRainChancePct == nil || *def.Walk.Slot.MaxRainChancePct != 60 || def.Walk.Slot.MaxThunderChancePct == nil {
+		t.Fatalf("default = %+v %+v", def, def.Walk.Slot)
+	}
+	h := def.Walk.Slot.Hours[0]
+	if h.GustKmh == nil || *h.GustKmh != 30 || h.RainChancePct == nil || h.RainMaxMM == nil || h.LowCloudPct == nil || h.FogPct != nil || h.Fails != nil {
+		t.Fatalf("hour = %+v", h)
+	}
+	// Loosened to 4 mm, the whole day is good from 08:00Z.
+	if wet := run(connector.WeatherLimits{MaxRainMMH: f(4)}); wet.Verdict != verdict.Go || wet.Walk.Slot.Start != "2026-10-20T08:00:00Z" || wet.Walk.Slot.WetHours != 2 {
+		t.Fatalf("loosened = %+v %+v", wet, wet.Walk.Slot)
+	}
+	// Gusts at most 50: 13:00Z is now the slot's one bad hour, named.
+	g := run(connector.WeatherLimits{MaxGustKmh: f(50)})
+	if g.Verdict != verdict.Marginal || !strings.Contains(g.Why, "one gusty hour") {
+		t.Fatalf("gusts = %+v", g)
+	}
+	var bad *connector.SlotHour
+	for i := range g.Walk.Slot.Hours {
+		if !g.Walk.Slot.Hours[i].Good {
+			bad = &g.Walk.Slot.Hours[i]
+		}
+	}
+	if bad == nil || len(bad.Fails) != 1 || bad.Fails[0] != "gust" || bad.GustKmh == nil || *bad.GustKmh != 70 {
+		t.Fatalf("bad hour = %+v", bad)
+	}
+	// At most a 50% chance of rain: from noon nothing is good.
+	if c := run(connector.WeatherLimits{MaxRainChancePct: f(50)}); c.Verdict != verdict.No {
+		t.Fatalf("rain chance = %+v", c)
+	}
+}
+
+// On data with good hours only, gust and rain-chance limits cannot apply,
+// and the answer says so rather than ignoring them.
+func TestGustLimitsNeedTheFullData(t *testing.T) {
+	var pe *connector.ParamError
+	_, err := fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}},
+		WeatherLimits: connector.WeatherLimits{MaxGustKmh: f(50)}})
+	if !errors.As(err, &pe) || pe.Param != "max_gust_kmh" || !strings.Contains(pe.Message, "not available yet") {
+		t.Fatalf("check: %v", err)
+	}
+	_, err = fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: connector.WeatherLimits{MaxRainChancePct: f(30)}})
+	if !errors.As(err, &pe) || pe.Param != "max_rain_chance_pct" {
+		t.Fatalf("plan: %v", err)
+	}
+	// Stargazing alone does not need walk data, so the limit is moot there.
+	if _, err := fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"stargaze"}, WeatherLimits: connector.WeatherLimits{MaxGustKmh: f(50)}}); err != nil {
+		t.Fatalf("stargaze plan: %v", err)
 	}
 }
 

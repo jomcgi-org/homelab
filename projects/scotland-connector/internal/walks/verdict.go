@@ -2,6 +2,7 @@ package walks
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -144,9 +145,12 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 		a.Why = fmt.Sprintf("Fits only by starting or finishing in the dark: %s %s to %s, %s.", goodHours(b.GoodHours), local(b.Start), local(b.End), weather)
 	case badHourInside:
 		bad := "one wet or windy hour"
-		if d.GapOutsideLimits {
-			// The weather sums cover the good hours, not the one turned away.
-			bad, weather = "one hour outside the limits", strings.Replace(weather, ", dry", ", otherwise dry", 1)
+		if len(d.GapFails) > 0 {
+			bad = "one " + failWords(d.GapFails) + " hour"
+			// The weather sums cover the good hours, not the bad one.
+			if slices.Contains(d.GapFails, "rain") || slices.Contains(d.GapFails, "rain_chance") {
+				weather = strings.Replace(weather, ", dry", ", otherwise dry", 1)
+			}
 		}
 		a.Why = fmt.Sprintf("Fits with %s mid-walk: %s to %s, %s.", bad, local(b.Start), local(b.End), weather)
 	case windyStart:
@@ -155,6 +159,18 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 		a.Why = fmt.Sprintf("%s %s to %s, %s.", goodHours(b.GoodHours), local(b.Start), local(b.End), weather)
 	}
 	return a
+}
+
+// failWords reads Test.Fails codes as an adjective: "wet", "wet and windy".
+func failWords(fails []string) string {
+	words := map[string]string{"rain": "wet", "wind": "windy", "gust": "gusty", "rain_chance": "likely wet", "cold": "cold"}
+	var out []string
+	for _, f := range fails {
+		if w, ok := words[f]; ok && !slices.Contains(out, w) {
+			out = append(out, w)
+		}
+	}
+	return strings.Join(out, " and ")
 }
 
 func goodHours(n int) string {

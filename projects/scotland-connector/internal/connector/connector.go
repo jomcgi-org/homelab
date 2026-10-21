@@ -39,10 +39,14 @@ const (
 	MaxDurationH    = 24
 	MaxLengthKm     = 100
 	MaxAscentM      = 3000
-	// min_temp_c bounds, in degrees C.
-	MinTempLimitC = -30
-	MaxTempLimitC = 30
-	MaxNameLength = 100
+	// Weather limit bounds. Rain and wind may go past the defaults (2 mm and
+	// 80 km/h), so a person who will put up with more can say so.
+	MaxRainLimitMM  = 10
+	MaxWindLimitKmh = 120
+	MaxGustLimitKmh = 150
+	MinTempLimitC   = -30
+	MaxTempLimitC   = 30
+	MaxNameLength   = 100
 )
 
 // Alternatives in a check: walks starting within nearbyWalkKm of the checked

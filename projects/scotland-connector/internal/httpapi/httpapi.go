@@ -142,6 +142,8 @@ func (h *Handler) plan(w http.ResponseWriter, r *http.Request) {
 	p.MaxAscentM, err = intParam(q.Get("max_ascent_m"), "max_ascent_m", err)
 	p.MaxRainMMH, err = floatParam(q.Get("max_rain_mm_h"), "max_rain_mm_h", err)
 	p.MaxWindKmh, err = floatParam(q.Get("max_wind_kmh"), "max_wind_kmh", err)
+	p.MaxGustKmh, err = floatParam(q.Get("max_gust_kmh"), "max_gust_kmh", err)
+	p.MaxRainChancePct, err = floatParam(q.Get("max_rain_chance_pct"), "max_rain_chance_pct", err)
 	p.MinTempC, err = floatParam(q.Get("min_temp_c"), "min_temp_c", err)
 	p.Limit, err = intParam(q.Get("limit"), "limit", err)
 	p.From, p.To = strParam(q, "from"), strParam(q, "to")

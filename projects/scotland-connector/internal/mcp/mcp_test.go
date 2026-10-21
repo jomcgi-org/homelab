@@ -13,7 +13,6 @@ import (
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/meter"
-	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -157,9 +156,11 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 	bounds("plan.min_length_km", plan.Properties["min_length_km"], 0.5, connector.MaxLengthKm)
 	bounds("plan.max_length_km", plan.Properties["max_length_km"], 0.5, connector.MaxLengthKm)
 	for name, props := range map[string]map[string]prop{"plan": plan.Properties, "check": schemas["check"].Properties} {
-		bounds(name+".max_rain_mm_h", props["max_rain_mm_h"], 0, walks.ViableMaxPrecipMM)
-		bounds(name+".max_wind_kmh", props["max_wind_kmh"], 0, walks.ViableMaxWindKmh)
+		bounds(name+".max_rain_mm_h", props["max_rain_mm_h"], 0, connector.MaxRainLimitMM)
+		bounds(name+".max_wind_kmh", props["max_wind_kmh"], 0, connector.MaxWindLimitKmh)
 		bounds(name+".min_temp_c", props["min_temp_c"], connector.MinTempLimitC, connector.MaxTempLimitC)
+		bounds(name+".max_gust_kmh", props["max_gust_kmh"], 0, connector.MaxGustLimitKmh)
+		bounds(name+".max_rain_chance_pct", props["max_rain_chance_pct"], 0, 100)
 	}
 	bounds("plan.max_ascent_m", plan.Properties["max_ascent_m"], 1, connector.MaxAscentM)
 	if d := plan.Properties["from"].Description; !strings.Contains(d, fmt.Sprintf("up to %d days ahead", connector.MaxDaysAhead)) {
