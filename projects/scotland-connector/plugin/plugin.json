@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "scotland",
+  "version": "0.1.0",
+  "description": "Plan and check Scottish walks and stargazing: which Walkhighlands walks fit the weather and where the night sky will be dark and clear, each with a go, marginal or no verdict and its reason.",
+  "author": {
+    "name": "Joe McGinley",
+    "email": "joe@jomcgi.dev",
+    "url": "https://jomcgi.dev"
+  },
+  "homepage": "https://jomcgi.dev/scotland",
+  "keywords": ["scotland", "walking", "hiking", "stargazing", "weather"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Scotland trips",
+        "shortDescription": "Walks that fit the weather and dark-sky nights in Scotland",
+        "category": "Travel",
+        "defaultPrompt": [
+          "Which walks near Aviemore suit the weather this weekend?",
+          "Is Ben Nevis on for Saturday, and if not, which day is better?",
+          "Where is the best stargazing near Inverness this week?"
+        ]
+      }
+    }
+  }
+}

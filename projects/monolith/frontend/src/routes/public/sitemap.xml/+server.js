@@ -13,6 +13,9 @@ const PAGES = [
   // /blog is deliberately unlisted until the first post is published.
   { path: "/app/notes", priority: "0.7" },
   { path: "/scotland", priority: "0.7" },
+  { path: "/scotland/privacy", priority: "0.3" },
+  { path: "/scotland/terms", priority: "0.3" },
+  { path: "/scotland/support", priority: "0.3" },
 ];
 
 export function GET() {

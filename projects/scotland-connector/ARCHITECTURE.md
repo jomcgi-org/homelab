@@ -346,6 +346,21 @@ ratio is Cloudflare's to report. The counters are exposed on the admin port
 only and nothing collects them yet: export to Honeycomb and the zero-priced
 unit table are #7245.
 
+## Listings
+
+`plugin/` stages the Claude Code and OpenAI plugin: the MCP URL for each
+client, one shared skill on when to use `plan` and `check`, and the
+directory listing links to `jomcgi.dev/scotland/privacy`, `/terms` and
+`/support`. It is copied to its own repository for the listings, because
+the directories fetch a whole repository and this one is far past their size
+limits; `plugin_test.py` keeps the two manifests and both MCP configs in
+step. The privacy page describes what this service and the gateway log, so
+a change to either updates it.
+
+**Why.** The plugin carries no tools of its own, only the URL, so tool
+changes ship by deploying the connector; a plugin release is needed only
+when the skill or the listing text changes.
+
 ## Not here yet
 
 Aurora is #7256.
@@ -362,3 +377,4 @@ this table when the work ships or the issue closes without it.
 | Egress NetworkPolicy enabled                      | #7248  | staged off  |
 | Per-walk and per-site forecast fetch times        | #7274  | not started |
 | Slot rule slides past a second gap                | #7275  | not started |
+| Directory listings and a plugin repository       | #7255  | staged      |
