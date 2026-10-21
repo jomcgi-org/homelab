@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 from pathlib import Path
 
 _DIR = Path(__file__).resolve().parent
@@ -72,3 +73,21 @@ def test_skill_frontmatter_names_its_folder():
     assert front, "SKILL.md needs YAML frontmatter"
     assert "name: scotland-trips" in front.group(1).splitlines()
     assert any(line.startswith("description: ") for line in front.group(1).splitlines())
+
+
+def _png_size(rel: str) -> tuple[int, int]:
+    data = (_DIR / rel).read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", f"{rel} is not a PNG"
+    return struct.unpack(">II", data[16:24])
+
+
+def test_icons_are_square_pngs_both_directories_accept():
+    claude = _json(".claude-plugin/plugin.json")
+    openai = _json("plugin.json")["extensions"]["com.openai"]["interface"]
+    assert claude["icon"] == openai["logo"] == openai["composerIcon"]
+    assert openai["logoDark"] == openai["composerIconDark"]
+    for rel in {claude["icon"], openai["logoDark"]}:
+        w, h = _png_size(rel)
+        # Claude: square, 512 to 2048 px, under 2 MB.
+        assert w == h and 512 <= w <= 2048, (rel, w, h)
+        assert (_DIR / rel).stat().st_size < 2 * 1024 * 1024

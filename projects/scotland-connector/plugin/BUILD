@@ -10,6 +10,8 @@ py_test(
         ".claude-plugin/plugin.json",
         ".mcp.json",
         "LICENSE",
+        "assets/icon.png",
+        "assets/icon-dark.png",
         "mcp.json",
         "plugin.json",
         "skills/scotland-trips/SKILL.md",
