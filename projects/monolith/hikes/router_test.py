@@ -369,3 +369,24 @@ class TestStoredBadHours:
         session.commit()
         walks = {w["uuid"]: w for w in client.get("/api/hikes/walks").json()["walks"]}
         assert walks[BEN]["viable_days"] == []
+
+    def test_bad_hours_still_move_freshness(self, client, session):
+        """A refresh that finds only bad weather still turns the list over."""
+        _seed_walks(session)
+        before = client.get("/api/hikes/walks").json()["generated_at"]
+        later = FETCHED + timedelta(hours=2)
+        session.add(
+            WalkHour(
+                walk_uuid=BEN,
+                hour_time=H1 + timedelta(hours=20),
+                temp_c=8.0,
+                precip_mm=6.0,
+                wind_kmh=30.0,
+                cloud_pct=90.0,
+                fetched_at=later,
+            )
+        )
+        session.commit()
+        r = client.get("/api/hikes/walks")
+        assert r.json()["generated_at"] != before
+        assert r.json()["generated_at"].startswith(later.isoformat()[:16])

@@ -153,8 +153,8 @@ def _viable() -> tuple:
     )
 
 
-def _window_tuple(row: WalkHour) -> list:
-    """Reassemble the compact wire tuple from a typed walk_hours row.
+def _window_tuple(row) -> list:
+    """Reassemble the compact wire tuple from a walk_hours row's columns.
 
     The client reads windows as [ts_unix_seconds, temp_c, precip_mm, wind_kmh,
     cloud_pct] tuples (see frontend hikes/filters.js). Storage is normalised to
@@ -289,8 +289,17 @@ def get_walk_detail(
         raise HTTPException(status_code=404, detail="walk not found")
 
     cutoff = top_of_hour(datetime.now(timezone.utc))
+    # Only the columns the window tuple needs: monolith-public serves this
+    # route and promotes separately from the monolith chart that applies
+    # migrations, so the hikes app must not depend on newer columns.
     hour_rows = session.exec(
-        select(WalkHour)
+        select(
+            WalkHour.hour_time,
+            WalkHour.temp_c,
+            WalkHour.precip_mm,
+            WalkHour.wind_kmh,
+            WalkHour.cloud_pct,
+        )
         .where(WalkHour.walk_uuid == uuid, WalkHour.hour_time >= cutoff, *_viable())
         .order_by(WalkHour.hour_time)
     ).all()

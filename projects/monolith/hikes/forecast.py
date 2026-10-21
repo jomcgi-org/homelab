@@ -12,8 +12,13 @@ original rounding rules so the windows match the old bundle format exactly.
 Every daylight hour is stored, good or not, so the Scotland connector can
 judge an hour by the caller's own limits; the hikes app filters on
 is_viable when it reads. Wind and gusts are stored in km/h to two decimals:
-met.no gives m/s to one decimal, so the stored value is exact and the read
-filter matches the raw viability rule at the 80 km/h boundary.
+met.no gives m/s (and rain in mm) to one decimal, so the stored value is
+exact and the read filter matches the raw viability rule at the 80 km/h
+boundary. A finer input would be rounded before the rule applies.
+
+The complete forecast's gusts, rain range and chances of rain and thunder
+come from met.no's Nordic model, which in Scotland covers Shetland only;
+elsewhere they are absent and stored as null.
 
 The one intentional change from the legacy logic: the daylight gate. The old
 code kept a fixed 07:00-19:00 UTC band, which is wrong both ways in Scotland

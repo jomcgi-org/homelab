@@ -234,7 +234,7 @@ def _run_prune() -> int:
 
 
 async def refresh_forecasts_handler(session: Session) -> datetime | None:
-    """2-hourly met.no refresh: recompute viable hiking windows per walk.
+    """2-hourly met.no refresh: recompute every walk's daylight forecast hours.
 
     Loads the coordinate corpus, runs the whole network phase, then
     wholesale-replaces each fetched walk's typed walk_hours rows in one
@@ -252,7 +252,7 @@ async def refresh_forecasts_handler(session: Session) -> datetime | None:
 
     total_hours = await asyncio.to_thread(_persist_windows, windows_by_uuid, now)
     logger.info(
-        "hikes forecast: %d walks, %d forecasts fetched, %d viable hours",
+        "hikes forecast: %d walks, %d forecasts fetched, %d daylight hours",
         len(coords),
         len(windows_by_uuid),
         total_hours,
