@@ -420,8 +420,10 @@ func TestWeatherLimits(t *testing.T) {
 		}
 	}
 	// A check of stargazing alone echoes no walk limits.
-	if env, err := fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-19", Lat: f(57.3), Lon: f(-3.7)}},
-		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0)}}); err != nil || env.Data.(connector.CheckResult).Limits != nil {
+	if env, err := fixture.Service(true).Check(connector.CheckParams{
+		Items:         []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-19", Lat: f(57.3), Lon: f(-3.7)}},
+		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0)},
+	}); err != nil || env.Data.(connector.CheckResult).Limits != nil {
 		t.Errorf("stargaze-only limits echo: %v", err)
 	}
 	for param, l := range map[string]connector.WeatherLimits{
