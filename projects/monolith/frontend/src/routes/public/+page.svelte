@@ -735,8 +735,25 @@
     }
   }
   @media (max-width: 760px) {
+    /* On a phone the unit is one object on one screen: it fills the visible
+       viewport (dvh, so the browser's toolbars are excluded) and the deck
+       takes whatever height the nameplate, glass and footer leave. A screen
+       too short for the keypad (a phone on its side) scrolls rather than
+       crushing it. */
     .home {
-      padding-top: 1rem;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      min-height: 100dvh;
+      padding: 0.75rem;
+    }
+    .unit {
+      flex: 1 0 auto;
+      width: 100%;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.8rem;
     }
     /* The nameplate: brand and switch on the first row, readouts beneath.
        The switch is placed explicitly; auto-placement would put it after
@@ -754,22 +771,40 @@
     .plate .meta {
       grid-column: 1 / -1;
     }
-    /* On a phone the portrait and the keypad share a row at half size, so
-       the picture is a part of the unit rather than the whole screen. The
-       keypad keeps a floor wide enough for three caps and their legends;
-       the portrait takes whatever is left, so narrow phones shrink the
-       picture rather than overlapping the keys. */
+    /* The portrait and the keypad share the deck. The deck is a size
+       container, so the portrait can be as tall as the deck allows while
+       leaving the keypad a floor wide enough for three caps and their
+       legends (8.7rem, plus the 0.8rem gap); its width follows from the
+       3:4 ratio. The deck's own floor is the keypad's height; spare height
+       on a tall phone sits evenly above and below the pair. */
     .deck {
-      grid-template-columns: minmax(0, 10.5rem) minmax(8.7rem, 1fr);
+      flex: 1 1 0;
+      min-height: 13rem;
+      container-type: size;
+      display: flex;
       gap: 0.8rem;
-      align-items: start;
+      align-items: center;
+    }
+    .portrait {
+      flex: none;
+      height: min(100cqh, (100cqw - 9.5rem) * 4 / 3);
+      width: auto;
     }
     .right {
       display: contents;
     }
     .pad {
+      flex: 1;
+      min-width: 8.7rem;
       grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(3, minmax(0, 1fr));
+      /* As tall as the portrait beside it, never below the keypad's own
+         height, so the keys spread over the picture's height and a tall
+         phone centres the pair rather than stretching the keys apart. */
+      height: min(100cqh, max(13rem, (100cqw - 9.5rem) * 4 / 3));
       justify-content: stretch;
+      align-content: stretch;
+      align-items: center;
       gap: 0.55rem 0.2rem;
       padding: 0.1rem 0 0;
     }
@@ -784,8 +819,10 @@
       font-size: 0.56rem;
       letter-spacing: 0;
     }
+    /* The latest posts do not fit one screen; the blog link in the footer
+       leads to them. */
     .writing {
-      grid-column: 1 / -1;
+      display: none;
     }
     /* The glass is narrow on a phone: the top line may take two lines
        (clamped, so a long title still cannot push the sentence out) and
