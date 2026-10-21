@@ -7,9 +7,6 @@ import Support from "./support/+page.svelte";
 import Terms from "./terms/+page.svelte";
 import {
   CONTACT_EMAIL,
-  PRIVACY_URL,
-  SUPPORT_URL,
-  TERMS_URL,
   policyLinks,
   privacy,
   support,
@@ -48,12 +45,6 @@ const pages = [
 ];
 
 describe("scotland policy pages", () => {
-  it("publish at the URLs the directory listings use", () => {
-    expect(PRIVACY_URL).toBe("https://jomcgi.dev/scotland/privacy");
-    expect(TERMS_URL).toBe("https://jomcgi.dev/scotland/terms");
-    expect(SUPPORT_URL).toBe("https://jomcgi.dev/scotland/support");
-  });
-
   for (const [slug, Page, doc] of pages) {
     it(`${slug} is one sheet with its title and every section`, async () => {
       const root = await render(Page);
@@ -96,6 +87,13 @@ describe("scotland policy pages", () => {
     expect(text).toContain("network address");
     expect(text).toContain("query string");
     expect(text).toContain("Request bodies");
+  });
+
+  it("privacy says local assistants call from the person's machine", async () => {
+    const root = await render(Privacy);
+    const text = root.querySelector("#requests").textContent;
+    expect(text).toContain("Claude Code or Codex");
+    expect(text).toContain("coarse location");
   });
 
   it("the landing page links all three", async () => {

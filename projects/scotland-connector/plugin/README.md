@@ -34,13 +34,13 @@ url = "https://jomcgi.dev/scotland/mcp"
 
 ## Layout
 
-| File | For |
-|---|---|
-| `.claude-plugin/plugin.json` | Claude Code plugin manifest |
-| `.claude-plugin/marketplace.json` | this repository as a one-plugin marketplace |
-| `.mcp.json` | the MCP server, for Claude Code |
-| `plugin.json`, `mcp.json` | the same plugin for OpenAI's plugin directory (Codex and ChatGPT) |
-| `skills/scotland-trips/SKILL.md` | when and how to use the tools, shared by both |
+| File                              | For                                                               |
+| --------------------------------- | ----------------------------------------------------------------- |
+| `.claude-plugin/plugin.json`      | Claude Code plugin manifest                                       |
+| `.claude-plugin/marketplace.json` | this repository as a one-plugin marketplace                       |
+| `.mcp.json`                       | the MCP server, for Claude Code                                   |
+| `plugin.json`, `mcp.json`         | the same plugin for OpenAI's plugin directory (Codex and ChatGPT) |
+| `skills/scotland-trips/SKILL.md`  | when and how to use the tools, shared by both                     |
 
 Raise `version` in both manifests together for each release; installed
 copies use it to tell that an update exists. The tools themselves change on

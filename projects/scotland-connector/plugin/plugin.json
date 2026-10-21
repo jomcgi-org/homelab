@@ -14,8 +14,14 @@
     "com.openai": {
       "interface": {
         "displayName": "Scotland trips",
-        "shortDescription": "Walks that fit the weather and dark-sky nights in Scotland",
+        "shortDescription": "Walks and stars by forecast",
+        "longDescription": "Plan and check walks and stargazing anywhere in Scotland. Ask where to walk near a place over the next few days, whether a named Walkhighlands walk is on for a given day and which other days suit it, or where and when the night sky will be dark and clear. Each walk and night comes with a go, marginal or no verdict and a one-line reason, the start window or clear window, sunrise, sunset and the moon. For anyone planning a day out or a trip in Scotland. Limits: Scotland only; the hourly forecast reaches about two and a half days ahead, so later days come back as unknown; walk weather is forecast at the walk's start, and summits are usually colder and windier; routes and descriptions stay on Walkhighlands, linked from each walk.",
+        "developerName": "Joe McGinley",
         "category": "Travel",
+        "websiteURL": "https://jomcgi.dev/scotland",
+        "supportURL": "https://jomcgi.dev/scotland/support",
+        "privacyPolicyURL": "https://jomcgi.dev/scotland/privacy",
+        "termsOfServiceURL": "https://jomcgi.dev/scotland/terms",
         "defaultPrompt": [
           "Which walks near Aviemore suit the weather this weekend?",
           "Is Ben Nevis on for Saturday, and if not, which day is better?",
