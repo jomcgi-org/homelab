@@ -299,9 +299,11 @@ func TestWireShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{`"date":"2026-10-20"`, `"sunrise":`, `"sunset":`, `"moon_illumination":`, `"walks":[`, `"verdict":"go"`, `"why":`,
+	for _, k := range []string{
+		`"date":"2026-10-20"`, `"sunrise":`, `"sunset":`, `"moon_illumination":`, `"walks":[`, `"verdict":"go"`, `"why":`,
 		`"start_from":`, `"start_by":`, `"slot":{`, `"url":"https://www.walkhighlands.co.uk/`, `"stargazing":[`, `"clear_sky_odds":`,
-		`"clear_from":`, `"moonless_clear_dark_hours":`, `"light_pollution_zone":`} {
+		`"clear_from":`, `"moonless_clear_dark_hours":`, `"light_pollution_zone":`,
+	} {
 		if !strings.Contains(string(b), k) {
 			t.Errorf("day lacks %s: %s", k, b)
 		}
