@@ -97,32 +97,20 @@
           {
             "name": "max_rain_mm_h",
             "in": "query",
-            "schema": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 2,
-              "description": "Walks: an hour counts as good only with at most this much rain, in mm. 0 means dry; the default 2 allows light rain."
-            }
+            "schema": { "type": "number", "minimum": 0, "maximum": 2 },
+            "description": "Walks: an hour counts as good only with at most this much rain, in mm. 0 means dry; the default 2 allows light rain."
           },
           {
             "name": "max_wind_kmh",
             "in": "query",
-            "schema": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 80,
-              "description": "Walks: an hour counts as good only with wind at most this, in km/h, at the walk's start. Default 80."
-            }
+            "schema": { "type": "number", "minimum": 0, "maximum": 80 },
+            "description": "Walks: an hour counts as good only with wind at most this, in km/h, at the walk's start. Default 80."
           },
           {
             "name": "min_temp_c",
             "in": "query",
-            "schema": {
-              "type": "number",
-              "minimum": -30,
-              "maximum": 30,
-              "description": "Walks: an hour counts as good only at or above this temperature, in degrees C. Default none."
-            }
+            "schema": { "type": "number", "minimum": -30, "maximum": 30 },
+            "description": "Walks: an hour counts as good only at or above this temperature, in degrees C. Default none."
           },
           {
             "name": "limit",
@@ -317,11 +305,15 @@
       },
       "SlotHour": {
         "type": "object",
-        "description": "One hour of a slot. The one bad hour a slot may hold has good false and no weather: the data stores good hours only.",
+        "description": "One hour of a slot. The one bad hour a slot may hold has good false. It carries its weather when the caller's limits turned it away (outside_limits), and none when it failed the defaults, since the data stores no such hour.",
         "required": ["time", "good"],
         "properties": {
           "time": { "type": "string", "format": "date-time" },
           "good": { "type": "boolean" },
+          "outside_limits": {
+            "type": "boolean",
+            "description": "The hour is daylight within the defaults that the caller's limits turned away; its weather is given."
+          },
           "rain_mm": { "type": "number" },
           "wind_kmh": { "type": "number" },
           "temp_c": { "type": "number" },
@@ -361,7 +353,7 @@
           "hours": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/SlotHour" },
-            "description": "The slot hour by hour; check returns it, plan leaves it out."
+            "description": "The slot hour by hour, for the checked walk in a check; plan and the alternatives a check offers leave it out."
           }
         }
       },

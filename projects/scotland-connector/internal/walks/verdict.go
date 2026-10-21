@@ -2,6 +2,7 @@ package walks
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
@@ -117,7 +118,13 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 	a.StartFrom = b.Start
 	a.StartBy = b.End.Add(-time.Duration(w.DurationH * float64(time.Hour))).Truncate(time.Minute)
 	if a.StartBy.Before(a.StartFrom) {
+		// It needs more than the slot: start early in the dark, unless the
+		// hour before is daylight the limits ruled out, when it starts with
+		// the slot and finishes in the dark.
 		a.StartFrom = a.StartBy
+		if d.NoEarlyStart {
+			a.StartFrom, a.StartBy = b.Start, b.Start
+		}
 	}
 	// A walk that needs more than the slot starts before it, but never
 	// before the first hour that counts.
@@ -137,7 +144,12 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 	case darkShoulder:
 		a.Why = fmt.Sprintf("Fits only by starting or finishing in the dark: %s %s to %s, %s.", goodHours(b.GoodHours), local(b.Start), local(b.End), weather)
 	case badHourInside:
-		a.Why = fmt.Sprintf("Fits with one wet or windy hour mid-walk: %s to %s, %s.", local(b.Start), local(b.End), weather)
+		bad := "one wet or windy hour"
+		if d.GapOutsideLimits {
+			// The weather sums cover the good hours, not the one turned away.
+			bad, weather = "one hour outside the limits", strings.Replace(weather, ", dry", ", otherwise dry", 1)
+		}
+		a.Why = fmt.Sprintf("Fits with %s mid-walk: %s to %s, %s.", bad, local(b.Start), local(b.End), weather)
 	case windyStart:
 		a.Why = fmt.Sprintf("Fits, but windy at the start: %s to %s, %s.", local(b.Start), local(b.End), weather)
 	default:
