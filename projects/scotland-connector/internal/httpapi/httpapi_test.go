@@ -157,7 +157,6 @@ func TestCapsAreEnforced(t *testing.T) {
 		"/v1/plan?lat=57&lon=-3.8&max_ascent_m=lots",
 		"/v1/plan?lat=57&lon=-3.8&max_duration_h=0",
 		"/v1/plan?lat=57&lon=-3.8&max_rain_mm_h=11",
-		"/v1/plan?lat=57&lon=-3.8&max_rain_chance_pct=101",
 		"/v1/plan?lat=57&lon=-3.8&max_wind_kmh=windy",
 		"/v1/plan?lat=57&lon=-3.8&min_length_km=10&max_length_km=5",
 	} {
@@ -341,10 +340,6 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			bounds(where, p.Schema, 0, connector.MaxWindLimitKmh)
 		case "min_temp_c":
 			bounds(where, p.Schema, connector.MinTempLimitC, connector.MaxTempLimitC)
-		case "max_gust_kmh":
-			bounds(where, p.Schema, 0, connector.MaxGustLimitKmh)
-		case "max_rain_chance_pct":
-			bounds(where, p.Schema, 0, 100)
 		case "max_ascent_m":
 			bounds(where, p.Schema, 1, connector.MaxAscentM)
 		case "from":
@@ -366,7 +361,7 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			t.Errorf("%s required = %v", where, p.Required)
 		}
 	}
-	if len(seen) != 17 {
+	if len(seen) != 15 {
 		t.Errorf("plan parameters = %v", seen)
 	}
 
@@ -375,8 +370,6 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 	bounds("CheckRequest.max_rain_mm_h", req.Properties["max_rain_mm_h"], 0, connector.MaxRainLimitMM)
 	bounds("CheckRequest.max_wind_kmh", req.Properties["max_wind_kmh"], 0, connector.MaxWindLimitKmh)
 	bounds("CheckRequest.min_temp_c", req.Properties["min_temp_c"], connector.MinTempLimitC, connector.MaxTempLimitC)
-	bounds("CheckRequest.max_gust_kmh", req.Properties["max_gust_kmh"], 0, connector.MaxGustLimitKmh)
-	bounds("CheckRequest.max_rain_chance_pct", req.Properties["max_rain_chance_pct"], 0, 100)
 	items := req.Properties["items"]
 	if items.MinItems == nil || *items.MinItems != 1 || items.MaxItems == nil || *items.MaxItems != connector.MaxCheckItems {
 		t.Errorf("CheckRequest.items = %+v", items)

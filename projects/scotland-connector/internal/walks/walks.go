@@ -22,9 +22,8 @@ import (
 
 // Snapshot shapes this package reads. Version 1 holds the good hours only,
 // as [unix, temp_c, precip_mm, wind_kmh, cloud_pct]. Version 2 holds every
-// daylight hour of the hourly forecast with six more fields: gust_kmh,
-// precip_max_mm, rain_chance_pct, thunder_chance_pct, fog_pct and
-// low_cloud_pct, any of them null when the forecast leaves it out.
+// daylight hour of the hourly forecast with two more fields, fog_pct and
+// low_cloud_pct, either null when the forecast leaves it out.
 const (
 	SchemaV1 = 1
 	SchemaV2 = 2
@@ -78,18 +77,14 @@ func DayName(day int32) string {
 // snapshot only good hours are present; in version 2 every daylight hour is.
 // The version 2 fields are NaN when unknown.
 type Hour struct {
-	Unix             int64
-	Day              int32
-	TempC            float32
-	PrecipMM         float32
-	WindKmh          float32
-	CloudPct         float32
-	GustKmh          float32
-	PrecipMaxMM      float32
-	RainChancePct    float32
-	ThunderChancePct float32
-	FogPct           float32
-	LowCloudPct      float32
+	Unix        int64
+	Day         int32
+	TempC       float32
+	PrecipMM    float32
+	WindKmh     float32
+	CloudPct    float32
+	FogPct      float32
+	LowCloudPct float32
 }
 
 var nan = float32(math.NaN())
@@ -133,8 +128,8 @@ type Dataset struct {
 	Skipped      int
 	SkippedHours int
 	// Complete reports a version 2 snapshot: every daylight hour is present,
-	// with gusts and the chance of rain, so limits can loosen the default
-	// test and a bad hour's weather is known.
+	// so limits can loosen the default test and a bad hour's weather is
+	// known.
 	Complete bool
 	// fullThrough and noneFrom index CoverageOf: days up to fullThrough are
 	// full, days from noneFrom have none, and the rest are partial. A plan
@@ -170,7 +165,7 @@ func Parse(body []byte, version string) (*Dataset, error) {
 	case SchemaV1:
 		width = 5
 	case SchemaV2:
-		width = 11
+		width = 7
 	default:
 		return nil, fmt.Errorf("walks: schema_version %d, want %d or %d", d.SchemaVersion, SchemaV1, SchemaV2)
 	}
@@ -229,8 +224,7 @@ func Parse(body []byte, version string) (*Dataset, error) {
 			out.Hours = append(out.Hours, Hour{
 				Unix: at.Unix(), Day: LocalDay(at),
 				TempC: v(1, 0), PrecipMM: v(2, 0), WindKmh: v(3, 0), CloudPct: v(4, 50),
-				GustKmh: v(5, nan), PrecipMaxMM: v(6, nan), RainChancePct: v(7, nan),
-				ThunderChancePct: v(8, nan), FogPct: v(9, nan), LowCloudPct: v(10, nan),
+				FogPct: v(5, nan), LowCloudPct: v(6, nan),
 			})
 			latest = max(latest, at.Unix())
 		}
@@ -483,7 +477,7 @@ func (w *Walk) limitedEdges(d *Day, from time.Time) {
 // good hours only, a limit looser than the default would find no extra hours,
 // so callers refuse it there (NeedsComplete).
 type Limits struct {
-	MaxPrecipMM, MaxWindKmh, MaxGustKmh, MaxRainChancePct, MinTempC *float64
+	MaxPrecipMM, MaxWindKmh, MinTempC *float64
 }
 
 // The default good-hour test, the hikes job's viability rule
@@ -495,27 +489,25 @@ const (
 
 // Active reports whether any limit is set.
 func (l Limits) Active() bool {
-	return l.MaxPrecipMM != nil || l.MaxWindKmh != nil || l.MaxGustKmh != nil || l.MaxRainChancePct != nil || l.MinTempC != nil
+	return l.MaxPrecipMM != nil || l.MaxWindKmh != nil || l.MinTempC != nil
 }
 
-// NeedsComplete reports limits only a version 2 snapshot can apply: on gusts
-// or the chance of rain, or looser than the default, since version 1 holds no
-// hour that fails the default.
+// NeedsComplete reports limits only a version 2 snapshot can apply: looser
+// than the default, since version 1 holds no hour that fails the default.
 func (l Limits) NeedsComplete() bool {
-	return l.MaxGustKmh != nil || l.MaxRainChancePct != nil ||
-		l.MaxPrecipMM != nil && *l.MaxPrecipMM > DefaultMaxPrecipMM ||
+	return l.MaxPrecipMM != nil && *l.MaxPrecipMM > DefaultMaxPrecipMM ||
 		l.MaxWindKmh != nil && *l.MaxWindKmh > DefaultMaxWindKmh
 }
 
 // Test is a good-hour test: the defaults with the caller's limits applied.
 type Test struct {
-	MaxPrecipMM, MaxWindKmh, MaxGustKmh, MaxRainChancePct, MinTempC float32
+	MaxPrecipMM, MaxWindKmh, MinTempC float32
 }
 
 var inf = float32(math.Inf(1))
 
 // DefaultTest is the hikes app's good-hour test.
-var DefaultTest = Test{MaxPrecipMM: DefaultMaxPrecipMM, MaxWindKmh: DefaultMaxWindKmh, MaxGustKmh: inf, MaxRainChancePct: inf, MinTempC: -inf}
+var DefaultTest = Test{MaxPrecipMM: DefaultMaxPrecipMM, MaxWindKmh: DefaultMaxWindKmh, MinTempC: -inf}
 
 // Test is the good-hour test these limits make. Values are compared at the
 // hours' own float32 precision, so a limit of 0.2 mm admits an hour stored as
@@ -529,14 +521,11 @@ func (l Limits) Test() Test {
 	}
 	set(&t.MaxPrecipMM, l.MaxPrecipMM)
 	set(&t.MaxWindKmh, l.MaxWindKmh)
-	set(&t.MaxGustKmh, l.MaxGustKmh)
-	set(&t.MaxRainChancePct, l.MaxRainChancePct)
 	set(&t.MinTempC, l.MinTempC)
 	return t
 }
 
-// Fails lists what an hour fails: "rain", "wind", "gust", "rain_chance",
-// "cold". An unknown gust or rain chance fails nothing.
+// Fails lists what an hour fails: "rain", "wind", "cold".
 func (t Test) Fails(h Hour) []string {
 	var out []string
 	if h.PrecipMM > t.MaxPrecipMM {
@@ -544,12 +533,6 @@ func (t Test) Fails(h Hour) []string {
 	}
 	if h.WindKmh > t.MaxWindKmh {
 		out = append(out, "wind")
-	}
-	if Known(h.GustKmh) && h.GustKmh > t.MaxGustKmh {
-		out = append(out, "gust")
-	}
-	if Known(h.RainChancePct) && h.RainChancePct > t.MaxRainChancePct {
-		out = append(out, "rain_chance")
 	}
 	if h.TempC < t.MinTempC {
 		out = append(out, "cold")
@@ -559,10 +542,7 @@ func (t Test) Fails(h Hour) []string {
 
 // Good reports whether an hour passes the test.
 func (t Test) Good(h Hour) bool {
-	return h.PrecipMM <= t.MaxPrecipMM && h.WindKmh <= t.MaxWindKmh &&
-		(!Known(h.GustKmh) || h.GustKmh <= t.MaxGustKmh) &&
-		(!Known(h.RainChancePct) || h.RainChancePct <= t.MaxRainChancePct) &&
-		h.TempC >= t.MinTempC
+	return h.PrecipMM <= t.MaxPrecipMM && h.WindKmh <= t.MaxWindKmh && h.TempC >= t.MinTempC
 }
 
 func (t Test) filter(hours []Hour) []Hour {

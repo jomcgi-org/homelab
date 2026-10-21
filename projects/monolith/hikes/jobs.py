@@ -139,10 +139,6 @@ def _load_coords() -> list[tuple[str, float, float]]:
 
 
 _EXTRA_COLUMNS = (
-    "gust_kmh",
-    "precip_max_mm",
-    "rain_chance_pct",
-    "thunder_chance_pct",
     "fog_pct",
     "low_cloud_pct",
 )

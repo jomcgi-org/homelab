@@ -166,7 +166,7 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 
 // failWords reads Test.Fails codes as an adjective: "wet", "wet and windy".
 func failWords(fails []string) string {
-	words := map[string]string{"rain": "wet", "wind": "windy", "gust": "gusty", "rain_chance": "likely wet", "cold": "cold"}
+	words := map[string]string{"rain": "wet", "wind": "windy", "cold": "cold"}
 	var out []string
 	for _, f := range fails {
 		if w, ok := words[f]; ok && !slices.Contains(out, w) {

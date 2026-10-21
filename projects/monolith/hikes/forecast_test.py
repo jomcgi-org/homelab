@@ -167,10 +167,6 @@ class TestParseHourly:
                 "wind_speed_ms": 3.4,
                 "precipitation_mm": 0.3,
                 "cloud_area_fraction": 75.0,
-                "wind_gust_ms": None,
-                "precipitation_max_mm": None,
-                "rain_chance_pct": None,
-                "thunder_chance_pct": None,
                 "fog_pct": None,
                 "low_cloud_pct": None,
             }
@@ -241,7 +237,7 @@ class TestSunTimes:
 
 class TestCompleteForecast:
     """compute_hours keeps every daylight hour with the complete forecast's
-    extras, so the connector can apply the caller's own limits."""
+    fog and low cloud, so the connector can apply the caller's own limits."""
 
     def _complete(self, **instant_extra):
         details = {
@@ -281,10 +277,9 @@ class TestCompleteForecast:
         # 3.4 mm and 80.28 km/h fail the viability rule but are kept.
         assert h["precip_mm"] == 3.4
         assert h["wind_kmh"] == 80.28
-        assert h["gust_kmh"] == 111.96
-        assert h["precip_max_mm"] == 5.1
-        assert h["rain_chance_pct"] == 88
-        assert h["thunder_chance_pct"] == 2
+        # Nordic-model fields (gusts, rain chance) are not kept.
+        assert "gust_kmh" not in HOUR_FIELDS
+        assert len(hours[0]) == len(HOUR_FIELDS) == 7
         assert h["fog_pct"] == 0
         assert h["low_cloud_pct"] == 62
         assert not is_viable(h["precip_mm"], h["wind_kmh"])
@@ -294,7 +289,6 @@ class TestCompleteForecast:
     def test_missing_extras_are_none(self):
         hours = compute_hours(parse_hourly(self._complete()), NOW, LAT, LON)
         h = dict(zip(HOUR_FIELDS, hours[0]))
-        assert h["gust_kmh"] is None
         assert h["fog_pct"] is None
         assert h["low_cloud_pct"] is None
 

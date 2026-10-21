@@ -107,18 +107,6 @@
             "description": "Walks: an hour counts as good only with mean wind at most this, in km/h, at the walk's start. Default 80."
           },
           {
-            "name": "max_gust_kmh",
-            "in": "query",
-            "schema": { "type": "number", "minimum": 0, "maximum": 150 },
-            "description": "Walks: an hour counts as good only with gusts at most this, in km/h. Default none."
-          },
-          {
-            "name": "max_rain_chance_pct",
-            "in": "query",
-            "schema": { "type": "number", "minimum": 0, "maximum": 100 },
-            "description": "Walks: an hour counts as good only with at most this chance of rain, in percent. Default none."
-          },
-          {
             "name": "min_temp_c",
             "in": "query",
             "schema": { "type": "number", "minimum": -30, "maximum": 30 },
@@ -324,21 +312,11 @@
           "good": { "type": "boolean" },
           "fails": {
             "type": "array",
-            "items": {
-              "type": "string",
-              "enum": ["rain", "wind", "gust", "rain_chance", "cold"]
-            },
+            "items": { "type": "string", "enum": ["rain", "wind", "cold"] },
             "description": "What the slot's one bad hour failed."
           },
           "rain_mm": { "type": "number" },
-          "rain_max_mm": {
-            "type": "number",
-            "description": "The forecast's upper rain amount for the hour."
-          },
-          "rain_chance_pct": { "type": "number" },
-          "thunder_chance_pct": { "type": "number" },
           "wind_kmh": { "type": "number" },
-          "gust_kmh": { "type": "number" },
           "temp_c": { "type": "number" },
           "cloud_pct": { "type": "number" },
           "low_cloud_pct": { "type": "number" },
@@ -357,10 +335,7 @@
           "max_rain_mm_h",
           "wet_hours",
           "min_temp_c",
-          "max_temp_c",
-          "max_gust_kmh",
-          "max_rain_chance_pct",
-          "max_thunder_chance_pct"
+          "max_temp_c"
         ],
         "properties": {
           "start": { "type": "string", "format": "date-time" },
@@ -378,12 +353,6 @@
           },
           "min_temp_c": { "type": "number" },
           "max_temp_c": { "type": "number" },
-          "max_gust_kmh": {
-            "type": ["number", "null"],
-            "description": "Strongest gust across the good hours; null where the forecast data does not carry gusts."
-          },
-          "max_rain_chance_pct": { "type": ["number", "null"] },
-          "max_thunder_chance_pct": { "type": ["number", "null"] },
           "hours": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/SlotHour" },
@@ -569,8 +538,6 @@
               "max_ascent_m": { "type": "integer" },
               "max_rain_mm_h": { "type": "number" },
               "max_wind_kmh": { "type": "number" },
-              "max_gust_kmh": { "type": "number" },
-              "max_rain_chance_pct": { "type": "number" },
               "min_temp_c": { "type": "number" },
               "limit": { "type": "integer" }
             }
@@ -644,18 +611,6 @@
             "minimum": 0,
             "maximum": 120,
             "description": "Walks: an hour counts as good only with mean wind at most this, in km/h, at the walk's start. Default 80."
-          },
-          "max_gust_kmh": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 150,
-            "description": "Walks: an hour counts as good only with gusts at most this, in km/h. Default none."
-          },
-          "max_rain_chance_pct": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 100,
-            "description": "Walks: an hour counts as good only with at most this chance of rain, in percent. Default none."
           },
           "min_temp_c": {
             "type": "number",
@@ -745,8 +700,6 @@
             "properties": {
               "max_rain_mm_h": { "type": "number" },
               "max_wind_kmh": { "type": "number" },
-              "max_gust_kmh": { "type": "number" },
-              "max_rain_chance_pct": { "type": "number" },
               "min_temp_c": { "type": "number" }
             }
           },

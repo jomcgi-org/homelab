@@ -67,10 +67,13 @@ tools were removed rather than kept beside the new ones.
 
 **Why.** Agents get the context to judge the weather themselves. Each slot
 carries its wettest hour and its wet hours, and a check returns it hour by
-hour. `max_rain_mm_h`, `max_wind_kmh`, `max_gust_kmh`,
-`max_rain_chance_pct` and `min_temp_c` let an agent apply what the person
-will put up with ("no rain at all", "out of the gusts", "a bit of rain is
-fine") before the verdict is reached, rather than second-guessing a `go`.
+hour. `max_rain_mm_h`, `max_wind_kmh` and `min_temp_c` let an agent apply
+what the person will put up with ("no rain at all", "nothing too breezy", "a
+bit of rain is fine") before the verdict is reached, rather than
+second-guessing a `go`. There is no gust or rain-chance limit: MET Norway's
+`complete` forecast gives those only within its Nordic model, which in
+Scotland covers Shetland alone, and a limit that silently passed every
+mainland walk would mislead.
 The default good-hour test stays the hikes app's, so the two never disagree
 without being asked to. Plans leave the hours out to stay compact: a plan is
 the wide question, and a check is the close look.
@@ -154,11 +157,12 @@ Walk answers read `walks.json`, which the monolith's
 hours. Each walk carries its Walkhighlands URL, start point, length, ascent,
 estimated time and its daylight forecast hours. Schema version 1 holds only
 the hours that pass the hikes app's test (at most 2 mm of rain, wind at most
-80 km/h); version 2 holds every daylight hour with gusts, the forecast's
-upper rain amount, the chance of rain and of thunder, fog and low cloud, so
-limits can loosen as well as tighten and a bad hour's weather is known. The
-connector reads both: the version 2 producer ships after it, and a looser,
-gust or rain-chance limit on version 1 data is refused as not available yet.
+80 km/h); version 2 holds every daylight hour with fog and low cloud, as
+`[unix, temp_c, precip_mm, wind_kmh, cloud_pct, fog_pct, low_cloud_pct]`,
+so limits can loosen as well as tighten and a bad hour's weather is known.
+The connector reads both, and a looser limit on version 1 data is refused as
+not available yet. A row of any other width rejects the snapshot, and the
+store keeps serving the last one that parsed.
 Only a tightening limit makes a day "limited" for the dark-credit rule:
 loosening rules no daylight out.
 `internal/walks` buckets those hours into UK days at load time and applies

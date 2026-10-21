@@ -40,7 +40,7 @@ var Tools = []Tool{
 			"For each day it returns sunrise, sunset and the moon, then the best walks and stargazing sites that suit it, each with a verdict (go or marginal) and a one-line why; " +
 			"when none suit, a note says why instead, including when the hourly forecast, about two and a half days ahead, does not reach that far yet. " +
 			"Walks are Walkhighlands routes that fit a slot of good daylight hours for their estimated time, with the slot (its rain, wind, wet hours and temperatures), a start window and the url for the route. " +
-			"A good hour has at most 2 mm of rain and wind at most 80 km/h by default; pass max_rain_mm_h, max_wind_kmh, max_gust_kmh, max_rain_chance_pct or min_temp_c to match what the person will put up with, stricter or looser, for example max_rain_mm_h 0 for dry hours (a marginal slot may still hold one bad hour, which check lists hour by hour with what it failed). " +
+			"A good hour has at most 2 mm of rain and wind at most 80 km/h by default; pass max_rain_mm_h, max_wind_kmh or min_temp_c to match what the person will put up with, stricter or looser, for example max_rain_mm_h 0 for dry hours (a marginal slot may still hold one bad hour, which check lists hour by hour with what it failed). " +
 			"Stargazing sites are road-accessible spots in the darkest light-pollution zones, judged on clear dark hours and the moon. " +
 			"Walk weather is at the walk's start, not on summits. Give lat and lon in decimal degrees for the place the person means. Scotland only.",
 		InputSchema: json.RawMessage(`{
@@ -59,8 +59,6 @@ var Tools = []Tool{
     "max_ascent_m": {"type": "integer", "minimum": 1, "maximum": 3000, "description": "Only walks with at most this much ascent, in metres."},
     "max_rain_mm_h": {"type": "number", "minimum": 0, "maximum": 10, "description": "Walks: an hour counts as good only with at most this much rain, in mm. 0 means dry; the default 2 allows light rain; higher accepts wetter hours."},
     "max_wind_kmh": {"type": "number", "minimum": 0, "maximum": 120, "description": "Walks: an hour counts as good only with mean wind at most this, in km/h, at the walk's start. Default 80."},
-    "max_gust_kmh": {"type": "number", "minimum": 0, "maximum": 150, "description": "Walks: an hour counts as good only with gusts at most this, in km/h. Default none."},
-    "max_rain_chance_pct": {"type": "number", "minimum": 0, "maximum": 100, "description": "Walks: an hour counts as good only with at most this chance of rain, in percent. Default none."},
     "min_temp_c": {"type": "number", "minimum": -30, "maximum": 30, "description": "Walks: an hour counts as good only at or above this temperature, in degrees C. Default none."},
     "limit": {"type": "integer", "minimum": 1, "maximum": 5, "default": 3, "description": "Options per activity per day."}
   },
@@ -75,10 +73,10 @@ var Tools = []Tool{
 		Description: "Check whether a plan is on: a named walk on a date, or stargazing at a place on a night, or several at once (a walk then stargazing the same day). " +
 			"Use this when someone already has a plan: is Ben Nevis on for Saturday, if not Saturday then when, does a walk in Glencoe then stargazing on Rannoch Moor work on Friday. " +
 			"For each item it returns a verdict (go, marginal, no, or unknown beyond the hourly forecast, about two and a half days ahead) with a one-line why, " +
-			"the timing (for a walk: its slot hour by hour with rain, chance of rain and thunder, wind, gusts, temperature, cloud and fog, the window to start in, sunrise and sunset; for a night: the clear window at the best dark-sky site near the point and the moon), " +
+			"the timing (for a walk: its slot hour by hour with rain, wind, temperature, cloud, low cloud and fog, the window to start in, sunrise and sunset; for a night: the clear window at the best dark-sky site near the point and the moon), " +
 			"the other forecast days that suit it, and better options nearby the same day (for a walk, walks of similar length). " +
 			"Walks are found by walk_name (words from the Walkhighlands name, for example \"Ben Nevis\") or walk_id from plan. " +
-			"max_rain_mm_h, max_wind_kmh, max_gust_kmh, max_rain_chance_pct and min_temp_c change what counts as a good walking hour, as in plan. " +
+			"max_rain_mm_h, max_wind_kmh and min_temp_c change what counts as a good walking hour, as in plan. " +
 			"Walk weather is at the walk's start, not on summits. Scotland only.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
@@ -103,8 +101,6 @@ var Tools = []Tool{
     },
     "max_rain_mm_h": {"type": "number", "minimum": 0, "maximum": 10, "description": "Walks: an hour counts as good only with at most this much rain, in mm. 0 means dry; the default 2 allows light rain; higher accepts wetter hours."},
     "max_wind_kmh": {"type": "number", "minimum": 0, "maximum": 120, "description": "Walks: an hour counts as good only with mean wind at most this, in km/h, at the walk's start. Default 80."},
-    "max_gust_kmh": {"type": "number", "minimum": 0, "maximum": 150, "description": "Walks: an hour counts as good only with gusts at most this, in km/h. Default none."},
-    "max_rain_chance_pct": {"type": "number", "minimum": 0, "maximum": 100, "description": "Walks: an hour counts as good only with at most this chance of rain, in percent. Default none."},
     "min_temp_c": {"type": "number", "minimum": -30, "maximum": 30, "description": "Walks: an hour counts as good only at or above this temperature, in degrees C. Default none."}
   },
   "required": ["items"],

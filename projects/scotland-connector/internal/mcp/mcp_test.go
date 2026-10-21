@@ -159,8 +159,6 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 		bounds(name+".max_rain_mm_h", props["max_rain_mm_h"], 0, connector.MaxRainLimitMM)
 		bounds(name+".max_wind_kmh", props["max_wind_kmh"], 0, connector.MaxWindLimitKmh)
 		bounds(name+".min_temp_c", props["min_temp_c"], connector.MinTempLimitC, connector.MaxTempLimitC)
-		bounds(name+".max_gust_kmh", props["max_gust_kmh"], 0, connector.MaxGustLimitKmh)
-		bounds(name+".max_rain_chance_pct", props["max_rain_chance_pct"], 0, 100)
 	}
 	bounds("plan.max_ascent_m", plan.Properties["max_ascent_m"], 1, connector.MaxAscentM)
 	if d := plan.Properties["from"].Description; !strings.Contains(d, fmt.Sprintf("up to %d days ahead", connector.MaxDaysAhead)) {

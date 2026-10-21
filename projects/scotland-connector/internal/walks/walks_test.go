@@ -266,22 +266,22 @@ func TestCoverageIndexMatchesTheRule(t *testing.T) {
 	}
 }
 
-// A version 2 snapshot holds every daylight hour with gusts, rain chance and
-// the rest; the default test keeps the hikes app's good hours, and limits can
-// loosen it as well as tighten it.
+// A version 2 snapshot holds every daylight hour with fog and low cloud; the
+// default test keeps the hikes app's good hours, and limits can loosen it as
+// well as tighten it.
 func TestParseV2AndTheDefaultTest(t *testing.T) {
-	hour := func(o int, rain, wind float64, gust, chance string) string {
-		return fmt.Sprintf("[%d,9.5,%g,%g,40,%s,%g,%s,0,null,30]", base.Add(time.Duration(o)*time.Hour).Unix(), rain, wind, gust, rain*2, chance)
+	hour := func(o int, rain, wind float64, fog string) string {
+		return fmt.Sprintf("[%d,9.5,%g,%g,40,%s,30]", base.Add(time.Duration(o)*time.Hour).Unix(), rain, wind, fog)
 	}
 	body := `{"schema_version":2,"generated_at":"2026-06-15T06:30:00+00:00","fetched_at":"2026-06-15T06:20:00+00:00","walks":[` +
 		`{"id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":9,"ascent_m":400,"duration_h":3,"hours":[` +
-		strings.Join([]string{hour(0, 0, 15, "30", "10"), hour(1, 3.5, 15, "35", "90"), hour(2, 0.2, 20, "null", "null"), hour(3, 0, 90, "110", "5"), hour(4, 0, 15, "28", "5")}, ",") + `]}]}`
+		strings.Join([]string{hour(0, 0, 15, "null"), hour(1, 3.5, 15, "5"), hour(2, 0.2, 20, "0"), hour(3, 0, 90, "0"), hour(4, 0, 15, "0")}, ",") + `]}]}`
 	ds := mustParse(t, body)
 	if !ds.Complete {
 		t.Fatal("a v2 snapshot is not complete")
 	}
 	h := ds.Walks[0].Hours
-	if len(h) != 5 || h[0].GustKmh != 30 || h[0].RainChancePct != 10 || h[1].PrecipMaxMM != 7 || Known(h[0].FogPct) || h[0].LowCloudPct != 30 || Known(h[2].GustKmh) {
+	if len(h) != 5 || Known(h[0].FogPct) || h[1].FogPct != 5 || h[0].LowCloudPct != 30 {
 		t.Fatalf("hours = %+v", h)
 	}
 	w := &ds.Walks[0]
@@ -301,15 +301,14 @@ func TestParseV2AndTheDefaultTest(t *testing.T) {
 	if d := ds.DayWithin(w, day, base, Limits{MaxPrecipMM: f(4)}); d.GoodHours != 4 || d.Limited || d.Best.GoodHours != 4 || len(d.GapFails) != 1 || d.GapFails[0] != "wind" {
 		t.Fatalf("loosened = %+v %+v", d, d.Best)
 	}
-	// Gusts and rain chance limit only where they are known.
-	if d := ds.DayWithin(w, day, base, Limits{MaxGustKmh: f(29)}); d.GoodHours != 2 {
-		t.Fatalf("gust limit = %d good hours", d.GoodHours)
-	}
-	if d := ds.DayWithin(w, day, base, Limits{MaxRainChancePct: f(20)}); d.GoodHours != 3 {
-		t.Fatalf("rain chance limit = %d good hours", d.GoodHours)
-	}
-	if !(Limits{MaxGustKmh: f(1)}).NeedsComplete() || (Limits{MaxPrecipMM: f(1)}).NeedsComplete() {
+	if !(Limits{MaxWindKmh: f(90)}).NeedsComplete() || (Limits{MaxPrecipMM: f(1)}).NeedsComplete() {
 		t.Fatal("NeedsComplete")
+	}
+	// A row of another width, such as the 11-field draft of version 2, is
+	// the wrong schema and rejects the snapshot.
+	wide := strings.Replace(body, hour(4, 0, 15, "0"), fmt.Sprintf("[%d,9.5,0,15,40,30,0,10,0,0,30]", base.Add(4*time.Hour).Unix()), 1)
+	if _, err := Parse([]byte(wide), "x"); err == nil || !strings.Contains(err.Error(), "want 7") {
+		t.Fatalf("an 11-field row parsed: %v", err)
 	}
 }
 
@@ -329,7 +328,7 @@ func v2Day(t *testing.T, duration float64, rain map[int]float64) *Dataset {
 	var hours []string
 	for o := -6; o < 18; o++ {
 		if r, ok := rain[o]; ok {
-			hours = append(hours, fmt.Sprintf("[%d,9.5,%g,10,40,20,%g,10,0,null,30]", base.Add(time.Duration(o)*time.Hour).Unix(), r, r))
+			hours = append(hours, fmt.Sprintf("[%d,9.5,%g,10,40,null,30]", base.Add(time.Duration(o)*time.Hour).Unix(), r))
 		}
 	}
 	return mustParse(t, `{"schema_version":2,"fetched_at":"2026-06-15T06:20:00+00:00","walks":[`+
