@@ -13,7 +13,6 @@ py_test(
         "plugin.json",
         "skills/scotland-trips/SKILL.md",
     ],
-    deps = ["@pip//pytest"],
 )
 
 # The README and the skill are indexed with the repo docs.

@@ -27,10 +27,7 @@
 
 {#snippet trail()}
   <Trail
-    crumbs={[
-      { label: "scotland", href: "/scotland" },
-      { label: doc.slug },
-    ]}
+    crumbs={[{ label: "scotland", href: "/scotland" }, { label: doc.slug }]}
   />
 {/snippet}
 
