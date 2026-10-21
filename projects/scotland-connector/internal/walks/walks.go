@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 	_ "time/tzdata" // the image ships no zoneinfo; days are UK calendar dates
+
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
 )
 
 // SchemaVersion is the walks.json shape this package reads.
@@ -349,39 +351,50 @@ type Day struct {
 	// are daylight with known weather, not darkness or bad weather.
 	Limited bool
 	All     []Hour
-	// NoEarlyStart reports that the hour before the slot is daylight the
-	// limits turned away, so a walk that needs more than the slot cannot
-	// start early in the dark; GapOutsideLimits that the slot's one bad hour
-	// is such an hour.
-	NoEarlyStart     bool
+	// DarkLateOnly reports that, under limits, a long walk's dark credit can
+	// only be spent after the slot, so it starts with the slot;
+	// GapOutsideLimits that the slot's one bad hour is daylight the limits
+	// turned away.
+	DarkLateOnly     bool
 	GapOutsideLimits bool
 }
 
-// limitedEdges applies the dark-shoulder credit only where the slot can
-// meet darkness: an hour the limits turned away is daylight the person ruled
-// out. With both edges turned away the credit is void.
+// limitedEdges keeps the dark-shoulder credit honest under limits. Without
+// limits the hikes rule stands: a long walk may borrow two hours at either
+// edge of its slot. Under limits the hours beside the slot are often daylight
+// the person ruled out, so the credit counts only on a side that meets real
+// darkness (the hour beyond the edge starts before sunrise or after sunset):
+// with neither, the walk does not fit; with only the far side, it starts
+// with the slot and finishes in the dark.
 func (w *Walk) limitedEdges(d *Day) {
 	good := make(map[int64]bool, len(d.Hours))
 	for _, h := range d.Hours {
 		good[h.Unix] = true
 	}
-	turnedAway := func(t int64) bool {
-		for _, h := range d.All {
-			if h.Unix == t {
-				return !good[t]
-			}
-		}
-		return false
+	known := make(map[int64]bool, len(d.All))
+	for _, h := range d.All {
+		known[h.Unix] = true
 	}
 	start, end := d.Best.Start.Unix(), d.Best.End.Unix()
-	d.NoEarlyStart = turnedAway(start - 3600)
-	if d.NoEarlyStart && turnedAway(end) {
-		d.Doable = float64(d.Best.GoodHours) >= w.required-requirementEpsilon
-	}
 	for t := start; t < end; t += 3600 {
-		if !good[t] && turnedAway(t) {
+		if !good[t] && known[t] {
 			d.GapOutsideLimits = true
 		}
+	}
+	if w.shoulderHr == 0 || !d.Doable || float64(d.Best.GoodHours) >= w.required-requirementEpsilon {
+		return // the credit is not in play
+	}
+	rise, set, ok := astro.SunTimes(time.Unix(int64(d.Day)*86400, 0), w.Lat, w.Lon)
+	if !ok {
+		return
+	}
+	early := d.Best.Start.Add(-time.Hour).Before(rise)
+	late := d.Best.End.After(set)
+	switch {
+	case !early && !late:
+		d.Doable = false
+	case !early:
+		d.DarkLateOnly = true
 	}
 }
 

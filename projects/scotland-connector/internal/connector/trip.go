@@ -229,6 +229,7 @@ func strict(v float64, isMax bool) *float64 {
 	if isMax {
 		r = math.Floor(v*10+1e-9) / 10
 	}
+	r += 0 // -0 reads as 0, in the echo and the ETag
 	return &r
 }
 

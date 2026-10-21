@@ -411,6 +411,7 @@ func TestWeatherLimits(t *testing.T) {
 	}{
 		{connector.WeatherLimits{MaxRainMMH: f(0.05), MaxWindKmh: f(15.56), MinTempC: f(2.41)}, connector.WeatherLimits{MaxRainMMH: f(0), MaxWindKmh: f(15.5), MinTempC: f(2.5)}},
 		{connector.WeatherLimits{MaxRainMMH: f(0.3), MinTempC: f(9.5)}, connector.WeatherLimits{MaxRainMMH: f(0.3), MinTempC: f(9.5)}},
+		{connector.WeatherLimits{MinTempC: f(-0.05)}, connector.WeatherLimits{MinTempC: f(0)}},
 	} {
 		_, r := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: c.in})
 		got, want := r.Query.WeatherLimits, c.want
@@ -418,6 +419,10 @@ func TestWeatherLimits(t *testing.T) {
 		if !eq(got.MaxRainMMH, want.MaxRainMMH) || !eq(got.MaxWindKmh, want.MaxWindKmh) || !eq(got.MinTempC, want.MinTempC) {
 			t.Errorf("limits %v rounded to %+v", c.in, got)
 		}
+	}
+	_, negZero := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: connector.WeatherLimits{MinTempC: f(-0.05)}})
+	if b, _ := json.Marshal(negZero.Query); !strings.Contains(string(b), `"min_temp_c":0`) {
+		t.Errorf("-0.05 echoes as %s", b)
 	}
 	// A check of stargazing alone echoes no walk limits.
 	if env, err := fixture.Service(true).Check(connector.CheckParams{

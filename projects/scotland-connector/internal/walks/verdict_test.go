@@ -125,12 +125,13 @@ func TestLimitsNarrowTheGoodHours(t *testing.T) {
 	}
 }
 
-// tempWalk is a dry, calm walk whose hours (offsets from base) carry the
-// given temperatures.
+// tempWalk is a dry, calm walk whose hours (offsets from base, 07:00Z on
+// 15 June, when sunrise is 03:22Z and sunset 21:13Z) carry the given
+// temperatures.
 func tempWalk(t *testing.T, duration float64, temps map[int]float64) *Dataset {
 	t.Helper()
 	var hours []string
-	for o := 0; o < 24; o++ {
+	for o := -6; o < 18; o++ {
 		if c, ok := temps[o]; ok {
 			hours = append(hours, fmt.Sprintf("[%d,%g,0,10,20]", base.Add(time.Duration(o)*time.Hour).Unix(), c))
 		}
@@ -138,43 +139,73 @@ func tempWalk(t *testing.T, duration float64, temps map[int]float64) *Dataset {
 	return mustParse(t, snapshot(fmt.Sprintf(`{"id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":20,"ascent_m":900,"duration_h":%g,"hours":[%s]}`, duration, strings.Join(hours, ","))))
 }
 
-// Hours the limits turned away are daylight the person ruled out, so a long
-// walk cannot borrow them as "dark" hours.
+func temps(cold, warm [2]int) map[int]float64 {
+	m := map[int]float64{}
+	for o := cold[0]; o <= cold[1]; o++ {
+		m[o] = 4
+	}
+	for o := warm[0]; o <= warm[1]; o++ {
+		m[o] = 10
+	}
+	return m
+}
+
+// Under limits a long walk's dark credit counts only where the slot meets
+// real darkness: the hours beside it are often daylight the person ruled
+// out.
 func TestLimitsAndTheDarkShoulder(t *testing.T) {
 	f := func(v float64) *float64 { return &v }
 	warm := Limits{MinTempC: f(5)}
 	day := LocalDay(base)
-	// An 8 h walk (6.4 h needed) with 5 warm hours between cold ones: the
-	// 2 h dark credit would cover it, but both edges are cold daylight.
-	temps := map[int]float64{}
-	for o := 0; o <= 11; o++ {
-		temps[o] = 4
+	assess := func(ds *Dataset, now time.Time, lim Limits) Assessment {
+		w := &ds.Walks[0]
+		return w.Assess(ds.DayWithin(w, day, now, lim), ds.HourlyUntil)
 	}
-	for o := 4; o <= 8; o++ {
-		temps[o] = 10
+	// An 8 h walk (6.4 h needed) with 5 warm hours between cold daylight:
+	// the 2 h credit would cover it, but neither edge is dark.
+	ds := tempWalk(t, 8, temps([2]int{0, 11}, [2]int{4, 8}))
+	if a := assess(ds, base, warm); a.Verdict != verdict.No || !strings.Contains(a.Why, "within the limits is 5 h") {
+		t.Fatalf("both edges daylight = %+v", a)
 	}
-	ds := tempWalk(t, 8, temps)
-	w := &ds.Walks[0]
-	if a := w.Assess(ds.DayWithin(w, day, base, warm), ds.HourlyUntil); a.Verdict != verdict.No || !strings.Contains(a.Why, "within the limits is 5 h") {
-		t.Fatalf("both edges cold = %+v", a)
-	}
-	if a := w.Assess(ds.DayFor(w, day, base), ds.HourlyUntil); a.Verdict != verdict.Go {
+	if a := assess(ds, base, Limits{}); a.Verdict != verdict.Go {
 		t.Fatalf("no limits = %+v", a)
 	}
-	// Cold before, nothing after: the credit stands on the far side, so the
-	// walk starts with the slot and finishes late.
-	late := map[int]float64{0: 4, 1: 4, 2: 4, 3: 4, 4: 10, 5: 10, 6: 10, 7: 10, 8: 10}
-	ds = tempWalk(t, 8, late)
-	w = &ds.Walks[0]
-	a := w.Assess(ds.DayWithin(w, day, base, warm), ds.HourlyUntil)
-	slotStart := base.Add(4 * time.Hour)
-	if a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "in the dark") || !a.StartFrom.Equal(slotStart) || !a.StartBy.Equal(slotStart) {
-		t.Fatalf("cold before = %+v", a)
+	// An hour that failed the defaults at the edge is no darker: cold from
+	// 07:00Z, nothing at 10:00Z, warm 11:00Z to 15:00Z, cold after.
+	gap := temps([2]int{0, 11}, [2]int{4, 8})
+	delete(gap, 3)
+	if a := assess(tempWalk(t, 8, gap), base, warm); a.Verdict != verdict.No {
+		t.Fatalf("missing edge hour = %+v", a)
+	}
+	// The slot runs to 22:00Z, past sunset: the credit is spent after it, so
+	// the walk starts with the slot.
+	ds = tempWalk(t, 8, temps([2]int{6, 9}, [2]int{10, 14}))
+	slotStart := base.Add(10 * time.Hour)
+	if a := assess(ds, base, warm); a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "in the dark") || !a.StartFrom.Equal(slotStart) || !a.StartBy.Equal(slotStart) {
+		t.Fatalf("dark after = %+v", a)
+	}
+	// The slot starts at 04:00Z, just after sunrise: the walk starts early,
+	// in the dark.
+	ds = tempWalk(t, 8, temps([2]int{2, 5}, [2]int{-3, 1}))
+	early := base.Add(-5 * time.Hour)
+	if a := assess(ds, early, warm); a.Verdict != verdict.Marginal || !a.StartFrom.Before(base.Add(-3*time.Hour)) {
+		t.Fatalf("dark before = %+v", a)
+	}
+	// Later today the hour before the slot is daylight under way, not dark:
+	// at 11:30Z with warm hours to 16:00Z and cold after, it does not fit.
+	ds = tempWalk(t, 8, temps([2]int{10, 11}, [2]int{0, 9}))
+	if a := assess(ds, base.Add(4*time.Hour+30*time.Minute), warm); a.Verdict != verdict.No {
+		t.Fatalf("today at the cutoff = %+v", a)
+	}
+	// A walk of 7 h or less has no dark credit; its 80% rule starts it
+	// before the slot as without limits.
+	ds = tempWalk(t, 5, temps([2]int{0, 0}, [2]int{1, 4}))
+	if a := assess(ds, base, warm); a.Verdict != verdict.Go || !a.StartFrom.Equal(base) {
+		t.Fatalf("short walk = %+v", a)
 	}
 	// A cold hour mid-walk is the slot's one bad hour, and the why says so.
 	ds = tempWalk(t, 3, map[int]float64{0: 10, 1: 10, 2: 3, 3: 10})
-	w = &ds.Walks[0]
-	if a := w.Assess(ds.DayWithin(w, day, base, warm), ds.HourlyUntil); a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "one hour outside the limits") {
+	if a := assess(ds, base, warm); a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "one hour outside the limits") {
 		t.Fatalf("cold gap = %+v", a)
 	}
 }
