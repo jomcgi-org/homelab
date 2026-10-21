@@ -533,18 +533,14 @@
     inset: 0;
     background: var(--housing);
     pointer-events: none;
-    /* The pitch is a fraction of the portrait's width (container units),
-       so the grille keeps about 70 columns of holes whatever size the
-       portrait renders at; a fixed pixel pitch left a phone-sized portrait
-       with too few holes to read the face through. */
     -webkit-mask: radial-gradient(
         circle at center,
-        transparent 0 0.52cqw,
-        #000 0.64cqw
+        transparent 0 2.2px,
+        #000 2.8px
       )
-      0 0 / 1.45cqw 1.45cqw;
-    mask: radial-gradient(circle at center, transparent 0 0.52cqw, #000 0.64cqw)
-      0 0 / 1.45cqw 1.45cqw;
+      0 0 / 6px 6px;
+    mask: radial-gradient(circle at center, transparent 0 2.2px, #000 2.8px) 0
+      0 / 6px 6px;
   }
 
   .right {
@@ -788,6 +784,23 @@
     /* The glass is narrow on a phone: the top line may take two lines
        (clamped, so a long title still cannot push the sentence out) and
        the sentence wraps beneath it. */
+    /* The desktop pitch is right at desktop size; a phone-sized portrait
+       gets a finer grille, in container units of its width, so the face
+       still reads through roughly 70 columns of holes. */
+    .holes {
+      -webkit-mask: radial-gradient(
+          circle at center,
+          transparent 0 0.52cqw,
+          #000 0.64cqw
+        )
+        0 0 / 1.45cqw 1.45cqw;
+      mask: radial-gradient(
+          circle at center,
+          transparent 0 0.52cqw,
+          #000 0.64cqw
+        )
+        0 0 / 1.45cqw 1.45cqw;
+    }
     /* Touch never reads anything out, so the phone glass can fit its
        content instead of reserving room for a long readout. */
     .glass {
