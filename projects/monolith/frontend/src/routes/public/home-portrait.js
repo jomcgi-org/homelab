@@ -258,7 +258,14 @@ export function createPortrait({
     const r = host.getBoundingClientRect();
     const px = V.x - r.left;
     const py = V.y - r.top;
-    const over = px > -40 && px < W + 40 && py > -40 && py < H + 40;
+    // "Over" is judged against what is visible: the print clipped to the
+    // frame, which is narrower than the print when the frame crops it.
+    const f = tapTarget === host ? r : tapTarget.getBoundingClientRect();
+    const over =
+      V.x > Math.max(r.left, f.left) - 40 &&
+      V.x < Math.min(r.left + W, f.left + f.width) + 40 &&
+      V.y > Math.max(r.top, f.top) - 40 &&
+      V.y < Math.min(r.top + H, f.top + f.height) + 40;
     const { idle, gone } = state();
     const shove = clamp(V.speed / 700, 0, 1);
 

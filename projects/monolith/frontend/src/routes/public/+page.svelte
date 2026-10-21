@@ -807,9 +807,9 @@
        frame is narrower than 3:4, so a tall deck shows a larger face rather
        than headroom or empty housing; the keypad sits centred beside it.
        The frame's width leaves the keypad its floor and is capped at 18rem
-       for a small tablet, where the picture stops at 32rem tall and stands
-       on the frame's floor; 10.5rem by 14rem where container units are
-       missing (Safari 15). */
+       for a small tablet, where the picture stops at 32rem tall and sits
+       centred, level with the keypad; 10.5rem by 14rem where container
+       units are missing (Safari 15). */
     .portrait {
       /* May shrink below its width where container units are missing and a
          narrow phone cannot fit the fallback size; the print inside keeps
@@ -823,10 +823,10 @@
       height: 100cqh;
     }
     .print {
-      inset: auto auto 0 50%;
+      inset: 50% auto auto 50%;
       height: min(100%, 32rem);
       aspect-ratio: 3 / 4;
-      transform: translateX(-50%);
+      transform: translate(-50%, -50%);
     }
     .right {
       display: contents;
