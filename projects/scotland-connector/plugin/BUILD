@@ -9,6 +9,7 @@ py_test(
         ".claude-plugin/marketplace.json",
         ".claude-plugin/plugin.json",
         ".mcp.json",
+        "LICENSE",
         "mcp.json",
         "plugin.json",
         "skills/scotland-trips/SKILL.md",

@@ -53,3 +53,7 @@ the server and need no plugin release.
 [support](https://jomcgi.dev/scotland/support) ·
 [method](https://jomcgi.dev/scotland/v1/method) ·
 [OpenAPI](https://jomcgi.dev/scotland/v1/openapi.json)
+
+## Licence
+
+MPL-2.0, as the homelab repository it is staged in. See `LICENSE`.

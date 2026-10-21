@@ -87,6 +87,7 @@ describe("scotland policy pages", () => {
     expect(text).toContain("network address");
     expect(text).toContain("query string");
     expect(text).toContain("Request bodies");
+    expect(text).toContain("never shipped");
   });
 
   it("privacy says local assistants call from the person's machine", async () => {

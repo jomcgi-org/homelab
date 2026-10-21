@@ -48,7 +48,7 @@ export const privacy = {
       label: "Kept",
       heading: "What is kept",
       paras: [
-        "The gateway in front of the connector writes an access log line for each request: the time, the network address, the user agent, the path with its query string (so a plan's coordinates), the response status and size. Request bodies, which carry check and MCP arguments, are not logged. These logs are used only to keep the service running and to stop abuse, and are deleted on a rolling basis within 30 days.",
+        "The gateway in front of the connector writes an access log line for each request: the time, the network address, the user agent, the path with its query string (so a plan's coordinates), the response status and size. Request bodies, which carry check and MCP arguments, are not logged. These lines live only in the gateway's own rolling log on the server, which new traffic overwrites, and are used only to keep the service running and to stop abuse. They are never shipped to a log service, copied or kept anywhere else.",
         "The connector itself counts calls by tool, by surface (MCP or REST) and by whether the caller is a known assistant, with no address or arguments attached, and logs internal errors with the tool name and the error. Rate limits count requests per network address in memory and keep nothing.",
       ],
     },
