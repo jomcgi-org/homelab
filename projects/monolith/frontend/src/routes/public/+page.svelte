@@ -128,6 +128,7 @@
   let ledOff = $state(false);
   let cursorOff = $state(false);
   let portEl;
+  let frameEl;
   let canvasEl;
 
   const scheme = () => {
@@ -151,6 +152,7 @@
     const portrait = createPortrait({
       canvas: canvasEl,
       host: portEl,
+      tapTarget: frameEl,
       src: "/joe-grey.png",
       scheme,
       reduceMotion: reduce,
@@ -244,6 +246,7 @@
     <div class="deck">
       <div
         class="portrait"
+        bind:this={frameEl}
         role="img"
         aria-label="Joe, a greyscale print behind a perforated grille, cut into strips that scatter when you move"
       >
@@ -795,7 +798,6 @@
       min-height: 13rem;
       container: deck / size;
       display: flex;
-      flex-wrap: wrap;
       gap: 0.8rem;
       align-items: center;
       align-content: center;
@@ -804,14 +806,18 @@
        picture stands on its floor (the cut-out's shoulders meet the frame),
        so spare height is headroom in the grille, not empty housing; the
        keypad stands on the same line. The width leaves the keypad its floor and is capped at
-       18rem (a 24rem tall picture) for a small tablet; 13.5rem by 18rem
+       18rem (a 24rem tall picture) for a small tablet; 10.5rem by 14rem
        where container units are missing (Safari 15). */
     .portrait {
-      flex: none;
+      /* May shrink below its width where container units are missing and a
+         narrow phone cannot fit the fallback size; the print inside keeps
+         its 3:4 shape. */
+      flex: 0 1 auto;
+      min-width: 0;
       aspect-ratio: auto;
-      width: 13.5rem;
+      width: 10.5rem;
       width: min(100cqw - 9.6rem, 18rem, 75cqh);
-      height: 18rem;
+      height: 14rem;
       height: 100cqh;
     }
     .print {
@@ -830,7 +836,7 @@
       /* As tall as the portrait beside it, never below the keypad's own
          height, so the keys spread over the picture's height and a tall
          phone centres the pair rather than stretching the keys apart. */
-      height: 18rem;
+      height: 14rem;
       height: min(100cqh, max(13rem, min((100cqw - 9.6rem) * 4 / 3, 24rem)));
       align-self: end;
       justify-content: stretch;
@@ -870,20 +876,30 @@
       mask: radial-gradient(circle at center, transparent 0 1px, #000 1.25px) 0
         0 / 2.8px 2.8px;
     }
+    /* Only a browser with container queries can stack, so only it wraps;
+       without them the pair stays on one line at its fallback size. */
+    @supports (container-type: size) {
+      .deck {
+        flex-wrap: wrap;
+      }
+    }
     /* A deck taller than 4:3 (a tall phone) stacks: the grille spans the
        unit's width above the keypad, the picture centred behind it at the
-       height the keypad leaves, which is then at least as tall as it would
-       be side by side. The deck wraps, so each part taking the full width
-       is what stacks them. */
+       height the keypad leaves. The stacked keypad plus its gap is 12.8rem,
+       the same as the side-by-side width offset (9.6rem) times 4/3, so at
+       the 3:4 flip the picture is the same size either way and only grows
+       as the deck gets taller. The deck wraps, so each part taking the full
+       width is what stacks them. The print is capped at the frame's width
+       so a very narrow, tall screen never crops it. */
     @container deck (max-aspect-ratio: 3 / 4) {
       .portrait {
         width: 100%;
-        height: calc(100cqh - 13.8rem);
+        height: calc(100cqh - 12.8rem);
         aspect-ratio: auto;
       }
       .print {
-        inset: 0 auto 0 50%;
-        height: 100%;
+        inset: auto auto 0 50%;
+        height: min(100%, 100cqw * 4 / 3);
         aspect-ratio: 3 / 4;
         transform: translateX(-50%);
       }
@@ -891,11 +907,11 @@
         flex: none;
         width: 100%;
         max-width: none;
-        height: 13rem;
+        height: 12rem;
       }
       .key .cap {
-        width: 2.9rem;
-        height: 2.9rem;
+        width: 2.7rem;
+        height: 2.7rem;
       }
       .key .legend {
         font-size: 0.62rem;

@@ -135,13 +135,16 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
 /**
  * Wires the portrait to a canvas. `host` is the element the pointer is
- * measured against (the canvas's box); `src` is the grey cut-out, a PNG with
+ * measured against (the canvas's box); `tapTarget`, if given, is the larger
+ * element around it whose taps also flash the print; `src` is the grey
+ * cut-out, a PNG with
  * the figure on transparency; `scheme()` returns "light" or "dark" for the
  * current paint; `demo()` returns "", "bored" or "gone" to force a state.
  */
 export function createPortrait({
   canvas,
   host,
+  tapTarget = host,
   src,
   scheme,
   reduceMotion = false,
@@ -509,7 +512,7 @@ export function createPortrait({
   observer?.observe(host);
   document.documentElement.addEventListener("mouseleave", onLeave);
   document.documentElement.addEventListener("mouseenter", onEnter);
-  host.addEventListener("pointerdown", onPortraitDown);
+  tapTarget.addEventListener("pointerdown", onPortraitDown);
 
   img.onload = () => {
     if (!alive) return;
@@ -542,7 +545,7 @@ export function createPortrait({
       observer?.disconnect();
       document.documentElement.removeEventListener("mouseleave", onLeave);
       document.documentElement.removeEventListener("mouseenter", onEnter);
-      host.removeEventListener("pointerdown", onPortraitDown);
+      tapTarget.removeEventListener("pointerdown", onPortraitDown);
     },
   };
 }
