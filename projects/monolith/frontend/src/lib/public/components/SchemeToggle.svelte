@@ -20,8 +20,16 @@
     }
   }
 
+  // Cross-fade the whole page between schemes where the browser can,
+  // instead of every surface snapping at once. Reduced motion snaps.
   function flip() {
-    apply(dark ? "light" : "dark");
+    const next = dark ? "light" : "dark";
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!document.startViewTransition || still) {
+      apply(next);
+      return;
+    }
+    document.startViewTransition(() => apply(next));
   }
 
   $effect(() => {
