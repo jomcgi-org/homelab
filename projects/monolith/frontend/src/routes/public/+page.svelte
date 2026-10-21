@@ -731,20 +731,29 @@
     .home {
       padding-top: 1rem;
     }
-    /* The nameplate: brand and switch on the first row, readouts beneath. */
+    /* The nameplate: brand and switch on the first row, readouts beneath.
+       The switch is placed explicitly; auto-placement would put it after
+       the full-width readouts. */
     .plate {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       align-items: center;
       gap: 0.35rem 1rem;
     }
+    .plate :global(.scheme) {
+      grid-row: 1;
+      grid-column: 2;
+    }
     .plate .meta {
       grid-column: 1 / -1;
     }
     /* On a phone the portrait and the keypad share a row at half size, so
-       the picture is a part of the unit rather than the whole screen. */
+       the picture is a part of the unit rather than the whole screen. The
+       keypad keeps a floor wide enough for three caps and their legends;
+       the portrait takes whatever is left, so narrow phones shrink the
+       picture rather than overlapping the keys. */
     .deck {
-      grid-template-columns: minmax(0, 10.5rem) minmax(0, 1fr);
+      grid-template-columns: minmax(0, 10.5rem) minmax(8.7rem, 1fr);
       gap: 0.8rem;
       align-items: start;
     }
@@ -765,13 +774,24 @@
       height: 2.5rem;
     }
     .key .legend {
-      font-size: 0.6rem;
+      font-size: 0.56rem;
+      letter-spacing: 0;
     }
     .writing {
       grid-column: 1 / -1;
     }
+    /* The glass is narrow on a phone: the top line may take two lines
+       (clamped, so a long title still cannot push the sentence out) and
+       the sentence wraps beneath it. */
     .glass {
-      height: 8.8rem;
+      height: 9.6rem;
+    }
+    .glass .big {
+      white-space: normal;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
     }
     .glass .small {
       white-space: normal;
