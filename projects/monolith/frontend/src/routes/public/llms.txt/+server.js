@@ -27,6 +27,7 @@ const INTRO = `# Joe McGinley
 - MCP endpoint: ${PUBLIC_BASE}/scotland/mcp (Streamable HTTP, tools \`plan\` and \`check\`)
 - [OpenAPI spec](${PUBLIC_BASE}/scotland/v1/openapi.json): the REST contract
 - [Method](${PUBLIC_BASE}/scotland/v1/method): how verdicts are decided, and the data sources to credit
+- [Privacy](${PUBLIC_BASE}/scotland/privacy), [terms](${PUBLIC_BASE}/scotland/terms) and [support](${PUBLIC_BASE}/scotland/support)
 `;
 
 const ELSEWHERE = `## Elsewhere

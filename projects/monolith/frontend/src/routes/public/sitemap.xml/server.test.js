@@ -19,6 +19,9 @@ describe("/public/sitemap.xml", () => {
     expect(body).not.toContain("/blog");
     expect(body).toContain("https://jomcgi.dev/docs");
     expect(body).toContain("<loc>https://jomcgi.dev/scotland</loc>");
+    for (const page of ["privacy", "terms", "support"]) {
+      expect(body).toContain(`<loc>https://jomcgi.dev/scotland/${page}</loc>`);
+    }
   });
 
   it("lists the blog index and every post once published", async () => {

@@ -1,0 +1,17 @@
+{
+  "name": "jomcgi",
+  "owner": {
+    "name": "Joe McGinley",
+    "email": "joe@jomcgi.dev",
+    "url": "https://jomcgi.dev"
+  },
+  "description": "Plugins from jomcgi.dev.",
+  "plugins": [
+    {
+      "name": "scotland",
+      "source": "./",
+      "description": "Plan and check Scottish walks and stargazing with forecast verdicts.",
+      "category": "travel"
+    }
+  ]
+}

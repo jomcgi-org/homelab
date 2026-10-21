@@ -15,6 +15,7 @@
     setups,
     sources,
   } from "./scotland-data.js";
+  import { policyLinks } from "./policy-data.js";
 
   const sections = [
     { id: "connect", num: "01", label: "Connect" },
@@ -166,6 +167,11 @@
               </div>
             {/each}
           </dl>
+          <div class="ed-foot">
+            {#each policyLinks as l (l.href)}
+              <a href={l.href}>{l.label}</a>
+            {/each}
+          </div>
         </section>
       </div>
     </div>

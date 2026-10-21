@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "scotland": {
+      "type": "http",
+      "url": "https://jomcgi.dev/scotland/mcp"
+    }
+  }
+}
