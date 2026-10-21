@@ -37,8 +37,12 @@ const (
 	MaxOptions      = 5
 	MaxCheckItems   = 10
 	MaxDurationH    = 24
+	MaxLengthKm     = 100
 	MaxAscentM      = 3000
-	MaxNameLength   = 100
+	// min_temp_c bounds, in degrees C.
+	MinTempLimitC = -30
+	MaxTempLimitC = 30
+	MaxNameLength = 100
 )
 
 // Alternatives in a check: walks starting within nearbyWalkKm of the checked

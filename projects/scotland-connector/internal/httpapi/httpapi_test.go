@@ -15,6 +15,7 @@ import (
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/meter"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -95,6 +96,7 @@ func TestEnvelopeContract(t *testing.T) {
 		"/v1/plan?lat=57.19&lon=-3.83&radius_km=100&from=2026-10-20&to=2026-10-26&limit=5&max_duration_h=4.5&max_ascent_m=800",
 		"/v1/plan?lat=57.19&lon=-3.83&activities=walk,stargaze",
 		"/v1/plan?lat=57.19&lon=-3.83&activities=walk&activities=stargaze",
+		"/v1/plan?lat=57.19&lon=-3.83&min_duration_h=1&min_length_km=2&max_length_km=20&max_rain_mm_h=0.5&max_wind_kmh=40&min_temp_c=-2",
 	} {
 		rec, body := get(t, h, url)
 		if rec.Code != http.StatusOK {
@@ -155,6 +157,9 @@ func TestCapsAreEnforced(t *testing.T) {
 		"/v1/plan?lat=57&lon=-3.8&activities=ski",
 		"/v1/plan?lat=57&lon=-3.8&max_ascent_m=lots",
 		"/v1/plan?lat=57&lon=-3.8&max_duration_h=0",
+		"/v1/plan?lat=57&lon=-3.8&max_rain_mm_h=3",
+		"/v1/plan?lat=57&lon=-3.8&max_wind_kmh=windy",
+		"/v1/plan?lat=57&lon=-3.8&min_length_km=10&max_length_km=5",
 	} {
 		rec, body := get(t, h, url)
 		errObj, _ := body["error"].(map[string]any)
@@ -176,6 +181,7 @@ func TestCapsAreEnforced(t *testing.T) {
 		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm"}]}]`,
 		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm"}]}}`,
 		`{"items":[{"activity":"walk","date":"2026-10-20"}]}`,
+		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm"}],"max_rain_mm_h":5}`,
 		`{"items":[{"activity":"stargaze","date":"2026-10-20","lat":"57"}]}`,
 		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"` + strings.Repeat("a", maxCheckBody) + `"}]}`,
 	} {
@@ -325,8 +331,16 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 		case "limit":
 			bounds(where, p.Schema, 1, connector.MaxOptions)
 			defaults(where, p.Schema, connector.DefaultOptions)
-		case "max_duration_h":
+		case "min_duration_h", "max_duration_h":
 			bounds(where, p.Schema, 0.5, connector.MaxDurationH)
+		case "min_length_km", "max_length_km":
+			bounds(where, p.Schema, 0.5, connector.MaxLengthKm)
+		case "max_rain_mm_h":
+			bounds(where, p.Schema, 0, walks.ViableMaxPrecipMM)
+		case "max_wind_kmh":
+			bounds(where, p.Schema, 0, walks.ViableMaxWindKmh)
+		case "min_temp_c":
+			bounds(where, p.Schema, connector.MinTempLimitC, connector.MaxTempLimitC)
 		case "max_ascent_m":
 			bounds(where, p.Schema, 1, connector.MaxAscentM)
 		case "from":
@@ -348,12 +362,16 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			t.Errorf("%s required = %v", where, p.Required)
 		}
 	}
-	if len(seen) != 9 {
+	if len(seen) != 15 {
 		t.Errorf("plan parameters = %v", seen)
 	}
 
 	schemas := spec.Components.Schemas
-	items := schemas["CheckRequest"].Properties["items"]
+	req := schemas["CheckRequest"]
+	bounds("CheckRequest.max_rain_mm_h", req.Properties["max_rain_mm_h"], 0, walks.ViableMaxPrecipMM)
+	bounds("CheckRequest.max_wind_kmh", req.Properties["max_wind_kmh"], 0, walks.ViableMaxWindKmh)
+	bounds("CheckRequest.min_temp_c", req.Properties["min_temp_c"], connector.MinTempLimitC, connector.MaxTempLimitC)
+	items := req.Properties["items"]
 	if items.MinItems == nil || *items.MinItems != 1 || items.MaxItems == nil || *items.MaxItems != connector.MaxCheckItems {
 		t.Errorf("CheckRequest.items = %+v", items)
 	}

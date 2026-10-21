@@ -88,6 +88,19 @@ func BenchmarkPlanDefault(b *testing.B) {
 	}
 }
 
+// The widest plan with weather limits, which copy each day's hours.
+func BenchmarkPlanLimited(b *testing.B) {
+	svc := dense(b)
+	p := connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), RadiusKm: f(connector.MaxRadiusKm), To: s("2026-10-25"), Limit: i(connector.MaxOptions),
+		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0.5), MaxWindKmh: f(30)}}
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := svc.Plan(p); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // The widest check: ten items, half walks and half nights, each with its
 // other days and nearby alternatives.
 func BenchmarkCheck(b *testing.B) {

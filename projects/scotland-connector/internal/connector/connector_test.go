@@ -108,7 +108,7 @@ func TestPlanFilters(t *testing.T) {
 	if strings.Contains(sourceNames(env.Meta), "Walkhighlands") || len(env.Meta.Notes) != 1 || env.Meta.DataVersion != `"s1"|"h1"` {
 		t.Fatalf("stargaze only meta = %+v", env.Meta)
 	}
-	env, res = plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, MaxAscentM: i(500), From: s("2026-10-20"), To: s("2026-10-20")})
+	env, res = plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, WalkFilter: connector.WalkFilter{MaxAscentM: i(500)}, From: s("2026-10-20"), To: s("2026-10-20")})
 	if res.Days[0].Walks != nil || !strings.Contains(res.Days[0].WalkNote, "No walk starts within 30 km") || res.Days[0].Stargazing != nil {
 		t.Fatalf("max ascent = %+v", res.Days[0])
 	}
@@ -128,8 +128,8 @@ func TestPlanValidation(t *testing.T) {
 		"to":             {Lat: f(57), Lon: f(-3.8), From: s("2026-10-20"), To: s("2026-10-27")},
 		"to ":            {Lat: f(57), Lon: f(-3.8), From: s("2026-10-20"), To: s("2026-10-19")},
 		"activities":     {Lat: f(57), Lon: f(-3.8), Activities: []string{"ski"}},
-		"max_duration_h": {Lat: f(57), Lon: f(-3.8), MaxDurationH: f(0)},
-		"max_ascent_m":   {Lat: f(57), Lon: f(-3.8), MaxAscentM: i(3001)},
+		"max_duration_h": {Lat: f(57), Lon: f(-3.8), WalkFilter: connector.WalkFilter{MaxDurationH: f(0)}},
+		"max_ascent_m":   {Lat: f(57), Lon: f(-3.8), WalkFilter: connector.WalkFilter{MaxAscentM: i(3001)}},
 		"limit":          {Lat: f(57), Lon: f(-3.8), Limit: i(connector.MaxOptions + 1)},
 	} {
 		_, err := svc.Plan(p)
@@ -317,6 +317,98 @@ func TestCappedSiteOutsideTheTopIsStillUnknown(t *testing.T) {
 	}
 	if it := env.Data.(connector.CheckResult).Items[0]; it.Verdict != verdict.Unknown || it.Night.SiteID != "capped" || it.Night.FromPointKm < 8.5 {
 		t.Fatalf("check = %+v", it)
+	}
+}
+
+// A plan filters walks by time, length and ascent, and checks a minimum
+// against its maximum.
+func TestPlanWalkFilters(t *testing.T) {
+	day := connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-20"), To: s("2026-10-20")}
+	for name, c := range map[string]struct {
+		f    connector.WalkFilter
+		want int
+	}{
+		"none":         {connector.WalkFilter{}, 1},
+		"long walks":   {connector.WalkFilter{MinDurationH: f(5)}, 0},
+		"short walks":  {connector.WalkFilter{MaxDurationH: f(4)}, 1},
+		"length range": {connector.WalkFilter{MinLengthKm: f(5), MaxLengthKm: f(10)}, 1},
+		"too long":     {connector.WalkFilter{MinLengthKm: f(8)}, 0},
+	} {
+		p := day
+		p.WalkFilter = c.f
+		_, res := plan(t, p)
+		if got := len(res.Days[0].Walks); got != c.want {
+			t.Errorf("%s: %d walks %q", name, got, res.Days[0].WalkNote)
+		}
+	}
+	p := day
+	p.WalkFilter = connector.WalkFilter{MinDurationH: f(5), MaxDurationH: f(4)}
+	var pe *connector.ParamError
+	if _, err := fixture.Service(true).Plan(p); !errors.As(err, &pe) || pe.Param != "min_duration_h" {
+		t.Fatalf("min above max: %v", err)
+	}
+	p.WalkFilter = connector.WalkFilter{MaxLengthKm: f(101)}
+	if _, err := fixture.Service(true).Plan(p); !errors.As(err, &pe) || pe.Param != "max_length_km" {
+		t.Fatalf("length cap: %v", err)
+	}
+}
+
+// Weather limits tighten the good hours: a dry walk drops the drizzly
+// hours, and the slot says how wet it is. check shows the slot hour by
+// hour; plan stays compact.
+func TestWeatherLimits(t *testing.T) {
+	walk := connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkID: "wh-meall-a-bhuachaille"}
+	_, items := check(t, walk)
+	slot := items[0].Walk.Slot
+	if items[0].Verdict != verdict.Go || slot.WetHours != 2 || slot.MaxRainMMH != 0.2 || len(slot.Hours) != 6 {
+		t.Fatalf("default slot = %+v", slot)
+	}
+	if h := slot.Hours[1]; !h.Good || h.RainMM == nil || *h.RainMM != 0.1 || h.WindKmh == nil || h.TempC == nil || h.CloudPct == nil {
+		t.Fatalf("hour = %+v", h)
+	}
+	// Dry only: 09:00Z (0.1 mm) and 12:00Z (0.2 mm) drop out, leaving 08:00Z,
+	// 10:00Z and 11:00Z with one bad hour between: fits, but marginal.
+	env, err := fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{walk}, WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := env.Data.(connector.CheckResult)
+	dry := res.Items[0]
+	if dry.Verdict != verdict.Marginal || dry.Walk.Slot.WetHours != 0 || dry.Walk.Slot.Hours[1].Good || dry.Walk.Slot.Hours[1].RainMM != nil {
+		t.Fatalf("dry = %+v %+v", dry, dry.Walk.Slot)
+	}
+	if res.Limits == nil || *res.Limits.MaxRainMMH != 0 {
+		t.Fatalf("limits echo = %+v", res.Limits)
+	}
+	// Calm only: every hour is windier than 10 km/h.
+	env, err = fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{walk}, WeatherLimits: connector.WeatherLimits{MaxWindKmh: f(10)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calm := env.Data.(connector.CheckResult).Items[0]; calm.Verdict != verdict.No || !strings.Contains(calm.Why, "within the limits") {
+		t.Fatalf("calm = %+v", calm)
+	}
+	// plan applies the same limits, echoes them, and leaves out the hours.
+	pe, res2 := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-20"), To: s("2026-10-20"),
+		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0)}})
+	if w := res2.Days[0].Walks; len(w) != 1 || w[0].Verdict != verdict.Marginal || w[0].Slot.Hours != nil || res2.Query.MaxRainMMH == nil {
+		t.Fatalf("plan = %+v %+v", res2.Days[0], res2.Query)
+	}
+	if def, _ := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-20"), To: s("2026-10-20")}); def.ETag == pe.ETag {
+		t.Fatal("limits do not change the plan's ETag")
+	}
+	for param, l := range map[string]connector.WeatherLimits{
+		"max_rain_mm_h": {MaxRainMMH: f(2.5)},
+		"max_wind_kmh":  {MaxWindKmh: f(-1)},
+		"min_temp_c":    {MinTempC: f(31)},
+	} {
+		var perr *connector.ParamError
+		if _, err := fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{walk}, WeatherLimits: l}); !errors.As(err, &perr) || perr.Param != param {
+			t.Errorf("check %s: %v", param, err)
+		}
+		if _, err := fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: l}); !errors.As(err, &perr) || perr.Param != param {
+			t.Errorf("plan %s: %v", param, err)
+		}
 	}
 }
 

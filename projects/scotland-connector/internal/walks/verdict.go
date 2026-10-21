@@ -93,17 +93,24 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 		a.Why = "The hourly forecast reaches only " + localDay(hourlyUntil) + ", with no slot long enough before then."
 		return a
 	case noGoodHour:
-		a.Why = "No dry, calm daylight hour at the start."
-		if d.Started {
-			a.Why = "No dry, calm daylight hour left today at the start."
+		hour, left := "No dry, calm daylight hour", ""
+		if d.Limited {
+			hour = "No daylight hour within the limits"
 		}
-		return a
-	case tooShort:
-		left := ""
 		if d.Started {
 			left = " left today"
 		}
-		a.Why = fmt.Sprintf("The longest good spell%s is %d h; the walk takes about %.1f h.", left, d.Best.GoodHours, w.DurationH)
+		a.Why = hour + left + " at the start."
+		return a
+	case tooShort:
+		spell, left := "good spell", ""
+		if d.Limited {
+			spell = "spell within the limits"
+		}
+		if d.Started {
+			left = " left today"
+		}
+		a.Why = fmt.Sprintf("The longest %s%s is %d h; the walk takes about %.1f h.", spell, left, d.Best.GoodHours, w.DurationH)
 		return a
 	}
 	b := d.Best
@@ -121,7 +128,7 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 		a.StartBy = a.StartFrom
 	}
 	weather := fmt.Sprintf("wind up to %.0f km/h", b.MaxWindKmh)
-	if b.TotalPrecipMM >= 0.1 {
+	if b.TotalPrecipMM >= WetMM {
 		weather += fmt.Sprintf(", %.1f mm of rain", b.TotalPrecipMM)
 	} else {
 		weather += ", dry"

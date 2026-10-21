@@ -26,6 +26,9 @@ type CheckItem struct {
 // CheckParams are the check inputs.
 type CheckParams struct {
 	Items []CheckItem `json:"items"`
+	// WeatherLimits apply to every walk item, its other days and the
+	// walks offered nearby.
+	WeatherLimits
 }
 
 // OtherDay is the same walk or place on another forecast day.
@@ -70,7 +73,9 @@ type CheckResultItem struct {
 
 // CheckResult is check's data.
 type CheckResult struct {
-	Items []CheckResultItem `json:"items"`
+	// Limits echoes the weather limits used, when any were given.
+	Limits *WeatherLimits    `json:"limits,omitempty"`
+	Items  []CheckResultItem `json:"items"`
 }
 
 type checkPlan struct {
@@ -140,7 +145,7 @@ func otherDays(today, asked, last int32, assess func(day int32) (verdict.Verdict
 	return out
 }
 
-func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time) CheckResultItem {
+func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time, lim walks.Limits) CheckResultItem {
 	r := CheckResultItem{Activity: ActivityWalk, Date: cp.item.Date}
 	var w *walks.Walk
 	var also []string
@@ -160,7 +165,8 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time) Chec
 			also = append(also, h.Name)
 		}
 	}
-	o, _ := walkOption(ds, w, cp.day, now)
+	// A check is the close look, so its slot comes back hour by hour.
+	o, _ := walkOption(ds, w, cp.day, now, walkAsk{lim: lim, hours: true})
 	r.Verdict, r.Why = o.Verdict, o.Why
 	r.Walk = &CheckWalk{WalkOption: o, AlsoMatched: also}
 	sky := skyAt(cp.day, w.Lat, w.Lon)
@@ -168,11 +174,11 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time) Chec
 	today := walks.LocalDay(now)
 	last := walks.LocalDay(ds.HourlyUntil)
 	r.OtherDays = otherDays(today, cp.day, last, func(day int32) (verdict.Verdict, string) {
-		a := w.Assess(ds.DayFor(w, day, now), ds.HourlyUntil)
+		a := w.Assess(ds.DayWithin(w, day, now, lim), ds.HourlyUntil)
 		return a.Verdict, a.Why
 	})
 	if o.Verdict != verdict.Go {
-		r.NearbyWalks = nearbyWalks(ds, w, o.Verdict, cp.day, now)
+		r.NearbyWalks = nearbyWalks(ds, w, o.Verdict, cp.day, now, lim)
 	}
 	return r
 }
@@ -181,7 +187,7 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time) Chec
 // within nearbyWalkKm of it and of a similar length (half to one and a half
 // times its time), so they are a substitute for it rather than any walk at
 // all. Nearest first within a verdict.
-func nearbyWalks(ds *walks.Dataset, w *walks.Walk, v verdict.Verdict, day int32, now time.Time) []WalkOption {
+func nearbyWalks(ds *walks.Dataset, w *walks.Walk, v verdict.Verdict, day int32, now time.Time, lim walks.Limits) []WalkOption {
 	var near []walkCandidate
 	for i := range ds.Walks {
 		n := &ds.Walks[i]
@@ -192,7 +198,7 @@ func nearbyWalks(ds *walks.Dataset, w *walks.Walk, v verdict.Verdict, day int32,
 		if dist > nearbyWalkKm {
 			continue
 		}
-		nv := n.Verdict(ds.DayFor(n, day, now))
+		nv := n.Verdict(ds.DayWithin(n, day, now, lim))
 		if nv != verdict.Go && nv != verdict.Marginal || nv.Rank() >= v.Rank() {
 			continue
 		}
@@ -201,7 +207,7 @@ func nearbyWalks(ds *walks.Dataset, w *walks.Walk, v verdict.Verdict, day int32,
 	sort.Slice(near, func(i, j int) bool { return near[i].better(near[j]) })
 	var out []WalkOption
 	for _, c := range near[:min(len(near), 2)] {
-		o, _ := walkOption(ds, c.w, day, now)
+		o, _ := walkOption(ds, c.w, day, now, walkAsk{lim: lim})
 		km := round(c.dist, 1)
 		o.FromPointKm = &km
 		out = append(out, o)
@@ -301,6 +307,10 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	if err != nil {
 		return nil, err
 	}
+	limits, err := weatherLimits(p.WeatherLimits, "")
+	if err != nil {
+		return nil, err
+	}
 	var sky *stars.Dataset
 	var wk *walks.Dataset
 	sources := []Source{sourceMET}
@@ -325,6 +335,9 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 		}
 	}
 	res := CheckResult{Items: make([]CheckResultItem, len(plans))}
+	if limits.walks().Active() {
+		res.Limits = &limits
+	}
 	results := 0
 	for i, cp := range plans {
 		switch {
@@ -333,7 +346,7 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 		case wk == nil:
 			res.Items[i] = CheckResultItem{Activity: ActivityWalk, Date: cp.item.Date, Error: noteWalksLoading}
 		default:
-			res.Items[i] = s.checkWalk(wk, cp, now)
+			res.Items[i] = s.checkWalk(wk, cp, now, limits.walks())
 		}
 		if res.Items[i].Error == "" {
 			results++

@@ -34,7 +34,15 @@ ground are usually colder and windier. For hill days also check the Mountain
 Weather Information Service.
 
 A **good hour** is a daylight hour (between sunrise and sunset at the start)
-with at most 2 mm of rain and wind at most 80 km/h.
+with at most 2 mm of rain and wind at most 80 km/h. 2 mm in an hour is light
+rain, so by default a good hour may be drizzly.
+
+**Weather limits.** `max_rain_mm_h`, `max_wind_kmh` and `min_temp_c`, on
+plan and check, tighten what counts as a good hour to what the person will
+put up with: `max_rain_mm_h=0` asks for dry hours only. The limits apply
+before the slot is found, so they change the verdict, the start window and
+the other days. They can only tighten: the data holds no hour wetter or
+windier than the defaults.
 
 The **slot** is the day's longest run of good hours, with one bad hour
 tolerated inside it. A walk **fits** when the slot holds at least 80% of its
@@ -52,10 +60,17 @@ in the past.
   and no slot long enough has appeared yet.
 
 `start_from` and `start_by` bound the start time that keeps the walk inside
-the slot.
+the slot. The slot carries its highest wind, total rain, wettest hour
+(`max_rain_mm_h`), `wet_hours` (good hours with at least 0.1 mm of rain) and
+temperature range, so an agent can tell a dry slot from a drizzly one. A
+check also returns the slot hour by hour (`hours`): rain, wind, temperature
+and cloud for each good hour, and `good: false` with no weather for the one
+bad hour a slot may hold.
 
-**In a plan**, walks whose start is within `radius_km` of the point are
-assessed for each day; go comes before marginal, then the longest slot, then
+**In a plan**, walks whose start is within `radius_km` of the point, and
+that pass the filters on estimated time (`min_duration_h`,
+`max_duration_h`), length (`min_length_km`, `max_length_km`) and ascent
+(`max_ascent_m`), are assessed for each day; go comes before marginal, then the longest slot, then
 the nearest. Walks that do not fit are left out, and the day's `walk_note`
 says why when none fit.
 

@@ -317,9 +317,15 @@ type Run struct {
 	GoodHours     int
 	MaxWindKmh    float32
 	TotalPrecipMM float32
-	MinTempC      float32
-	MaxTempC      float32
+	MaxPrecipMM   float32
+	// WetHours counts good hours with at least WetMM of rain.
+	WetHours int
+	MinTempC float32
+	MaxTempC float32
 }
+
+// WetMM is the rain in an hour that counts as wet rather than dry.
+const WetMM = 0.1
 
 // Day is one day at one walk. Decided is false when the forecast does not
 // reach far enough to say: no coverage, or partial coverage without a slot
@@ -338,6 +344,37 @@ type Day struct {
 	// that every answer within the hour is the same.
 	From    time.Time
 	Started bool
+	// Limited reports that the caller's Limits narrowed the good hours.
+	Limited bool
+}
+
+// Limits tighten what counts as a good hour beyond the snapshot's own test
+// (at most ViableMaxPrecipMM of rain and ViableMaxWindKmh of wind): for a
+// caller who wants it dry, calm or mild. A nil field leaves that test alone.
+// The snapshot holds good hours only, so limits can tighten the test but
+// never loosen it.
+type Limits struct {
+	MaxPrecipMM, MaxWindKmh, MinTempC *float64
+}
+
+// The snapshot's own good-hour test, applied by the hikes job before an hour
+// is stored (projects/monolith/hikes/forecast.py).
+const (
+	ViableMaxPrecipMM = 2.0
+	ViableMaxWindKmh  = 80.0
+)
+
+// Active reports whether any limit is set.
+func (l Limits) Active() bool {
+	return l.MaxPrecipMM != nil || l.MaxWindKmh != nil || l.MinTempC != nil
+}
+
+// allows compares at the hours' own float32 precision, so a limit of 0.2 mm
+// admits an hour stored as 0.2 mm.
+func (l Limits) allows(h Hour) bool {
+	return (l.MaxPrecipMM == nil || h.PrecipMM <= float32(*l.MaxPrecipMM)) &&
+		(l.MaxWindKmh == nil || h.WindKmh <= float32(*l.MaxWindKmh)) &&
+		(l.MinTempC == nil || h.TempC >= float32(*l.MinTempC))
 }
 
 // longestRun is _longest_good_run: the longest run of good hours allowing
@@ -370,7 +407,7 @@ func longestRun(hours []Hour) (count, start, end int) {
 
 // dayAt is the walk's assessed day: its good hours from cutoff (a Unix
 // time, the next top of the hour) on, and whether it can be decided.
-func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage) Day {
+func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage, lim Limits) Day {
 	hours := w.Hours
 	lo := sort.Search(len(hours), func(j int) bool { return hours[j].Day >= day })
 	hi := sort.Search(len(hours), func(j int) bool { return hours[j].Day > day })
@@ -379,8 +416,18 @@ func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage) Day {
 	for len(dayHours) > 0 && dayHours[0].Unix < cutoff {
 		dayHours = dayHours[1:]
 	}
+	if lim.Active() {
+		kept := make([]Hour, 0, len(dayHours))
+		for _, h := range dayHours {
+			if lim.allows(h) {
+				kept = append(kept, h)
+			}
+		}
+		dayHours = kept
+	}
 	d := w.day(day, dayHours)
 	d.Started = started
+	d.Limited = lim.Active()
 	d.Coverage = coverage
 	d.Decided = coverage == CoverageFull || d.Doable
 	return d
@@ -390,11 +437,16 @@ func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage) Day {
 // begun count: an hour already under way is not a full good hour left, and
 // counting it would offer a start window in the past.
 func (d *Dataset) DayFor(w *Walk, day int32, now time.Time) Day {
+	return d.DayWithin(w, day, now, Limits{})
+}
+
+// DayWithin is DayFor with the caller's limits on what counts as a good hour.
+func (d *Dataset) DayWithin(w *Walk, day int32, now time.Time, lim Limits) Day {
 	cutoff := now.Truncate(time.Hour)
 	if cutoff.Before(now) {
 		cutoff = cutoff.Add(time.Hour)
 	}
-	dw := w.dayAt(day, cutoff.Unix(), d.CoverageOf(day))
+	dw := w.dayAt(day, cutoff.Unix(), d.CoverageOf(day), lim)
 	dw.From = cutoff
 	return dw
 }
@@ -460,6 +512,10 @@ func (w *Walk) day(day int32, hours []Hour) Day {
 	for _, h := range hours[s : e+1] {
 		r.MaxWindKmh = max(r.MaxWindKmh, h.WindKmh)
 		r.TotalPrecipMM += h.PrecipMM
+		r.MaxPrecipMM = max(r.MaxPrecipMM, h.PrecipMM)
+		if h.PrecipMM >= WetMM {
+			r.WetHours++
+		}
 		r.MinTempC = min(r.MinTempC, h.TempC)
 		r.MaxTempC = max(r.MaxTempC, h.TempC)
 	}
