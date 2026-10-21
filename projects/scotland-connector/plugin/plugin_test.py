@@ -1,5 +1,4 @@
-"""The staged plugin (copied to its own repository for the listings, #7255)
-must stay one plugin: the Claude Code and OpenAI manifests agree on name and
+"""The plugin (listed from this folder, #7255) must stay one plugin: the Claude Code and OpenAI manifests agree on name and
 version, both MCP configs point at the live connector, and the directory
 listing URLs are the jomcgi.dev pages that exist."""
 

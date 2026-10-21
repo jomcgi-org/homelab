@@ -1,7 +1,7 @@
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
-# The Claude Code and OpenAI plugin for the connector, staged here and
-# copied to its own repository for the directory listings (#7255).
+# The Claude Code and OpenAI plugin for the connector. It stays in this
+# repository; see the Listings section of ../ARCHITECTURE.md (#7255).
 py_test(
     name = "plugin_test",
     srcs = ["plugin_test.py"],
