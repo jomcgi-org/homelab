@@ -27,7 +27,6 @@ advisory work, not authority) and the self-releasing kinds above.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -35,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import select
 
 from core.clock import aware
+from factory.orchestration import factory_controls as controls
 
 logger = logging.getLogger(__name__)
 
@@ -109,14 +109,6 @@ def _items(db, watermark: int) -> list:
     ).all()
 
 
-def _detail(row) -> dict:
-    try:
-        value = json.loads(row.detail_json or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def sections(rows) -> dict[str, list[str]]:
     """The digest lines, by section, from audit rows past the watermark."""
     out: dict[str, list[str]] = {
@@ -127,7 +119,7 @@ def sections(rows) -> dict[str, list[str]]:
         "notices": [],
     }
     for row in rows:
-        detail = _detail(row)
+        detail = controls.audit_detail(row)
         task = row.task_id or "?"
         if row.action == "funding_granted":
             # Only the judge's own merit grants are auto-approvals; a dispatch
@@ -241,7 +233,7 @@ def digest_tick() -> str:
         else:
             if aware(last.created_at) > now - DIGEST_INTERVAL:
                 return "not_due"
-            watermark = _detail(last).get("watermark", 0)
+            watermark = controls.audit_detail(last).get("watermark", 0)
         if (
             failed is not None
             and (last is None or failed.id > last.id)
