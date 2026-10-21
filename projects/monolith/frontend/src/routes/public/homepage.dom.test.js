@@ -125,6 +125,30 @@ describe("homepage unit", () => {
     );
   });
 
+  it("never reads out on the phone layout, where the glass fits the name", async () => {
+    window.happyDOM.setViewport({ width: 390, height: 800 });
+    try {
+      instance = mount(Homepage, {
+        target,
+        props: { data: { stats: null, posts } },
+      });
+      await tick();
+      const pad = target.querySelector('nav[aria-label="Site"]');
+      const cv = pad.querySelector('a[href="/cv"]');
+      hover(cv);
+      await tick();
+      expect(target.querySelector(".glass p.big")).toBeNull();
+      cv.dispatchEvent(new FocusEvent("focus"));
+      await tick();
+      expect(target.querySelector(".glass p.big")).toBeNull();
+      expect(target.querySelector("h1").classList.contains("sr-only")).toBe(
+        false,
+      );
+    } finally {
+      window.happyDOM.setViewport({ width: 1024, height: 768 });
+    }
+  });
+
   it("lists the latest posts as legends and reads them out on hover", async () => {
     instance = mount(Homepage, {
       target,
