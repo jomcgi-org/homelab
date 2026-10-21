@@ -432,9 +432,11 @@ func TestWeatherLimits(t *testing.T) {
 		t.Errorf("stargaze-only limits echo: %v", err)
 	}
 	for param, l := range map[string]connector.WeatherLimits{
-		"max_rain_mm_h": {MaxRainMMH: f(10.5)},
-		"max_wind_kmh":  {MaxWindKmh: f(-1)},
-		"min_temp_c":    {MinTempC: f(31)},
+		"max_rain_mm_h":       {MaxRainMMH: f(10.5)},
+		"max_wind_kmh":        {MaxWindKmh: f(-1)},
+		"min_temp_c":          {MinTempC: f(31)},
+		"max_gust_kmh":        {MaxGustKmh: f(151)},
+		"max_rain_chance_pct": {MaxRainChancePct: f(-1)},
 	} {
 		var perr *connector.ParamError
 		if _, err := fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{walk}, WeatherLimits: l}); !errors.As(err, &perr) || perr.Param != param {
@@ -538,6 +540,20 @@ func TestGustLimitsNeedTheFullData(t *testing.T) {
 	_, err = fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: connector.WeatherLimits{MaxRainChancePct: f(30)}})
 	if !errors.As(err, &pe) || pe.Param != "max_rain_chance_pct" {
 		t.Fatalf("plan: %v", err)
+	}
+	// Loosening past the defaults needs every daylight hour too.
+	_, err = fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}},
+		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(5)}})
+	if !errors.As(err, &pe) || pe.Param != "max_rain_mm_h" {
+		t.Fatalf("loosened rain on v1: %v", err)
+	}
+	_, err = fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: connector.WeatherLimits{MaxWindKmh: f(90)}})
+	if !errors.As(err, &pe) || pe.Param != "max_wind_kmh" {
+		t.Fatalf("loosened wind on v1: %v", err)
+	}
+	// Tightening, and limits at the default, still work on v1.
+	if _, err := fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(2), MaxWindKmh: f(50)}}); err != nil {
+		t.Fatalf("tightened on v1: %v", err)
 	}
 	// Stargazing alone does not need walk data, so the limit is moot there.
 	if _, err := fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"stargaze"}, WeatherLimits: connector.WeatherLimits{MaxGustKmh: f(50)}}); err != nil {
