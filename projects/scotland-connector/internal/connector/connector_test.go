@@ -374,8 +374,12 @@ func TestWeatherLimits(t *testing.T) {
 	}
 	res := env.Data.(connector.CheckResult)
 	dry := res.Items[0]
-	if dry.Verdict != verdict.Marginal || dry.Walk.Slot.WetHours != 0 || dry.Walk.Slot.Hours[1].Good || dry.Walk.Slot.Hours[1].RainMM != nil {
-		t.Fatalf("dry = %+v %+v", dry, dry.Walk.Slot)
+	// The hour turned away keeps its known weather, so an agent can see it
+	// was drizzle, and the why names it.
+	gap := dry.Walk.Slot.Hours[1]
+	if dry.Verdict != verdict.Marginal || dry.Walk.Slot.WetHours != 0 || gap.Good || !gap.OutsideLimits || gap.RainMM == nil || *gap.RainMM != 0.1 ||
+		!strings.Contains(dry.Why, "one hour outside the limits") || !strings.Contains(dry.Why, "otherwise dry") {
+		t.Fatalf("dry = %+v %+v", dry, gap)
 	}
 	if res.Limits == nil || *res.Limits.MaxRainMMH != 0 {
 		t.Fatalf("limits echo = %+v", res.Limits)
@@ -398,6 +402,27 @@ func TestWeatherLimits(t *testing.T) {
 	}
 	if def, _ := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-20"), To: s("2026-10-20")}); def.ETag == pe.ETag {
 		t.Fatal("limits do not change the plan's ETag")
+	}
+	// Limits round to the data's 0.1 in their strict direction, never
+	// admitting an hour the caller ruled out.
+	for _, c := range []struct {
+		in   connector.WeatherLimits
+		want connector.WeatherLimits
+	}{
+		{connector.WeatherLimits{MaxRainMMH: f(0.05), MaxWindKmh: f(15.56), MinTempC: f(2.41)}, connector.WeatherLimits{MaxRainMMH: f(0), MaxWindKmh: f(15.5), MinTempC: f(2.5)}},
+		{connector.WeatherLimits{MaxRainMMH: f(0.3), MinTempC: f(9.5)}, connector.WeatherLimits{MaxRainMMH: f(0.3), MinTempC: f(9.5)}},
+	} {
+		_, r := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: c.in})
+		got, want := r.Query.WeatherLimits, c.want
+		eq := func(a, b *float64) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
+		if !eq(got.MaxRainMMH, want.MaxRainMMH) || !eq(got.MaxWindKmh, want.MaxWindKmh) || !eq(got.MinTempC, want.MinTempC) {
+			t.Errorf("limits %v rounded to %+v", c.in, got)
+		}
+	}
+	// A check of stargazing alone echoes no walk limits.
+	if env, err := fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-19", Lat: f(57.3), Lon: f(-3.7)}},
+		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0)}}); err != nil || env.Data.(connector.CheckResult).Limits != nil {
+		t.Errorf("stargaze-only limits echo: %v", err)
 	}
 	for param, l := range map[string]connector.WeatherLimits{
 		"max_rain_mm_h": {MaxRainMMH: f(2.5)},

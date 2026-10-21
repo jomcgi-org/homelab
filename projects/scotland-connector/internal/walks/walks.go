@@ -344,8 +344,45 @@ type Day struct {
 	// that every answer within the hour is the same.
 	From    time.Time
 	Started bool
-	// Limited reports that the caller's Limits narrowed the good hours.
+	// Limited reports that the caller's Limits narrowed the good hours, and
+	// All is the day's hours before they did: hours the limits turned away
+	// are daylight with known weather, not darkness or bad weather.
 	Limited bool
+	All     []Hour
+	// NoEarlyStart reports that the hour before the slot is daylight the
+	// limits turned away, so a walk that needs more than the slot cannot
+	// start early in the dark; GapOutsideLimits that the slot's one bad hour
+	// is such an hour.
+	NoEarlyStart     bool
+	GapOutsideLimits bool
+}
+
+// limitedEdges applies the dark-shoulder credit only where the slot can
+// meet darkness: an hour the limits turned away is daylight the person ruled
+// out. With both edges turned away the credit is void.
+func (w *Walk) limitedEdges(d *Day) {
+	good := make(map[int64]bool, len(d.Hours))
+	for _, h := range d.Hours {
+		good[h.Unix] = true
+	}
+	turnedAway := func(t int64) bool {
+		for _, h := range d.All {
+			if h.Unix == t {
+				return !good[t]
+			}
+		}
+		return false
+	}
+	start, end := d.Best.Start.Unix(), d.Best.End.Unix()
+	d.NoEarlyStart = turnedAway(start - 3600)
+	if d.NoEarlyStart && turnedAway(end) {
+		d.Doable = float64(d.Best.GoodHours) >= w.required-requirementEpsilon
+	}
+	for t := start; t < end; t += 3600 {
+		if !good[t] && turnedAway(t) {
+			d.GapOutsideLimits = true
+		}
+	}
 }
 
 // Limits tighten what counts as a good hour beyond the snapshot's own test
@@ -416,6 +453,7 @@ func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage, lim Limits) Day
 	for len(dayHours) > 0 && dayHours[0].Unix < cutoff {
 		dayHours = dayHours[1:]
 	}
+	all := dayHours
 	if lim.Active() {
 		kept := make([]Hour, 0, len(dayHours))
 		for _, h := range dayHours {
@@ -426,8 +464,12 @@ func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage, lim Limits) Day
 		dayHours = kept
 	}
 	d := w.day(day, dayHours)
+	d.All = all
 	d.Started = started
 	d.Limited = lim.Active()
+	if d.Limited && d.Best != nil {
+		w.limitedEdges(&d)
+	}
 	d.Coverage = coverage
 	d.Decided = coverage == CoverageFull || d.Doable
 	return d

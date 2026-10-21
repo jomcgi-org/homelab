@@ -40,9 +40,14 @@ rain, so by default a good hour may be drizzly.
 **Weather limits.** `max_rain_mm_h`, `max_wind_kmh` and `min_temp_c`, on
 plan and check, tighten what counts as a good hour to what the person will
 put up with: `max_rain_mm_h=0` asks for dry hours only. The limits apply
-before the slot is found, so they change the verdict, the start window and
-the other days. They can only tighten: the data holds no hour wetter or
-windier than the defaults.
+before the slot is found, so they change the verdict, the start window, the
+other days and the walks offered nearby. They can only tighten: the data
+holds no hour wetter or windier than the defaults. Each limit rounds to the
+data's 0.1 in its strict direction (a maximum down, a minimum up), so
+rounding never admits an hour the caller ruled out. An hour the limits turn
+away is daylight, so a long walk's dark credit does not cover it: when both
+edges of the slot are such hours the credit is void, and when only the hour
+before is, the walk starts with the slot and finishes in the dark.
 
 The **slot** is the day's longest run of good hours, with one bad hour
 tolerated inside it. A walk **fits** when the slot holds at least 80% of its
@@ -62,10 +67,12 @@ in the past.
 `start_from` and `start_by` bound the start time that keeps the walk inside
 the slot. The slot carries its highest wind, total rain, wettest hour
 (`max_rain_mm_h`), `wet_hours` (good hours with at least 0.1 mm of rain) and
-temperature range, so an agent can tell a dry slot from a drizzly one. A
-check also returns the slot hour by hour (`hours`): rain, wind, temperature
-and cloud for each good hour, and `good: false` with no weather for the one
-bad hour a slot may hold.
+temperature range across its good hours, so an agent can tell a dry slot
+from a drizzly one. A check also returns the checked walk's slot hour by
+hour (`hours`): rain, wind, temperature and cloud for each good hour. The
+one bad hour a slot may hold is `good: false`; it keeps its weather, with
+`outside_limits: true`, when the caller's limits turned it away, and has
+none when it failed the defaults, since the data stores no such hour.
 
 **In a plan**, walks whose start is within `radius_km` of the point, and
 that pass the filters on estimated time (`min_duration_h`,

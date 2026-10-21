@@ -307,7 +307,7 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	if err != nil {
 		return nil, err
 	}
-	limits, err := weatherLimits(p.WeatherLimits, "")
+	limits, err := weatherLimits(p.WeatherLimits)
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +335,7 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 		}
 	}
 	res := CheckResult{Items: make([]CheckResultItem, len(plans))}
-	if limits.walks().Active() {
+	if walk && limits.walks().Active() {
 		res.Limits = &limits
 	}
 	results := 0

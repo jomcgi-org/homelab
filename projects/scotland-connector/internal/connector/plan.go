@@ -178,7 +178,7 @@ func planQuery(p PlanParams, today, tonight int32) (q PlanQuery, from, to int32,
 	if q.WalkFilter, err = walkFilter(p.WalkFilter); err != nil {
 		return
 	}
-	if q.WeatherLimits, err = weatherLimits(p.WeatherLimits, ""); err != nil {
+	if q.WeatherLimits, err = weatherLimits(p.WeatherLimits); err != nil {
 		return
 	}
 	q.Limit = DefaultOptions

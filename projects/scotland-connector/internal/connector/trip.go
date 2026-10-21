@@ -46,21 +46,23 @@ type SlotOut struct {
 	WetHours int     `json:"wet_hours"`
 	MinTempC float32 `json:"min_temp_c"`
 	MaxTempC float32 `json:"max_temp_c"`
-	// Hours is the slot hour by hour; check returns it, plan leaves it out
-	// to stay compact.
+	// Hours is the slot hour by hour for the checked walk in a check; plan
+	// and the alternatives a check offers leave it out to stay compact.
 	Hours []SlotHour `json:"hours,omitempty"`
 }
 
 // SlotHour is one hour of a slot. The one bad hour a slot may hold is
-// marked good false and carries no weather: the snapshot stores good hours
-// only.
+// marked good false. It carries its weather when the caller's limits turned
+// it away; when it failed the default test it carries none, since the data
+// stores no such hour.
 type SlotHour struct {
-	Time     string   `json:"time"`
-	Good     bool     `json:"good"`
-	RainMM   *float32 `json:"rain_mm,omitempty"`
-	WindKmh  *float32 `json:"wind_kmh,omitempty"`
-	TempC    *float32 `json:"temp_c,omitempty"`
-	CloudPct *float32 `json:"cloud_pct,omitempty"`
+	Time          string   `json:"time"`
+	Good          bool     `json:"good"`
+	OutsideLimits bool     `json:"outside_limits,omitempty"`
+	RainMM        *float32 `json:"rain_mm,omitempty"`
+	WindKmh       *float32 `json:"wind_kmh,omitempty"`
+	TempC         *float32 `json:"temp_c,omitempty"`
+	CloudPct      *float32 `json:"cloud_pct,omitempty"`
 }
 
 // WalkFacts identify a Walkhighlands walk; url has the route.
@@ -165,14 +167,18 @@ func slotOut(d *walks.Day, withHours bool) *SlotOut {
 	if !withHours {
 		return out
 	}
-	byTime := make(map[int64]walks.Hour, len(d.Hours))
+	good := make(map[int64]bool, len(d.Hours))
 	for _, h := range d.Hours {
-		byTime[h.Unix] = h
+		good[h.Unix] = true
+	}
+	known := make(map[int64]walks.Hour, len(d.All))
+	for _, h := range d.All {
+		known[h.Unix] = h
 	}
 	for t := r.Start.Unix(); t < r.End.Unix(); t += 3600 {
-		sh := SlotHour{Time: rfc3339(time.Unix(t, 0))}
-		if h, ok := byTime[t]; ok {
-			sh.Good = true
+		sh := SlotHour{Time: rfc3339(time.Unix(t, 0)), Good: good[t]}
+		if h, ok := known[t]; ok {
+			sh.OutsideLimits = !sh.Good
 			sh.RainMM, sh.WindKmh, sh.TempC, sh.CloudPct = f32(h.PrecipMM), f32(h.WindKmh), f32(h.TempC), f32(h.CloudPct)
 		}
 		out.Hours = append(out.Hours, sh)
@@ -215,26 +221,37 @@ func rounded(v *float64, places int) *float64 {
 	return &r
 }
 
-// weatherLimits validates and rounds the limits, naming params with prefix.
-func weatherLimits(l WeatherLimits, prefix string) (WeatherLimits, error) {
+// strict rounds a limit to the data's 0.1 precision in its strict
+// direction, so rounding never admits an hour the caller ruled out: a
+// maximum rounds down and a minimum up. The epsilon keeps 0.3 at 0.3.
+func strict(v float64, isMax bool) *float64 {
+	r := math.Ceil(v*10-1e-9) / 10
+	if isMax {
+		r = math.Floor(v*10+1e-9) / 10
+	}
+	return &r
+}
+
+// weatherLimits validates the limits and rounds them strictly.
+func weatherLimits(l WeatherLimits) (WeatherLimits, error) {
 	var out WeatherLimits
 	if v := l.MaxRainMMH; v != nil {
 		if math.IsNaN(*v) || *v < 0 || *v > walks.ViableMaxPrecipMM {
-			return out, &ParamError{prefix + "max_rain_mm_h", fmt.Sprintf("between 0 and %g: the data holds only hours with at most %g mm", walks.ViableMaxPrecipMM, walks.ViableMaxPrecipMM)}
+			return out, &ParamError{"max_rain_mm_h", fmt.Sprintf("between 0 and %g: the data holds only hours with at most %g mm", walks.ViableMaxPrecipMM, walks.ViableMaxPrecipMM)}
 		}
-		out.MaxRainMMH = rounded(v, 1)
+		out.MaxRainMMH = strict(*v, true)
 	}
 	if v := l.MaxWindKmh; v != nil {
 		if math.IsNaN(*v) || *v < 0 || *v > walks.ViableMaxWindKmh {
-			return out, &ParamError{prefix + "max_wind_kmh", fmt.Sprintf("between 0 and %g: the data holds only hours with wind at most %g km/h", walks.ViableMaxWindKmh, walks.ViableMaxWindKmh)}
+			return out, &ParamError{"max_wind_kmh", fmt.Sprintf("between 0 and %g: the data holds only hours with wind at most %g km/h", walks.ViableMaxWindKmh, walks.ViableMaxWindKmh)}
 		}
-		out.MaxWindKmh = rounded(v, 0)
+		out.MaxWindKmh = strict(*v, true)
 	}
 	if v := l.MinTempC; v != nil {
 		if math.IsNaN(*v) || *v < MinTempLimitC || *v > MaxTempLimitC {
-			return out, &ParamError{prefix + "min_temp_c", fmt.Sprintf("between %d and %d", MinTempLimitC, MaxTempLimitC)}
+			return out, &ParamError{"min_temp_c", fmt.Sprintf("between %d and %d", MinTempLimitC, MaxTempLimitC)}
 		}
-		out.MinTempC = rounded(v, 0)
+		out.MinTempC = strict(*v, false)
 	}
 	return out, nil
 }
