@@ -105,6 +105,11 @@ type Dataset struct {
 	HourlyUntil time.Time
 	// Skipped counts snapshot rows left out for missing fields.
 	Skipped int
+	// fullThrough and noneFrom index CoverageOf: days up to fullThrough are
+	// full, days from noneFrom have none, and the rest are partial. A plan
+	// asks for every walk on every day, so the answer is worked out once.
+	fullThrough, noneFrom int32
+	indexed               bool
 }
 
 type doc struct {
@@ -184,6 +189,7 @@ func Parse(body []byte, version string) (*Dataset, error) {
 			ds.HourlyUntil = end
 		}
 	}
+	ds.indexCoverage()
 	return ds, nil
 }
 
@@ -203,6 +209,35 @@ func localHour(day int32, hour int) time.Time {
 
 // CoverageOf is how much of day's daylight lies before the hourly horizon.
 func (d *Dataset) CoverageOf(day int32) Coverage {
+	if !d.indexed {
+		return d.coverage(day)
+	}
+	switch {
+	case day <= d.fullThrough:
+		return CoverageFull
+	case day >= d.noneFrom:
+		return CoverageNone
+	}
+	return CoveragePartial
+}
+
+// indexCoverage fills the CoverageOf index. Coverage only falls as days get
+// later, so the two boundaries sit either side of the horizon's own day.
+func (d *Dataset) indexCoverage() {
+	h := LocalDay(d.HourlyUntil)
+	d.fullThrough, d.noneFrom = h-2, h+2
+	for day := h - 1; day <= h+1; day++ {
+		switch d.coverage(day) {
+		case CoverageFull:
+			d.fullThrough = day
+		case CoverageNone:
+			d.noneFrom = min(d.noneFrom, day)
+		}
+	}
+	d.indexed = true
+}
+
+func (d *Dataset) coverage(day int32) Coverage {
 	switch {
 	case !d.HourlyUntil.Before(localHour(day, daylightEndHour)):
 		return CoverageFull
@@ -210,32 +245,6 @@ func (d *Dataset) CoverageOf(day int32) Coverage {
 		return CoverageNone
 	}
 	return CoveragePartial
-}
-
-// Query is one walk_windows question; the connector validates it.
-type Query struct {
-	// HasPoint is false for a name-only search, which has no radius and no
-	// distances.
-	HasPoint     bool
-	Lat, Lon     float64
-	RadiusKm     float64
-	Days         int
-	Limit        int
-	MaxDurationH float64 // 0 means no limit
-	MaxAscentM   int     // 0 means no limit
-	// Date, when set, is the one day asked about (a LocalDay); Days is then 1.
-	Date int32
-	// Name, when set, keeps only walks whose name matches (see Match).
-	Name string
-	Now  time.Time
-}
-
-// FirstDay is the query's first day: Date, or today in UK time.
-func (q Query) FirstDay() int32 {
-	if q.Date != 0 {
-		return q.Date
-	}
-	return LocalDay(q.Now)
 }
 
 // folds maps the accented letters used in Scottish and Gaelic walk names to
@@ -274,8 +283,11 @@ func Normalize(s string) string {
 // Match scores a walk name against a normalized query: 0 is no match, 1 is
 // every query word starting a word of the name, 2 is the name starting with
 // the whole query ("ben nevis" against "Ben Nevis by the Mountain Path").
-func (w *Walk) Match(query string) int {
-	q := strings.Fields(query)
+func (w *Walk) Match(query string) int { return w.match(query, strings.Fields(query)) }
+
+// match is Match with the query already split into words, so a search over
+// every walk splits it once.
+func (w *Walk) match(query string, q []string) int {
 	if len(q) == 0 {
 		return 0
 	}
@@ -295,16 +307,6 @@ func (w *Walk) Match(query string) int {
 		return 2
 	}
 	return 1
-}
-
-// DayNames lists the covered days.
-func (q Query) DayNames() []string {
-	first := q.FirstDay()
-	out := make([]string, q.Days)
-	for i := range out {
-		out[i] = DayName(first + int32(i))
-	}
-	return out
 }
 
 // Run is the best slot on one day: its first and last good hour, how many
@@ -330,19 +332,6 @@ type Day struct {
 	GoodHours int
 	Best      *Run
 	Hours     []Hour
-}
-
-// Result is one ranked walk.
-type Result struct {
-	Walk *Walk
-	// DistanceKm is from the query point; meaningless without HasPoint.
-	DistanceKm float64
-	// NameScore is Match's score for a name query, else 0.
-	NameScore  int
-	DoableDays int
-	Days       []Day
-	firstOK    int32
-	goodHours  int
 }
 
 // longestRun is _longest_good_run: the longest run of good hours allowing
@@ -373,6 +362,75 @@ func longestRun(hours []Hour) (count, start, end int) {
 	return best, bestStart, bestEnd
 }
 
+// dayAt is the walk's assessed day: its good hours from cutoff (a Unix
+// time, the top of the current hour) on, and whether it can be decided.
+func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage) Day {
+	hours := w.Hours
+	lo := sort.Search(len(hours), func(j int) bool { return hours[j].Day >= day })
+	hi := sort.Search(len(hours), func(j int) bool { return hours[j].Day > day })
+	dayHours := hours[lo:hi]
+	for len(dayHours) > 0 && dayHours[0].Unix < cutoff {
+		dayHours = dayHours[1:]
+	}
+	d := w.day(day, dayHours)
+	d.Coverage = coverage
+	d.Decided = coverage == CoverageFull || d.Doable
+	return d
+}
+
+// DayFor is one walk's assessed day as of now.
+func (d *Dataset) DayFor(w *Walk, day int32, now time.Time) Day {
+	return w.dayAt(day, now.Truncate(time.Hour).Unix(), d.CoverageOf(day))
+}
+
+// ByID is the walk with id, or nil.
+func (d *Dataset) ByID(id string) *Walk {
+	for i := range d.Walks {
+		if d.Walks[i].ID == id {
+			return &d.Walks[i]
+		}
+	}
+	return nil
+}
+
+// Named lists the walks matching a normalized name query, best match first
+// (Match's score, then shorter names, then id).
+func (d *Dataset) Named(query string) []*Walk {
+	type hit struct {
+		w     *Walk
+		score int
+	}
+	var hits []hit
+	words := strings.Fields(query)
+	for i := range d.Walks {
+		if s := d.Walks[i].match(query, words); s > 0 {
+			hits = append(hits, hit{&d.Walks[i], s})
+		}
+	}
+	sort.Slice(hits, func(i, j int) bool {
+		a, b := hits[i], hits[j]
+		if a.score != b.score {
+			return a.score > b.score
+		}
+		if len(a.w.nameKey) != len(b.w.nameKey) {
+			return len(a.w.nameKey) < len(b.w.nameKey)
+		}
+		return a.w.ID < b.w.ID
+	})
+	out := make([]*Walk, len(hits))
+	for i, h := range hits {
+		out[i] = h.w
+	}
+	return out
+}
+
+// DistanceKm is the distance from a point to the walk's start.
+func (w *Walk) DistanceKm(lat, lon float64) float64 {
+	dy := (w.Lat - lat) * kmPerDegLat
+	dx := (w.Lon - lon) * kmPerDegLat * (math.Cos(lat*math.Pi/180) + w.cosLat) / 2
+	return math.Sqrt(dx*dx + dy*dy)
+}
+
 func (w *Walk) day(day int32, hours []Hour) Day {
 	d := Day{Day: day, GoodHours: len(hours), Hours: hours}
 	n, s, e := longestRun(hours)
@@ -392,98 +450,4 @@ func (w *Walk) day(day int32, hours []Hour) Day {
 	d.Best = r
 	d.Doable = float64(n+w.shoulderHr) >= w.required-requirementEpsilon
 	return d
-}
-
-// FirstDoable is the earliest doable day, if any.
-func (r *Result) FirstDoable() (Day, bool) {
-	for _, d := range r.Days {
-		if d.Doable {
-			return d, true
-		}
-	}
-	return Day{}, false
-}
-
-func better(a, b *Result) bool {
-	if a.NameScore != b.NameScore {
-		return a.NameScore > b.NameScore
-	}
-	if a.DoableDays != b.DoableDays {
-		return a.DoableDays > b.DoableDays
-	}
-	if a.firstOK != b.firstOK {
-		return a.firstOK < b.firstOK
-	}
-	if a.goodHours != b.goodHours {
-		return a.goodHours > b.goodHours
-	}
-	if a.DistanceKm != b.DistanceKm {
-		return a.DistanceKm < b.DistanceKm
-	}
-	return a.Walk.ID < b.Walk.ID
-}
-
-// Windows ranks the walks within the radius: most doable days first, then
-// the earliest doable day, then the most good hours, then the nearest.
-func (d *Dataset) Windows(q Query) []Result {
-	first := q.FirstDay()
-	last := first + int32(q.Days) - 1
-	cutoff := q.Now.Truncate(time.Hour).Unix()
-	cosQ := math.Cos(q.Lat * math.Pi / 180)
-	coverage := make([]Coverage, q.Days)
-	for i := range coverage {
-		coverage[i] = d.CoverageOf(first + int32(i))
-	}
-	var out []Result
-	for i := range d.Walks {
-		w := &d.Walks[i]
-		if q.MaxDurationH > 0 && w.DurationH > q.MaxDurationH {
-			continue
-		}
-		if q.MaxAscentM > 0 && w.AscentM > q.MaxAscentM {
-			continue
-		}
-		score := 0
-		if q.Name != "" {
-			if score = w.Match(q.Name); score == 0 {
-				continue
-			}
-		}
-		var dist float64
-		if q.HasPoint {
-			dy := (w.Lat - q.Lat) * kmPerDegLat
-			dx := (w.Lon - q.Lon) * kmPerDegLat * (cosQ + w.cosLat) / 2
-			dist = math.Sqrt(dx*dx + dy*dy)
-			if dist > q.RadiusKm {
-				continue
-			}
-		}
-		r := Result{Walk: w, DistanceKm: dist, NameScore: score, Days: make([]Day, 0, q.Days), firstOK: math.MaxInt32}
-		hours := w.Hours
-		for day := first; day <= last; day++ {
-			lo := sort.Search(len(hours), func(j int) bool { return hours[j].Day >= day })
-			hi := sort.Search(len(hours), func(j int) bool { return hours[j].Day > day })
-			dayHours := hours[lo:hi]
-			for len(dayHours) > 0 && dayHours[0].Unix < cutoff {
-				dayHours = dayHours[1:]
-			}
-			dw := w.day(day, dayHours)
-			dw.Coverage = coverage[day-first]
-			dw.Decided = dw.Coverage == CoverageFull || dw.Doable
-			if dw.Doable {
-				r.DoableDays++
-				if day < r.firstOK {
-					r.firstOK = day
-				}
-			}
-			r.goodHours += dw.GoodHours
-			r.Days = append(r.Days, dw)
-		}
-		out = append(out, r)
-	}
-	sort.Slice(out, func(i, j int) bool { return better(&out[i], &out[j]) })
-	if len(out) > q.Limit {
-		out = out[:q.Limit]
-	}
-	return out
 }

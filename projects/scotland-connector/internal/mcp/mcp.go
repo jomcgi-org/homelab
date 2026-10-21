@@ -72,10 +72,10 @@ type Handler struct {
 }
 
 // Instructions are returned by server/discover and initialize.
-const Instructions = "Read-only answers to Scottish outdoor questions from forecast and climatology data. " +
-	"Use dark_sky_windows for where and when to stargaze and walk_windows for which walks fit the weather, " +
-	"with the coordinates of the place the person means. " +
-	"Every result carries meta.sources: credit them when you present the data."
+const Instructions = "Read-only answers to Scottish outdoor trip questions from forecast and climatology data. " +
+	"Use plan for open questions (where and when to walk or stargaze near a place over the next few days) " +
+	"and check for a specific plan (a named walk on a date, stargazing at a place on a night). " +
+	"Lead with each answer's verdict and why. Every result carries meta.sources: credit them when you present the data."
 
 // New builds the handler. allowedOrigins lists the browser origins accepted;
 // requests without an Origin header (every server-side connector) always pass.

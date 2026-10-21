@@ -3,19 +3,19 @@
   "info": {
     "title": "Scotland outdoors API",
     "version": "v1",
-    "summary": "Read-only answers to Scottish outdoor questions: where and when the sky will be dark and clear, and which walks fit the weather.",
-    "description": "Narrow, question-shaped endpoints over forecast and climatology engines. Every response carries a provenance envelope (sources, attribution, forecast fetch time, method). Results and radius are capped; there is no bulk listing. Bulk extraction or redistribution of responses is not permitted.",
+    "summary": "Read-only answers to Scottish trip questions: which walks fit the weather and where the night sky will be dark and clear, with a go, marginal, no or unknown verdict.",
+    "description": "Two question-shaped endpoints over forecast and climatology engines: plan (what to do near a place over the next few days) and check (whether a given walk or night is on). Every response carries a provenance envelope (sources, attribution, forecast fetch time, method). Results and radius are capped; there is no bulk listing. Bulk extraction or redistribution of responses is not permitted.",
     "license": {
       "name": "Responses carry the source licences named in meta.sources"
     }
   },
   "servers": [{ "url": "/" }],
   "paths": {
-    "/v1/dark-sky-windows": {
+    "/v1/plan": {
       "get": {
-        "operationId": "dark_sky_windows",
-        "summary": "Best dark-sky sites near a place for the next few nights",
-        "description": "Ranks dark-sky sites within radius_km of a point by forecast clear-dark hours (cloud < 10%, sun below -12 degrees) over the next `nights` nights, then by clear-twilight hours (sun below -10 degrees, the midsummer fallback), then darker light-pollution zone, then distance. Each site carries a per-night breakdown and its historical clear-sky odds for the month. Give the coordinates of the place the caller means. Each site leads with best_night, its darkest clear night: clear-dark hours with the moon set count fully, moonlit ones by how little of the moon is lit.",
+        "operationId": "plan",
+        "summary": "What to do near a place over the next few days",
+        "description": "For each day from `from` to `to`: sunrise, sunset and the moon at the point, then the walks that fit the weather and the night's best stargazing within radius_km, each with a verdict and a one-line why. Walks are Walkhighlands routes whose start is within the radius and whose best good-weather slot fits their estimated time (80% of it in good hours, two hours of credit for walks over seven hours); go before marginal, then the longest slot, then the nearest. Stargazing sites are road-accessible points in the darkest light-pollution zones, ranked by clear dark hours weighted by the moon. Walk weather is forecast at each walk's start, not on summits.",
         "parameters": [
           {
             "name": "lat",
@@ -37,126 +37,32 @@
             "schema": {
               "type": "number",
               "minimum": 1,
-              "maximum": 150,
-              "default": 50
-            }
-          },
-          {
-            "name": "night",
-            "in": "query",
-            "schema": { "type": "string", "format": "date" },
-            "description": "One night to ask about, named by its evening's date, within the next 7 nights. Use instead of nights."
-          },
-          {
-            "name": "nights",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 7,
-              "default": 3
-            },
-            "description": "Nights to cover, starting tonight: the night in progress until 09:00 local, then the coming evening's. A night runs from local noon to local noon and is named by its evening's date."
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10,
-              "default": 5
-            }
-          },
-          {
-            "name": "detail",
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "enum": ["summary", "hours"],
-              "default": "summary"
-            },
-            "description": "summary (the default) leads with the best night or slot and leaves out hourly arrays; hours adds them."
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Ranked sites.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DarkSkyWindowsResponse"
-                }
-              }
-            }
-          },
-          "304": { "description": "Not modified (If-None-Match matched)." },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "503": { "$ref": "#/components/responses/Unavailable" }
-        }
-      }
-    },
-    "/v1/walk-windows": {
-      "get": {
-        "operationId": "walk_windows",
-        "summary": "Walks near a place that fit the weather over the next few days",
-        "description": "Ranks Walkhighlands walks whose start is within radius_km of a point, or whose name matches walk_name, by how many of the next `days` days hold a good-weather slot long enough for the walk's estimated time: daylight hours with at most 2 mm of rain and wind at most 80 km/h, one bad hour tolerated, and two hours of credit for walks over seven hours. Then by the earliest such day, then good hours, then distance. Weather is forecast at each walk's start. Each walk links to its Walkhighlands page, which has the route. Each walk leads with best, its earliest doable day and slot.",
-        "parameters": [
-          {
-            "name": "lat",
-            "in": "query",
-            "schema": { "type": "number", "minimum": 54.5, "maximum": 61.0 },
-            "description": "Latitude, decimal degrees. Rounded to 0.01. Required unless walk_name is given."
-          },
-          {
-            "name": "lon",
-            "in": "query",
-            "schema": { "type": "number", "minimum": -9.0, "maximum": -0.5 },
-            "description": "Longitude, decimal degrees. Rounded to 0.01. Required unless walk_name is given."
-          },
-          {
-            "name": "walk_name",
-            "in": "query",
-            "schema": { "type": "string", "maxLength": 100 },
-            "description": "Words from a Walkhighlands walk name, for example Ben Nevis; accents optional. Without lat and lon, searches every walk."
-          },
-          {
-            "name": "radius_km",
-            "in": "query",
-            "schema": {
-              "type": "number",
-              "minimum": 1,
               "maximum": 100,
               "default": 30
-            },
-            "description": "Needs lat and lon."
+            }
           },
           {
-            "name": "date",
+            "name": "from",
             "in": "query",
             "schema": { "type": "string", "format": "date" },
-            "description": "One UK day to ask about, up to 13 days ahead. Days past the hourly forecast come back with forecast_coverage none. Use instead of days."
+            "description": "First day (UK date), from today up to 13 days ahead. Default today. A day's stargazing is the night of its evening."
           },
           {
-            "name": "days",
+            "name": "to",
+            "in": "query",
+            "schema": { "type": "string", "format": "date" },
+            "description": "Last day; a plan covers at most 7 days. Default two days after from."
+          },
+          {
+            "name": "activities",
             "in": "query",
             "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 3,
-              "default": 3
+              "type": "array",
+              "items": { "type": "string", "enum": ["walk", "stargaze"] }
             },
-            "description": "Days to cover, starting today (UK time). The hourly forecast reaches about two and a half days."
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10,
-              "default": 5
-            }
+            "style": "form",
+            "explode": false,
+            "description": "Comma-separated or repeated. Default both."
           },
           {
             "name": "max_duration_h",
@@ -171,26 +77,54 @@
             "description": "Only walks with at most this much ascent, in metres."
           },
           {
-            "name": "detail",
+            "name": "limit",
             "in": "query",
             "schema": {
-              "type": "string",
-              "enum": ["summary", "hours"],
-              "default": "summary"
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5,
+              "default": 3
             },
-            "description": "summary (the default) leads with the best night or slot and leaves out hourly arrays; hours adds them."
+            "description": "Options per activity per day."
           }
         ],
         "responses": {
           "200": {
-            "description": "Ranked walks.",
+            "description": "The plan, one entry per day.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/WalkWindowsResponse" }
+                "schema": { "$ref": "#/components/schemas/PlanResponse" }
               }
             }
           },
           "304": { "description": "Not modified (If-None-Match matched)." },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/check": {
+      "post": {
+        "operationId": "check",
+        "summary": "Whether a plan is on",
+        "description": "For each item (a walk on a date, or stargazing at a point on a night) a verdict and a one-line why, the timing (the walk's slot and start window, or the clear window at the best dark-sky site within 10 km, widening to 30 km), sunrise, sunset and the moon, the other forecast days that suit it, and better options nearby the same day. A walk is found by walk_id, or by walk_name (every word must start a word of the Walkhighlands name). An item that cannot be resolved carries error and no verdict; the others still answer. Answers are not cached; for a cacheable question use plan.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CheckRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One answer per item.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CheckResponse" }
+              }
+            }
+          },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
@@ -310,315 +244,32 @@
           "meta": { "$ref": "#/components/schemas/Meta" }
         }
       },
-      "Hour": {
-        "type": "object",
-        "required": [
-          "time",
-          "cloud_area_fraction",
-          "dark",
-          "moon_altitude_deg"
-        ],
-        "properties": {
-          "time": { "type": "string", "format": "date-time" },
-          "cloud_area_fraction": {
-            "type": "number",
-            "description": "Forecast cloud cover, percent."
-          },
-          "dark": {
-            "type": "boolean",
-            "description": "Sun below -12 degrees; false means twilight (-12 to -10)."
-          },
-          "moon_altitude_deg": {
-            "type": "number",
-            "description": "The moon's altitude at the site; below zero it is set."
-          }
-        }
+      "Verdict": {
+        "type": "string",
+        "enum": ["go", "marginal", "unknown", "no"],
+        "description": "go: it fits. marginal: it fits with a catch the why names. unknown: the hourly forecast, about two and a half days ahead, does not reach that far yet. no: it does not fit."
       },
-      "Night": {
+      "Sky": {
         "type": "object",
-        "required": [
-          "night",
-          "clear_dark_hours",
-          "clear_twilight_hours",
-          "moonless_clear_dark_hours",
-          "moon_illumination",
-          "clear_from",
-          "clear_until"
-        ],
+        "required": ["sunrise", "sunset", "moon_illumination"],
         "properties": {
-          "night": { "type": "string", "format": "date" },
-          "clear_dark_hours": { "type": "integer" },
-          "clear_twilight_hours": { "type": "integer" },
-          "moonless_clear_dark_hours": {
-            "type": "integer",
-            "description": "Clear-dark hours with the moon below the horizon or under 10% lit."
+          "sunrise": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Sunrise at the point; null in polar day or night."
           },
+          "sunset": { "type": ["string", "null"], "format": "date-time" },
           "moon_illumination": {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Lit fraction of the moon at local midnight."
-          },
-          "clear_from": {
-            "type": ["string", "null"],
-            "format": "date-time",
-            "description": "Start of the first clear hour."
-          },
-          "clear_until": {
-            "type": ["string", "null"],
-            "format": "date-time",
-            "description": "End of the last clear hour; the hours between may have gaps."
-          },
-          "hours": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/Hour" },
-            "description": "Only with detail=hours, and only in nights (never in best_night)."
+            "description": "The moon's lit fraction at local midnight after the evening."
           }
         }
       },
-      "Site": {
+      "Slot": {
         "type": "object",
-        "required": [
-          "site_id",
-          "lat",
-          "lon",
-          "distance_km",
-          "altitude_m",
-          "light_pollution_zone",
-          "clear_dark_hours",
-          "clear_twilight_hours",
-          "moonless_clear_dark_hours",
-          "forecast_hours_truncated",
-          "best_night",
-          "nights",
-          "climatology"
-        ],
-        "properties": {
-          "site_id": { "type": "string" },
-          "lat": { "type": "number" },
-          "lon": { "type": "number" },
-          "distance_km": { "type": "number" },
-          "altitude_m": { "type": "integer" },
-          "light_pollution_zone": { "type": "string" },
-          "clear_dark_hours": { "type": "integer" },
-          "clear_twilight_hours": { "type": "integer" },
-          "moonless_clear_dark_hours": { "type": "integer" },
-          "forecast_hours_truncated": { "type": "boolean" },
-          "best_night": {
-            "oneOf": [
-              { "$ref": "#/components/schemas/Night" },
-              { "type": "null" }
-            ],
-            "description": "The night with the most moon-weighted clear-dark hours, then clear-twilight; null if none is clear. Never carries hours."
-          },
-          "nights": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/Night" }
-          },
-          "climatology": {
-            "type": ["object", "null"],
-            "required": [
-              "month",
-              "clear_dark_hours",
-              "dark_hours",
-              "clear_sky_odds"
-            ],
-            "properties": {
-              "month": { "type": "integer", "minimum": 1, "maximum": 12 },
-              "clear_dark_hours": { "type": "integer" },
-              "dark_hours": { "type": "integer" },
-              "clear_sky_odds": {
-                "type": ["number", "null"],
-                "description": "Historical share of dark hours that were clear, this month."
-              }
-            }
-          }
-        }
-      },
-      "DarkSkyWindowsResponse": {
-        "type": "object",
-        "required": ["data", "meta"],
-        "properties": {
-          "data": {
-            "type": "object",
-            "required": ["query", "darkness_mode", "nights", "sites"],
-            "properties": {
-              "query": {
-                "type": "object",
-                "required": [
-                  "lat",
-                  "lon",
-                  "radius_km",
-                  "nights",
-                  "limit",
-                  "detail"
-                ],
-                "properties": {
-                  "lat": { "type": "number" },
-                  "lon": { "type": "number" },
-                  "radius_km": { "type": "number" },
-                  "nights": { "type": "integer" },
-                  "limit": { "type": "integer" },
-                  "night": { "type": "string", "format": "date" },
-                  "detail": { "enum": ["summary", "hours"] }
-                }
-              },
-              "darkness_mode": { "enum": ["astronomical", "twilight", "none"] },
-              "nights": {
-                "type": "array",
-                "items": { "type": "string", "format": "date" }
-              },
-              "sites": {
-                "type": "array",
-                "maxItems": 10,
-                "items": { "$ref": "#/components/schemas/Site" }
-              }
-            }
-          },
-          "meta": { "$ref": "#/components/schemas/Meta" }
-        }
-      },
-      "WalkHour": {
-        "type": "object",
-        "required": ["time", "temp_c", "precip_mm", "wind_kmh", "cloud_pct"],
-        "properties": {
-          "time": { "type": "string", "format": "date-time" },
-          "temp_c": { "type": "number" },
-          "precip_mm": { "type": "number" },
-          "wind_kmh": { "type": "number" },
-          "cloud_pct": { "type": "number" }
-        }
-      },
-      "WalkDay": {
-        "type": "object",
-        "required": [
-          "date",
-          "forecast_coverage",
-          "doable",
-          "good_hours",
-          "best_slot"
-        ],
-        "properties": {
-          "date": { "type": "string", "format": "date" },
-          "forecast_coverage": {
-            "enum": ["full", "partial", "none"],
-            "description": "How much of the day's daylight the hourly forecast covers."
-          },
-          "doable": {
-            "type": ["boolean", "null"],
-            "description": "Null when the forecast does not reach far enough to decide."
-          },
-          "good_hours": { "type": "integer" },
-          "best_slot": {
-            "oneOf": [
-              { "$ref": "#/components/schemas/WalkSlot" },
-              { "type": "null" }
-            ]
-          },
-          "hours": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/WalkHour" },
-            "description": "Only with detail=hours."
-          }
-        }
-      },
-      "Walk": {
-        "type": "object",
-        "required": [
-          "walk_id",
-          "name",
-          "url",
-          "start_lat",
-          "start_lon",
-          "length_km",
-          "ascent_m",
-          "duration_h",
-          "doable_days",
-          "best",
-          "days"
-        ],
-        "properties": {
-          "walk_id": { "type": "string" },
-          "name": { "type": "string" },
-          "url": {
-            "type": "string",
-            "format": "uri",
-            "description": "The walk's Walkhighlands page, with the route."
-          },
-          "start_lat": { "type": "number" },
-          "start_lon": { "type": "number" },
-          "from_point_km": {
-            "type": "number",
-            "description": "Only when lat and lon were given."
-          },
-          "length_km": { "type": "number" },
-          "ascent_m": { "type": "integer" },
-          "duration_h": { "type": "number" },
-          "doable_days": { "type": "integer" },
-          "best": {
-            "oneOf": [
-              {
-                "allOf": [
-                  { "$ref": "#/components/schemas/WalkSlot" },
-                  {
-                    "type": "object",
-                    "required": ["date"],
-                    "properties": {
-                      "date": { "type": "string", "format": "date" }
-                    }
-                  }
-                ]
-              },
-              { "type": "null" }
-            ],
-            "description": "The earliest doable day and its slot; null if none."
-          },
-          "days": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/WalkDay" }
-          }
-        }
-      },
-      "WalkWindowsResponse": {
-        "type": "object",
-        "required": ["data", "meta"],
-        "properties": {
-          "data": {
-            "type": "object",
-            "required": ["query", "days", "walks"],
-            "properties": {
-              "query": {
-                "type": "object",
-                "required": ["days", "limit", "detail"],
-                "properties": {
-                  "lat": { "type": "number" },
-                  "lon": { "type": "number" },
-                  "walk_name": { "type": "string" },
-                  "radius_km": { "type": "number" },
-                  "date": { "type": "string", "format": "date" },
-                  "days": { "type": "integer" },
-                  "limit": { "type": "integer" },
-                  "max_duration_h": { "type": "number" },
-                  "max_ascent_m": { "type": "integer" },
-                  "detail": { "enum": ["summary", "hours"] }
-                }
-              },
-              "days": {
-                "type": "array",
-                "items": { "type": "string", "format": "date" }
-              },
-              "walks": {
-                "type": "array",
-                "maxItems": 10,
-                "items": { "$ref": "#/components/schemas/Walk" }
-              }
-            }
-          },
-          "meta": { "$ref": "#/components/schemas/Meta" }
-        }
-      },
-      "WalkSlot": {
-        "type": "object",
+        "description": "The day's best good-weather slot at the walk's start: daylight hours with at most 2 mm of rain and wind at most 80 km/h, one bad hour tolerated.",
         "required": [
           "start",
           "end",
@@ -636,6 +287,326 @@
           "total_precip_mm": { "type": "number" },
           "min_temp_c": { "type": "number" },
           "max_temp_c": { "type": "number" }
+        }
+      },
+      "Walk": {
+        "type": "object",
+        "description": "One Walkhighlands walk on one day.",
+        "required": [
+          "walk_id",
+          "name",
+          "url",
+          "start_lat",
+          "start_lon",
+          "length_km",
+          "ascent_m",
+          "duration_h",
+          "verdict",
+          "why",
+          "start_from",
+          "start_by",
+          "slot"
+        ],
+        "properties": {
+          "walk_id": {
+            "type": "string",
+            "description": "Pass to check as walk_id."
+          },
+          "name": { "type": "string" },
+          "url": {
+            "type": "string",
+            "description": "The walk's Walkhighlands page, which has the route."
+          },
+          "start_lat": { "type": "number" },
+          "start_lon": { "type": "number" },
+          "length_km": { "type": "number" },
+          "ascent_m": { "type": "integer" },
+          "duration_h": {
+            "type": "number",
+            "description": "Walkhighlands' estimated time."
+          },
+          "from_point_km": {
+            "type": "number",
+            "description": "From the asked point; absent for a walk checked by name."
+          },
+          "verdict": { "$ref": "#/components/schemas/Verdict" },
+          "why": { "type": "string" },
+          "start_from": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Earliest start that keeps the walk in the slot; null unless it fits."
+          },
+          "start_by": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Latest start that finishes inside the slot; null unless it fits."
+          },
+          "slot": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/Slot" },
+              { "type": "null" }
+            ]
+          }
+        }
+      },
+      "Site": {
+        "type": "object",
+        "description": "One road-accessible dark-sky site on one night.",
+        "required": [
+          "site_id",
+          "lat",
+          "lon",
+          "light_pollution_zone",
+          "clear_sky_odds",
+          "from_point_km",
+          "verdict",
+          "why",
+          "clear_from",
+          "clear_until",
+          "clear_dark_hours",
+          "moonless_clear_dark_hours"
+        ],
+        "properties": {
+          "site_id": { "type": "string" },
+          "lat": { "type": "number" },
+          "lon": { "type": "number" },
+          "light_pollution_zone": {
+            "type": "string",
+            "description": "pristine, excellent or rural."
+          },
+          "clear_sky_odds": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Share of dark hours that were clear here in this calendar month, historically."
+          },
+          "from_point_km": { "type": "number" },
+          "verdict": { "$ref": "#/components/schemas/Verdict" },
+          "why": { "type": "string" },
+          "clear_from": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Start of the clear dark spell; null when none."
+          },
+          "clear_until": { "type": ["string", "null"], "format": "date-time" },
+          "clear_dark_hours": { "type": "integer" },
+          "moonless_clear_dark_hours": { "type": "integer" }
+        }
+      },
+      "PlanDay": {
+        "type": "object",
+        "required": ["date", "sunrise", "sunset", "moon_illumination"],
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "sunrise": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Sunrise at the point; null in polar day or night."
+          },
+          "sunset": { "type": ["string", "null"], "format": "date-time" },
+          "moon_illumination": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "The moon's lit fraction at local midnight after the evening."
+          },
+          "walks": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Walk" },
+            "description": "Walks that fit, go first. Absent when none do."
+          },
+          "walk_note": {
+            "type": "string",
+            "description": "Why walks is empty."
+          },
+          "stargazing": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Site" },
+            "description": "Sites for the night of this evening, go first, at least 5 km apart. Absent when none suit."
+          },
+          "stargazing_note": {
+            "type": "string",
+            "description": "Why stargazing is empty."
+          }
+        }
+      },
+      "PlanResult": {
+        "type": "object",
+        "required": ["query", "days"],
+        "properties": {
+          "query": {
+            "type": "object",
+            "description": "The inputs as used, after defaults and rounding.",
+            "required": [
+              "lat",
+              "lon",
+              "radius_km",
+              "from",
+              "to",
+              "activities",
+              "limit"
+            ],
+            "properties": {
+              "lat": { "type": "number" },
+              "lon": { "type": "number" },
+              "radius_km": { "type": "number" },
+              "from": { "type": "string", "format": "date" },
+              "to": { "type": "string", "format": "date" },
+              "activities": {
+                "type": "array",
+                "items": { "type": "string", "enum": ["walk", "stargaze"] }
+              },
+              "max_duration_h": { "type": "number" },
+              "max_ascent_m": { "type": "integer" },
+              "limit": { "type": "integer" }
+            }
+          },
+          "days": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/PlanDay" }
+          }
+        }
+      },
+      "PlanResponse": {
+        "type": "object",
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/PlanResult" },
+          "meta": { "$ref": "#/components/schemas/Meta" }
+        }
+      },
+      "CheckItem": {
+        "type": "object",
+        "required": ["activity", "date"],
+        "properties": {
+          "activity": { "type": "string", "enum": ["walk", "stargaze"] },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "description": "The day (YYYY-MM-DD, UK date), from today up to 13 days ahead; for stargazing, the evening the night starts."
+          },
+          "walk_name": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "For a walk: words from its Walkhighlands name. Accents optional."
+          },
+          "walk_id": {
+            "type": "string",
+            "description": "For a walk: its walk_id from plan, instead of walk_name."
+          },
+          "lat": {
+            "type": "number",
+            "minimum": 54.5,
+            "maximum": 61.0,
+            "description": "For stargazing: latitude in decimal degrees."
+          },
+          "lon": {
+            "type": "number",
+            "minimum": -9.0,
+            "maximum": -0.5,
+            "description": "For stargazing: longitude in decimal degrees."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CheckRequest": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": { "$ref": "#/components/schemas/CheckItem" }
+          }
+        },
+        "additionalProperties": false
+      },
+      "OtherDay": {
+        "type": "object",
+        "required": ["date", "verdict", "why"],
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "verdict": { "$ref": "#/components/schemas/Verdict" },
+          "why": { "type": "string" }
+        }
+      },
+      "CheckResultItem": {
+        "type": "object",
+        "required": ["activity", "date"],
+        "properties": {
+          "activity": { "type": "string", "enum": ["walk", "stargaze"] },
+          "date": { "type": "string", "format": "date" },
+          "verdict": { "$ref": "#/components/schemas/Verdict" },
+          "why": { "type": "string" },
+          "error": {
+            "type": "string",
+            "description": "Set, with the rest absent, when the item cannot be resolved: an unknown walk, or no dark-sky site within 30 km."
+          },
+          "walk": {
+            "allOf": [
+              { "$ref": "#/components/schemas/Walk" },
+              {
+                "type": "object",
+                "properties": {
+                  "also_matched": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Other walks walk_name matched, best first."
+                  }
+                }
+              }
+            ]
+          },
+          "night": {
+            "allOf": [
+              { "$ref": "#/components/schemas/Site" },
+              {
+                "type": "object",
+                "properties": {
+                  "site_note": {
+                    "type": "string",
+                    "description": "Set when no site was within 10 km of the point."
+                  }
+                }
+              }
+            ]
+          },
+          "sky": { "$ref": "#/components/schemas/Sky" },
+          "other_days": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/OtherDay" },
+            "description": "Other forecast days that suit it, go or marginal."
+          },
+          "nearby_walks": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Walk" },
+            "description": "Up to two better walks starting within 20 km, the same day."
+          },
+          "nearby_nights": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Site" },
+            "description": "Up to two better dark-sky sites within 30 km, the same night."
+          }
+        }
+      },
+      "CheckResult": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/CheckResultItem" },
+            "description": "One answer per item, in order."
+          }
+        }
+      },
+      "CheckResponse": {
+        "type": "object",
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/CheckResult" },
+          "meta": { "$ref": "#/components/schemas/Meta" }
         }
       }
     }

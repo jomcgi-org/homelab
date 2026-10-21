@@ -113,6 +113,13 @@ func FirstNight(now time.Time) int32 {
 	return NightDay(now.Add(12*time.Hour - morningCutover))
 }
 
+// NightMoonLit is the moon's lit fraction at local midnight of night (a
+// NightDay): the middle of the evening it is named for.
+func NightMoonLit(night int32) float64 {
+	y, m, d := time.Unix(int64(night+1)*86400, 0).UTC().Date()
+	return astro.MoonAt(time.Date(y, m, d, 0, 0, 0, 0, london)).Lit
+}
+
 // First is the query's first night.
 func (q WindowsQuery) First() int32 {
 	if q.Night != 0 {
@@ -194,8 +201,7 @@ func (d *Dataset) Windows(q WindowsQuery) []Window {
 	// The moon's phase is the same for every site; its altitude is not.
 	moonLit := make([]float64, len(names))
 	for j := range moonLit {
-		y, m, dd := time.Unix(int64(first+int32(j)+1)*86400, 0).UTC().Date()
-		moonLit[j] = astro.MoonAt(time.Date(y, m, dd, 0, 0, 0, 0, london)).Lit
+		moonLit[j] = NightMoonLit(first + int32(j))
 	}
 
 	// Only the returned few pay for the per-night breakdown, and they share

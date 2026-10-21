@@ -1,8 +1,8 @@
 # Scotland connector architecture
 
-A public, read-only, free API and MCP endpoint answering Scottish outdoor
-questions: where and when the sky will be dark and clear, and which walks
-fit the weather.
+A public, read-only, free API and MCP endpoint for planning and checking
+Scottish trips: which walks fit the weather and where the night sky will be
+dark and clear, each with a go, marginal, no or unknown verdict.
 Tracking issue: #7240. Deployed on the hub through Kargo
 (`projects/gke-apps/scotland-connector/`, pipeline `scotland-connector` in
 `projects/platform/kargo/values.yaml`), served publicly at
@@ -22,9 +22,9 @@ graph LR
 One Go binary, `cmd/connector`, in its own `scotland-connector` namespace.
 It serves two surfaces on port 8080 and nothing else:
 
-- `GET /v1/dark-sky-windows`, `GET /v1/walk-windows`, `/v1/openapi.json`
-  (the published contract) and `/v1/method`.
-- `POST /mcp`: tools `dark_sky_windows` and `walk_windows`.
+- `GET /v1/plan`, `POST /v1/check`, `/v1/openapi.json` (the published
+  contract) and `/v1/method`.
+- `POST /mcp`: tools `plan` and `check`.
 
 Health (`/healthz`), readiness (`/readyz`) and Prometheus metrics
 (`/metrics`) are on an admin listener, port 9090, that no Service or route
@@ -34,6 +34,47 @@ Both surfaces call the same `internal/connector` functions, which validate
 parameters, apply the caps, query the dataset and wrap the answer in the
 provenance envelope. `internal/httpapi` and `internal/mcp` only translate
 transport.
+
+## Tools: plan and check
+
+The two tools are the two questions a person brings to a trip. `plan` is
+"what should I do near here": for each day from `from` to `to` (at most a
+week, starting no later than 13 days out), sunrise, sunset and the moon at
+the point, the walks within the radius that fit the weather and the night's
+best dark-sky sites, at most `limit` of each. `check` is "is my plan on": for
+up to ten items, each a walk (by `walk_name` or `walk_id`) on a date or
+stargazing at a point on a night, the verdict with its timing, the other
+forecast days that suit it, and up to two better options nearby the same
+day. An item that cannot be resolved carries an item `error` and the rest
+still answer.
+
+Every walk and night leads with a verdict from `internal/verdict`: `go`,
+`marginal`, `no`, or `unknown` when the hourly forecast does not reach far
+enough to say, and a one-line `why`. The rules are in `internal/walks`
+(`Assess`) and `internal/stars` (`AssessNight`), and `/v1/method` states
+them. A plan keeps only go and marginal options and says why when a day has
+none.
+
+**Why.** The first two tools (`dark_sky_windows`, `walk_windows`) mirrored
+the engines: ranked sites and walks with counts of good hours, which left
+the assistant to work out whether a day was any good and to stitch walks and
+nights together. Real questions are a plan ("what can we do around Skye this
+weekend") or a check ("is Ben Nevis on Saturday, and if not, when"), and the
+answer a person wants is a verdict with a reason and a time. Deciding the
+verdict here, with one rule set, keeps every assistant's answer the same and
+the answers short. The connector had no users when this changed, so the old
+tools were removed rather than kept beside the new ones.
+
+**Why.** `check` is a POST with a JSON body over REST because its input is a
+list of items. Its answers are not cached (`no-store`); `plan`, the open
+question an assistant asks first, is a GET and caches at the edge. A CORS
+preflight answer lets browser callers POST.
+
+**Why.** No live weather call: every answer comes from the in-memory
+snapshots. Point weather from MET Norway per request would put the
+connector's traffic, set by assistants, onto MET's API under this service's
+identity, and add a failure mode the snapshots avoid. Weather between walk
+starts and dark-sky sites is not answered.
 
 **Why.** A path on the apex rather than its own hostname: the apex already
 resolves through the tunnel and carries the Cloudflare cache rule, so going
@@ -73,22 +114,25 @@ possible Scottish twilight-dark hour, and the coming evening's after that,
 so a morning query never leads with a night that has already ended. Queries
 keep a bounded top-k rather than sorting every candidate.
 Distances use a mid-latitude equirectangular approximation with
-precomputed cosines, which within the 150 km cap is well under 0.1 km from
-haversine. A worst-case query (150 km, 7 nights, 10 results) over a grid
-three times the real site density runs in about 0.8 ms on one core
-(`BenchmarkWindows`), 0.1 ms of it the moon.
+precomputed cosines, which within the 100 km cap is well under 0.1 km from
+haversine. Over a grid three times the real site density and 3000 walks
+(`internal/connector/bench_test.go`), on one core, a default plan (30 km,
+three days) takes about 0.9 ms, the widest (100 km, seven days, five options
+each) about 5 ms and a ten-item check about 2 ms. A plan ranks walks on their
+verdict alone and builds the full answer only for the ones it returns.
 
 **Why.** Reading Postgres would put a database credential and an egress path
 to CNPG in the namespace that takes public traffic, and make the database's
 load a function of the replica count. The snapshots already exist, are a few
 MB, and change every three hours, so loading them into memory costs nothing to keep in
 sync. The cost is that the snapshot caps each site's hour list at 25, so
-later nights can be undercounted. Answers flag this as
-`forecast_hours_truncated`, and #7246 adds an uncapped snapshot.
+later nights can be undercounted. A night past a capped site's last listed
+hour is `unknown` unless it is already a go, and #7246 adds an uncapped
+snapshot.
 
 ## Walks
 
-`walk_windows` reads `walks.json`, which the monolith's
+Walk answers read `walks.json`, which the monolith's
 `hikes-refresh-forecasts` job writes to the same bucket every two hours
 (`projects/monolith/hikes/materialize.py`) after it stores new forecast
 hours. Each walk carries its Walkhighlands URL, start point, length, ascent,
@@ -97,8 +141,10 @@ estimated time and the viable hours the hikes app already computes
 `internal/walks` buckets those hours into UK days at load time and applies
 the hikes app's doable-day rule (`projects/monolith/hikes/router.py`); its
 tests replay the hikes router's cases. A separate `WalkStore` loads the
-object, so a missing or broken `walks.json` takes out `walk_windows` alone:
-readiness still depends only on the stars snapshot. A row missing a name,
+object, so a missing or broken `walks.json` takes out walk answers alone:
+readiness still depends only on the stars snapshot. A plan then answers its
+stargazing with a `walk_note`, and a check gives its walk items an item
+error; only a walks-only question is a 503. A row missing a name,
 URL or positive duration is skipped, never fatal: the scrape has stored a
 0 h walk. `scotland_connector_walks_forecast_age_seconds` reports the
 snapshot's age.
@@ -108,22 +154,14 @@ facts and a link to each walk's page, never the route description, maps or
 GPX, so the route itself stays on Walkhighlands. The snapshot leaves out the
 scraped `summary` prose for the same reason.
 
-**Why.** Answers lead with `best` (walks) and `best_night` (dark skies) and
-leave out hourly arrays unless `detail=hours`: an assistant asked "where and
-when" needs the answer first, and the hourly arrays were most of a walk
-answer (about 70% of its bytes). `walk_name` and `date` (`night` for dark
-skies) take the questions people ask, "is Ben Nevis on Saturday", without
-the assistant guessing coordinates or counting days.
-
 **Why.** Forecasts are at each walk's start, because that is what the hikes
 job fetches. Every answer says so in `meta.notes`, since summit conditions
 are colder and windier than the car park.
 
-**Why.** Queries stop at three days and each day carries
-`forecast_coverage`. The hikes job keeps MET Norway's hourly steps only,
-which reach about two and a half days, so a later day has no hours at all.
-Reporting it as not doable would tell an assistant the weather is bad when
-there is no forecast. The horizon is the later of the fetch plus 48 hours
+**Why.** Days past the hourly forecast are `unknown`, never `no`. The hikes
+job keeps MET Norway's hourly steps only, which reach about two and a half
+days, so a later day has no hours at all. Reporting it as not doable would
+tell an assistant the weather is bad when there is no forecast. The horizon is the later of the fetch plus 48 hours
 and the last hour in the snapshot, both lower bounds, and a stale snapshot
 falls back to "no forecast" rather than "bad weather".
 
@@ -134,30 +172,33 @@ truncated lunar and solar series after Meeus; its tests hold it to PyEphem
 within 0.4 degrees and 0.01 (over 300 random Scottish samples the worst
 case was 0.28 degrees). The moon's sky position is computed once per hour
 per query and shared across sites. Each night reports the lit fraction and
-moonless clear-dark hours. `best_night` weighs each clear-dark hour by the
-moon: a moonless hour counts 1 and a moonlit one 1 minus the lit fraction,
-so a long night under a thin crescent still beats one moonless hour.
+moonless clear-dark hours. A night's dark score weighs each clear-dark hour
+by the moon: a moonless hour counts 1 and a moonlit one 1 minus the lit
+fraction, so a long night under a thin crescent still beats one moonless
+hour. A score of 3 is a go. `internal/astro` also gives sunrise and sunset
+(NOAA equations, matching the hikes app to two seconds) for every plan day
+and check item.
 
 **Why.** Moonlight decides a stargazing night as much as cloud, and a
-computed moon needs no data source or licence. Site ranking stays on
-clear-dark hours: the moon is nearly the same for every site in a query, so
-it chooses the night, not the place.
+computed moon needs no data source or licence.
 
 ## Contract
 
 Every response is `{data, meta}`. `meta` carries `api_version`,
 `generated_at`, `as_of` (the top of the hour the answer is computed for),
-`forecast_fetched_at`, `data_version` (both R2 ETags), `method_url`, and
-`sources` with attribution and licence for MET Norway, Copernicus CERRA,
-OpenStreetMap and Natural Earth. The light-pollution render is not
+`forecast_fetched_at` (the older fetch when an answer draws on both
+snapshots), `data_version` (the R2 ETags behind the answer), `method_url`,
+and `sources` with attribution and licence for MET Norway, Walkhighlands,
+Copernicus CERRA, OpenStreetMap and Natural Earth, as the answer uses them. The light-pollution render is not
 attributed until its licence is confirmed (#7253).
 
 Caps live in `internal/connector` and are mirrored in `openapi.json` and the
-MCP input schemas; tests fail if any copy drifts. Results at most 10, radius
-at most 150 km, nights at most 7, coordinates inside Scotland only
-(required, except that `walk_windows` also takes a `walk_name`). There is
-no listing endpoint.
-Coordinates are rounded to 0.01 degrees so equal questions share an ETag.
+MCP input schemas; tests fail if any copy drifts. A plan covers at most 7
+days with at most 5 options of each activity a day, within at most 100 km;
+a check takes at most 10 items; dates reach at most 13 days ahead; and
+coordinates must be inside Scotland. There is no listing endpoint.
+Coordinates are rounded to 0.01 degrees and walk names normalized so equal
+questions share an ETag.
 
 **Why.** Queries take coordinates, with no place-name lookup. The calling
 assistant already knows where Glencoe or Skye is, to well within the search
@@ -165,14 +206,15 @@ radius, and can search for anything obscure. A gazetteer here would be a
 dataset to license and maintain, and the 50-place seed it replaced answered
 "Skye" with nothing, which reads to a model as "not covered".
 
-Answers carry `Cache-Control: public, max-age=60, s-maxage=600,
+plan answers carry `Cache-Control: public, max-age=60, s-maxage=600,
 stale-while-revalidate=3600, stale-if-error=86400` plus
 `Cloudflare-CDN-Cache-Control: public, max-age=600, stale-while-revalidate=3600,
 stale-if-error=86400`, and a strong ETag over the dataset version, the as-of
 hour and the canonical parameters. The second header follows the public-tier
 cache contract (`docs/runbooks/public-tier-checklist.md`): Cloudflare treats
 `s-maxage` as `proxy-revalidate`, which would switch off serving stale through
-an origin outage, so the edge lifetime reaches it as `max-age`.
+an origin outage, so the edge lifetime reaches it as `max-age`. check
+answers are `no-store`.
 
 ## MCP: dual-era and stateless
 

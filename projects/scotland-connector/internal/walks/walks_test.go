@@ -112,49 +112,33 @@ func TestParseRejectsBadSnapshots(t *testing.T) {
 	}
 }
 
-func TestWindowsRanksFiltersAndDropsElapsedHours(t *testing.T) {
+func TestDayForDropsElapsedHours(t *testing.T) {
 	// Now is 10:30 BST on day one; base is 08:00 BST. The hour in progress
 	// (10:00, offset 2) is kept, as the hikes read filter does, so offsets 0
 	// and 1 have elapsed.
 	now := base.Add(2*time.Hour + 30*time.Minute)
 	ds := mustParse(t, snapshot(
 		// Doable today (5 good hours left for a 4 h walk) and tomorrow.
-		walkJSON("near-two-days", 57.00, -4.00, 4, 600, 0, 1, 2, 3, 4, 5, 6, 24, 25, 26, 27),
-		// Doable only tomorrow, and nearer.
-		walkJSON("nearer-one-day", 57.01, -4.00, 4, 300, 24, 25, 26, 27),
+		walkJSON("both", 57.00, -4.00, 4, 600, 0, 1, 2, 3, 4, 5, 6, 24, 25, 26, 27),
 		// Today's good hours have all elapsed: not doable.
 		walkJSON("elapsed", 57.02, -4.00, 2, 100, 0, 1),
-		// Out of range.
-		walkJSON("far", 58.50, -4.00, 2, 100, 3, 4, 5),
-		// Too long for the filter below.
-		walkJSON("long", 57.00, -4.01, 9, 1200, 3, 4, 5, 6, 7, 8),
 	))
-	q := Query{HasPoint: true, Lat: 57.0, Lon: -4.0, RadiusKm: 30, Days: 2, Limit: 10, MaxDurationH: 8, Now: now}
-	res := ds.Windows(q)
-	var ids []string
-	for _, r := range res {
-		ids = append(ids, r.Walk.ID)
+	today := LocalDay(now)
+	d := ds.DayFor(ds.ByID("both"), today, now)
+	if d.GoodHours != 5 || !d.Doable || d.Hours[0].Unix != base.Add(2*time.Hour).Unix() {
+		t.Fatalf("today = %+v", d)
 	}
-	if strings.Join(ids, ",") != "near-two-days,nearer-one-day,elapsed" {
-		t.Fatalf("order = %v", ids)
+	if d := ds.DayFor(ds.ByID("both"), today+1, now); !d.Doable || d.GoodHours != 4 {
+		t.Fatalf("tomorrow = %+v", d)
 	}
-	top := res[0]
-	if top.DoableDays != 2 || len(top.Days) != 2 || top.Days[0].GoodHours != 5 || !top.Days[0].Doable {
-		t.Fatalf("top = %+v", top)
+	if d := ds.DayFor(ds.ByID("elapsed"), today, now); d.Doable || d.GoodHours != 0 || d.Best != nil {
+		t.Fatalf("elapsed = %+v", d)
 	}
-	if top.Days[0].Hours[0].Unix != base.Add(2*time.Hour).Unix() {
-		t.Fatal("an elapsed hour survived")
+	if ds.ByID("nope") != nil {
+		t.Fatal("ByID found a missing walk")
 	}
-	if res[2].DoableDays != 0 || res[2].Days[0].GoodHours != 0 || res[2].Days[0].Best != nil {
-		t.Fatalf("elapsed = %+v", res[2])
-	}
-	if got := q.DayNames(); strings.Join(got, ",") != "2026-06-15,2026-06-16" {
-		t.Fatalf("days = %v", got)
-	}
-
-	q.MaxAscentM, q.Limit = 400, 1
-	if res := ds.Windows(q); len(res) != 1 || res[0].Walk.ID != "nearer-one-day" {
-		t.Fatalf("ascent filter and limit = %+v", res)
+	if km := ds.ByID("elapsed").DistanceKm(57, -4); km < 2.1 || km > 2.3 {
+		t.Fatalf("distance = %v", km)
 	}
 }
 
@@ -202,8 +186,10 @@ func TestDaysBeyondTheForecastAreUndecided(t *testing.T) {
 	// A 3 h walk, good on day one only. Day three is partial with no slot
 	// yet, so it is undecided rather than "not doable".
 	ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 3, 0, 0, 1, 2, 3)))
-	res := ds.Windows(Query{HasPoint: true, Lat: 57, Lon: -4, RadiusKm: 10, Days: 3, Limit: 1, Now: base})
-	days := res[0].Days
+	days := make([]Day, 3)
+	for i := range days {
+		days[i] = ds.DayFor(&ds.Walks[0], LocalDay(base)+int32(i), base)
+	}
 	if !days[0].Decided || !days[0].Doable || days[0].Coverage != CoverageFull {
 		t.Fatalf("day 1 = %+v", days[0])
 	}
@@ -227,7 +213,7 @@ func TestNameMatching(t *testing.T) {
 		want  string
 	}{
 		{"Ben Nevis", "bn,cmd"}, // the name that starts with the query first
-		{"nevis", "dd,bn,cmd"},  // a word prefix anywhere; then weather ranks
+		{"nevis", "dd,bn,cmd"},  // a word prefix anywhere; then shorter names
 		{"dun deardail", "dd"},  // accents fold
 		{"Carn Mor Dearg Arete", "cmd"},
 		{"stob coire a chearcaill", "sc"}, // apostrophes separate words
@@ -235,18 +221,13 @@ func TestNameMatching(t *testing.T) {
 		{"Dun Deardail", "dd"},
 		{"ben lomond", ""},
 	} {
-		res := ds.Windows(Query{Name: Normalize(c.query), Days: 1, Limit: 10, Now: base})
 		var ids []string
-		for _, r := range res {
-			ids = append(ids, r.Walk.ID)
+		for _, w := range ds.Named(Normalize(c.query)) {
+			ids = append(ids, w.ID)
 		}
 		if strings.Join(ids, ",") != c.want {
 			t.Errorf("%q matched %v, want %s", c.query, ids, c.want)
 		}
-	}
-	// A name query with a point still applies the radius.
-	if res := ds.Windows(Query{HasPoint: true, Lat: 56.9, Lon: -5.3, RadiusKm: 5, Name: "stob", Days: 1, Limit: 10, Now: base}); len(res) != 1 {
-		t.Fatalf("name plus radius = %d walks", len(res))
 	}
 }
 
@@ -257,16 +238,26 @@ func TestNormalizeFoldsDecomposedAccents(t *testing.T) {
 	}
 }
 
-func TestDateSelectsOneDayAndSlotStats(t *testing.T) {
+func TestSlotStats(t *testing.T) {
 	ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 3, 0, 24, 25, 26, 27)))
 	tomorrow := LocalDay(base) + 1
-	res := ds.Windows(Query{HasPoint: true, Lat: 57, Lon: -4, RadiusKm: 5, Days: 1, Date: tomorrow, Limit: 1, Now: base})
-	if len(res[0].Days) != 1 || res[0].Days[0].Day != tomorrow || !res[0].Days[0].Doable {
-		t.Fatalf("days = %+v", res[0].Days)
-	}
-	best, ok := res[0].FirstDoable()
-	if !ok || best.Best.GoodHours != 4 || best.Best.MaxWindKmh != 18 || best.Best.MinTempC != 9.5 ||
+	best := ds.DayFor(&ds.Walks[0], tomorrow, base)
+	if best.Day != tomorrow || !best.Doable || best.Best.GoodHours != 4 || best.Best.MaxWindKmh != 18 || best.Best.MinTempC != 9.5 ||
 		best.Best.TotalPrecipMM < 0.79 || best.Best.TotalPrecipMM > 0.81 {
 		t.Fatalf("best = %+v", best.Best)
+	}
+}
+
+// The CoverageOf index agrees with the rule it caches, for horizons at every
+// hour of a day.
+func TestCoverageIndexMatchesTheRule(t *testing.T) {
+	for h := 0; h < 48; h++ {
+		ds := &Dataset{HourlyUntil: base.Add(time.Duration(h) * time.Hour)}
+		ds.indexCoverage()
+		for day := LocalDay(base) - 3; day <= LocalDay(base)+5; day++ {
+			if got, want := ds.CoverageOf(day), ds.coverage(day); got != want {
+				t.Errorf("horizon +%dh day %s: index %s, rule %s", h, DayName(day), got, want)
+			}
+		}
 	}
 }

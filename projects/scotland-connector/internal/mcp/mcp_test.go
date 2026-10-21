@@ -84,110 +84,131 @@ func TestToolListAndAnnotations(t *testing.T) {
 			t.Errorf("%s: inputSchema %v", tool["name"], schema)
 		}
 	}
-	if strings.Join(names, ",") != "dark_sky_windows,walk_windows" {
+	if strings.Join(names, ",") != "plan,check" {
 		t.Fatalf("tools = %v", names)
 	}
 }
 
+// The schemas carry the code's caps, and no combinator at the root: the
+// Messages API rejects anyOf, oneOf and allOf there.
 func TestToolSchemaCapsMatchCode(t *testing.T) {
+	type prop struct {
+		Type        string   `json:"type"`
+		Minimum     *float64 `json:"minimum"`
+		Maximum     *float64 `json:"maximum"`
+		Default     any      `json:"default"`
+		MaxLength   *int     `json:"maxLength"`
+		MinItems    *int     `json:"minItems"`
+		MaxItems    *int     `json:"maxItems"`
+		Enum        []string `json:"enum"`
+		Description string   `json:"description"`
+		Items       *struct {
+			Enum       []string        `json:"enum"`
+			Properties map[string]prop `json:"properties"`
+			Required   []string        `json:"required"`
+		} `json:"items"`
+	}
+	type schema struct {
+		Properties map[string]prop `json:"properties"`
+		Required   []string        `json:"required"`
+		AnyOf      []any           `json:"anyOf"`
+		OneOf      []any           `json:"oneOf"`
+		AllOf      []any           `json:"allOf"`
+	}
+	schemas := map[string]schema{}
 	for _, tool := range Tools {
-		var s struct {
-			Properties map[string]struct {
-				Minimum     *float64 `json:"minimum"`
-				Maximum     *float64 `json:"maximum"`
-				Default     any      `json:"default"`
-				MaxLength   *int     `json:"maxLength"`
-				Enum        []string `json:"enum"`
-				Description string   `json:"description"`
-			} `json:"properties"`
-			Required []string `json:"required"`
-			AnyOf    []struct {
-				Required []string `json:"required"`
-			} `json:"anyOf"`
-		}
+		var s schema
 		if err := json.Unmarshal(tool.InputSchema, &s); err != nil {
 			t.Fatalf("%s: %v", tool.Name, err)
 		}
-		caps := map[string]map[string][2]float64{
-			"dark_sky_windows": {
-				"radius_km": {connector.MaxRadiusKm, connector.DefaultRadiusKm},
-				"nights":    {connector.MaxNights, connector.DefaultNights},
-				"limit":     {connector.MaxLimit, connector.DefaultLimit},
-			},
-			"walk_windows": {
-				"radius_km": {connector.MaxWalkRadiusKm, connector.DefaultWalkRadiusKm},
-				"days":      {connector.MaxWalkDays, connector.DefaultWalkDays},
-				"limit":     {connector.MaxLimit, connector.DefaultLimit},
-			},
-		}[tool.Name]
-		if caps == nil {
-			t.Fatalf("%s: no caps pinned for this tool", tool.Name)
+		if s.AnyOf != nil || s.OneOf != nil || s.AllOf != nil {
+			t.Errorf("%s: root combinator", tool.Name)
 		}
-		for name, want := range caps {
-			p := s.Properties[name]
-			if def, ok := p.Default.(float64); p.Maximum == nil || *p.Maximum != want[0] || !ok || def != want[1] {
-				t.Errorf("%s.%s = max %v default %v, code %v", tool.Name, name, p.Maximum, p.Default, want)
-			}
+		schemas[tool.Name] = s
+	}
+	bounds := func(where string, p prop, lo, hi float64) {
+		t.Helper()
+		if p.Minimum == nil || p.Maximum == nil || *p.Minimum != lo || *p.Maximum != hi {
+			t.Errorf("%s = min %v max %v, code %v..%v", where, p.Minimum, p.Maximum, lo, hi)
 		}
-		if tool.Name == "walk_windows" {
-			if p := s.Properties["max_duration_h"]; p.Maximum == nil || *p.Maximum != connector.MaxWalkDurationH {
-				t.Errorf("walk_windows.max_duration_h max = %v", p.Maximum)
-			}
-			if p := s.Properties["max_ascent_m"]; p.Maximum == nil || *p.Maximum != connector.MaxWalkAscentM {
-				t.Errorf("walk_windows.max_ascent_m max = %v", p.Maximum)
-			}
+	}
+	defaults := func(where string, p prop, want float64) {
+		t.Helper()
+		if d, ok := p.Default.(float64); !ok || d != want {
+			t.Errorf("%s default = %v, code %v", where, p.Default, want)
 		}
-		c := connector.Coverage
-		for name, b := range map[string][2]float64{"lat": {c.MinLat, c.MaxLat}, "lon": {c.MinLon, c.MaxLon}} {
-			p := s.Properties[name]
-			if p.Minimum == nil || p.Maximum == nil || *p.Minimum != b[0] || *p.Maximum != b[1] {
-				t.Errorf("%s.%s = min %v max %v, coverage %v", tool.Name, name, p.Minimum, p.Maximum, b)
-			}
-		}
-		if d := s.Properties["detail"]; strings.Join(d.Enum, ",") != connector.DetailSummary+","+connector.DetailHours || d.Default != connector.DetailSummary {
-			t.Errorf("%s detail = %+v", tool.Name, d)
-		}
-		switch tool.Name {
-		case "dark_sky_windows":
-			if strings.Join(s.Required, ",") != "lat,lon" {
-				t.Errorf("%s required = %v", tool.Name, s.Required)
-			}
-			if d := s.Properties["night"].Description; !strings.Contains(d, fmt.Sprintf("within the next %d nights", connector.MaxNights)) {
-				t.Errorf("dark_sky_windows.night description %q does not match the code's window", d)
-			}
-		case "walk_windows":
-			// lat+lon or walk_name is enforced in code: the Messages API
-			// rejects a combinator at the root of a tool's input schema.
-			if len(s.Required) != 0 || len(s.AnyOf) != 0 {
-				t.Errorf("%s: no root required or anyOf: %+v %+v", tool.Name, s.Required, s.AnyOf)
-			}
-			if p := s.Properties["walk_name"]; p.MaxLength == nil || *p.MaxLength != connector.MaxNameLength {
-				t.Errorf("walk_name maxLength = %v", p.MaxLength)
-			}
-			if d := s.Properties["date"].Description; !strings.Contains(d, fmt.Sprintf("up to %d days ahead", connector.MaxWalkDateAhead)) {
-				t.Errorf("walk_windows.date description %q does not match the code's window", d)
-			}
-		}
+	}
+	c := connector.Coverage
+	activities := connector.ActivityWalk + "," + connector.ActivityStargaze
+
+	plan := schemas["plan"]
+	if strings.Join(plan.Required, ",") != "lat,lon" {
+		t.Errorf("plan required = %v", plan.Required)
+	}
+	bounds("plan.lat", plan.Properties["lat"], c.MinLat, c.MaxLat)
+	bounds("plan.lon", plan.Properties["lon"], c.MinLon, c.MaxLon)
+	bounds("plan.radius_km", plan.Properties["radius_km"], 1, connector.MaxRadiusKm)
+	defaults("plan.radius_km", plan.Properties["radius_km"], connector.DefaultRadiusKm)
+	bounds("plan.limit", plan.Properties["limit"], 1, connector.MaxOptions)
+	defaults("plan.limit", plan.Properties["limit"], connector.DefaultOptions)
+	bounds("plan.max_duration_h", plan.Properties["max_duration_h"], 0.5, connector.MaxDurationH)
+	bounds("plan.max_ascent_m", plan.Properties["max_ascent_m"], 1, connector.MaxAscentM)
+	if d := plan.Properties["from"].Description; !strings.Contains(d, fmt.Sprintf("up to %d days ahead", connector.MaxDaysAhead)) {
+		t.Errorf("plan.from description %q does not match the code's window", d)
+	}
+	if d := plan.Properties["to"].Description; !strings.Contains(d, fmt.Sprintf("at most %d days", connector.MaxSpanDays)) {
+		t.Errorf("plan.to description %q does not match the code's span", d)
+	}
+	if it := plan.Properties["activities"].Items; it == nil || strings.Join(it.Enum, ",") != activities {
+		t.Errorf("plan.activities = %+v", it)
+	}
+
+	check := schemas["check"]
+	items := check.Properties["items"]
+	if strings.Join(check.Required, ",") != "items" || items.MinItems == nil || *items.MinItems != 1 || items.MaxItems == nil || *items.MaxItems != connector.MaxCheckItems || items.Items == nil {
+		t.Fatalf("check.items = %+v", items)
+	}
+	item := items.Items
+	if strings.Join(item.Required, ",") != "activity,date" || strings.Join(item.Properties["activity"].Enum, ",") != activities {
+		t.Errorf("check item = %+v", item)
+	}
+	bounds("check.lat", item.Properties["lat"], c.MinLat, c.MaxLat)
+	bounds("check.lon", item.Properties["lon"], c.MinLon, c.MaxLon)
+	if p := item.Properties["walk_name"]; p.MaxLength == nil || *p.MaxLength != connector.MaxNameLength {
+		t.Errorf("check.walk_name maxLength = %v", p.MaxLength)
+	}
+	if d := item.Properties["date"].Description; !strings.Contains(d, fmt.Sprintf("up to %d days ahead", connector.MaxDaysAhead)) {
+		t.Errorf("check.date description %q does not match the code's window", d)
 	}
 }
 
-func TestModernToolCall(t *testing.T) {
-	code, hdr, r := post(t, handler(),
-		`{"jsonrpc":"2.0","id":"a","method":"tools/call","params":{"name":"dark_sky_windows","arguments":{"lat":57.19,"lon":-3.83,"nights":2},`+modernMeta+`}}`,
-		modern("tools/call", "dark_sky_windows"))
+func callTool(t *testing.T, h http.Handler, name, args string) reply {
+	t.Helper()
+	code, hdr, r := post(t, h,
+		`{"jsonrpc":"2.0","id":"a","method":"tools/call","params":{"name":"`+name+`","arguments":`+args+`,`+modernMeta+`}}`,
+		modern("tools/call", name))
 	if code != http.StatusOK || r.Error != nil || string(r.ID) != `"a"` {
-		t.Fatalf("status %d error %+v", code, r.Error)
+		t.Fatalf("%s %s: status %d error %+v", name, args, code, r.Error)
 	}
 	if hdr.Get("MCP-Protocol-Version") != ModernVersion || hdr.Get("Mcp-Session-Id") != "" {
 		t.Fatalf("headers %v", hdr)
 	}
+	return r
+}
+
+func TestPlanToolCall(t *testing.T) {
+	r := callTool(t, handler(), "plan", `{"lat":57.19,"lon":-3.83,"from":"2026-10-20","to":"2026-10-20"}`)
 	if r.Result["isError"] != false || r.Result["resultType"] != "complete" {
 		t.Fatalf("result %v", r.Result)
 	}
 	sc := r.Result["structuredContent"].(map[string]any)
-	data := sc["data"].(map[string]any)
-	if len(data["sites"].([]any)) != 3 || sc["meta"].(map[string]any)["api_version"] != "v1" {
+	days := sc["data"].(map[string]any)["days"].([]any)
+	if len(days) != 1 || sc["meta"].(map[string]any)["api_version"] != "v1" {
 		t.Fatalf("structuredContent %v", sc)
+	}
+	walk := days[0].(map[string]any)["walks"].([]any)[0].(map[string]any)
+	if walk["verdict"] != "go" || !strings.HasPrefix(walk["url"].(string), "https://www.walkhighlands.co.uk/") {
+		t.Fatalf("walk %v", walk)
 	}
 	text := r.Result["content"].([]any)[0].(map[string]any)["text"].(string)
 	var echoed map[string]any
@@ -196,28 +217,30 @@ func TestModernToolCall(t *testing.T) {
 	}
 }
 
-func TestWalkToolCall(t *testing.T) {
-	code, _, r := post(t, handler(),
-		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"walk_windows","arguments":{"lat":57.19,"lon":-3.83,"days":2,"max_ascent_m":600},`+modernMeta+`}}`,
-		modern("tools/call", "walk_windows"))
-	if code != http.StatusOK || r.Error != nil || r.Result["isError"] != false {
-		t.Fatalf("status %d error %+v result %v", code, r.Error, r.Result)
+func TestCheckToolCall(t *testing.T) {
+	r := callTool(t, handler(), "check", `{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"Cairn Gorm"},{"activity":"stargaze","date":"2026-10-19","lat":57.3,"lon":-3.7}]}`)
+	if r.Result["isError"] != false {
+		t.Fatalf("result %v", r.Result)
 	}
-	data := r.Result["structuredContent"].(map[string]any)["data"].(map[string]any)
-	ws := data["walks"].([]any)
-	if len(ws) != 1 || !strings.HasPrefix(ws[0].(map[string]any)["url"].(string), "https://www.walkhighlands.co.uk/") {
-		t.Fatalf("walks %v", ws)
+	items := r.Result["structuredContent"].(map[string]any)["data"].(map[string]any)["items"].([]any)
+	if len(items) != 2 || items[0].(map[string]any)["verdict"] != "no" || items[1].(map[string]any)["verdict"] != "marginal" {
+		t.Fatalf("items %v", items)
 	}
 }
 
 func TestToolErrorsAreResults(t *testing.T) {
 	h := handler()
-	for _, args := range []string{`{"limit":50,"lat":57.19,"lon":-3.83}`, `{"place":"Aviemore"}`, `{"lat":57.19}`, `{"lat":51.5,"lon":-0.1}`} {
-		code, _, r := post(t, h,
-			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dark_sky_windows","arguments":`+args+`,`+modernMeta+`}}`,
-			modern("tools/call", "dark_sky_windows"))
-		if code != http.StatusOK || r.Error != nil || r.Result["isError"] != true {
-			t.Errorf("args %s: status %d error %+v result %v", args, code, r.Error, r.Result)
+	for name, args := range map[string][]string{
+		"plan":  {`{"limit":50,"lat":57.19,"lon":-3.83}`, `{"place":"Aviemore"}`, `{"lat":57.19}`, `{"lat":51.5,"lon":-0.1}`, `{"lat":57.19,"lon":-3.83,"activities":["ski"]}`},
+		"check": {`{}`, `{"items":[]}`, `{"items":[{"activity":"walk","date":"2026-10-20"}]}`, `{"items":[{"activity":"stargaze","date":"tomorrow","lat":57.3,"lon":-3.7}]}`},
+	} {
+		for _, a := range args {
+			code, _, r := post(t, h,
+				`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"`+name+`","arguments":`+a+`,`+modernMeta+`}}`,
+				modern("tools/call", name))
+			if code != http.StatusOK || r.Error != nil || r.Result["isError"] != true {
+				t.Errorf("%s %s: status %d error %+v result %v", name, a, code, r.Error, r.Result)
+			}
 		}
 	}
 	code, _, r := post(t, h,
@@ -230,16 +253,16 @@ func TestToolErrorsAreResults(t *testing.T) {
 
 func TestModernHeaderValidation(t *testing.T) {
 	h := handler()
-	call := `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"dark_sky_windows","arguments":{"lat":56.41,"lon":-5.47},` + modernMeta + `}}`
+	call := `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"plan","arguments":{"lat":56.41,"lon":-5.47},` + modernMeta + `}}`
 	cases := map[string]struct {
 		hdr  map[string]string
 		code int
 	}{
-		"missing version header": {map[string]string{"Mcp-Method": "tools/call", "Mcp-Name": "dark_sky_windows"}, codeHeaderMismatch},
-		"method mismatch":        {modern("tools/list", "dark_sky_windows"), codeHeaderMismatch},
+		"missing version header": {map[string]string{"Mcp-Method": "tools/call", "Mcp-Name": "plan"}, codeHeaderMismatch},
+		"method mismatch":        {modern("tools/list", "plan"), codeHeaderMismatch},
 		"name mismatch":          {modern("tools/call", "aurora_windows"), codeHeaderMismatch},
 		"missing name":           {modern("tools/call", ""), codeHeaderMismatch},
-		"version mismatch":       {map[string]string{"MCP-Protocol-Version": "2025-11-25", "Mcp-Method": "tools/call", "Mcp-Name": "dark_sky_windows"}, codeHeaderMismatch},
+		"version mismatch":       {map[string]string{"MCP-Protocol-Version": "2025-11-25", "Mcp-Method": "tools/call", "Mcp-Name": "plan"}, codeHeaderMismatch},
 	}
 	for name, c := range cases {
 		code, _, r := post(t, h, call, c.hdr)
@@ -248,7 +271,7 @@ func TestModernHeaderValidation(t *testing.T) {
 		}
 	}
 	// Base64-sentinel Mcp-Name decodes before comparison.
-	if code, _, r := post(t, h, call, modern("tools/call", "=?base64?ZGFya19za3lfd2luZG93cw==?=")); code != http.StatusOK || r.Error != nil {
+	if code, _, r := post(t, h, call, modern("tools/call", "=?base64?cGxhbg==?=")); code != http.StatusOK || r.Error != nil {
 		t.Errorf("base64 name: status %d error %+v", code, r.Error)
 	}
 }
@@ -299,7 +322,7 @@ func TestLegacyClient(t *testing.T) {
 	if code != http.StatusOK || len(r.Result["tools"].([]any)) != len(Tools) || r.Result["resultType"] != nil {
 		t.Fatalf("legacy tools/list: status %d result %v", code, r.Result)
 	}
-	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dark_sky_windows","arguments":{"lat":56.41,"lon":-5.47}}}`, map[string]string{"MCP-Protocol-Version": "2025-11-25"})
+	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"plan","arguments":{"lat":56.41,"lon":-5.47}}}`, map[string]string{"MCP-Protocol-Version": "2025-11-25"})
 	if code != http.StatusOK || r.Result["isError"] != false {
 		t.Fatalf("legacy tools/call: status %d result %v", code, r.Result)
 	}

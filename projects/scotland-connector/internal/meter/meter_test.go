@@ -39,12 +39,12 @@ func TestClientClass(t *testing.T) {
 func TestRecord(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg)
-	m.Record("dark_sky_windows", "mcp", ClassAnthropic, "ok", 5, time.Millisecond)
-	m.Record("dark_sky_windows", "mcp", ClassAnthropic, "ok", 0, time.Millisecond)
-	if got := testutil.ToFloat64(m.calls.WithLabelValues("dark_sky_windows", "mcp", ClassAnthropic, "ok")); got != 2 {
+	m.Record("plan", "mcp", ClassAnthropic, "ok", 5, time.Millisecond)
+	m.Record("plan", "mcp", ClassAnthropic, "ok", 0, time.Millisecond)
+	if got := testutil.ToFloat64(m.calls.WithLabelValues("plan", "mcp", ClassAnthropic, "ok")); got != 2 {
 		t.Fatalf("calls = %v", got)
 	}
-	if got := testutil.ToFloat64(m.results.WithLabelValues("dark_sky_windows", "mcp", ClassAnthropic)); got != 5 {
+	if got := testutil.ToFloat64(m.results.WithLabelValues("plan", "mcp", ClassAnthropic)); got != 5 {
 		t.Fatalf("results = %v", got)
 	}
 }

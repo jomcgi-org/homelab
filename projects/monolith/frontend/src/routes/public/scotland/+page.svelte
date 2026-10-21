@@ -25,7 +25,7 @@
 
 <Seo
   title="Scotland connector · jomcgi.dev"
-  description="A free MCP server and REST API that tells an assistant where and when the sky over Scotland will be dark and clear, and which walks fit the weather."
+  description="A free MCP server and REST API that helps an assistant plan and check Scottish trips: which walks fit the weather and where the night sky will be dark and clear."
   path="/scotland"
 />
 
@@ -66,19 +66,19 @@
           </div>
           <div class="ed-lead">
             <h1 id="intro-h">
-              Ask your assistant where to go stargazing or walking.
+              Ask your assistant what to do outdoors, and whether it is on.
             </h1>
             <p>
-              Give it a point in Scotland and it ranks the road-accessible
-              dark-sky sites nearby by forecast clear, dark hours over the next
-              few nights (up to seven), picks the night the moon is out of the
-              way, and says how often each site has been clear in this month in
-              past years.
+              Plan: give it a place in Scotland and a few days, and for each
+              day it suggests the Walkhighlands walks that fit the weather and
+              the best nearby dark-sky site for the night, each with go,
+              marginal or no and the reason, plus sunrise, sunset and the moon.
             </p>
             <p>
-              For walks it ranks Walkhighlands routes near the point by the days
-              a dry, calm daylight slot fits the walk, and links to each route.
-              Ask about a walk by name or a particular day.
+              Check: name a walk and a day, or a place and a night, and it says
+              whether it is on, when to start, which other days suit it and
+              what is better nearby. Each walk links to its route on
+              Walkhighlands.
             </p>
           </div>
           <dl class="spec">

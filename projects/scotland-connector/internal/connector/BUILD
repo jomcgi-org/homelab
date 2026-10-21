@@ -3,27 +3,27 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "connector",
     srcs = [
+        "check.go",
         "connector.go",
-        "walks.go",
+        "plan.go",
+        "trip.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/scotland-connector/internal/connector",
     visibility = ["//projects/scotland-connector:__subpackages__"],
     deps = [
+        "//projects/scotland-connector/internal/astro",
         "//projects/scotland-connector/internal/stars",
+        "//projects/scotland-connector/internal/verdict",
         "//projects/scotland-connector/internal/walks",
     ],
 )
 
 go_test(
     name = "connector_test",
-    srcs = [
-        "connector_test.go",
-        "shape_test.go",
-        "walks_test.go",
-    ],
+    srcs = ["connector_test.go"],
     deps = [
         ":connector",
         "//projects/scotland-connector/internal/fixture",
-        "//projects/scotland-connector/internal/stars",
+        "//projects/scotland-connector/internal/verdict",
     ],
 )
