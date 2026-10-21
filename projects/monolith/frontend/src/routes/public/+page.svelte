@@ -803,11 +803,13 @@
       align-content: center;
     }
     /* Side by side, the grille frame runs the deck's full height and the
-       picture stands on its floor (the cut-out's shoulders meet the frame),
-       so spare height is headroom in the grille, not empty housing; the
-       keypad stands on the same line. The width leaves the keypad its floor and is capped at
-       18rem (a 24rem tall picture) for a small tablet; 10.5rem by 14rem
-       where container units are missing (Safari 15). */
+       picture fills it, cropped at the sides like a tight portrait when the
+       frame is narrower than 3:4, so a tall deck shows a larger face rather
+       than headroom or empty housing; the keypad sits centred beside it.
+       The frame's width leaves the keypad its floor and is capped at 18rem
+       for a small tablet, where the picture stops at 32rem tall and stands
+       on the frame's floor; 10.5rem by 14rem where container units are
+       missing (Safari 15). */
     .portrait {
       /* May shrink below its width where container units are missing and a
          narrow phone cannot fit the fallback size; the print inside keeps
@@ -821,8 +823,10 @@
       height: 100cqh;
     }
     .print {
-      inset: auto 0 0;
+      inset: auto auto 0 50%;
+      height: min(100%, 32rem);
       aspect-ratio: 3 / 4;
+      transform: translateX(-50%);
     }
     .right {
       display: contents;
@@ -833,12 +837,12 @@
       max-width: 14rem;
       grid-template-columns: repeat(3, 1fr);
       grid-template-rows: repeat(3, minmax(0, 1fr));
-      /* As tall as the portrait beside it, never below the keypad's own
-         height, so the keys spread over the picture's height and a tall
-         phone centres the pair rather than stretching the keys apart. */
+      /* About as tall as a 3:4 picture of the frame's width, never below
+         the keypad's own height, so the keys keep a calm spacing however
+         tall the frame beside them is. */
       height: 14rem;
       height: min(100cqh, max(13rem, min((100cqw - 9.6rem) * 4 / 3, 24rem)));
-      align-self: end;
+      align-self: center;
       justify-content: stretch;
       align-content: stretch;
       align-items: center;
