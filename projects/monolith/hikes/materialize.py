@@ -31,7 +31,7 @@ logger = logging.getLogger("monolith.hikes")
 
 # Bump when the payload shape changes incompatibly; the connector refuses a
 # version it does not know rather than misreading it. v2: every daylight hour
-# (v1 held viable hours only), each hour with the complete forecast's extras.
+# (v1 held viable hours only), each hour with fog and low cloud.
 SCHEMA_VERSION = 2
 
 # The stored columns each hour carries after its unix time, in wire order:
@@ -41,10 +41,6 @@ _HOUR_COLUMNS = (
     "precip_mm",
     "wind_kmh",
     "cloud_pct",
-    "gust_kmh",
-    "precip_max_mm",
-    "rain_chance_pct",
-    "thunder_chance_pct",
     "fog_pct",
     "low_cloud_pct",
 )

@@ -30,7 +30,7 @@ def _walk(uuid, **over):
 
 
 def _row(uuid, at, precip=0.1, wind=20.0):
-    return (uuid, at, 8.0, precip, wind, 40.0, 35.0, 0.3, 60.0, 1.0, None, 25.0)
+    return (uuid, at, 8.0, precip, wind, 40.0, None, 25.0)
 
 
 def _hour(uuid, at, fetched=NOW):
@@ -64,7 +64,7 @@ def test_payload_keeps_future_hours_in_order_and_no_prose():
         int(TOP.timestamp()),
         int((TOP + timedelta(hours=2)).timestamp()),
     ]
-    assert a["hours"][0][1:] == [8.0, 0.1, 20.0, 40.0, 35.0, 0.3, 60.0, 1.0, None, 25.0]
+    assert a["hours"][0][1:] == [8.0, 0.1, 20.0, 40.0, None, 25.0]
     assert b["hours"] == []
     assert a["url"].startswith("https://www.walkhighlands.co.uk/")
     assert "summary" not in json.dumps(payload)
@@ -133,7 +133,7 @@ def test_writes_the_snapshot_to_the_configured_object(monkeypatch, engine):
     assert [w["id"] for w in body["walks"]] == ["a"]
     assert len(body["walks"][0]["hours"]) == 1
     # A row stored without the complete forecast's columns emits nulls.
-    assert body["walks"][0]["hours"][0][5:] == [None] * 6
+    assert body["walks"][0]["hours"][0][5:] == [None] * 2
     assert body["fetched_at"].startswith("2026-10-20T12:00:00")
 
 
@@ -149,6 +149,6 @@ def test_payload_keeps_bad_daylight_hours():
     payload = materialize.build_payload(walks, hours, NOW, NOW)
     assert payload["schema_version"] == 2
     got = payload["walks"][0]["hours"]
-    assert [len(h) for h in got] == [11, 11, 11]
+    assert [len(h) for h in got] == [7, 7, 7]
     assert [h[2] for h in got] == [0.1, 3.4, 0.1]
     assert got[2][3] == 91.08

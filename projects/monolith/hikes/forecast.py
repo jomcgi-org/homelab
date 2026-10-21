@@ -11,14 +11,15 @@ original rounding rules so the windows match the old bundle format exactly.
 
 Every daylight hour is stored, good or not, so the Scotland connector can
 judge an hour by the caller's own limits; the hikes app filters on
-is_viable when it reads. Wind and gusts are stored in km/h to two decimals:
+is_viable when it reads. Wind is stored in km/h to two decimals:
 met.no gives m/s (and rain in mm) to one decimal, so the stored value is
 exact and the read filter matches the raw viability rule at the 80 km/h
 boundary. A finer input would be rounded before the rule applies.
 
-The complete forecast's gusts, rain range and chances of rain and thunder
-come from met.no's Nordic model, which in Scotland covers Shetland only;
-elsewhere they are absent and stored as null.
+The complete forecast adds fog and low cloud, which met.no gives across
+Scotland. Its gusts, rain range and chances of rain and thunder are left
+out: they come from met.no's Nordic model, which in Scotland covers
+Shetland only.
 
 The one intentional change from the legacy logic: the daylight gate. The old
 code kept a fixed 07:00-19:00 UTC band, which is wrong both ways in Scotland
@@ -188,10 +189,6 @@ def parse_hourly(forecast_json: dict | None) -> list[dict]:
                 "precipitation_mm": next_details.get("precipitation_amount", 0) or 0,
                 "cloud_area_fraction": instant.get("cloud_area_fraction"),
                 # The complete forecast's extras; None when absent.
-                "wind_gust_ms": instant.get("wind_speed_of_gust"),
-                "precipitation_max_mm": next_details.get("precipitation_amount_max"),
-                "rain_chance_pct": next_details.get("probability_of_precipitation"),
-                "thunder_chance_pct": next_details.get("probability_of_thunder"),
                 "fog_pct": instant.get("fog_area_fraction"),
                 "low_cloud_pct": instant.get("cloud_area_fraction_low"),
             }
@@ -213,10 +210,6 @@ HOUR_FIELDS = (
     "precip_mm",
     "wind_kmh",
     "cloud_pct",
-    "gust_kmh",
-    "precip_max_mm",
-    "rain_chance_pct",
-    "thunder_chance_pct",
     "fog_pct",
     "low_cloud_pct",
 )
@@ -276,10 +269,6 @@ def compute_hours(
                 precip_mm,
                 _kmh(weather["wind_speed_ms"] or 0),
                 cloud_pct,
-                _kmh(weather.get("wind_gust_ms")),
-                _opt(weather.get("precipitation_max_mm"), 1),
-                _opt(weather.get("rain_chance_pct")),
-                _opt(weather.get("thunder_chance_pct")),
                 _opt(weather.get("fog_pct")),
                 _opt(weather.get("low_cloud_pct")),
             ]

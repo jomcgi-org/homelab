@@ -110,19 +110,13 @@ def test_write_walk_hours_inserts_rows_for_each_walk(session):
 def test_write_walk_hours_stores_the_complete_forecast_columns(session):
     h1 = datetime(2026, 6, 13, 12, tzinfo=timezone.utc)
     now = datetime(2026, 6, 13, 11, tzinfo=timezone.utc)
-    row = [_ts(h1), 7.4, 3.4, 80.28, 90, 111.96, 5.1, 88, 2, None, 62]
+    row = [_ts(h1), 7.4, 3.4, 80.28, 90, None, 62]
     jobs._write_walk_hours(session, {"walk-a": [row]}, now)
     session.commit()
     a = session.get(WalkHour, ("walk-a", h1))
-    assert (a.precip_mm, a.wind_kmh, a.gust_kmh, a.precip_max_mm) == (
+    assert (a.precip_mm, a.wind_kmh, a.fog_pct, a.low_cloud_pct) == (
         3.4,
         80.28,
-        111.96,
-        5.1,
-    )
-    assert (a.rain_chance_pct, a.thunder_chance_pct, a.fog_pct, a.low_cloud_pct) == (
-        88,
-        2,
         None,
         62,
     )

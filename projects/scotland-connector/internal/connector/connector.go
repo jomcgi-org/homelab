@@ -43,7 +43,6 @@ const (
 	// 80 km/h), so a person who will put up with more can say so.
 	MaxRainLimitMM  = 10
 	MaxWindLimitKmh = 120
-	MaxGustLimitKmh = 150
 	MinTempLimitC   = -30
 	MaxTempLimitC   = 30
 	MaxNameLength   = 100
