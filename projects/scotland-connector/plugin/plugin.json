@@ -9,6 +9,7 @@
     "url": "https://jomcgi.dev"
   },
   "homepage": "https://jomcgi.dev/scotland",
+  "license": "MPL-2.0",
   "keywords": ["scotland", "walking", "hiking", "stargazing", "weather"],
   "extensions": {
     "com.openai": {

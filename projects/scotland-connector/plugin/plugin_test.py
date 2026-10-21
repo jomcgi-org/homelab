@@ -24,6 +24,8 @@ def test_manifests_agree():
     assert claude["name"] == openai["name"] == "scotland"
     assert claude["version"] == openai["version"]
     assert claude["description"] == openai["description"]
+    assert claude["license"] == openai["license"] == "MPL-2.0"
+    assert (_DIR / "LICENSE").read_text().startswith("Mozilla Public License")
 
 
 def test_both_mcp_configs_point_at_the_connector():
