@@ -96,7 +96,9 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 		return a
 	case noGoodHour:
 		hour, left := "No dry, calm daylight hour", ""
-		if d.Limited {
+		// The words follow the test the caller asked for, looser or
+		// stricter; Limited (stricter only) is for the dark-credit rule.
+		if d.Test != DefaultTest {
 			hour = "No daylight hour within the limits"
 		}
 		if d.Started {
@@ -106,7 +108,7 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 		return a
 	case tooShort:
 		spell, left := "good spell", ""
-		if d.Limited {
+		if d.Test != DefaultTest {
 			spell = "spell within the limits"
 		}
 		if d.Started {
