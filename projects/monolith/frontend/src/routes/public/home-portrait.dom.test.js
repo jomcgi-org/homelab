@@ -86,4 +86,38 @@ describe("createPortrait", () => {
     expect(disconnected).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("flashes the print when the frame around it is tapped, and stops on destroy", () => {
+    vi.useFakeTimers();
+    const ctx = {
+      setTransform: vi.fn(),
+      clearRect: vi.fn(),
+      drawImage: vi.fn(),
+    };
+    const canvas = document.createElement("canvas");
+    canvas.getContext = () => ctx;
+    const frame = document.createElement("div");
+    const host = document.createElement("div");
+    frame.append(host);
+    host.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      width: 300,
+      height: 400,
+    });
+    const portrait = createPortrait({
+      canvas,
+      host,
+      tapTarget: frame,
+      src: "/missing.png",
+      scheme: () => "light",
+    });
+    frame.dispatchEvent(new PointerEvent("pointerdown"));
+    expect(host.classList.contains("neg")).toBe(true);
+    vi.advanceTimersByTime(200);
+    expect(host.classList.contains("neg")).toBe(false);
+    portrait.destroy();
+    frame.dispatchEvent(new PointerEvent("pointerdown"));
+    expect(host.classList.contains("neg")).toBe(false);
+  });
 });

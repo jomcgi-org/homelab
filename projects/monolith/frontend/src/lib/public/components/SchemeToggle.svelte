@@ -22,14 +22,22 @@
 
   // Cross-fade the whole page between schemes where the browser can,
   // instead of every surface snapping at once. Reduced motion snaps.
+  // `want` is the scheme a pending transition will apply, so a second
+  // click before it runs flips from that rather than the painted scheme.
+  let want = null;
   function flip() {
-    const next = dark ? "light" : "dark";
+    const from = want ?? (dark ? "dark" : "light");
+    const next = from === "dark" ? "light" : "dark";
     const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (!document.startViewTransition || still) {
       apply(next);
       return;
     }
-    document.startViewTransition(() => apply(next));
+    want = next;
+    document.startViewTransition(() => {
+      apply(next);
+      if (want === next) want = null;
+    });
   }
 
   $effect(() => {
