@@ -90,11 +90,17 @@
   });
 
   // What the display is reading out: a key, a post, or nothing (the name).
+  // Touch never reads out, and neither does the phone layout at all (hover,
+  // focus or otherwise): its glass fits the name, so changing the readout
+  // would resize the unit under the finger. Keep the query in step with the
+  // phone media block below.
+  const PHONE_QUERY = "(max-width: 760px)";
   let reading = $state(null);
   let slopOn = $state(false);
   let slopTimer;
   function readout(item, pointerType) {
     if (pointerType === "touch") return;
+    if (item && window.matchMedia(PHONE_QUERY).matches) return;
     clearTimeout(slopTimer);
     reading = item;
     slopOn = false;
@@ -801,8 +807,9 @@
         )
         0 0 / 1.45cqw 1.45cqw;
     }
-    /* Touch never reads anything out, so the phone glass can fit its
-       content instead of reserving room for a long readout. */
+    /* Nothing reads out at this width (readout() checks PHONE_QUERY), so
+       the glass can fit the name instead of reserving room for a readout
+       without ever resizing the unit. */
     .glass {
       height: auto;
       min-height: 6.4rem;
