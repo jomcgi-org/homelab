@@ -49,6 +49,7 @@ from sqlmodel import select
 from factory.orchestration.turn_artifact import run_artifact
 from factory.orchestration import graph
 from factory.orchestration.tracing import set_attributes, tracer
+from factory.orchestration import factory_controls as controls
 
 logger = logging.getLogger(__name__)
 
@@ -118,14 +119,6 @@ def _session():
 # Reading the state
 
 
-def _detail(row) -> dict:
-    try:
-        value = json.loads(row.detail_json or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def _trail(db, task_id: str) -> list:
     from factory.orchestration.factory_models import FactoryAudit
 
@@ -171,7 +164,7 @@ def state(trail: list, threshold: int) -> dict:
     for row in trail:
         if row.action not in (ASSESSED, CLEARED):
             continue
-        detail = _detail(row)
+        detail = controls.audit_detail(row)
         result["assessment_cost_usd"] += float(detail.get("cost_usd") or 0.0)
         result["last"] = {"id": row.id, "action": row.action, **detail}
         if row.action == CLEARED:
@@ -279,7 +272,7 @@ def evidence(runs: list[dict], trail: list, adds: Counter, watch: dict) -> dict:
     """The recent history an assessment reads, since the last clearance."""
     recent = [r for r in runs if r["id"] > watch["run_watermark"]]
     refusals = [
-        _detail(row).get("refusal_code")
+        controls.audit_detail(row).get("refusal_code")
         for row in trail
         if row.id > watch["audit_watermark"]
         and row.action in ("conductor_rejected", "dispatch_refused")
@@ -743,7 +736,9 @@ def _enact(task: dict, open_: dict, receipt, trail, used, threshold, runs) -> st
         (
             r
             for r in trail
-            if r.action == "resume_task" and r.id > pause_id and _detail(r).get("ok")
+            if r.action == "resume_task"
+            and r.id > pause_id
+            and controls.audit_detail(r).get("ok")
         ),
         None,
     )
@@ -970,7 +965,7 @@ def detail(db, task_id: str | None, policy: dict | None) -> dict | None:
         "assessment_cost_usd": round(watch["assessment_cost_usd"], 6),
         "paused_by_watchdog": watch["open"] is not None,
         "last": watch["last"],
-        "shadow": _detail(shadow) if shadow else None,
+        "shadow": controls.audit_detail(shadow) if shadow else None,
     }
 
 
@@ -1000,7 +995,7 @@ def paused_receipts(db) -> list[tuple[int, int, int]]:
             )
             .order_by(FactoryAudit.id.desc())
         ).all()
-        latest = next((p for p in pauses if _detail(p).get("ok")), None)
+        latest = next((p for p in pauses if controls.audit_detail(p).get("ok")), None)
         if latest is not None and latest.actor == ACTOR:
             held.append((row.id, row.issue_number, turns(db, row.task_id)))
     return held

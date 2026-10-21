@@ -59,6 +59,7 @@ from factory.execution.rationale import parse_rationale
 from factory.access import factory_decider
 
 from auth.api import Principal, current_principal, get_principal
+from core.jsonio import loads_or
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -77,16 +78,6 @@ def session_stop_control_enabled() -> bool:
     return (
         os.environ.get("AGENT_SESSION_STOP_CONTROL_ENABLED", "false").lower() == "true"
     )
-
-
-def _decode(value: str | None, default):
-    if not value:
-        return default
-    try:
-        decoded = json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return default
-    return decoded
 
 
 def _aggregate_statement(status: str | None = None, session_id: int | None = None):
@@ -1094,10 +1085,10 @@ def get_session_detail(
                 "voice_summary": turn.voice_summary,
                 "terminal_reason": turn.terminal_reason,
                 "stop_reason": turn.stop_reason,
-                "permission_denials": _decode(turn.permission_denials, []),
+                "permission_denials": loads_or(turn.permission_denials, []),
                 "commit_sha": turn.commit_sha,
                 "base_sha": turn.base_sha,
-                "usage": _decode(turn.usage_json, {}),
+                "usage": loads_or(turn.usage_json, {}),
                 "cost_usd": turn.cost_usd,
                 "list_cost_usd": turn.list_cost_usd,
                 "created_at": iso(turn.created_at),
@@ -1109,7 +1100,7 @@ def get_session_detail(
                 "seq": message.seq,
                 "prompt": message.message_text,
                 "partial_text": message.partial_text,
-                "partial_activities": _decode(message.partial_activities, None),
+                "partial_activities": loads_or(message.partial_activities, None),
                 "claimed_by_replica": message.claimed_by_replica,
                 "claimed_at": iso(message.claimed_at),
                 "dispatch_count": message.dispatch_count,
