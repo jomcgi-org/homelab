@@ -376,6 +376,9 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 		}
 		sources = append(sources, sourceCERRA, sourceOSM, sourceNaturalEarth)
 	}
+	if err := q.WeatherLimits.needsComplete(wk); err != nil {
+		return nil, err
+	}
 	var inRange []walkCandidate
 	if wk != nil {
 		inRange = walksInRange(wk, q)

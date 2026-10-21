@@ -334,6 +334,9 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 			return nil, fmt.Errorf("%w: walks", ErrUnavailable)
 		}
 	}
+	if err := limits.needsComplete(wk); err != nil {
+		return nil, err
+	}
 	res := CheckResult{Items: make([]CheckResultItem, len(plans))}
 	if walk && limits.walks().Active() {
 		res.Limits = &limits

@@ -67,13 +67,13 @@ tools were removed rather than kept beside the new ones.
 
 **Why.** Agents get the context to judge the weather themselves. Each slot
 carries its wettest hour and its wet hours, and a check returns it hour by
-hour. `max_rain_mm_h`, `max_wind_kmh` and `min_temp_c` let an agent apply
-what the person will put up with ("no rain at all", "out of the wind")
-before the verdict is reached, rather than second-guessing a `go`. The
-limits only tighten, since the hikes job stores only hours with at most
-2 mm of rain and wind at most 80 km/h; loosening them would need the job to
-store every daylight hour. Plans leave the hours out to stay compact: a
-plan is the wide question, and a check is the close look.
+hour. `max_rain_mm_h`, `max_wind_kmh`, `max_gust_kmh`,
+`max_rain_chance_pct` and `min_temp_c` let an agent apply what the person
+will put up with ("no rain at all", "out of the gusts", "a bit of rain is
+fine") before the verdict is reached, rather than second-guessing a `go`.
+The default good-hour test stays the hikes app's, so the two never disagree
+without being asked to. Plans leave the hours out to stay compact: a plan is
+the wide question, and a check is the close look.
 
 **Why.** `check` is a POST with a JSON body over REST because its input is a
 list of items. Its answers are not cached (`no-store`); `plan`, the open
@@ -152,8 +152,13 @@ Walk answers read `walks.json`, which the monolith's
 `hikes-refresh-forecasts` job writes to the same bucket every two hours
 (`projects/monolith/hikes/materialize.py`) after it stores new forecast
 hours. Each walk carries its Walkhighlands URL, start point, length, ascent,
-estimated time and the viable hours the hikes app already computes
-(daylight, at most 2 mm of rain, wind at most 80 km/h).
+estimated time and its daylight forecast hours. Schema version 1 holds only
+the hours that pass the hikes app's test (at most 2 mm of rain, wind at most
+80 km/h); version 2 holds every daylight hour with gusts, the forecast's
+upper rain amount, the chance of rain and of thunder, fog and low cloud, so
+limits can loosen as well as tighten and a bad hour's weather is known. The
+connector reads both: the version 2 producer ships after it, and a gust or
+rain-chance limit on version 1 data is refused as not available yet.
 `internal/walks` buckets those hours into UK days at load time and applies
 the hikes app's doable-day rule (`projects/monolith/hikes/router.py`); its
 tests replay the hikes router's cases. A separate `WalkStore` loads the

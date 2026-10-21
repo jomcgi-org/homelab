@@ -46,23 +46,36 @@ type SlotOut struct {
 	WetHours int     `json:"wet_hours"`
 	MinTempC float32 `json:"min_temp_c"`
 	MaxTempC float32 `json:"max_temp_c"`
+	// The strongest gust and the highest chance of rain and of thunder
+	// across the good hours; null where the forecast data does not carry
+	// them.
+	MaxGustKmh          *float32 `json:"max_gust_kmh"`
+	MaxRainChancePct    *float32 `json:"max_rain_chance_pct"`
+	MaxThunderChancePct *float32 `json:"max_thunder_chance_pct"`
 	// Hours is the slot hour by hour for the checked walk in a check; plan
 	// and the alternatives a check offers leave it out to stay compact.
 	Hours []SlotHour `json:"hours,omitempty"`
 }
 
-// SlotHour is one hour of a slot. The one bad hour a slot may hold is
-// marked good false. It carries its weather when the caller's limits turned
-// it away; when it failed the default test it carries none, since the data
-// stores no such hour.
+// SlotHour is one hour of a slot with its weather. The one bad hour a slot
+// may hold is marked good false, with fails naming what it failed ("rain",
+// "wind", "gust", "rain_chance", "cold"); when the forecast data holds good
+// hours only, a bad hour that failed the default test has no weather and no
+// fails. Fields the forecast leaves out are omitted.
 type SlotHour struct {
-	Time          string   `json:"time"`
-	Good          bool     `json:"good"`
-	OutsideLimits bool     `json:"outside_limits,omitempty"`
-	RainMM        *float32 `json:"rain_mm,omitempty"`
-	WindKmh       *float32 `json:"wind_kmh,omitempty"`
-	TempC         *float32 `json:"temp_c,omitempty"`
-	CloudPct      *float32 `json:"cloud_pct,omitempty"`
+	Time             string   `json:"time"`
+	Good             bool     `json:"good"`
+	Fails            []string `json:"fails,omitempty"`
+	RainMM           *float32 `json:"rain_mm,omitempty"`
+	RainMaxMM        *float32 `json:"rain_max_mm,omitempty"`
+	RainChancePct    *float32 `json:"rain_chance_pct,omitempty"`
+	ThunderChancePct *float32 `json:"thunder_chance_pct,omitempty"`
+	WindKmh          *float32 `json:"wind_kmh,omitempty"`
+	GustKmh          *float32 `json:"gust_kmh,omitempty"`
+	TempC            *float32 `json:"temp_c,omitempty"`
+	CloudPct         *float32 `json:"cloud_pct,omitempty"`
+	LowCloudPct      *float32 `json:"low_cloud_pct,omitempty"`
+	FogPct           *float32 `json:"fog_pct,omitempty"`
 }
 
 // WalkFacts identify a Walkhighlands walk; url has the route.
@@ -153,16 +166,44 @@ func walkFacts(w *walks.Walk) WalkFacts {
 
 func f32(v float32) *float32 { return &v }
 
+// known is v when the forecast carries it, else nil.
+func known(v float32) *float32 {
+	if !walks.Known(v) {
+		return nil
+	}
+	return f32(v)
+}
+
+// maxKnown is the highest known value of field across hours, else nil.
+func maxKnown(hours []walks.Hour, field func(walks.Hour) float32) *float32 {
+	var out *float32
+	for _, h := range hours {
+		if v := field(h); walks.Known(v) && (out == nil || v > *out) {
+			out = f32(v)
+		}
+	}
+	return out
+}
+
 func slotOut(d *walks.Day, withHours bool) *SlotOut {
 	r := d.Best
 	if r == nil {
 		return nil
+	}
+	var inSlot []walks.Hour
+	for _, h := range d.Hours {
+		if h.Unix >= r.Start.Unix() && h.Unix < r.End.Unix() {
+			inSlot = append(inSlot, h)
+		}
 	}
 	out := &SlotOut{
 		Start: rfc3339(r.Start), End: rfc3339(r.End), GoodHours: r.GoodHours,
 		MaxWindKmh: r.MaxWindKmh, TotalPrecipMM: float32(round(float64(r.TotalPrecipMM), 1)),
 		MaxRainMMH: float32(round(float64(r.MaxPrecipMM), 1)), WetHours: r.WetHours,
 		MinTempC: r.MinTempC, MaxTempC: r.MaxTempC,
+		MaxGustKmh:          maxKnown(inSlot, func(h walks.Hour) float32 { return h.GustKmh }),
+		MaxRainChancePct:    maxKnown(inSlot, func(h walks.Hour) float32 { return h.RainChancePct }),
+		MaxThunderChancePct: maxKnown(inSlot, func(h walks.Hour) float32 { return h.ThunderChancePct }),
 	}
 	if !withHours {
 		return out
@@ -171,15 +212,19 @@ func slotOut(d *walks.Day, withHours bool) *SlotOut {
 	for _, h := range d.Hours {
 		good[h.Unix] = true
 	}
-	known := make(map[int64]walks.Hour, len(d.All))
+	all := make(map[int64]walks.Hour, len(d.All))
 	for _, h := range d.All {
-		known[h.Unix] = h
+		all[h.Unix] = h
 	}
 	for t := r.Start.Unix(); t < r.End.Unix(); t += 3600 {
 		sh := SlotHour{Time: rfc3339(time.Unix(t, 0)), Good: good[t]}
-		if h, ok := known[t]; ok {
-			sh.OutsideLimits = !sh.Good
+		if h, ok := all[t]; ok {
+			if !sh.Good {
+				sh.Fails = d.Test.Fails(h)
+			}
 			sh.RainMM, sh.WindKmh, sh.TempC, sh.CloudPct = f32(h.PrecipMM), f32(h.WindKmh), f32(h.TempC), f32(h.CloudPct)
+			sh.RainMaxMM, sh.RainChancePct, sh.ThunderChancePct = known(h.PrecipMaxMM), known(h.RainChancePct), known(h.ThunderChancePct)
+			sh.GustKmh, sh.LowCloudPct, sh.FogPct = known(h.GustKmh), known(h.LowCloudPct), known(h.FogPct)
 		}
 		out.Hours = append(out.Hours, sh)
 	}
@@ -206,14 +251,18 @@ func walkOption(ds *walks.Dataset, w *walks.Walk, day int32, now time.Time, ask 
 	return o, good
 }
 
-// WeatherLimits tighten what counts as a good walking hour, for a caller
-// who wants it drier, calmer or milder than the defaults (at most 2 mm of
-// rain and 80 km/h of wind in an hour). Limits can only tighten: the data
-// holds no hour outside the defaults.
+// WeatherLimits change what counts as a good walking hour from the default
+// (at most 2 mm of rain and wind at most 80 km/h in an hour): drier, calmer,
+// less gusty, less likely to rain or milder, or wetter and windier when the
+// person will put up with it. Loosening needs forecast data that carries
+// every daylight hour; on data that holds good hours only, a looser limit
+// finds no extra hours.
 type WeatherLimits struct {
-	MaxRainMMH *float64 `json:"max_rain_mm_h,omitempty"`
-	MaxWindKmh *float64 `json:"max_wind_kmh,omitempty"`
-	MinTempC   *float64 `json:"min_temp_c,omitempty"`
+	MaxRainMMH       *float64 `json:"max_rain_mm_h,omitempty"`
+	MaxWindKmh       *float64 `json:"max_wind_kmh,omitempty"`
+	MaxGustKmh       *float64 `json:"max_gust_kmh,omitempty"`
+	MaxRainChancePct *float64 `json:"max_rain_chance_pct,omitempty"`
+	MinTempC         *float64 `json:"min_temp_c,omitempty"`
 }
 
 func rounded(v *float64, places int) *float64 {
@@ -236,29 +285,49 @@ func strict(v float64, isMax bool) *float64 {
 // weatherLimits validates the limits and rounds them strictly.
 func weatherLimits(l WeatherLimits) (WeatherLimits, error) {
 	var out WeatherLimits
-	if v := l.MaxRainMMH; v != nil {
-		if math.IsNaN(*v) || *v < 0 || *v > walks.ViableMaxPrecipMM {
-			return out, &ParamError{"max_rain_mm_h", fmt.Sprintf("between 0 and %g: the data holds only hours with at most %g mm", walks.ViableMaxPrecipMM, walks.ViableMaxPrecipMM)}
+	check := func(v *float64, param string, lo, hi float64, isMax bool) (*float64, error) {
+		if v == nil {
+			return nil, nil
 		}
-		out.MaxRainMMH = strict(*v, true)
+		if math.IsNaN(*v) || *v < lo || *v > hi {
+			return nil, &ParamError{param, fmt.Sprintf("between %g and %g", lo, hi)}
+		}
+		return strict(*v, isMax), nil
 	}
-	if v := l.MaxWindKmh; v != nil {
-		if math.IsNaN(*v) || *v < 0 || *v > walks.ViableMaxWindKmh {
-			return out, &ParamError{"max_wind_kmh", fmt.Sprintf("between 0 and %g: the data holds only hours with wind at most %g km/h", walks.ViableMaxWindKmh, walks.ViableMaxWindKmh)}
-		}
-		out.MaxWindKmh = strict(*v, true)
+	var err error
+	if out.MaxRainMMH, err = check(l.MaxRainMMH, "max_rain_mm_h", 0, MaxRainLimitMM, true); err != nil {
+		return out, err
 	}
-	if v := l.MinTempC; v != nil {
-		if math.IsNaN(*v) || *v < MinTempLimitC || *v > MaxTempLimitC {
-			return out, &ParamError{"min_temp_c", fmt.Sprintf("between %d and %d", MinTempLimitC, MaxTempLimitC)}
-		}
-		out.MinTempC = strict(*v, false)
+	if out.MaxWindKmh, err = check(l.MaxWindKmh, "max_wind_kmh", 0, MaxWindLimitKmh, true); err != nil {
+		return out, err
+	}
+	if out.MaxGustKmh, err = check(l.MaxGustKmh, "max_gust_kmh", 0, MaxGustLimitKmh, true); err != nil {
+		return out, err
+	}
+	if out.MaxRainChancePct, err = check(l.MaxRainChancePct, "max_rain_chance_pct", 0, 100, true); err != nil {
+		return out, err
+	}
+	if out.MinTempC, err = check(l.MinTempC, "min_temp_c", MinTempLimitC, MaxTempLimitC, false); err != nil {
+		return out, err
 	}
 	return out, nil
 }
 
+// needsComplete is the error for limits the walk data cannot apply yet:
+// gusts and the chance of rain arrive with the version 2 snapshot.
+func (l WeatherLimits) needsComplete(ds *walks.Dataset) error {
+	if ds == nil || ds.Complete || !l.walks().NeedsComplete() {
+		return nil
+	}
+	param := "max_gust_kmh"
+	if l.MaxGustKmh == nil {
+		param = "max_rain_chance_pct"
+	}
+	return &ParamError{param, "not available yet: the walk forecast data does not carry gusts or the chance of rain"}
+}
+
 func (l WeatherLimits) walks() walks.Limits {
-	return walks.Limits{MaxPrecipMM: l.MaxRainMMH, MaxWindKmh: l.MaxWindKmh, MinTempC: l.MinTempC}
+	return walks.Limits{MaxPrecipMM: l.MaxRainMMH, MaxWindKmh: l.MaxWindKmh, MaxGustKmh: l.MaxGustKmh, MaxRainChancePct: l.MaxRainChancePct, MinTempC: l.MinTempC}
 }
 
 func siteFacts(site *stars.Site, c *stars.Climate) SiteFacts {

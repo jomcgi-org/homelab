@@ -20,8 +20,15 @@ import (
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
 )
 
-// SchemaVersion is the walks.json shape this package reads.
-const SchemaVersion = 1
+// Snapshot shapes this package reads. Version 1 holds the good hours only,
+// as [unix, temp_c, precip_mm, wind_kmh, cloud_pct]. Version 2 holds every
+// daylight hour of the hourly forecast with six more fields: gust_kmh,
+// precip_max_mm, rain_chance_pct, thunder_chance_pct, fog_pct and
+// low_cloud_pct, any of them null when the forecast leaves it out.
+const (
+	SchemaV1 = 1
+	SchemaV2 = 2
+)
 
 // Doable-day rule, mirrored from the hikes router.
 const (
@@ -67,27 +74,42 @@ func DayName(day int32) string {
 	return time.Unix(int64(day)*86400, 0).UTC().Format("2006-01-02")
 }
 
-// Hour is one viable daylight hour at the walk's start point: present means
-// it passed the daylight, precipitation and wind limits.
+// Hour is one daylight hour at the walk's start point. In a version 1
+// snapshot only good hours are present; in version 2 every daylight hour is.
+// The version 2 fields are NaN when unknown.
 type Hour struct {
-	Unix     int64
-	Day      int32
-	TempC    float32
-	PrecipMM float32
-	WindKmh  float32
-	CloudPct float32
+	Unix             int64
+	Day              int32
+	TempC            float32
+	PrecipMM         float32
+	WindKmh          float32
+	CloudPct         float32
+	GustKmh          float32
+	PrecipMaxMM      float32
+	RainChancePct    float32
+	ThunderChancePct float32
+	FogPct           float32
+	LowCloudPct      float32
 }
+
+var nan = float32(math.NaN())
+
+// Known reports whether v, one of an hour's version 2 fields, was forecast.
+func Known(v float32) bool { return v == v }
 
 // Walk is one WalkHighlands walk with its viable hours in time order.
 type Walk struct {
-	ID         string
-	Name       string
-	URL        string
-	Lat, Lon   float64
-	LengthKm   float64
-	AscentM    int
-	DurationH  float64
-	Hours      []Hour
+	ID        string
+	Name      string
+	URL       string
+	Lat, Lon  float64
+	LengthKm  float64
+	AscentM   int
+	DurationH float64
+	Hours     []Hour
+	// good is Hours under DefaultTest, worked out once: most questions use
+	// the default test, and a plan asks it of every walk on every day.
+	good       []Hour
 	cosLat     float64
 	required   float64
 	shoulderHr int
@@ -107,6 +129,10 @@ type Dataset struct {
 	HourlyUntil time.Time
 	// Skipped counts snapshot rows left out for missing fields.
 	Skipped int
+	// Complete reports a version 2 snapshot: every daylight hour is present,
+	// with gusts and the chance of rain, so limits can loosen the default
+	// test and a bad hour's weather is known.
+	Complete bool
 	// fullThrough and noneFrom index CoverageOf: days up to fullThrough are
 	// full, days from noneFrom have none, and the rest are partial. A plan
 	// asks for every walk on every day, so the answer is worked out once.
@@ -126,7 +152,7 @@ type doc struct {
 		DistanceKm float64      `json:"distance_km"`
 		AscentM    int          `json:"ascent_m"`
 		DurationH  float64      `json:"duration_h"`
-		Hours      [][5]float64 `json:"hours"`
+		Hours      [][]*float64 `json:"hours"`
 	} `json:"walks"`
 }
 
@@ -136,13 +162,19 @@ func Parse(body []byte, version string) (*Dataset, error) {
 	if err := json.Unmarshal(body, &d); err != nil {
 		return nil, fmt.Errorf("walks: parse: %w", err)
 	}
-	if d.SchemaVersion != SchemaVersion {
-		return nil, fmt.Errorf("walks: schema_version %d, want %d", d.SchemaVersion, SchemaVersion)
+	width := 0
+	switch d.SchemaVersion {
+	case SchemaV1:
+		width = 5
+	case SchemaV2:
+		width = 11
+	default:
+		return nil, fmt.Errorf("walks: schema_version %d, want %d or %d", d.SchemaVersion, SchemaV1, SchemaV2)
 	}
 	if len(d.Walks) == 0 {
 		return nil, fmt.Errorf("walks: snapshot has no walks")
 	}
-	ds := &Dataset{Version: version, Walks: make([]Walk, 0, len(d.Walks))}
+	ds := &Dataset{Version: version, Walks: make([]Walk, 0, len(d.Walks)), Complete: d.SchemaVersion == SchemaV2}
 	if d.FetchedAt != nil && *d.FetchedAt != "" {
 		t, err := time.Parse(time.RFC3339, *d.FetchedAt)
 		if err != nil {
@@ -169,15 +201,31 @@ func Parse(body []byte, version string) (*Dataset, error) {
 		if w.DurationH > longWalkHours {
 			out.shoulderHr = darkShoulderHours
 		}
-		for i, h := range w.Hours {
-			at := time.Unix(int64(h[0]), 0)
-			out.Hours[i] = Hour{
-				Unix: at.Unix(), Day: LocalDay(at),
-				TempC: float32(h[1]), PrecipMM: float32(h[2]), WindKmh: float32(h[3]), CloudPct: float32(h[4]),
+		out.Hours = out.Hours[:0]
+		for _, h := range w.Hours {
+			// An hour without a time is unusable; a short or long row is a
+			// shape this reader does not know.
+			if len(h) != width || h[0] == nil {
+				return nil, fmt.Errorf("walks: walk %s: an hour has %d fields, want %d", w.ID, len(h), width)
 			}
+			at := time.Unix(int64(*h[0]), 0)
+			v := func(i int, missing float32) float32 {
+				if i >= len(h) || h[i] == nil {
+					return missing
+				}
+				return float32(*h[i])
+			}
+			// Version 1 coerced missing core values to 0 before storing.
+			out.Hours = append(out.Hours, Hour{
+				Unix: at.Unix(), Day: LocalDay(at),
+				TempC: v(1, 0), PrecipMM: v(2, 0), WindKmh: v(3, 0), CloudPct: v(4, 0),
+				GustKmh: v(5, nan), PrecipMaxMM: v(6, nan), RainChancePct: v(7, nan),
+				ThunderChancePct: v(8, nan), FogPct: v(9, nan), LowCloudPct: v(10, nan),
+			})
 			latest = max(latest, at.Unix())
 		}
 		sort.Slice(out.Hours, func(i, j int) bool { return out.Hours[i].Unix < out.Hours[j].Unix })
+		out.good = DefaultTest.filter(out.Hours)
 		ds.Walks = append(ds.Walks, out)
 	}
 	if len(ds.Walks) == 0 {
@@ -353,11 +401,39 @@ type Day struct {
 	Limited bool
 	All     []Hour
 	// DarkLateOnly reports that, under limits, a long walk's dark credit can
-	// only be spent after the slot, so it starts with the slot;
-	// GapOutsideLimits that the slot's one bad hour is daylight the limits
-	// turned away.
-	DarkLateOnly     bool
-	GapOutsideLimits bool
+	// only be spent after the slot, so it starts with the slot. GapFails is
+	// what made the slot's one bad hour bad (see Test.Fails), empty when the
+	// hour is not in the data.
+	DarkLateOnly bool
+	GapFails     []string
+	// Test is the good-hour test the day was assessed with.
+	Test Test
+}
+
+// gapFails is what made the slot's one bad hour bad, when the data has it.
+func (w *Walk) gapFails(d *Day) []string {
+	r := d.Best
+	if int(r.End.Sub(r.Start)/time.Hour) == r.GoodHours {
+		return nil // no bad hour inside
+	}
+	// Hours are time-ordered: the gap is the first hour of the run that the
+	// good hours skip.
+	t := r.Start.Unix()
+	for _, h := range d.Hours {
+		if h.Unix < t {
+			continue
+		}
+		if h.Unix != t {
+			break
+		}
+		t += 3600
+	}
+	for _, h := range d.All {
+		if h.Unix == t {
+			return d.Test.Fails(h)
+		}
+	}
+	return nil
 }
 
 // limitedEdges keeps the dark-shoulder credit honest under limits. Without
@@ -368,20 +444,6 @@ type Day struct {
 // with neither, the walk does not fit; with only the far side, it starts
 // with the slot and finishes in the dark.
 func (w *Walk) limitedEdges(d *Day, from time.Time) {
-	good := make(map[int64]bool, len(d.Hours))
-	for _, h := range d.Hours {
-		good[h.Unix] = true
-	}
-	known := make(map[int64]bool, len(d.All))
-	for _, h := range d.All {
-		known[h.Unix] = true
-	}
-	start, end := d.Best.Start.Unix(), d.Best.End.Unix()
-	for t := start; t < end; t += 3600 {
-		if !good[t] && known[t] {
-			d.GapOutsideLimits = true
-		}
-	}
 	if w.shoulderHr == 0 || !d.Doable || float64(d.Best.GoodHours) >= w.required-requirementEpsilon {
 		return // the credit is not in play
 	}
@@ -401,33 +463,108 @@ func (w *Walk) limitedEdges(d *Day, from time.Time) {
 	}
 }
 
-// Limits tighten what counts as a good hour beyond the snapshot's own test
-// (at most ViableMaxPrecipMM of rain and ViableMaxWindKmh of wind): for a
-// caller who wants it dry, calm or mild. A nil field leaves that test alone.
-// The snapshot holds good hours only, so limits can tighten the test but
-// never loosen it.
+// Limits change what counts as a good hour from the default test (at most
+// DefaultMaxPrecipMM of rain and DefaultMaxWindKmh of wind, the hikes app's):
+// for a caller who wants it drier, calmer or milder, or will put up with
+// more. A nil field keeps the default. On a version 1 snapshot, which holds
+// good hours only, a limit looser than the default finds no extra hours.
 type Limits struct {
-	MaxPrecipMM, MaxWindKmh, MinTempC *float64
+	MaxPrecipMM, MaxWindKmh, MaxGustKmh, MaxRainChancePct, MinTempC *float64
 }
 
-// The snapshot's own good-hour test, applied by the hikes job before an hour
-// is stored (projects/monolith/hikes/forecast.py).
+// The default good-hour test, the hikes job's viability rule
+// (projects/monolith/hikes/forecast.py).
 const (
-	ViableMaxPrecipMM = 2.0
-	ViableMaxWindKmh  = 80.0
+	DefaultMaxPrecipMM = 2.0
+	DefaultMaxWindKmh  = 80.0
 )
 
 // Active reports whether any limit is set.
 func (l Limits) Active() bool {
-	return l.MaxPrecipMM != nil || l.MaxWindKmh != nil || l.MinTempC != nil
+	return l.MaxPrecipMM != nil || l.MaxWindKmh != nil || l.MaxGustKmh != nil || l.MaxRainChancePct != nil || l.MinTempC != nil
 }
 
-// allows compares at the hours' own float32 precision, so a limit of 0.2 mm
-// admits an hour stored as 0.2 mm.
-func (l Limits) allows(h Hour) bool {
-	return (l.MaxPrecipMM == nil || h.PrecipMM <= float32(*l.MaxPrecipMM)) &&
-		(l.MaxWindKmh == nil || h.WindKmh <= float32(*l.MaxWindKmh)) &&
-		(l.MinTempC == nil || h.TempC >= float32(*l.MinTempC))
+// NeedsComplete reports limits on fields only a version 2 snapshot has.
+func (l Limits) NeedsComplete() bool { return l.MaxGustKmh != nil || l.MaxRainChancePct != nil }
+
+// Test is a good-hour test: the defaults with the caller's limits applied.
+type Test struct {
+	MaxPrecipMM, MaxWindKmh, MaxGustKmh, MaxRainChancePct, MinTempC float32
+}
+
+var inf = float32(math.Inf(1))
+
+// DefaultTest is the hikes app's good-hour test.
+var DefaultTest = Test{MaxPrecipMM: DefaultMaxPrecipMM, MaxWindKmh: DefaultMaxWindKmh, MaxGustKmh: inf, MaxRainChancePct: inf, MinTempC: -inf}
+
+// Test is the good-hour test these limits make. Values are compared at the
+// hours' own float32 precision, so a limit of 0.2 mm admits an hour stored as
+// 0.2 mm.
+func (l Limits) Test() Test {
+	t := DefaultTest
+	set := func(dst *float32, v *float64) {
+		if v != nil {
+			*dst = float32(*v)
+		}
+	}
+	set(&t.MaxPrecipMM, l.MaxPrecipMM)
+	set(&t.MaxWindKmh, l.MaxWindKmh)
+	set(&t.MaxGustKmh, l.MaxGustKmh)
+	set(&t.MaxRainChancePct, l.MaxRainChancePct)
+	set(&t.MinTempC, l.MinTempC)
+	return t
+}
+
+// Fails lists what an hour fails: "rain", "wind", "gust", "rain_chance",
+// "cold". An unknown gust or rain chance fails nothing.
+func (t Test) Fails(h Hour) []string {
+	var out []string
+	if h.PrecipMM > t.MaxPrecipMM {
+		out = append(out, "rain")
+	}
+	if h.WindKmh > t.MaxWindKmh {
+		out = append(out, "wind")
+	}
+	if Known(h.GustKmh) && h.GustKmh > t.MaxGustKmh {
+		out = append(out, "gust")
+	}
+	if Known(h.RainChancePct) && h.RainChancePct > t.MaxRainChancePct {
+		out = append(out, "rain_chance")
+	}
+	if h.TempC < t.MinTempC {
+		out = append(out, "cold")
+	}
+	return out
+}
+
+// Good reports whether an hour passes the test.
+func (t Test) Good(h Hour) bool {
+	return h.PrecipMM <= t.MaxPrecipMM && h.WindKmh <= t.MaxWindKmh &&
+		(!Known(h.GustKmh) || h.GustKmh <= t.MaxGustKmh) &&
+		(!Known(h.RainChancePct) || h.RainChancePct <= t.MaxRainChancePct) &&
+		h.TempC >= t.MinTempC
+}
+
+func (t Test) filter(hours []Hour) []Hour {
+	out := make([]Hour, 0, len(hours))
+	for _, h := range hours {
+		if t.Good(h) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func sameHours(a, b []Hour) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Unix != b[i].Unix {
+			return false
+		}
+	}
+	return true
 }
 
 // longestRun is _longest_good_run: the longest run of good hours allowing
@@ -460,33 +597,37 @@ func longestRun(hours []Hour) (count, start, end int) {
 
 // dayAt is the walk's assessed day: its good hours from cutoff (a Unix
 // time, the next top of the hour) on, and whether it can be decided.
-func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage, lim Limits) Day {
-	hours := w.Hours
+// dayHours is the part of hours (time-ordered) on day from cutoff on, and
+// whether any of the day's hours were before cutoff.
+func dayHours(hours []Hour, day int32, cutoff int64) ([]Hour, bool) {
 	lo := sort.Search(len(hours), func(j int) bool { return hours[j].Day >= day })
 	hi := sort.Search(len(hours), func(j int) bool { return hours[j].Day > day })
-	dayHours := hours[lo:hi]
-	started := len(dayHours) > 0 && dayHours[0].Unix < cutoff
-	for len(dayHours) > 0 && dayHours[0].Unix < cutoff {
-		dayHours = dayHours[1:]
-	}
-	all := dayHours
+	from := sort.Search(hi-lo, func(j int) bool { return hours[lo+j].Unix >= cutoff })
+	return hours[lo+from : hi], from > 0
+}
+
+func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage, lim Limits) Day {
+	all, _ := dayHours(w.Hours, day, cutoff)
+	// The default test leaves a version 1 day as it is; a version 2 day
+	// loses the hours that fail it.
+	def, started := dayHours(w.good, day, cutoff)
+	good, test := def, DefaultTest
 	if lim.Active() {
-		kept := make([]Hour, 0, len(dayHours))
-		for _, h := range dayHours {
-			if lim.allows(h) {
-				kept = append(kept, h)
-			}
-		}
-		dayHours = kept
+		test = lim.Test()
+		good = test.filter(all)
 	}
-	d := w.day(day, dayHours)
+	d := w.day(day, good)
 	d.All = all
+	d.Test = test
 	d.Started = started
-	// Limited only when the limits turned an hour away: a limit at or past
+	// Limited only when the limits changed which hours are good: a limit at
 	// the default changes nothing, so the answer must not change either.
-	d.Limited = len(dayHours) < len(all)
+	d.Limited = !sameHours(good, def)
 	if d.Limited && d.Best != nil {
 		w.limitedEdges(&d, time.Unix(cutoff, 0))
+	}
+	if d.Best != nil {
+		d.GapFails = w.gapFails(&d)
 	}
 	d.Coverage = coverage
 	d.Decided = coverage == CoverageFull || d.Doable

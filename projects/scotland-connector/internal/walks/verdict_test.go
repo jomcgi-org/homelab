@@ -223,7 +223,7 @@ func TestLimitsAndTheDarkShoulder(t *testing.T) {
 	}
 	// A cold hour mid-walk is the slot's one bad hour, and the why says so.
 	ds = tempWalk(t, 3, map[int]float64{0: 10, 1: 10, 2: 3, 3: 10})
-	if a := assess(ds, base, warm); a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "one hour outside the limits") {
+	if a := assess(ds, base, warm); a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "one cold hour") {
 		t.Fatalf("cold gap = %+v", a)
 	}
 }
