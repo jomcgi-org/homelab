@@ -346,7 +346,8 @@ type Day struct {
 	// that every answer within the hour is the same.
 	From    time.Time
 	Started bool
-	// Limited reports that the caller's Limits narrowed the good hours, and
+	// Limited reports that the caller's Limits turned at least one of the
+	// day's hours away, and
 	// All is the day's hours before they did: hours the limits turned away
 	// are daylight with known weather, not darkness or bad weather.
 	Limited bool
@@ -366,7 +367,7 @@ type Day struct {
 // darkness (the hour beyond the edge starts before sunrise or after sunset):
 // with neither, the walk does not fit; with only the far side, it starts
 // with the slot and finishes in the dark.
-func (w *Walk) limitedEdges(d *Day) {
+func (w *Walk) limitedEdges(d *Day, from time.Time) {
 	good := make(map[int64]bool, len(d.Hours))
 	for _, h := range d.Hours {
 		good[h.Unix] = true
@@ -388,7 +389,9 @@ func (w *Walk) limitedEdges(d *Day) {
 	if !ok {
 		return
 	}
-	early := d.Best.Start.Add(-time.Hour).Before(rise)
+	// Early darkness counts only while some of it is still to come: asked
+	// about today after dawn, the dark before the slot is past.
+	early := d.Best.Start.Add(-time.Hour).Before(rise) && rise.After(from)
 	late := d.Best.End.After(set)
 	switch {
 	case !early && !late:
@@ -479,9 +482,11 @@ func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage, lim Limits) Day
 	d := w.day(day, dayHours)
 	d.All = all
 	d.Started = started
-	d.Limited = lim.Active()
+	// Limited only when the limits turned an hour away: a limit at or past
+	// the default changes nothing, so the answer must not change either.
+	d.Limited = len(dayHours) < len(all)
 	if d.Limited && d.Best != nil {
-		w.limitedEdges(&d)
+		w.limitedEdges(&d, time.Unix(cutoff, 0))
 	}
 	d.Coverage = coverage
 	d.Decided = coverage == CoverageFull || d.Doable
