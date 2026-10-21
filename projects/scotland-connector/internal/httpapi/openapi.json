@@ -65,16 +65,64 @@
             "description": "Comma-separated or repeated. Default both."
           },
           {
+            "name": "min_duration_h",
+            "in": "query",
+            "schema": { "type": "number", "minimum": 0.5, "maximum": 24 },
+            "description": "Only walks whose estimated time is at least this many hours."
+          },
+          {
             "name": "max_duration_h",
             "in": "query",
             "schema": { "type": "number", "minimum": 0.5, "maximum": 24 },
             "description": "Only walks whose estimated time is at most this many hours."
           },
           {
+            "name": "min_length_km",
+            "in": "query",
+            "schema": { "type": "number", "minimum": 0.5, "maximum": 100 },
+            "description": "Only walks at least this long, in km."
+          },
+          {
+            "name": "max_length_km",
+            "in": "query",
+            "schema": { "type": "number", "minimum": 0.5, "maximum": 100 },
+            "description": "Only walks at most this long, in km."
+          },
+          {
             "name": "max_ascent_m",
             "in": "query",
             "schema": { "type": "integer", "minimum": 1, "maximum": 3000 },
             "description": "Only walks with at most this much ascent, in metres."
+          },
+          {
+            "name": "max_rain_mm_h",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2,
+              "description": "Walks: an hour counts as good only with at most this much rain, in mm. 0 means dry; the default 2 allows light rain."
+            }
+          },
+          {
+            "name": "max_wind_kmh",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 80,
+              "description": "Walks: an hour counts as good only with wind at most this, in km/h, at the walk's start. Default 80."
+            }
+          },
+          {
+            "name": "min_temp_c",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "minimum": -30,
+              "maximum": 30,
+              "description": "Walks: an hour counts as good only at or above this temperature, in degrees C. Default none."
+            }
           },
           {
             "name": "limit",
@@ -267,15 +315,30 @@
           }
         }
       },
+      "SlotHour": {
+        "type": "object",
+        "description": "One hour of a slot. The one bad hour a slot may hold has good false and no weather: the data stores good hours only.",
+        "required": ["time", "good"],
+        "properties": {
+          "time": { "type": "string", "format": "date-time" },
+          "good": { "type": "boolean" },
+          "rain_mm": { "type": "number" },
+          "wind_kmh": { "type": "number" },
+          "temp_c": { "type": "number" },
+          "cloud_pct": { "type": "number" }
+        }
+      },
       "Slot": {
         "type": "object",
-        "description": "The day's best good-weather slot at the walk's start: daylight hours with at most 2 mm of rain and wind at most 80 km/h, one bad hour tolerated.",
+        "description": "The day's best good-weather slot at the walk's start: daylight hours with at most 2 mm of rain and wind at most 80 km/h (or the caller's tighter limits), one bad hour tolerated.",
         "required": [
           "start",
           "end",
           "good_hours",
           "max_wind_kmh",
           "total_precip_mm",
+          "max_rain_mm_h",
+          "wet_hours",
           "min_temp_c",
           "max_temp_c"
         ],
@@ -285,8 +348,21 @@
           "good_hours": { "type": "integer" },
           "max_wind_kmh": { "type": "number" },
           "total_precip_mm": { "type": "number" },
+          "max_rain_mm_h": {
+            "type": "number",
+            "description": "The wettest good hour's rain, in mm."
+          },
+          "wet_hours": {
+            "type": "integer",
+            "description": "Good hours with at least 0.1 mm of rain."
+          },
           "min_temp_c": { "type": "number" },
-          "max_temp_c": { "type": "number" }
+          "max_temp_c": { "type": "number" },
+          "hours": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SlotHour" },
+            "description": "The slot hour by hour; check returns it, plan leaves it out."
+          }
         }
       },
       "Walk": {
@@ -460,8 +536,14 @@
                 "type": "array",
                 "items": { "type": "string", "enum": ["walk", "stargaze"] }
               },
+              "min_duration_h": { "type": "number" },
               "max_duration_h": { "type": "number" },
+              "min_length_km": { "type": "number" },
+              "max_length_km": { "type": "number" },
               "max_ascent_m": { "type": "integer" },
+              "max_rain_mm_h": { "type": "number" },
+              "max_wind_kmh": { "type": "number" },
+              "min_temp_c": { "type": "number" },
               "limit": { "type": "integer" }
             }
           },
@@ -522,6 +604,24 @@
             "minItems": 1,
             "maxItems": 10,
             "items": { "$ref": "#/components/schemas/CheckItem" }
+          },
+          "max_rain_mm_h": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2,
+            "description": "Walks: an hour counts as good only with at most this much rain, in mm. 0 means dry; the default 2 allows light rain."
+          },
+          "max_wind_kmh": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 80,
+            "description": "Walks: an hour counts as good only with wind at most this, in km/h, at the walk's start. Default 80."
+          },
+          "min_temp_c": {
+            "type": "number",
+            "minimum": -30,
+            "maximum": 30,
+            "description": "Walks: an hour counts as good only at or above this temperature, in degrees C. Default none."
           }
         },
         "additionalProperties": false
@@ -598,6 +698,16 @@
         "type": "object",
         "required": ["items"],
         "properties": {
+          "limits": {
+            "type": "object",
+            "description": "The weather limits used, when any were given.",
+            "required": [],
+            "properties": {
+              "max_rain_mm_h": { "type": "number" },
+              "max_wind_kmh": { "type": "number" },
+              "min_temp_c": { "type": "number" }
+            }
+          },
           "items": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/CheckResultItem" },

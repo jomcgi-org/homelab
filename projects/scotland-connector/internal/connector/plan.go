@@ -12,30 +12,40 @@ import (
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
 
-// PlanParams are the plan inputs: where, when, what, and limits on walks.
+// PlanParams are the plan inputs: where, when, what, which walks and the
+// weather a walk needs.
 type PlanParams struct {
-	Lat          *float64 `json:"lat,omitempty"`
-	Lon          *float64 `json:"lon,omitempty"`
-	RadiusKm     *float64 `json:"radius_km,omitempty"`
-	From         *string  `json:"from,omitempty"`
-	To           *string  `json:"to,omitempty"`
-	Activities   []string `json:"activities,omitempty"`
+	Lat        *float64 `json:"lat,omitempty"`
+	Lon        *float64 `json:"lon,omitempty"`
+	RadiusKm   *float64 `json:"radius_km,omitempty"`
+	From       *string  `json:"from,omitempty"`
+	To         *string  `json:"to,omitempty"`
+	Activities []string `json:"activities,omitempty"`
+	WalkFilter
+	WeatherLimits
+	Limit *int `json:"limit,omitempty"`
+}
+
+// WalkFilter narrows a plan's walks by their Walkhighlands facts.
+type WalkFilter struct {
+	MinDurationH *float64 `json:"min_duration_h,omitempty"`
 	MaxDurationH *float64 `json:"max_duration_h,omitempty"`
+	MinLengthKm  *float64 `json:"min_length_km,omitempty"`
+	MaxLengthKm  *float64 `json:"max_length_km,omitempty"`
 	MaxAscentM   *int     `json:"max_ascent_m,omitempty"`
-	Limit        *int     `json:"limit,omitempty"`
 }
 
 // PlanQuery echoes the canonical inputs used.
 type PlanQuery struct {
-	Lat          float64  `json:"lat"`
-	Lon          float64  `json:"lon"`
-	RadiusKm     float64  `json:"radius_km"`
-	From         string   `json:"from"`
-	To           string   `json:"to"`
-	Activities   []string `json:"activities"`
-	MaxDurationH *float64 `json:"max_duration_h,omitempty"`
-	MaxAscentM   *int     `json:"max_ascent_m,omitempty"`
-	Limit        int      `json:"limit"`
+	Lat        float64  `json:"lat"`
+	Lon        float64  `json:"lon"`
+	RadiusKm   float64  `json:"radius_km"`
+	From       string   `json:"from"`
+	To         string   `json:"to"`
+	Activities []string `json:"activities"`
+	WalkFilter
+	WeatherLimits
+	Limit int `json:"limit"`
 }
 
 // PlanDay is one day of a plan: the sun and moon at the point, then the best
@@ -77,19 +87,53 @@ func activities(raw []string) ([]string, error) {
 	return out, nil
 }
 
-func walkLimits(maxDuration *float64, maxAscent *int) (*float64, *int, error) {
-	if maxDuration != nil {
-		d := *maxDuration
-		if math.IsNaN(d) || d < 0.5 || d > MaxDurationH {
-			return nil, nil, &ParamError{"max_duration_h", fmt.Sprintf("between 0.5 and %d", MaxDurationH)}
+// walkFilter validates and rounds a filter; a minimum above its maximum is
+// the minimum's error.
+func walkFilter(f WalkFilter) (WalkFilter, error) {
+	var out WalkFilter
+	between := func(v *float64, param string, lo, hi float64) (*float64, error) {
+		if v == nil {
+			return nil, nil
 		}
-		d = round(d, 1)
-		maxDuration = &d
+		if math.IsNaN(*v) || *v < lo || *v > hi {
+			return nil, &ParamError{param, fmt.Sprintf("between %g and %g", lo, hi)}
+		}
+		return rounded(v, 1), nil
 	}
-	if maxAscent != nil && (*maxAscent < 1 || *maxAscent > MaxAscentM) {
-		return nil, nil, &ParamError{"max_ascent_m", fmt.Sprintf("between 1 and %d", MaxAscentM)}
+	var err error
+	if out.MinDurationH, err = between(f.MinDurationH, "min_duration_h", 0.5, MaxDurationH); err != nil {
+		return out, err
 	}
-	return maxDuration, maxAscent, nil
+	if out.MaxDurationH, err = between(f.MaxDurationH, "max_duration_h", 0.5, MaxDurationH); err != nil {
+		return out, err
+	}
+	if out.MinLengthKm, err = between(f.MinLengthKm, "min_length_km", 0.5, MaxLengthKm); err != nil {
+		return out, err
+	}
+	if out.MaxLengthKm, err = between(f.MaxLengthKm, "max_length_km", 0.5, MaxLengthKm); err != nil {
+		return out, err
+	}
+	if out.MinDurationH != nil && out.MaxDurationH != nil && *out.MinDurationH > *out.MaxDurationH {
+		return out, &ParamError{"min_duration_h", "at most max_duration_h"}
+	}
+	if out.MinLengthKm != nil && out.MaxLengthKm != nil && *out.MinLengthKm > *out.MaxLengthKm {
+		return out, &ParamError{"min_length_km", "at most max_length_km"}
+	}
+	if a := f.MaxAscentM; a != nil {
+		if *a < 1 || *a > MaxAscentM {
+			return out, &ParamError{"max_ascent_m", fmt.Sprintf("between 1 and %d", MaxAscentM)}
+		}
+		out.MaxAscentM = a
+	}
+	return out, nil
+}
+
+func (f WalkFilter) matches(w *walks.Walk) bool {
+	return (f.MinDurationH == nil || w.DurationH >= *f.MinDurationH) &&
+		(f.MaxDurationH == nil || w.DurationH <= *f.MaxDurationH) &&
+		(f.MinLengthKm == nil || w.LengthKm >= *f.MinLengthKm) &&
+		(f.MaxLengthKm == nil || w.LengthKm <= *f.MaxLengthKm) &&
+		(f.MaxAscentM == nil || w.AscentM <= *f.MaxAscentM)
 }
 
 // planQuery validates a plan. Days run from today (UK date) to MaxDaysAhead
@@ -131,7 +175,10 @@ func planQuery(p PlanParams, today, tonight int32) (q PlanQuery, from, to int32,
 		}
 	}
 	q.From, q.To = dayName(from), dayName(to)
-	if q.MaxDurationH, q.MaxAscentM, err = walkLimits(p.MaxDurationH, p.MaxAscentM); err != nil {
+	if q.WalkFilter, err = walkFilter(p.WalkFilter); err != nil {
+		return
+	}
+	if q.WeatherLimits, err = weatherLimits(p.WeatherLimits, ""); err != nil {
 		return
 	}
 	q.Limit = DefaultOptions
@@ -182,7 +229,7 @@ func walksInRange(ds *walks.Dataset, q PlanQuery) []walkCandidate {
 	var out []walkCandidate
 	for i := range ds.Walks {
 		w := &ds.Walks[i]
-		if q.MaxDurationH != nil && w.DurationH > *q.MaxDurationH || q.MaxAscentM != nil && w.AscentM > *q.MaxAscentM {
+		if !q.WalkFilter.matches(w) {
 			continue
 		}
 		if dist := w.DistanceKm(q.Lat, q.Lon); dist <= q.RadiusKm {
@@ -197,9 +244,10 @@ func walksInRange(ds *walks.Dataset, q PlanQuery) []walkCandidate {
 func planWalks(ds *walks.Dataset, q PlanQuery, inRange []walkCandidate, day int32, now time.Time) ([]WalkOption, string) {
 	var top []walkCandidate // the best q.Limit that fit, best first
 	var unknown *walks.Walk
+	ask := walkAsk{lim: q.WeatherLimits.walks()}
 	for _, c := range inRange {
 		w := c.w
-		d := ds.DayFor(w, day, now)
+		d := ds.DayWithin(w, day, now, ask.lim)
 		v := w.Verdict(d)
 		if v != verdict.Go && v != verdict.Marginal {
 			if v == verdict.Unknown && unknown == nil {
@@ -220,16 +268,18 @@ func planWalks(ds *walks.Dataset, q PlanQuery, inRange []walkCandidate, day int3
 	}
 	switch {
 	case len(inRange) == 0:
-		return nil, fmt.Sprintf("No walk starts within %.0f km that matches the limits.", q.RadiusKm)
+		return nil, fmt.Sprintf("No walk starts within %.0f km that matches the filters.", q.RadiusKm)
 	case len(top) == 0 && unknown != nil:
 		// An unknown day may yet be good, so it outranks "none fits".
-		return nil, unknown.Assess(ds.DayFor(unknown, day, now), ds.HourlyUntil).Why
+		return nil, unknown.Assess(ds.DayWithin(unknown, day, now, ask.lim), ds.HourlyUntil).Why
+	case len(top) == 0 && ask.lim.Active():
+		return nil, fmt.Sprintf("None of the %d walks starting within %.0f km fits the weather within the limits.", len(inRange), q.RadiusKm)
 	case len(top) == 0:
 		return nil, fmt.Sprintf("None of the %d walks starting within %.0f km fits the weather.", len(inRange), q.RadiusKm)
 	}
 	out := make([]WalkOption, len(top))
 	for i, c := range top {
-		out[i], _ = walkOption(ds, c.w, day, now)
+		out[i], _ = walkOption(ds, c.w, day, now, ask)
 		km := round(c.dist, 1)
 		out[i].FromPointKm = &km
 	}

@@ -1,6 +1,8 @@
 package connector
 
 import (
+	"fmt"
+	"math"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
@@ -30,15 +32,35 @@ func (s *Service) walks() *walks.Dataset {
 }
 
 // SlotOut is a walk's best slot on a day and the weather across its good
-// hours (daylight, at most 2 mm of rain and wind at most 80 km/h each).
+// hours (daylight, at most 2 mm of rain and wind at most 80 km/h each, or
+// the caller's tighter limits).
 type SlotOut struct {
 	Start         string  `json:"start"`
 	End           string  `json:"end"`
 	GoodHours     int     `json:"good_hours"`
 	MaxWindKmh    float32 `json:"max_wind_kmh"`
 	TotalPrecipMM float32 `json:"total_precip_mm"`
-	MinTempC      float32 `json:"min_temp_c"`
-	MaxTempC      float32 `json:"max_temp_c"`
+	MaxRainMMH    float32 `json:"max_rain_mm_h"`
+	// WetHours counts good hours with at least 0.1 mm of rain, so an agent
+	// can tell a dry slot from a drizzly one.
+	WetHours int     `json:"wet_hours"`
+	MinTempC float32 `json:"min_temp_c"`
+	MaxTempC float32 `json:"max_temp_c"`
+	// Hours is the slot hour by hour; check returns it, plan leaves it out
+	// to stay compact.
+	Hours []SlotHour `json:"hours,omitempty"`
+}
+
+// SlotHour is one hour of a slot. The one bad hour a slot may hold is
+// marked good false and carries no weather: the snapshot stores good hours
+// only.
+type SlotHour struct {
+	Time     string   `json:"time"`
+	Good     bool     `json:"good"`
+	RainMM   *float32 `json:"rain_mm,omitempty"`
+	WindKmh  *float32 `json:"wind_kmh,omitempty"`
+	TempC    *float32 `json:"temp_c,omitempty"`
+	CloudPct *float32 `json:"cloud_pct,omitempty"`
 }
 
 // WalkFacts identify a Walkhighlands walk; url has the route.
@@ -127,28 +149,98 @@ func walkFacts(w *walks.Walk) WalkFacts {
 	}
 }
 
-func slotOut(r *walks.Run) *SlotOut {
+func f32(v float32) *float32 { return &v }
+
+func slotOut(d *walks.Day, withHours bool) *SlotOut {
+	r := d.Best
 	if r == nil {
 		return nil
 	}
-	return &SlotOut{
+	out := &SlotOut{
 		Start: rfc3339(r.Start), End: rfc3339(r.End), GoodHours: r.GoodHours,
 		MaxWindKmh: r.MaxWindKmh, TotalPrecipMM: float32(round(float64(r.TotalPrecipMM), 1)),
+		MaxRainMMH: float32(round(float64(r.MaxPrecipMM), 1)), WetHours: r.WetHours,
 		MinTempC: r.MinTempC, MaxTempC: r.MaxTempC,
 	}
+	if !withHours {
+		return out
+	}
+	byTime := make(map[int64]walks.Hour, len(d.Hours))
+	for _, h := range d.Hours {
+		byTime[h.Unix] = h
+	}
+	for t := r.Start.Unix(); t < r.End.Unix(); t += 3600 {
+		sh := SlotHour{Time: rfc3339(time.Unix(t, 0))}
+		if h, ok := byTime[t]; ok {
+			sh.Good = true
+			sh.RainMM, sh.WindKmh, sh.TempC, sh.CloudPct = f32(h.PrecipMM), f32(h.WindKmh), f32(h.TempC), f32(h.CloudPct)
+		}
+		out.Hours = append(out.Hours, sh)
+	}
+	return out
+}
+
+// walkAsk is how a walk is assessed: the caller's weather limits, and
+// whether the slot comes back hour by hour.
+type walkAsk struct {
+	lim   walks.Limits
+	hours bool
 }
 
 // walkOption assesses one walk on one day.
-func walkOption(ds *walks.Dataset, w *walks.Walk, day int32, now time.Time) (WalkOption, float64) {
-	d := ds.DayFor(w, day, now)
+func walkOption(ds *walks.Dataset, w *walks.Walk, day int32, now time.Time, ask walkAsk) (WalkOption, float64) {
+	d := ds.DayWithin(w, day, now, ask.lim)
 	a := w.Assess(d, ds.HourlyUntil)
 	o := WalkOption{WalkFacts: walkFacts(w), Verdict: a.Verdict, Why: a.Why}
 	good := 0.0
 	if a.Verdict == verdict.Go || a.Verdict == verdict.Marginal {
-		o.StartFrom, o.StartBy, o.Slot = timep(a.StartFrom), timep(a.StartBy), slotOut(d.Best)
+		o.StartFrom, o.StartBy, o.Slot = timep(a.StartFrom), timep(a.StartBy), slotOut(&d, ask.hours)
 		good = float64(d.Best.GoodHours)
 	}
 	return o, good
+}
+
+// WeatherLimits tighten what counts as a good walking hour, for a caller
+// who wants it drier, calmer or milder than the defaults (at most 2 mm of
+// rain and 80 km/h of wind in an hour). Limits can only tighten: the data
+// holds no hour outside the defaults.
+type WeatherLimits struct {
+	MaxRainMMH *float64 `json:"max_rain_mm_h,omitempty"`
+	MaxWindKmh *float64 `json:"max_wind_kmh,omitempty"`
+	MinTempC   *float64 `json:"min_temp_c,omitempty"`
+}
+
+func rounded(v *float64, places int) *float64 {
+	r := round(*v, places)
+	return &r
+}
+
+// weatherLimits validates and rounds the limits, naming params with prefix.
+func weatherLimits(l WeatherLimits, prefix string) (WeatherLimits, error) {
+	var out WeatherLimits
+	if v := l.MaxRainMMH; v != nil {
+		if math.IsNaN(*v) || *v < 0 || *v > walks.ViableMaxPrecipMM {
+			return out, &ParamError{prefix + "max_rain_mm_h", fmt.Sprintf("between 0 and %g: the data holds only hours with at most %g mm", walks.ViableMaxPrecipMM, walks.ViableMaxPrecipMM)}
+		}
+		out.MaxRainMMH = rounded(v, 1)
+	}
+	if v := l.MaxWindKmh; v != nil {
+		if math.IsNaN(*v) || *v < 0 || *v > walks.ViableMaxWindKmh {
+			return out, &ParamError{prefix + "max_wind_kmh", fmt.Sprintf("between 0 and %g: the data holds only hours with wind at most %g km/h", walks.ViableMaxWindKmh, walks.ViableMaxWindKmh)}
+		}
+		out.MaxWindKmh = rounded(v, 0)
+	}
+	if v := l.MinTempC; v != nil {
+		if math.IsNaN(*v) || *v < MinTempLimitC || *v > MaxTempLimitC {
+			return out, &ParamError{prefix + "min_temp_c", fmt.Sprintf("between %d and %d", MinTempLimitC, MaxTempLimitC)}
+		}
+		out.MinTempC = rounded(v, 0)
+	}
+	return out, nil
+}
+
+func (l WeatherLimits) walks() walks.Limits {
+	return walks.Limits{MaxPrecipMM: l.MaxRainMMH, MaxWindKmh: l.MaxWindKmh, MinTempC: l.MinTempC}
 }
 
 func siteFacts(site *stars.Site, c *stars.Climate) SiteFacts {

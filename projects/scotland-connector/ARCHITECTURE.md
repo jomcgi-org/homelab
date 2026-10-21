@@ -65,6 +65,16 @@ verdict here, with one rule set, keeps every assistant's answer the same and
 the answers short. The connector had no users when this changed, so the old
 tools were removed rather than kept beside the new ones.
 
+**Why.** Agents get the context to judge the weather themselves. Each slot
+carries its wettest hour and its wet hours, and a check returns it hour by
+hour. `max_rain_mm_h`, `max_wind_kmh` and `min_temp_c` let an agent apply
+what the person will put up with ("no rain at all", "out of the wind")
+before the verdict is reached, rather than second-guessing a `go`. The
+limits only tighten, since the hikes job stores only hours with at most
+2 mm of rain and wind at most 80 km/h; loosening them would need the job to
+store every daylight hour. Plans leave the hours out to stay compact: a
+plan is the wide question, and a check is the close look.
+
 **Why.** `check` is a POST with a JSON body over REST because its input is a
 list of items. Its answers are not cached (`no-store`); `plan`, the open
 question an assistant asks first, is a GET and caches at the edge. A CORS

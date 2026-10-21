@@ -96,3 +96,30 @@ func TestAssessLaterToday(t *testing.T) {
 		t.Fatalf("evening = %+v", a)
 	}
 }
+
+// Limits narrow the good hours and say so in the why; without them the
+// snapshot's own test stands.
+func TestLimitsNarrowTheGoodHours(t *testing.T) {
+	// The fixture hour has 0.2 mm of rain, 18 km/h of wind and 9.5 C.
+	ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 3, 0, 0, 1, 2, 3)))
+	w := &ds.Walks[0]
+	day := LocalDay(base)
+	f := func(v float64) *float64 { return &v }
+	if a := w.Assess(ds.DayWithin(w, day, base, Limits{MaxPrecipMM: f(0.2), MaxWindKmh: f(18), MinTempC: f(9.5)}), ds.HourlyUntil); a.Verdict != verdict.Go {
+		t.Fatalf("at the limits = %+v", a)
+	}
+	for name, lim := range map[string]Limits{
+		"dry":  {MaxPrecipMM: f(0)},
+		"calm": {MaxWindKmh: f(15)},
+		"mild": {MinTempC: f(10)},
+	} {
+		d := ds.DayWithin(w, day, base, lim)
+		a := w.Assess(d, ds.HourlyUntil)
+		if a.Verdict != verdict.No || d.GoodHours != 0 || a.Why != "No daylight hour within the limits at the start." {
+			t.Errorf("%s = %+v", name, a)
+		}
+	}
+	if d := ds.DayWithin(w, day, base, Limits{}); d.Limited || d.GoodHours != 4 {
+		t.Fatalf("no limits = %+v", d)
+	}
+}
