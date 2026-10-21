@@ -23,10 +23,10 @@ const INTRO = `# Joe McGinley
 
 ## Scotland connector
 
-- [Scotland connector](${PUBLIC_BASE}/scotland): free, read-only MCP server and REST API that ranks road-accessible dark-sky sites in Scotland by forecast clear, dark hours over the next few nights (up to seven), and Walkhighlands walks by the days a dry, calm daylight slot fits each walk, linking to the route. Pass coordinates; no sign-up or key.
-- MCP endpoint: ${PUBLIC_BASE}/scotland/mcp (Streamable HTTP, tools \`dark_sky_windows\` and \`walk_windows\`)
+- [Scotland connector](${PUBLIC_BASE}/scotland): free, read-only MCP server and REST API for planning and checking Scottish trips. \`plan\` takes a point and up to seven days and returns, for each day, the Walkhighlands walks that fit the weather and the best road-accessible dark-sky sites for the night, each with a go, marginal, no or unknown verdict and its reason. \`check\` takes named walks on dates or points on nights and says whether each is on, when, and what else suits. Pass coordinates; no sign-up or key.
+- MCP endpoint: ${PUBLIC_BASE}/scotland/mcp (Streamable HTTP, tools \`plan\` and \`check\`)
 - [OpenAPI spec](${PUBLIC_BASE}/scotland/v1/openapi.json): the REST contract
-- [Method](${PUBLIC_BASE}/scotland/v1/method): how windows are scored, and the data sources to credit
+- [Method](${PUBLIC_BASE}/scotland/v1/method): how verdicts are decided, and the data sources to credit
 `;
 
 const ELSEWHERE = `## Elsewhere

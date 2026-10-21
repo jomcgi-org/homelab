@@ -22,45 +22,36 @@ import (
 const APIVersion = "v1"
 
 // Caps. The connector answers narrow questions; nothing lists the corpus.
-// openapi.json documents the same numbers and a test keeps them equal.
+// openapi.json and the MCP input schemas carry the same numbers and tests
+// keep them equal.
 const (
-	DefaultRadiusKm = 50
-	MaxRadiusKm     = 150
-	DefaultNights   = 3
-	MaxNights       = 7
-	DefaultLimit    = 5
-	MaxLimit        = 10
-
-	DefaultWalkRadiusKm = 30
-	MaxWalkRadiusKm     = 100
-	// Walk days stop at three: MET Norway's hourly forecast reaches about two
-	// and a half days, and the hikes job keeps hourly steps only.
-	DefaultWalkDays  = 3
-	MaxWalkDays      = 3
-	MaxWalkDurationH = 24
-	MaxWalkAscentM   = 3000
-	MaxNameLength    = 100
-	// MaxWalkDateAhead is how far ahead a walk date may be asked about. Days
-	// past the hourly forecast come back with forecast_coverage "none".
-	MaxWalkDateAhead = 13
+	DefaultRadiusKm = 30
+	MaxRadiusKm     = 100
+	// A plan covers up to a week, starting no earlier than today and ending
+	// no later than MaxDaysAhead days out; days past the hourly forecast
+	// come back with verdict unknown.
+	DefaultSpanDays = 3
+	MaxSpanDays     = 7
+	MaxDaysAhead    = 13
+	DefaultOptions  = 3
+	MaxOptions      = 5
+	MaxCheckItems   = 10
+	MaxDurationH    = 24
+	MaxAscentM      = 3000
+	MaxNameLength   = 100
 )
 
-// Detail levels. Summary answers lead with the best night or slot and leave
-// out the hourly arrays, which are most of an answer's size.
+// Alternatives in a check: walks starting within nearbyWalkKm of the checked
+// walk, and dark-sky sites within siteKm of the checked point (widened to
+// siteFarKm when none is that close).
 const (
-	DetailSummary = "summary"
-	DetailHours   = "hours"
+	nearbyWalkKm = 20
+	siteKm       = 10
+	siteFarKm    = 30
+	// siteSpacingKm keeps a plan's stargazing options apart: grid sites
+	// 2 km apart are one place to a person.
+	siteSpacingKm = 5
 )
-
-func detail(p *string) (string, error) {
-	if p == nil || *p == "" || *p == DetailSummary {
-		return DetailSummary, nil
-	}
-	if *p == DetailHours {
-		return DetailHours, nil
-	}
-	return "", &ParamError{"detail", `"summary" or "hours"`}
-}
 
 func dayName(day int32) string { return time.Unix(int64(day)*86400, 0).UTC().Format("2006-01-02") }
 
@@ -171,7 +162,7 @@ var (
 		Attribution: "Weather forecast data from MET Norway",
 		License:     "CC BY 4.0",
 		URL:         "https://api.met.no/doc/License",
-		Use:         "hourly cloud cover forecast",
+		Use:         "hourly cloud, rain, wind and temperature forecasts",
 	}
 	sourceCERRA = Source{
 		Name:        "Copernicus CERRA regional reanalysis",
@@ -196,9 +187,21 @@ var (
 		URL:         "https://www.naturalearthdata.com/about/terms-of-use/",
 		Use:         "Scotland land boundary for the site grid",
 	}
+	// Walk facts come from Walkhighlands pages; the route itself is not
+	// reproduced, and every walk links to its page (#7252).
+	sourceWalkhighlands = Source{
+		Name:        "Walkhighlands",
+		Attribution: "Walk listings from Walkhighlands; follow each walk's url for the route",
+		License:     "Routes and descriptions stay on walkhighlands.co.uk; each walk links to its page",
+		URL:         "https://www.walkhighlands.co.uk/",
+		Use:         "walk names, start points, length, ascent and estimated time",
+	}
 )
 
-func (s *Service) meta(ds *stars.Dataset, now time.Time, sources []Source) Meta {
+// meta is the provenance block for an answer drawing on sky, walks or both
+// (either may be nil). forecast_fetched_at is the older of the two fetches,
+// so it never overstates freshness.
+func (s *Service) meta(sky *stars.Dataset, wk *walks.Dataset, now time.Time, sources []Source) Meta {
 	m := Meta{
 		APIVersion:  APIVersion,
 		GeneratedAt: now.UTC().Format(time.RFC3339),
@@ -206,12 +209,25 @@ func (s *Service) meta(ds *stars.Dataset, now time.Time, sources []Source) Meta 
 		MethodURL:   s.MethodURL,
 		Sources:     sources,
 	}
-	if ds != nil {
-		m.DataVersion = ds.Version
-		if !ds.FetchedAt.IsZero() {
-			f := ds.FetchedAt.Format(time.RFC3339)
-			m.ForecastFetchedAt = &f
+	var versions []string
+	var fetched time.Time
+	older := func(t time.Time) {
+		if !t.IsZero() && (fetched.IsZero() || t.Before(fetched)) {
+			fetched = t
 		}
+	}
+	if sky != nil {
+		versions = append(versions, sky.Version)
+		older(sky.FetchedAt)
+	}
+	if wk != nil {
+		versions = append(versions, wk.Version)
+		older(wk.FetchedAt)
+	}
+	m.DataVersion = strings.Join(versions, "|")
+	if !fetched.IsZero() {
+		f := fetched.Format(time.RFC3339)
+		m.ForecastFetchedAt = &f
 	}
 	return m
 }
@@ -219,85 +235,6 @@ func (s *Service) meta(ds *stars.Dataset, now time.Time, sources []Source) Meta 
 func etag(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return `"` + hex.EncodeToString(sum[:12]) + `"`
-}
-
-// --- dark_sky_windows ---
-
-// DarkSkyParams are the dark_sky_windows inputs. Pointers distinguish
-// "absent" (use the default) from an explicit value.
-type DarkSkyParams struct {
-	Lat      *float64 `json:"lat,omitempty"`
-	Lon      *float64 `json:"lon,omitempty"`
-	RadiusKm *float64 `json:"radius_km,omitempty"`
-	Night    *string  `json:"night,omitempty"`
-	Nights   *int     `json:"nights,omitempty"`
-	Limit    *int     `json:"limit,omitempty"`
-	Detail   *string  `json:"detail,omitempty"`
-}
-
-// DarkSkyQuery echoes the canonical inputs actually used.
-type DarkSkyQuery struct {
-	Lat      float64 `json:"lat"`
-	Lon      float64 `json:"lon"`
-	RadiusKm float64 `json:"radius_km"`
-	Night    string  `json:"night,omitempty"`
-	Nights   int     `json:"nights"`
-	Limit    int     `json:"limit"`
-	Detail   string  `json:"detail"`
-}
-
-// HourOut is one clear hour.
-type HourOut struct {
-	Time              string  `json:"time"`
-	CloudAreaFraction float32 `json:"cloud_area_fraction"`
-	Dark              bool    `json:"dark"`
-	MoonAltitudeDeg   float32 `json:"moon_altitude_deg"`
-}
-
-// NightOut is one night at one site. ClearFrom and ClearUntil bound its clear
-// hours, which may have gaps; Hours only come with detail=hours.
-type NightOut struct {
-	Night            string     `json:"night"`
-	ClearDark        int        `json:"clear_dark_hours"`
-	ClearTwilight    int        `json:"clear_twilight_hours"`
-	MoonlessDark     int        `json:"moonless_clear_dark_hours"`
-	MoonIllumination float64    `json:"moon_illumination"`
-	ClearFrom        *string    `json:"clear_from"`
-	ClearUntil       *string    `json:"clear_until"`
-	Hours            *[]HourOut `json:"hours,omitempty"`
-}
-
-// ClimateOut is the site's historical month.
-type ClimateOut struct {
-	Month        int      `json:"month"`
-	ClearDark    int      `json:"clear_dark_hours"`
-	Dark         int      `json:"dark_hours"`
-	ClearSkyOdds *float64 `json:"clear_sky_odds"`
-}
-
-// SiteOut is one ranked site.
-type SiteOut struct {
-	SiteID         string      `json:"site_id"`
-	Lat            float64     `json:"lat"`
-	Lon            float64     `json:"lon"`
-	DistanceKm     float64     `json:"distance_km"`
-	AltitudeM      int         `json:"altitude_m"`
-	LightPollution string      `json:"light_pollution_zone"`
-	ClearDark      int         `json:"clear_dark_hours"`
-	ClearTwilight  int         `json:"clear_twilight_hours"`
-	MoonlessDark   int         `json:"moonless_clear_dark_hours"`
-	HoursTruncated bool        `json:"forecast_hours_truncated"`
-	BestNight      *NightOut   `json:"best_night"`
-	Nights         []NightOut  `json:"nights"`
-	Climatology    *ClimateOut `json:"climatology"`
-}
-
-// DarkSkyResult is dark_sky_windows' data.
-type DarkSkyResult struct {
-	Query        DarkSkyQuery `json:"query"`
-	DarknessMode string       `json:"darkness_mode"`
-	Nights       []string     `json:"nights"`
-	Sites        []SiteOut    `json:"sites"`
 }
 
 func round(v float64, places int) float64 {
@@ -315,170 +252,4 @@ func coordinates(lat, lon *float64) (float64, float64, error) {
 		return 0, 0, &ParamError{"lat", "coordinates are outside Scotland, the area this service covers"}
 	}
 	return round(*lat, 2), round(*lon, 2), nil
-}
-
-func darkSkyQuery(p DarkSkyParams, now time.Time) (q DarkSkyQuery, night int32, err error) {
-	q = DarkSkyQuery{RadiusKm: DefaultRadiusKm, Nights: DefaultNights, Limit: DefaultLimit}
-	if q.Detail, err = detail(p.Detail); err != nil {
-		return q, 0, err
-	}
-	if p.Night != nil && strings.TrimSpace(*p.Night) != "" {
-		if p.Nights != nil {
-			return q, 0, &ParamError{"night", "pass night or nights, not both"}
-		}
-		first := stars.FirstNight(now)
-		if night, err = parseDay("night", *p.Night, first, first+MaxNights-1); err != nil {
-			return q, 0, err
-		}
-		q.Night, q.Nights = dayName(night), 1
-	}
-	q2, err := darkSkyCaps(p, q)
-	return q2, night, err
-}
-
-func darkSkyCaps(p DarkSkyParams, q DarkSkyQuery) (DarkSkyQuery, error) {
-	var err error
-	if q.Lat, q.Lon, err = coordinates(p.Lat, p.Lon); err != nil {
-		return q, err
-	}
-
-	if p.RadiusKm != nil {
-		r := *p.RadiusKm
-		if math.IsNaN(r) || r < 1 || r > MaxRadiusKm {
-			return q, &ParamError{"radius_km", fmt.Sprintf("between 1 and %d", MaxRadiusKm)}
-		}
-		q.RadiusKm = round(r, 1)
-	}
-	if p.Nights != nil && q.Night == "" {
-		if *p.Nights < 1 || *p.Nights > MaxNights {
-			return q, &ParamError{"nights", fmt.Sprintf("between 1 and %d", MaxNights)}
-		}
-		q.Nights = *p.Nights
-	}
-	if p.Limit != nil {
-		if *p.Limit < 1 || *p.Limit > MaxLimit {
-			return q, &ParamError{"limit", fmt.Sprintf("between 1 and %d", MaxLimit)}
-		}
-		q.Limit = *p.Limit
-	}
-	return q, nil
-}
-
-func nightOut(n stars.NightWindow, hours bool) NightOut {
-	no := NightOut{
-		Night: n.Night, ClearDark: n.ClearDark, ClearTwilight: n.ClearTwilight,
-		MoonlessDark: n.MoonlessDark, MoonIllumination: round(n.MoonLit, 2),
-	}
-	if len(n.Hours) > 0 {
-		from := rfc3339(n.Hours[0].Unix)
-		until := rfc3339(n.Hours[len(n.Hours)-1].Unix + 3600)
-		no.ClearFrom, no.ClearUntil = &from, &until
-	}
-	if hours {
-		out := make([]HourOut, len(n.Hours))
-		for j, h := range n.Hours {
-			out[j] = HourOut{
-				Time:              rfc3339(h.Unix),
-				CloudAreaFraction: h.Cloud,
-				Dark:              h.Dark,
-				MoonAltitudeDeg:   float32(round(float64(n.MoonAlt[j]), 1)),
-			}
-		}
-		no.Hours = &out
-	}
-	return no
-}
-
-// darkScore weighs a night's clear-dark hours by the moon: a moonless hour
-// counts 1 and a moonlit one 1 minus the moon's lit fraction, so a long
-// clear night under a thin crescent beats one moonless hour, and a short
-// moonless night beats a long one under a full moon.
-func darkScore(n *stars.NightWindow) float64 {
-	return float64(n.MoonlessDark) + float64(n.ClearDark-n.MoonlessDark)*(1-n.MoonLit)
-}
-
-// BestNight is the night to go: the highest darkScore, then most
-// clear-twilight hours (the midsummer fallback), earliest first. Nil when no
-// night has a clear hour.
-func BestNight(nights []stars.NightWindow) *stars.NightWindow {
-	var best *stars.NightWindow
-	for i := range nights {
-		n := &nights[i]
-		if n.ClearTwilight == 0 {
-			continue
-		}
-		if best == nil {
-			best = n
-			continue
-		}
-		if a, b := darkScore(n), darkScore(best); a > b+1e-9 || (math.Abs(a-b) <= 1e-9 && n.ClearTwilight > best.ClearTwilight) {
-			best = n
-		}
-	}
-	return best
-}
-
-// DarkSkyWindows ranks dark-sky sites near a point for the next few nights,
-// or for one named night.
-func (s *Service) DarkSkyWindows(p DarkSkyParams) (*Envelope, error) {
-	now := s.Now()
-	q, night, err := darkSkyQuery(p, now)
-	if err != nil {
-		return nil, err
-	}
-	ds := s.Data.Current()
-	if ds == nil {
-		return nil, ErrUnavailable
-	}
-	hours := q.Detail == DetailHours
-	wq := stars.WindowsQuery{Lat: q.Lat, Lon: q.Lon, RadiusKm: q.RadiusKm, Nights: q.Nights, Limit: q.Limit, Night: night, Now: now}
-	res := DarkSkyResult{Query: q, DarknessMode: ds.Darkness, Nights: wq.NightNames(), Sites: []SiteOut{}}
-	truncated := false
-	for _, w := range ds.Windows(wq) {
-		out := SiteOut{
-			SiteID:         w.Site.ID,
-			Lat:            w.Site.Lat,
-			Lon:            w.Site.Lon,
-			DistanceKm:     round(w.DistanceKm, 1),
-			AltitudeM:      w.Site.AltitudeM,
-			LightPollution: w.Site.LPZone,
-			ClearDark:      w.ClearDark,
-			ClearTwilight:  w.ClearTwilight,
-			MoonlessDark:   w.MoonlessDark,
-			HoursTruncated: w.Site.Truncated(),
-			Nights:         make([]NightOut, len(w.Nights)),
-		}
-		truncated = truncated || out.HoursTruncated
-		for i, n := range w.Nights {
-			out.Nights[i] = nightOut(n, hours)
-		}
-		if b := BestNight(w.Nights); b != nil {
-			bn := nightOut(*b, false)
-			out.BestNight = &bn
-		}
-		if c := w.Climate; c != nil {
-			co := &ClimateOut{Month: c.Month, ClearDark: c.ClearDark, Dark: c.Dark}
-			if c.Dark > 0 {
-				odds := round(float64(c.ClearDark)/float64(c.Dark), 3)
-				co.ClearSkyOdds = &odds
-			}
-			out.Climatology = co
-		}
-		res.Sites = append(res.Sites, out)
-	}
-	meta := s.meta(ds, now, []Source{sourceMET, sourceCERRA, sourceOSM, sourceNaturalEarth})
-	meta.Notes = append(meta.Notes,
-		"best_night is each site's darkest clear night: clear-dark hours with the moon set count fully, moonlit ones by how little of the moon is lit. Pass detail=hours for each clear hour with the moon's altitude.")
-	if truncated {
-		meta.Notes = append(meta.Notes, "Some sites have more clear hours than the snapshot lists; their later nights may be undercounted (forecast_hours_truncated).")
-	}
-	if len(res.Sites) == 0 {
-		meta.Notes = append(meta.Notes, "No dark-sky sites within the radius. Try a larger radius_km.")
-	}
-	return &Envelope{
-		Data:    res,
-		Meta:    meta,
-		ETag:    etag("dark_sky_windows", ds.Version, meta.AsOf, canonical(q)),
-		Results: len(res.Sites),
-	}, nil
 }

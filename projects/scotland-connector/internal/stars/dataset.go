@@ -59,6 +59,11 @@ type Dataset struct {
 	Sites []Site
 	// FetchedAt is the newest MET Norway fetch time across the snapshot.
 	FetchedAt time.Time
+	// HourlyUntil is how far the hourly forecast is known to reach: the later
+	// of FetchedAt plus 48 hours and the end of the latest hour listed. MET
+	// Norway is hourly for about two and a half days and 6-hourly after, so
+	// nights past this are sampled too thinly to judge.
+	HourlyUntil time.Time
 	// Darkness is the snapshot-wide mode: astronomical, twilight or none.
 	Darkness string
 	// Version identifies the snapshot pair (both R2 ETags); responses fold it
@@ -161,5 +166,15 @@ func Parse(sitesJSON, historyJSON []byte, version string) (*Dataset, error) {
 		ds.Sites = append(ds.Sites, site)
 	}
 	ds.index = newGrid(ds.Sites)
+	if !ds.FetchedAt.IsZero() {
+		ds.HourlyUntil = ds.FetchedAt.Add(48 * time.Hour)
+	}
+	for i := range ds.Sites {
+		if h := ds.Sites[i].Hours; len(h) > 0 {
+			if end := time.Unix(h[len(h)-1].Unix, 0).UTC().Add(time.Hour); end.After(ds.HourlyUntil) {
+				ds.HourlyUntil = end
+			}
+		}
+	}
 	return ds, nil
 }

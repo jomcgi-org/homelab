@@ -84,8 +84,9 @@ func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL
 		return nil, err
 	}
 	h := &Handler{svc: svc, meter: m, log: log, mux: http.NewServeMux(), specURL: publicBaseURL + "/v1/openapi.json"}
-	h.mux.HandleFunc("GET /v1/dark-sky-windows", h.darkSkyWindows)
-	h.mux.HandleFunc("GET /v1/walk-windows", h.walkWindows)
+	h.mux.HandleFunc("GET /v1/plan", h.plan)
+	h.mux.HandleFunc("POST /v1/check", h.check)
+	h.mux.HandleFunc("OPTIONS /v1/check", h.preflight)
 	h.mux.HandleFunc("GET /v1/openapi.json", h.static(spec, "application/json"))
 	h.mux.HandleFunc("GET /v1/method", h.static(method, "text/markdown; charset=utf-8"))
 	h.mux.HandleFunc("/v1/", h.notFound)
@@ -121,42 +122,59 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
-func (h *Handler) darkSkyWindows(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) plan(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	q := r.URL.Query()
-	var p connector.DarkSkyParams
+	var p connector.PlanParams
 	var err error
 	p.Lat, err = floatParam(q.Get("lat"), "lat", err)
 	p.Lon, err = floatParam(q.Get("lon"), "lon", err)
 	p.RadiusKm, err = floatParam(q.Get("radius_km"), "radius_km", err)
-	p.Nights, err = intParam(q.Get("nights"), "nights", err)
-	p.Limit, err = intParam(q.Get("limit"), "limit", err)
-	p.Night, p.Detail = strParam(q, "night"), strParam(q, "detail")
-	var env *connector.Envelope
-	if err == nil {
-		env, err = h.svc.DarkSkyWindows(p)
-	}
-	h.respond(w, r, "dark_sky_windows", start, env, err)
-}
-
-func (h *Handler) walkWindows(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	q := r.URL.Query()
-	var p connector.WalkWindowsParams
-	var err error
-	p.Lat, err = floatParam(q.Get("lat"), "lat", err)
-	p.Lon, err = floatParam(q.Get("lon"), "lon", err)
-	p.RadiusKm, err = floatParam(q.Get("radius_km"), "radius_km", err)
-	p.Days, err = intParam(q.Get("days"), "days", err)
-	p.Limit, err = intParam(q.Get("limit"), "limit", err)
 	p.MaxDurationH, err = floatParam(q.Get("max_duration_h"), "max_duration_h", err)
 	p.MaxAscentM, err = intParam(q.Get("max_ascent_m"), "max_ascent_m", err)
-	p.WalkName, p.Date, p.Detail = strParam(q, "walk_name"), strParam(q, "date"), strParam(q, "detail")
+	p.Limit, err = intParam(q.Get("limit"), "limit", err)
+	p.From, p.To = strParam(q, "from"), strParam(q, "to")
+	// activities is comma-separated, repeated, or both.
+	for _, v := range q["activities"] {
+		for _, a := range strings.Split(v, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				p.Activities = append(p.Activities, a)
+			}
+		}
+	}
 	var env *connector.Envelope
 	if err == nil {
-		env, err = h.svc.WalkWindows(p)
+		env, err = h.svc.Plan(p)
 	}
-	h.respond(w, r, "walk_windows", start, env, err)
+	h.respond(w, r, "plan", start, env, err)
+}
+
+// maxCheckBody bounds a check request: ten items are well under 4 KiB.
+const maxCheckBody = 16 << 10
+
+func (h *Handler) check(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	var p connector.CheckParams
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCheckBody))
+	dec.DisallowUnknownFields()
+	var err error
+	if derr := dec.Decode(&p); derr != nil || dec.More() {
+		err = &connector.ParamError{Param: "body", Message: `a JSON object {"items": [...]} with known fields only, at most 16 KiB`}
+	}
+	var env *connector.Envelope
+	if err == nil {
+		env, err = h.svc.Check(p)
+	}
+	h.respond(w, r, "check", start, env, err)
+}
+
+// preflight answers the CORS preflight a browser sends before a JSON POST.
+func (h *Handler) preflight(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Max-Age", "86400")
+	cacheControlStatic.set(w.Header())
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // strParam is nil for an absent parameter, so the service applies its default.
@@ -209,7 +227,11 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, tool string, s
 		switch {
 		case errors.As(err, &pe):
 			body.Error.Code, body.Error.Param, body.Error.Message = "invalid_parameter", pe.Param, pe.Message
-			cacheControlError.set(w.Header())
+			if r.Method == http.MethodPost {
+				noStore.set(w.Header())
+			} else {
+				cacheControlError.set(w.Header())
+			}
 		case errors.Is(err, connector.ErrUnavailable):
 			status, outcome = http.StatusServiceUnavailable, "unavailable"
 			body.Error.Code, body.Error.Message = "unavailable", "forecast data is loading; retry shortly"
@@ -226,6 +248,13 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, tool string, s
 		return
 	}
 
+	if r.Method == http.MethodPost {
+		// A POST answer is not cacheable by URL, so it is not cached at all.
+		noStore.set(w.Header())
+		writeJSON(w, http.StatusOK, env)
+		h.meter.Record(tool, surface, class, "ok", env.Results, time.Since(start))
+		return
+	}
 	CacheControl.set(w.Header())
 	w.Header().Set("ETag", env.ETag)
 	if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, env.ETag) {

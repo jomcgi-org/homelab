@@ -10,12 +10,12 @@ export const METHOD_URL = `${BASE}/v1/method`;
 
 export const facts = [
   { k: "MCP", v: MCP_URL, code: true },
-  { k: "Tools", v: "dark_sky_windows, walk_windows", code: true },
+  { k: "Tools", v: "plan, check", code: true },
   { k: "Covers", v: "Scotland, mainland and islands" },
   { k: "Forecast", v: "MET Norway, refreshed every two to three hours" },
   {
     k: "Per call",
-    v: "up to 10 results, 7 nights of stars or 3 days of walks",
+    v: "a plan of up to 7 days, or a check of up to 10 walks and nights",
   },
   { k: "Cost", v: "free, no sign-up or key" },
 ];
@@ -49,7 +49,7 @@ export const setups = [
   },
 ];
 
-export const curl = `curl '${BASE}/v1/dark-sky-windows?lat=57.19&lon=-3.83&nights=3'`;
+export const curl = `curl '${BASE}/v1/plan?lat=57.19&lon=-3.83'`;
 
 export const sources = [
   { name: "MET Norway", use: "cloud forecast", licence: "CC BY 4.0" },

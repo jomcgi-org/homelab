@@ -69,7 +69,7 @@ func TestAppServesFromR2Snapshots(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	a.public.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/dark-sky-windows?lat=57.19&lon=-3.83", nil))
+	a.public.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/plan?lat=57.19&lon=-3.83&activities=stargaze", nil))
 	var body struct {
 		Meta struct {
 			MethodURL   string `json:"method_url"`
@@ -90,7 +90,7 @@ func TestAppServesFromR2Snapshots(t *testing.T) {
 
 	// Paths ServeMux would 301 to a root-relative Location (escaping a
 	// prefix-stripping route) are answered in place instead.
-	for _, p := range []string{"/v1", "/v1//dark-sky-windows", "/v1/./method"} {
+	for _, p := range []string{"/v1", "/v1//plan", "/v1/./method"} {
 		rec = httptest.NewRecorder()
 		a.public.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
 		if rec.Code != http.StatusNotFound || rec.Header().Get("Location") != "" {

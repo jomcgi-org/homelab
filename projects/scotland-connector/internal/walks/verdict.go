@@ -1,0 +1,132 @@
+package walks
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
+)
+
+// windyKmh is the sustained wind at the start above which a day that fits is
+// marginal rather than go: around Beaufort 7, unpleasant low down and
+// serious on any ridge.
+const windyKmh = 50
+
+// Assessment is a verdict with its reason and, when the walk fits, the
+// window to start in.
+type Assessment struct {
+	Verdict verdict.Verdict
+	Why     string
+	// StartFrom and StartBy bound the start time that keeps the walk inside
+	// the best slot; zero unless the walk fits. StartFrom is earlier than the
+	// slot when a long walk needs its dark-shoulder credit.
+	StartFrom, StartBy time.Time
+}
+
+func local(t time.Time) string { return t.In(london).Format("15:04") }
+
+func localDay(t time.Time) string { return t.In(london).Format("Mon 15:04") }
+
+// outcome is which verdict rule decided a day.
+type outcome int
+
+const (
+	beyondForecast outcome = iota
+	forecastEnds
+	noGoodHour
+	tooShort
+	darkShoulder
+	badHourInside
+	windyStart
+	fits
+)
+
+func (o outcome) verdict() verdict.Verdict {
+	switch o {
+	case beyondForecast, forecastEnds:
+		return verdict.Unknown
+	case noGoodHour, tooShort:
+		return verdict.No
+	case darkShoulder, badHourInside, windyStart:
+		return verdict.Marginal
+	}
+	return verdict.Go
+}
+
+func (w *Walk) outcome(d Day) outcome {
+	switch {
+	case !d.Decided && d.Coverage == CoverageNone:
+		return beyondForecast
+	case !d.Decided:
+		return forecastEnds
+	case !d.Doable && d.GoodHours == 0:
+		return noGoodHour
+	case !d.Doable:
+		return tooShort
+	}
+	b := d.Best
+	switch {
+	case float64(b.GoodHours) < w.required-requirementEpsilon:
+		return darkShoulder
+	case int(b.End.Sub(b.Start)/time.Hour) > b.GoodHours:
+		return badHourInside
+	case b.MaxWindKmh > windyKmh:
+		return windyStart
+	}
+	return fits
+}
+
+// Verdict is Assess's verdict alone, without building its reason: what a
+// ranking over many walks needs.
+func (w *Walk) Verdict(d Day) verdict.Verdict { return w.outcome(d).verdict() }
+
+// Assess turns one assessed day into a verdict. hourlyUntil is the dataset's
+// forecast horizon, quoted when the day cannot be decided.
+func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
+	o := w.outcome(d)
+	a := Assessment{Verdict: o.verdict()}
+	switch o {
+	case beyondForecast:
+		a.Why = "Beyond the hourly forecast, which reaches " + localDay(hourlyUntil) + "."
+		return a
+	case forecastEnds:
+		a.Why = "The hourly forecast reaches only " + localDay(hourlyUntil) + ", with no slot long enough before then."
+		return a
+	case noGoodHour:
+		a.Why = "No dry, calm daylight hour at the start."
+		return a
+	case tooShort:
+		a.Why = fmt.Sprintf("The longest good spell is %d h; the walk takes about %.1f h.", d.Best.GoodHours, w.DurationH)
+		return a
+	}
+	b := d.Best
+	a.StartFrom = b.Start
+	a.StartBy = b.End.Add(-time.Duration(w.DurationH * float64(time.Hour))).Truncate(time.Minute)
+	if a.StartBy.Before(a.StartFrom) {
+		a.StartFrom = a.StartBy
+	}
+	weather := fmt.Sprintf("wind up to %.0f km/h", b.MaxWindKmh)
+	if b.TotalPrecipMM >= 0.1 {
+		weather += fmt.Sprintf(", %.1f mm of rain", b.TotalPrecipMM)
+	} else {
+		weather += ", dry"
+	}
+	switch o {
+	case darkShoulder:
+		a.Why = fmt.Sprintf("Fits only by starting or finishing in the dark: %s %s to %s, %s.", goodHours(b.GoodHours), local(b.Start), local(b.End), weather)
+	case badHourInside:
+		a.Why = fmt.Sprintf("Fits with one wet or windy hour mid-walk: %s to %s, %s.", local(b.Start), local(b.End), weather)
+	case windyStart:
+		a.Why = fmt.Sprintf("Fits, but windy at the start: %s to %s, %s.", local(b.Start), local(b.End), weather)
+	default:
+		a.Why = fmt.Sprintf("%s %s to %s, %s.", goodHours(b.GoodHours), local(b.Start), local(b.End), weather)
+	}
+	return a
+}
+
+func goodHours(n int) string {
+	if n == 1 {
+		return "1 good hour"
+	}
+	return fmt.Sprintf("%d good hours", n)
+}

@@ -13,7 +13,7 @@ import (
 
 // WalkStore keeps the walk snapshot in memory. It is optional: readiness
 // depends only on the stars Store, so a missing or broken walks.json takes
-// out walk_windows alone, and the last good copy keeps serving.
+// out walk answers alone, and the last good copy keeps serving.
 type WalkStore struct {
 	bucket, key string
 	interval    time.Duration

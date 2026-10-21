@@ -5,15 +5,23 @@ go_library(
     srcs = [
         "dataset.go",
         "geo.go",
+        "verdict.go",
         "windows.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/scotland-connector/internal/stars",
     visibility = ["//projects/scotland-connector:__subpackages__"],
-    deps = ["//projects/scotland-connector/internal/astro"],
+    deps = [
+        "//projects/scotland-connector/internal/astro",
+        "//projects/scotland-connector/internal/verdict",
+    ],
 )
 
 go_test(
     name = "stars_test",
-    srcs = ["stars_test.go"],
+    srcs = [
+        "stars_test.go",
+        "verdict_test.go",
+    ],
     embed = [":stars"],
+    deps = ["//projects/scotland-connector/internal/verdict"],
 )

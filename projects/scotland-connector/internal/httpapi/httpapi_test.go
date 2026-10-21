@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/meter"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -34,7 +36,7 @@ func TestOpenAPIServerIsThePublicBaseURL(t *testing.T) {
 	if len(servers) != 1 || servers[0].(map[string]any)["url"] != "https://jomcgi.dev/scotland" {
 		t.Fatalf("servers = %v", body["servers"])
 	}
-	if _, ok := body["paths"].(map[string]any)["/v1/dark-sky-windows"]; !ok {
+	if _, ok := body["paths"].(map[string]any)["/v1/plan"]; !ok {
 		t.Fatal("rewritten document lost its paths")
 	}
 }
@@ -56,16 +58,43 @@ func get(t *testing.T, h http.Handler, url string, hdr ...string) (*httptest.Res
 	return rec, body
 }
 
+func postCheck(t *testing.T, h http.Handler, body string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/check", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("check %s: invalid JSON %q: %v", body, rec.Body, err)
+	}
+	return rec, out
+}
+
+func checkMeta(t *testing.T, what string, body map[string]any) {
+	t.Helper()
+	if _, ok := body["data"]; !ok {
+		t.Fatalf("%s: no data", what)
+	}
+	meta, _ := body["meta"].(map[string]any)
+	for _, k := range []string{"api_version", "generated_at", "as_of", "forecast_fetched_at", "data_version", "method_url", "sources"} {
+		if _, ok := meta[k]; !ok {
+			t.Errorf("%s: meta.%s missing", what, k)
+		}
+	}
+}
+
+const checkBody = `{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"Cairn Gorm"},{"activity":"stargaze","date":"2026-10-19","lat":57.3,"lon":-3.7}]}`
+
 // The envelope contract: every 200 carries data and a complete meta block.
+// plan answers are cached at the edge; check answers, being POSTs, are not.
 func TestEnvelopeContract(t *testing.T) {
 	h := handler(true)
 	for _, url := range []string{
-		"/v1/dark-sky-windows?lat=57.19&lon=-3.83",
-		"/v1/dark-sky-windows?lat=57.19&lon=-3.83&radius_km=80&nights=7&limit=10",
-		"/v1/walk-windows?lat=57.19&lon=-3.83",
-		"/v1/walk-windows?walk_name=cairn+gorm&date=2026-10-20&detail=hours",
-		"/v1/dark-sky-windows?lat=57.19&lon=-3.83&night=2026-10-20&detail=hours",
-		"/v1/walk-windows?lat=57.19&lon=-3.83&radius_km=100&days=3&limit=10&max_duration_h=4.5&max_ascent_m=800",
+		"/v1/plan?lat=57.19&lon=-3.83",
+		"/v1/plan?lat=57.19&lon=-3.83&radius_km=100&from=2026-10-20&to=2026-10-26&limit=5&max_duration_h=4.5&max_ascent_m=800",
+		"/v1/plan?lat=57.19&lon=-3.83&activities=walk,stargaze",
+		"/v1/plan?lat=57.19&lon=-3.83&activities=walk&activities=stargaze",
 	} {
 		rec, body := get(t, h, url)
 		if rec.Code != http.StatusOK {
@@ -79,14 +108,33 @@ func TestEnvelopeContract(t *testing.T) {
 		if edge := rec.Header().Get("Cloudflare-CDN-Cache-Control"); edge != CacheControl.edge || strings.Contains(edge, "s-maxage") {
 			t.Fatalf("%s: cache headers %v", url, rec.Header())
 		}
-		if _, ok := body["data"]; !ok {
-			t.Fatalf("%s: no data", url)
+		checkMeta(t, url, body)
+	}
+	rec, body := postCheck(t, h, checkBody)
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Cloudflare-CDN-Cache-Control") != "no-store" || rec.Header().Get("ETag") != "" {
+		t.Fatalf("check: status %d headers %v", rec.Code, rec.Header())
+	}
+	checkMeta(t, "check", body)
+	if items := body["data"].(map[string]any)["items"].([]any); len(items) != 2 {
+		t.Fatalf("check items %v", items)
+	}
+}
+
+func TestActivitiesListForms(t *testing.T) {
+	h := handler(true)
+	for url, want := range map[string]string{
+		"/v1/plan?lat=57.19&lon=-3.83&activities=stargaze":                 "stargaze",
+		"/v1/plan?lat=57.19&lon=-3.83&activities=stargaze,+walk":           "walk,stargaze",
+		"/v1/plan?lat=57.19&lon=-3.83&activities=walk&activities=stargaze": "walk,stargaze",
+		"/v1/plan?lat=57.19&lon=-3.83&activities=":                         "walk,stargaze",
+	} {
+		_, body := get(t, h, url)
+		var got []string
+		for _, a := range body["data"].(map[string]any)["query"].(map[string]any)["activities"].([]any) {
+			got = append(got, a.(string))
 		}
-		meta, _ := body["meta"].(map[string]any)
-		for _, k := range []string{"api_version", "generated_at", "as_of", "forecast_fetched_at", "data_version", "method_url", "sources"} {
-			if _, ok := meta[k]; !ok {
-				t.Errorf("%s: meta.%s missing", url, k)
-			}
+		if strings.Join(got, ",") != want {
+			t.Errorf("%s: activities %v", url, got)
 		}
 	}
 }
@@ -94,140 +142,227 @@ func TestEnvelopeContract(t *testing.T) {
 func TestCapsAreEnforced(t *testing.T) {
 	h := handler(true)
 	for _, url := range []string{
-		"/v1/dark-sky-windows",
-		"/v1/dark-sky-windows?lat=57&lon=-3.8&limit=11",
-		"/v1/dark-sky-windows?lat=57&lon=-3.8&radius_km=151",
-		"/v1/dark-sky-windows?lat=57&lon=-3.8&nights=8",
-		"/v1/dark-sky-windows?lat=57&lon=-3.8&limit=ten",
-		"/v1/dark-sky-windows?lat=north&lon=-3.8",
-		"/v1/dark-sky-windows?lat=51.5&lon=-0.12",
-		"/v1/dark-sky-windows?lat=57.19",
-		"/v1/dark-sky-windows?place=Aviemore",
-		"/v1/walk-windows?lat=57.19",
-		"/v1/walk-windows?lat=57&lon=-3.8&days=4",
-		"/v1/walk-windows?lat=57&lon=-3.8&radius_km=101",
-		"/v1/walk-windows?lat=57&lon=-3.8&max_ascent_m=lots",
-		"/v1/walk-windows?lat=57&lon=-3.8&max_duration_h=0",
-		"/v1/walk-windows?walk_name=",
-		"/v1/walk-windows?walk_name=cairn&radius_km=10",
-		"/v1/walk-windows?lat=57&lon=-3.8&date=tomorrow",
-		"/v1/walk-windows?lat=57&lon=-3.8&detail=all",
-		"/v1/dark-sky-windows?lat=57&lon=-3.8&night=2026-10-20&nights=2",
+		"/v1/plan",
+		"/v1/plan?lat=57.19",
+		"/v1/plan?lat=north&lon=-3.8",
+		"/v1/plan?lat=51.5&lon=-0.12",
+		"/v1/plan?place=Aviemore",
+		"/v1/plan?lat=57&lon=-3.8&limit=6",
+		"/v1/plan?lat=57&lon=-3.8&limit=ten",
+		"/v1/plan?lat=57&lon=-3.8&radius_km=101",
+		"/v1/plan?lat=57&lon=-3.8&from=tomorrow",
+		"/v1/plan?lat=57&lon=-3.8&from=2026-10-20&to=2026-10-27",
+		"/v1/plan?lat=57&lon=-3.8&activities=ski",
+		"/v1/plan?lat=57&lon=-3.8&max_ascent_m=lots",
+		"/v1/plan?lat=57&lon=-3.8&max_duration_h=0",
 	} {
 		rec, body := get(t, h, url)
 		errObj, _ := body["error"].(map[string]any)
 		if rec.Code != http.StatusBadRequest || errObj["code"] != "invalid_parameter" || errObj["param"] == "" {
 			t.Errorf("%s: status %d body %s", url, rec.Code, rec.Body)
 		}
+		if rec.Header().Get("Cache-Control") != cacheControlError.browser {
+			t.Errorf("%s: cache headers %v", url, rec.Header())
+		}
+	}
+	for _, body := range []string{
+		``,
+		`{`,
+		`[]`,
+		`{"items":[]}`,
+		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm","colour":"red"}]}`,
+		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm"}],"extra":1}`,
+		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"gorm"}]} {}`,
+		`{"items":[{"activity":"walk","date":"2026-10-20"}]}`,
+		`{"items":[{"activity":"stargaze","date":"2026-10-20","lat":"57"}]}`,
+		`{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"` + strings.Repeat("a", maxCheckBody) + `"}]}`,
+	} {
+		rec, out := postCheck(t, h, body)
+		errObj, _ := out["error"].(map[string]any)
+		if rec.Code != http.StatusBadRequest || errObj["code"] != "invalid_parameter" || errObj["param"] == "" || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("check %.80s: status %d headers %v body %.200s", body, rec.Code, rec.Header(), rec.Body)
+		}
+	}
+}
+
+// A browser POSTing JSON preflights first; the answer allows it from any
+// origin, as the GET routes are.
+func TestCheckPreflight(t *testing.T) {
+	req := httptest.NewRequest(http.MethodOptions, "/v1/check", nil)
+	req.Header.Set("Origin", "https://example.org")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "content-type")
+	rec := httptest.NewRecorder()
+	handler(true).ServeHTTP(rec, req)
+	hdr := rec.Header()
+	if rec.Code != http.StatusNoContent || hdr.Get("Access-Control-Allow-Origin") != "*" ||
+		!strings.Contains(hdr.Get("Access-Control-Allow-Methods"), "POST") || !strings.EqualFold(hdr.Get("Access-Control-Allow-Headers"), "content-type") {
+		t.Fatalf("preflight %d %v", rec.Code, hdr)
+	}
+	// GET on check, and POST on plan, are not routes.
+	if rec, _ := get(t, handler(true), "/v1/check"); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /v1/check = %d", rec.Code)
 	}
 }
 
 func TestConditionalGet(t *testing.T) {
 	h := handler(true)
-	rec, _ := get(t, h, "/v1/dark-sky-windows?lat=57.19&lon=-3.83")
+	rec, _ := get(t, h, "/v1/plan?lat=57.19&lon=-3.83")
 	tag := rec.Header().Get("ETag")
-	rec, _ = get(t, h, "/v1/dark-sky-windows?lat=57.19&lon=-3.83", "If-None-Match", `"other", W/`+tag)
+	rec, _ = get(t, h, "/v1/plan?lat=57.19&lon=-3.83", "If-None-Match", `"other", W/`+tag)
 	if rec.Code != http.StatusNotModified || rec.Body.Len() != 0 {
 		t.Fatalf("conditional GET = %d", rec.Code)
 	}
 }
 
 func TestUnavailableIsNotCached(t *testing.T) {
-	rec, body := get(t, handler(false), "/v1/dark-sky-windows?lat=57.19&lon=-3.83")
+	rec, body := get(t, handler(false), "/v1/plan?lat=57.19&lon=-3.83")
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Cache-Control") != "no-store" ||
-		rec.Header().Get("Cloudflare-CDN-Cache-Control") != "no-store" || body["error"] == nil {
+		rec.Header().Get("Cloudflare-CDN-Cache-Control") != "no-store" || rec.Header().Get("Retry-After") == "" || body["error"] == nil {
 		t.Fatalf("status %d headers %v", rec.Code, rec.Header())
+	}
+	if rec, _ := postCheck(t, handler(false), checkBody); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("check status %d", rec.Code)
 	}
 }
 
 func TestUnknownPathIs404(t *testing.T) {
-	rec, body := get(t, handler(true), "/v1/sites")
-	if rec.Code != http.StatusNotFound || body["error"] == nil {
-		t.Fatalf("status %d", rec.Code)
+	for _, p := range []string{"/v1/sites", "/v1/dark-sky-windows", "/v1/walk-windows"} {
+		rec, body := get(t, handler(true), p)
+		if rec.Code != http.StatusNotFound || body["error"] == nil {
+			t.Fatalf("%s: status %d", p, rec.Code)
+		}
 	}
 }
 
-// openapi.json is the published contract: its paths must be exactly the
-// served routes and its caps must equal the code's.
+type specSchema struct {
+	Type       any                   `json:"type"`
+	Ref        string                `json:"$ref"`
+	Minimum    *float64              `json:"minimum"`
+	Maximum    *float64              `json:"maximum"`
+	Default    any                   `json:"default"`
+	MaxLength  *int                  `json:"maxLength"`
+	MinItems   *int                  `json:"minItems"`
+	MaxItems   *int                  `json:"maxItems"`
+	Enum       []string              `json:"enum"`
+	Required   []string              `json:"required"`
+	Properties map[string]specSchema `json:"properties"`
+	Items      *specSchema           `json:"items"`
+}
+
+// openapi.json is the published contract: its operations must be exactly
+// the served routes and its caps must equal the code's.
 func TestOpenAPIMatchesCode(t *testing.T) {
 	var spec struct {
 		Paths map[string]map[string]struct {
 			OperationID string `json:"operationId"`
 			Parameters  []struct {
-				Name        string `json:"name"`
-				Required    bool   `json:"required"`
-				Description string `json:"description"`
-				Schema      struct {
-					Minimum   *float64 `json:"minimum"`
-					Maximum   *float64 `json:"maximum"`
-					Default   any      `json:"default"`
-					MaxLength *int     `json:"maxLength"`
-				} `json:"schema"`
+				Name        string     `json:"name"`
+				Required    bool       `json:"required"`
+				Description string     `json:"description"`
+				Schema      specSchema `json:"schema"`
 			} `json:"parameters"`
 		} `json:"paths"`
+		Components struct {
+			Schemas map[string]specSchema `json:"schemas"`
+		} `json:"components"`
 	}
 	if err := json.Unmarshal(openAPI, &spec); err != nil {
 		t.Fatal(err)
 	}
 	h := handler(true)
-	for path := range spec.Paths {
-		rec, _ := get(t, h, path+"?lat=57.19&lon=-3.83")
-		if rec.Code == http.StatusNotFound {
-			t.Errorf("spec path %s is not served", path)
+	var ops []string
+	for path, methods := range spec.Paths {
+		for method := range methods {
+			ops = append(ops, strings.ToUpper(method)+" "+path)
+			req := httptest.NewRequest(strings.ToUpper(method), path+"?lat=57.19&lon=-3.83", strings.NewReader(checkBody))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Errorf("spec operation %s %s = %d", method, path, rec.Code)
+			}
 		}
 	}
-	caps := map[string]map[string][3]float64{ // min, max, default
-		"/v1/dark-sky-windows": {
-			"radius_km": {1, connector.MaxRadiusKm, connector.DefaultRadiusKm},
-			"nights":    {1, connector.MaxNights, connector.DefaultNights},
-			"limit":     {1, connector.MaxLimit, connector.DefaultLimit},
-		},
-		"/v1/walk-windows": {
-			"radius_km": {1, connector.MaxWalkRadiusKm, connector.DefaultWalkRadiusKm},
-			"days":      {1, connector.MaxWalkDays, connector.DefaultWalkDays},
-			"limit":     {1, connector.MaxLimit, connector.DefaultLimit},
-		},
+	sort.Strings(ops)
+	if got := strings.Join(ops, ","); got != "GET /v1/method,GET /v1/openapi.json,GET /v1/plan,POST /v1/check" {
+		t.Errorf("spec operations = %s", got)
 	}
-	for path, want := range caps {
-		c := connector.Coverage
-		bounds := map[string][2]float64{"lat": {c.MinLat, c.MaxLat}, "lon": {c.MinLon, c.MaxLon}}
-		for _, p := range spec.Paths[path]["get"].Parameters {
-			if w, ok := want[p.Name]; ok {
-				s := p.Schema
-				if def, ok := s.Default.(float64); s.Minimum == nil || s.Maximum == nil || !ok || *s.Minimum != w[0] || *s.Maximum != w[1] || def != w[2] {
-					t.Errorf("%s spec %s = %+v, code %v", path, p.Name, s, w)
-				}
-				delete(want, p.Name)
-			}
-			if b, ok := bounds[p.Name]; ok {
-				s := p.Schema
-				// The walk path also answers by walk_name, so its point is optional.
-				if p.Required != (path == "/v1/dark-sky-windows") || s.Minimum == nil || s.Maximum == nil || *s.Minimum != b[0] || *s.Maximum != b[1] {
-					t.Errorf("%s spec %s = required %v %+v, coverage %v", path, p.Name, p.Required, s, b)
-				}
-				delete(bounds, p.Name)
-			}
-			if path == "/v1/walk-windows" && p.Name == "max_duration_h" && (p.Schema.Maximum == nil || *p.Schema.Maximum != connector.MaxWalkDurationH) {
-				t.Errorf("spec max_duration_h = %+v", p.Schema)
-			}
-			if path == "/v1/walk-windows" && p.Name == "max_ascent_m" && (p.Schema.Maximum == nil || *p.Schema.Maximum != connector.MaxWalkAscentM) {
-				t.Errorf("spec max_ascent_m = %+v", p.Schema)
-			}
-			if p.Name == "walk_name" && (p.Schema.MaxLength == nil || *p.Schema.MaxLength != connector.MaxNameLength) {
-				t.Errorf("spec walk_name = %+v", p.Schema)
-			}
-			if p.Name == "date" && !strings.Contains(p.Description, fmt.Sprintf("up to %d days ahead", connector.MaxWalkDateAhead)) {
-				t.Errorf("spec date description %q does not match the code's window", p.Description)
-			}
-			if p.Name == "night" && !strings.Contains(p.Description, fmt.Sprintf("within the next %d nights", connector.MaxNights)) {
-				t.Errorf("spec night description %q does not match the code's window", p.Description)
-			}
-			if p.Name == "detail" && p.Schema.Default != connector.DetailSummary {
-				t.Errorf("%s spec detail default = %v", path, p.Schema.Default)
-			}
+
+	bounds := func(where string, s specSchema, lo, hi float64) {
+		t.Helper()
+		if s.Minimum == nil || s.Maximum == nil || *s.Minimum != lo || *s.Maximum != hi {
+			t.Errorf("%s = %+v, code %v..%v", where, s, lo, hi)
 		}
-		if len(want) != 0 || len(bounds) != 0 {
-			t.Errorf("%s spec lacks parameters %v %v", path, want, bounds)
+	}
+	defaults := func(where string, s specSchema, want float64) {
+		t.Helper()
+		if d, ok := s.Default.(float64); !ok || d != want {
+			t.Errorf("%s default = %v, code %v", where, s.Default, want)
 		}
+	}
+	c := connector.Coverage
+	activities := connector.ActivityWalk + "," + connector.ActivityStargaze
+	seen := map[string]bool{}
+	for _, p := range spec.Paths["/v1/plan"]["get"].Parameters {
+		seen[p.Name] = true
+		where := "plan." + p.Name
+		switch p.Name {
+		case "lat":
+			bounds(where, p.Schema, c.MinLat, c.MaxLat)
+		case "lon":
+			bounds(where, p.Schema, c.MinLon, c.MaxLon)
+		case "radius_km":
+			bounds(where, p.Schema, 1, connector.MaxRadiusKm)
+			defaults(where, p.Schema, connector.DefaultRadiusKm)
+		case "limit":
+			bounds(where, p.Schema, 1, connector.MaxOptions)
+			defaults(where, p.Schema, connector.DefaultOptions)
+		case "max_duration_h":
+			bounds(where, p.Schema, 0.5, connector.MaxDurationH)
+		case "max_ascent_m":
+			bounds(where, p.Schema, 1, connector.MaxAscentM)
+		case "from":
+			if !strings.Contains(p.Description, fmt.Sprintf("up to %d days ahead", connector.MaxDaysAhead)) {
+				t.Errorf("%s description %q does not match the code's window", where, p.Description)
+			}
+		case "to":
+			if !strings.Contains(p.Description, fmt.Sprintf("at most %d days", connector.MaxSpanDays)) {
+				t.Errorf("%s description %q does not match the code's span", where, p.Description)
+			}
+		case "activities":
+			if p.Schema.Items == nil || strings.Join(p.Schema.Items.Enum, ",") != activities {
+				t.Errorf("%s = %+v", where, p.Schema)
+			}
+		default:
+			t.Errorf("spec has unknown plan parameter %s", p.Name)
+		}
+		if p.Required != (p.Name == "lat" || p.Name == "lon") {
+			t.Errorf("%s required = %v", where, p.Required)
+		}
+	}
+	if len(seen) != 9 {
+		t.Errorf("plan parameters = %v", seen)
+	}
+
+	schemas := spec.Components.Schemas
+	items := schemas["CheckRequest"].Properties["items"]
+	if items.MinItems == nil || *items.MinItems != 1 || items.MaxItems == nil || *items.MaxItems != connector.MaxCheckItems {
+		t.Errorf("CheckRequest.items = %+v", items)
+	}
+	item := schemas["CheckItem"]
+	bounds("CheckItem.lat", item.Properties["lat"], c.MinLat, c.MaxLat)
+	bounds("CheckItem.lon", item.Properties["lon"], c.MinLon, c.MaxLon)
+	if p := item.Properties["walk_name"]; p.MaxLength == nil || *p.MaxLength != connector.MaxNameLength {
+		t.Errorf("CheckItem.walk_name = %+v", p)
+	}
+	if strings.Join(item.Properties["activity"].Enum, ",") != activities || strings.Join(item.Required, ",") != "activity,date" {
+		t.Errorf("CheckItem = %+v", item)
+	}
+	var want []string
+	for _, v := range verdict.All {
+		want = append(want, string(v))
+	}
+	if got := strings.Join(schemas["Verdict"].Enum, ","); got != strings.Join(want, ",") {
+		t.Errorf("Verdict = %s, code %v", got, want)
 	}
 }
