@@ -12,11 +12,12 @@ all" into a weather limit. There is no account or key.
 
 ## Install
 
-Claude Code:
+Claude Code, from your shell (or the same commands as `/plugin ...` in a
+session):
 
 ```sh
-/plugin marketplace add https://jomcgi.dev/scotland/marketplace.json
-/plugin install scotland@jomcgi
+claude plugin marketplace add https://jomcgi.dev/scotland/marketplace.json
+claude plugin install scotland@jomcgi
 ```
 
 Without the plugin, add the server alone:

@@ -52,7 +52,6 @@ export const facts = [
 // set it when the listing goes live.
 export const listings = [
   { label: "Claude directory", href: null },
-  { label: "Claude Code plugin", href: null },
   { label: "Codex plugin", href: null },
 ];
 
@@ -65,9 +64,9 @@ export const setups = [
   {
     id: "claude-code",
     label: "Claude Code",
-    how: "In a session, install the plugin: the server plus a skill on when to use plan and check. Or add the server alone from your shell.",
+    how: "Install the plugin: the server plus a skill on when to use plan and check. Or add the server alone with the last line.",
     lang: "sh",
-    code: `/plugin marketplace add ${MARKETPLACE_URL}\n/plugin install scotland@jomcgi\n\nclaude mcp add --transport http scotland ${MCP_URL}`,
+    code: `claude plugin marketplace add ${MARKETPLACE_URL}\nclaude plugin install scotland@jomcgi\n\nclaude mcp add --transport http scotland ${MCP_URL}`,
   },
   {
     id: "codex",
