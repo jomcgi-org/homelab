@@ -162,7 +162,10 @@ the hours that pass the hikes app's test (at most 2 mm of rain, wind at most
 so limits can loosen as well as tighten and a bad hour's weather is known.
 The connector reads both, and a looser limit on version 1 data is refused as
 not available yet. A row of any other width rejects the snapshot, and the
-store keeps serving the last one that parsed.
+store keeps serving the last one that parsed. That is in memory only, so a
+connector from before this layout cannot be rolled back to while
+the hikes job writes version 2: its new pods would start with no walks.
+Rolling back below it needs the hikes job back on `SCHEMA_VERSION = 1` first.
 Only a tightening limit makes a day "limited" for the dark-credit rule:
 loosening rules no daylight out.
 `internal/walks` buckets those hours into UK days at load time and applies

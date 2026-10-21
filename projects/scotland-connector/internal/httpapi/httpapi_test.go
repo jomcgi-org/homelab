@@ -158,6 +158,8 @@ func TestCapsAreEnforced(t *testing.T) {
 		"/v1/plan?lat=57&lon=-3.8&max_duration_h=0",
 		"/v1/plan?lat=57&lon=-3.8&max_rain_mm_h=11",
 		"/v1/plan?lat=57&lon=-3.8&max_wind_kmh=windy",
+		"/v1/plan?lat=57&lon=-3.8&max_gust_kmh=50",
+		"/v1/plan?lat=57&lon=-3.8&max_rain_chance_pct=30",
 		"/v1/plan?lat=57&lon=-3.8&min_length_km=10&max_length_km=5",
 	} {
 		rec, body := get(t, h, url)
