@@ -111,8 +111,14 @@ metrics); the Honeycomb export in #7245 is what turns it into an alert.
 Night bucketing (Europe/London, noon to noon) is computed per hour at parse
 time. "Tonight" is the night in progress until 09:00 local, after the last
 possible Scottish twilight-dark hour, and the coming evening's after that,
-so a morning query never leads with a night that has already ended. Queries
-keep a bounded top-k rather than sorting every candidate.
+so a morning query never leads with a night that has already ended. Until
+09:00 that night carries yesterday's date, so plan and check accept it, and
+a plan that covers stargazing starts on it. Queries keep a bounded top-k
+rather than sorting every candidate.
+
+The stars job keeps MET Norway's 6-hourly tail as well as the hourly steps,
+so a listed hour says nothing about how far the hourly forecast reaches: the
+stars horizon is the fetch plus 48 hours, never extended by listed hours.
 Distances use a mid-latitude equirectangular approximation with
 precomputed cosines, which within the 100 km cap is well under 0.1 km from
 haversine. Over a grid three times the real site density and 3000 walks
@@ -162,8 +168,16 @@ are colder and windier than the car park.
 job keeps MET Norway's hourly steps only, which reach about two and a half
 days, so a later day has no hours at all. Reporting it as not doable would
 tell an assistant the weather is bad when there is no forecast. The horizon is the later of the fetch plus 48 hours
-and the last hour in the snapshot, both lower bounds, and a stale snapshot
-falls back to "no forecast" rather than "bad weather".
+and the last hour in the snapshot, and a stale snapshot falls back to "no
+forecast" rather than "bad weather". The fetch time is the newest across
+the snapshot, so a walk whose own fetch failed (the job keeps its old hours)
+can read `no` for days it has no forecast for; per-walk and per-site fetch
+times are #7274.
+
+Today counts only hours that have not begun, so a slot under way is shorter
+by the hour in progress and the start window never lies in the past. The
+slot rule follows the hikes app's `_longest_good_run`, including its
+restart at a second gap (#7275).
 
 ## Moon
 
@@ -322,3 +336,5 @@ this table when the work ships or the issue closes without it.
 | Meter export to Honeycomb, unit price table       | #7245  | not started |
 | Uncapped connector snapshot from the materializer | #7246  | not started |
 | Egress NetworkPolicy enabled                      | #7248  | staged off  |
+| Per-walk and per-site forecast fetch times        | #7274  | not started |
+| Slot rule slides past a second gap                | #7275  | not started |

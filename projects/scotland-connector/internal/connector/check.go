@@ -80,7 +80,9 @@ type checkPlan struct {
 	lat, lon float64
 }
 
-func checkItems(p CheckParams, today int32) ([]checkPlan, error) {
+// checkItems validates a check. A walk's date runs from today (UK date); a
+// night's from tonight, which before 09:00 is yesterday's evening.
+func checkItems(p CheckParams, today, tonight int32) ([]checkPlan, error) {
 	if len(p.Items) == 0 || len(p.Items) > MaxCheckItems {
 		return nil, &ParamError{"items", fmt.Sprintf("between 1 and %d items", MaxCheckItems)}
 	}
@@ -89,7 +91,11 @@ func checkItems(p CheckParams, today int32) ([]checkPlan, error) {
 		param := func(f string) string { return fmt.Sprintf("items[%d].%s", i, f) }
 		cp := checkPlan{item: it}
 		var err error
-		if cp.day, err = parseDay(param("date"), it.Date, today, today+MaxDaysAhead); err != nil {
+		first := today
+		if it.Activity == ActivityStargaze {
+			first = tonight
+		}
+		if cp.day, err = parseDay(param("date"), it.Date, first, today+MaxDaysAhead); err != nil {
 			return nil, err
 		}
 		cp.item.Date = dayName(cp.day)
@@ -166,30 +172,41 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time) Chec
 		return a.Verdict, a.Why
 	})
 	if o.Verdict != verdict.Go {
-		var near []rankedWalk
-		for i := range ds.Walks {
-			n := &ds.Walks[i]
-			if n == w {
-				continue
-			}
-			dist := n.DistanceKm(w.Lat, w.Lon)
-			if dist > nearbyWalkKm {
-				continue
-			}
-			no, good := walkOption(ds, n, cp.day, now)
-			if no.Verdict.Rank() >= o.Verdict.Rank() || no.Verdict == verdict.Unknown {
-				continue
-			}
-			km := round(dist, 1)
-			no.FromPointKm = &km
-			near = append(near, rankedWalk{no, good, dist})
-		}
-		sortWalks(near)
-		for _, n := range near[:min(len(near), 2)] {
-			r.NearbyWalks = append(r.NearbyWalks, n.o)
-		}
+		r.NearbyWalks = nearbyWalks(ds, w, o.Verdict, cp.day, now)
 	}
 	return r
+}
+
+// nearbyWalks is up to two walks that fit better than w on day: starting
+// within nearbyWalkKm of it and of a similar length (half to one and a half
+// times its time), so they are a substitute for it rather than any walk at
+// all. Nearest first within a verdict.
+func nearbyWalks(ds *walks.Dataset, w *walks.Walk, v verdict.Verdict, day int32, now time.Time) []WalkOption {
+	var near []walkCandidate
+	for i := range ds.Walks {
+		n := &ds.Walks[i]
+		if n == w || n.DurationH < w.DurationH/2 || n.DurationH > w.DurationH*1.5 {
+			continue
+		}
+		dist := n.DistanceKm(w.Lat, w.Lon)
+		if dist > nearbyWalkKm {
+			continue
+		}
+		nv := n.Verdict(ds.DayFor(n, day, now))
+		if nv != verdict.Go && nv != verdict.Marginal || nv.Rank() >= v.Rank() {
+			continue
+		}
+		near = append(near, walkCandidate{w: n, rank: nv.Rank(), dist: dist})
+	}
+	sort.Slice(near, func(i, j int) bool { return near[i].better(near[j]) })
+	var out []WalkOption
+	for _, c := range near[:min(len(near), 2)] {
+		o, _ := walkOption(ds, c.w, day, now)
+		km := round(c.dist, 1)
+		o.FromPointKm = &km
+		out = append(out, o)
+	}
+	return out
 }
 
 func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) CheckResultItem {
@@ -208,11 +225,24 @@ func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) Che
 		}
 		note = fmt.Sprintf("No dark-sky site within %d km of the point; this is the best within %d km.", siteKm, siteFarKm)
 	}
-	best, bestScore := nightOption(ds, &windows[0], cp.day)
+	radius := float64(siteKm)
+	if note != "" {
+		radius = siteFarKm
+	}
+	best, bestScore := nightOption(ds, &windows[0], cp.day, now)
 	for i := 1; i < len(windows); i++ {
-		o, score := nightOption(ds, &windows[i], cp.day)
+		o, score := nightOption(ds, &windows[i], cp.day, now)
 		if o.Verdict.Rank() < best.Verdict.Rank() || (o.Verdict == best.Verdict && score > bestScore) {
 			best, bestScore = o, score
+		}
+	}
+	// The windows are the most clear hours listed; a capped site may list
+	// none for this night and still be unknown rather than cloudy.
+	if best.Verdict == verdict.No {
+		if site := ds.CappedNear(cp.lat, cp.lon, radius, cp.day); site != nil {
+			if o, ok := siteNight(ds, site, cp.lat, cp.lon, cp.day, now); ok {
+				best = o
+			}
 		}
 	}
 	r.Verdict, r.Why = best.Verdict, best.Why
@@ -224,13 +254,13 @@ func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) Che
 		if len(ws) == 0 {
 			return verdict.Unknown, ""
 		}
-		a := ds.AssessNight(ws[0].Site, &ws[0].Nights[0], night, ws[0].Climate)
+		a := ds.AssessNight(ws[0].Site, &ws[0].Nights[0], night, now, ws[0].Climate)
 		return a.Verdict, a.Why
 	})
 	if best.Verdict != verdict.Go {
 		var near []rankedNight
 		for i := range windows {
-			o, score := nightOption(ds, &windows[i], cp.day)
+			o, score := nightOption(ds, &windows[i], cp.day, now)
 			if o.Verdict.Rank() < best.Verdict.Rank() && o.Verdict != verdict.Unknown {
 				near = append(near, rankedNight{o, score})
 			}
@@ -240,7 +270,7 @@ func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) Che
 				if w.DistanceKm <= siteKm {
 					continue
 				}
-				o, score := nightOption(ds, &w, cp.day)
+				o, score := nightOption(ds, &w, cp.day, now)
 				if o.Verdict.Rank() < best.Verdict.Rank() && o.Verdict != verdict.Unknown {
 					near = append(near, rankedNight{o, score})
 				}
@@ -267,7 +297,7 @@ func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) Che
 // nearby the same day.
 func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	now := s.Now()
-	plans, err := checkItems(p, walks.LocalDay(now))
+	plans, err := checkItems(p, walks.LocalDay(now), stars.FirstNight(now))
 	if err != nil {
 		return nil, err
 	}
@@ -314,16 +344,6 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	if wk != nil {
 		meta.Notes = append(meta.Notes, noteWalkStart)
 	}
-	// The ETag key is each item as resolved: normalized date and name,
-	// rounded point. checkPlan's own fields are unexported, so it cannot be
-	// the key itself.
-	keys := make([]CheckItem, len(plans))
-	for i, cp := range plans {
-		k := CheckItem{Activity: cp.item.Activity, Date: cp.item.Date, WalkID: cp.item.WalkID, WalkName: cp.name}
-		if cp.item.Activity == ActivityStargaze {
-			k.Lat, k.Lon = &plans[i].lat, &plans[i].lon
-		}
-		keys[i] = k
-	}
-	return &Envelope{Data: res, Meta: meta, ETag: etag("check", meta.DataVersion, meta.AsOf, canonical(keys)), Results: results}, nil
+	// No ETag: check is a POST, which no cache keys on.
+	return &Envelope{Data: res, Meta: meta, Results: results}, nil
 }

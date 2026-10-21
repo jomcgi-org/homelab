@@ -161,16 +161,29 @@ func siteFacts(site *stars.Site, c *stars.Climate) SiteFacts {
 }
 
 // nightOption assesses one window (a site on one night).
-func nightOption(ds *stars.Dataset, w *stars.Window, night int32) (NightOption, float64) {
+func nightOption(ds *stars.Dataset, w *stars.Window, night int32, now time.Time) (NightOption, float64) {
 	n := &w.Nights[0]
-	a := ds.AssessNight(w.Site, n, night, w.Climate)
+	a := ds.AssessNight(w.Site, n, night, now, w.Climate)
 	o := NightOption{
 		SiteFacts: siteFacts(w.Site, w.Climate), FromPointKm: round(w.DistanceKm, 1),
 		Verdict: a.Verdict, Why: a.Why, ClearDark: n.ClearDark, MoonlessDark: n.MoonlessDark,
 	}
-	if len(n.Hours) > 0 {
-		o.ClearFrom = strp(time.Unix(n.Hours[0].Unix, 0).UTC().Format(time.RFC3339))
-		o.ClearUntil = strp(time.Unix(n.Hours[len(n.Hours)-1].Unix+3600, 0).UTC().Format(time.RFC3339))
+	if from, ok := n.ClearFrom(); ok {
+		o.ClearFrom = strp(rfc3339(from))
+	}
+	if until, ok := n.ClearUntil(); ok {
+		o.ClearUntil = strp(rfc3339(until))
 	}
 	return o, stars.DarkScore(n)
+}
+
+// siteNight assesses one site on one night, with its distance from a point.
+func siteNight(ds *stars.Dataset, site *stars.Site, lat, lon float64, night int32, now time.Time) (NightOption, bool) {
+	ws := ds.Windows(stars.WindowsQuery{Lat: site.Lat, Lon: site.Lon, RadiusKm: 0.01, Nights: 1, Night: night, Limit: 1, Now: now})
+	if len(ws) == 0 || ws[0].Site != site {
+		return NightOption{}, false
+	}
+	o, _ := nightOption(ds, &ws[0], night, now)
+	o.FromPointKm = round(stars.DistanceKm(lat, lon, site.Lat, site.Lon), 1)
+	return o, true
 }

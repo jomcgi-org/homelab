@@ -16,9 +16,11 @@ time.
 - **unknown**: the hourly forecast does not reach far enough to say yet.
 - **no**: it does not fit.
 
-MET Norway's forecast is hourly for about two and a half days. Days further
-out, up to 13 days ahead, come back **unknown**; for nights the `why` quotes
-how often the site has been clear in that month.
+MET Norway's forecast is hourly for about two and a half days, and the
+connector counts 48 hours from each fetch as hourly. Days further out, up to
+13 days ahead, come back **unknown**; for nights the `why` quotes how often
+the site has been clear in that month. A plan lists only go and marginal
+options; a day with none says why in `walk_note` or `stargazing_note`.
 
 ## Walks
 
@@ -37,8 +39,9 @@ with at most 2 mm of rain and wind at most 80 km/h.
 The **slot** is the day's longest run of good hours, with one bad hour
 tolerated inside it. A walk **fits** when the slot holds at least 80% of its
 estimated time; walks over seven hours get two hours of credit for starting
-or finishing in the dark. Hours already past are dropped, so today's slot
-starts no earlier than the current hour.
+or finishing in the dark. Only hours that have not begun count, so at 11:20
+today's slot starts at 12:00 at the earliest, and the start window never lies
+in the past.
 
 - **go** when it fits in daylight, with no bad hour inside the slot and wind
   at most 50 km/h.
@@ -59,7 +62,10 @@ says why when none fit.
 **In a check**, a walk is found by `walk_id` or by `walk_name`, which matches
 Walkhighlands names ignoring case, accents and apostrophes: every word given
 must start a word of the name. A name that starts with the whole query ranks
-first, then shorter names. Other matches are listed in `also_matched`.
+first, then shorter names. Other matches are listed in `also_matched`. When
+the walk is not a go, `nearby_walks` offers up to two that fit better the
+same day: of similar length (half to one and a half times its time),
+starting within 20 km, nearest first.
 
 ## Stargazing
 
@@ -78,7 +84,8 @@ fetched every three hours.
 
 **Nights** run from local noon to local noon (Europe/London) and are named by
 the date of their evening: a plan day's stargazing, and a check's `date`, are
-the night that starts that evening.
+the night that starts that evening. Until 09:00 the night under way is
+yesterday's date, and plan and check accept it.
 
 **The moon.** A clear-dark hour is **moonless** when the moon is below the
 horizon or under 10% lit. Positions come from truncated lunar and solar
@@ -96,8 +103,13 @@ counts 1, a moonlit one 1 minus the moon's lit fraction.
 - **unknown** when the hourly forecast ends before the night does and what is
   forecast is not already a go.
 
-`clear_from` and `clear_until` bound the night's clear hours, which may have
-gaps.
+The stars snapshot lists at most 25 clear hours per site, earliest first. A
+night past the end of a capped site's list is **unknown** unless it is
+already a go: its later hours were left out of the snapshot, not forecast
+cloudy.
+
+`clear_from` and `clear_until` bound the night's clear-dark hours (its
+clear-twilight hours when none is dark), which may have gaps.
 
 **In a plan**, sites within `radius_km` are ranked by verdict, then dark
 score, then distance, and kept at least 5 km apart. **In a check**, the

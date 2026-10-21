@@ -3,12 +3,16 @@ package connector_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
 
 func f(v float64) *float64 { return &v }
@@ -193,11 +197,9 @@ func TestETags(t *testing.T) {
 	if a.ETag != b.ETag || a.ETag == c.ETag {
 		t.Errorf("plan etags %s %s %s", a.ETag, b.ETag, c.ETag)
 	}
-	d, _ := check(t, connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkName: "Cairn  Gorm"})
-	e, _ := check(t, connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkName: "cairn gorm"})
-	g, _ := check(t, connector.CheckItem{Activity: "walk", Date: "2026-10-21", WalkName: "cairn gorm"})
-	if d.ETag != e.ETag || d.ETag == g.ETag || d.ETag == a.ETag {
-		t.Errorf("check etags %s %s %s", d.ETag, e.ETag, g.ETag)
+	// check is a POST, which no cache keys on.
+	if d, _ := check(t, connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}); d.ETag != "" {
+		t.Errorf("check etag %s", d.ETag)
 	}
 }
 
@@ -211,7 +213,8 @@ func TestCheckWalk(t *testing.T) {
 	if no.Verdict != verdict.No || !strings.Contains(no.Why, "longest good spell is 2 h") || no.Walk == nil || no.Walk.WalkID != "wh-cairn-gorm" || no.Walk.Slot != nil {
 		t.Fatalf("cairn gorm = %+v", no)
 	}
-	if len(no.NearbyWalks) != 1 || no.NearbyWalks[0].WalkID != "wh-meall-a-bhuachaille" || no.NearbyWalks[0].Verdict != verdict.Go || no.NearbyWalks[0].FromPointKm == nil {
+	// Meall a' Bhuachaille fits, but at 3 h it is no substitute for 9 h.
+	if no.NearbyWalks != nil {
 		t.Fatalf("cairn gorm nearby = %+v", no.NearbyWalks)
 	}
 	if yes.Verdict != verdict.Go || yes.Walk.Slot == nil || yes.Walk.StartFrom == nil || yes.NearbyWalks != nil || yes.Sky == nil || yes.Sky.Sunrise == nil {
@@ -219,6 +222,96 @@ func TestCheckWalk(t *testing.T) {
 	}
 	if strings.Contains(sourceNames(env.Meta), "CERRA") || env.Results != 2 {
 		t.Fatalf("meta %+v results %d", env.Meta, env.Results)
+	}
+}
+
+// A better walk nearby is one of similar length that fits the same day.
+func TestCheckNearbyWalksAreSubstitutes(t *testing.T) {
+	hours := func(n int) string {
+		var h []string
+		for i := 0; i < n; i++ {
+			h = append(h, fmt.Sprintf("[%d,7,0.0,15,30]", 1792483200+i*3600))
+		}
+		return strings.Join(h, ",")
+	}
+	body := `{"schema_version":1,"fetched_at":"2026-10-19T14:20:00+00:00","walks":[` +
+		`{"id":"asked","name":"Asked","url":"https://www.walkhighlands.co.uk/a.shtml","lat":57.1,"lon":-3.7,"distance_km":12,"ascent_m":800,"duration_h":6,"hours":[` + hours(2) + `]},` +
+		`{"id":"similar","name":"Similar","url":"https://www.walkhighlands.co.uk/s.shtml","lat":57.12,"lon":-3.7,"distance_km":11,"ascent_m":700,"duration_h":5,"hours":[` + hours(6) + `]},` +
+		`{"id":"short","name":"Short","url":"https://www.walkhighlands.co.uk/b.shtml","lat":57.1,"lon":-3.71,"distance_km":3,"ascent_m":50,"duration_h":1,"hours":[` + hours(6) + `]},` +
+		`{"id":"far","name":"Far","url":"https://www.walkhighlands.co.uk/f.shtml","lat":57.5,"lon":-3.7,"distance_km":12,"ascent_m":800,"duration_h":6,"hours":[` + hours(6) + `]}]}`
+	wk, err := walks.Parse([]byte(body), "w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: wk}
+	env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkID: "asked"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := env.Data.(connector.CheckResult).Items[0]
+	if it.Verdict != verdict.No || len(it.NearbyWalks) != 1 || it.NearbyWalks[0].WalkID != "similar" {
+		t.Fatalf("nearby = %+v", it)
+	}
+}
+
+// Before 09:00 the night under way is yesterday's: check accepts its date,
+// and a plan with stargazing starts on it.
+func TestTonightAfterMidnight(t *testing.T) {
+	svc := fixture.Service(true)
+	svc.Now = func() time.Time { return time.Date(2026, 10, 19, 23, 30, 0, 0, time.UTC) } // 00:30 BST on the 20th
+	env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-19", Lat: f(57.10), Lon: f(-3.90)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := env.Data.(connector.CheckResult).Items[0]; it.Error != "" || it.Night == nil || it.Night.SiteID != "scotland-0002" {
+		t.Fatalf("tonight = %+v", it)
+	}
+	// A walk on that date is over.
+	if _, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-19", WalkName: "gorm"}}}); err == nil {
+		t.Fatal("a walk yesterday was accepted")
+	}
+	env, err = svc.Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := env.Data.(connector.PlanResult)
+	if res.Query.From != "2026-10-19" || res.Days[0].Walks != nil || !strings.Contains(res.Days[0].WalkNote, "This day is over") {
+		t.Fatalf("plan = %+v", res.Query)
+	}
+	env, err = svc.Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}})
+	if err != nil || env.Data.(connector.PlanResult).Query.From != "2026-10-20" {
+		t.Fatalf("walk plan from = %v %v", env, err)
+	}
+}
+
+// Windows ranks on listed hours, so a capped site whose list stops before
+// the night can fall outside the top sites; the answer is still unknown.
+func TestCappedSiteOutsideTheTopIsStillUnknown(t *testing.T) {
+	var sites []string
+	for i := 0; i < 60; i++ {
+		sites = append(sites, fmt.Sprintf(`{"id":"near-%02d","lat":%.3f,"lon":-3.8,"lp_zone":"rural","clear_dark_hours":0,"clear_twilight_hours":0,"best_hours":[]}`, i, 57.0+float64(i)*0.001))
+	}
+	sites = append(sites, `{"id":"capped","lat":57.08,"lon":-3.8,"lp_zone":"rural","clear_dark_hours":30,"clear_twilight_hours":30,"best_hours":[{"time":"2026-10-19T22:00:00+00:00","cloud_area_fraction":1,"dark":true}]}`)
+	sky, err := stars.Parse([]byte(`{"fetched_at":"2026-10-19T14:05:00+00:00","sites":[`+strings.Join(sites, ",")+`]}`), []byte(`{"sites":[]}`), "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := fixture.Service(true)
+	svc.Data = fixture.Source{DS: sky}
+	env, err := svc.Plan(connector.PlanParams{Lat: f(57.0), Lon: f(-3.8), Activities: []string{"stargaze"}, From: s("2026-10-20"), To: s("2026-10-20")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note := env.Data.(connector.PlanResult).Days[0].StarNote; !strings.Contains(note, "not counted yet") {
+		t.Fatalf("plan note = %q", note)
+	}
+	env, err = svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-20", Lat: f(57.0), Lon: f(-3.8)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := env.Data.(connector.CheckResult).Items[0]; it.Verdict != verdict.Unknown || it.Night.SiteID != "capped" || it.Night.FromPointKm < 8.5 {
+		t.Fatalf("check = %+v", it)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -87,6 +88,10 @@ func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL
 	h.mux.HandleFunc("GET /v1/plan", h.plan)
 	h.mux.HandleFunc("POST /v1/check", h.check)
 	h.mux.HandleFunc("OPTIONS /v1/check", h.preflight)
+	// Without these the /v1/ catch-all would answer a wrong method with "no
+	// such endpoint".
+	h.mux.HandleFunc("/v1/plan", h.methodNotAllowed("GET"))
+	h.mux.HandleFunc("/v1/check", h.methodNotAllowed("POST, OPTIONS"))
 	h.mux.HandleFunc("GET /v1/openapi.json", h.static(spec, "application/json"))
 	h.mux.HandleFunc("GET /v1/method", h.static(method, "text/markdown; charset=utf-8"))
 	h.mux.HandleFunc("/v1/", h.notFound)
@@ -158,7 +163,8 @@ func (h *Handler) check(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCheckBody))
 	dec.DisallowUnknownFields()
 	var err error
-	if derr := dec.Decode(&p); derr != nil || dec.More() {
+	// One object and nothing after it: a second Decode must hit EOF.
+	if derr := dec.Decode(&p); derr != nil || dec.Decode(&json.RawMessage{}) != io.EOF {
 		err = &connector.ParamError{Param: "body", Message: `a JSON object {"items": [...]} with known fields only, at most 16 KiB`}
 	}
 	var env *connector.Envelope
@@ -282,6 +288,17 @@ func (h *Handler) static(body []byte, contentType string) http.HandlerFunc {
 		cacheControlStatic.set(w.Header())
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		_, _ = w.Write(body)
+	}
+}
+
+func (h *Handler) methodNotAllowed(allow string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body errorBody
+		body.Meta = connector.Meta{APIVersion: connector.APIVersion, GeneratedAt: time.Now().UTC().Format(time.RFC3339), MethodURL: h.svc.MethodURL, Sources: []connector.Source{}}
+		body.Error.Code, body.Error.Message = "method_not_allowed", "use "+allow+"; see "+h.specURL
+		w.Header().Set("Allow", allow)
+		cacheControlError.set(w.Header())
+		writeJSON(w, http.StatusMethodNotAllowed, body)
 	}
 }
 

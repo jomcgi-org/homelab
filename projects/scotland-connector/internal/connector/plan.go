@@ -92,7 +92,10 @@ func walkLimits(maxDuration *float64, maxAscent *int) (*float64, *int, error) {
 	return maxDuration, maxAscent, nil
 }
 
-func planQuery(p PlanParams, today int32) (q PlanQuery, from, to int32, err error) {
+// planQuery validates a plan. Days run from today (UK date) to MaxDaysAhead
+// out, except that before 09:00 the night still under way is yesterday's: a
+// plan may start on it, and does by default when it covers stargazing.
+func planQuery(p PlanParams, today, tonight int32) (q PlanQuery, from, to int32, err error) {
 	if q.Lat, q.Lon, err = coordinates(p.Lat, p.Lon); err != nil {
 		return
 	}
@@ -105,9 +108,15 @@ func planQuery(p PlanParams, today int32) (q PlanQuery, from, to int32, err erro
 		}
 		q.RadiusKm = round(r, 1)
 	}
+	if q.Activities, err = activities(p.Activities); err != nil {
+		return
+	}
 	from = today
+	if has(q.Activities, ActivityStargaze) {
+		from = tonight
+	}
 	if p.From != nil && strings.TrimSpace(*p.From) != "" {
-		if from, err = parseDay("from", *p.From, today, today+MaxDaysAhead); err != nil {
+		if from, err = parseDay("from", *p.From, tonight, today+MaxDaysAhead); err != nil {
 			return
 		}
 	}
@@ -118,9 +127,6 @@ func planQuery(p PlanParams, today int32) (q PlanQuery, from, to int32, err erro
 		}
 	}
 	q.From, q.To = dayName(from), dayName(to)
-	if q.Activities, err = activities(p.Activities); err != nil {
-		return
-	}
 	if q.MaxDurationH, q.MaxAscentM, err = walkLimits(p.MaxDurationH, p.MaxAscentM); err != nil {
 		return
 	}
@@ -142,28 +148,6 @@ func has(list []string, v string) bool {
 		}
 	}
 	return false
-}
-
-type rankedWalk struct {
-	o     WalkOption
-	score float64
-	dist  float64
-}
-
-func sortWalks(r []rankedWalk) {
-	sort.SliceStable(r, func(i, j int) bool {
-		a, b := r[i], r[j]
-		if ra, rb := a.o.Verdict.Rank(), b.o.Verdict.Rank(); ra != rb {
-			return ra < rb
-		}
-		if a.score != b.score {
-			return a.score > b.score
-		}
-		if a.dist != b.dist {
-			return a.dist < b.dist
-		}
-		return a.o.WalkID < b.o.WalkID
-	})
 }
 
 // walkCandidate is a walk ranked by its verdict before its option is built:
@@ -262,7 +246,7 @@ func planNights(ds *stars.Dataset, q PlanQuery, night int32, now time.Time) ([]N
 	}
 	ranked := make([]rankedNight, len(windows))
 	for i := range windows {
-		o, score := nightOption(ds, &windows[i], night)
+		o, score := nightOption(ds, &windows[i], night, now)
 		ranked[i] = rankedNight{o, score}
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
@@ -300,6 +284,13 @@ func planNights(ds *stars.Dataset, q PlanQuery, night int32, now time.Time) ([]N
 	if ranked[0].o.Verdict == verdict.Unknown {
 		return nil, ranked[0].o.Why
 	}
+	// The windows are the most clear hours listed; a capped site may list
+	// none for this night and still be unknown rather than cloudy.
+	if site := ds.CappedNear(q.Lat, q.Lon, q.RadiusKm, night); site != nil {
+		if o, ok := siteNight(ds, site, q.Lat, q.Lon, night, now); ok {
+			return nil, o.Why
+		}
+	}
 	return nil, fmt.Sprintf("Cloudy at every dark-sky site within %.0f km.", q.RadiusKm)
 }
 
@@ -307,7 +298,8 @@ func planNights(ds *stars.Dataset, q PlanQuery, night int32, now time.Time) ([]N
 // the walks that fit and the night's best stargazing near a point.
 func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 	now := s.Now()
-	q, from, to, err := planQuery(p, walks.LocalDay(now))
+	today := walks.LocalDay(now)
+	q, from, to, err := planQuery(p, today, stars.FirstNight(now))
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +330,9 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 	results := 0
 	for day := from; day <= to; day++ {
 		pd := PlanDay{Date: dayName(day), SkyOut: skyAt(day, q.Lat, q.Lon)}
-		if wk != nil {
+		if day < today && (wk != nil || walksMissing) {
+			pd.WalkNote = "This day is over; its night is still under way."
+		} else if wk != nil {
 			pd.Walks, pd.WalkNote = planWalks(wk, q, inRange, day, now)
 			results += len(pd.Walks)
 		} else if walksMissing {
