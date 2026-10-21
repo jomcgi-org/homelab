@@ -77,6 +77,8 @@ def build_payload(
     HOUR_FIELDS tuple, with null for a value met.no left out or a row stored
     before its column existed. Every daylight hour is present, good or not:
     the connector applies the viability rule (or the caller's limits) itself.
+    A walk whose last fetch failed keeps its earlier rows, so until it next
+    fetches it may hold only the good hours stored before this version.
     """
     cutoff = top_of_hour(now)
     by_walk: dict[str, list[list[float]]] = {}
