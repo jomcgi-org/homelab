@@ -45,6 +45,19 @@ describe("createPortrait", () => {
       width: 300,
       height: 400,
     });
+    const observed = [];
+    let disconnected = false;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe(el) {
+          observed.push(el);
+        }
+        disconnect() {
+          disconnected = true;
+        }
+      },
+    );
     const add = vi.spyOn(window, "addEventListener");
     const remove = vi.spyOn(window, "removeEventListener");
     const portrait = createPortrait({
@@ -69,6 +82,8 @@ describe("createPortrait", () => {
     portrait.destroy();
     const removed = remove.mock.calls.map(([name]) => name);
     for (const name of wired) expect(removed).toContain(name);
+    expect(observed).toEqual([host]);
+    expect(disconnected).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   });
 });

@@ -502,6 +502,11 @@ export function createPortrait({
   window.addEventListener("wheel", onActivity, { passive: true });
   window.addEventListener("scroll", onScroll, { passive: true });
   window.addEventListener("resize", onResize);
+  // The host can change size without the window doing so (the phone layout
+  // sizes it from the space the nameplate and glass leave), so watch it too.
+  const observer =
+    typeof ResizeObserver === "function" ? new ResizeObserver(onResize) : null;
+  observer?.observe(host);
   document.documentElement.addEventListener("mouseleave", onLeave);
   document.documentElement.addEventListener("mouseenter", onEnter);
   host.addEventListener("pointerdown", onPortraitDown);
@@ -534,6 +539,7 @@ export function createPortrait({
       window.removeEventListener("wheel", onActivity);
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onResize);
+      observer?.disconnect();
       document.documentElement.removeEventListener("mouseleave", onLeave);
       document.documentElement.removeEventListener("mouseenter", onEnter);
       host.removeEventListener("pointerdown", onPortraitDown);

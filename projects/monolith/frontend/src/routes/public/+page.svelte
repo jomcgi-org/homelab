@@ -526,7 +526,11 @@
     border: 1px solid var(--edge);
     touch-action: pan-y;
   }
+  /* Out of flow, so the canvas's pixel size can never feed back into the
+     portrait's box (size() sets it from that box). */
   .portrait canvas {
+    position: absolute;
+    inset: 0;
     display: block;
     width: 100%;
     height: 100%;
@@ -745,15 +749,16 @@
       flex-direction: column;
       min-height: 100vh;
       min-height: 100dvh;
-      padding: 0.75rem;
+      padding: 0.5rem;
     }
     .unit {
       flex: 1 0 auto;
       width: 100%;
       margin: 0;
+      padding: 0.85rem;
       display: flex;
       flex-direction: column;
-      gap: 0.8rem;
+      gap: 0.7rem;
     }
     /* The nameplate: brand and switch on the first row, readouts beneath.
        The switch is placed explicitly; auto-placement would put it after
@@ -787,7 +792,10 @@
     }
     .portrait {
       flex: none;
-      height: min(100cqh, (100cqw - 9.5rem) * 4 / 3);
+      /* 14rem where container units are missing (Safari 15); 24rem caps a
+         small tablet's portrait so the keypad keeps its share. */
+      height: 14rem;
+      height: min(100cqh, (100cqw - 9.5rem) * 4 / 3, 24rem);
       width: auto;
     }
     .right {
@@ -796,12 +804,14 @@
     .pad {
       flex: 1;
       min-width: 8.7rem;
+      max-width: 14rem;
       grid-template-columns: repeat(3, 1fr);
       grid-template-rows: repeat(3, minmax(0, 1fr));
       /* As tall as the portrait beside it, never below the keypad's own
          height, so the keys spread over the picture's height and a tall
          phone centres the pair rather than stretching the keys apart. */
-      height: min(100cqh, max(13rem, (100cqw - 9.5rem) * 4 / 3));
+      height: 14rem;
+      height: min(100cqh, max(13rem, min((100cqw - 9.5rem) * 4 / 3, 24rem)));
       justify-content: stretch;
       align-content: stretch;
       align-items: center;
