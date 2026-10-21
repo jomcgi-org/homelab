@@ -5,9 +5,11 @@ description: Plan or check walks and stargazing in Scotland with the scotland MC
 
 # Scottish walks and stargazing
 
-The `scotland` MCP server has two tools. Both answer with a verdict (`go`,
-`marginal`, `no` or `unknown`) and a one-line `why` in UK local time. Lead
-with the verdict and the why; they are written to be repeated.
+The `scotland` MCP server has two tools. `check` answers each item with a
+verdict (`go`, `marginal`, `no` or `unknown`) and a one-line `why` in UK
+local time; `plan` lists only `go` and `marginal` options, and a day's
+`walk_note` or `stargazing_note` says why it has none. Lead with the verdict
+and the why; they are written to be repeated.
 
 ## plan or check
 
@@ -22,7 +24,9 @@ with the verdict and the why; they are written to be repeated.
   go in one call.
 
 Dates are UK calendar dates (`YYYY-MM-DD`). A stargazing date is the evening
-the night starts.
+the night starts. A plan covers today and the next two days unless you pass
+`from` and `to`: up to 7 days, starting up to 13 days ahead. For "this
+weekend", pass that Saturday and Sunday.
 
 ## Match the weather to the person
 
@@ -30,12 +34,12 @@ By default a good walking hour has at most 2 mm of rain and wind at most
 80 km/h, so a `go` can include drizzle. Translate what the person says into
 limits on both tools:
 
-| They say | Pass |
-|---|---|
-| "no rain at all", "dry" | `max_rain_mm_h: 0` |
-| "a bit of drizzle is fine" | nothing (the default) |
-| "I don't mind getting wet" | `max_rain_mm_h: 4` |
-| "not too windy" | `max_wind_kmh: 40` |
+| They say                     | Pass                      |
+| ---------------------------- | ------------------------- |
+| "no rain at all", "dry"      | `max_rain_mm_h: 0`        |
+| "a bit of drizzle is fine"   | nothing (the default)     |
+| "I don't mind getting wet"   | `max_rain_mm_h: 4`        |
+| "not too windy"              | `max_wind_kmh: 40`        |
 | "not cold", "above freezing" | `min_temp_c: 0` or higher |
 
 Size and effort go on `plan` as `max_duration_h`, `min_duration_h`,
@@ -48,9 +52,9 @@ Size and effort go on `plan` as `max_duration_h`, `min_duration_h`,
   time; for nights, quote the clear-sky odds it gives.
 - **`marginal`** names its catch in the `why` (a wet hour mid-walk, wind,
   needing to start or finish in the dark). Pass the catch on.
-- Walk weather is forecast at the walk's start, not on the summit, where it
-  is usually colder and windier. For hill days, suggest the Mountain Weather
-  Information Service as well.
+- Walk weather is forecast at the walk's start; the summit is usually colder
+  and windier. For hill days, suggest the Mountain Weather Information
+  Service as well.
 - Link each walk's `url` for the route; the connector does not carry route
   descriptions.
 - Credit the sources listed in the answer's `meta` when you summarise it.

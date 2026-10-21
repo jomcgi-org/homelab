@@ -3,12 +3,7 @@
   "mcpServers": {
     "scotland": {
       "type": "streamable-http",
-      "url": "https://jomcgi.dev/scotland/mcp",
-      "extensions": {
-        "com.openai": {
-          "auth": { "type": "none" }
-        }
-      }
+      "url": "https://jomcgi.dev/scotland/mcp"
     }
   }
 }

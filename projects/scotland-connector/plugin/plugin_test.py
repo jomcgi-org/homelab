@@ -10,7 +10,8 @@ import re
 from pathlib import Path
 
 _DIR = Path(__file__).resolve().parent
-_MCP_URL = "https://jomcgi.dev/scotland/mcp"
+_SITE = "https://jomcgi.dev/scotland"
+_MCP_URL = f"{_SITE}/mcp"
 
 
 def _json(rel: str) -> dict:
@@ -29,9 +30,9 @@ def test_both_mcp_configs_point_at_the_connector():
     claude = _json(".mcp.json")["mcpServers"]["scotland"]
     openai = _json("mcp.json")["mcpServers"]["scotland"]
     assert claude == {"type": "http", "url": _MCP_URL}
-    assert openai["type"] == "streamable-http"
-    assert openai["url"] == _MCP_URL
-    assert openai["extensions"]["com.openai"]["auth"] == {"type": "none"}
+    # The Agent Plugins schema closes a streamable-http entry to type, url
+    # and headers; OpenAI reads a server with no auth block as no auth.
+    assert openai == {"type": "streamable-http", "url": _MCP_URL}
 
 
 def test_marketplace_lists_the_plugin_at_the_root():
@@ -42,13 +43,25 @@ def test_marketplace_lists_the_plugin_at_the_root():
 
 def test_listing_urls_are_the_connector_pages():
     claude = _json(".claude-plugin/plugin.json")
-    assert claude["documentationUrl"] == "https://jomcgi.dev/scotland"
-    for key, page in [
-        ("supportUrl", "support"),
-        ("privacyPolicyUrl", "privacy"),
-        ("termsOfServiceUrl", "terms"),
+    openai = _json("plugin.json")["extensions"]["com.openai"]["interface"]
+    assert claude["documentationUrl"] == openai["websiteURL"] == _SITE
+    for claude_key, openai_key, page in [
+        ("supportUrl", "supportURL", "support"),
+        ("privacyPolicyUrl", "privacyPolicyURL", "privacy"),
+        ("termsOfServiceUrl", "termsOfServiceURL", "terms"),
     ]:
-        assert claude[key] == f"https://jomcgi.dev/scotland/{page}"
+        assert claude[claude_key] == openai[openai_key] == f"{_SITE}/{page}"
+
+
+def test_openai_listing_fields_fit_their_limits():
+    openai = _json("plugin.json")["extensions"]["com.openai"]["interface"]
+    assert 0 < len(openai["displayName"]) <= 30
+    assert 0 < len(openai["shortDescription"]) <= 30
+    assert 0 < len(openai["longDescription"]) <= 4000
+    assert 0 < len(openai["developerName"]) <= 80
+    assert openai["category"]
+    assert len(openai["defaultPrompt"]) <= 3
+    assert all(len(p) <= 128 for p in openai["defaultPrompt"])
 
 
 def test_skill_frontmatter_names_its_folder():

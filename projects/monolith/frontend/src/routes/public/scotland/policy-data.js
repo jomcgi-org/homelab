@@ -1,4 +1,4 @@
-import { BASE, METHOD_URL } from "./scotland-data.js";
+import { METHOD_URL } from "./scotland-data.js";
 
 // Privacy, terms and support for the Scotland connector, the pages the
 // Claude and OpenAI directory listings link to (#7255). Each doc renders
@@ -10,10 +10,6 @@ import { BASE, METHOD_URL } from "./scotland-data.js";
 
 export const CONTACT_EMAIL = "joe@jomcgi.dev";
 export const UPDATED = "2026-10-21";
-
-export const PRIVACY_URL = `${BASE}/privacy`;
-export const TERMS_URL = `${BASE}/terms`;
-export const SUPPORT_URL = `${BASE}/support`;
 
 export const policyLinks = [
   { href: "/scotland/privacy", label: "privacy" },
@@ -42,8 +38,9 @@ export const privacy = {
       label: "Requests",
       heading: "What a request carries",
       paras: [
-        "Through an assistant such as Claude or ChatGPT, the assistant's servers make the call, so the connector sees their network address, not yours, and only the tool arguments the assistant sends. It never sees your conversation.",
-        "Called directly over the REST API, it sees your network address, your user agent and the request itself: for plan, the point and dates in the URL.",
+        "Through a hosted assistant such as Claude or ChatGPT, the assistant's servers make the call, so the connector sees their network address and the tool arguments the assistant sends. Your conversation stays with the assistant.",
+        "ChatGPT also attaches hints to each call: a coarse location (city, region, country and approximate coordinates), an anonymised user and conversation id, your locale and a user agent. The connector reads none of them, and since request bodies are never logged, none is kept.",
+        "An assistant that runs on your own computer, such as Claude Code or Codex, calls from your machine, so your network address and its user agent reach the gateway. The same holds when you call the REST API directly, where the request itself is visible too: for plan, the point and dates in the URL.",
       ],
     },
     {
@@ -60,7 +57,7 @@ export const privacy = {
       label: "Others",
       heading: "Who else handles it",
       paras: [
-        "Requests pass through Cloudflare, which carries the traffic and caches answers under its own privacy policy. The service runs on Google Cloud. Neither gets anything from the connector beyond what carrying and hosting the traffic involves.",
+        "Requests pass through Cloudflare, which carries the traffic and caches answers under its own privacy policy. The service and its logs run on Google Cloud. Neither gets anything from the connector beyond what carrying and hosting the traffic involves.",
         "Nothing is sold, shared for advertising, or used to train models.",
       ],
     },
@@ -97,14 +94,14 @@ export const terms = {
       label: "Outdoors",
       heading: "It is not a safety service",
       paras: [
-        "Answers come from forecasts, which can be wrong, and the weather is forecast at each walk's start, not on summits, where it is usually colder and windier. A go is a suggestion, not a guarantee that a walk or a night is safe.",
+        "Answers come from forecasts, which can be wrong, and the weather is forecast at each walk's start; summits are usually colder and windier. A go is a suggestion, and whether a walk or a night is safe is yours to judge on the day.",
         "Decisions in the outdoors are yours. For hill days, check the Mountain Weather Information Service and conditions on the ground, and turn back when you need to.",
       ],
     },
     {
       id: "use",
       label: "Fair use",
-      heading: "Use it for answers, not for the data",
+      heading: "Use it for answers",
       paras: [
         "Ask it questions for yourself, your trips or the people your assistant helps. Do not use it to extract the underlying data in bulk, to rebuild or redistribute it, or to get round the rate limits.",
         "Requests over the limits are refused, and traffic that harms the service can be blocked.",
