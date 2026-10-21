@@ -153,6 +153,13 @@ func (h *Handler) plan(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Plan ignores unknown query keys, so the withdrawn limits are refused by
+	// name: a caller sending one would otherwise get an answer it never applied.
+	for _, name := range []string{"max_gust_kmh", "max_rain_chance_pct"} {
+		if err == nil && q.Has(name) {
+			err = &connector.ParamError{Param: name, Message: "not offered: MET Norway forecasts gusts and the chance of rain only within its Nordic model, which in Scotland covers Shetland alone"}
+		}
+	}
 	var env *connector.Envelope
 	if err == nil {
 		env, err = h.svc.Plan(p)

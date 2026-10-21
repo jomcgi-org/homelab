@@ -101,7 +101,7 @@ func TestParseRejectsBadSnapshots(t *testing.T) {
 		"not json":       `{`,
 		"future schema":  `{"schema_version":3,"walks":[` + walkJSON("a", 57, -4, 3, 0) + `]}`,
 		"v1 row as v2":   `{"schema_version":2,"walks":[` + walkJSON("a", 57, -4, 3, 0, 0) + `]}`,
-		"v2 row as v1":   `{"schema_version":1,"walks":[{"id":"a","name":"A","url":"u","duration_h":3,"hours":[[1781506800,9,0,10,20,15,0,5,0,0,10]]}]}`,
+		"v2 row as v1":   `{"schema_version":1,"walks":[{"id":"a","name":"A","url":"u","duration_h":3,"hours":[[1781506800,9,0,10,20,0,10]]}]}`,
 		"no walks":       `{"schema_version":1,"walks":[]}`,
 		"missing url":    `{"schema_version":1,"walks":[{"id":"a","name":"A","duration_h":3}]}`,
 		"bad fetched_at": `{"schema_version":1,"fetched_at":"yesterday","walks":[` + walkJSON("a", 57, -4, 3, 0) + `]}`,
