@@ -6,7 +6,6 @@ py_test(
     name = "plugin_test",
     srcs = ["plugin_test.py"],
     data = [
-        ".claude-plugin/marketplace.json",
         ".claude-plugin/plugin.json",
         ".mcp.json",
         "LICENSE",

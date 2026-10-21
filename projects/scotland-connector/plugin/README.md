@@ -15,7 +15,7 @@ all" into a weather limit. There is no account or key.
 Claude Code:
 
 ```sh
-/plugin marketplace add jomcgi/scotland-plugin
+/plugin marketplace add https://jomcgi.dev/scotland/marketplace.json
 /plugin install scotland@jomcgi
 ```
 
@@ -34,10 +34,14 @@ url = "https://jomcgi.dev/scotland/mcp"
 
 ## Layout
 
+The plugin lives in the homelab monorepo. The marketplace is served from
+`https://jomcgi.dev/scotland/marketplace.json`, whose entry checks out only
+this folder, so installing it does not clone the monorepo.
+
+
 | File                              | For                                                               |
 | --------------------------------- | ----------------------------------------------------------------- |
 | `.claude-plugin/plugin.json`      | Claude Code plugin manifest                                       |
-| `.claude-plugin/marketplace.json` | this repository as a one-plugin marketplace                       |
 | `.mcp.json`                       | the MCP server, for Claude Code                                   |
 | `plugin.json`, `mcp.json`         | the same plugin for OpenAI's plugin directory (Codex and ChatGPT) |
 | `skills/scotland-trips/SKILL.md`  | when and how to use the tools, shared by both                     |

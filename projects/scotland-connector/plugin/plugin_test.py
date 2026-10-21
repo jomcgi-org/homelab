@@ -26,6 +26,12 @@ def test_manifests_agree():
     assert claude["version"] == openai["version"]
     assert claude["description"] == openai["description"]
     assert claude["license"] == openai["license"] == "MPL-2.0"
+    # The marketplace is served at jomcgi.dev/scotland/marketplace.json
+    # (projects/monolith/frontend), with a git-subdir source for this folder.
+    assert claude["repository"] == openai["repository"]
+    assert claude["repository"].endswith(
+        "/tree/main/projects/scotland-connector/plugin"
+    )
     assert (_DIR / "LICENSE").read_text().startswith("Mozilla Public License")
 
 
@@ -36,12 +42,6 @@ def test_both_mcp_configs_point_at_the_connector():
     # The Agent Plugins schema closes a streamable-http entry to type, url
     # and headers; OpenAI reads a server with no auth block as no auth.
     assert openai == {"type": "streamable-http", "url": _MCP_URL}
-
-
-def test_marketplace_lists_the_plugin_at_the_root():
-    market = _json(".claude-plugin/marketplace.json")
-    assert [p["name"] for p in market["plugins"]] == ["scotland"]
-    assert market["plugins"][0]["source"] == "./"
 
 
 def test_listing_urls_are_the_connector_pages():

@@ -7,6 +7,34 @@ export const BASE = `${PUBLIC_BASE}/scotland`;
 export const MCP_URL = `${BASE}/mcp`;
 export const SPEC_URL = `${BASE}/v1/openapi.json`;
 export const METHOD_URL = `${BASE}/v1/method`;
+export const MARKETPLACE_URL = `${BASE}/marketplace.json`;
+
+// The Claude Code plugin lives in the homelab monorepo. Served as a file at
+// MARKETPLACE_URL, the catalog lets `/plugin marketplace add` fetch it alone,
+// and the entry's git-subdir source checks out only the plugin folder.
+export const marketplace = {
+  name: "jomcgi",
+  owner: {
+    name: "Joe McGinley",
+    email: "joe@jomcgi.dev",
+    url: PUBLIC_BASE,
+  },
+  description: "Plugins from jomcgi.dev.",
+  plugins: [
+    {
+      name: "scotland",
+      source: {
+        source: "git-subdir",
+        url: "https://github.com/jomcgi-org/homelab.git",
+        path: "projects/scotland-connector/plugin",
+        ref: "main",
+      },
+      description:
+        "Plan and check Scottish walks and stargazing with forecast verdicts.",
+      category: "travel",
+    },
+  ],
+};
 
 export const facts = [
   { k: "MCP", v: MCP_URL, code: true },
@@ -37,8 +65,9 @@ export const setups = [
   {
     id: "claude-code",
     label: "Claude Code",
+    how: "In a session, install the plugin: the server plus a skill on when to use plan and check. Or add the server alone from your shell.",
     lang: "sh",
-    code: `claude mcp add --transport http scotland ${MCP_URL}`,
+    code: `/plugin marketplace add ${MARKETPLACE_URL}\n/plugin install scotland@jomcgi\n\nclaude mcp add --transport http scotland ${MCP_URL}`,
   },
   {
     id: "codex",
