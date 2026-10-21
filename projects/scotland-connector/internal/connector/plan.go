@@ -111,16 +111,20 @@ func planQuery(p PlanParams, today, tonight int32) (q PlanQuery, from, to int32,
 	if q.Activities, err = activities(p.Activities); err != nil {
 		return
 	}
-	from = today
+	// The night under way is a day to plan only for stargazing.
+	earliest := today
 	if has(q.Activities, ActivityStargaze) {
-		from = tonight
+		earliest = tonight
 	}
+	from = earliest
 	if p.From != nil && strings.TrimSpace(*p.From) != "" {
-		if from, err = parseDay("from", *p.From, tonight, today+MaxDaysAhead); err != nil {
+		if from, err = parseDay("from", *p.From, earliest, today+MaxDaysAhead); err != nil {
 			return
 		}
 	}
-	to = min(from+DefaultSpanDays-1, today+MaxDaysAhead)
+	// The default span counts from today, so a plan that starts on last
+	// night still covers three days of walks.
+	to = min(max(from, today)+DefaultSpanDays-1, today+MaxDaysAhead)
 	if p.To != nil && strings.TrimSpace(*p.To) != "" {
 		if to, err = parseDay("to", *p.To, from, min(from+MaxSpanDays-1, today+MaxDaysAhead)); err != nil {
 			return
@@ -288,7 +292,7 @@ func planNights(ds *stars.Dataset, q PlanQuery, night int32, now time.Time) ([]N
 	// none for this night and still be unknown rather than cloudy.
 	if site := ds.CappedNear(q.Lat, q.Lon, q.RadiusKm, night); site != nil {
 		if o, ok := siteNight(ds, site, q.Lat, q.Lon, night, now); ok {
-			return nil, o.Why
+			return nil, fmt.Sprintf("At site %s, %.1f km away: %s", o.SiteID, o.FromPointKm, o.Why)
 		}
 	}
 	return nil, fmt.Sprintf("Cloudy at every dark-sky site within %.0f km.", q.RadiusKm)

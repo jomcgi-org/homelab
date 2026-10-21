@@ -34,8 +34,8 @@ func TestVerdicts(t *testing.T) {
 		t.Fatalf("gap = %+v", gap)
 	}
 	// 9 h needs 7.2 good hours; 6 plus the 2 h shoulder fits, in the dark.
-	// It would start before the slot, but the slot starts now, so it starts
-	// now rather than in the past.
+	// It would start before the slot, but the slot starts at the first hour
+	// that counts, so it starts then rather than in the past.
 	dark := assessDay(t, 9, 0, 1, 2, 3, 4, 5)
 	if dark.Verdict != verdict.Marginal || !strings.Contains(dark.Why, "in the dark") || !dark.StartFrom.Equal(base) || !dark.StartBy.Equal(base) {
 		t.Fatalf("dark = %+v", dark)
@@ -80,12 +80,16 @@ func TestAssessLaterToday(t *testing.T) {
 	if a.Verdict != verdict.Go || !a.StartFrom.Equal(base.Add(2*time.Hour)) || !a.StartBy.Equal(base.Add(3*time.Hour)) {
 		t.Fatalf("mid = %+v", a)
 	}
-	// A long walk that would start before the slot starts now instead.
+	// A long walk that would start before the slot starts at the next top
+	// of the hour instead, the same answer all hour.
 	long := mustParse(t, snapshot(walkJSON("l", 57, -4, 9, 0, 2, 3, 4, 5, 6, 7)))
 	lw := &long.Walks[0]
 	a = lw.Assess(long.DayFor(lw, today, mid), long.HourlyUntil)
-	if a.Verdict != verdict.Marginal || a.StartFrom.Before(mid) || a.StartBy.Before(a.StartFrom) {
+	if a.Verdict != verdict.Marginal || !a.StartFrom.Equal(base.Add(2*time.Hour)) || a.StartBy.Before(a.StartFrom) {
 		t.Fatalf("long = %+v", a)
+	}
+	if b := lw.Assess(long.DayFor(lw, today, mid.Add(40*time.Minute)), long.HourlyUntil); b != a {
+		t.Fatalf("answers within the hour differ: %+v %+v", a, b)
 	}
 	// After the last good hour, the why says none is left today.
 	if a := w.Assess(ds.DayFor(w, today, base.Add(7*time.Hour)), ds.HourlyUntil); a.Verdict != verdict.No || !strings.Contains(a.Why, "left today") {

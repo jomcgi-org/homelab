@@ -45,13 +45,13 @@
             "name": "from",
             "in": "query",
             "schema": { "type": "string", "format": "date" },
-            "description": "First day (UK date), from today up to 13 days ahead. A day's stargazing is the night of its evening; before 09:00 the night under way is yesterday's, which from may also be. Default today, or that night's date when stargazing is planned."
+            "description": "First day (UK date), from today up to 13 days ahead. A day's stargazing is the night of its evening; before 09:00 the night under way is yesterday's, which from may also be when stargazing is planned, and is by default. Otherwise the default is today."
           },
           {
             "name": "to",
             "in": "query",
             "schema": { "type": "string", "format": "date" },
-            "description": "Last day; a plan covers at most 7 days. Default two days after from."
+            "description": "Last day; a plan covers at most 7 days. Default two days after today, or after from when that is later."
           },
           {
             "name": "activities",

@@ -332,9 +332,11 @@ type Day struct {
 	GoodHours int
 	Best      *Run
 	Hours     []Hour
-	// Now is the instant the day was assessed at, and Started reports that
-	// some of its good hours had already begun then and were dropped.
-	Now     time.Time
+	// From is the top of the hour hours count from (the next one, when the
+	// day is under way), and Started reports that some of its good hours
+	// had begun by then and were dropped. From, not the instant asked, so
+	// that every answer within the hour is the same.
+	From    time.Time
 	Started bool
 }
 
@@ -393,7 +395,7 @@ func (d *Dataset) DayFor(w *Walk, day int32, now time.Time) Day {
 		cutoff = cutoff.Add(time.Hour)
 	}
 	dw := w.dayAt(day, cutoff.Unix(), d.CoverageOf(day))
-	dw.Now = now
+	dw.From = cutoff
 	return dw
 }
 
