@@ -1,6 +1,7 @@
 <script>
   import { onMount, untrack } from "svelte";
-  import { Footer, Seo, TechnicalDrawingChrome } from "$lib/public/components";
+  import { page } from "$app/state";
+  import { SchemeToggle, Seo } from "$lib/public/components";
   import "$lib/public/styles/technical-drawing.css";
   import { apps } from "$lib/public/apps.js";
   import {
@@ -17,6 +18,14 @@
   // (home-portrait.js); the chrome stays still.
   let { data } = $props();
   let stats = $state(untrack(() => data.stats));
+  // The foot keeps the site's other sections one tap away on a phone, the
+  // same list the sheet footer carried; the blog appears once a post exists.
+  const sections = $derived([
+    { label: "cv", href: "/cv" },
+    { label: "engineering", href: "/engineering" },
+    ...(page.data?.hasBlog ? [{ label: "blog", href: "/blog" }] : []),
+    { label: "docs", href: "/docs" },
+  ]);
   const deploy = $derived(deployReadout(stats));
   const posts = $derived(data.posts ?? []);
 
@@ -185,18 +194,20 @@
   path="/"
 />
 
-<TechnicalDrawingChrome />
 <main class="td sheet home">
   <div class="unit">
     <div class="plate">
       <span class="brand">jomcgi.dev</span>
-      <span>scotland <b>{clock}</b></span>
-      {#if deploy}
-        <span class="deploy">deployed <b>{deploy.ago}</b> ago</span>
-      {/if}
-      <span class="led"
-        ><i class:off={ledOff}></i> <span>{deploy?.sha ?? "live"}</span></span
-      >
+      <span class="meta">
+        <span>scotland <b>{clock}</b></span>
+        {#if deploy}
+          <span class="deploy">deployed <b>{deploy.ago}</b> ago</span>
+        {/if}
+        <span class="led"
+          ><i class:off={ledOff}></i> <span>{deploy?.sha ?? "live"}</span></span
+        >
+      </span>
+      <SchemeToggle />
     </div>
 
     <div class="glass" class:slop={slopOn} aria-live="polite">
@@ -286,10 +297,25 @@
         {/if}
       </div>
     </div>
-  </div>
 
-  <div class="editions foot">
-    <Footer />
+    <div class="foot">
+      <span class="links">
+        <a href="mailto:joe@jomcgi.dev">joe@jomcgi.dev</a>
+        <a href="https://github.com/jomcgi" target="_blank" rel="noreferrer"
+          >github</a
+        >
+        <a
+          href="https://linkedin.com/in/jomcgi"
+          target="_blank"
+          rel="noreferrer">linkedin</a
+        >
+      </span>
+      <nav aria-label="Continue reading">
+        {#each sections as section (section.href)}
+          <a href={section.href}>{section.label}</a>
+        {/each}
+      </nav>
+    </div>
   </div>
 </main>
 
@@ -308,7 +334,7 @@
     --glass: #0e100e; /* nosemgrep: svelte-hardcoded-color-in-style */
     --glass-text: #dfe3d2; /* nosemgrep: svelte-hardcoded-color-in-style */
     --glass-dim: #8f957f; /* nosemgrep: svelte-hardcoded-color-in-style */
-    padding: 4.5rem clamp(1rem, 4vw, 3rem) 4rem;
+    padding: 1.6rem clamp(1rem, 4vw, 3rem) 4rem;
     font-variant-numeric: tabular-nums;
   }
 
@@ -335,6 +361,12 @@
     font-size: 0.72rem;
     color: var(--ink-2);
   }
+  .plate .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 1.4rem;
+    min-width: 0;
+  }
   .plate .brand {
     color: var(--ink);
     font-family: var(--font-ui);
@@ -360,6 +392,25 @@
   .led i.off {
     background: var(--panel-2);
     box-shadow: 0 0 0 1px var(--edge) inset;
+  }
+  /* The day/night switch sits on the nameplate as a small round key, the
+     same object as the keypad's caps, instead of floating over the page. */
+  .plate :global(.scheme) {
+    width: 1.9rem;
+    height: 1.9rem;
+    border-radius: 50%;
+    border: 1px solid var(--edge);
+    background: var(--panel);
+    color: var(--ink-2);
+    box-shadow: 0 2px 0 var(--edge);
+    align-self: center;
+  }
+  .plate :global(.scheme:hover) {
+    color: var(--ink);
+  }
+  .plate :global(.scheme:active) {
+    transform: translateY(2px);
+    box-shadow: none;
   }
 
   .glass {
@@ -642,8 +693,28 @@
   }
 
   .foot {
-    max-width: 60rem;
-    margin: 2rem auto 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.4rem 1.4rem;
+    padding: 0.2rem 0.2rem 0;
+    font-family: var(--font-code);
+    font-size: 0.72rem;
+    color: var(--ink-2);
+  }
+  .foot .links,
+  .foot nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 1.1rem;
+  }
+  .foot a {
+    color: var(--ink);
+    text-decoration: none;
+    border-bottom: 1px solid var(--edge);
+  }
+  .foot a:hover {
+    border-bottom-color: var(--ink);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -660,13 +731,44 @@
     .home {
       padding-top: 1rem;
     }
-    .deck {
-      grid-template-columns: 1fr;
+    /* The nameplate: brand and switch on the first row, readouts beneath. */
+    .plate {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 0.35rem 1rem;
     }
-    .portrait {
-      max-width: 22rem;
-      margin: 0 auto;
-      width: 100%;
+    .plate .meta {
+      grid-column: 1 / -1;
+    }
+    /* On a phone the portrait and the keypad share a row at half size, so
+       the picture is a part of the unit rather than the whole screen. */
+    .deck {
+      grid-template-columns: minmax(0, 10.5rem) minmax(0, 1fr);
+      gap: 0.8rem;
+      align-items: start;
+    }
+    .right {
+      display: contents;
+    }
+    .pad {
+      grid-template-columns: repeat(3, 1fr);
+      justify-content: stretch;
+      gap: 0.55rem 0.2rem;
+      padding: 0.1rem 0 0;
+    }
+    .key {
+      gap: 0.3rem;
+    }
+    .key .cap {
+      width: 2.5rem;
+      height: 2.5rem;
+    }
+    .key .legend {
+      font-size: 0.6rem;
+    }
+    .writing {
+      grid-column: 1 / -1;
     }
     .glass {
       height: 8.8rem;
@@ -674,10 +776,6 @@
     .glass .small {
       white-space: normal;
       font-size: 0.92rem;
-    }
-    .pad {
-      grid-template-columns: repeat(3, 1fr);
-      justify-content: stretch;
     }
   }
 </style>
