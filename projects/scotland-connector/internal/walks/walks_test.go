@@ -367,7 +367,7 @@ func TestLeftTodayFollowsTheCallersHours(t *testing.T) {
 	w := &ds.Walks[0]
 	f := func(v float64) *float64 { return &v }
 	a := w.Assess(ds.DayWithin(w, LocalDay(base), base.Add(30*time.Minute), Limits{MaxPrecipMM: f(4)}), ds.HourlyUntil)
-	if a.Verdict != verdict.No || !strings.Contains(a.Why, "left today") {
+	if a.Verdict != verdict.No || !strings.Contains(a.Why, "left today") || !strings.Contains(a.Why, "within the limits") {
 		t.Fatalf("assess = %+v", a)
 	}
 }
