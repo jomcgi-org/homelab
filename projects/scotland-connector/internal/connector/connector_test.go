@@ -528,8 +528,10 @@ func TestV2WeatherLimits(t *testing.T) {
 // and the answer says so rather than ignoring them.
 func TestGustLimitsNeedTheFullData(t *testing.T) {
 	var pe *connector.ParamError
-	_, err := fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}},
-		WeatherLimits: connector.WeatherLimits{MaxGustKmh: f(50)}})
+	_, err := fixture.Service(true).Check(connector.CheckParams{
+		Items:         []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}},
+		WeatherLimits: connector.WeatherLimits{MaxGustKmh: f(50)},
+	})
 	if !errors.As(err, &pe) || pe.Param != "max_gust_kmh" || !strings.Contains(pe.Message, "not available yet") {
 		t.Fatalf("check: %v", err)
 	}
