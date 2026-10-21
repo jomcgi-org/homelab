@@ -542,8 +542,10 @@ func TestGustLimitsNeedTheFullData(t *testing.T) {
 		t.Fatalf("plan: %v", err)
 	}
 	// Loosening past the defaults needs every daylight hour too.
-	_, err = fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}},
-		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(5)}})
+	_, err = fixture.Service(true).Check(connector.CheckParams{
+		Items:         []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}},
+		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(5)},
+	})
 	if !errors.As(err, &pe) || pe.Param != "max_rain_mm_h" {
 		t.Fatalf("loosened rain on v1: %v", err)
 	}
