@@ -58,14 +58,16 @@ describe("home/CV composed route chrome", () => {
   );
 
   it.each([
-    ["/", "home"],
-    ["/public/", "home"],
-    ["/cv", "cv"],
-    ["/cv/", "cv"],
-    ["/public/cv", "cv"],
-  ])("renders one chrome and scheme control at %s", async (path, surface) => {
+    ["/", "home", 0],
+    ["/public/", "home", 0],
+    ["/cv", "cv", 1],
+    ["/cv/", "cv", 1],
+    ["/public/cv", "cv", 1],
+  ])("renders one scheme control at %s", async (path, surface, chrome) => {
     await render(path, surface);
-    expect(target.querySelectorAll(".chrome")).toHaveLength(1);
+    // The home unit carries the switch on its nameplate; the CV keeps the
+    // floating chrome.
+    expect(target.querySelectorAll(".chrome")).toHaveLength(chrome);
     expect(target.querySelectorAll("button.scheme")).toHaveLength(1);
     expect(target.querySelector(".md-nav")).toBeNull();
     expect(target.querySelectorAll("main")).toHaveLength(1);
