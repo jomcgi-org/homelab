@@ -389,8 +389,10 @@ func TestWeatherLimits(t *testing.T) {
 		t.Fatalf("calm = %+v", calm)
 	}
 	// plan applies the same limits, echoes them, and leaves out the hours.
-	pe, res2 := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-20"), To: s("2026-10-20"),
-		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0)}})
+	pe, res2 := plan(t, connector.PlanParams{
+		Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-20"), To: s("2026-10-20"),
+		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0)},
+	})
 	if w := res2.Days[0].Walks; len(w) != 1 || w[0].Verdict != verdict.Marginal || w[0].Slot.Hours != nil || res2.Query.MaxRainMMH == nil {
 		t.Fatalf("plan = %+v %+v", res2.Days[0], res2.Query)
 	}
