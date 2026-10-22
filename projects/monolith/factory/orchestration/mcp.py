@@ -1416,3 +1416,98 @@ async def factory_permit_diagnostics(
     from factory.execution.admission_diagnostics import inspect_permits
 
     return await asyncio.to_thread(inspect_permits, permit_ids)
+
+
+@mcp.tool
+async def factory_find_receipts(
+    repo: Annotated[str, Field(min_length=1, max_length=256)],
+    task_id: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+    issue_number: Annotated[MCPInteger | None, Field(gt=0)] = None,
+    pr_number: Annotated[MCPInteger | None, Field(gt=0)] = None,
+    offset: Annotated[MCPInteger, Field(ge=0)] = 0,
+    limit: Annotated[MCPInteger, Field(ge=1, le=50)] = 20,
+) -> dict:
+    """Find receipt IDs by exact task, issue or owned PR as a standing operator.
+
+    Supply a repository and at least one exact selector. Selectors intersect.
+    All matching generations and task classes are returned with pagination.
+    An issue may have advisory and delivery receipts, so never select the first
+    match without checking task identity. PR lookup reads GitHub and matches
+    its repository and branch to recorded delivery identity. This read does
+    not submit work, create a receipt, change a hold or authorize execution.
+    """
+    refusal = _refuse(current_principal())
+    if refusal is not None:
+        return refusal
+
+    def find():
+        from factory.orchestration import factory_validation
+
+        try:
+            return factory_validation.locate(
+                repo,
+                task_id=task_id,
+                issue_number=issue_number,
+                pr_number=pr_number,
+                offset=offset,
+                limit=limit,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        except httpx.HTTPError:
+            return {"ok": False, "reason": "receipt_github_read_failed"}
+
+    return await asyncio.to_thread(find)
+
+
+@mcp.tool
+async def factory_prepare_validation(
+    operation: Literal["preview", "apply"],
+    receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+) -> dict:
+    """Prepare one waiting receipt for bounded validation as a standing operator.
+
+    Preview first while admissions are paused and no other work is queued,
+    active or landing, with no reserved or uncertain starts. The derived policy
+    disables automatic landing, intake and issue production, limits admission
+    to the selected primary-repository issue and pauses other repositories.
+    It preserves generation, budgets, turn limits, deadlines and receipt holds.
+    These are policy and accounting bounds, not verified marginal cash charges.
+    Apply needs the exact preview digest and a fresh request key. It rechecks
+    state under the existing control lock and reuses validated configuration.
+    Replay identical arguments after a lost response, then read current state.
+    This leaves admissions paused and neither recovers nor resumes a task.
+    Recovery eligibility, live issue ownership and execution checks still apply.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+
+    def prepare():
+        from factory.orchestration import factory_validation
+
+        try:
+            if operation == "preview":
+                return factory_validation.preview(receipt_id, reason)
+            if not request_key or not expected_preview_sha256:
+                return {
+                    "ok": False,
+                    "reason": "validation_requires_preview_and_request_key",
+                }
+            return factory_validation.apply(
+                receipt_id,
+                reason,
+                actor=principal.subject,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    return await asyncio.to_thread(prepare)

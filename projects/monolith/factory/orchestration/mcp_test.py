@@ -127,6 +127,8 @@ def test_factory_tools_are_registered():
         "factory_decide",
         "factory_amend_policy",
         "factory_release_landing_hold",
+        "factory_find_receipts",
+        "factory_prepare_validation",
         "factory_request_brief",
         "factory_context",
     } <= registered, f"factory tools not registered; got: {sorted(registered)}"
@@ -1847,3 +1849,132 @@ def test_lifecycle_does_not_reuse_old_rollout_proof(tmp_path, recovery):
         assert result["deployment"]["status"] != "verified"
         assert result["repository_delivery"]["status"] == "not_observed"
     engine.dispose()
+
+
+@pytest.mark.parametrize("tool", ["prepare", "locate"])
+def test_validation_tools_retain_operator_floor(monkeypatch, tool):
+    from factory.orchestration import factory_validation as validation
+
+    calls = []
+    monkeypatch.setattr(
+        validation, "preview", lambda *a: calls.append(a) or {"ok": True}
+    )
+    monkeypatch.setattr(
+        validation, "locate", lambda *a, **kw: calls.append(a) or {"ok": True}
+    )
+
+    async def invoke():
+        if tool == "prepare":
+            return await mcp.factory_prepare_validation("preview", 934, "bounded check")
+        return await mcp.factory_find_receipts("org/repo", task_id="exact")
+
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(principal, invoke)["ok"]
+    assert not calls
+    assert _as(_principal(), invoke)["ok"]
+    assert len(calls) == 1
+
+
+def test_validation_apply_requires_preview_identity(monkeypatch):
+    from factory.orchestration import factory_validation as validation
+
+    def unexpected(*a, **kw):
+        pytest.fail("unpreviewed apply reached mutation")
+
+    monkeypatch.setattr(validation, "apply", unexpected)
+
+    async def invoke():
+        return await mcp.factory_prepare_validation("apply", 934, "bounded check")
+
+    assert (
+        _as(_principal(), invoke)["reason"]
+        == "validation_requires_preview_and_request_key"
+    )
+
+
+def test_receipt_locator_intersects_exact_identity_and_retains_ambiguity(
+    db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_validation as validation,
+        factory_conductor,
+    )
+
+    monkeypatch.setattr(validation, "_available_repo", lambda repo: repo)
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                SwarmTask(
+                    id="delivery",
+                    task_text="work",
+                    conductor_model="astra",
+                    budget_usd=50,
+                ),
+                SwarmTask(
+                    id="advisory",
+                    task_text="brief",
+                    conductor_model="astra",
+                    budget_usd=50,
+                ),
+            ]
+        )
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                FactoryReceipt(
+                    id=1,
+                    repo="org/repo",
+                    issue_number=6995,
+                    title="brief",
+                    body="",
+                    url="https://example.invalid",
+                    actor="operator",
+                    task_id="advisory",
+                    task_class="refine",
+                    state="succeeded",
+                ),
+                FactoryReceipt(
+                    id=2,
+                    repo="org/repo",
+                    issue_number=6995,
+                    title="delivery",
+                    body="",
+                    url="https://example.invalid",
+                    actor="operator",
+                    task_id="delivery",
+                    state="escalated",
+                ),
+            ]
+        )
+    pull = {
+        "number": 7199,
+        "head": {"ref": "factory/delivery", "repo": {"full_name": "org/repo"}},
+        "base": {"repo": {"full_name": "org/repo"}},
+    }
+    monkeypatch.setattr(factory_conductor, "github_get", lambda *a: pull)
+    result = validation.locate("org/repo", issue_number=6995, limit=1)
+    assert result["ambiguous"] and result["total"] == 2 and result["next_offset"] == 1
+    assert (
+        validation.locate("org/repo", issue_number=6995, offset=1)["receipts"][0][
+            "receipt_id"
+        ]
+        == 2
+    )
+    result = validation.locate(
+        "org/repo", task_id="delivery", pr_number=7199, issue_number=6995
+    )
+    assert [r["receipt_id"] for r in result["receipts"]] == [2]
+    assert not validation.locate("org/repo", task_id="advisory", pr_number=7199)[
+        "receipts"
+    ]
+    assert not validation.locate("org/other", task_id="delivery")["receipts"]
+    with pytest.raises(ValueError, match="receipt_selector_required"):
+        validation.locate("org/repo")
+    pull["head"]["repo"]["full_name"] = "foreign/repo"
+    with pytest.raises(ValueError, match="receipt_pr_identity_changed"):
+        validation.locate("org/repo", pr_number=7199)
+    assert len(stored_receipts(db)) == 2

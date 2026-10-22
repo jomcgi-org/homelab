@@ -1880,3 +1880,169 @@ def test_delayed_terminal_replay_keeps_completed_proof_and_conflicts_still_trip(
         assert not db.get(FactoryReceipt, 838).task_paused
         assert len(meter._records_for_receipt(db, receipt["id"], meter.UPDATE)) == 3
     assert update(receipt, 2, 101, "complete")["stop"]
+
+
+@pytest.fixture
+def validation_ready(database, monkeypatch):
+    from factory.orchestration import factory_validation as validation
+
+    paused(database)
+    monkeypatch.setattr(validation, "_available_repo", lambda repo: repo)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.state = "escalated"
+        row.direction_json = json.dumps(
+            {
+                "landing_hold": {"reason": "review first"},
+                "review_only_hold": {"owner": "operator"},
+            }
+        )
+        control = db.get(FactoryControl, "factory")
+        control.state = "paused"
+        policy = json.loads(control.policy_json)
+        policy.update(
+            auto_merge=True,
+            issue_numbers=[7001, 7002],
+            intake={"enabled": True, "refine_enabled": True, "close_enabled": True},
+            problem_issues={"enabled": True},
+            repos={
+                "org/repo": {"auto_merge": True},
+                "org/other": {"enabled": True, "auto_merge": True},
+            },
+        )
+        control.policy_json = json.dumps(policy)
+    return validation
+
+
+def test_validation_preparation_is_narrow_audited_and_idempotent(
+    database, validation_ready
+):
+    validation = validation_ready
+    proposal = validation.preview(838, "bounded check")
+    before, after = proposal["policy_before"], proposal["policy_after"]
+    assert before["auto_merge"] and not after["auto_merge"]
+    assert after["issue_numbers"] == [7001]
+    assert not any(
+        after["intake"][k] for k in ("enabled", "refine_enabled", "close_enabled")
+    )
+    assert not after["problem_issues"]["enabled"]
+    assert not after["repos"]["org/repo"]["auto_merge"]
+    assert after["repos"]["org/other"]["paused"]
+    for key in before.keys() - {
+        "auto_merge",
+        "issue_numbers",
+        "intake",
+        "problem_issues",
+        "repos",
+    }:
+        assert before[key] == after[key]
+    with Session(database) as db:
+        receipt_before = db.get(FactoryReceipt, 838).model_dump()
+    args = dict(
+        actor="operator",
+        request_key="prepare",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    result = validation.apply(838, "bounded check", **args)
+    assert result["state"] == "paused" and not result["execution_authorized"]
+    assert validation.apply(838, "bounded check", **args) == result
+    with pytest.raises(ValueError, match="conflicting_validation_request"):
+        validation.apply(838, "different", **args)
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump() == receipt_before
+        control = db.get(FactoryControl, "factory")
+        assert control.state == "paused" and json.loads(control.policy_json) == after
+        assert db.get(SwarmTask, "task").budget_usd == 50
+        events = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == validation.ACTION)
+        ).all()
+        assert len(events) == 1
+        assert json.loads(events[0].detail_json)["policy_before"] == before
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "version",
+        "policy",
+        "direction",
+        "new_receipt",
+        "enabled",
+        "active",
+        "landing",
+        "unknown_start",
+        "generation",
+        "cancel",
+    ],
+)
+def test_validation_rechecks_concurrent_state(database, validation_ready, change):
+    validation = validation_ready
+    proposal = validation.preview(838, "bounded check")
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        control = db.get(FactoryControl, "factory")
+        if change == "version":
+            control.version += 1
+        elif change == "policy":
+            policy = json.loads(control.policy_json)
+            policy["task_budget_usd"] = 60
+            control.policy_json = json.dumps(policy)
+        elif change == "direction":
+            row.direction_json = json.dumps({"landing_hold": {"reason": "new review"}})
+        elif change == "new_receipt":
+            db.add(
+                FactoryReceipt(
+                    repo="org/repo",
+                    issue_number=7002,
+                    title="other",
+                    body="other",
+                    url="https://example.invalid",
+                    actor="operator",
+                    state="queued",
+                )
+            )
+        elif change == "enabled":
+            control.state = "enabled"
+        elif change in ("active", "landing"):
+            row.state = "admitted" if change == "active" else "landing"
+        elif change == "unknown_start":
+            db.exec(select(FactoryStart)).one().status = "uncertain"
+        elif change == "generation":
+            row.generation += 1
+        elif change == "cancel":
+            row.cancellation_requested = True
+    with pytest.raises(ValueError):
+        validation.apply(
+            838,
+            "bounded check",
+            actor="operator",
+            request_key="stale",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        assert json.loads(db.get(FactoryControl, "factory").policy_json)["auto_merge"]
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == validation.ACTION)
+        ).all()
+
+
+def test_validation_competing_applications_are_serialized(database, validation_ready):
+    validation = validation_ready
+    proposal = validation.preview(838, "bounded check")
+
+    def apply(key):
+        try:
+            return validation.apply(
+                838,
+                "bounded check",
+                actor="operator",
+                request_key=key,
+                expected_preview_sha256=proposal["preview_sha256"],
+            )
+        except ValueError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(apply, ["first", "second"]))
+    assert sum(isinstance(result, dict) for result in results) == 1
+    assert "validation_preview_changed" in results
