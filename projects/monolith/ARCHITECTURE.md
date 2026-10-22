@@ -2641,6 +2641,24 @@ is not proof that the operator authorized removing the hold. A separate exact
 preview/apply operation records that decision without conflating it with task
 resume, review approval or delivery acceptance.
 
+The operator-only `factory_prepare_validation` MCP adapter derives a narrow
+policy for one existing primary-repository receipt and delegates configuration
+to `factory_controls.set_control`. Preview binds the complete policy, control
+version and receipt inventory. Apply rechecks under the same control lock and
+records actor-scoped idempotency plus the previous and proposed policies. It
+leaves admissions paused, disables automatic landing and broad intake, preserves
+generation and all task bounds, and does not mutate receipts or release holds.
+Recovery eligibility and execution remain separate existing gates.
+`factory_find_receipts` supplies an exact, read-only identity lookup across
+receipt history, with intersecting selectors and explicit ambiguity.
+
+**Why preparation is separate from execution.** Pausing admissions alone does
+not disable automatic landing, and existing recovery may require admission to
+be enabled. A previewable configuration step lets an operator inspect the
+narrow policy before any recovery or admission action. It cannot itself prove
+that an expired or externally delivered task is eligible to restart. No new
+principal, credential or permission grant accompanies this MCP exposure.
+
 A typed `live_validation` gate may carry `leave_unmerged=true`. The gate owner
 persists the same sticky landing hold before any GitHub write. Operational
 checklists alone only preserve the issue's outstanding acceptance; they are not

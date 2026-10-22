@@ -175,3 +175,34 @@ deployed replay and stale-version checks while the model is unavailable, an
 unreachable-worker global stop trial, and live reconciliation proof that cost,
 start records and capacity holds survive cancellation, replacement and retry.
 The issue remains open until those checks are complete.
+
+## Prepare bounded validation
+
+`factory_find_receipts` resolves exact task IDs, issue numbers or PR numbers in
+an available repository. Selectors intersect. Follow `next_offset` and inspect
+`task_class`, generation and task identity when `ambiguous=true`. An issue can
+have several advisory and delivery receipts. PR lookup verifies GitHub's exact
+repository and branch against recorded delivery identity. It does not infer a
+receipt number from an advisory record or create work.
+
+`factory_prepare_validation` exposes a narrow form of existing operator
+configuration, not arbitrary policy editing. Preview a selected current primary
+repository receipt while admissions are paused, with no competing queued,
+active or landing receipts and no unresolved start reservations. Apply with the
+returned digest, reason and an actor-scoped request key. The control lock and
+fingerprint reject concurrent policy, version or receipt changes. Identical
+replays return the recorded result; inspect current status after a lost response.
+
+Preparation disables automatic landing (including repository overrides), intake,
+advisory refinement, issue closing and problem-issue production, restricts the
+issue allowlist to the selected receipt, and pauses other repositories. It keeps
+admissions paused and preserves generation, accounting bounds, turn limits,
+deadlines, receipt ownership and holds. Dollar amounts are policy/accounting
+bounds, not evidence of marginal cash charges.
+
+This operation does not recover, resume, admit or settle any task, and its
+preview is not evidence that recovery will succeed. Before any separately
+authorized execution, inspect live ownership, existing PRs and other owners,
+then use the existing recovery and execution checks. Never restart externally
+delivered work merely because its receipt remains escalated. Both tools retain
+the existing standing-human `operators` requirement.
