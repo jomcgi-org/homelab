@@ -1202,8 +1202,8 @@ async def factory_release_landing_hold(
     a new preview. Unknown or live execution refuses release.
     This removes only the recorded landing hold, or refreshes a prior audited
     release for the same PR after its head changes. The preview identifies which
-    operation applies; both require fresh exact-head authorization. It does not resume a paused
-    task, reopen a settled task, accept delivery, grant a review, merge a PR or
+    operation applies. Both require fresh exact-head authorization. It does not
+    resume a paused task, reopen a settled task, accept delivery, grant a review, merge a PR or
     waive CI, rollout or operational checks. Previously merged PRs can be
     acknowledged without inventing their missing review evidence. Restricted
     review-only recovery holds cannot be released here. Read factory state
