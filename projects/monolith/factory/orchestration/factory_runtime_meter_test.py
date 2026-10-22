@@ -2046,3 +2046,25 @@ def test_validation_competing_applications_are_serialized(database, validation_r
         results = list(pool.map(apply, ["first", "second"]))
     assert sum(isinstance(result, dict) for result in results) == 1
     assert "validation_preview_changed" in results
+
+
+def test_validation_preserves_implicit_primary_repository(database, validation_ready):
+    with Session(database) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        del policy["repos"]
+        control.policy_json = json.dumps(policy)
+    proposal = validation_ready.preview(838, "implicit primary")
+    assert "repos" not in proposal["policy_after"]
+    result = validation_ready.apply(
+        838,
+        "implicit primary",
+        actor="operator",
+        request_key="implicit-primary",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    assert result["ok"] and result["state"] == "paused"
+    with Session(database) as db:
+        policy = json.loads(db.get(FactoryControl, "factory").policy_json)
+        assert controls.enabled_repos(policy) == ["org/repo"]
+        assert not policy["auto_merge"]
