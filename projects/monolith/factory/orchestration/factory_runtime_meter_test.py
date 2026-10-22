@@ -932,6 +932,157 @@ def test_landing_release_only_removes_hold_and_is_idempotent(
         )
 
 
+def released_delivery(database, pull):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull["head"]["sha"] = "b" * 40
+    proposal = releases.preview(838, 7170, "b" * 40, "initial release")
+    result = releases.apply(
+        838,
+        7170,
+        "b" * 40,
+        "initial release",
+        actor="operator",
+        request_key="initial",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).state = "escalated"
+    pull["head"]["sha"] = "a" * 40
+    return result
+
+
+def test_landing_authorization_refresh_preserves_state_and_replays(
+    database, held_delivery
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, original = held_delivery
+    released_delivery(database, pull)
+    with Session(database) as db:
+        before = json.loads(db.get(FactoryReceipt, 838).direction_json)
+    proposal = releases.preview(838, 7170, "a" * 40, "reviewed rebase")
+    assert proposal["operation"] == "refresh"
+    args = dict(
+        actor="operator",
+        request_key="refresh",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    result = releases.apply(838, 7170, "a" * 40, "reviewed rebase", **args)
+    assert result["operation"] == "refresh" and not result["delivery_accepted"]
+    assert releases.apply(838, 7170, "a" * 40, "reviewed rebase", **args) == result
+    with pytest.raises(ValueError, match="conflicting_landing_release_request"):
+        releases.apply(838, 7170, "c" * 40, "reviewed rebase", **args)
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        after = json.loads(row.direction_json)
+        assert row.state == "escalated" and row.task_paused and row.task_id == "task"
+        assert not controls.landing_held(row)
+        assert after["landing_authorization"]["head_sha"] == "a" * 40
+        assert after["conductor_gates"] == original["conductor_gates"]
+        assert after["nonrenewable_recovery"] == original["nonrenewable_recovery"]
+        assert {k: v for k, v in after.items() if k != "landing_authorization"} == {
+            k: v for k, v in before.items() if k != "landing_authorization"
+        }
+        assert db.get(SwarmTask, "task").budget_usd == 50
+        events = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.ACTION)
+        ).all()
+        assert len(events) == 2
+        event = next(
+            json.loads(e.detail_json)
+            for e in events
+            if json.loads(e.detail_json)["request"]["request_key"] == "refresh"
+        )
+        assert event["prior_authorization"] == before["landing_authorization"]
+        assert event["prior_hold"] is None
+    # A second rebase uses the refresh audit as its predecessor.
+    pull["head"]["sha"] = "c" * 40
+    assert (
+        releases.preview(838, 7170, "c" * 40, "next rebase")["operation"] == "refresh"
+    )
+
+
+def test_landing_refresh_competing_previews_cannot_overwrite_authorization(
+    database, held_delivery
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, _ = held_delivery
+    released_delivery(database, pull)
+    first = releases.preview(838, 7170, "a" * 40, "refresh")
+    second = releases.preview(838, 7170, "a" * 40, "refresh")
+    assert first == second
+    result = releases.apply(
+        838,
+        7170,
+        "a" * 40,
+        "refresh",
+        actor="operator",
+        request_key="first",
+        expected_preview_sha256=first["preview_sha256"],
+    )
+    with pytest.raises(ValueError):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "refresh",
+            actor="operator",
+            request_key="second",
+            expected_preview_sha256=second["preview_sha256"],
+        )
+    with Session(database) as db:
+        authorization = json.loads(db.get(FactoryReceipt, 838).direction_json)[
+            "landing_authorization"
+        ]
+        assert authorization["request_key"] == "first"
+        assert db.get(FactoryControl, "factory").version == result["version"]
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == releases.ACTION)
+                ).all()
+            )
+            == 2
+        )
+
+
+@pytest.mark.parametrize(
+    "change", ["same_head", "wrong_pr", "wrong_receipt", "missing_audit", "actor"]
+)
+def test_landing_refresh_requires_matching_release_history(
+    database, held_delivery, change
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, _ = held_delivery
+    released_delivery(database, pull)
+    number, head = 7170, "a" * 40
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        event = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.ACTION)
+        ).one()
+        if change == "same_head":
+            head = pull["head"]["sha"] = "b" * 40
+        elif change == "wrong_pr":
+            number = pull["number"] = 7171
+        elif change == "wrong_receipt":
+            detail = json.loads(event.detail_json)
+            detail["request"]["receipt_id"] = 839
+            event.detail_json = json.dumps(detail)
+        elif change == "missing_audit":
+            db.delete(event)
+        elif change == "actor":
+            direction["landing_authorization"]["actor"] = "other"
+            row.direction_json = json.dumps(direction)
+    with pytest.raises(ValueError, match="landing_release_requires_held_receipt"):
+        releases.preview(838, number, head, "refresh")
+
+
+@pytest.mark.parametrize("refresh", [False, True])
 @pytest.mark.parametrize(
     "change",
     [
@@ -962,11 +1113,13 @@ def test_landing_release_only_removes_hold_and_is_idempotent(
     ],
 )
 def test_landing_release_rechecks_preview_and_execution(
-    database, held_delivery, change, monkeypatch
+    database, held_delivery, change, monkeypatch, refresh
 ):
     from factory.orchestration import factory_landing_release as releases
 
     pull, _ = held_delivery
+    if refresh:
+        released_delivery(database, pull)
     proposal = releases.preview(838, 7170, "a" * 40, "approved")
     with Session(database) as db, db.begin():
         row = db.get(FactoryReceipt, 838)
@@ -991,7 +1144,7 @@ def test_landing_release_rechecks_preview_and_execution(
         elif change == "pause":
             row.task_paused = False
         elif change == "state":
-            row.state = "escalated"
+            row.state = "admitted" if refresh else "escalated"
         elif change == "cancel":
             row.cancellation_requested = True
         elif change == "stop":
@@ -1081,14 +1234,13 @@ def test_landing_release_rechecks_preview_and_execution(
         )
     with Session(database) as db:
         assert controls.landing_held(db.get(FactoryReceipt, 838)) is (
-            change != "no_hold"
+            change == "direction" or (not refresh and change != "no_hold")
         )
-        assert (
+        assert len(
             db.exec(
                 select(FactoryAudit).where(FactoryAudit.action == releases.ACTION)
-            ).first()
-            is None
-        )
+            ).all()
+        ) == int(refresh)
 
 
 def test_late_update_after_receipt_readmission_keeps_original_objective_cost(database):

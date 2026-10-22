@@ -1,7 +1,8 @@
 """Explicit operator release of a staged delivery hold, without accepting delivery.
 
 The preview binds the owned PR head and current receipt state. Application only
-removes that hold, leaving execution, review, CI and rollout gates unchanged.
+removes that hold or refreshes its audited authorization after a head change,
+leaving execution, review, CI and rollout gates unchanged.
 """
 
 import hashlib
@@ -34,6 +35,35 @@ def _pull(receipt_id, pr_number, head_sha):
     return github_get(repo, f"pulls/{pr_number}")
 
 
+def _refreshable(db, row, pr_number, head_sha):
+    """Only refresh a prior audited release for this receipt and the same PR."""
+    direction = json.loads(row.direction_json or "{}")
+    authorization = direction.get("landing_authorization")
+    if (
+        not isinstance(authorization, dict)
+        or authorization.get("pr_number") != pr_number
+        or authorization.get("head_sha") == head_sha
+    ):
+        return False
+    for event in db.exec(
+        select(FactoryAudit).where(
+            FactoryAudit.action == ACTION, FactoryAudit.task_id == row.task_id
+        )
+    ).all():
+        detail = json.loads(event.detail_json)
+        request = detail.get("request", {})
+        if (
+            event.actor == authorization.get("actor")
+            and request.get("receipt_id") == row.id
+            and request.get("pr_number") == pr_number
+            and request.get("head_sha") == authorization.get("head_sha")
+            and request.get("request_key") == authorization.get("request_key")
+            and detail.get("result", {}).get("ok") is True
+        ):
+            return True
+    return False
+
+
 def _preview(db, control, receipt_id, pr_number, head_sha, reason, pull):
     from factory.orchestration import factory_conductor as conductor
     from factory.orchestration.factory_decisions import decision_in_flight
@@ -46,7 +76,10 @@ def _preview(db, control, receipt_id, pr_number, head_sha, reason, pull):
         or row.state not in (*controls._ACTIVE, "landing", "succeeded", "escalated")
         or row.cancellation_requested
         or control.state not in ("enabled", "paused")
-        or not controls.landing_held(row)
+        or (
+            not controls.landing_held(row)
+            and not _refreshable(db, row, pr_number, head_sha)
+        )
     ):
         raise ValueError("landing_release_requires_held_receipt")
     if controls.review_recovery_held(row.task_id, session=db):
@@ -92,6 +125,7 @@ def _preview(db, control, receipt_id, pr_number, head_sha, reason, pull):
     ):
         raise ValueError("landing_release_branch_owned_elsewhere")
     result = {
+        "operation": "release" if controls.landing_held(row) else "refresh",
         "receipt_id": row.id,
         "task_id": row.task_id,
         "repo": row.repo,
@@ -173,7 +207,8 @@ def apply(
             raise ValueError("landing_release_preview_changed")
         row = db.get(FactoryReceipt, receipt_id)
         direction = json.loads(row.direction_json)
-        prior_hold = direction.pop("landing_hold")
+        prior_hold = direction.pop("landing_hold", None)
+        prior_authorization = direction.get("landing_authorization")
         direction["landing_authorization"] = {
             "actor": actor,
             "request_key": request_key,
@@ -189,6 +224,7 @@ def apply(
         control.updated_at = controls._now()
         result = {
             "ok": True,
+            "operation": proposal["operation"],
             "receipt_id": row.id,
             "task_id": row.task_id,
             "version": control.version,
@@ -204,5 +240,6 @@ def apply(
             request=request,
             result=result,
             prior_hold=prior_hold,
+            prior_authorization=prior_authorization,
         )
         return result
