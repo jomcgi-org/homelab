@@ -279,7 +279,7 @@ def ceiling_below_lanes(policy: dict) -> dict | None:
     }
 
 
-def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
+def open_lanes(policy: dict, rows, lanes=LANES, *, in_flight=None) -> dict:
     """Room left per lane, given the receipts already holding slots in them.
 
     The chart owns one ceiling for the whole factory and the policy asks for a
@@ -297,7 +297,9 @@ def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
     """
     from factory.orchestration.factory_controls import execution_slot_holders
 
-    rows = execution_slot_holders(policy, rows, include_queued=True)
+    rows = execution_slot_holders(
+        policy, rows, include_queued=True, in_flight=in_flight
+    )
     wanted = lane_max_tasks(policy)
     held = {lane: 0 for lane in LANES}
     for row in rows:
@@ -460,21 +462,31 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             .where(FactoryReceipt.state.in_(("admitted", "uncertain")))
             .order_by(FactoryReceipt.id)
         ).all()
-        room = open_lanes(policy, active, lanes)
+        # A paused task holds no slot (#7163), but it still owns its issue
+        # and branch, so `active` keeps feeding `busy` below while capacity
+        # and the per-repo holds count only `running`.
+        from factory.orchestration.factory_controls import (
+            holds_execution_slot,
+            in_flight_task_ids,
+        )
+
+        in_flight = in_flight_task_ids(db, active)
+        running = [row for row in active if holds_execution_slot(row, in_flight)]
+        room = open_lanes(policy, active, lanes, in_flight=in_flight)
         available = [lane for lane in lanes if room[lane] > 0]
         if not available:
-            held = [row.task_id for row in active]
+            held = [row.task_id for row in running]
             return {
                 "ok": False,
                 "reason": "wip_limit",
                 "task_id": held[0] if held else None,
                 "active_task_ids": held,
-                "active": len(active),
+                "active": len(running),
                 "limit": sum(limits[lane] for lane in lanes),
                 "lanes": {
                     lane: {
                         "limit": limits[lane] if lane in lanes else 0,
-                        "active": sum(1 for row in active if lane_of(row) == lane),
+                        "active": sum(1 for row in running if lane_of(row) == lane),
                     }
                     for lane in LANES
                 },
@@ -622,7 +634,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             repo_limits = repo_lane_limits(policy, candidate.repo)
             held = sum(
                 1
-                for item in active
+                for item in running
                 if item.repo == candidate.repo and lane_of(item) == tier
             )
             if held >= repo_limits[tier]:

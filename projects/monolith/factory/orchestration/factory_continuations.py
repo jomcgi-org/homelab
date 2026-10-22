@@ -93,7 +93,13 @@ def try_grant(
             from factory.orchestration.factory_intake import open_lanes, lane_of
 
             current = json.loads(control.policy_json)
-            if open_lanes(current, active).get(lane_of(row), 0) < 1:
+            from factory.orchestration.factory_controls import in_flight_task_ids
+
+            in_flight = in_flight_task_ids(db, active)
+            if (
+                open_lanes(current, active, in_flight=in_flight).get(lane_of(row), 0)
+                < 1
+            ):
                 return False, "continuation_waiting"
         elif row.state != "admitted" or row.task_paused:
             return False, "continuation_control_refused"

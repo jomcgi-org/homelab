@@ -54,10 +54,15 @@ def _capacity(db, control, row):
     if any(same_work(other, row) for other in owned):
         raise ValueError("recovery_work_owned_elsewhere")
     active = [other for other in owned if other.state in controls._ACTIVE]
+    # Paused tasks own their work above but hold no slot (#7163).
+    in_flight = controls.in_flight_task_ids(db, active)
+    running = [
+        other for other in active if controls.holds_execution_slot(other, in_flight)
+    ]
     lane = lane_of(row)
     if (
-        open_lanes(policy, active, (lane,))[lane] <= 0
-        or sum(other.repo == row.repo and lane_of(other) == lane for other in active)
+        open_lanes(policy, active, (lane,), in_flight=in_flight)[lane] <= 0
+        or sum(other.repo == row.repo and lane_of(other) == lane for other in running)
         >= controls.repo_lane_limits(policy, row.repo)[lane]
     ):
         raise ValueError("recovery_capacity_unavailable")

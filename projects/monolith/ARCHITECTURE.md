@@ -561,8 +561,12 @@ remain fenced. Infrastructure rollout and outstanding functional acceptance are
 separate from repository merge observation, including externally closed issues.
 
 Execution capacity uses one projection: admitted and uncertain receipts retain
-slots across generations, including pauses; current admission-eligible queues
-reserve intake room; landing receipts retain issue ownership without guest slots.
+slots across generations; current admission-eligible queues reserve intake room;
+landing receipts retain issue ownership without guest slots. A paused admitted
+task is waiting on a person, so it gives its slot back unless a start is still
+reserved or uncertain, while keeping its issue and branch ownership (#7163).
+Resuming it takes a slot again and waits while its lane is full. A landing hold
+alone keeps the slot, because a held task can still be working between nodes.
 The existing operational health loop reports landing or observed-merged active
 work awaiting reconciliation or rollout for over 30 minutes. It does not settle,
 resume or otherwise repair a task as a side effect of health evaluation.

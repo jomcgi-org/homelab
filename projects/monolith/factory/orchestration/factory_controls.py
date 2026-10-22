@@ -1358,27 +1358,105 @@ def admission_eligible(policy: dict, issue_number: int, actor: str) -> bool:
     return actor == INTAKE_ACTOR and bool(intake_policy(policy).get("enabled"))
 
 
+_IN_FLIGHT_STARTS = ("reserved", "uncertain")
+
+
+def _field(row, key):
+    return row.get(key) if isinstance(row, dict) else getattr(row, key, None)
+
+
+def in_flight_task_ids(db: Session, rows) -> set[str]:
+    """Paused tasks among rows that still have a start reserved or uncertain.
+
+    Only paused rows are looked up, because only a pause can release a slot.
+    """
+    ids = {
+        _field(row, "task_id")
+        for row in rows
+        if _field(row, "task_paused") and _field(row, "task_id")
+    }
+    if not ids:
+        return set()
+    return set(
+        db.exec(
+            select(FactoryStart.task_id)
+            .where(
+                FactoryStart.task_id.in_(ids),
+                FactoryStart.status.in_(_IN_FLIGHT_STARTS),
+            )
+            .distinct()
+        ).all()
+    )
+
+
+def holds_execution_slot(row, in_flight=None) -> bool:
+    """Whether an active receipt occupies a lane slot right now.
+
+    A paused task is waiting on a person, so it gives its slot back (#7163):
+    the watchdog, an operator, a recovery hold or a delivered PR awaiting a
+    human merge must not starve intake. It keeps its issue and branch
+    ownership, which callers read from the unfiltered rows. A paused task
+    with a start still reserved or uncertain keeps the slot until that start
+    resolves, since pausing only fences new starts. An uncertain receipt
+    always holds. A landing hold alone does not release the slot: a held task
+    can still be working between nodes.
+
+    in_flight is the set from in_flight_task_ids. A status snapshot carries
+    its own unresolved_starts count instead. A caller that has neither stays
+    conservative and counts the paused task.
+    """
+    state = _field(row, "state")
+    if state not in _ACTIVE:
+        return False
+    if state == "uncertain" or not _field(row, "task_paused"):
+        return True
+    if isinstance(row, dict) and row.get("unresolved_starts") is not None:
+        return bool(row["unresolved_starts"])
+    if in_flight is None:
+        return True
+    return _field(row, "task_id") in in_flight
+
+
 def execution_slot_holders(
-    policy: dict, receipts, *, include_queued: bool = False
+    policy: dict, receipts, *, include_queued: bool = False, in_flight=None
 ) -> list:
     """One capacity projection for status, intake and admission.
 
-    Paused active work retains its slot across generations. Landing retains
-    ownership, but has no guest work. Only admissible current queues reserve
-    future intake room.
+    Running active work holds its slot across generations; paused work gives
+    it back (see holds_execution_slot). Landing retains ownership, but has no
+    guest work. Only admissible current queues reserve future intake room.
     """
 
     def holds(row):
-        get = row.get if isinstance(row, dict) else lambda key: getattr(row, key, None)
-        if get("state") in _ACTIVE:
-            return True
+        if _field(row, "state") in _ACTIVE:
+            return holds_execution_slot(row, in_flight)
         return (
             include_queued
             and is_current_generation_queue(policy, row)
-            and admission_eligible(policy, get("issue_number"), get("actor"))
+            and admission_eligible(
+                policy, _field(row, "issue_number"), _field(row, "actor")
+            )
         )
 
     return [row for row in receipts if holds(row)]
+
+
+def resume_has_room(db: Session, policy: dict, row) -> bool:
+    """Whether resuming this paused task fits its lane (#7163).
+
+    A paused task without an in-flight start holds no slot, so resuming it
+    takes one. Only running active work counts against it here, as in
+    admission; a queued receipt never outranks work already admitted.
+    """
+    from factory.orchestration.factory_intake import lane_of, open_lanes
+
+    active = db.exec(
+        select(FactoryReceipt).where(FactoryReceipt.state.in_(_ACTIVE))
+    ).all()
+    in_flight = in_flight_task_ids(db, active)
+    if holds_execution_slot(row, in_flight):
+        return True
+    return open_lanes(policy, active, in_flight=in_flight).get(lane_of(row), 0) >= 1
 
 
 def lane_usage(policy: dict, receipts: list[dict]) -> dict:
@@ -2934,6 +3012,15 @@ def set_control(
                 reason = "task_not_active"
             elif row.cancellation_requested:
                 reason = "cancellation_pending"
+            elif (
+                action == "resume_task"
+                and row.task_paused
+                and not resume_has_room(db, json.loads(control.policy_json), row)
+            ):
+                # The pause gave its slot back. Resuming into a full lane would
+                # take it over its limit, so the task stays paused until a
+                # slot opens; an automated caller retries on its next tick.
+                reason = "lane_full"
             else:
                 row.task_paused = action == "pause_task"
                 row.updated_at = _now()
@@ -4011,10 +4098,12 @@ def request_landing_recovery(
 
             if any(same_work(r, row) and r.task_id != task_id for r in active):
                 return {"ok": False, "reason": "issue_already_active"}
+            in_flight = in_flight_task_ids(db, active)
             if (
                 sum(
                     (r.routing_tier or lane_for(receipt_task_class(r))) == "delivery"
                     for r in active
+                    if holds_execution_slot(r, in_flight)
                 )
                 >= lane_limits(live_policy)["delivery"]
             ):

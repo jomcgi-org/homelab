@@ -414,9 +414,11 @@ def request(task, reason, *, recover=False):
             ).all()
             if (
                 control.state != "enabled"
-                or open_lanes(json.loads(control.policy_json), active).get(
-                    lane_of(row), 0
-                )
+                or open_lanes(
+                    json.loads(control.policy_json),
+                    active,
+                    in_flight=controls.in_flight_task_ids(db, active),
+                ).get(lane_of(row), 0)
                 < 1
             ):
                 return False

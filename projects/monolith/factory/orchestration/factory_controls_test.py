@@ -550,6 +550,71 @@ def test_pause_admissions_allows_admitted_work_and_task_pause_fences(db, policy)
     assert grant(task)["ok"]
 
 
+def _receive(number):
+    receive_issue(
+        "owner/repo",
+        number,
+        f"issue {number}",
+        "body",
+        f"https://github.com/owner/repo/issues/{number}",
+        "poller",
+    )
+
+
+def test_paused_task_gives_its_slot_back_and_resume_waits_for_room(
+    db, policy, monkeypatch
+):
+    """A task waiting on a person must not hold a delivery slot (#7163)."""
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    first = admitted({**policy, "max_tasks": 1})
+    _receive(2)
+    assert admit_next("scheduler")["reason"] == "wip_limit"
+
+    assert controls.set_control("pause_task", "operator", task_id=first)["ok"]
+    second = admit_next("scheduler")
+    assert second["ok"]
+
+    # Resuming into the full lane would take it over its limit.
+    refused = controls.set_control("resume_task", "operator", task_id=first)
+    assert refused == {**refused, "ok": False, "reason": "lane_full"}
+    assert grant(first)["reason"] == "task_paused"
+
+    assert controls.set_control("pause_task", "operator", task_id=second["task_id"])[
+        "ok"
+    ]
+    assert controls.set_control("resume_task", "operator", task_id=first)["ok"]
+    assert grant(first)["ok"]
+
+
+def test_paused_task_with_a_start_in_flight_keeps_its_slot(db, policy, monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    first = admitted({**policy, "max_tasks": 1})
+    assert grant(first)["ok"]
+    assert controls.set_control("pause_task", "operator", task_id=first)["ok"]
+    _receive(2)
+    assert admit_next("scheduler")["reason"] == "wip_limit"
+    # The pause still holds the slot, so resuming needs no room.
+    assert controls.set_control("resume_task", "operator", task_id=first)["ok"]
+
+
+def test_lane_usage_releases_paused_snapshots_without_unresolved_starts(monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    receipts = [
+        {"state": "admitted", "task_paused": True, "unresolved_starts": 0},
+        {"state": "admitted", "task_paused": True, "unresolved_starts": 1},
+        # A row without the count stays conservative.
+        {"state": "admitted", "task_paused": True},
+        {"state": "uncertain", "task_paused": True, "unresolved_starts": 0},
+        {"state": "admitted", "task_paused": False, "unresolved_starts": 0},
+    ]
+    for row in receipts:
+        row.update(task_class="bug-fix", generation=0)
+    usage = controls.lane_usage(
+        {"issue_numbers": [1], "max_tasks": {"delivery": 5, "advisory": 2}}, receipts
+    )
+    assert usage["delivery"]["active"] == 4
+
+
 def test_stop_cannot_be_reset_and_retains_unconfirmed_descendants(db, policy):
     task = admitted(policy)
     assert grant(task)["ok"]
