@@ -21,5 +21,8 @@ go_test(
         "walks_test.go",
     ],
     embed = [":walks"],
-    deps = ["//projects/scotland-connector/internal/verdict"],
+    deps = [
+        "//projects/scotland-connector/internal/astro",
+        "//projects/scotland-connector/internal/verdict",
+    ],
 )
