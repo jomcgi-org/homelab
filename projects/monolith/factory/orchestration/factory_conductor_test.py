@@ -904,10 +904,9 @@ def test_operator_cancel_paused_task_next_tick_releases_slot_and_keeps_cooldown(
         "reason": "Work is no longer needed",
     }
     assert not current["active_tasks"]
-    assert (
-        current["lanes"]["delivery"]["active"]
-        == before["lanes"]["delivery"]["active"] - 1
-    )
+    # Quiescent paused work already released its execution slot before cancel.
+    assert before["lanes"]["delivery"]["active"] == int(not paused)
+    assert current["lanes"]["delivery"]["active"] == 0
     assert current["state"] == before["state"]
     assert current["policy"] == before["policy"]
     assert s.issue == issue_before and s.pr == pr_before and not s.cards
