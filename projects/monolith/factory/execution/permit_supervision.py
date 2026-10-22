@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-import hashlib
 import json
 import logging
 import os
@@ -35,6 +34,7 @@ from factory.execution.models import (
     PendingMessage,
     ProbeObservation,
 )
+from factory.execution.review_leases import digest
 from core.db import get_engine
 from shared.invocation_outcomes import never_invoked_view, terminal_dispatch_cessation
 from factory.orchestration.factory_models import FactoryStart
@@ -56,12 +56,6 @@ _TERMINAL_SESSION_STATUSES = frozenset({"failed", "warn", "completed", "cancelle
 
 def _now():
     return datetime.now(timezone.utc)
-
-
-def _sha(value):
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, default=str).encode()
-    ).hexdigest()
 
 
 def _reason(audit, reason):
@@ -475,7 +469,7 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         permit_identity["outcome"] = recovered_review_original_outcome(
             db, agent.id, permit.id
         )
-    identity = _sha(
+    identity = digest(
         {
             "permit": permit_identity,
             "session_id": agent.id,
@@ -783,7 +777,7 @@ def _record(candidate, observed, observed_at, node_names=None):
                 "invoke_started_at": observed.get("invoke_started_at"),
                 "updated_at": updated,
                 "observed_at": observed_at.isoformat(),
-                "response_sha256": _sha(observed),
+                "response_sha256": digest(observed),
                 "terminal_state": observed.get("state")
                 if observed.get("state") in {"evicted", "destroyed"}
                 else None,
@@ -1055,7 +1049,7 @@ def _reconcile_routine(db, permit, candidate, observed, observed_at, evidence):
             "observed_at": observed_at.isoformat(),
             "updated_at": observed["updated_at"],
             "last_invoke_at": observed.get("last_invoke_at"),
-            "evidence_sha256": _sha(evidence),
+            "evidence_sha256": digest(evidence),
             **(
                 {"invoke_started_at": observed["invoke_started_at"]}
                 if evidence.get("cessation_evidence")
