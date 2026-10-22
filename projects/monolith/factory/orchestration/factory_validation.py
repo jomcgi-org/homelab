@@ -51,9 +51,9 @@ def locate(
         matches = []
         for row in db.exec(query.order_by(FactoryReceipt.id)).all():
             direction = json.loads(row.direction_json or "{}")
-            identity = {**direction, "id": row.task_id}
-            branch = conductor.delivery_branch(identity) if row.task_id else None
-            granted = conductor.delivery_pr_number(identity)
+            branch, granted = controls.granted_delivery_surface(direction)
+            if branch is None and row.task_id:
+                branch = conductor.task_branch(row.task_id)
             if pull is not None and (
                 branch != pull.get("head", {}).get("ref")
                 or (granted is not None and granted != pr_number)
@@ -128,8 +128,7 @@ def _preview(db, control, receipt_id, reason):
     }
     # Disable other repositories without changing any envelope or generation.
     # Explicit primary landing overrides must not defeat the global fence.
-    proposed["repos"] = json.loads(controls._json(policy.get("repos") or {}))
-    for repo, entry in proposed["repos"].items():
+    for repo, entry in proposed.get("repos", {}).items():
         entry["auto_merge"] = False
         if repo != row.repo:
             entry["paused"] = True

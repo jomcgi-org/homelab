@@ -1978,3 +1978,47 @@ def test_receipt_locator_intersects_exact_identity_and_retains_ambiguity(
     with pytest.raises(ValueError, match="receipt_pr_identity_changed"):
         validation.locate("org/repo", pr_number=7199)
     assert len(stored_receipts(db)) == 2
+
+
+@pytest.mark.parametrize(
+    "prior,adopted", [(False, False), (True, False), (False, True)]
+)
+def test_receipt_locator_resolves_granted_queued_delivery(
+    db, monkeypatch, prior, adopted
+):
+    from factory.orchestration import (
+        factory_validation as validation,
+        factory_conductor,
+    )
+
+    monkeypatch.setattr(validation, "_available_repo", lambda repo: repo)
+    branch = "fix/existing" if adopted else "factory/existing"
+    prefix = "prior" if prior else "delivery"
+    direction = {f"{prefix}_branch": branch, f"{prefix}_pr_number": 7199}
+    if adopted:
+        direction["delivery_adoption"] = True
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                id=7,
+                repo="org/repo",
+                issue_number=6995,
+                title="existing",
+                body="",
+                url="https://example.invalid",
+                actor="operator",
+                state="queued",
+                direction_json=json.dumps(direction),
+            )
+        )
+    pull = {
+        "number": 7199,
+        "head": {"ref": branch, "repo": {"full_name": "org/repo"}},
+        "base": {"repo": {"full_name": "org/repo"}},
+    }
+    monkeypatch.setattr(factory_conductor, "github_get", lambda *a: pull)
+    result = validation.locate("org/repo", pr_number=7199)
+    assert [r["receipt_id"] for r in result["receipts"]] == [7]
+    assert result["receipts"][0]["recorded_pr_number"] == 7199
+    pull["head"]["ref"] = "factory/unrelated"
+    assert not validation.locate("org/repo", pr_number=7199)["receipts"]
