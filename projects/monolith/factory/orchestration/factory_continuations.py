@@ -1,12 +1,12 @@
 """One exact correction/review continuation, without resetting a task's limits."""
 
 from datetime import timedelta
-import hashlib
 import json
 import os
 
 from core.clock import aware
 from factory.orchestration import factory_controls as controls, graph
+from factory.execution.review_leases import digest
 
 ACTOR = "factory:continuation"
 
@@ -17,16 +17,10 @@ def enabled():
     )
 
 
-def _digest(value):
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, default=str).encode()
-    ).hexdigest()
-
-
 def _replay(grant, review_run, edits, cause):
     if grant["cause"] != cause or grant["source_review_id"] != review_run["id"]:
         return False, "continuation_exhausted"
-    if grant.get("edits_sha256") != _digest(edits):
+    if grant.get("edits_sha256") != digest(edits):
         return False, "continuation_changed"
     return True, None
 
@@ -95,7 +89,7 @@ def try_grant(
         runs = graph.node_runs(task["id"], session=db)
         nodes = graph.load_graph(task["id"], session=db)
         latest = conductor._pending_correction(nodes, runs)
-        if latest is None or _digest(latest) != _digest(review_run):
+        if latest is None or digest(latest) != digest(review_run):
             return False, "continuation_changed"
         starts = controls._starts(db, task["id"])
         budget = controls._accounting(starts)
@@ -163,7 +157,7 @@ def try_grant(
             "continuation_granted",
             task_id=task["id"],
             cause=cause,
-            edits_sha256=_digest(edits),
+            edits_sha256=digest(edits),
             original_turn_ceiling=controls.task_turn_ceiling(policy),
             work_turn_ceiling=ceiling,
             starts_before=len(starts),
