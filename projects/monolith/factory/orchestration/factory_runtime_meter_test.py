@@ -1217,13 +1217,21 @@ def released_delivery(database, pull):
     return result
 
 
+@pytest.mark.parametrize("receipt_state", ["admitted", "escalated"])
 def test_landing_authorization_refresh_preserves_state_and_replays(
-    database, held_delivery
+    database, held_delivery, receipt_state, monkeypatch
 ):
     from factory.orchestration import factory_landing_release as releases
 
     pull, original = held_delivery
     released_delivery(database, pull)
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).state = receipt_state
+
+    def no_reacquisition(*args, **kwargs):
+        pytest.fail("authorization refresh must not request execution capacity")
+
+    monkeypatch.setattr(controls, "request_capacity_release", no_reacquisition)
     with Session(database) as db:
         before = json.loads(db.get(FactoryReceipt, 838).direction_json)
     proposal = releases.preview(838, 7170, "a" * 40, "reviewed rebase")
@@ -1241,7 +1249,7 @@ def test_landing_authorization_refresh_preserves_state_and_replays(
     with Session(database) as db:
         row = db.get(FactoryReceipt, 838)
         after = json.loads(row.direction_json)
-        assert row.state == "escalated" and row.task_paused and row.task_id == "task"
+        assert row.state == receipt_state and row.task_paused and row.task_id == "task"
         assert not controls.landing_held(row)
         assert after["landing_authorization"]["head_sha"] == "a" * 40
         assert after["conductor_gates"] == original["conductor_gates"]
