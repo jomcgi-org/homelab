@@ -33,7 +33,7 @@ fetched every two hours. It is not a summit forecast: conditions on high
 ground are usually colder and windier. For hill days also check the Mountain
 Weather Information Service.
 
-A **good hour** is a daylight hour (between sunrise and sunset at the start)
+A **good hour** is a complete daylight hour (starting at or after sunrise and ending by sunset at the walk's start)
 with at most 2 mm of rain and wind at most 80 km/h. 2 mm in an hour is light
 rain, so by default a good hour may be drizzly.
 

@@ -390,3 +390,24 @@ class TestStoredBadHours:
         r = client.get("/api/hikes/walks")
         assert r.json()["generated_at"] != before
         assert r.json()["generated_at"].startswith(later.isoformat()[:16])
+
+
+@pytest.mark.parametrize("duration,doable", [(4, True), (5, True), (5.5, False)])
+def test_doable_day_excludes_partial_sunset_hour(duration, doable):
+    from hikes.forecast import compute_windows
+
+    now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    hourly = [
+        {
+            "time": f"2026-10-22T{hour}:00:00Z",
+            "temp_c": 10,
+            "wind_speed_ms": 0,
+            "precipitation_mm": 0,
+            "cloud_area_fraction": 20,
+        }
+        for hour in range(13, 18)
+    ]
+    windows = compute_windows(hourly, now, 56.82, -5.1)
+    hours = [datetime.fromtimestamp(row[0], timezone.utc) for row in windows]
+    assert len(hours) == 4
+    assert _doable_days(hours, duration) == (["2026-10-22"] if doable else [])

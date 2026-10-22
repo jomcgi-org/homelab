@@ -166,6 +166,12 @@ store keeps serving the last one that parsed. That is in memory only, so a
 connector from before this layout cannot be rolled back to while
 the hikes job writes version 2: its new pods would start with no walks.
 Rolling back below it needs the hikes job back on `SCHEMA_VERSION = 1` first.
+The hikes producer and connector count only complete hours from sunrise through
+sunset, excluding the final fractional hour. The connector applies the same gate
+when loading older snapshots. **Why.** The integer-hour slot format otherwise
+credits time after sunset (#7277). Today's cutoff also cannot push a normal
+walk's finish beyond sunset; the existing explicit dark-shoulder allowance
+remains separate.
 Only a tightening limit makes a day "limited" for the dark-credit rule:
 loosening rules no daylight out.
 `internal/walks` buckets those hours into UK days at load time and applies

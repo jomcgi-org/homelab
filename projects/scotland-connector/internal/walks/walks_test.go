@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 )
 
@@ -368,5 +369,103 @@ func TestLeftTodayFollowsTheCallersHours(t *testing.T) {
 	a := w.Assess(ds.DayWithin(w, LocalDay(base), base.Add(30*time.Minute), Limits{MaxPrecipMM: f(4)}), ds.HourlyUntil)
 	if a.Verdict != verdict.No || !strings.Contains(a.Why, "left today") || !strings.Contains(a.Why, "within the limits") {
 		t.Fatalf("assess = %+v", a)
+	}
+}
+
+// Same whole-hour daylight rule as TestWholeDaylightHours in hikes/forecast_test.py.
+// Both old and complete snapshots must reject a final fractional daylight hour.
+func TestWholeDaylightHoursMatchHikes(t *testing.T) {
+	for _, date := range []string{"2026-10-22", "2026-10-24", "2026-10-25", "2026-10-26", "2026-06-15"} {
+		for _, schema := range []int{1, 2} {
+			for _, duration := range []float64{4, 4.25} {
+				t.Run(fmt.Sprintf("%s/v%d/%.2f", date, schema, duration), func(t *testing.T) {
+					day, _ := time.Parse("2006-01-02", date)
+					rise, set, _ := astro.SunTimes(day, 56.82, -5.1)
+					var rows []string
+					for hour := 0; hour < 24; hour++ {
+						at := day.Add(time.Duration(hour) * time.Hour)
+						if at.Before(rise) || at.After(set) {
+							continue
+						}
+						extra := ""
+						if schema == 2 {
+							extra = ",0,20"
+						}
+						rows = append(rows, fmt.Sprintf("[%d,10,0,10,20%s]", at.Unix(), extra))
+					}
+					ds := mustParse(t, fmt.Sprintf(`{"schema_version":%d,"fetched_at":%q,"walks":[{"id":"cow","name":"Cow Hill","url":"https://www.walkhighlands.co.uk/cow.shtml","lat":56.82,"lon":-5.1,"duration_h":%g,"hours":[%s]}]}`, schema, day.Format(time.RFC3339), duration, strings.Join(rows, ",")))
+					w := &ds.Walks[0]
+					if len(w.Hours) == 0 {
+						t.Fatal("no daylight hours")
+					}
+					for _, h := range w.Hours {
+						at := time.Unix(h.Unix, 0)
+						if at.Before(rise) || at.Add(time.Hour).After(set) {
+							t.Fatalf("non-daylight hour retained: %v", at)
+						}
+					}
+					rain, wind := 4.0, 90.0
+					for _, lim := range []Limits{{}, {MaxPrecipMM: &rain, MaxWindKmh: &wind}} {
+						d := ds.DayWithin(w, LocalDay(day), day, lim)
+						a := w.Assess(d, ds.HourlyUntil)
+						wantEnd := set.Truncate(time.Hour)
+						wantStart := wantEnd.Add(-time.Duration(duration * float64(time.Hour)))
+						if a.Verdict != verdict.Go || !d.Best.End.Equal(wantEnd) || !a.StartBy.Equal(wantStart) {
+							t.Fatalf("day=%+v assessment=%+v want end %v latest %v", d, a, wantEnd, wantStart)
+						}
+						if a.StartBy.Add(time.Duration(duration * float64(time.Hour))).After(set) {
+							t.Fatal("latest start finishes after sunset")
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestTodayCutoffCannotMoveFinishPastDaylightSlot(t *testing.T) {
+	day := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	var rows []string
+	for hour := 8; hour <= 17; hour++ {
+		rows = append(rows, fmt.Sprintf("[%d,10,0,10,20]", day.Add(time.Duration(hour)*time.Hour).Unix()))
+	}
+	for _, c := range []struct {
+		duration     float64
+		hour, minute int
+		want         verdict.Verdict
+	}{
+		{4, 13, 0, verdict.Go}, {4, 13, 1, verdict.No}, {5, 12, 0, verdict.Go}, {5, 13, 0, verdict.No}, {4.25, 12, 0, verdict.Go}, {4.25, 13, 0, verdict.No},
+	} {
+		t.Run(fmt.Sprintf("%.2f/%02d:%02d", c.duration, c.hour, c.minute), func(t *testing.T) {
+			ds := mustParse(t, fmt.Sprintf(`{"schema_version":1,"fetched_at":%q,"walks":[{"id":"cow","name":"Cow Hill","url":"https://www.walkhighlands.co.uk/cow.shtml","lat":56.82,"lon":-5.1,"duration_h":%g,"hours":[%s]}]}`, day.Format(time.RFC3339), c.duration, strings.Join(rows, ",")))
+			w := &ds.Walks[0]
+			now := day.Add(time.Duration(c.hour)*time.Hour + time.Duration(c.minute)*time.Minute)
+			d := ds.DayFor(w, LocalDay(day), now)
+			a := w.Assess(d, ds.HourlyUntil)
+			if a.Verdict != c.want {
+				t.Fatalf("got %+v want %v", a, c.want)
+			}
+			if a.Verdict == verdict.Go && (a.StartBy.Before(now) || a.StartBy.Add(time.Duration(c.duration*float64(time.Hour))).After(d.Best.End)) {
+				t.Fatalf("invalid start window: %+v", a)
+			}
+		})
+	}
+}
+
+func TestDoableMatchesHikesAtFractionalSunset(t *testing.T) {
+	day := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	var rows []string
+	for hour := 13; hour <= 17; hour++ {
+		rows = append(rows, fmt.Sprintf("[%d,10,0,0,20]", day.Add(time.Duration(hour)*time.Hour).Unix()))
+	}
+	for _, c := range []struct {
+		duration float64
+		want     bool
+	}{{4, true}, {5, true}, {5.5, false}} {
+		ds := mustParse(t, fmt.Sprintf(`{"schema_version":1,"fetched_at":%q,"walks":[{"id":"cow","name":"Cow Hill","url":"https://www.walkhighlands.co.uk/cow.shtml","lat":56.82,"lon":-5.1,"duration_h":%g,"hours":[%s]}]}`, day.Format(time.RFC3339), c.duration, strings.Join(rows, ",")))
+		d := ds.DayFor(&ds.Walks[0], LocalDay(day), day)
+		if d.GoodHours != 4 || d.Doable != c.want {
+			t.Fatalf("duration %g: %+v", c.duration, d)
+		}
 	}
 }

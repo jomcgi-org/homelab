@@ -177,10 +177,10 @@ func TestLimitsAndTheDarkShoulder(t *testing.T) {
 	if a := assess(tempWalk(t, 8, gap), base, warm); a.Verdict != verdict.No {
 		t.Fatalf("missing edge hour = %+v", a)
 	}
-	// The slot runs to 22:00Z, past sunset: the credit is spent after it, so
+	// The slot runs to 21:00Z, the last full daylight hour: credit is spent after it, so
 	// the walk starts with the slot.
-	ds = tempWalk(t, 8, temps([2]int{6, 9}, [2]int{10, 14}))
-	slotStart := base.Add(10 * time.Hour)
+	ds = tempWalk(t, 8, temps([2]int{6, 8}, [2]int{9, 14}))
+	slotStart := base.Add(9 * time.Hour)
 	if a := assess(ds, base, warm); a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "in the dark") || !a.StartFrom.Equal(slotStart) || !a.StartBy.Equal(slotStart) {
 		t.Fatalf("dark after = %+v", a)
 	}
