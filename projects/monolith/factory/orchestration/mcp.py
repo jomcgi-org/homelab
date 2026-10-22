@@ -1193,14 +1193,16 @@ async def factory_release_landing_hold(
         str | None, Field(pattern=r"^[0-9a-f]{64}$")
     ] = None,
 ) -> dict:
-    """Preview or release one staged delivery hold as a standing human operator.
+    """Preview a hold release or head refresh as a standing human operator.
 
     Supply the exact receipt, owned PR and current head, with the operator's
     landing authorization as reason. Preview first. Apply requires the same
     arguments, its digest and a fresh request key. Replay the identical request
     after a lost response. Changed receipt, graph, policy or PR evidence requires
     a new preview. Unknown or live execution refuses release.
-    This removes only the recorded landing hold. It does not resume a paused
+    This removes only the recorded landing hold, or refreshes a prior audited
+    release for the same PR after its head changes. The preview identifies which
+    operation applies; both require fresh exact-head authorization. It does not resume a paused
     task, reopen a settled task, accept delivery, grant a review, merge a PR or
     waive CI, rollout or operational checks. Previously merged PRs can be
     acknowledged without inventing their missing review evidence. Restricted

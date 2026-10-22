@@ -2592,7 +2592,12 @@ operation records the superseded hold and operator authorization, then removes
 only `landing_hold`. It preserves pause and settlement state, all accounting,
 the existing graph, independent-review gates and outstanding operational checks.
 An already merged PR can be acknowledged without claiming its review or rollout
-passed. Restricted review-only recovery holds remain fenced.
+passed. After a rebase changes the head, the same preview/apply flow can refresh
+authorization for the same PR only when the receipt has a matching prior release
+audit. The preview identifies release versus refresh, binds the prior direction
+and records the superseded authorization in the next audit. It cannot authorize
+an unheld receipt without that history. Restricted review-only recovery holds
+remain fenced.
 
 **Why an explicit release.** An operator can authorize landing after a task has
 produced its staged PR, but the sticky hold otherwise keeps dequeuing that PR
