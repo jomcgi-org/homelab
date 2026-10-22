@@ -32,7 +32,7 @@ already UTC, so the computed sun times are UTC too and compare directly.
 import asyncio
 import logging
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -67,7 +67,8 @@ def sun_times(
     every hour reads as daylight. Scotland (~56-58 N) never hits either branch;
     they are defensive so the gate degrades sanely anywhere on Earth.
     """
-    day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
+    date = date.astimezone(UTC)
+    day_start = datetime(date.year, date.month, date.day, tzinfo=UTC)
 
     # Julian day count since the J2000.0 epoch (2000-01-01 12:00 UTC), anchored
     # at noon of the target day. unix / 86400 + 2440587.5 is the Julian Date.
@@ -113,25 +114,24 @@ def sun_times(
     sunrise_jd = solar_transit - hour_angle / 360.0
     sunset_jd = solar_transit + hour_angle / 360.0
 
-    sunrise = datetime.fromtimestamp(
-        (sunrise_jd - 2440587.5) * 86400.0, tz=timezone.utc
-    )
-    sunset = datetime.fromtimestamp((sunset_jd - 2440587.5) * 86400.0, tz=timezone.utc)
+    sunrise = datetime.fromtimestamp((sunrise_jd - 2440587.5) * 86400.0, tz=UTC)
+    sunset = datetime.fromtimestamp((sunset_jd - 2440587.5) * 86400.0, tz=UTC)
     return sunrise, sunset
 
 
 def is_daylight(dt: datetime, lat: float, lon: float) -> bool:
-    """True if ``dt`` (UTC) falls between sunrise and sunset at (lat, lon).
+    """True if the entire hour starting at ``dt`` is daylight at (lat, lon).
 
     Replaces the legacy fixed 07:00-19:00 UTC band. An hour counts as daylight
-    when its start instant is within [sunrise, sunset]; polar night is never
-    daylight, polar day always is (see sun_times).
+    when its start is at or after sunrise and its end is at or before sunset.
+    Fractional edge hours are excluded because stored tuples count whole hours.
     """
+    dt = dt.astimezone(UTC)
     times = sun_times(dt, lat, lon)
     if times is None:
         return False
     sunrise, sunset = times
-    return sunrise <= dt <= sunset
+    return sunrise <= dt and dt + timedelta(hours=1) <= sunset
 
 
 async def fetch_forecast(

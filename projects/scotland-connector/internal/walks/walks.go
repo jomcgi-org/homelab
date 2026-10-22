@@ -212,6 +212,14 @@ func Parse(body []byte, version string) (*Dataset, error) {
 				continue
 			}
 			at := time.Unix(int64(*h[0]), 0)
+			// Older snapshots include the partial sunset hour. Keep only
+			// complete daylight hours, matching hikes.forecast.is_daylight.
+			// Preserve the observed forecast horizon before filtering.
+			latest = max(latest, at.Unix())
+			rise, set, ok := astro.SunTimes(at, w.Lat, w.Lon)
+			if !ok || at.Before(rise) || at.Add(time.Hour).After(set) {
+				continue
+			}
 			v := func(i int, missing float32) float32 {
 				if i >= len(h) || h[i] == nil {
 					return missing
@@ -226,7 +234,6 @@ func Parse(body []byte, version string) (*Dataset, error) {
 				TempC: v(1, 0), PrecipMM: v(2, 0), WindKmh: v(3, 0), CloudPct: v(4, 50),
 				FogPct: v(5, nan), LowCloudPct: v(6, nan),
 			})
-			latest = max(latest, at.Unix())
 		}
 		sort.Slice(out.Hours, func(i, j int) bool { return out.Hours[i].Unix < out.Hours[j].Unix })
 		out.good = DefaultTest.filter(out.Hours)
@@ -447,7 +454,7 @@ func (w *Walk) gapFails(d *Day) ([]string, float32) {
 // limits the hikes rule stands: a long walk may borrow two hours at either
 // edge of its slot. Under limits the hours beside the slot are often daylight
 // the person ruled out, so the credit counts only on a side that meets real
-// darkness (the hour beyond the edge starts before sunrise or after sunset):
+// darkness (the hour beyond the edge overlaps sunrise or sunset):
 // with neither, the walk does not fit; with only the far side, it starts
 // with the slot and finishes in the dark.
 func (w *Walk) limitedEdges(d *Day, from time.Time) {
@@ -461,7 +468,7 @@ func (w *Walk) limitedEdges(d *Day, from time.Time) {
 	// Early darkness counts only while some of it is still to come: asked
 	// about today after dawn, the dark before the slot is past.
 	early := d.Best.Start.Add(-time.Hour).Before(rise) && rise.After(from)
-	late := d.Best.End.After(set)
+	late := d.Best.End.Add(time.Hour).After(set)
 	switch {
 	case !early && !late:
 		d.Doable = false
@@ -637,6 +644,15 @@ func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage, lim Limits) Day
 		}
 	}
 	d := w.day(day, good)
+	// The 80% rule can place the start before the good slot, but cannot
+	// borrow elapsed daylight. Keep the weather tolerance, but a walk not
+	// using dark credit must finish by sunset after the cutoff moves it.
+	if d.Doable && float64(d.Best.GoodHours) >= w.required-requirementEpsilon {
+		_, set, ok := astro.SunTimes(time.Unix(int64(day)*86400, 0), w.Lat, w.Lon)
+		if ok && time.Unix(cutoff, 0).Add(time.Duration(w.DurationH*float64(time.Hour))).After(set) {
+			d.Doable = false
+		}
+	}
 	d.All = all
 	d.Test = test
 	d.Started = started

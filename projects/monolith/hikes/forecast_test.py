@@ -8,7 +8,7 @@ divergence: it now follows real sunrise/sunset at the walk's coordinates
 (see TestDaylightGate and TestSunTimes) rather than a fixed 07:00-19:00 band.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from hikes.forecast import (
     HOUR_FIELDS,
@@ -20,7 +20,7 @@ from hikes.forecast import (
     sun_times,
 )
 
-NOW = datetime(2026, 6, 13, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 6, 13, 12, 0, tzinfo=UTC)
 LAT = 56.7969
 LON = -5.0036
 
@@ -86,8 +86,8 @@ class TestDaylightGate:
         assert len(_windows(_entry("2026-06-14T04:00:00Z"))) == 1
 
     def test_late_summer_evening_is_viable(self):
-        # 21:00 UTC (22:00 BST), just before the ~21:14 sunset.
-        assert len(_windows(_entry("2026-06-14T21:00:00Z"))) == 1
+        # 20:00 UTC ends before the ~21:14 sunset.
+        assert len(_windows(_entry("2026-06-14T20:00:00Z"))) == 1
 
     def test_after_sunset_is_not_viable(self):
         # 22:00 UTC, after the sun has set.
@@ -126,7 +126,7 @@ class TestTupleEmission:
         windows = _windows(
             _entry(VIABLE_TIME, temp_c=10.34, wind_ms=4.7, precip=1.44, cloud=87.6)
         )
-        expected_ts = int(datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc).timestamp())
+        expected_ts = int(datetime(2026, 6, 14, 12, 0, tzinfo=UTC).timestamp())
         assert windows == [[expected_ts, 10.3, 1.4, 17, 88]]
 
 
@@ -224,14 +224,14 @@ class TestSunTimes:
 
     def test_polar_night_has_no_daylight(self):
         # Svalbard at the winter solstice: the sun never rises.
-        midwinter = datetime(2026, 12, 21, 12, tzinfo=timezone.utc)
+        midwinter = datetime(2026, 12, 21, 12, tzinfo=UTC)
         assert sun_times(midwinter, 78.0, 16.0) is None
         assert is_daylight(midwinter, 78.0, 16.0) is False
 
     def test_polar_day_is_all_daylight(self):
         # Svalbard at the summer solstice: the sun never sets, so even 02:00
         # UTC reads as daylight.
-        midnight_sun = datetime(2026, 6, 21, 2, tzinfo=timezone.utc)
+        midnight_sun = datetime(2026, 6, 21, 2, tzinfo=UTC)
         assert is_daylight(midnight_sun, 78.0, 16.0) is True
 
 
@@ -304,3 +304,42 @@ class TestCompleteForecast:
         assert not is_viable(0, round(22.3 * 3.6, 2))
         assert is_viable(2.0, 0)
         assert not is_viable(2.1, 0)
+
+
+class TestWholeDaylightHours:
+    def test_fractional_sunset_is_not_a_whole_hour(self):
+        now = datetime(2026, 10, 22, tzinfo=UTC)
+        entries = [_entry(f"2026-10-22T{h:02}:00:00Z") for h in range(13, 19)]
+        hours = compute_hours(entries, now, 56.82, -5.1)
+        windows = compute_windows(entries, now, 56.82, -5.1)
+        assert [h[0] for h in hours] == [h[0] for h in windows]
+        assert len(hours) == 4
+        assert datetime.fromtimestamp(hours[-1][0], UTC).hour == 16
+
+    def test_exact_sunrise_and_sunset_boundaries(self, monkeypatch):
+        rise = datetime(2026, 10, 22, 8, tzinfo=UTC)
+        sunset = rise + timedelta(hours=9)
+        monkeypatch.setattr("hikes.forecast.sun_times", lambda *_: (rise, sunset))
+        assert is_daylight(rise, LAT, LON)
+        assert is_daylight(sunset - timedelta(hours=1), LAT, LON)
+        assert not is_daylight(
+            sunset - timedelta(hours=1) + timedelta(microseconds=1), LAT, LON
+        )
+        assert not is_daylight(sunset, LAT, LON)
+        assert not is_daylight(rise - timedelta(microseconds=1), LAT, LON)
+
+    def test_offset_calendar_boundary_uses_utc_day(self):
+        utc = datetime(2026, 6, 15, 23, 30, tzinfo=UTC)
+        offset = utc.astimezone(timezone(timedelta(hours=2)))
+        assert sun_times(utc, LAT, LON) == sun_times(offset, LAT, LON)
+        assert is_daylight(utc, LAT, LON) == is_daylight(offset, LAT, LON)
+
+    def test_uk_clock_change_preserves_instants(self):
+        from zoneinfo import ZoneInfo
+
+        for day in (24, 25, 26):
+            for hour in range(24):
+                utc = datetime(2026, 10, day, hour, tzinfo=UTC)
+                assert is_daylight(utc, LAT, LON) == is_daylight(
+                    utc.astimezone(ZoneInfo("Europe/London")), LAT, LON
+                )
