@@ -936,13 +936,17 @@ def test_improvement_refinement_success_is_not_useful_delivery(improvements):
                 FactoryAudit(
                     actor="test",
                     action="problem_issue_created",
-                    detail_json=controls._json({"fingerprint": key, "issue_number": 8000}),
+                    detail_json=controls._json(
+                        {"fingerprint": key, "issue_number": 8000}
+                    ),
                 ),
                 FactoryAudit(
                     actor="test",
                     action="owned_pr_merged",
                     task_id="t-1",
-                    detail_json=controls._json({"pr_number": 8001, "head_sha": "b" * 40}),
+                    detail_json=controls._json(
+                        {"pr_number": 8001, "head_sha": "b" * 40}
+                    ),
                 ),
             ]
         )
@@ -957,3 +961,31 @@ def test_improvement_refinement_success_is_not_useful_delivery(improvements):
         service.submit(batch, actor="operator:test")["reason"]
         == "usefulness_review_required"
     )
+
+
+def test_new_important_ready_issue_wins_over_recent_empty_sweep(improvements):
+    service, _engine, _clock, policy, batch, inventory, _quota, writes = improvements
+    inventory.extend(
+        [
+            {
+                "kind": "issue",
+                "number": 7001,
+                "title": "existing bug",
+                "labels": [{"name": "agent-ready"}, {"name": "bug"}],
+                "assignees": [],
+            },
+            {
+                "kind": "issue",
+                "number": 7002,
+                "title": "new critical bug",
+                "labels": [{"name": "agent-ready"}, {"name": "critical"}],
+                "assignees": [],
+            },
+        ]
+    )
+    batch["review_digest"] = service.context()["review_digest"]
+    result = service.submit(batch, actor="operator:test")
+    assert result["reason"] == "existing_ready_work"
+    assert result["ready_issue_numbers"] == [7002, 7001]
+    producer.problem_issues_tick(policy)
+    assert not writes

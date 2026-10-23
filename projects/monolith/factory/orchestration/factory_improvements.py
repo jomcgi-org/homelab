@@ -70,6 +70,7 @@ def _inventory():
                             "labels",
                             "assignees",
                             "updated_at",
+                            "created_at",
                         )
                     },
                 }
@@ -224,12 +225,46 @@ def _history(db):
     return result
 
 
+def _ready_work(inventory, policy):
+    """Conservative fresh screen using intake labels and ordering.
+
+    The earlier sweep supplies dependency/delivery exclusions. A newly ready
+    row must not be hidden by that older sweep, even if a later full intake
+    evaluation would exclude it. False positives only defer discovery.
+    """
+    from factory.orchestration.factory_intake_loop import (
+        RANK_LABELS,
+        _created_rank,
+        _label_names,
+    )
+
+    entry = controls.repo_entry(policy, REPO)
+    include = {label.lower() for label in entry["labels"]}
+    exclude = {label.lower() for label in entry["exclude_labels"]} | {"human"}
+    candidates = []
+    for row in inventory:
+        labels = _label_names(row)
+        if (
+            row.get("kind") != "issue"
+            or row.get("assignees")
+            or labels & exclude
+            or not labels & include
+        ):
+            continue
+        rank = next(
+            (i for i, label in enumerate(RANK_LABELS) if label in labels),
+            len(RANK_LABELS),
+        )
+        candidates.append((rank, _created_rank(row), row["number"]))
+    return [number for _, _, number in sorted(candidates)[:20]]
+
+
 def _snapshot(reviewed, current, history):
     return {
         "repo": REPO,
         "captured_at": controls._now().isoformat(),
         "intake_complete": current["intake_complete"],
-        "ready_issue_numbers": [],
+        "ready_issue_numbers": _ready_work(current["inventory"], current["policy"]),
         "dedup_complete": True,
         "rules_reviewed": True,
         "history_complete": True,
