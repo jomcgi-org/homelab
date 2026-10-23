@@ -433,6 +433,17 @@ js_library(
 
 # Full-layout sheet DOM checks consume the existing invented factory and
 # blog fixtures. Their module guard excludes production loaders and APIs.
+py_test(
+    name = "sheet_comparison_test",
+    srcs = [
+        "factory-preview/sheet_check.py",
+        "factory-preview/sheet_check_test.py",
+    ],
+    imports = ["factory-preview"],
+    main = "factory-preview/sheet_check_test.py",
+    deps = ["@pip//pillow"],
+)
+
 vitest_bin.vitest_test(
     name = "sheet_fixture_dom_test",
     args = [

@@ -12,8 +12,6 @@ import json
 from pathlib import Path
 import threading
 
-from playwright.sync_api import sync_playwright
-
 VIEWS = [
     "blog",
     "blog-empty",
@@ -64,6 +62,8 @@ class QuietHandler(SimpleHTTPRequestHandler):
 
 
 def capture(artifact, output, label, *, acceptance=False):
+    from playwright.sync_api import sync_playwright
+
     output.mkdir(parents=True, exist_ok=True)
     build = json.loads((artifact / "sheet-build.json").read_text())
     assert build["fixture_only"] and build["production_sha"] == label, (label, build)
