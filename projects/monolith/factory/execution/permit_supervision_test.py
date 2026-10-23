@@ -2084,3 +2084,103 @@ def test_dispatch_diagnostics_reject_malformed_metadata(database, usage):
         "dispatch_count": None,
         "last_dispatch_at": None,
     }
+
+
+def test_session_dispatch_diagnostics_without_turn_or_permit(database):
+    from sqlalchemy import event
+    from factory.execution.admission_diagnostics import inspect_session_turn
+
+    now = datetime.now(timezone.utc)
+    with Session(database) as db, db.begin():
+        agent = AgentSession(
+            local_session_id="queued-only",
+            workspace="secret-workspace",
+            branch="private-branch",
+            status="running",
+            ember_session_token="secret-token",
+            system_prompt="secret-system",
+            result_receipt_fence_id="private-fence",
+        )
+        db.add(agent)
+        db.flush()
+        sid = agent.id
+        db.add_all(
+            [
+                PendingMessage(
+                    session_id=sid,
+                    seq=2,
+                    message_text="secret-prompt",
+                    partial_text="secret-result",
+                    capacity_intent_json='{"secret":"intent"}',
+                    capacity_state="waiting",
+                    capacity_started_at=now,
+                    capacity_next_poll_at=now,
+                ),
+                PendingMessage(
+                    session_id=sid,
+                    seq=3,
+                    message_text="other-prompt",
+                    claimed_by_replica="other-owner",
+                    dispatch_count=3,
+                ),
+            ]
+        )
+    statements = []
+
+    def capture(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(database, "before_cursor_execute", capture)
+    try:
+        with Session(database) as db:
+            result = inspect_session_turn(sid, 2, session=db)
+            missing = inspect_session_turn(sid + 100, 2, session=db)
+    finally:
+        event.remove(database, "before_cursor_execute", capture)
+    assert all(s.lstrip().upper().startswith("SELECT") for s in statements)
+    assert result["found"] and result["turn"] is None and result["permits"] == []
+    assert result["pending"]["seq"] == 2
+    assert result["pending"]["dispatch_count"] == 0
+    assert result["pending"]["claimed_by_replica"] is None
+    assert result["pending"]["capacity_state"] == "waiting"
+    assert result["session"]["result_receipt_fenced"]
+    assert result["recovery_authorized"] is False
+    encoded = json.dumps(result)
+    for forbidden in ("secret", "private-", "other-owner", "other-prompt"):
+        assert forbidden not in encoded
+    for forbidden in (
+        "message_text",
+        "partial_text",
+        "system_prompt",
+        "capacity_intent_json",
+        "ember_session_token",
+    ):
+        assert not any(forbidden in s for s in statements)
+    assert missing["found"] is False and missing["pending"] is None
+
+
+def test_session_dispatch_diagnostics_links_exact_permit(database):
+    from factory.execution.admission_diagnostics import inspect_session_turn
+
+    pid = seed(database, tier="interactive")
+    with Session(database) as db:
+        permit = db.get(AgentCapacityReservation, pid)
+        result = inspect_session_turn(permit.session_id, permit.pending_seq, session=db)
+        other = inspect_session_turn(
+            permit.session_id, permit.pending_seq + 1, session=db
+        )
+    assert [p["permit_id"] for p in result["permits"]] == [pid]
+    assert result["permits"][0]["session"]["ember_session_id"] == "guest-one"
+    assert result["turn"] is not None
+    assert other["permits"] == [] and other["turn"] is None
+    assert "never-export-this-token" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "sid,seq", [(True, 1), (1, False), (0, 1), (1, -1), ("1", 1), (1, 2**63)]
+)
+def test_session_dispatch_diagnostics_reject_invalid_identity(sid, seq):
+    from factory.execution.admission_diagnostics import inspect_session_turn
+
+    with pytest.raises(ValueError):
+        inspect_session_turn(sid, seq)

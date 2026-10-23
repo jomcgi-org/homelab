@@ -279,3 +279,68 @@ def find_routine_permits(job_name, *, offset=0, limit=20, session=None):
             "recovery_authorized": False,
         }
     )
+
+
+def inspect_session_turn(session_id, seq, *, session=None):
+    """Inspect one persisted dispatch identity, including pre-permit queues."""
+    if any(type(v) is not int or not 1 <= v <= 2**63 - 1 for v in (session_id, seq)):
+        raise ValueError("Supply positive session ID and turn sequence")
+    if session is None:
+        with Session(get_engine(), autoflush=False) as db:
+            return inspect_session_turn(session_id, seq, session=db)
+    db = session
+    params = {"id": session_id, "seq": seq}
+    agents = _rows(
+        db,
+        """
+        SELECT id, status, admission_tier, workflow_id, ember_session_id,
+               created_at, last_turn_at,
+               result_receipt_fence_id IS NOT NULL AS result_receipt_fenced,
+               guest_cleanup_id IS NOT NULL AS cleanup_pending
+        FROM agent_sessions.agent_sessions WHERE id=:id
+    """,
+        params,
+    )
+    pending = _rows(
+        db,
+        """
+        SELECT id, seq, created_at, claimed_by_replica, claimed_at,
+               dispatch_count, last_dispatch_at, capacity_state,
+               capacity_started_at, capacity_next_poll_at
+        FROM agent_sessions.pending_messages WHERE session_id=:id AND seq=:seq
+    """,
+        params,
+    )
+    turns = _rows(
+        db,
+        """
+        SELECT seq, terminal_reason, stop_reason, created_at
+        FROM agent_sessions.agent_turns WHERE session_id=:id AND seq=:seq
+    """,
+        params,
+    )
+    permits = _rows(
+        db,
+        """
+        SELECT id FROM agent_sessions.capacity_reservations
+        WHERE session_id=:id AND pending_seq=:seq ORDER BY id DESC LIMIT 21
+    """,
+        params,
+    )
+    ids = [row["id"] for row in permits[:20]]
+    details = inspect_permits(ids, session=db) if ids else {"items": []}
+    return _safe(
+        {
+            "observed_at": datetime.now(timezone.utc),
+            "session_id": session_id,
+            "seq": seq,
+            "found": bool(agents),
+            "session": next(iter(agents), None),
+            "pending": next(iter(pending), None),
+            "turn": next(iter(turns), None),
+            "permits": details["items"],
+            "permits_truncated": len(permits) > 20,
+            "coverage": "Persisted metadata only. Reads can race with dispatch. Missing records do not prove non-dispatch or cessation. No guest contacted.",
+            "recovery_authorized": False,
+        }
+    )

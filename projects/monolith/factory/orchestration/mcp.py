@@ -1586,3 +1586,23 @@ async def factory_apply_issue_admission(
         expected_preview_sha256=expected_preview_sha256,
         request_key=request_key,
     )
+
+
+@mcp.tool
+async def factory_session_dispatch_diagnostics(
+    session_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    seq: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+) -> dict:
+    """Read exact session-turn queue and dispatch metadata as a human operator.
+
+    Covers pending messages before a turn or permit exists. Returns bounded
+    claim, capacity, fence and linked permit metadata without prompts, results
+    or credentials. Does not contact guests, retry, reconcile or change state.
+    Missing records and old observations never authorize retry or recovery.
+    """
+    refusal = _refuse(current_principal())
+    if refusal is not None:
+        return refusal
+    from factory.execution.admission_diagnostics import inspect_session_turn
+
+    return await asyncio.to_thread(inspect_session_turn, session_id, seq)
