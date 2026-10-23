@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import "$lib/private/dashboard-theme.css";
+  import FactorySheet from "../FactorySheet.svelte";
   import { relativeTime } from "../execution/run-history.js";
   import {
     EFFECT_WORD,
@@ -25,11 +25,6 @@
   let { data } = $props();
 
   const POLL_MS = 20000;
-
-  let dark = $state(
-    typeof window !== "undefined" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches,
-  );
 
   // svelte-ignore state_referenced_locally
   let escalations = $state(data.escalations ?? []);
@@ -308,16 +303,11 @@
   }
 
   onMount(() => {
-    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => (dark = scheme.matches);
-    apply();
-    scheme.addEventListener("change", apply);
     const timer = setInterval(() => {
       if (document.visibilityState === "visible" && !busy) refresh();
     }, POLL_MS);
     const tick = setInterval(() => (now = Date.now()), 30000);
     return () => {
-      scheme.removeEventListener("change", apply);
       clearInterval(timer);
       clearInterval(tick);
     };
@@ -330,285 +320,223 @@
 
 <svelte:window on:keydown={onKey} />
 
-<main class="escalations-page shell {dark ? 'night' : 'day'}">
-  <div class="frame">
-    <h1 class="sr-only">Factory escalations</h1>
+<FactorySheet className="escalations-page" view="escalations">
+  <h1 class="sr-only">Factory escalations</h1>
 
-    <header class="masthead">
-      <nav class="view-tabs" aria-label="Factory views">
-        <a class="here" href="/factory/escalations" aria-current="page"
-          >escalations</a
-        >
-        <a href="/factory">factory</a>
-        <a href="/factory/execution">work</a>
-        <a href="/factory/execution/drain">knowledge extraction queue</a>
-      </nav>
-    </header>
+  <section class="stats edition" aria-label="Escalation state">
+    <div>
+      <span class="k">open</span>
+      <span class="v num">{pending.length}</span>
+    </div>
+    <div>
+      <span class="k">decided</span>
+      <span class="v num">{settled.length}</span>
+    </div>
+    <div>
+      <span class="k">keys</span>
+      <span class="v keys">j k e 1-4 c x d esc</span>
+    </div>
+  </section>
 
-    <section class="stats" aria-label="Escalation state">
-      <div>
-        <span class="k">open</span>
-        <span class="v num">{pending.length}</span>
-      </div>
-      <div>
-        <span class="k">decided</span>
-        <span class="v num">{settled.length}</span>
-      </div>
-      <div>
-        <span class="k">keys</span>
-        <span class="v keys">j k e 1-4 c x d esc</span>
-      </div>
-    </section>
+  {#if unavailable}
+    <p class="warn-line">
+      The board is unavailable. Retrying every 20 seconds.
+    </p>
+  {/if}
+  {#if failure}
+    <p class="warn-line" role="alert">{failure}</p>
+  {/if}
+  {#if notice}
+    <p class="warn-line" role="status">{notice}</p>
+  {/if}
 
-    {#if unavailable}
-      <p class="warn-line">
-        The board is unavailable. Retrying every 20 seconds.
-      </p>
+  <section aria-label="Open escalations" aria-busy={busy !== null}>
+    <p class="sec-label">/ Waiting on you</p>
+    {#if !pending.length}
+      <p class="none">Nothing is waiting. The lane decides the rest itself.</p>
     {/if}
-    {#if failure}
-      <p class="warn-line" role="alert">{failure}</p>
-    {/if}
-    {#if notice}
-      <p class="warn-line" role="status">{notice}</p>
-    {/if}
+    {#each pending as item, index (item.receipt_id)}
+      <article class="panel edition" class:here={index === cursor}>
+        <header class="panel-head ed-head">
+          <span class="issue code">#{item.issue_number}</span>
+          {#if item.work_item_id}
+            <a
+              href="/factory/work-items/{item.work_item_id}"
+              class="work-item code"
+            >
+              work item {item.work_item_id}
+            </a>
+          {/if}
+          <span class="title">{item.title}</span>
+          <span class="badge">{item.task_class}</span>
+          <span class="badge">recommend {item.recommendation}</span>
+          {#if item.kind === "delivery"}
+            <span class="badge">left the lane</span>
+          {/if}
+          {#if item.briefing}
+            <span class="badge briefing">briefing</span>
+          {/if}
+        </header>
 
-    <section aria-label="Open escalations">
-      <p class="sec-label">/ Waiting on you</p>
-      {#if !pending.length}
-        <p class="none">
-          Nothing is waiting. The lane decides the rest itself.
-        </p>
-      {/if}
-      {#each pending as item, index (item.receipt_id)}
-        <article class="panel" class:here={index === cursor}>
-          <header class="panel-head">
-            <span class="issue code">#{item.issue_number}</span>
-            {#if item.work_item_id}
-              <a
-                href="/factory/work-items/{item.work_item_id}"
-                class="work-item code"
-              >
-                work item {item.work_item_id}
-              </a>
-            {/if}
-            <span class="title">{item.title}</span>
-            <span class="badge">{item.task_class}</span>
-            <span class="badge">recommend {item.recommendation}</span>
-            {#if item.kind === "delivery"}
-              <span class="badge">left the lane</span>
-            {/if}
-            {#if item.briefing}
-              <span class="badge briefing">briefing</span>
-            {/if}
-          </header>
-
-          <div class="body">
-            {#if item.summary}
-              <p class="outcome">{item.summary}</p>
-            {/if}
-            <p class="question">{item.question}</p>
-            {#each item.chat as asked, i (i)}
-              <p class="asked code">
-                asked {relativeTime(asked.asked_at, now)}: {asked.note}
-                {#if asked.requeued === false}
-                  <span class="unqueued"
-                    >no brief queued: {asked.blocked_by ??
-                      "the lane would not admit it"}</span
-                  >
-                {/if}
-              </p>
-            {/each}
-
-            {#if index === cursor || contexts[contextKey(item)]}
-              {@const context = contexts[contextKey(item)]}
-              {@const error = contextErrors[contextKey(item)]}
-              <section class="context" aria-label="context">
-                {#if context?.rows}
-                  {#each context.rows as row (row.key)}
-                    <details class="ctx-row" open={!!expanded[item.receipt_id]}>
-                      <summary><span class="ctx-line">{row.line}</span></summary
-                      >
-                      <dl>
-                        {#each row.evidence as entry, index (entry.label + ":" + entry.value + ":" + index)}
-                          <dt>{entry.label}</dt>
-                          {#if entry.href}
-                            <dd><a href={entry.href}>{entry.value}</a></dd>
-                          {:else}
-                            <dd>{entry.value}</dd>
-                          {/if}
-                        {/each}
-                      </dl>
-                    </details>
-                  {/each}
-                {:else if error}
-                  <p class="context-state">context unavailable</p>
-                {:else}
-                  <p class="context-state">context loading</p>
-                {/if}
-              </section>
-            {/if}
-
-            <div class="options">
-              {#each item.options as option, i (option.key)}
-                <button
-                  class="option"
-                  class:primary={i === 0}
-                  disabled={busy !== null || item.briefing}
-                  onclick={() => decide(item, option)}
+        <div class="body ed-body">
+          {#if item.summary}
+            <p class="outcome">{item.summary}</p>
+          {/if}
+          <p class="question">{item.question}</p>
+          {#each item.chat as asked, i (i)}
+            <p class="asked code">
+              asked {relativeTime(asked.asked_at, now)}: {asked.note}
+              {#if asked.requeued === false}
+                <span class="unqueued"
+                  >no brief queued: {asked.blocked_by ??
+                    "the lane would not admit it"}</span
                 >
-                  <span class="hotkey code">{HOTKEYS[i] ?? ""}</span>
-                  <span class="label">{option.label}</span>
-                  <span class="effect code"
-                    >{EFFECT_WORD[option.effect] ?? option.effect} ·
-                    {effectLine(option, item.kind)}</span
+              {/if}
+            </p>
+          {/each}
+
+          {#if index === cursor || contexts[contextKey(item)]}
+            {@const context = contexts[contextKey(item)]}
+            {@const error = contextErrors[contextKey(item)]}
+            <section class="context" aria-label="context">
+              {#if context?.rows}
+                {#each context.rows as row (row.key)}
+                  <details class="ctx-row" open={!!expanded[item.receipt_id]}>
+                    <summary><span class="ctx-line">{row.line}</span></summary>
+                    <dl>
+                      {#each row.evidence as entry, index (entry.label + ":" + entry.value + ":" + index)}
+                        <dt>{entry.label}</dt>
+                        {#if entry.href}
+                          <dd><a href={entry.href}>{entry.value}</a></dd>
+                        {:else}
+                          <dd>{entry.value}</dd>
+                        {/if}
+                      {/each}
+                    </dl>
+                  </details>
+                {/each}
+              {:else if error}
+                <p class="context-state">context unavailable</p>
+              {:else}
+                <p class="context-state">context loading</p>
+              {/if}
+            </section>
+          {/if}
+
+          <div class="options">
+            {#each item.options as option, i (option.key)}
+              <button
+                class="option"
+                class:primary={i === 0}
+                disabled={busy !== null || item.briefing}
+                onclick={() => decide(item, option)}
+              >
+                <span class="hotkey code">{HOTKEYS[i] ?? ""}</span>
+                <span class="label">{option.label}</span>
+                <span class="effect code"
+                  >{EFFECT_WORD[option.effect] ?? option.effect} ·
+                  {effectLine(option, item.kind)}</span
+                >
+              </button>
+            {/each}
+          </div>
+
+          {#if item.escape?.length}
+            <div class="escapes">
+              <span class="escapes-label code">escape</span>
+              {#each item.escape as way (way.key)}
+                <button
+                  class="escape-btn"
+                  class:armed={armed(item, way)}
+                  disabled={busy !== null || item.briefing}
+                  onclick={() => escapeWith(item, way)}
+                >
+                  <span class="hotkey code">{escapeHotkey(way)}</span>
+                  <span class="label"
+                    >{armed(item, way) ? "Confirm close" : way.label}</span
                   >
+                  <span class="effect code">{effectLine(way, item.kind)}</span>
                 </button>
               {/each}
             </div>
-
-            {#if item.escape?.length}
-              <div class="escapes">
-                <span class="escapes-label code">escape</span>
-                {#each item.escape as way (way.key)}
-                  <button
-                    class="escape-btn"
-                    class:armed={armed(item, way)}
-                    disabled={busy !== null || item.briefing}
-                    onclick={() => escapeWith(item, way)}
-                  >
-                    <span class="hotkey code">{escapeHotkey(way)}</span>
-                    <span class="label"
-                      >{armed(item, way) ? "Confirm close" : way.label}</span
-                    >
-                    <span class="effect code">{effectLine(way, item.kind)}</span
-                    >
-                  </button>
-                {/each}
-              </div>
-              {#if confirming === item.receipt_id}
-                <p class="confirm code" role="status">{confirmLine(item)}</p>
-              {/if}
+            {#if confirming === item.receipt_id}
+              <p class="confirm code" role="status">{confirmLine(item)}</p>
             {/if}
+          {/if}
 
-            {#if index === cursor}
-              <div class="chat">
-                <label class="sr-only" for={`note-${item.receipt_id}`}>
-                  Note for issue {item.issue_number}
-                </label>
-                <textarea
-                  id={`note-${item.receipt_id}`}
-                  bind:this={noteBox}
-                  value={noteFor(item)}
-                  oninput={(event) => setNote(item, event.target.value)}
-                  rows="2"
-                  placeholder="What is missing, or a note to record with the decision"
-                ></textarea>
-                <button
-                  class="option chat-button"
-                  disabled={busy !== null}
-                  onclick={() => chat(item)}
+          {#if index === cursor}
+            <div class="chat">
+              <label class="sr-only" for={`note-${item.receipt_id}`}>
+                Note for issue {item.issue_number}
+              </label>
+              <textarea
+                id={`note-${item.receipt_id}`}
+                bind:this={noteBox}
+                value={noteFor(item)}
+                oninput={(event) => setNote(item, event.target.value)}
+                rows="2"
+                placeholder="What is missing, or a note to record with the decision"
+              ></textarea>
+              <button
+                class="option chat-button"
+                disabled={busy !== null}
+                onclick={() => chat(item)}
+              >
+                <span class="hotkey code">c</span>
+                <span class="label">Needs more chat</span>
+                <span class="effect code"
+                  >asks on the issue and re-briefs it</span
                 >
-                  <span class="hotkey code">c</span>
-                  <span class="label">Needs more chat</span>
-                  <span class="effect code"
-                    >asks on the issue and re-briefs it</span
-                  >
-                </button>
-              </div>
+              </button>
+            </div>
+          {/if}
+
+          <p class="links code">
+            <a href={item.url}>issue on GitHub</a>
+            {#if item.comment_url}
+              <a href={item.comment_url}
+                >{item.kind === "delivery"
+                  ? "the decision card"
+                  : "the brief"}</a
+              >
             {/if}
+            {#if item.pr_url}
+              <a href={item.pr_url}>the pull request</a>
+            {/if}
+            {#if item.branch}
+              <span>branch {item.branch}</span>
+            {/if}
+            {#if item.downgraded}
+              <span class="badge">close refused, escalated</span>
+            {/if}
+          </p>
+        </div>
+      </article>
+    {/each}
+  </section>
 
-            <p class="links code">
-              <a href={item.url}>issue on GitHub</a>
-              {#if item.comment_url}
-                <a href={item.comment_url}
-                  >{item.kind === "delivery"
-                    ? "the decision card"
-                    : "the brief"}</a
-                >
-              {/if}
-              {#if item.pr_url}
-                <a href={item.pr_url}>the pull request</a>
-              {/if}
-              {#if item.branch}
-                <span>branch {item.branch}</span>
-              {/if}
-              {#if item.downgraded}
-                <span class="badge">close refused, escalated</span>
-              {/if}
-            </p>
-          </div>
-        </article>
-      {/each}
+  {#if settled.length}
+    <section aria-label="Decided escalations">
+      <details>
+        <summary class="sec-label">/ Decided ({settled.length})</summary>
+        <ol class="ledger code">
+          {#each settled as item (item.receipt_id)}
+            <li>
+              <a href={item.url}>#{item.issue_number}</a>
+              <span class="clip">{item.title}</span>
+              <span>{resolutionLine(item)}</span>
+              <span>{relativeTime(item.resolved?.decided_at, now)}</span>
+            </li>
+          {/each}
+        </ol>
+      </details>
     </section>
-
-    {#if settled.length}
-      <section aria-label="Decided escalations">
-        <details>
-          <summary class="sec-label">/ Decided ({settled.length})</summary>
-          <ol class="ledger code">
-            {#each settled as item (item.receipt_id)}
-              <li>
-                <a href={item.url}>#{item.issue_number}</a>
-                <span class="clip">{item.title}</span>
-                <span>{resolutionLine(item)}</span>
-                <span>{relativeTime(item.resolved?.decided_at, now)}</span>
-              </li>
-            {/each}
-          </ol>
-        </details>
-      </section>
-    {/if}
-  </div>
-</main>
+  {/if}
+</FactorySheet>
 
 <style>
-  :global(body) {
-    margin: 0;
-  }
-
-  /* One bright sheet with a fixed root basis, the same pairing the factory
-     board and the updates page use. */
-  :global(html:has(.escalations-page)) {
-    background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
-    font-size: 16px;
-  }
-  @media (prefers-color-scheme: dark) {
-    :global(html:has(.escalations-page)) {
-      background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
-    }
-  }
-
-  .escalations-page {
-    --band: color-mix(in srgb, var(--ink) 5%, var(--sheet));
-    --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
-    --stroke: color-mix(in srgb, var(--ink) 28%, transparent);
-    min-height: 100vh;
-    box-sizing: border-box;
-    padding: clamp(3.25rem, 5vh, 3.75rem) clamp(1rem, 4vw, 4.5em) 6em;
-    color: var(--ink);
-    background: var(--sheet);
-    font-family: var(--font-ui);
-    font-size: 16px;
-    line-height: 1.45;
-  }
-  .frame {
-    max-width: 56em;
-    margin: 0 auto;
-  }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
   .code {
     font-family: var(--font-code);
-  }
-  .num {
-    font-variant-numeric: tabular-nums;
   }
   a {
     color: var(--accent-ink);
@@ -618,40 +546,6 @@
   textarea:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: 3px;
-  }
-
-  .masthead {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    margin-bottom: 1rem;
-  }
-  .view-tabs {
-    display: flex;
-    flex-wrap: wrap;
-    border: 1px solid var(--stroke);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-    letter-spacing: 0.04em;
-  }
-  .view-tabs > a {
-    display: inline-flex;
-    align-items: center;
-    min-height: 2.75rem;
-    padding: 0 0.9em;
-    border-bottom: 2px solid transparent;
-    color: var(--ink-2);
-    text-decoration: none;
-  }
-  .view-tabs > a + a {
-    border-left: 1px solid var(--stroke);
-  }
-  .view-tabs a:hover {
-    color: var(--ink);
-  }
-  .view-tabs .here {
-    border-bottom-color: var(--accent-ink);
-    color: var(--accent-ink);
   }
 
   .stats {
@@ -678,13 +572,11 @@
   .stats .v {
     display: block;
     margin-top: 0.3em;
-    overflow: hidden;
     font-size: 1.25rem;
     font-weight: 700;
     letter-spacing: -0.02em;
     line-height: 1.1;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
   .stats .v.keys {
     font-family: var(--font-code);
@@ -702,17 +594,6 @@
   section {
     margin-top: 2.25rem;
   }
-  .sec-label {
-    margin: 0 0 0.8em;
-    padding-bottom: 0.5em;
-    border-bottom: 1px solid var(--stroke);
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.68rem;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
   summary.sec-label {
     cursor: pointer;
   }
@@ -723,23 +604,22 @@
   }
 
   .panel {
+    position: relative;
     margin-bottom: 0.9rem;
-    border: 1px solid var(--ink);
   }
   /* The cursor marker, the tier's 2px left bar on a vertical list. Drawn
      inside the border so the panel does not shift as it moves. */
-  .panel.here {
-    box-shadow: inset 3px 0 0 0 var(--accent-ink);
+  .panel.here::before {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    border-left: 2px solid var(--accent-ink);
+    pointer-events: none;
+    content: "";
   }
   .panel-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.4rem 0.8rem;
     min-height: 2.75rem;
-    padding: 0.55rem 0.8rem;
-    border-bottom: 1px solid var(--stroke);
-    background: var(--band);
   }
   .issue {
     color: var(--ink-2);
@@ -910,7 +790,7 @@
   }
   .escape-btn {
     display: inline-grid;
-    grid-template-columns: 1.4rem minmax(0, 1fr);
+    grid-template-columns: minmax(max-content, 1.4rem) minmax(0, 1fr);
     gap: 0.1rem 0.5rem;
     align-items: center;
     min-height: 2.75rem;
@@ -940,6 +820,7 @@
     align-self: center;
     font-size: 0.78rem;
     text-align: center;
+    white-space: nowrap;
   }
   .escape-btn .label {
     color: inherit;

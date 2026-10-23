@@ -8,6 +8,8 @@ import importlib.metadata
 import itertools
 import json
 import re
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -670,3 +672,20 @@ if __name__ == "__main__":
     parser.add_argument("--expected-sha", required=True)
     args = parser.parse_args()
     check(args.artifact.resolve(), args.output.resolve(), args.expected_sha)
+    # The existing read-only Linux workflow invokes this entry point and
+    # uploads the entire evidence directory. Keep the public checks and
+    # module guard intact; the private routes use a separate build and server.
+    subprocess.run(
+        [
+            sys.executable,
+            str(
+                Path(__file__).resolve().parent.parent
+                / "private-factory-preview/ci_check.py"
+            ),
+            "--output",
+            str(args.output.resolve() / "private"),
+            "--expected-sha",
+            args.expected_sha,
+        ],
+        check=True,
+    )

@@ -136,10 +136,14 @@ function acceptingFetch() {
  * flight and reads the DOM from before the update.
  */
 async function settle() {
-  for (let i = 0; i < 4; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await tick();
-  }
+  await tick();
+  // SHA-256 request keys use native crypto. Four timer ticks can finish
+  // before that work on a loaded Linux runner and leak a POST into the next
+  // test. Wait for the actual action boundary, including its refresh.
+  await vi.waitFor(() => {
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+  await tick();
 }
 
 function renderPage(data) {
@@ -161,6 +165,64 @@ afterEach(() => {
 });
 
 describe("escalations page", () => {
+  test("reuses the request key after a transport failure on the sheet", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("lost response"))
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({ escalations: [escalation()] }),
+      });
+    stubFetch(fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+    expect(
+      target.querySelector("main.td.sheet.escalations-page"),
+    ).not.toBeNull();
+    expect(target.querySelectorAll(".scheme")).toHaveLength(1);
+    target.querySelector(".option").click();
+    await settle();
+    expect(target.querySelector('[role="alert"]').textContent).toContain(
+      "could not be sent",
+    );
+    target.querySelector(".option").click();
+    await settle();
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).request_key).toBe(
+      JSON.parse(fetchMock.mock.calls[1][1].body).request_key,
+    );
+  });
+
+  test("poll reordering keeps an armed confirmation pinned to its receipt", async () => {
+    vi.useFakeTimers();
+    const first = escalation(),
+      second = escalation({ receipt_id: 4, issue_number: 6003 });
+    const fetchMock = vi.fn(async (url, init) => ({
+      ok: true,
+      json: async () =>
+        init?.method === "POST"
+          ? { ok: true }
+          : { escalations: [second, first] },
+    }));
+    stubFetch(fetchMock);
+    const target = renderPage({ escalations: [first, second], error: false });
+    await tick();
+    target.querySelector(".escape-btn").click();
+    await tick();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(
+      target.querySelectorAll(".panel")[1].querySelector(".confirm"),
+    ).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
+    // Native digest completion cannot be advanced by the fake clock.
+    vi.useRealTimers();
+    await settle();
+    const posts = fetchMock.mock.calls.filter(
+      ([, init]) => init?.method === "POST",
+    );
+    expect(posts).toHaveLength(1);
+    expect(posts[0][0]).toBe("/factory/escalations/decisions/3");
+    expect(JSON.parse(posts[0][1].body).decision_id).toBe(first.decision_id);
+  });
+
   test("renders a delivery escalation beside a refine one", () => {
     // A paused delivery planner leaves the lane as a card on this page. It
     // carries a branch and usually a pull request, which a refine escalation

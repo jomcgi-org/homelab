@@ -158,6 +158,36 @@ afterEach(() => {
 });
 
 describe("factory board page", () => {
+  test("keeps the empty sheet, visibility gate and timer cleanup", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => board(),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({
+      board: board({ active: [], queued: [], recent: [] }),
+      task: null,
+    });
+    await tick();
+    expect(target.textContent).toContain("Nothing in flight.");
+    expect(target.textContent).toContain("Queue is empty.");
+    expect(target.textContent).toContain("No finished tasks yet.");
+    const visibility = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(fetchMock).not.toHaveBeenCalled();
+    visibility.mockReturnValue("visible");
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await unmount(mounted.pop().component);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    target.remove();
+    visibility.mockRestore();
+  });
+
   test("polls the canonical factory board endpoint", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async () => ({
@@ -173,6 +203,11 @@ describe("factory board page", () => {
 
   test("renders the state strip, the three sections, and the plan", () => {
     const target = renderPage({ board: board(), task: null, error: false });
+
+    expect(target.querySelector("main.td.sheet.factory-page")).not.toBeNull();
+    expect(target.querySelectorAll(".scheme")).toHaveLength(1);
+    expect(target.querySelectorAll(".edition.panel")).toHaveLength(3);
+    expect(target.querySelector(".shell")).toBeNull();
 
     const stats = target.querySelector(".stats");
     expect(stats.textContent).toContain("enabled");

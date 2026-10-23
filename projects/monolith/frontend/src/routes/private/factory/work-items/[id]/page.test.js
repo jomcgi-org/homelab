@@ -86,6 +86,13 @@ describe("work item page", () => {
   test("renders identity, all edge directions, receipts, and the add control", () => {
     const target = renderPage({ itemId: "100001", document: fixture() });
 
+    expect(target.querySelector("main.td.sheet.work-item-page")).not.toBeNull();
+    expect(target.querySelectorAll(".scheme")).toHaveLength(1);
+    expect(target.querySelector(".item-meta.divided")).not.toBeNull();
+    expect(target.querySelector(".submit-btn").dataset.variant).toBe(
+      "secondary",
+    );
+
     expect(target.querySelector(".item-id").textContent).toContain("100001");
     expect(target.querySelector(".issue-link").getAttribute("href")).toBe(
       "https://github.com/owner/repo/issues/6257",
