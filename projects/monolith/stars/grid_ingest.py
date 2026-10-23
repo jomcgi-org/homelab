@@ -61,11 +61,20 @@ def _replace_rows(rows: list[Site], *, engine=None) -> int:
             if site is None:
                 new_rows.append(row)
                 continue
-            for name in ("name", "lat", "lon", "altitude_m", "lp_zone", "source", "updated_at"):
+            for name in (
+                "name",
+                "lat",
+                "lon",
+                "altitude_m",
+                "lp_zone",
+                "source",
+                "updated_at",
+            ):
                 setattr(site, name, getattr(row, name))
         session.add_all(new_rows)
         session.execute(
-            delete(Site).where(Site.id.notin_([row.id for row in rows]))
+            delete(Site)
+            .where(Site.id.notin_([row.id for row in rows]))
             .execution_options(synchronize_session=False)
         )
         # add_all autoflushes before the subquery, so it sees the replacement

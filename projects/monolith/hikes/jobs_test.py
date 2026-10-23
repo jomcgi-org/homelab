@@ -66,10 +66,14 @@ def _utc(dt):
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-def test_entity_success_time_includes_empty_and_survives_scrape_prune(session, monkeypatch):
+def test_entity_success_time_includes_empty_and_survives_scrape_prune(
+    session, monkeypatch
+):
     now = datetime(2026, 10, 23, 14, tzinfo=timezone(timedelta(hours=2)))
     old = now.astimezone(timezone.utc) - timedelta(days=1)
-    session.add_all([_scraped(key, forecast_fetched_at=old) for key in ("full", "empty", "failed")])
+    session.add_all(
+        [_scraped(key, forecast_fetched_at=old) for key in ("full", "empty", "failed")]
+    )
     session.add(_scraped("never"))
     session.commit()
     windows = {"full": [[int(now.timestamp()), 8, 0, 10, 20]], "empty": []}

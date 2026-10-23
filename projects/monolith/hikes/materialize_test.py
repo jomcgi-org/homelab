@@ -80,7 +80,9 @@ def test_payload_without_hours_has_null_fetched_at():
 def test_entity_timestamp_serializes_identically_for_sqlite_and_postgres():
     # SQLite returns naive UTC; Postgres can return an aware session offset.
     for at in (NOW.replace(tzinfo=None), NOW.astimezone(timezone(timedelta(hours=2)))):
-        payload = materialize.build_payload([_walk("a", forecast_fetched_at=at)], [], NOW, NOW)
+        payload = materialize.build_payload(
+            [_walk("a", forecast_fetched_at=at)], [], NOW, NOW
+        )
         assert payload["walks"][0]["forecast_fetched_at"] == NOW.isoformat()
 
 
@@ -111,7 +113,12 @@ def engine_fixture(tmp_path):
 
 def test_writes_the_snapshot_to_the_configured_object(monkeypatch, engine):
     with Session(engine) as session:
-        session.add_all([_walk("a", forecast_fetched_at=TOP), _hour("a", TOP + timedelta(hours=1), fetched=TOP)])
+        session.add_all(
+            [
+                _walk("a", forecast_fetched_at=TOP),
+                _hour("a", TOP + timedelta(hours=1), fetched=TOP),
+            ]
+        )
         session.commit()
 
     puts = []
@@ -147,11 +154,13 @@ def test_writes_the_snapshot_to_the_configured_object(monkeypatch, engine):
 def test_serialized_mixed_entity_times_without_any_hour_rows(engine):
     old = NOW - timedelta(days=1)
     with Session(engine) as session:
-        session.add_all([
-            _walk("fresh", forecast_fetched_at=NOW),
-            _walk("stale", forecast_fetched_at=old),
-            _walk("never"),
-        ])
+        session.add_all(
+            [
+                _walk("fresh", forecast_fetched_at=NOW),
+                _walk("stale", forecast_fetched_at=old),
+                _walk("never"),
+            ]
+        )
         session.commit()
         payload = json.loads(json.dumps(materialize._load(session, NOW)))
     assert payload["fetched_at"] == NOW.isoformat()

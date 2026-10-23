@@ -17,7 +17,9 @@ def test_forecast_timestamp_is_nullable_timestamptz():
     column = Site.__table__.c.forecast_fetched_at
     assert column.nullable
     assert column.default is None and column.server_default is None
-    assert column.type.compile(dialect=postgresql.dialect()) == "TIMESTAMP WITH TIME ZONE"
+    assert (
+        column.type.compile(dialect=postgresql.dialect()) == "TIMESTAMP WITH TIME ZONE"
+    )
 
 
 @pytest.fixture(name="session")

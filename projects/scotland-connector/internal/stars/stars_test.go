@@ -49,7 +49,8 @@ func TestEntityFreshnessFromSnapshot(t *testing.T) {
 			until time.Time
 			want  Coverage
 		}{
-			{end, CoverageFull}, {end.Add(-time.Nanosecond), CoveragePartial},
+			{end, CoverageFull},
+			{end.Add(-time.Nanosecond), CoveragePartial},
 			{localHour(night-1, nightStartHour), CoverageNone},
 		} {
 			ds.HourlyUntil = tc.until
