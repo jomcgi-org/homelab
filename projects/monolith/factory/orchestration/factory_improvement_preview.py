@@ -19,6 +19,7 @@ class PreviewPolicy:
     horizon_seconds: int = 302400  # half a week
     minimum_remaining_percent: float = 50
     minimum_surplus_percent: float = 10
+    minimum_short_remaining_percent: float = 10
     max_findings: int = 20
     max_drafts: int = 2
     cooldown_seconds: int = 86400
@@ -40,6 +41,8 @@ class PreviewPolicy:
         for key in ("minimum_remaining_percent", "minimum_surplus_percent"):
             if not _number(getattr(self, key), 1, 100):
                 raise ValueError(f"invalid {key}")
+        if not _number(self.minimum_short_remaining_percent, 10, 100):
+            raise ValueError("invalid minimum_short_remaining_percent")
 
 
 def _number(value, low, high):
@@ -96,6 +99,17 @@ def quota_decisions(
         if view.get("status") != "allowed" or view.get("exhausted") is not False:
             result["reason"] = "quota_blocked"
             continue
+        pacing = view.get("pacing")
+        if pacing is not None:
+            if not isinstance(pacing, dict) or pacing.get("state") not in (
+                "on_pace",
+                "use_more",
+            ):
+                result["reason"] = "broker_pacing_not_permissive"
+                result["pacing_state"] = (
+                    pacing.get("state") if isinstance(pacing, dict) else None
+                )
+                continue
         windows = view.get("windows")
         if not isinstance(windows, list) or not 1 <= len(windows) <= 16:
             continue
@@ -129,6 +143,30 @@ def quota_decisions(
         if len({minutes for minutes, _, _ in checked}) != len(checked):
             continue
         minutes, used, reset = max(checked)
+        constrained = next(
+            (
+                (short_minutes, short_used, short_reset)
+                for short_minutes, short_used, short_reset in checked
+                if short_minutes < minutes
+                and (
+                    100 - short_used < policy.minimum_short_remaining_percent
+                    or 100
+                    - short_used
+                    - 100 * (short_reset - now).total_seconds() / (short_minutes * 60)
+                    < -5
+                )
+            ),
+            None,
+        )
+        if constrained is not None:
+            short_minutes, short_used, short_reset = constrained
+            result.update(
+                reason="short_window_conserve",
+                constrained_window_minutes=short_minutes,
+                short_remaining_percent=100 - short_used,
+                seconds_until_short_reset=(short_reset - now).total_seconds(),
+            )
+            continue
         seconds = (reset - now).total_seconds()
         remaining = 100 - used
         surplus = remaining - 100 * seconds / (minutes * 60)

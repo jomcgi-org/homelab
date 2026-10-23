@@ -82,6 +82,11 @@ estimates must carry `reset_source: estimate` and abstain. Missing, expired,
 contradictory or stale windows abstain. No inference from a window's name is
 made. All windows on an account must be usable and nonempty; the longest is its
 budget. Accounts are never pooled, and the provider summary is never a fallback.
+Explicit per-grant broker `conserve`, blocked or unknown pacing also abstains;
+a provider headline never overrides a grant. Each shorter window must retain
+at least 10 percent headroom and must not be more than five percentage points
+ahead of its time-based consumption pace. A spare weekly budget cannot override
+a binding burst window. The short-window reserve can only be tightened.
 An account absent from grant telemetry abstains, including Claude on brokers
 which only enumerate Codex grants.
 
