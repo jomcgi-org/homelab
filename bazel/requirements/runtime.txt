@@ -1979,9 +1979,9 @@ pydantic[email]==2.12.5 \
     #   pydantic-graph
     #   pydantic-settings
     #   sqlmodel
-pydantic-ai-slim[openai]==1.107.6 \
-    --hash=sha256:09e0d02c93245586d7728fde101ad2689a07e576003f77249db9f63abfec4c7b \
-    --hash=sha256:33b7a84e28448aa5ae4190158f703fd3d7de948c7610252b993420d6bc84b9a5
+pydantic-ai-slim[openai]==1.107.7 \
+    --hash=sha256:92aa6087e190017348f9b6354d30f0e67998992c0273e778930005bc31e04794 \
+    --hash=sha256:ecc02b80dcd9a4e7182e9389d21d6e559bcc324f6793b3f7171a52fb883edb5b
     # via homelab (pyproject.toml)
 pydantic-core==2.41.5 \
     --hash=sha256:0177272f88ab8312479336e1d777f6b124537d47f2123f89cb37e0accea97f90 \
