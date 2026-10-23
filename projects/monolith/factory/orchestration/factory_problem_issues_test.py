@@ -596,3 +596,16 @@ def test_issue_lookup_stays_bounded_when_two_pages_are_full(db, monkeypatch):
     assert capped[-1]["pages"] == 2 and capped[-1]["per_page"] == 100
     assert audits(engine, "problem_issue_source_refused") == []
     assert details(audits(engine, "problem_issue_created"))[-1]["issue_number"] == 8000
+
+
+def test_improvement_preview_is_read_only(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("preview must not read or write external state")
+
+    monkeypatch.setattr(producer, "github_write", forbidden)
+    monkeypatch.setattr(producer, "github_list", forbidden)
+    monkeypatch.setattr(producer, "_locked_session", forbidden)
+    result = producer.improvement_preview({}, now=START)
+    assert result["mode"] == "preview_only"
+    assert result["reason"] == "context_unknown"
+    assert result["drafts"] == []

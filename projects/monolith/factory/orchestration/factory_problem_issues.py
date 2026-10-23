@@ -788,3 +788,15 @@ def problem_issues_tick(policy: dict) -> None:
 
 
 __all__ = ["problem_issues_tick"]
+
+
+def improvement_preview(snapshot: dict, *, now: datetime, policy=None) -> dict:
+    """Read-only candidate shaping; deliberately not called by the live tick.
+
+    Shares problem markers with this producer. A future enabled source must use
+    its durable write/reconciliation ledger, never directly create tickets from
+    these drafts. Existing intake/refinement remains the only readiness gate.
+    """
+    from factory.orchestration.factory_improvement_preview import preview
+
+    return preview(snapshot, now=now, policy=policy)
