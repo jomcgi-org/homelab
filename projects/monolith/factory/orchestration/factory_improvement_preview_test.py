@@ -314,3 +314,50 @@ def test_half_week_boundary_is_inclusive():
         NOW + timedelta(seconds=302400)
     ).isoformat()
     assert preview(data, now=NOW)["drafts"]
+
+
+@pytest.mark.parametrize(
+    "state", ["conserve", "wait_for_reset", "stale", "unknown", "awaiting_report"]
+)
+def test_grant_pacing_cannot_be_overridden_by_spare_weekly_quota(state):
+    data = snapshot()
+    data["quota"]["grants"]["account-a"]["pacing"] = {"state": state}
+    result = preview(data, now=NOW)
+    assert not result["drafts"]
+    assert result["quota_decisions"][0]["reason"] == "broker_pacing_not_permissive"
+
+
+@pytest.mark.parametrize(
+    "used,reset_minutes,eligible", [(95, 5, False), (90, 60, False), (50, 60, True)]
+)
+def test_short_window_headroom_is_separate_from_weekly_budget(
+    used, reset_minutes, eligible
+):
+    data = snapshot()
+    view = data["quota"]["grants"]["account-a"]
+    view["pacing"] = {"state": "use_more"}
+    view["windows"].append(
+        {
+            "name": "burst",
+            "window_minutes": 300,
+            "used_percent": used,
+            "resets_at": (NOW + timedelta(minutes=reset_minutes)).isoformat(),
+            "expired": False,
+        }
+    )
+    result = preview(data, now=NOW)
+    assert bool(result["drafts"]) is eligible
+    if not eligible:
+        decision = result["quota_decisions"][0]
+        assert decision["reason"] == "short_window_conserve"
+        assert decision["short_remaining_percent"] == 100 - used
+
+
+def test_named_grant_conserve_is_not_overridden_by_headline_use_more():
+    data = snapshot()
+    account = data["quota"]["grants"]["account-a"]
+    account["pacing"] = {"state": "conserve"}
+    headline = deepcopy(account)
+    headline["pacing"] = {"state": "use_more"}
+    data["quota"]["providers"] = {"codex": headline}
+    assert not preview(data, now=NOW)["drafts"]
