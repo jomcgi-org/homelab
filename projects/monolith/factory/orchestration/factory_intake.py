@@ -664,6 +664,12 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                 return {"ok": False, "reason": "blocked"}
             return {"ok": False, "reason": "no_eligible_issue"}
 
+        from factory.orchestration.factory_refinement_delivery import admission_refusal
+
+        refinement_refusal = admission_refusal(db, row, policy)
+        if refinement_refusal:
+            return {"ok": False, "reason": refinement_refusal}
+
         route = routes[receipt_task_class(row)]
         direction = json.loads(row.direction_json) if row.direction_json else {}
         if route["tier"] == "delivery" and not direction.get("conductor_gates"):

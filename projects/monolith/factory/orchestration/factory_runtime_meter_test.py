@@ -2604,3 +2604,286 @@ def test_refinement_late_changes_refuse_apply(
             ).first()
             is None
         )
+
+
+@pytest.fixture
+def held_refinement(database, completed_refinement):
+    from factory.orchestration import factory_refinement_delivery as owner
+    from factory.orchestration.factory_models import (
+        WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
+    )
+
+    SQLModel.metadata.create_all(
+        database, tables=[m.__table__ for m in (WorkItem, WorkItemEdge, WorkItemEvent)]
+    )
+    _validation, issue = completed_refinement
+    issue.update(title="numeric correction support", body="Keep #7022 suspended")
+    direction = {
+        "landing_hold": {
+            "actor": "factory:conductor",
+            "cause": "refine-gate:task",
+            "reason": "Leave unmerged",
+        },
+        "conductor_gates": [
+            {
+                "kind": "live_validation",
+                "leave_unmerged": True,
+                "scope": "Keep #7022 suspended; no live model call or production mutation",
+            }
+        ],
+    }
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).direction_json = json.dumps(direction)
+    return owner, issue, direction
+
+
+def held_apply(owner, proposal, key="continuation"):
+    return owner.apply(
+        838,
+        "continue held work",
+        actor="operator",
+        request_key=key,
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+
+
+def test_held_refinement_creates_distinct_restricted_delivery(
+    database, held_refinement
+):
+    owner, _issue, direction = held_refinement
+    with Session(database) as db:
+        before = db.get(FactoryReceipt, 838).model_dump(mode="json")
+        task_before = db.get(SwarmTask, "task").model_dump(mode="json")
+    proposal = owner.preview(838, "continue held work")
+    assert proposal["inherited_direction"] == direction
+    assert not proposal["policy_after"]["auto_merge"]
+    result = held_apply(owner, proposal)
+    assert result["receipt_id"] != 838 and result["control_state"] == "paused"
+    assert not result["execution_authorized"] and not result["landing_authorized"]
+    assert held_apply(owner, proposal) == result
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump(mode="json") == before
+        assert db.get(SwarmTask, "task").model_dump(mode="json") == task_before
+        new = db.get(FactoryReceipt, result["receipt_id"])
+        assert new.state == "queued" and new.task_id is None
+        assert new.task_class == controls.DEFAULT_TASK_CLASS
+        copied = json.loads(new.direction_json)
+        assert all(copied[key] == value for key, value in direction.items())
+        policy = json.loads(db.get(FactoryControl, "factory").policy_json)
+        assert owner.admission_refusal(db, new, policy) is None
+        for key in (
+            "generation",
+            "task_budget_usd",
+            "turn_budget_usd",
+            "max_turns_per_task",
+            "task_timeout_seconds",
+        ):
+            assert policy[key] == proposal["policy_before"][key]
+        assert not policy["auto_merge"] and not policy["intake"]["enabled"]
+        assert len(db.exec(select(FactoryReceipt)).all()) == 2
+    with pytest.raises(ValueError, match="conflicting_refinement_delivery_request"):
+        owner.apply(
+            838,
+            "changed reason",
+            actor="operator",
+            request_key="continuation",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "hold_removed",
+        "hold_changed",
+        "gates_removed",
+        "gate_changed",
+        "version",
+        "existing_delivery",
+        "human",
+        "assigned",
+        "closed",
+    ],
+)
+def test_held_refinement_stale_preview_is_atomic(database, held_refinement, change):
+    owner, issue, _direction = held_refinement
+    proposal = owner.preview(838, "continue held work")
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        if change == "hold_removed":
+            direction.pop("landing_hold")
+        elif change == "hold_changed":
+            direction["landing_hold"]["reason"] = "new restriction"
+        elif change == "gates_removed":
+            direction.pop("conductor_gates")
+        elif change == "gate_changed":
+            direction["conductor_gates"][0]["scope"] = "different scope"
+        elif change == "version":
+            db.get(FactoryControl, "factory").version += 1
+        elif change == "existing_delivery":
+            db.add(
+                FactoryReceipt(
+                    repo=row.repo,
+                    issue_number=row.issue_number,
+                    generation=row.generation,
+                    task_class="bug-fix",
+                    title="owned",
+                    body="owned",
+                    url=row.url,
+                    actor="other",
+                )
+            )
+        elif change == "human":
+            issue["labels"] = [{"name": "agent-ready"}, {"name": "human"}]
+        elif change == "assigned":
+            issue["assignees"] = [{"login": "owner"}]
+        elif change == "closed":
+            issue["state"] = "closed"
+        row.direction_json = json.dumps(direction)
+    with pytest.raises(ValueError):
+        held_apply(owner, proposal)
+    with Session(database) as db:
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == owner.ACTION)
+        ).all()
+        assert json.loads(db.get(FactoryControl, "factory").policy_json)["auto_merge"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "hold",
+        "gate",
+        "marker",
+        "all_direction",
+        "generation",
+        "source",
+        "auto_merge",
+        "intake",
+    ],
+)
+def test_held_delivery_admission_rejects_missing_or_changed_proof(
+    database, held_refinement, change
+):
+    owner, _, _ = held_refinement
+    result = held_apply(owner, owner.preview(838, "continue held work"))
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, result["receipt_id"])
+        direction = json.loads(row.direction_json)
+        policy = json.loads(db.get(FactoryControl, "factory").policy_json)
+        if change == "hold":
+            direction.pop("landing_hold")
+        elif change == "gate":
+            direction["conductor_gates"][0]["scope"] = "changed"
+        elif change == "marker":
+            direction.pop(owner.MARKER)
+        elif change == "all_direction":
+            direction = {}
+        elif change == "generation":
+            row.generation += 1
+        elif change == "source":
+            db.get(FactoryReceipt, 838).direction_json = "{}"
+        elif change == "auto_merge":
+            policy["auto_merge"] = True
+        elif change == "intake":
+            policy["intake"]["enabled"] = True
+        row.direction_json = json.dumps(direction)
+        assert (
+            owner.admission_refusal(db, row, policy)
+            == "refinement_delivery_evidence_changed"
+        )
+        assert row.task_id is None
+
+
+def test_held_refinement_concurrent_apply_creates_once(database, held_refinement):
+    owner, _, _ = held_refinement
+    proposal = owner.preview(838, "continue held work")
+
+    def apply(key):
+        try:
+            return held_apply(owner, proposal, key)
+        except ValueError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(apply, ["first", "second"]))
+    assert sum(isinstance(result, dict) for result in results) == 1
+    with Session(database) as db:
+        assert len(db.exec(select(FactoryReceipt)).all()) == 2
+
+
+def test_held_refinement_pr_race_refuses(database, held_refinement, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor
+
+    owner, _, _ = held_refinement
+    proposal = owner.preview(838, "continue held work")
+    monkeypatch.setattr(
+        conductor, "github_list", lambda *args: [{"number": 12, "body": "Fixes #7001"}]
+    )
+    with pytest.raises(ValueError, match="pr_reference_ambiguous"):
+        held_apply(owner, proposal)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "review_only_hold",
+        "nonrenewable_recovery",
+        "landing_authorization",
+        "policy_overlay",
+    ],
+)
+def test_held_refinement_does_not_transfer_other_grants_or_holds(
+    database, held_refinement, extra
+):
+    owner, _, _ = held_refinement
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        direction[extra] = {"reason": "other owner"}
+        row.direction_json = json.dumps(direction)
+    with pytest.raises(ValueError):
+        owner.preview(838, "continue held work")
+
+
+def test_held_refinement_receipt_failure_rolls_back_configuration(
+    database, held_refinement, monkeypatch
+):
+    from factory.orchestration import factory_intake
+
+    owner, _, _ = held_refinement
+    proposal = owner.preview(838, "continue held work")
+
+    def refused(*args, **kwargs):
+        raise ValueError("receipt rejected")
+
+    monkeypatch.setattr(factory_intake, "receive_issue", refused)
+    with pytest.raises(ValueError, match="receipt rejected"):
+        held_apply(owner, proposal)
+    with Session(database) as db:
+        control = db.get(FactoryControl, "factory")
+        assert (
+            controls.validate_policy(json.loads(control.policy_json))
+            == proposal["policy_before"]
+        )
+        assert control.version == proposal["expected_version"]
+        assert len(db.exec(select(FactoryReceipt)).all()) == 1
+
+
+def test_held_refinement_replay_does_not_repeat_external_observation(
+    held_refinement, monkeypatch
+):
+    from factory.orchestration import factory_validation
+
+    owner, _, _ = held_refinement
+    proposal = owner.preview(838, "continue held work")
+    expected = held_apply(owner, proposal)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("replay contacted GitHub")
+
+    monkeypatch.setattr(factory_validation, "_refinement_observation", forbidden)
+    assert held_apply(owner, proposal) == expected

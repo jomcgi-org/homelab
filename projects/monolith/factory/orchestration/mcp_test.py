@@ -2225,3 +2225,61 @@ def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch):
 
     _as(_principal(), wire)
     assert calls == [(21073, 2)]
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.ANONYMOUS, groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_refinement_delivery_operator_gate_precedes_owner(principal, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unauthorized operation")
+
+    monkeypatch.setattr(mcp, "_refinement_delivery", forbidden)
+    for fn in (
+        lambda: mcp.factory_preview_refinement_delivery(902, "continue"),
+        lambda: mcp.factory_apply_refinement_delivery(902, "continue", "key", "a" * 64),
+    ):
+        assert _as(principal, fn)["error"] == mcp.OPERATOR_REQUIRED
+
+
+def test_refinement_delivery_adapter_passes_only_server_actor_and_exact_request(
+    monkeypatch,
+):
+    calls = []
+
+    def owner(*args):
+        calls.append(args)
+        return {"ok": True}
+
+    monkeypatch.setattr(mcp, "_refinement_delivery", owner)
+    assert _as(
+        _principal(), lambda: mcp.factory_preview_refinement_delivery(902, "continue")
+    ) == {"ok": True}
+    assert _as(
+        _principal(),
+        lambda: mcp.factory_apply_refinement_delivery(902, "continue", "key", "a" * 64),
+    ) == {"ok": True}
+    assert calls == [
+        ("preview", 902, "continue", "joe"),
+        ("apply", 902, "continue", "joe", "key", "a" * 64),
+    ]
+
+
+def test_refinement_delivery_tool_schema_has_no_restriction_override():
+    from core.mcp_app import mcp as shared
+
+    tools = {tool.name: tool for tool in asyncio.run(shared.list_tools())}
+    for name, fields in (
+        ("factory_preview_refinement_delivery", {"receipt_id", "reason"}),
+        (
+            "factory_apply_refinement_delivery",
+            {"receipt_id", "reason", "request_key", "expected_preview_sha256"},
+        ),
+    ):
+        assert set(tools[name].parameters["properties"]) == fields

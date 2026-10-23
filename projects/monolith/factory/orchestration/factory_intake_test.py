@@ -1483,3 +1483,19 @@ def test_dependency_schemas_and_guidance_require_adversarial_evidence():
     assert "independently challenge" in text
     assert "without production credentials" in text
     assert deps.guidance({}) == ""
+
+
+def test_refinement_provenance_refusal_precedes_task_creation(db, policy):
+    from factory.orchestration.factory_refinement_delivery import MARKER
+
+    enable(policy)
+    receipt = issue(1)
+    with Session(db) as session, session.begin():
+        row = session.get(FactoryReceipt, receipt["receipt"]["id"])
+        row.direction_json = json.dumps({MARKER: {"source_receipt_id": 999}})
+    result = admit_next("scheduler")
+    assert result == {"ok": False, "reason": "refinement_delivery_provenance_missing"}
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt["receipt"]["id"])
+        assert row.state == "queued" and row.task_id is None
+        assert session.exec(select(SwarmTask)).all() == []
