@@ -6,6 +6,7 @@ acceptance on the real hosts remains separate.
 """
 
 import argparse
+import importlib.metadata
 import json
 import threading
 from functools import partial
@@ -291,6 +292,7 @@ def capture(artifact, output, label, *, acceptance=False):
             # Repeatability probes below retain compositor variance without
             # masking pixels or modifying the production stylesheet.
             browser = pw.chromium.launch(args=["--disable-gpu"])
+            browser_version = browser.version
             cases = [
                 (view, banner)
                 for view in VIEWS
@@ -567,6 +569,8 @@ def capture(artifact, output, label, *, acceptance=False):
         "fixture_only": True,
         "viewport_height": 900,
         "chromium_args": ["--disable-gpu"],
+        "chromium_version": browser_version,
+        "playwright_version": importlib.metadata.version("playwright"),
         "captures": records,
         "scheme_checks": scheme_checks,
         "behavior_checks": behavior_checks,
