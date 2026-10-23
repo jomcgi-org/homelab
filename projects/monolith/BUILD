@@ -1506,11 +1506,11 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":factory_goal_models",
         ":agent_sessions_admission",
         ":agent_sessions_rationale",
         ":factory_access",
         ":factory_durable_identity",
+        ":factory_goal_models",
         ":pkg_agent_sessions",
         ":pkg_core",
         ":pkg_cyclegroup",
