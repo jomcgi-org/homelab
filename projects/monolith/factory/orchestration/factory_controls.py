@@ -236,6 +236,7 @@ DEFAULT_PROBLEM_ISSUES = {
         "max_unproven_attempts": 3,
     },
     "improvement_review": {"through_audit_id": 0, "reason": ""},
+    "improvement_scout": {"enabled": False, "issue_number": 0, "subscription_caps": {}},
     "labels": ["bug"],
     "retry_minutes": [2, 4, 8, 16, 32, 60],
 }
@@ -877,6 +878,49 @@ def _validate_problem_issues(value: object) -> dict:
     ):
         raise ValueError("improvement review requires a reason")
     result["improvement_review"] = {"through_audit_id": reviewed_id, "reason": reason}
+    scout = value.get("improvement_scout", DEFAULT_PROBLEM_ISSUES["improvement_scout"])
+    if not isinstance(scout, dict) or not set(scout) <= {
+        "enabled",
+        "issue_number",
+        "subscription_caps",
+    }:
+        raise ValueError("invalid improvement_scout")
+    scout_enabled = scout.get("enabled", False)
+    if type(scout_enabled) is not bool:
+        raise ValueError("invalid improvement_scout enabled")
+    issue_number = _integer(
+        scout.get("issue_number", 0), "scout issue_number", 0, 2**31 - 1
+    )
+    caps = scout.get("subscription_caps", {})
+    if not isinstance(caps, dict) or len(caps) > 16:
+        raise ValueError("invalid scout subscription_caps")
+    for grant, cap in caps.items():
+        if (
+            not isinstance(grant, str)
+            or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", grant)
+            or not isinstance(cap, dict)
+            or set(cap) != {"subscription_only", "overage_disabled", "evidence"}
+            or cap.get("subscription_only") is not True
+            or cap.get("overage_disabled") is not True
+            or not isinstance(cap.get("evidence"), str)
+            or not cap["evidence"].strip()
+            or len(cap["evidence"]) > 2000
+        ):
+            raise ValueError("invalid scout subscription cap attestation")
+    if scout_enabled and (
+        not issue_number
+        or not caps
+        or not enabled
+        or not result["sources"]["quota_improvement"]
+    ):
+        raise ValueError(
+            "scout requires charter, verified caps and enabled improvement source"
+        )
+    result["improvement_scout"] = {
+        "enabled": scout_enabled,
+        "issue_number": issue_number,
+        "subscription_caps": caps,
+    }
     result["max_per_tick"] = _integer(
         value.get("max_per_tick", result["max_per_tick"]),
         "max_per_tick",
@@ -1400,6 +1444,15 @@ def admission_eligible(policy: dict, issue_number: int, actor: str) -> bool:
     """
     if issue_number in set(policy.get("issue_numbers") or ()):
         return True
+    if actor == "factory:improvement-scout":
+        block = problem_issues_policy(policy)
+        scout = block["improvement_scout"]
+        return bool(
+            block["enabled"]
+            and block["sources"]["quota_improvement"]
+            and scout["enabled"]
+            and scout["issue_number"] == issue_number
+        )
     return actor == INTAKE_ACTOR and bool(intake_policy(policy).get("enabled"))
 
 
@@ -2783,6 +2836,9 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
 _PROBLEM_ISSUE_ACTIONS = (
     "improvement_attempt",
     "improvement_candidate",
+    "scout_claim",
+    "scout_review",
+    "scout_settled",
     "problem_issue_policy_observed",
     "problem_issue_scan_capped",
     "problem_issue_issue_scan_capped",

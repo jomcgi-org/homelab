@@ -9574,3 +9574,16 @@ py_library(
         "@pip//sqlmodel",
     ],
 )
+
+py_test(
+    name = "factory_improvement_scout_test",
+    srcs = ["factory/orchestration/factory_improvement_scout_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)

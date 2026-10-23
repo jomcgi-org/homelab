@@ -5314,3 +5314,58 @@ def test_automatic_stop_requires_exact_audit_and_card(db, policy, field):
                 detail[field] = {} if field == "effects" else "other"
                 event.detail_json = json.dumps(detail)
     assert controls.cancellation_evidence(task) is None
+
+
+def test_scout_configuration_is_default_off_and_explicit(policy):
+    configured = controls.validate_policy(policy)
+    assert configured["problem_issues"]["improvement_scout"]["enabled"] is False
+    policy["problem_issues"] = {"improvement_scout": {"enabled": True}}
+    with pytest.raises(ValueError, match="scout requires"):
+        controls.validate_policy(policy)
+
+
+def test_scout_admission_sql_and_python_match(db, policy):
+    from factory.orchestration.factory_intake import _eligible_clause
+
+    policy["problem_issues"] = {
+        "enabled": True,
+        "sources": {"quota_improvement": True},
+        "improvement_scout": {
+            "enabled": True,
+            "issue_number": 900,
+            "subscription_caps": {
+                "codex": {
+                    "subscription_only": True,
+                    "overage_disabled": True,
+                    "evidence": "verified",
+                }
+            },
+        },
+    }
+    configured = controls.validate_policy(policy)
+    with Session(db) as session:
+        rows = [
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=n,
+                title="charter",
+                body="",
+                url=f"https://github.com/owner/repo/issues/{n}",
+                actor=actor,
+            )
+            for n, actor in [
+                (900, "factory:improvement-scout"),
+                (901, "factory:improvement-scout"),
+                (902, "operator"),
+            ]
+        ]
+        session.add_all(rows)
+        session.commit()
+        found = session.exec(
+            select(FactoryReceipt).where(_eligible_clause(configured))
+        ).all()
+        assert [row.issue_number for row in found] == [900]
+        for row in rows:
+            assert controls.admission_eligible(
+                configured, row.issue_number, row.actor
+            ) == (row.issue_number == 900)

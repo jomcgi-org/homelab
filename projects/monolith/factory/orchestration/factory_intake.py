@@ -342,6 +342,16 @@ def _eligible_clause(policy: dict):
         # They are admissible only while intake is on, so turning intake off
         # leaves the allowlist exactly as it was.
         eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
+    from factory.orchestration.factory_controls import problem_issues_policy
+
+    block = problem_issues_policy(policy)
+    scout = block["improvement_scout"]
+    if block["enabled"] and block["sources"]["quota_improvement"] and scout["enabled"]:
+        eligible = or_(
+            eligible,
+            (FactoryReceipt.actor == "factory:improvement-scout")
+            & (FactoryReceipt.issue_number == scout["issue_number"]),
+        )
     return eligible
 
 

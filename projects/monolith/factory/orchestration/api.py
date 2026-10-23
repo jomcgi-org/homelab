@@ -78,7 +78,19 @@ def factory_session_allowed(local_session_id: str | None) -> bool:
         return False
     from factory.orchestration.factory_controls import can_start
 
-    return can_start(fields[1], start_key="factory-node:" + ":".join(fields[1:]))["ok"]
+    allowed = can_start(fields[1], start_key="factory-node:" + ":".join(fields[1:]))[
+        "ok"
+    ]
+    if allowed and fields[2] in {"scout_collect_1", "scout_review_1"}:
+        # Live transport fence: recheck on wake and retry, never trust a
+        # checkpointed quota preview as execution permission.
+        from factory.orchestration.factory_improvement_scout import dispatch_allowed
+
+        try:
+            return dispatch_allowed(fields[1])["ok"]
+        except Exception:  # unavailable evidence must not start speculative work
+            return False
+    return allowed
 
 
 def get_decision_reference(session, decision_id: int) -> dict | None:
