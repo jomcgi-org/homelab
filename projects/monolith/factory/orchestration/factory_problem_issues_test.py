@@ -642,6 +642,8 @@ def improvements(db, monkeypatch):
     }
     configured = {
         "repo": "jomcgi-org/homelab",
+        "task_budget_usd": 50,
+        "turn_budget_usd": 10,
         "generation": 14,
         "problem_issues": {"enabled": True, "sources": {"quota_improvement": True}},
     }
