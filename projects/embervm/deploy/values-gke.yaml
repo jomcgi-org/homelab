@@ -261,6 +261,9 @@ bricks:
 # defense in depth rather than the guarantee.
 warmthS3Gc:
   enabled: ""
+  # Only new, explicitly registered disposable capture workspaces expire.
+  # Git, Postgres, historical exports and other warmth classes are not opted in.
+  captureEvidenceEnabled: true
 
 # Only services reachable from the hub belong on the internal lane. Meta Spark
 # uses the external credentialed egress catalog instead.
