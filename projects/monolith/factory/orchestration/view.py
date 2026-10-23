@@ -12,6 +12,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from core.clock import iso_z
+
 from factory.orchestration import config
 from factory.execution.rationale import parse_rationale
 from factory.orchestration.budget import effective_budget
@@ -804,5 +806,5 @@ def compose_master(
             }
         ],
         "runs": runs,
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": iso_z(datetime.now(timezone.utc)),
     }
