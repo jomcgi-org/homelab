@@ -1498,7 +1498,7 @@ async def factory_prepare_validation(
     For a fresh primary-repository issue, pass receipt_id null and issue_number.
     Existing receipt history requires the receipt selector instead. Admitted
     tasks, including paused tasks, must first settle through existing controls.
-    This does not validate GitHub eligibility;
+    This does not validate GitHub eligibility.
     submit_issue must subsequently check live eligibility before queueing.
 
     Preview first while admissions are paused and no other work is queued,
