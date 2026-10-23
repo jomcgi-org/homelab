@@ -2672,3 +2672,186 @@ def test_operator_recomputation_releases_capacity_only_for_exact_fresh_cessation
         reconciliation.recover_review_job(actor="operator", recovery=request) == result
     )
     assert calls == ["guest", "guest"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        "no_audit",
+        "owner",
+        "turn",
+        "guest",
+        "ack",
+        "digest",
+        "receipt_owner",
+        "receipt_guest",
+        "receipt_missing",
+        "result",
+        "superseded",
+        "old_terminal",
+        "new_invoke",
+        "running",
+        "stale",
+        "malformed_completion",
+        "generation_regression",
+        "late_receipt",
+        "race",
+    ],
+)
+def test_recovered_review_redispatch_settles_only_exact_audited_attempt(
+    database, monkeypatch, change
+):
+    from factory.execution import permit_supervision as supervision
+    from factory.execution.models import AgentResultReceipt
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
+
+    engine, preview, key = recomputation_attempt(database)
+    engine = engine.execution_options(
+        schema_translate_map={
+            "agent_sessions": None,
+            "claude_agent": None,
+            "knowledge": None,
+            "swarm": None,
+        }
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (AgentResultReceipt, FactoryStart, SwarmNodeRun, SwarmTask)
+        ],
+    )
+    monkeypatch.setattr(supervision, "get_engine", lambda: engine)
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
+    now = datetime.now(timezone.utc)
+
+    def at(seconds):
+        return now - timedelta(seconds=seconds)
+
+    with Session(engine) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, preview["permit_id"])
+        permit.owner = "worker-two"
+        turn = db.exec(
+            select(AgentTurn).where(AgentTurn.session_id == preview["session_id"])
+        ).one()
+        turn.created_at = at(10)
+        turn.usage_json = json.dumps(
+            {
+                "recovery": {
+                    "claim_owner": "worker-two",
+                    "dispatch_count": 2,
+                    "last_dispatch_at": at(100).isoformat(),
+                }
+            }
+        )
+        db.add_all(
+            [
+                AgentResultReceipt(
+                    id=f"receipt-{i}",
+                    token_sha256=f"token-{i}",
+                    session_id=preview["session_id"],
+                    local_session_id=key,
+                    seq=1,
+                    dispatch_count=i,
+                    claim_owner="worker-one" if i == 1 else "worker-two",
+                    guest_id="guest",
+                    request_sha256=f"request-{i}",
+                    created_at=at(150 if i == 1 else 98),
+                    accept_until=at(5),
+                    retain_until=now + timedelta(days=1),
+                    superseded_at=at(98) if i == 1 else None,
+                    response_observer_released_at=at(19) if i == 2 else None,
+                )
+                for i in (1, 2)
+            ]
+        )
+    candidate_before = supervision._prepare(preview["permit_id"])
+    assert candidate_before is not None
+    with Session(engine) as db, db.begin():
+        request = apply_request(db, preview)
+        reconciliation.recover_review_job(
+            actor="operator", recovery=request, session=db
+        )
+        row = db.exec(select(RoutineReconciliation)).one()
+        original_audit = row.model_dump()
+        if change == "no_audit":
+            db.delete(row)
+        elif change in {"ack", "digest"}:
+            data = json.loads(row.evidence_json)
+            data["request"][
+                "acknowledgment" if change == "ack" else "expected_state_sha256"
+            ] = "wrong"
+            row.evidence_json = json.dumps(data)
+        elif change == "owner":
+            db.get(AgentCapacityReservation, preview["permit_id"]).owner = "other"
+        elif change == "turn":
+            db.exec(select(AgentTurn)).one().result_text = "changed"
+        elif change == "guest":
+            db.get(AgentSession, preview["session_id"]).ember_session_id = "other"
+        elif (change or "").startswith("receipt_") or change in {
+            "result",
+            "superseded",
+            "late_receipt",
+        }:
+            receipt = db.get(AgentResultReceipt, "receipt-2")
+            if change == "receipt_missing":
+                db.delete(receipt)
+            elif change == "receipt_owner":
+                receipt.claim_owner = "other"
+            elif change == "receipt_guest":
+                receipt.guest_id = "other"
+            elif change == "result":
+                receipt.result_sha256 = "result"
+            elif change == "late_receipt":
+                receipt.created_at = at(15)
+            else:
+                receipt.superseded_at = now
+    candidate = supervision._prepare(preview["permit_id"])
+    if change in {"no_audit", "owner", "turn", "guest", "ack", "digest"}:
+        assert candidate is None
+    else:
+        assert candidate == candidate_before
+        observed = {
+            "session_id": "guest",
+            "state": "running" if change == "running" else "evicted",
+            "generation": 0,
+            "invoke_started_at": int(
+                at(140 if change != "new_invoke" else 5).timestamp() * 1000
+            ),
+            "last_invoke_at": None,
+            "updated_at": int(
+                at(20 if change != "old_terminal" else 110).timestamp() * 1000
+            ),
+        }
+        if change == "malformed_completion":
+            observed["last_invoke_at"] = True
+        if change == "generation_regression":
+            with Session(engine) as db, db.begin():
+                audit = db.get(ProbeObservation, preview["permit_id"])
+                audit.generation = 1
+                audit.invoke_started_at = observed["invoke_started_at"]
+        if change == "race":
+            with Session(engine) as db, db.begin():
+                db.get(AgentCapacityReservation, preview["permit_id"]).owner = "raced"
+        supervision._record(candidate, observed, at(60) if change == "stale" else now)
+    with Session(engine) as db:
+        permit = db.get(AgentCapacityReservation, preview["permit_id"])
+        assert permit.state == ("settled" if change is None else "uncertain")
+        assert permit.outcome == (
+            "operator_recompute_ceased_unknown"
+            if change is None
+            else "operator_recompute_unknown"
+        )
+        if change is None:
+            assert (
+                db.exec(select(RoutineReconciliation)).one().model_dump()
+                == original_audit
+            )
+            assert db.exec(select(AgentTurn)).one().stop_reason == UNKNOWN_INVOCATION
+            assert (
+                db.get(AgentSession, preview["session_id"]).ember_session_id == "guest"
+            )
+            assert supervision._prepare(preview["permit_id"]) is None

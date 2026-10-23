@@ -29,6 +29,7 @@ from factory.execution.constants import (
 )
 from factory.execution.models import (
     AgentCapacityReservation,
+    AgentResultReceipt,
     AgentSession,
     AgentTurn,
     PendingMessage,
@@ -465,9 +466,18 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         raise ValueError("ambiguous_ownership")
     # Hash the complete turn to detect intervening evidence without copying
     # prompts, results, artifacts, or credentials into lifecycle audit records.
+    permit_identity = permit.model_dump()
+    if permit.outcome == "operator_recompute_unknown":
+        from agent.api import recovered_review_original_outcome
+
+        # Only the audited outcome transition may differ from the old identity.
+        # Keep the prior observation and require every other identity field.
+        permit_identity["outcome"] = recovered_review_original_outcome(
+            db, agent.id, permit.id
+        )
     identity = _sha(
         {
-            "permit": permit.model_dump(),
+            "permit": permit_identity,
             "session_id": agent.id,
             "local_session_id": agent.local_session_id,
             "guest_id": agent.ember_session_id,
@@ -478,6 +488,81 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         }
     )
     return agent, turn, identity
+
+
+def _recovered_review_redispatch_ceased(db, permit, agent, turn, observed, recovery):
+    """Two-dispatch receipt chain for an already audited review recomputation.
+
+    A second HTTP dispatch can attach to the same earlier guest invocation.
+    Require terminal guest evidence after both receipt issuances, never infer
+    successful execution or relax automatic recovery for an unaudited attempt.
+    Freshness, continuity and locked identity checks belong to _record.
+    """
+    if (
+        permit.outcome != "operator_recompute_unknown"
+        or permit.tier != "kg"
+        or permit.routine_job_name != "kg-fact-review"
+        or observed.get("state") not in {"evicted", "destroyed"}
+        or not isinstance(recovery, dict)
+        or recovery.get("claim_owner") != permit.owner
+        or recovery.get("dispatch_count") != 2
+    ):
+        return False
+    receipts = db.exec(
+        select(AgentResultReceipt)
+        .where(
+            AgentResultReceipt.session_id == agent.id,
+            AgentResultReceipt.seq == permit.pending_seq,
+        )
+        .order_by(AgentResultReceipt.dispatch_count)
+        .with_for_update()
+    ).all()
+    if len(receipts) != 2:
+        return False
+    first, last = receipts
+    if (
+        [r.dispatch_count for r in receipts] != [1, 2]
+        or any(
+            r.guest_id != agent.ember_session_id
+            or r.local_session_id != agent.local_session_id
+            or r.received_at is not None
+            or r.result_sha256 is not None
+            or r.result_body is not None
+            for r in receipts
+        )
+        or last.claim_owner != permit.owner
+        or first.superseded_at is None
+        or aware(first.superseded_at) != aware(last.created_at)
+        or last.superseded_at is not None
+        or last.response_observed_at is not None
+        or last.response_observer_released_at is None
+    ):
+        return False
+    try:
+        started, updated = observed["invoke_started_at"], observed["updated_at"]
+        last_invoke = observed.get("last_invoke_at")
+        if last_invoke is not None and (
+            type(last_invoke) is not int or not 0 < last_invoke <= updated
+        ):
+            return False
+        dispatched = datetime.fromisoformat(
+            recovery["last_dispatch_at"].replace("Z", "+00:00")
+        )
+        if dispatched.tzinfo is None or any(
+            type(t) is not int for t in (started, updated)
+        ):
+            return False
+
+        def ms(dt):
+            return int(aware(dt).timestamp() * 1000)
+
+        return ms(first.created_at) <= started < ms(dispatched) <= ms(
+            last.created_at
+        ) <= updated <= ms(turn.created_at) and updated <= ms(
+            last.response_observer_released_at
+        ) <= ms(turn.created_at)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _candidates():
@@ -871,6 +956,12 @@ def _record(candidate, observed, observed_at, node_names=None):
                 aware(turn.created_at),
                 allow_failed=invoke_failed,
             )
+            recovered_redispatch = _recovered_review_redispatch_ceased(
+                db, permit, agent, turn, observed, recovery
+            )
+            exact_dispatch = exact_dispatch or recovered_redispatch
+            if recovered_redispatch:
+                evidence["recovered_review_redispatch"] = True
             if exact_dispatch:
                 evidence["cessation_evidence"] = (
                     "invoke_failure" if invoke_failed else "terminal_dispatch"
@@ -916,6 +1007,13 @@ def _record(candidate, observed, observed_at, node_names=None):
                 _reason(audit, "routine_reconciliation_refused")
                 db.add(audit)
                 return False
+        elif permit.outcome == "operator_recompute_unknown":
+            # The operator already rearmed this job. Settle only its old permit,
+            # retaining the unknown result, original decision and guest binding.
+            permit.state = "settled"
+            permit.outcome = "operator_recompute_ceased_unknown"
+            permit.settled_at = _now()
+            db.add(permit)
         else:
             admission.confirm_guest_cessation(db, agent)
         audit.reason = "guest_cessation_confirmed"
