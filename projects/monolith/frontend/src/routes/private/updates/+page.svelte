@@ -365,7 +365,8 @@
 
 <style>
   @media (prefers-reduced-motion: no-preference) {
-    :global(html) {
+    /* Keep journal navigation smooth without changing other sheet routes. */
+    :global(html:has(main.updates-page)) {
       scroll-behavior: smooth;
     }
   }

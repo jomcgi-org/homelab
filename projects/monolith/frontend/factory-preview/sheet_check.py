@@ -156,6 +156,18 @@ def capture(artifact, output, label, *, acceptance=False):
                         page.evaluate("window.scrollTo(0, 0)")
                         page.wait_for_timeout(300)
                         checks = {}
+                        if acceptance and view == "updates":
+                            checks["scroll_behavior"] = {}
+                            for motion, expected in [
+                                ("no-preference", "smooth"),
+                                ("reduce", "auto"),
+                            ]:
+                                page.emulate_media(reduced_motion=motion)
+                                actual = page.evaluate(
+                                    "getComputedStyle(document.documentElement).scrollBehavior"
+                                )
+                                assert actual == expected, (key, motion, actual)
+                                checks["scroll_behavior"][motion] = actual
                         if view.startswith("updates"):
                             checks["links"] = page.locator("main a").evaluate_all(
                                 "nodes => nodes.map(node => node.getAttribute('href'))"
