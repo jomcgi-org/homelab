@@ -2049,3 +2049,50 @@ def test_routine_permit_lookup_operator_gate_and_worker_thread(monkeypatch):
     )
     assert result["recovery_authorized"] is False
     assert calls == [("kg-fact-review", {"offset": 1, "limit": 2})]
+
+
+def test_fresh_issue_preparation_wire_and_authority(monkeypatch):
+    from fastmcp import Client
+    from core.mcp_app import mcp as shared
+    from factory.orchestration import factory_validation as validation
+
+    calls = []
+    monkeypatch.setattr(
+        validation, "preview", lambda *a, **kw: calls.append((a, kw)) or {"ok": True}
+    )
+
+    async def invoke():
+        return await mcp.factory_prepare_validation(
+            "preview", None, "selected work", issue_number=7275
+        )
+
+    assert not _as(_principal(authority=Authority.DELEGATED), invoke)["ok"]
+    assert not calls
+
+    async def wire():
+        async with Client(shared) as client:
+            for issue in (True, "7275", 0, 2**63):
+                result = await client.call_tool(
+                    "factory_prepare_validation",
+                    dict(
+                        operation="preview",
+                        receipt_id=None,
+                        reason="selected work",
+                        issue_number=issue,
+                    ),
+                    raise_on_error=False,
+                )
+                assert result.is_error
+            result = await client.call_tool(
+                "factory_prepare_validation",
+                dict(
+                    operation="preview",
+                    receipt_id=None,
+                    reason="selected work",
+                    issue_number=7275,
+                ),
+            )
+            assert result.data["ok"]
+
+    _as(_principal(), wire)
+    assert calls == [((None, "selected work"), {"issue_number": 7275})]

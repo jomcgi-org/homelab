@@ -1485,14 +1485,21 @@ async def factory_find_receipts(
 @mcp.tool
 async def factory_prepare_validation(
     operation: Literal["preview", "apply"],
-    receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    receipt_id: Annotated[MCPInteger | None, Field(gt=0, le=2**63 - 1)],
     reason: Annotated[str, Field(min_length=1, max_length=4000)],
     request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
     expected_preview_sha256: Annotated[
         str | None, Field(pattern=r"^[0-9a-f]{64}$")
     ] = None,
+    issue_number: Annotated[MCPInteger | None, Field(gt=0, le=2**63 - 1)] = None,
 ) -> dict:
-    """Prepare one waiting receipt for bounded validation as a standing operator.
+    """Prepare one receipt or fresh issue for bounded work as a standing operator.
+
+    For a fresh primary-repository issue, pass receipt_id null and issue_number.
+    Existing receipt history requires the receipt selector instead. Admitted
+    tasks, including paused tasks, must first settle through existing controls.
+    This does not validate GitHub eligibility;
+    submit_issue must subsequently check live eligibility before queueing.
 
     Preview first while admissions are paused and no other work is queued,
     active or landing, with no reserved or uncertain starts. The derived policy
@@ -1514,9 +1521,10 @@ async def factory_prepare_validation(
     def prepare():
         from factory.orchestration import factory_validation
 
+        selector = {"issue_number": issue_number} if issue_number is not None else {}
         try:
             if operation == "preview":
-                return factory_validation.preview(receipt_id, reason)
+                return factory_validation.preview(receipt_id, reason, **selector)
             if not request_key or not expected_preview_sha256:
                 return {
                     "ok": False,
@@ -1528,6 +1536,7 @@ async def factory_prepare_validation(
                 actor=principal.subject,
                 request_key=request_key,
                 expected_preview_sha256=expected_preview_sha256,
+                **selector,
             )
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
