@@ -94,14 +94,15 @@ func Known(v float32) bool { return v == v }
 
 // Walk is one WalkHighlands walk with its viable hours in time order.
 type Walk struct {
-	ID        string
-	Name      string
-	URL       string
-	Lat, Lon  float64
-	LengthKm  float64
-	AscentM   int
-	DurationH float64
-	Hours     []Hour
+	ForecastFetchedAt time.Time
+	ID                string
+	Name              string
+	URL               string
+	Lat, Lon          float64
+	LengthKm          float64
+	AscentM           int
+	DurationH         float64
+	Hours             []Hour
 	// good is Hours under DefaultTest, worked out once: most questions use
 	// the default test, and a plan asks it of every walk on every day.
 	good       []Hour
@@ -142,15 +143,16 @@ type doc struct {
 	SchemaVersion int     `json:"schema_version"`
 	FetchedAt     *string `json:"fetched_at"`
 	Walks         []struct {
-		ID         string       `json:"id"`
-		Name       string       `json:"name"`
-		URL        string       `json:"url"`
-		Lat        float64      `json:"lat"`
-		Lon        float64      `json:"lon"`
-		DistanceKm float64      `json:"distance_km"`
-		AscentM    int          `json:"ascent_m"`
-		DurationH  float64      `json:"duration_h"`
-		Hours      [][]*float64 `json:"hours"`
+		ForecastFetchedAt *string      `json:"forecast_fetched_at"`
+		ID                string       `json:"id"`
+		Name              string       `json:"name"`
+		URL               string       `json:"url"`
+		Lat               float64      `json:"lat"`
+		Lon               float64      `json:"lon"`
+		DistanceKm        float64      `json:"distance_km"`
+		AscentM           int          `json:"ascent_m"`
+		DurationH         float64      `json:"duration_h"`
+		Hours             [][]*float64 `json:"hours"`
 	} `json:"walks"`
 }
 
@@ -196,6 +198,13 @@ func Parse(body []byte, version string) (*Dataset, error) {
 			nameKey:  Normalize(w.Name),
 		}
 		out.nameTokens = strings.Fields(out.nameKey)
+		if w.ForecastFetchedAt != nil && *w.ForecastFetchedAt != "" {
+			t, err := time.Parse(time.RFC3339, *w.ForecastFetchedAt)
+			if err != nil {
+				return nil, fmt.Errorf("walks: walk %s forecast_fetched_at: %w", w.ID, err)
+			}
+			out.ForecastFetchedAt = t.UTC()
+		}
 		if w.DurationH > longWalkHours {
 			out.shoulderHr = darkShoulderHours
 		}
@@ -299,10 +308,26 @@ func (d *Dataset) indexCoverage() {
 }
 
 func (d *Dataset) coverage(day int32) Coverage {
+	return coverageUntil(day, d.HourlyUntil)
+}
+
+// Horizon is the earlier dataset/entity horizon. Missing metadata is unknown.
+func (w *Walk) Horizon(datasetUntil time.Time) time.Time {
+	if w.ForecastFetchedAt.IsZero() || datasetUntil.IsZero() {
+		return time.Time{}
+	}
+	until := w.ForecastFetchedAt.Add(minHourlyHorizon)
+	if datasetUntil.Before(until) {
+		return datasetUntil
+	}
+	return until
+}
+
+func coverageUntil(day int32, until time.Time) Coverage {
 	switch {
-	case !d.HourlyUntil.Before(localHour(day, daylightEndHour)):
+	case !until.Before(localHour(day, daylightEndHour)):
 		return CoverageFull
-	case !d.HourlyUntil.After(localHour(day, daylightStartHour)):
+	case !until.After(localHour(day, daylightStartHour)):
 		return CoverageNone
 	}
 	return CoveragePartial
@@ -613,11 +638,13 @@ func dayHours(hours []Hour, day int32, cutoff int64) ([]Hour, bool) {
 
 // dayAt is the walk's assessed day: its good hours from cutoff (a Unix
 // time, the next top of the hour) on, and whether it can be decided.
-func (w *Walk) dayAt(day int32, cutoff int64, coverage Coverage, lim Limits) Day {
+func (w *Walk) dayAt(day int32, cutoff int64, until time.Time, coverage Coverage, lim Limits) Day {
 	all, _ := dayHours(w.Hours, day, cutoff)
+	all = beforeHorizon(all, until)
 	// The default test leaves a version 1 day as it is; a version 2 day
 	// loses the hours that fail it.
 	def, started := dayHours(w.good, day, cutoff)
+	def = beforeHorizon(def, until)
 	good, test := def, DefaultTest
 	limited := false
 	if lim.Active() {
@@ -682,9 +709,17 @@ func (d *Dataset) DayWithin(w *Walk, day int32, now time.Time, lim Limits) Day {
 	if cutoff.Before(now) {
 		cutoff = cutoff.Add(time.Hour)
 	}
-	dw := w.dayAt(day, cutoff.Unix(), d.CoverageOf(day), lim)
+	until := w.Horizon(d.HourlyUntil)
+	dw := w.dayAt(day, cutoff.Unix(), until, coverageUntil(day, until), lim)
 	dw.From = cutoff
 	return dw
+}
+
+func beforeHorizon(hours []Hour, until time.Time) []Hour {
+	end := sort.Search(len(hours), func(i int) bool {
+		return time.Unix(hours[i].Unix+3600, 0).After(until)
+	})
+	return hours[:end]
 }
 
 // ByID is the walk with id, or nil.

@@ -66,6 +66,31 @@ def _utc(dt):
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
+def test_entity_success_time_includes_empty_and_survives_scrape_prune(session, monkeypatch):
+    now = datetime(2026, 10, 23, 14, tzinfo=timezone(timedelta(hours=2)))
+    old = now.astimezone(timezone.utc) - timedelta(days=1)
+    session.add_all([_scraped(key, forecast_fetched_at=old) for key in ("full", "empty", "failed")])
+    session.add(_scraped("never"))
+    session.commit()
+    windows = {"full": [[int(now.timestamp()), 8, 0, 10, 20]], "empty": []}
+    assert jobs._write_walk_hours(session, windows, now) == 1
+    session.commit()
+    session.expire_all()
+    for key in ("full", "empty"):
+        assert _utc(session.get(Walk, key).forecast_fetched_at) == now
+    assert _utc(session.get(Walk, "failed").forecast_fetched_at) == old
+    assert session.get(Walk, "never").forecast_fetched_at is None
+    assert jobs._write_walk_hours(session, {}, now + timedelta(hours=1)) == 0
+    jobs._upsert_walks(session, [_scraped("full", name="Renamed")])
+    monkeypatch.setattr(jobs, "top_of_hour", lambda: now + timedelta(hours=2))
+    assert jobs._prune_elapsed(session) == 1
+    session.commit()
+    session.expire_all()
+    assert session.get(Walk, "full").name == "Renamed"
+    assert _utc(session.get(Walk, "full").forecast_fetched_at) == now
+    assert _utc(session.get(Walk, "empty").forecast_fetched_at) == now
+
+
 def _ts(dt: datetime) -> int:
     return int(dt.timestamp())
 

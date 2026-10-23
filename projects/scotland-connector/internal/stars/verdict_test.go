@@ -30,18 +30,18 @@ func TestNightVerdicts(t *testing.T) {
 		{"partial", NightWindow{}, night + 2, verdict.Unknown, "reaches only Thu 21:00"},
 		{"beyond", NightWindow{}, night + 3, verdict.Unknown, "Beyond the hourly forecast"},
 	} {
-		a := ds.AssessNight(&Site{}, &c.n, c.night, early, &Climate{Month: 10, ClearDark: 30, Dark: 120})
+		a := ds.AssessNight(&Site{ForecastFetchedAt: ds.HourlyUntil.Add(-48 * time.Hour)}, &c.n, c.night, early, &Climate{Month: 10, ClearDark: 30, Dark: 120})
 		if a.Verdict != c.want || !strings.Contains(a.Why, c.why) {
 			t.Errorf("%s: %s %q", c.name, a.Verdict, a.Why)
 		}
 	}
-	if a := ds.AssessNight(&Site{}, &NightWindow{}, night+3, early, &Climate{Month: 10, ClearDark: 30, Dark: 120}); !strings.Contains(a.Why, "In October about 25% of dark hours here are clear") {
+	if a := ds.AssessNight(&Site{ForecastFetchedAt: ds.HourlyUntil.Add(-48 * time.Hour)}, &NightWindow{}, night+3, early, &Climate{Month: 10, ClearDark: 30, Dark: 120}); !strings.Contains(a.Why, "In October about 25% of dark hours here are clear") {
 		t.Errorf("beyond the forecast quotes the climate: %q", a.Why)
 	}
 }
 
 func TestHourlyUntilFromSnapshot(t *testing.T) {
-	ds, err := Parse([]byte(`{"fetched_at":"2026-10-20T14:00:00+00:00","sites":[{"id":"a","lat":57,"lon":-4,"best_hours":[
+	ds, err := Parse([]byte(`{"fetched_at":"2026-10-20T14:00:00+00:00","sites":[{"forecast_fetched_at":"2026-10-20T14:00:00Z","id":"a","lat":57,"lon":-4,"best_hours":[
 	  {"time":"2026-10-23T02:00:00+00:00","cloud_area_fraction":1,"dark":true}]}]}`), []byte(`{"sites":[]}`), "v")
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestTruncatedSiteIsUnknownPastItsList(t *testing.T) {
 	night := NightDay(time.Date(2026, 10, 20, 22, 0, 0, 0, time.UTC))
 	last := Hour{Unix: time.Date(2026, 10, 20, 23, 0, 0, 0, time.UTC).Unix()}
 	early := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-	site := &Site{ClearTwilight: 40, Hours: []Hour{last}}
+	site := &Site{ForecastFetchedAt: ds.HourlyUntil.Add(-48 * time.Hour), ClearTwilight: 40, Hours: []Hour{last}}
 	if a := ds.AssessNight(site, &NightWindow{}, night+1, early, nil); a.Verdict != verdict.Unknown || !strings.Contains(a.Why, "only up to Wed 01:00") {
 		t.Fatalf("after the list: %s %q", a.Verdict, a.Why)
 	}
@@ -69,7 +69,7 @@ func TestTruncatedSiteIsUnknownPastItsList(t *testing.T) {
 		t.Fatalf("go on a capped site: %s %q", a.Verdict, a.Why)
 	}
 	// A whole list is believed.
-	if a := ds.AssessNight(&Site{ClearTwilight: 1, Hours: []Hour{last}}, &NightWindow{}, night+1, early, nil); a.Verdict != verdict.No {
+	if a := ds.AssessNight(&Site{ForecastFetchedAt: ds.HourlyUntil.Add(-48 * time.Hour), ClearTwilight: 1, Hours: []Hour{last}}, &NightWindow{}, night+1, early, nil); a.Verdict != verdict.No {
 		t.Fatalf("whole list: %s %q", a.Verdict, a.Why)
 	}
 }
@@ -82,7 +82,7 @@ func TestNightWording(t *testing.T) {
 	twilight := Hour{Unix: time.Date(2026, 10, 20, 18, 0, 0, 0, time.UTC).Unix()}
 	dark := Hour{Unix: time.Date(2026, 10, 20, 22, 0, 0, 0, time.UTC).Unix(), Dark: true}
 	n := NightWindow{ClearDark: 1, ClearTwilight: 2, Hours: []Hour{twilight, dark}}
-	a := ds.AssessNight(&Site{}, &n, night, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC), nil)
+	a := ds.AssessNight(&Site{ForecastFetchedAt: ds.HourlyUntil.Add(-48 * time.Hour)}, &n, night, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC), nil)
 	if !strings.Contains(a.Why, "from 23:00") {
 		t.Errorf("why %q names the twilight hour", a.Why)
 	}
@@ -96,15 +96,15 @@ func TestNightWording(t *testing.T) {
 		t.Errorf("twilight-only clear_from %v", from)
 	}
 	late := time.Date(2026, 10, 20, 23, 30, 0, 0, time.UTC)
-	if a := ds.AssessNight(&Site{}, &NightWindow{}, night, late, nil); a.Verdict != verdict.No || !strings.HasPrefix(a.Why, "No clear hour left tonight.") {
+	if a := ds.AssessNight(&Site{ForecastFetchedAt: ds.HourlyUntil.Add(-48 * time.Hour)}, &NightWindow{}, night, late, nil); a.Verdict != verdict.No || !strings.HasPrefix(a.Why, "No clear hour left tonight.") {
 		t.Errorf("night in progress: %s %q", a.Verdict, a.Why)
 	}
 }
 
 func TestCappedNear(t *testing.T) {
 	ds, err := Parse([]byte(`{"fetched_at":"2026-10-20T14:00:00+00:00","sites":[
-	  {"id":"capped","lat":57.0,"lon":-4.0,"clear_dark_hours":30,"clear_twilight_hours":30,"best_hours":[{"time":"2026-10-20T23:00:00+00:00","cloud_area_fraction":1,"dark":true}]},
-	  {"id":"whole","lat":57.01,"lon":-4.0,"clear_dark_hours":1,"clear_twilight_hours":1,"best_hours":[{"time":"2026-10-20T23:00:00+00:00","cloud_area_fraction":1,"dark":true}]}]}`), []byte(`{"sites":[]}`), "v")
+	  {"forecast_fetched_at":"2026-10-20T14:00:00Z","id":"capped","lat":57.0,"lon":-4.0,"clear_dark_hours":30,"clear_twilight_hours":30,"best_hours":[{"time":"2026-10-20T23:00:00+00:00","cloud_area_fraction":1,"dark":true}]},
+	  {"forecast_fetched_at":"2026-10-20T14:00:00Z","id":"whole","lat":57.01,"lon":-4.0,"clear_dark_hours":1,"clear_twilight_hours":1,"best_hours":[{"time":"2026-10-20T23:00:00+00:00","cloud_area_fraction":1,"dark":true}]}]}`), []byte(`{"sites":[]}`), "v")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestCloudyMoonGeometryIndependentOfForecast(t *testing.T) {
 		}
 		night := NightDay(now.Add(18 * time.Hour))
 		ds := &Dataset{HourlyUntil: now.Add(72 * time.Hour)}
-		site := &Site{Lat: 57, Lon: -4}
+		site := &Site{ForecastFetchedAt: now, Lat: 57, Lon: -4}
 		a := ds.AssessNight(site, &NightWindow{}, night, now, nil)
 		if a.Verdict != verdict.No || !strings.Contains(a.Why, "Moon illumination") || !strings.Contains(a.Why, "The moon is up") || strings.Contains(a.Why, "the moon below the horizon") {
 			t.Fatalf("%s: %+v", date, a)

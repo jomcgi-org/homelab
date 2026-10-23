@@ -80,7 +80,7 @@ func walkJSON(id string, lat, lon, duration float64, ascent int, offsets ...int)
 	for i, o := range offsets {
 		hours[i] = fmt.Sprintf("[%d,9.5,0.2,18,40]", base.Add(time.Duration(o)*time.Hour).Unix())
 	}
-	return fmt.Sprintf(`{"id":%q,"name":"Walk %s","url":"https://www.walkhighlands.co.uk/x/%s.shtml","lat":%g,"lon":%g,"distance_km":9.1,"ascent_m":%d,"duration_h":%g,"hours":[%s]}`,
+	return fmt.Sprintf(`{"forecast_fetched_at":"2026-06-15T06:20:00Z","id":%q,"name":"Walk %s","url":"https://www.walkhighlands.co.uk/x/%s.shtml","lat":%g,"lon":%g,"distance_km":9.1,"ascent_m":%d,"duration_h":%g,"hours":[%s]}`,
 		id, id, id, lat, lon, ascent, duration, strings.Join(hours, ","))
 }
 
@@ -97,14 +97,79 @@ func mustParse(t *testing.T, body string) *Dataset {
 	return ds
 }
 
+func TestEntityFreshnessFromSnapshot(t *testing.T) {
+	// Builder-shaped v2 rows, including successful empty and legacy entities.
+	row := func(id, field, hours string) string {
+		return fmt.Sprintf(`{"id":%q,"name":%q,"url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":5,"ascent_m":200,"duration_h":1,%s"hours":[%s]}`, id, id, field, hours)
+	}
+	rows := []string{
+		row("fresh", `"forecast_fetched_at":"2026-10-24T01:00:00+01:00",`, ""),
+		row("stale", `"forecast_fetched_at":"2026-10-23T00:00:00Z",`, ""),
+		row("legacy", "", ""), row("null", `"forecast_fetched_at":null,`, ""),
+		// A late observed hour extends the dataset, never this entity's cap.
+		row("late", `"forecast_fetched_at":"2026-10-23T00:00:00Z",`, fmt.Sprintf("[%d,10,0,10,20,0,0]", time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC).Unix())),
+	}
+	ds := mustParse(t, `{"schema_version":2,"fetched_at":"2026-10-24T00:00:00Z","walks":[`+strings.Join(rows, ",")+`]}`)
+	now := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
+	day := LocalDay(now) + 1 // UK clock falls back on this date.
+	wind := 30.0
+	for i, want := range []verdict.Verdict{verdict.No, verdict.Unknown, verdict.Unknown, verdict.Unknown, verdict.Unknown} {
+		w := &ds.Walks[i]
+		d := ds.DayWithin(w, day, now, Limits{MaxWindKmh: &wind})
+		a := w.Assess(d, ds.HourlyUntil)
+		if a.Verdict != want || strings.Contains(a.Why, "0001") {
+			t.Fatalf("%s: %+v %+v", w.ID, d, a)
+		}
+	}
+	fresh := &ds.Walks[0]
+	if got := fresh.Horizon(ds.HourlyUntil); !got.Equal(now.Add(48 * time.Hour)) {
+		t.Fatal(got)
+	}
+	// Exact daylight-end boundary is full; an instant earlier is partial.
+	end := localHour(day, daylightEndHour)
+	for _, tc := range []struct {
+		until time.Time
+		want  Coverage
+	}{
+		{end, CoverageFull}, {end.Add(-time.Nanosecond), CoveragePartial},
+		{localHour(day, daylightStartHour), CoverageNone},
+	} {
+		ds.HourlyUntil = tc.until // Cached global coverage must not be consulted.
+		if got := ds.DayFor(fresh, day, now).Coverage; got != tc.want {
+			t.Fatalf("until %v: %s want %s", tc.until, got, tc.want)
+		}
+	}
+	// Late rows cannot turn an expired entity into a positive assessment.
+	late := &ds.Walks[4]
+	if d := ds.DayFor(late, day+1, now); d.Doable || d.GoodHours != 0 || d.Coverage != CoverageNone {
+		t.Fatal(d)
+	}
+	bad := strings.ReplaceAll(snapshot(walkJSON("bad", 57, -4, 1, 0)), `"2026-06-15T06:20:00Z"`, `"yesterday"`)
+	if _, err := Parse([]byte(bad), "bad"); err == nil {
+		t.Fatal("malformed entity timestamp accepted")
+	}
+}
+
+func TestEntity48HourBoundaryWithObservedTail(t *testing.T) {
+	fetched := time.Date(2026, 10, 23, 13, 0, 0, 0, time.UTC)
+	until := fetched.Add(48 * time.Hour)
+	body := fmt.Sprintf(`{"schema_version":2,"fetched_at":"2026-10-24T13:00:00Z","walks":[{"id":"a","name":"A","url":"https://www.walkhighlands.co.uk/a.shtml","lat":57,"lon":-4,"duration_h":1,"forecast_fetched_at":%q,"hours":[[%d,10,0,10,20,0,0],[%d,10,0,10,20,0,0]]}]}`, fetched.Format(time.RFC3339), until.Add(-time.Hour).Unix(), until.Unix())
+	ds := mustParse(t, body)
+	w := &ds.Walks[0]
+	d := ds.DayFor(w, LocalDay(until), fetched)
+	if d.Coverage != CoveragePartial || d.GoodHours != 1 || d.Best == nil || !d.Best.End.Equal(until) {
+		t.Fatal(d)
+	}
+}
+
 func TestParseRejectsBadSnapshots(t *testing.T) {
 	for name, body := range map[string]string{
 		"not json":       `{`,
 		"future schema":  `{"schema_version":3,"walks":[` + walkJSON("a", 57, -4, 3, 0) + `]}`,
 		"v1 row as v2":   `{"schema_version":2,"walks":[` + walkJSON("a", 57, -4, 3, 0, 0) + `]}`,
-		"v2 row as v1":   `{"schema_version":1,"walks":[{"id":"a","name":"A","url":"u","duration_h":3,"hours":[[1781506800,9,0,10,20,0,10]]}]}`,
+		"v2 row as v1":   `{"schema_version":1,"walks":[{"forecast_fetched_at":"2026-06-15T06:20:00Z","id":"a","name":"A","url":"u","duration_h":3,"hours":[[1781506800,9,0,10,20,0,10]]}]}`,
 		"no walks":       `{"schema_version":1,"walks":[]}`,
-		"missing url":    `{"schema_version":1,"walks":[{"id":"a","name":"A","duration_h":3}]}`,
+		"missing url":    `{"schema_version":1,"walks":[{"forecast_fetched_at":"2026-06-15T06:20:00Z","id":"a","name":"A","duration_h":3}]}`,
 		"bad fetched_at": `{"schema_version":1,"fetched_at":"yesterday","walks":[` + walkJSON("a", 57, -4, 3, 0) + `]}`,
 	} {
 		if _, err := Parse([]byte(body), "v"); err == nil {
@@ -275,7 +340,7 @@ func TestParseV2AndTheDefaultTest(t *testing.T) {
 		return fmt.Sprintf("[%d,9.5,%g,%g,40,%s,30]", base.Add(time.Duration(o)*time.Hour).Unix(), rain, wind, fog)
 	}
 	body := `{"schema_version":2,"generated_at":"2026-06-15T06:30:00+00:00","fetched_at":"2026-06-15T06:20:00+00:00","walks":[` +
-		`{"id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":9,"ascent_m":400,"duration_h":3,"hours":[` +
+		`{"forecast_fetched_at":"2026-06-15T06:20:00Z","id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":9,"ascent_m":400,"duration_h":3,"hours":[` +
 		strings.Join([]string{hour(0, 0, 15, "null"), hour(1, 3.5, 15, "5"), hour(2, 0.2, 20, "0"), hour(3, 0, 90, "0"), hour(4, 0, 15, "0")}, ",") + `]}]}`
 	ds := mustParse(t, body)
 	if !ds.Complete {
@@ -316,7 +381,7 @@ func TestParseV2AndTheDefaultTest(t *testing.T) {
 // One hour row without a time is skipped and counted; the rest of the walk
 // and the snapshot stand.
 func TestParseSkipsAnHourWithoutATime(t *testing.T) {
-	ds := mustParse(t, `{"schema_version":1,"walks":[{"id":"a","name":"A","url":"u","duration_h":3,"hours":[[null,9,0,10,20],[1781506800,9,0,10,20]]}]}`)
+	ds := mustParse(t, `{"schema_version":1,"walks":[{"forecast_fetched_at":"2026-06-15T06:20:00Z","id":"a","name":"A","url":"u","duration_h":3,"hours":[[null,9,0,10,20],[1781506800,9,0,10,20]]}]}`)
 	if ds.SkippedHours != 1 || len(ds.Walks[0].Hours) != 1 {
 		t.Fatalf("skipped %d, hours %d", ds.SkippedHours, len(ds.Walks[0].Hours))
 	}
@@ -333,7 +398,7 @@ func v2Day(t *testing.T, duration float64, rain map[int]float64) *Dataset {
 		}
 	}
 	return mustParse(t, `{"schema_version":2,"fetched_at":"2026-06-15T06:20:00+00:00","walks":[`+
-		fmt.Sprintf(`{"id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":20,"ascent_m":900,"duration_h":%g,"hours":[%s]}`, duration, strings.Join(hours, ","))+`]}`)
+		fmt.Sprintf(`{"forecast_fetched_at":"2026-06-15T06:20:00Z","id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":20,"ascent_m":900,"duration_h":%g,"hours":[%s]}`, duration, strings.Join(hours, ","))+`]}`)
 }
 
 // Loosening adds good hours and rules none out, so it cannot take away the
@@ -393,7 +458,7 @@ func TestWholeDaylightHoursMatchHikes(t *testing.T) {
 						}
 						rows = append(rows, fmt.Sprintf("[%d,10,0,10,20%s]", at.Unix(), extra))
 					}
-					ds := mustParse(t, fmt.Sprintf(`{"schema_version":%d,"fetched_at":%q,"walks":[{"id":"cow","name":"Cow Hill","url":"https://www.walkhighlands.co.uk/cow.shtml","lat":56.82,"lon":-5.1,"duration_h":%g,"hours":[%s]}]}`, schema, day.Format(time.RFC3339), duration, strings.Join(rows, ",")))
+					ds := mustParse(t, fmt.Sprintf(`{"schema_version":%d,"fetched_at":%q,"walks":[{"forecast_fetched_at":%q,"id":"cow","name":"Cow Hill","url":"https://www.walkhighlands.co.uk/cow.shtml","lat":56.82,"lon":-5.1,"duration_h":%g,"hours":[%s]}]}`, schema, day.Format(time.RFC3339), day.Format(time.RFC3339), duration, strings.Join(rows, ",")))
 					w := &ds.Walks[0]
 					if len(w.Hours) == 0 {
 						t.Fatal("no daylight hours")
@@ -437,7 +502,7 @@ func TestTodayCutoffCannotMoveFinishPastDaylightSlot(t *testing.T) {
 		{4, 13, 0, verdict.Go}, {4, 13, 1, verdict.No}, {5, 12, 0, verdict.Go}, {5, 13, 0, verdict.No}, {4.25, 12, 0, verdict.Go}, {4.25, 13, 0, verdict.No},
 	} {
 		t.Run(fmt.Sprintf("%.2f/%02d:%02d", c.duration, c.hour, c.minute), func(t *testing.T) {
-			ds := mustParse(t, fmt.Sprintf(`{"schema_version":1,"fetched_at":%q,"walks":[{"id":"cow","name":"Cow Hill","url":"https://www.walkhighlands.co.uk/cow.shtml","lat":56.82,"lon":-5.1,"duration_h":%g,"hours":[%s]}]}`, day.Format(time.RFC3339), c.duration, strings.Join(rows, ",")))
+			ds := mustParse(t, fmt.Sprintf(`{"schema_version":1,"fetched_at":%q,"walks":[{"forecast_fetched_at":%q,"id":"cow","name":"Cow Hill","url":"https://www.walkhighlands.co.uk/cow.shtml","lat":56.82,"lon":-5.1,"duration_h":%g,"hours":[%s]}]}`, day.Format(time.RFC3339), day.Format(time.RFC3339), c.duration, strings.Join(rows, ",")))
 			w := &ds.Walks[0]
 			now := day.Add(time.Duration(c.hour)*time.Hour + time.Duration(c.minute)*time.Minute)
 			d := ds.DayFor(w, LocalDay(day), now)
@@ -462,7 +527,7 @@ func TestDoableMatchesHikesAtFractionalSunset(t *testing.T) {
 		duration float64
 		want     bool
 	}{{4, true}, {5, true}, {5.5, false}} {
-		ds := mustParse(t, fmt.Sprintf(`{"schema_version":1,"fetched_at":%q,"walks":[{"id":"cow","name":"Cow Hill","url":"https://www.walkhighlands.co.uk/cow.shtml","lat":56.82,"lon":-5.1,"duration_h":%g,"hours":[%s]}]}`, day.Format(time.RFC3339), c.duration, strings.Join(rows, ",")))
+		ds := mustParse(t, fmt.Sprintf(`{"schema_version":1,"fetched_at":%q,"walks":[{"forecast_fetched_at":%q,"id":"cow","name":"Cow Hill","url":"https://www.walkhighlands.co.uk/cow.shtml","lat":56.82,"lon":-5.1,"duration_h":%g,"hours":[%s]}]}`, day.Format(time.RFC3339), day.Format(time.RFC3339), c.duration, strings.Join(rows, ",")))
 		d := ds.DayFor(&ds.Walks[0], LocalDay(day), day)
 		if d.GoodHours != 4 || d.Doable != c.want {
 			t.Fatalf("duration %g: %+v", c.duration, d)

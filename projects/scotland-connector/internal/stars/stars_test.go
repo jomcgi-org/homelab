@@ -6,7 +6,84 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 )
+
+func TestEntityFreshnessFromSnapshot(t *testing.T) {
+	for _, date := range []string{"2026-03-28", "2026-10-24"} {
+		now, _ := time.Parse(time.DateOnly, date)
+		row := func(id, field, hours string) string {
+			return fmt.Sprintf(`{"id":%q,"name":null,"lat":57,"lon":-4,"altitude_m":100,"lp_zone":"rural","clear_dark_hours":0,"clear_twilight_hours":0,%s"best_hours":[%s]}`, id, field, hours)
+		}
+		stamp := func(at time.Time) string { return fmt.Sprintf(`"forecast_fetched_at":%q,`, at.Format(time.RFC3339)) }
+		body := fmt.Sprintf(`{"fetched_at":%q,"count":4,"total_sites":4,"darkness":"none","sites":[%s]}`, now.Format(time.RFC3339), strings.Join([]string{
+			row("fresh", stamp(now), ""), row("stale", stamp(now.Add(-24*time.Hour)), ""),
+			row("legacy", "", ""), row("null", `"forecast_fetched_at":null,`, ""),
+		}, ","))
+		ds, err := Parse([]byte(body), []byte(`{"sites":[]}`), "v")
+		if err != nil {
+			t.Fatal(err)
+		}
+		night := NightDay(now.Add(18*time.Hour)) + 1
+		for i, want := range []verdict.Verdict{verdict.Unknown, verdict.Unknown, verdict.Unknown, verdict.Unknown} {
+			// Both DST nights have a partially known fresh forecast, while
+			// the stale and absent entities have no coverage at all.
+			a := ds.AssessNight(&ds.Sites[i], &NightWindow{}, night, now, nil)
+			if a.Verdict != want || strings.Contains(a.Why, "0001") {
+				t.Fatalf("%s %s: %+v", date, ds.Sites[i].ID, a)
+			}
+			if i == 0 && a.Coverage != CoveragePartial || i > 0 && a.Coverage != CoverageNone {
+				t.Fatal(a)
+			}
+		}
+		fresh := &ds.Sites[0]
+		if a := ds.AssessNight(fresh, &NightWindow{}, night-1, now, nil); a.Verdict != verdict.No {
+			t.Fatal(a)
+		}
+		if !fresh.Horizon(ds.HourlyUntil).Equal(now.Add(48 * time.Hour)) {
+			t.Fatal("48h cap changed across DST")
+		}
+		end := localHour(night, nightEndHour)
+		for _, tc := range []struct {
+			until time.Time
+			want  Coverage
+		}{
+			{end, CoverageFull}, {end.Add(-time.Nanosecond), CoveragePartial},
+			{localHour(night-1, nightStartHour), CoverageNone},
+		} {
+			ds.HourlyUntil = tc.until
+			if got := ds.AssessNight(fresh, &NightWindow{}, night-1, now, nil).Coverage; got != tc.want {
+				t.Fatalf("%s %v: %s want %s", date, tc.until, got, tc.want)
+			}
+		}
+		bad := strings.Replace(body, stamp(now), `"forecast_fetched_at":"yesterday",`, 1)
+		if _, err := Parse([]byte(bad), []byte(`{"sites":[]}`), "bad"); err == nil {
+			t.Fatal("malformed entity timestamp accepted")
+		}
+	}
+}
+
+func TestLateHoursCannotDefeatEntityCap(t *testing.T) {
+	body := `{"fetched_at":"2026-10-24T00:00:00Z","sites":[{"id":"old","lat":57,"lon":-4,"forecast_fetched_at":"2026-10-23T00:00:00Z","clear_dark_hours":4,"clear_twilight_hours":4,"best_hours":[
+	{"time":"2026-10-24T23:00:00Z","cloud_area_fraction":0,"dark":true},
+	{"time":"2026-10-25T00:00:00Z","cloud_area_fraction":0,"dark":true},
+	{"time":"2026-10-25T01:00:00Z","cloud_area_fraction":0,"dark":true},
+	{"time":"2026-10-25T02:00:00Z","cloud_area_fraction":0,"dark":true}]}]}`
+	ds, err := Parse([]byte(body), []byte(`{"sites":[]}`), "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	w := ds.Windows(WindowsQuery{Lat: 57, Lon: -4, RadiusKm: 5, Nights: 1, Limit: 1, Now: now})[0]
+	if w.ClearDark != 1 || w.Nights[0].ClearDark != 1 {
+		t.Fatal(w)
+	}
+	a := ds.AssessNight(w.Site, &w.Nights[0], NightDay(now.Add(6*time.Hour)), now, nil)
+	if a.Verdict != verdict.Unknown {
+		t.Fatal(a)
+	}
+}
 
 func history(ids ...string) string {
 	var parts []string
@@ -19,16 +96,16 @@ func history(ids ...string) string {
 const fixtureSites = `{
  "count": 3, "total_sites": 3, "darkness": "astronomical", "fetched_at": "2026-10-19T11:05:00+00:00",
  "sites": [
-  {"id":"near-cloudy","name":null,"lat":57.20,"lon":-3.80,"altitude_m":300,"lp_zone":"rural",
+  {"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"near-cloudy","name":null,"lat":57.20,"lon":-3.80,"altitude_m":300,"lp_zone":"rural",
    "clear_dark_hours":1,"clear_twilight_hours":1,
    "best_hours":[{"time":"2026-10-19T22:00:00+00:00","cloud_area_fraction":5,"dark":true}]},
-  {"id":"far-clear","name":null,"lat":57.60,"lon":-3.80,"altitude_m":120,"lp_zone":"pristine",
+  {"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"far-clear","name":null,"lat":57.60,"lon":-3.80,"altitude_m":120,"lp_zone":"pristine",
    "clear_dark_hours":3,"clear_twilight_hours":3,
    "best_hours":[
      {"time":"2026-10-20T23:00:00+00:00","cloud_area_fraction":1,"dark":true},
      {"time":"2026-10-19T21:00:00+00:00","cloud_area_fraction":2,"dark":true},
      {"time":"2026-10-20T01:00:00+00:00","cloud_area_fraction":3,"dark":true}]},
-  {"id":"out-of-range","name":null,"lat":60.15,"lon":-1.15,"altitude_m":50,"lp_zone":"pristine",
+  {"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"out-of-range","name":null,"lat":60.15,"lon":-1.15,"altitude_m":50,"lp_zone":"pristine",
    "clear_dark_hours":30,"clear_twilight_hours":30,"best_hours":[]}
  ]}`
 
@@ -64,11 +141,11 @@ func TestParse(t *testing.T) {
 func TestParseRejectsBrokenInput(t *testing.T) {
 	cases := map[string][2]string{
 		"bad json":       {`{`, history()},
-		"duplicate id":   {`{"sites":[{"id":"a","lat":1,"lon":1},{"id":"a","lat":1,"lon":1}]}`, history()},
-		"empty id":       {`{"sites":[{"id":"","lat":1,"lon":1}]}`, history()},
-		"bad coordinate": {`{"sites":[{"id":"a","lat":91,"lon":1}]}`, history()},
-		"bad hour":       {`{"sites":[{"id":"a","lat":1,"lon":1,"best_hours":[{"time":"soon"}]}]}`, history()},
-		"short history":  {`{"sites":[]}`, `{"sites":[{"id":"a","clear":[1],"dark":[1]}]}`},
+		"duplicate id":   {`{"sites":[{"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"a","lat":1,"lon":1},{"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"a","lat":1,"lon":1}]}`, history()},
+		"empty id":       {`{"sites":[{"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"","lat":1,"lon":1}]}`, history()},
+		"bad coordinate": {`{"sites":[{"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"a","lat":91,"lon":1}]}`, history()},
+		"bad hour":       {`{"sites":[{"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"a","lat":1,"lon":1,"best_hours":[{"time":"soon"}]}]}`, history()},
+		"short history":  {`{"sites":[]}`, `{"sites":[{"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"a","clear":[1],"dark":[1]}]}`},
 	}
 	for name, c := range cases {
 		if _, err := Parse([]byte(c[0]), []byte(c[1]), "v"); err == nil {
@@ -150,7 +227,7 @@ func TestFirstNightRollsOverInTheMorning(t *testing.T) {
 		}
 	}
 
-	ds, err := Parse([]byte(`{"sites":[{"id":"a","lat":57.2,"lon":-3.8,"clear_dark_hours":2,"clear_twilight_hours":2,"best_hours":[
+	ds, err := Parse([]byte(`{"fetched_at":"2026-11-10T09:00:00Z","sites":[{"forecast_fetched_at":"2026-11-10T09:00:00Z","id":"a","lat":57.2,"lon":-3.8,"clear_dark_hours":2,"clear_twilight_hours":2,"best_hours":[
 		{"time":"2026-11-10T19:00:00Z","cloud_area_fraction":1,"dark":true},
 		{"time":"2026-11-10T22:00:00Z","cloud_area_fraction":1,"dark":true}]}]}`), []byte(`{"sites":[]}`), "v")
 	if err != nil {
@@ -171,7 +248,7 @@ func TestWithinMatchesBruteForce(t *testing.T) {
 			if n > 0 {
 				b.WriteByte(',')
 			}
-			fmt.Fprintf(&b, `{"id":"s%d","lat":%.4f,"lon":%.4f}`, n, lat, lon)
+			fmt.Fprintf(&b, `{"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"s%d","lat":%.4f,"lon":%.4f}`, n, lat, lon)
 			n++
 		}
 	}
@@ -208,7 +285,7 @@ func TestWithinKeepsEdgeSitesAtSmallRadius(t *testing.T) {
 	for i := 0; i < 2000; i++ {
 		lon := -3.75 - east - 0.0001 + float64(i)*1e-7
 		siteLon := lon + east
-		ds, err := Parse([]byte(fmt.Sprintf(`{"sites":[{"id":"a","lat":57,"lon":%.9f}]}`, siteLon)), []byte(`{"sites":[]}`), "v")
+		ds, err := Parse([]byte(fmt.Sprintf(`{"sites":[{"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"a","lat":57,"lon":%.9f}]}`, siteLon)), []byte(`{"sites":[]}`), "v")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -234,7 +311,7 @@ func BenchmarkWindows(b *testing.B) {
 			if n > 0 {
 				sb.WriteByte(',')
 			}
-			fmt.Fprintf(&sb, `{"id":"s%d","lat":%.4f,"lon":%.4f,"lp_zone":"rural","clear_dark_hours":6,"clear_twilight_hours":6,"best_hours":[`, n, lat, lon)
+			fmt.Fprintf(&sb, `{"forecast_fetched_at":"2026-10-19T11:05:00Z","id":"s%d","lat":%.4f,"lon":%.4f,"lp_zone":"rural","clear_dark_hours":6,"clear_twilight_hours":6,"best_hours":[`, n, lat, lon)
 			for h := 0; h < 25; h++ {
 				if h > 0 {
 					sb.WriteByte(',')
@@ -262,7 +339,7 @@ func TestMoonlessHoursFollowTheMoon(t *testing.T) {
 	// Two clear-dark hours at Aviemore on the night of the 20th: at 22:00Z the
 	// 71%-lit moon is 13 deg up, at 03:00Z it has set (ephem: -19 deg). Only
 	// the second is moonless.
-	ds, err := Parse([]byte(`{"sites":[{"id":"a","lat":57.19,"lon":-3.83,"clear_dark_hours":2,"clear_twilight_hours":2,"best_hours":[
+	ds, err := Parse([]byte(`{"fetched_at":"2026-10-20T11:05:00Z","sites":[{"forecast_fetched_at":"2026-10-20T11:05:00Z","id":"a","lat":57.19,"lon":-3.83,"clear_dark_hours":2,"clear_twilight_hours":2,"best_hours":[
 	  {"time":"2026-10-20T22:00:00+00:00","cloud_area_fraction":1,"dark":true},
 	  {"time":"2026-10-21T03:00:00+00:00","cloud_area_fraction":1,"dark":true}]}]}`), []byte(`{"sites":[]}`), "v")
 	if err != nil {

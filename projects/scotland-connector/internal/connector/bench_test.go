@@ -25,7 +25,7 @@ func dense(b *testing.B) *connector.Service {
 			if n > 0 {
 				sb.WriteByte(',')
 			}
-			fmt.Fprintf(&sb, `{"id":"s%d","lat":%.4f,"lon":%.4f,"lp_zone":"rural","clear_dark_hours":6,"clear_twilight_hours":6,"best_hours":[`, n, lat, lon)
+			fmt.Fprintf(&sb, `{"forecast_fetched_at":"2026-10-19T14:05:00Z","id":"s%d","lat":%.4f,"lon":%.4f,"lp_zone":"rural","clear_dark_hours":6,"clear_twilight_hours":6,"best_hours":[`, n, lat, lon)
 			for h := 0; h < 25; h++ {
 				if h > 0 {
 					sb.WriteByte(',')
@@ -52,7 +52,7 @@ func dense(b *testing.B) *connector.Service {
 		for h := int64(0); h < 9; h++ {
 			hours = append(hours, fmt.Sprintf("[%d,7,0.1,20,40]", day+h*3600))
 		}
-		fmt.Fprintf(&wb, `{"id":"w%d","name":"Walk %d","url":"https://www.walkhighlands.co.uk/x/%d.shtml","lat":%.3f,"lon":%.3f,"distance_km":10,"ascent_m":500,"duration_h":%d,"hours":[%s]}`,
+		fmt.Fprintf(&wb, `{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"w%d","name":"Walk %d","url":"https://www.walkhighlands.co.uk/x/%d.shtml","lat":%.3f,"lon":%.3f,"distance_km":10,"ascent_m":500,"duration_h":%d,"hours":[%s]}`,
 			i, i, i, 56.5+float64(i%60)*0.02, -4.8+float64(i/60)*0.04, 2+i%8, strings.Join(hours, ","))
 	}
 	wb.WriteString(`]}`)

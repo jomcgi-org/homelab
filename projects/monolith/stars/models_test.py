@@ -8,8 +8,16 @@ from datetime import datetime, timezone
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
+from sqlalchemy.dialects import postgresql
 
 from stars.models import Site, SiteHour, SiteMonthClimatology
+
+
+def test_forecast_timestamp_is_nullable_timestamptz():
+    column = Site.__table__.c.forecast_fetched_at
+    assert column.nullable
+    assert column.default is None and column.server_default is None
+    assert column.type.compile(dialect=postgresql.dialect()) == "TIMESTAMP WITH TIME ZONE"
 
 
 @pytest.fixture(name="session")
@@ -85,6 +93,7 @@ def test_site_roundtrip(session):
     assert loaded.altitude_m == 312
     assert loaded.lp_zone == "1a"
     assert loaded.source == "grid"
+    assert loaded.forecast_fetched_at is None
     # SQLite returns naive datetimes; assert the type only, not tzinfo.
     # Production is Postgres TIMESTAMPTZ where the value round-trips tz-aware.
     assert isinstance(loaded.updated_at, datetime)

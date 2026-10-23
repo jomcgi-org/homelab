@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,10 @@ func TestWalkStoreKeepsLastGoodSnapshot(t *testing.T) {
 		t.Fatalf("bad upload err=%v swapped=%v", err, s.Current() != first)
 	}
 	// An R2 outage keeps it too.
+	f.objects["walks.json"] = r2.Object{Body: []byte(strings.Replace(walksV1, `"id":"a"`, `"id":"a","forecast_fetched_at":"invalid"`, 1)), ETag: `"w3"`}
+	if err := s.Refresh(ctx); err == nil || s.Current() != first {
+		t.Fatalf("bad entity timestamp err=%v swapped=%v", err, s.Current() != first)
+	}
 	f.fail = fmt.Errorf("%w: stars/walks.json", r2.ErrNotFound)
 	if err := s.Refresh(ctx); !errors.Is(err, r2.ErrNotFound) || s.Current() != first {
 		t.Fatalf("outage err=%v", err)

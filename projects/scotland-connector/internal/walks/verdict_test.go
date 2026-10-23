@@ -136,7 +136,7 @@ func tempWalk(t *testing.T, duration float64, temps map[int]float64) *Dataset {
 			hours = append(hours, fmt.Sprintf("[%d,%g,0,10,20]", base.Add(time.Duration(o)*time.Hour).Unix(), c))
 		}
 	}
-	return mustParse(t, snapshot(fmt.Sprintf(`{"id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":20,"ascent_m":900,"duration_h":%g,"hours":[%s]}`, duration, strings.Join(hours, ","))))
+	return mustParse(t, snapshot(fmt.Sprintf(`{"forecast_fetched_at":"2026-06-15T06:20:00Z","id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":20,"ascent_m":900,"duration_h":%g,"hours":[%s]}`, duration, strings.Join(hours, ","))))
 }
 
 func temps(cold, warm [2]int) map[int]float64 {
@@ -239,7 +239,7 @@ func TestOtherwiseDryWhateverTheGapFailed(t *testing.T) {
 		}
 		hours = append(hours, fmt.Sprintf("[%d,9.5,%g,%d,40]", base.Add(time.Duration(o)*time.Hour).Unix(), rain, wind))
 	}
-	ds := mustParse(t, snapshot(`{"id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":9,"ascent_m":300,"duration_h":4,"hours":[`+strings.Join(hours, ",")+`]}`))
+	ds := mustParse(t, snapshot(`{"forecast_fetched_at":"2026-06-15T06:20:00Z","id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57,"lon":-4,"distance_km":9,"ascent_m":300,"duration_h":4,"hours":[`+strings.Join(hours, ",")+`]}`))
 	w := &ds.Walks[0]
 	f := func(v float64) *float64 { return &v }
 	a := w.Assess(ds.DayWithin(w, LocalDay(base), base, Limits{MaxWindKmh: f(30)}), ds.HourlyUntil)

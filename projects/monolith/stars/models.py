@@ -10,6 +10,7 @@ drop hours once their clock hour ends.
 
 from datetime import datetime, timezone
 
+from sqlalchemy import Column, DateTime
 from sqlmodel import Field, SQLModel
 
 
@@ -24,6 +25,9 @@ class Site(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     altitude_m: int = Field(default=0)
     lp_zone: str = Field(default="unknown")
     source: str = Field(default="grid")
+    forecast_fetched_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
+from sqlalchemy.dialects import postgresql
 
 from hikes.models import Walk, WalkHour
 
@@ -61,6 +62,14 @@ def test_walk_roundtrip(session):
     assert loaded.longitude == -4.633
     assert isinstance(loaded.scraped_at, datetime)
     assert isinstance(loaded.created_at, datetime)
+    assert loaded.forecast_fetched_at is None
+
+
+def test_forecast_timestamp_is_nullable_timestamptz():
+    column = Walk.__table__.c.forecast_fetched_at
+    assert column.nullable
+    assert column.default is None and column.server_default is None
+    assert column.type.compile(dialect=postgresql.dialect()) == "TIMESTAMP WITH TIME ZONE"
 
 
 def test_walk_hour_roundtrip(session):

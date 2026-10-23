@@ -37,6 +37,45 @@ func check(t *testing.T, items ...connector.CheckItem) (*connector.Envelope, []c
 	return env, env.Data.(connector.CheckResult).Items
 }
 
+func TestEntityFreshnessAcrossCheckAndCombinedPlan(t *testing.T) {
+	// The real snapshot shapes carry independent times. A newer entity
+	// keeps dataset metadata fresh while the requested entity expires.
+	for _, stamp := range []string{`"2026-10-18T00:00:00Z"`, `null`} {
+		walkBody := strings.Replace(fixture.Walks, `"forecast_fetched_at":"2026-10-19T14:20:00Z"`, `"forecast_fetched_at":`+stamp, 1)
+		starBody := strings.Replace(fixture.Sites, `"forecast_fetched_at":"2026-10-19T14:05:00Z"`, `"forecast_fetched_at":`+stamp, 1)
+		wd, err := walks.Parse([]byte(walkBody), "walks")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sd, err := stars.Parse([]byte(starBody), []byte(fixture.History), "stars")
+		if err != nil {
+			t.Fatal(err)
+		}
+		svc := fixture.Service(true)
+		svc.Walks, svc.Data = fixture.WalkSource{DS: wd}, fixture.Source{DS: sd}
+		env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{
+			{Activity: "walk", Date: "2026-10-20", WalkID: "wh-meall-a-bhuachaille"},
+			{Activity: "stargaze", Date: "2026-10-20", Lat: f(57.30), Lon: f(-3.70)},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range env.Data.(connector.CheckResult).Items {
+			if item.Verdict != verdict.Unknown || strings.Contains(item.Why, "0001") {
+				t.Fatalf("%s: %+v", stamp, item)
+			}
+		}
+		plan, err := svc.Plan(connector.PlanParams{Lat: f(57.30), Lon: f(-3.70), From: s("2026-10-20"), To: s("2026-10-20")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := plan.Data.(connector.PlanResult).Days[0]
+		if len(day.Walks) != 0 || len(day.Stargazing) != 0 || day.WalkNote == "" || day.StarNote == "" {
+			t.Fatalf("%s: %+v", stamp, day)
+		}
+	}
+}
+
 func sourceNames(m connector.Meta) string {
 	var names []string
 	for _, src := range m.Sources {
@@ -235,10 +274,10 @@ func TestCheckNearbyWalksAreSubstitutes(t *testing.T) {
 		return strings.Join(h, ",")
 	}
 	body := `{"schema_version":1,"fetched_at":"2026-10-19T14:20:00+00:00","walks":[` +
-		`{"id":"asked","name":"Asked","url":"https://www.walkhighlands.co.uk/a.shtml","lat":57.1,"lon":-3.7,"distance_km":12,"ascent_m":800,"duration_h":6,"hours":[` + hours(2) + `]},` +
-		`{"id":"similar","name":"Similar","url":"https://www.walkhighlands.co.uk/s.shtml","lat":57.12,"lon":-3.7,"distance_km":11,"ascent_m":700,"duration_h":5,"hours":[` + hours(6) + `]},` +
-		`{"id":"short","name":"Short","url":"https://www.walkhighlands.co.uk/b.shtml","lat":57.1,"lon":-3.71,"distance_km":3,"ascent_m":50,"duration_h":1,"hours":[` + hours(6) + `]},` +
-		`{"id":"far","name":"Far","url":"https://www.walkhighlands.co.uk/f.shtml","lat":57.5,"lon":-3.7,"distance_km":12,"ascent_m":800,"duration_h":6,"hours":[` + hours(6) + `]}]}`
+		`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"asked","name":"Asked","url":"https://www.walkhighlands.co.uk/a.shtml","lat":57.1,"lon":-3.7,"distance_km":12,"ascent_m":800,"duration_h":6,"hours":[` + hours(2) + `]},` +
+		`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"similar","name":"Similar","url":"https://www.walkhighlands.co.uk/s.shtml","lat":57.12,"lon":-3.7,"distance_km":11,"ascent_m":700,"duration_h":5,"hours":[` + hours(6) + `]},` +
+		`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"short","name":"Short","url":"https://www.walkhighlands.co.uk/b.shtml","lat":57.1,"lon":-3.71,"distance_km":3,"ascent_m":50,"duration_h":1,"hours":[` + hours(6) + `]},` +
+		`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"far","name":"Far","url":"https://www.walkhighlands.co.uk/f.shtml","lat":57.5,"lon":-3.7,"distance_km":12,"ascent_m":800,"duration_h":6,"hours":[` + hours(6) + `]}]}`
 	wk, err := walks.Parse([]byte(body), "w")
 	if err != nil {
 		t.Fatal(err)
@@ -295,9 +334,9 @@ func TestTonightAfterMidnight(t *testing.T) {
 func TestCappedSiteOutsideTheTopIsStillUnknown(t *testing.T) {
 	var sites []string
 	for i := 0; i < 60; i++ {
-		sites = append(sites, fmt.Sprintf(`{"id":"near-%02d","lat":%.3f,"lon":-3.8,"lp_zone":"rural","clear_dark_hours":0,"clear_twilight_hours":0,"best_hours":[]}`, i, 57.0+float64(i)*0.001))
+		sites = append(sites, fmt.Sprintf(`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"near-%02d","lat":%.3f,"lon":-3.8,"lp_zone":"rural","clear_dark_hours":0,"clear_twilight_hours":0,"best_hours":[]}`, i, 57.0+float64(i)*0.001))
 	}
-	sites = append(sites, `{"id":"capped","lat":57.08,"lon":-3.8,"lp_zone":"rural","clear_dark_hours":30,"clear_twilight_hours":30,"best_hours":[{"time":"2026-10-19T22:00:00+00:00","cloud_area_fraction":1,"dark":true}]}`)
+	sites = append(sites, `{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"capped","lat":57.08,"lon":-3.8,"lp_zone":"rural","clear_dark_hours":30,"clear_twilight_hours":30,"best_hours":[{"time":"2026-10-19T22:00:00+00:00","cloud_area_fraction":1,"dark":true}]}`)
 	sky, err := stars.Parse([]byte(`{"fetched_at":"2026-10-19T14:05:00+00:00","sites":[`+strings.Join(sites, ",")+`]}`), []byte(`{"sites":[]}`), "v")
 	if err != nil {
 		t.Fatal(err)
@@ -464,7 +503,7 @@ func v2Walks(t *testing.T) *walks.Dataset {
 		hours = append(hours, fmt.Sprintf("[%d,8,%g,%d,50,null,40]", 1792483200+i*3600, rain, wind))
 	}
 	body := `{"schema_version":2,"fetched_at":"2026-10-19T14:20:00+00:00","walks":[` +
-		`{"id":"wet","name":"Wet Walk","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57.17,"lon":-3.67,"distance_km":9,"ascent_m":400,"duration_h":3,"hours":[` + strings.Join(hours, ",") + `]}]}`
+		`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"wet","name":"Wet Walk","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57.17,"lon":-3.67,"distance_km":9,"ascent_m":400,"duration_h":3,"hours":[` + strings.Join(hours, ",") + `]}]}`
 	ds, err := walks.Parse([]byte(body), "w2")
 	if err != nil {
 		t.Fatal(err)
@@ -633,7 +672,7 @@ func TestWireShape(t *testing.T) {
 }
 
 func TestCloudyPlanKeepsMoonContext(t *testing.T) {
-	sky, err := stars.Parse([]byte(`{"fetched_at":"2026-10-20T14:00:00+00:00","sites":[{"id":"cloudy","lat":57,"lon":-4,"best_hours":[]}]}`), []byte(`{"sites":[]}`), "synthetic")
+	sky, err := stars.Parse([]byte(`{"fetched_at":"2026-10-20T14:00:00+00:00","sites":[{"forecast_fetched_at":"2026-10-20T14:00:00Z","id":"cloudy","lat":57,"lon":-4,"best_hours":[]}]}`), []byte(`{"sites":[]}`), "synthetic")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +720,7 @@ func refinementWalks(t *testing.T) *walks.Dataset {
 			}
 			hours = append(hours, fmt.Sprintf("[%d,10,%.1f,20,90,0,%s]", 1792483200+h*3600, rain, low))
 		}
-		rows = append(rows, fmt.Sprintf(`{"id":%q,"name":%q,"url":"https://example.com/walk","lat":%g,"lon":-4,"distance_km":%g,"ascent_m":%d,"duration_h":%g,"hours":[%s]}`, r.id, r.id, r.lat, r.length, r.ascent, r.duration, strings.Join(hours, ",")))
+		rows = append(rows, fmt.Sprintf(`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":%q,"name":%q,"url":"https://example.com/walk","lat":%g,"lon":-4,"distance_km":%g,"ascent_m":%d,"duration_h":%g,"hours":[%s]}`, r.id, r.id, r.lat, r.length, r.ascent, r.duration, strings.Join(hours, ",")))
 	}
 	ds, err := walks.Parse([]byte(`{"schema_version":2,"fetched_at":"2026-10-19T14:20:00Z","walks":[`+strings.Join(rows, ",")+`]}`), "synthetic-refinements")
 	if err != nil {

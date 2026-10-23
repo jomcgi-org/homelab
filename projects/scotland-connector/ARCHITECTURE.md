@@ -131,7 +131,9 @@ rather than sorting every candidate.
 
 The stars job keeps MET Norway's 6-hourly tail as well as the hourly steps,
 so a listed hour says nothing about how far the hourly forecast reaches: the
-stars horizon is the fetch plus 48 hours, never extended by listed hours.
+stars dataset horizon is the newest fetch plus 48 hours, never extended by
+listed hours. Each site's coverage stops at the earlier of that horizon and
+its own `forecast_fetched_at` plus 48 hours.
 Distances use a mid-latitude equirectangular approximation with
 precomputed cosines, which within the 100 km cap is well under 0.1 km from
 haversine. Over a grid three times the real site density and 3000 walks
@@ -197,12 +199,19 @@ are colder and windier than the car park.
 **Why.** Days past the hourly forecast are `unknown`, never `no`. The hikes
 job keeps MET Norway's hourly steps only, which reach about two and a half
 days, so a later day has no hours at all. Reporting it as not doable would
-tell an assistant the weather is bad when there is no forecast. The horizon is the later of the fetch plus 48 hours
-and the last hour in the snapshot, and a stale snapshot falls back to "no
-forecast" rather than "bad weather". The fetch time is the newest across
-the snapshot, so a walk whose own fetch failed (the job keeps its old hours)
-can read `no` for days it has no forecast for; per-walk and per-site fetch
-times are #7274.
+tell an assistant the weather is bad when there is no forecast. The dataset
+horizon is the later of the newest fetch plus 48 hours and the last hour in
+the snapshot. Each walk's coverage stops at the earlier of that horizon and
+its own `forecast_fetched_at` plus 48 hours. Missing entity metadata means
+unknown. Late observed hours cannot extend an entity's coverage.
+
+**Why.** Successful forecasts can contain zero retained hours. Walks and sites
+store their nullable last-success time independently of hour rows, in the same
+transaction that replaces a successful forecast. Failed fetches leave both
+untouched. Scraping, grid metadata refresh and hour pruning preserve that time.
+Snapshots include zero-hour entities and derive dataset freshness from the
+entity times, including an all-empty successful refresh. Legacy rows remain
+unknown until a successful fetch; there is no inferred backfill (#7274).
 
 Today counts only hours that have not begun, so a slot under way is shorter
 by the hour in progress and the start window never lies in the past. The
@@ -384,6 +393,6 @@ this table when the work ships or the issue closes without it.
 | Meter export to Honeycomb, unit price table       | #7245  | not started |
 | Uncapped connector snapshot from the materializer | #7246  | not started |
 | Egress NetworkPolicy enabled                      | #7248  | staged off  |
-| Per-walk and per-site forecast fetch times        | #7274  | not started |
+| Per-walk and per-site forecast fetch times        | #7274  | staged, live acceptance pending |
 | Slot rule slides past a second gap                | #7275  | not started |
 | Directory listings                                | #7255  | staged      |

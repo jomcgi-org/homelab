@@ -77,6 +77,13 @@ def test_payload_without_hours_has_null_fetched_at():
     assert payload["walks"][0]["hours"] == []
 
 
+def test_entity_timestamp_serializes_identically_for_sqlite_and_postgres():
+    # SQLite returns naive UTC; Postgres can return an aware session offset.
+    for at in (NOW.replace(tzinfo=None), NOW.astimezone(timezone(timedelta(hours=2)))):
+        payload = materialize.build_payload([_walk("a", forecast_fetched_at=at)], [], NOW, NOW)
+        assert payload["walks"][0]["forecast_fetched_at"] == NOW.isoformat()
+
+
 def test_skips_without_an_https_endpoint(monkeypatch):
     monkeypatch.delenv("SEAWEEDFS_S3_ENDPOINT", raising=False)
     monkeypatch.setattr(materialize, "_s3_client", pytest.fail)
@@ -104,7 +111,7 @@ def engine_fixture(tmp_path):
 
 def test_writes_the_snapshot_to_the_configured_object(monkeypatch, engine):
     with Session(engine) as session:
-        session.add_all([_walk("a"), _hour("a", TOP + timedelta(hours=1), fetched=TOP)])
+        session.add_all([_walk("a", forecast_fetched_at=TOP), _hour("a", TOP + timedelta(hours=1), fetched=TOP)])
         session.commit()
 
     puts = []
@@ -135,6 +142,24 @@ def test_writes_the_snapshot_to_the_configured_object(monkeypatch, engine):
     # A row stored without the complete forecast's columns emits nulls.
     assert body["walks"][0]["hours"][0][5:] == [None] * 2
     assert body["fetched_at"].startswith("2026-10-20T12:00:00")
+
+
+def test_serialized_mixed_entity_times_without_any_hour_rows(engine):
+    old = NOW - timedelta(days=1)
+    with Session(engine) as session:
+        session.add_all([
+            _walk("fresh", forecast_fetched_at=NOW),
+            _walk("stale", forecast_fetched_at=old),
+            _walk("never"),
+        ])
+        session.commit()
+        payload = json.loads(json.dumps(materialize._load(session, NOW)))
+    assert payload["fetched_at"] == NOW.isoformat()
+    by_id = {w["id"]: w for w in payload["walks"]}
+    assert by_id["fresh"]["forecast_fetched_at"] == NOW.isoformat()
+    assert by_id["stale"]["forecast_fetched_at"] == old.isoformat()
+    assert by_id["never"]["forecast_fetched_at"] is None
+    assert all(w["hours"] == [] for w in by_id.values())
 
 
 def test_payload_keeps_bad_daylight_hours():

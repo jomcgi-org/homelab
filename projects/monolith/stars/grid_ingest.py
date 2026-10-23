@@ -52,8 +52,22 @@ def _replace_rows(rows: list[Site], *, engine=None) -> int:
         engine = get_engine()
 
     with Session(engine) as session:
-        session.execute(delete(Site))
-        session.add_all(rows)
+        # Refresh metadata without replacing forecast-owned state. One bounded
+        # table read avoids per-site hydration and never writes the fetch field.
+        existing = {site.id: site for site in session.exec(select(Site)).all()}
+        new_rows = []
+        for row in rows:
+            site = existing.get(row.id)
+            if site is None:
+                new_rows.append(row)
+                continue
+            for name in ("name", "lat", "lon", "altitude_m", "lp_zone", "source", "updated_at"):
+                setattr(site, name, getattr(row, name))
+        session.add_all(new_rows)
+        session.execute(
+            delete(Site).where(Site.id.notin_([row.id for row in rows]))
+            .execution_options(synchronize_session=False)
+        )
         # add_all autoflushes before the subquery, so it sees the replacement
         # grid. Seasonal climatology rows remain because their bounded history
         # is still useful if a site later returns to the grid.
