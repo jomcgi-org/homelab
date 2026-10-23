@@ -3885,7 +3885,9 @@ def _cancellation_evidence(db: Session, row: FactoryReceipt | None) -> dict | No
         select(FactoryAudit)
         .where(
             FactoryAudit.task_id == row.task_id,
-            FactoryAudit.action.in_(("human_handoff", "cancel_task")),
+            FactoryAudit.action.in_(
+                ("human_handoff", "cancel_task", "decision_applied")
+            ),
         )
         .order_by(FactoryAudit.id)
     ).all()
@@ -3898,6 +3900,39 @@ def _cancellation_evidence(db: Session, row: FactoryReceipt | None) -> dict | No
                 "state": "operator_cancelled",
                 "reason": detail["cancellation_reason"],
             }
+    # Automatic-pause STOP has already authenticated and committed its decision.
+    # Require both the exact resolved card and its matching audit, never the
+    # shared cancellation flag or a generic hold decision alone. This also
+    # reconciles decisions committed before this reader understood STOP.
+    from factory.orchestration import factory_pause
+
+    card = json.loads(row.escalation_json or "{}")
+    resolved = card.get("resolved") or {}
+    if (
+        factory_pause.is_card(card)
+        and card.get("task_id") == row.task_id
+        and resolved.get("decision_id") == factory_pause._identity(row, card)
+        and resolved.get("option_key") == "stop"
+        and resolved.get("effect") == "hold"
+        and resolved.get("effects", {}).get("cancellation_requested") is True
+    ):
+        for event in events:
+            detail = json.loads(event.detail_json)
+            if (
+                event.action == "decision_applied"
+                and event.actor == resolved.get("actor")
+                and detail.get("receipt_id") == row.id
+                and detail.get("issue_number") == row.issue_number
+                and detail.get("decision_id") == resolved.get("decision_id")
+                and isinstance(detail.get("decision_id"), str)
+                and detail.get("option_key") == "stop"
+                and detail.get("effect") == "hold"
+                and detail.get("effects", {}).get("cancellation_requested") is True
+            ):
+                return {
+                    "state": "operator_cancelled",
+                    "reason": "Operator selected STOP on the exact automatic-pause decision. Issue remains open.",
+                }
     return None
 
 

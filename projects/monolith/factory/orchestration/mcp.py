@@ -1542,3 +1542,47 @@ async def factory_prepare_validation(
             return {"ok": False, "reason": str(exc)}
 
     return await asyncio.to_thread(prepare)
+
+
+@mcp.tool
+async def factory_preview_issue_admission(
+    issue_number: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+) -> dict:
+    """Preview bounded admission configuration for one fresh primary-repo issue.
+
+    Requires a standing human operator. Reads only, creates no receipt and
+    starts no work. All admitted tasks must settle first, even paused ones.
+    Preserves generation and bounds, disables auto-merge and broad intake.
+    Return the preview digest to factory_apply_issue_admission with identical
+    issue and reason. Submission still checks live eligibility afterwards.
+    """
+    return await factory_prepare_validation(
+        "preview", None, reason, issue_number=issue_number
+    )
+
+
+@mcp.tool
+async def factory_apply_issue_admission(
+    issue_number: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    expected_preview_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
+    request_key: Annotated[str, Field(min_length=1, max_length=256)],
+) -> dict:
+    """Apply an exact fresh-issue admission preview as a standing human operator.
+
+    Requires the digest from factory_preview_issue_admission and identical
+    issue and reason. Locks and rechecks current state. Preserves generation,
+    budgets and holds, with automatic landing and broad intake disabled.
+    Leaves admissions paused and creates no receipt or worker. Submit the
+    selected issue separately, then explicitly enable admission. Replay the
+    same key and arguments after a lost response, then read fresh state.
+    """
+    return await factory_prepare_validation(
+        "apply",
+        None,
+        reason,
+        issue_number=issue_number,
+        expected_preview_sha256=expected_preview_sha256,
+        request_key=request_key,
+    )
