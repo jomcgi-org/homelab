@@ -302,3 +302,36 @@ def factory_receipt(
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+class ImprovementRequest(BaseModel):
+    """A bounded scouting batch after reviewing exact current context."""
+
+    model_config = ConfigDict(extra="forbid")
+    review_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rules_reviewed: bool
+    dedup_reviewed: bool
+    subscription_caps: dict
+    findings: list[dict] = Field(max_length=20)
+
+
+@router.get("/improvements/context")
+def improvement_context(principal: Principal = Depends(operator)) -> dict:
+    from factory.orchestration.factory_improvements import context
+
+    try:
+        return context()
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/improvements")
+def improvement_submit(
+    body: ImprovementRequest, principal: Principal = Depends(operator)
+) -> dict:
+    from factory.orchestration.factory_improvements import submit
+
+    try:
+        return submit(body.model_dump(), actor=principal.subject)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc

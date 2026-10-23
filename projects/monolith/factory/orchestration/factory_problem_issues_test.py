@@ -609,3 +609,349 @@ def test_improvement_preview_is_read_only(monkeypatch):
     assert result["mode"] == "preview_only"
     assert result["reason"] == "context_unknown"
     assert result["drafts"] == []
+
+
+@pytest.fixture
+def improvements(db, monkeypatch):
+    from factory.orchestration import factory_improvements as improvements
+
+    engine, clock = db
+    quota = {
+        "available": True,
+        "grants_complete": True,
+        "fetched_at": START.isoformat(),
+        "grants": {
+            "account-a": {
+                "provider": "codex",
+                "grant": "account-a",
+                "observed": True,
+                "observed_at": START.isoformat(),
+                "status": "allowed",
+                "exhausted": False,
+                "windows": [
+                    {
+                        "name": "primary",
+                        "window_minutes": 10080,
+                        "used_percent": 0,
+                        "resets_at": (START + timedelta(days=2)).isoformat(),
+                        "expired": False,
+                    }
+                ],
+            }
+        },
+    }
+    configured = {
+        "repo": "jomcgi-org/homelab",
+        "generation": 14,
+        "problem_issues": {"enabled": True, "sources": {"quota_improvement": True}},
+    }
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.state = "enabled"
+        control.policy_json = json.dumps(configured)
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action="intake_evaluated",
+                created_at=START,
+                detail_json=json.dumps(
+                    {
+                        "generation": 14,
+                        "github": "completed",
+                        "truncated": False,
+                        "candidates": {"delivery": 0, "advisory": 0},
+                    }
+                ),
+            )
+        )
+        session.commit()
+    inventory = []
+    monkeypatch.setattr(improvements, "_inventory", lambda: inventory)
+    monkeypatch.setattr(improvements, "_quota", lambda: quota)
+    monkeypatch.setattr(
+        improvements,
+        "_goals",
+        lambda db: [{"id": 7, "statement": "honest connector explanations"}],
+    )
+    original_audit = controls._audit
+
+    def timed_audit(session, *args, **kwargs):
+        original_audit(session, *args, **kwargs)
+        for row in session.new:
+            if isinstance(row, FactoryAudit):
+                row.created_at = clock["now"]
+
+    monkeypatch.setattr(controls, "_audit", timed_audit)
+    monkeypatch.setattr(producer, "github_list", lambda *args: [])
+    writes = []
+
+    def write(repo, payload):
+        writes.append((repo, payload))
+        return {"number": 8000, "body": payload["body"]}
+
+    monkeypatch.setattr(producer, "github_write", write)
+    batch = {
+        "review_digest": improvements.context()["review_digest"],
+        "rules_reviewed": True,
+        "dedup_reviewed": True,
+        "subscription_caps": {
+            "account-a": {
+                "subscription_only": True,
+                "overage_disabled": True,
+                "evidence": "reviewed subscription cap configuration",
+            }
+        },
+        "findings": [
+            {
+                "problem_key": "scotland-connector/wet-hour-explanation",
+                "title": "connector: explain rain frequency in qualifying walk hours",
+                "kind": "bug",
+                "goal_id": 7,
+                "owner": "factory refinement",
+                "ready": True,
+                "observed_at": START.isoformat(),
+                "evidence": "82db9a0f: internal/connector/trip.go returns WetHours; walks verdict omits frequency",
+                "reproduction": "Inspect WetHours increment at >= 0.1 mm and compare the walk why string",
+                "benefit": "Expose frequent light rain without changing user thresholds",
+                "acceptance_tests": "Synthetic eight qualifying wet hours reports rain in 8 of 8; threshold verdict unchanged",
+            }
+        ],
+    }
+    return improvements, engine, clock, configured, batch, inventory, quota, writes
+
+
+def test_improvement_submission_uses_existing_writer_and_no_ready_label(improvements):
+    service, _engine, _clock, policy, batch, _inventory, _quota, writes = improvements
+    result = service.submit(batch, actor="operator:test")
+    assert result["mode"] == "audit_candidate"
+    assert len(result["drafts"]) == 1
+    assert not writes
+    producer.problem_issues_tick(policy)
+    assert len(writes) == 1
+    assert writes[0][0] == "jomcgi-org/homelab"
+    assert writes[0][1]["labels"] == []
+    assert "Synthetic eight" in writes[0][1]["body"]
+    producer.problem_issues_tick(policy)
+    assert len(writes) == 1
+    assert service.submit(batch, actor="operator:test")["reason"] == "cooldown"
+
+
+def test_improvement_empty_attempt_is_durable_and_cools_down(improvements):
+    service, engine, _clock, policy, batch, _inventory, _quota, writes = improvements
+    batch["findings"] = []
+    assert (
+        service.submit(batch, actor="operator:test")["reason"]
+        == "no_actionable_findings"
+    )
+    with Session(engine) as session:
+        rows = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "improvement_attempt")
+        ).all()
+        assert len(rows) == 1
+    assert service.submit(batch, actor="operator:test")["reason"] == "cooldown"
+    producer.problem_issues_tick(policy)
+    assert not writes
+
+
+@pytest.mark.parametrize(
+    "change", ["quota", "backlog", "owner", "goal", "policy", "inventory", "expiry"]
+)
+def test_improvement_rechecks_before_write(improvements, change, monkeypatch):
+    service, engine, clock, policy, batch, inventory, quota, writes = improvements
+    service.submit(batch, actor="operator:test")
+    if change == "quota":
+        quota["grants"]["account-a"]["windows"][0]["used_percent"] = 100
+    elif change == "inventory":
+        inventory.append({"number": 44, "title": "new open work", "body": ""})
+    elif change == "expiry":
+        clock["now"] += timedelta(seconds=901)
+    elif change == "goal":
+        monkeypatch.setattr(service, "_goals", lambda db: [])
+    else:
+        with Session(engine) as session:
+            if change == "policy":
+                session.get(FactoryControl, "factory").state = "paused"
+            elif change == "owner":
+                receipt = session.exec(select(FactoryReceipt)).first()
+                receipt.repo = service.REPO
+                receipt.state = "admitted"
+            else:
+                row = session.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == "intake_evaluated"
+                    )
+                ).first()
+                row.detail_json = json.dumps(
+                    {
+                        "generation": 14,
+                        "github": "completed",
+                        "truncated": False,
+                        "candidates": {"delivery": 1, "advisory": 0},
+                    }
+                )
+            session.commit()
+    producer.problem_issues_tick(policy)
+    assert not writes
+
+
+def test_improvement_context_must_be_reviewed_and_source_enabled(improvements):
+    service, engine, _clock, _policy, batch, _inventory, _quota, writes = improvements
+    batch["review_digest"] = "0" * 64
+    with pytest.raises(ValueError, match="context_changed"):
+        service.submit(batch, actor="operator:test")
+    batch["review_digest"] = service.context()["review_digest"]
+    with Session(engine) as session:
+        session.get(FactoryControl, "factory").state = "paused"
+        session.commit()
+    with pytest.raises(ValueError, match="source_disabled"):
+        service.submit(batch, actor="operator:test")
+    assert not writes
+
+
+def test_improvement_duplicate_open_pr_is_not_enqueued(improvements):
+    service, _engine, _clock, policy, batch, inventory, _quota, writes = improvements
+    inventory.append(
+        {"kind": "pr", "number": 42, "title": batch["findings"][0]["title"], "body": ""}
+    )
+    batch["review_digest"] = service.context()["review_digest"]
+    assert (
+        service.submit(batch, actor="operator:test")["reason"] == "duplicate_or_owned"
+    )
+    producer.problem_issues_tick(policy)
+    assert not writes
+
+
+def test_improvement_uncertain_write_is_not_repeated(improvements, monkeypatch):
+    service, _engine, clock, policy, batch, _inventory, _quota, writes = improvements
+    service.submit(batch, actor="operator:test")
+
+    def uncertain(repo, payload):
+        writes.append(payload)
+        raise httpx.ReadTimeout("unknown result")
+
+    monkeypatch.setattr(producer, "github_write", uncertain)
+    producer.problem_issues_tick(policy)
+    clock["now"] += timedelta(minutes=5)
+    producer.problem_issues_tick(policy)
+    assert len(writes) == 1
+
+
+def test_improvement_diversity_needs_policy_and_no_fabricated_forecast(improvements):
+    service, _engine, _clock, _policy, batch, _inventory, _quota, writes = improvements
+    batch["findings"][0].update(
+        problem_key="scotland-connector/walk-diversity",
+        ready=False,
+        title="connector: choose deterministic walk diversity policy",
+        evidence="82db9a0f: ranking is verdict, good hours, distance, ID",
+        acceptance_tests="Define policy before agent-ready; no numerical Sunday forecast supplied",
+    )
+    assert (
+        service.submit(batch, actor="operator:test")["reason"]
+        == "no_actionable_findings"
+    )
+    assert not writes
+
+
+def test_improvement_concurrent_batches_have_one_durable_candidate(improvements):
+    service, _engine, _clock, policy, batch, _inventory, _quota, writes = improvements
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda _: service.submit(batch, actor="operator:test"), range(2))
+        )
+    assert sorted(result["reason"] for result in results) == ["candidates", "cooldown"]
+    producer.problem_issues_tick(policy)
+    assert len(writes) == 1
+
+
+def test_improvement_history_requires_merged_useful_delivery(improvements):
+    service, engine, _clock, _policy, batch, _inventory, _quota, _writes = improvements
+    key = "a" * 64
+    with Session(engine) as session:
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="test",
+                    action="improvement_attempt",
+                    created_at=START - timedelta(days=i),
+                    detail_json=controls._json(
+                        {
+                            "fingerprint": key if i == 2 else str(i) * 64,
+                            "reason": "candidates",
+                        }
+                    ),
+                )
+                for i in (2, 3, 4)
+            ]
+        )
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action="problem_issue_created",
+                created_at=START - timedelta(days=1),
+                detail_json=controls._json({"fingerprint": key, "issue_number": 8000}),
+            )
+        )
+        receipt = session.exec(select(FactoryReceipt)).first()
+        receipt.repo = service.REPO
+        receipt.issue_number = 8000
+        receipt.state = "succeeded"
+        session.commit()
+    assert (
+        service.submit(batch, actor="operator:test")["reason"]
+        == "usefulness_review_required"
+    )
+    with Session(engine) as session:
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action="owned_pr_merged",
+                task_id="t-1",
+                created_at=START,
+                detail_json=controls._json({"pr_number": 8001, "head_sha": "b" * 40}),
+            )
+        )
+        session.commit()
+    assert service.submit(batch, actor="operator:test")["reason"] == "candidates"
+
+
+def test_improvement_refinement_success_is_not_useful_delivery(improvements):
+    service, engine, _clock, _policy, batch, _inventory, _quota, _writes = improvements
+    key = "a" * 64
+    with Session(engine) as session:
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="test",
+                    action="improvement_attempt",
+                    created_at=START - timedelta(days=i),
+                    detail_json=controls._json({"fingerprint": key}),
+                )
+                for i in (2, 3, 4)
+            ]
+        )
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="test",
+                    action="problem_issue_created",
+                    detail_json=controls._json({"fingerprint": key, "issue_number": 8000}),
+                ),
+                FactoryAudit(
+                    actor="test",
+                    action="owned_pr_merged",
+                    task_id="t-1",
+                    detail_json=controls._json({"pr_number": 8001, "head_sha": "b" * 40}),
+                ),
+            ]
+        )
+        receipt = session.exec(select(FactoryReceipt)).first()
+        receipt.repo, receipt.issue_number, receipt.task_class = (
+            service.REPO,
+            8000,
+            "refine",
+        )
+        session.commit()
+    assert (
+        service.submit(batch, actor="operator:test")["reason"]
+        == "usefulness_review_required"
+    )

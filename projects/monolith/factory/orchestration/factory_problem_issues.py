@@ -48,6 +48,7 @@ _TERMINAL_ACTIONS = (
     "problem_issue_source_refused",
 )
 _EVENT_ACTIONS = {
+    "quota_improvement": "improvement_candidate",
     "node_stalled": "node_stalled",
     "workflow_stranded": "workflow_stranded",
     "landing_recovery_exhausted": "merge_arm_refused",
@@ -100,6 +101,8 @@ def _source(row: FactoryAudit) -> tuple[str, dict] | None:
         return None
     if not isinstance(detail, dict):
         return None
+    if row.action == "improvement_candidate":
+        return "quota_improvement", detail
     if row.action in ("node_stalled", "workflow_stranded"):
         return row.action, detail
     if (
@@ -131,6 +134,14 @@ def _identity(source: str, row: FactoryAudit, detail: dict) -> dict | None:
 
 
 def _fingerprint(source: str, row: FactoryAudit, detail: dict) -> str | None:
+    if source == "quota_improvement":
+        fingerprint = detail.get("fingerprint")
+        return (
+            fingerprint
+            if isinstance(fingerprint, str)
+            and re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+            else None
+        )
     identity = _identity(source, row, detail)
     if identity is None:
         return None
@@ -579,10 +590,8 @@ def problem_issues_tick(policy: dict) -> None:
         return
     parsed = _source(row)
     if parsed is None:
-        source = (
-            row.action
-            if row.action in ("node_stalled", "workflow_stranded")
-            else "landing_recovery_exhausted"
+        source = next(
+            name for name, action in _EVENT_ACTIONS.items() if action == row.action
         )
         _record(
             "problem_issue_source_refused",
@@ -649,7 +658,11 @@ def problem_issues_tick(policy: dict) -> None:
                 limit=block["source_audit_limit"],
             )
     marker = _marker(fingerprint)
-    receipt = _source_receipt(row)
+    receipt = (
+        (source_detail.get("repo"), 0)
+        if source == "quota_improvement"
+        else _source_receipt(row)
+    )
     if receipt is None:
         _record(
             "problem_issue_source_refused",
@@ -701,9 +714,54 @@ def problem_issues_tick(policy: dict) -> None:
             retry=0,
         )
         return
-    issue = _issue(source, row, source_detail, repo, issue_number, marker)
+    if source == "quota_improvement":
+        from factory.orchestration.factory_improvements import validate_candidate
+
+        validated_context = validate_candidate(source_detail)
+        if validated_context is None:
+            _record(
+                "problem_issue_source_refused",
+                row,
+                source,
+                fingerprint,
+                reason="improvement_evidence_changed_or_expired",
+            )
+            return
+        issue = source_detail["draft"]
+        issue = {key: issue[key] for key in ("title", "body")}
+    else:
+        issue = _issue(source, row, source_detail, repo, issue_number, marker)
 
     with _locked_session() as (db, _control):
+        if source == "quota_improvement":
+            from factory.orchestration.factory_improvements import (
+                _database_context,
+                _digest,
+                candidate_matches,
+            )
+
+            # Final local rule/owner/goal check under the same lock as intent.
+            live = _database_context(db, _control)
+            live_block = problem_issues_policy(live["policy"])
+            if (
+                _control.state != "enabled"
+                or not live["repo_enabled"]
+                or not live_block["enabled"]
+                or not live_block["sources"][source]
+                or _control.version != source_detail.get("control_version")
+                or not live["intake_complete"]
+                or _digest(live) != source_detail.get("database_digest")
+                or not candidate_matches(source_detail, {**validated_context, **live})
+            ):
+                _audit(
+                    db,
+                    ACTOR,
+                    "problem_issue_source_refused",
+                    **_detail(
+                        row, source, fingerprint, reason="improvement_control_changed"
+                    ),
+                )
+                return
         if _terminal(db, fingerprint, row.task_id) or _last_matching(
             db, fingerprint, ("problem_issue_write_started",), row.task_id
         ):
@@ -748,7 +806,10 @@ def problem_issues_tick(policy: dict) -> None:
             ),
         )
 
-    payload = {**issue, "labels": list(block["labels"])}
+    payload = {
+        **issue,
+        "labels": [] if source == "quota_improvement" else list(block["labels"]),
+    }
     try:
         created = github_write(repo, payload)
         if (
@@ -791,12 +852,7 @@ __all__ = ["problem_issues_tick"]
 
 
 def improvement_preview(snapshot: dict, *, now: datetime, policy=None) -> dict:
-    """Read-only candidate shaping; deliberately not called by the live tick.
-
-    Shares problem markers with this producer. A future enabled source must use
-    its durable write/reconciliation ledger, never directly create tickets from
-    these drafts. Existing intake/refinement remains the only readiness gate.
-    """
+    """Read-only shaping shared with the bounded audited improvement source."""
     from factory.orchestration.factory_improvement_preview import preview
 
     return preview(snapshot, now=now, policy=policy)
