@@ -359,10 +359,10 @@
     overflow: hidden;
     transform: translateX(-50%);
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: 0;
     color: var(--text);
     background: var(--panel-bg);
-    box-shadow: var(--panel-shadow);
+    box-shadow: none;
   }
   .jump-input-row {
     flex: 0 0 52px;
@@ -403,7 +403,7 @@
     min-width: 24px;
     padding: 2px 5px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
+    border-radius: 0;
     color: var(--muted);
     background: var(--page-bg);
     font: 11.5px var(--font-mono);
@@ -432,7 +432,7 @@
     gap: 10px;
     padding: 0 10px;
     border: 0;
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--text);
     background: transparent;
     text-align: left;
@@ -457,7 +457,7 @@
   .jump-mark .dot {
     width: 8px;
     height: 8px;
-    border-radius: var(--radius-circle);
+    border-radius: 0;
     background: var(--dot-idle);
   }
   .jump-mark .dot.running,
@@ -480,7 +480,7 @@
   }
   .voice-mark i {
     width: 2px;
-    border-radius: 1px;
+    border-radius: 0;
     background: currentColor;
   }
   .voice-mark i:nth-child(1) {
@@ -505,7 +505,7 @@
     width: 6px;
     height: 6px;
     flex: 0 0 6px;
-    border-radius: 2px;
+    border-radius: 0;
     background: currentColor;
   }
   .shape-node.gate {

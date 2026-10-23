@@ -362,7 +362,12 @@ apko_image(
 js_library(
     name = "factory_fixture_src",
     srcs = glob(
-        ["factory-preview/**"],
+        [
+            "factory-preview/**",
+            "src/routes/private/factory/execution/**/*.js",
+            "src/routes/private/factory/execution/**/*.svelte",
+            "src/routes/private/factory/execution/*.css",
+        ],
         exclude = [
             "factory-preview/.generated/**",
             "factory-preview/__pycache__/**",
@@ -370,8 +375,13 @@ js_library(
     ) + [
         "package.json",
         "src/lib/cache-headers.js",
+        "src/lib/components/notes/markdown.js",
         "src/lib/global.css",
+        "src/lib/private/dashboard-theme.css",
+        "src/lib/public/apps.js",
+        "src/lib/public/components/Nav.svelte",
         "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/TechnicalDrawingChrome.svelte",
         "src/lib/public/components/Trail.svelte",
         "src/lib/public/factory/activity.css",
         "src/lib/public/factory/activity-view.js",
@@ -386,7 +396,11 @@ js_library(
         "src/lib/public/factory/search-index.test.js",
         "src/lib/public/styles/design-system.css",
         "src/lib/public/styles/technical-drawing.css",
+        "src/lib/public/styles/technical-drawing.test.js",
         "src/lib/styles/shared/tokens.css",
+        "src/routes/+layout.svelte",
+        "src/routes/private/+layout.svelte",
+        "src/routes/private/factory/factory-view.js",
         "src/routes/public/slop/Trail.svelte",
         "src/routes/public/slop/factory/+page.server.js",
         "src/routes/public/slop/factory/+page.svelte",
@@ -394,14 +408,18 @@ js_library(
         "src/routes/public/slop/factory/activity/+page.svelte",
         "src/routes/public/slop/factory/context/+page.server.js",
         "src/routes/public/slop/factory/context/+page.svelte",
+        "test/app-navigation-stub.js",
+        "test/app-state-stub.js",
     ],
     deps = [
         ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@homelab/design-system",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@sveltejs/vite-plugin-svelte",
         ":node_modules/svelte",
         ":node_modules/vite",
         ":node_modules/vitest",
+        "//:node_modules/happy-dom",
         "//projects/design-system:pkg",
     ],
 )
