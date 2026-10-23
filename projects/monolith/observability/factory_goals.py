@@ -17,7 +17,7 @@ public tier on plain SQL over granted tables.
 from __future__ import annotations
 
 import re
-from core.clock import as_utc, iso
+from core.clock import as_utc, iso_z
 from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Integer, JSON
@@ -66,11 +66,6 @@ class FactoryGoalIssue(SQLModel, table=True):
         default=None, sa_type=DateTime(timezone=True)
     )
     snapshotted_at: datetime = Field(sa_type=DateTime(timezone=True))
-
-
-def _iso(value: datetime | None) -> str | None:
-    stamp = iso(value)
-    return None if stamp is None else stamp.replace("+00:00", "Z")
 
 
 def validate_goals(goals: list[dict], declared_by: str) -> list[dict]:
@@ -163,7 +158,7 @@ def score_goals(
                 "statement": goal.get("statement"),
                 "issue_numbers": sorted(linked),
                 "declared_by": goal.get("declared_by"),
-                "declared_at": _iso(declared_at),
+                "declared_at": iso_z(declared_at),
                 "age_days": age_days,
                 "stale": age_days is None or age_days > STALE_AFTER_DAYS,
                 "linked_issues": len(linked),
@@ -171,7 +166,7 @@ def score_goals(
                 "issues_closed": sum(row["state"] == "CLOSED" for row in snapshots),
                 "issues_unknown": len(linked) - len(snapshots),
                 "merged_refs": len(refs),
-                "last_activity": _iso(max(hit_times)) if hit_times else None,
+                "last_activity": iso_z(max(hit_times)) if hit_times else None,
             }
         )
     scored.sort(key=lambda row: row["declared_at"] or "", reverse=True)
