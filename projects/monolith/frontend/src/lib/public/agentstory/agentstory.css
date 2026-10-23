@@ -1,22 +1,96 @@
-/* Extra tokens for the /ember/agents scroll story, scoped under .agstory.
- * The page layers over the ember mini-site sheet (lib/public/ember/ember.css)
- * and only defines what that sheet lacks, so AgentScrollStory.svelte's <style>
- * block references var(--em-*) and var(--ag-*) exclusively (semgrep rule
- * svelte-hardcoded-color-in-style flags bare hex inside a .svelte <style>).
- *
- * The overscroll ground is already pinned by ember.css's html:has(.ember-site)
- * rule, and the component root carries both classes, so this file deliberately
- * does not repeat it: a :has() rule here would read --em-ground off <html>,
- * where it is not defined, and resolve to transparent.
- */
+/* Surface-only flow and wrapping. The sheet owns paint, type and chrome.
+ * The former sticky SVG scaled labels below 5px on a 390px screen. These
+ * keyed parts keep their text size and follow document flow in every mode. */
+.agent-sheet .agent-phase,
+.agent-sheet #tiers,
+.agent-sheet #keep-going {
+  scroll-margin-top: 5rem;
+}
 
-.agstory {
-  /* Same value as the landing page's --eml-line-strong. Diagram lane borders
-     drawn in --em-line read as invisible on the white panel. */
-  --ag-line-strong: #c9c3b4;
-  --ag-frost-deep: #2b628f;
-  --ag-amber-deep: #9a6414;
-  --ag-idle: #e6e2d7;
-  --ag-s3-fill: rgba(185, 210, 234, 0.14);
-  --ag-chip-shadow: rgba(224, 66, 26, 0.5);
+/* Keep the keyed figures numbered across all phase panels. */
+.agent-sheet .editions {
+  counter-reset: fig;
+}
+
+.agent-sheet .editions .prose {
+  counter-reset: none;
+}
+
+/* The body and preceding figure already supply each joining rule. */
+.agent-sheet .agent-phase .prose > .fig:first-child,
+.agent-sheet .agent-phase .prose > .fig + .fig {
+  margin-top: 0;
+  border-top: 0;
+}
+
+.agent-sheet .agent-phase .prose > .fig:not(:last-child) {
+  margin-bottom: 0;
+}
+
+/* The closing text cells use the same inset and divider as sheet links. */
+.agent-sheet .ed-foot > span {
+  padding: 0.6em 1rem;
+  border-right: 1px solid var(--stroke);
+}
+
+.agent-sheet .agent-messages,
+.agent-sheet .agent-calls {
+  margin: 0;
+  padding-left: 1.25em;
+}
+
+.agent-sheet .agent-messages li + li,
+.agent-sheet .agent-calls li + li {
+  margin-top: 0.6em;
+}
+
+.agent-sheet code {
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+
+.agent-sheet .dbox,
+.agent-sheet .dgroup {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-sheet .dbox {
+  font-size: 0.8rem;
+}
+
+.agent-sheet .dbox-sub,
+.agent-sheet .dgroup-label {
+  font-size: 0.75rem;
+}
+
+.agent-sheet .diagram-flow {
+  width: auto;
+}
+
+.agent-sheet .agent-door {
+  display: block;
+  padding: 1rem 1.2rem;
+  border-top: 1px solid var(--stroke);
+  text-decoration: none;
+}
+
+.agent-sheet .agent-door h3 {
+  font-size: 1rem;
+  margin: 0.4rem 0;
+}
+
+.agent-sheet .agent-door p {
+  margin: 0 0 0.6rem;
+}
+
+.agent-sheet .agent-door span {
+  font: 0.75rem var(--font-code);
+  color: var(--ink-2);
+}
+
+.agent-sheet .agent-door:hover h3 {
+  color: var(--accent-ink);
+  text-decoration: underline;
 }
