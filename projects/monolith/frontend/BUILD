@@ -304,6 +304,8 @@ js_library(
         "test/app-state-stub.js",
         "test/app-stores-stub.js",
         "test/ProfileRoute.svelte",
+        "test/MovingRoute.svelte",
+        "test/moving-fixtures.js",
         "test/profile-page.svelte.js",
         "test/profile-stores.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
@@ -496,6 +498,75 @@ js_run_binary(
 build_test(
     name = "fixture_preview_build_test",
     targets = [":fixture_preview"],
+)
+
+# Real friends layouts and moving views with synthetic loader/API data only.
+js_library(
+    name = "moving_fixture_src",
+    srcs = [
+        "moving-preview/App.svelte",
+        "moving-preview/README.md",
+        "moving-preview/browser-check.mjs",
+        "moving-preview/components.js",
+        "moving-preview/index.html",
+        "moving-preview/main.js",
+        "moving-preview/navigation.js",
+        "moving-preview/stores.js",
+        "moving-preview/vite.config.js",
+        "package.json",
+        "preview/fonts.css",
+        "preview/fonts/OFL.txt",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "src/lib/global.css",
+        "src/lib/public/apps.js",
+        "src/lib/public/components/Nav.svelte",
+        "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/TechnicalDrawingChrome.svelte",
+        "src/lib/public/components/Trail.svelte",
+        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/technical-drawing.css",
+        "src/lib/styles/shared/tokens.css",
+        "src/routes/+error.svelte",
+        "src/routes/+layout.svelte",
+        "src/routes/friends/+layout.svelte",
+        "src/routes/friends/moving/+page.server.js",
+        "src/routes/friends/moving/+page.svelte",
+        "src/routes/friends/moving/AccessPanel.svelte",
+        "src/routes/friends/moving/ChatPanel.svelte",
+        "src/routes/friends/moving/ManagePanel.svelte",
+        "src/routes/friends/moving/chat-stream.js",
+        "src/routes/friends/moving/moving.css",
+        "src/routes/friends/moving/moving.js",
+        "test/MovingRoute.svelte",
+        "test/moving-fixtures.js",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@homelab/design-system",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        "//projects/design-system:pkg",
+    ],
+)
+
+js_run_binary(
+    name = "moving_fixture_preview",
+    srcs = [":moving_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "moving-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["moving-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "moving_fixture_preview_build_test",
+    targets = [":moving_fixture_preview"],
 )
 
 vitest_bin.vitest_test(

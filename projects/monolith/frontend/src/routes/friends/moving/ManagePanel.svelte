@@ -1,5 +1,6 @@
 <script>
   import { onDestroy } from "svelte";
+  import { Button } from "@homelab/design-system/components";
   import {
     blankToNull,
     collisionWording,
@@ -506,12 +507,16 @@
   {#if undo}
     <div class="undo-strip" role="status">
       <span>Deleted '{undo.label}'.</span>
-      <button type="button" onclick={restoreDeleted}>Undo</button>
+      <Button variant="secondary" type="button" onclick={restoreDeleted}
+        >Undo</Button
+      >
     </div>
   {/if}
 
-  <section class="tsec manage-section spans" aria-labelledby="manage-spans">
-    <div class="th" id="manage-spans">Spans <span>{spans.length}</span></div>
+  <section class="edition manage-section spans" aria-labelledby="manage-spans">
+    <div class="ed-head" id="manage-spans">
+      Spans <span>{spans.length}</span>
+    </div>
     <div class="manage-table">
       <div class="manage-row column-head">
         <span>Kind</span><span>Label</span><span>Starts</span><span>Ends</span
@@ -568,9 +573,10 @@
               ></label
             >
             <span class="row-actions"
-              ><button class="save" type="submit">Save</button><button
-                type="button"
-                onclick={cancelEdit}>Cancel</button
+              ><Button variant="secondary" class="save" type="submit"
+                >Save</Button
+              ><Button variant="secondary" type="button" onclick={cancelEdit}
+                >Cancel</Button
               ></span
             >
           </form>
@@ -586,19 +592,21 @@
               >{titleCaseName(span.owner)}</span
             >
             <span class="row-actions"
-              ><button
+              ><Button
+                variant="secondary"
                 type="button"
                 disabled={!canEdit(span) ||
                   pendingIds.has(pendingKey("spans", span.id))}
                 title={ownerTitle(span)}
-                onclick={() => beginEdit("spans", span)}>Edit</button
-              ><button
+                onclick={() => beginEdit("spans", span)}>Edit</Button
+              ><Button
+                variant="secondary"
                 class="danger"
                 type="button"
                 disabled={!canEdit(span) ||
                   pendingIds.has(pendingKey("spans", span.id))}
                 title={ownerTitle(span)}
-                onclick={() => deleteEntity("spans", span)}>Delete</button
+                onclick={() => deleteEntity("spans", span)}>Delete</Button
               ></span
             >
           </div>
@@ -649,17 +657,18 @@
           ></label
         >
         <span class="row-actions"
-          ><button class="add" type="submit">Add</button></span
+          ><Button variant="secondary" class="add" type="submit">Add</Button
+          ></span
         >
       </form>
     </div>
   </section>
 
   <section
-    class="tsec manage-section milestones"
+    class="edition manage-section milestones"
     aria-labelledby="manage-milestones"
   >
-    <div class="th" id="manage-milestones">
+    <div class="ed-head" id="manage-milestones">
       Milestones <span>{milestones.length}</span>
     </div>
     <div class="manage-table">
@@ -720,9 +729,10 @@
                 >{/if}</span
             >
             <span class="row-actions"
-              ><button class="save" type="submit">Save</button><button
-                type="button"
-                onclick={cancelEdit}>Cancel</button
+              ><Button variant="secondary" class="save" type="submit"
+                >Save</Button
+              ><Button variant="secondary" type="button" onclick={cancelEdit}
+                >Cancel</Button
               ></span
             >
           </form>
@@ -741,20 +751,22 @@
                   >{milestone.gcal_event_id}</small
                 >{/if}</span
             ><span class="row-actions"
-              ><button
+              ><Button
+                variant="secondary"
                 type="button"
                 disabled={!canEdit(milestone) ||
                   pendingIds.has(pendingKey("milestones", milestone.id))}
                 title={ownerTitle(milestone)}
-                onclick={() => beginEdit("milestones", milestone)}>Edit</button
-              ><button
+                onclick={() => beginEdit("milestones", milestone)}>Edit</Button
+              ><Button
+                variant="secondary"
                 class="danger"
                 type="button"
                 disabled={!canEdit(milestone) ||
                   pendingIds.has(pendingKey("milestones", milestone.id))}
                 title={ownerTitle(milestone)}
                 onclick={() => deleteEntity("milestones", milestone)}
-                >Delete</button
+                >Delete</Button
               ></span
             >
           </div>
@@ -797,17 +809,20 @@
               >{/each}</select
           ></label
         ><span class="sync-state">not synced</span><span class="row-actions"
-          ><button class="add" type="submit">Add</button></span
+          ><Button variant="secondary" class="add" type="submit">Add</Button
+          ></span
         >
       </form>
     </div>
   </section>
 
   <section
-    class="tsec manage-section tasks-manage"
+    class="edition manage-section tasks-manage"
     aria-labelledby="manage-tasks"
   >
-    <div class="th" id="manage-tasks">Tasks <span>{tasks.length}</span></div>
+    <div class="ed-head" id="manage-tasks">
+      Tasks <span>{tasks.length}</span>
+    </div>
     <div class="manage-table">
       <div class="manage-row column-head">
         <span>Track</span><span>Task</span><span>Note</span><span>Owner</span
@@ -868,9 +883,10 @@
             ><span class:done-state={task.done_at} class="task-state"
               >{task.done_at ? "Done" : "Open"}</span
             ><span class="row-actions"
-              ><button class="save" type="submit">Save</button><button
-                type="button"
-                onclick={cancelEdit}>Cancel</button
+              ><Button variant="secondary" class="save" type="submit"
+                >Save</Button
+              ><Button variant="secondary" type="button" onclick={cancelEdit}
+                >Cancel</Button
               ></span
             >
           </form>
@@ -889,19 +905,21 @@
             ><span class:done-state={task.done_at} class="task-state"
               >{task.done_at ? "Done" : "Open"}</span
             ><span class="row-actions"
-              ><button
+              ><Button
+                variant="secondary"
                 type="button"
                 disabled={!canEdit(task) ||
                   pendingIds.has(pendingKey("tasks", task.id))}
                 title={ownerTitle(task)}
-                onclick={() => beginEdit("tasks", task)}>Edit</button
-              ><button
+                onclick={() => beginEdit("tasks", task)}>Edit</Button
+              ><Button
+                variant="secondary"
                 class="danger"
                 type="button"
                 disabled={!canEdit(task) ||
                   pendingIds.has(pendingKey("tasks", task.id))}
                 title={ownerTitle(task)}
-                onclick={() => deleteEntity("tasks", task)}>Delete</button
+                onclick={() => deleteEntity("tasks", task)}>Delete</Button
               ></span
             >
           </div>
@@ -954,17 +972,20 @@
             step="0.01"
           /></label
         ><span class="task-state">Open</span><span class="row-actions"
-          ><button class="add" type="submit">Add</button></span
+          ><Button variant="secondary" class="add" type="submit">Add</Button
+          ></span
         >
       </form>
     </div>
   </section>
 
   <section
-    class="tsec manage-section roles-manage"
+    class="edition manage-section roles-manage"
     aria-labelledby="manage-roles"
   >
-    <div class="th" id="manage-roles">Roles <span>{roles.length}</span></div>
+    <div class="ed-head" id="manage-roles">
+      Roles <span>{roles.length}</span>
+    </div>
     <div class="manage-table">
       <div class="manage-row column-head">
         <span>Company</span><span>Title</span><span>Owner</span><span
@@ -1025,9 +1046,10 @@
                   >{/each}</select
               ></label
             ><span class="row-actions"
-              ><button class="save" type="submit">Save</button><button
-                type="button"
-                onclick={cancelEdit}>Cancel</button
+              ><Button variant="secondary" class="save" type="submit"
+                >Save</Button
+              ><Button variant="secondary" type="button" onclick={cancelEdit}
+                >Cancel</Button
               ></span
             >
           </form>
@@ -1040,19 +1062,21 @@
             ><span class="mono"
               >{role.next_on ? formatShortDate(role.next_on) : "No date"}</span
             ><span>{spanLabel(role.span_id)}</span><span class="row-actions"
-              ><button
+              ><Button
+                variant="secondary"
                 type="button"
                 disabled={!canEdit(role) ||
                   pendingIds.has(pendingKey("roles", role.id))}
                 title={ownerTitle(role)}
-                onclick={() => beginEdit("roles", role)}>Edit</button
-              ><button
+                onclick={() => beginEdit("roles", role)}>Edit</Button
+              ><Button
+                variant="secondary"
                 class="danger"
                 type="button"
                 disabled={!canEdit(role) ||
                   pendingIds.has(pendingKey("roles", role.id))}
                 title={ownerTitle(role)}
-                onclick={() => deleteEntity("roles", role)}>Delete</button
+                onclick={() => deleteEntity("roles", role)}>Delete</Button
               ></span
             >
           </div>
@@ -1106,17 +1130,18 @@
               >{/each}</select
           ></label
         ><span class="row-actions"
-          ><button class="add" type="submit">Add</button></span
+          ><Button variant="secondary" class="add" type="submit">Add</Button
+          ></span
         >
       </form>
     </div>
   </section>
 
   <section
-    class="tsec manage-section collisions-manage"
+    class="edition manage-section collisions-manage"
     aria-labelledby="manage-collisions"
   >
-    <div class="th" id="manage-collisions">
+    <div class="ed-head" id="manage-collisions">
       Collisions <span>{collisionRows.length}</span>
     </div>
     <div class="collision-list">
@@ -1136,12 +1161,13 @@
                   ? `: ${collision.ack_note}`
                   : ""}</span
               >
-              <button
+              <Button
+                variant="secondary"
                 type="button"
                 disabled={pendingIds.has(
                   `collision:${collisionKey(collision)}`,
                 )}
-                onclick={() => unacknowledge(collision)}>Unacknowledge</button
+                onclick={() => unacknowledge(collision)}>Unacknowledge</Button
               >
             {:else}
               <form
@@ -1155,11 +1181,12 @@
                     placeholder="Optional note"
                   /></label
                 >
-                <button
+                <Button
+                  variant="secondary"
                   type="submit"
                   disabled={pendingIds.has(
                     `collision:${collisionKey(collision)}`,
-                  )}>Acknowledge</button
+                  )}>Acknowledge</Button
                 >
               </form>
             {/if}
