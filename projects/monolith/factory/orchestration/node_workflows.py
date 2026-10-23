@@ -396,6 +396,18 @@ def _evaluate_stored_artifact(
     Hunk lengths are checked before the shared evaluator extracts its content.
     An explicit whole-file failure never falls back to the diff.
     """
+    marker = schema.get("properties", {}).get("browser_evidence_handoff_sha256")
+    if marker is not None:
+        from factory.orchestration.browser_review_dispatch import (
+            verify_stored_review_preflight,
+        )
+
+        try:
+            if stored_path != path or artifact_outcome != "ok":
+                raise ValueError("browser review requires exact stored artifact")
+            verify_stored_review_preflight(path, artifact_blob, marker["enum"][0])
+        except (ValueError, KeyError, TypeError, IndexError) as exc:
+            return _invalid_artifact(str(exc))
     if any(
         value is not None for value in (stored_path, artifact_blob, artifact_outcome)
     ):
@@ -814,7 +826,7 @@ def _read_turn_artifact(
     """
     from sqlmodel import Session, select
 
-    from factory.execution.models import AgentSession, AgentTurn
+    from factory.execution.models import AgentTurn
     from core.db import get_engine
 
     with Session(get_engine()) as session:
@@ -840,19 +852,6 @@ def _read_turn_artifact(
         diff_blob = bytes(turn.diff_blob) if turn.diff_blob is not None else None
         diff_truncated = bool(turn.diff_truncated)
         artifact_outcome = turn.artifact_outcome
-        marker = schema.get("properties", {}).get("browser_evidence_handoff_sha256")
-        if marker is not None:
-            from factory.orchestration.browser_review_dispatch import verify_review_preflight
-
-            try:
-                owner = session.get(AgentSession, session_id)
-                verify_review_preflight(
-                    owner.workspace_handoff_json if owner else None,
-                    turn.usage_json,
-                    marker["enum"][0],
-                )
-            except (ValueError, KeyError, TypeError, IndexError) as exc:
-                return {"status": "invalid", "value": None, "errors": [str(exc)]}
     return _evaluate_stored_artifact(
         stored_path,
         artifact_blob,

@@ -172,6 +172,140 @@ class BrowserReviewDispatchTest(unittest.TestCase):
                 )
             engine.dispose()
 
+    def test_stored_preflight_binds_unique_path_bytes_turn_and_owner(self):
+        import tempfile
+        from pathlib import Path
+
+        from sqlmodel import Session, SQLModel, create_engine
+
+        from factory.execution.models import AgentSession, AgentTurn
+        from factory.orchestration import node_workflows
+
+        prepared, _ = self.prepare()
+        context = WorkspaceHandoff.from_json(prepared["workspace_handoff"])
+        proof = {
+            "status": "ok",
+            "handoff_sha256": context.handoff_sha256,
+            "manifest_sha256": self.value["manifest_sha256"],
+            "inventory_sha256": self.value["inventory_sha256"],
+            "files": 3,
+            "bytes": 90,
+            **{
+                key: getattr(self.provenance, key)
+                for key in ("base_sha", "head_sha", "harness_sha")
+            },
+        }
+        path = ".factory/task/review_browser-1.json"
+        blob = json.dumps(
+            {
+                "verdict": "approve",
+                "browser_evidence_handoff_sha256": context.handoff_sha256,
+            }
+        ).encode()
+        schema = {
+            "type": "object",
+            "properties": {
+                "verdict": {"enum": ["approve"]},
+                "browser_evidence_handoff_sha256": {"enum": [context.handoff_sha256]},
+            },
+        }
+        for case in (
+            "valid",
+            "digest",
+            "bytes",
+            "owner",
+            "other_task",
+            "multiple",
+            "turn",
+            "missing_proof",
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                engine = create_engine(
+                    f"sqlite:///{Path(directory) / 'review.db'}",
+                    execution_options={
+                        "schema_translate_map": {"agent_sessions": None}
+                    },
+                )
+                SQLModel.metadata.create_all(
+                    engine, tables=[AgentSession.__table__, AgentTurn.__table__]
+                )
+                with Session(engine) as db:
+                    db.add(
+                        AgentSession(
+                            id=1,
+                            local_session_id=(
+                                "factory:other:review_browser:1"
+                                if case == "other_task"
+                                else "factory:task:review_browser:1"
+                            ),
+                            node_key="review_other"
+                            if case == "owner"
+                            else "review_browser",
+                            node_attempt=1,
+                            workspace="guest",
+                            branch="main",
+                            workspace_handoff_json=context.to_json(),
+                        )
+                    )
+                    db.add(
+                        AgentTurn(
+                            session_id=1,
+                            seq=2 if case == "turn" else 1,
+                            prompt="review",
+                            result_text="done",
+                            artifact_path=path,
+                            artifact_blob=blob,
+                            artifact_outcome="ok",
+                            usage_json="{}"
+                            if case == "missing_proof"
+                            else json.dumps({"workspace_preflight": proof}),
+                        )
+                    )
+                    if case == "multiple":
+                        db.add(
+                            AgentTurn(
+                                session_id=1,
+                                seq=2,
+                                prompt="duplicate",
+                                result_text="done",
+                                artifact_path=path,
+                                artifact_blob=blob,
+                                artifact_outcome="ok",
+                            )
+                        )
+                    db.commit()
+                with (
+                    patch.object(dispatch, "get_engine", return_value=engine),
+                    patch("core.db.get_engine", return_value=engine),
+                ):
+                    if case == "valid":
+                        dispatch.verify_stored_review_preflight(
+                            path, blob, context.handoff_sha256
+                        )
+                        self.assertEqual(
+                            node_workflows._read_turn_artifact.__wrapped__(
+                                1, 1, path, schema
+                            )["status"],
+                            "ok",
+                        )
+                    else:
+                        with self.assertRaises(EvidenceError):
+                            dispatch.verify_stored_review_preflight(
+                                path,
+                                b"wrong" if case == "bytes" else blob,
+                                "f" * 64
+                                if case == "digest"
+                                else context.handoff_sha256,
+                            )
+                        if case not in ("bytes", "digest"):
+                            self.assertEqual(
+                                node_workflows._read_turn_artifact.__wrapped__(
+                                    1, 2 if case == "turn" else 1, path, schema
+                                )["status"],
+                                "invalid",
+                            )
+                engine.dispose()
+
     def test_capture_dependency_is_explicit_and_unique(self):
         self.assertEqual(dispatch.capture_dependency(self.node, [self.run]), self.run)
         self.assertIsNone(

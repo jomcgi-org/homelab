@@ -25,6 +25,10 @@
 # jq a pi session would reach for, so the only thing that differs between the
 # two images is which CLIs exist. Diverge the package sets only with a reason
 # recorded here.
+# Factory browser-evidence preflight deliberately adds py3.12-pillow only to
+# claude-runtime: Luna captures and independent reviewers share that workload.
+# The pi-spark rollback workload cannot restore a different workload's lineage,
+# so it does not run that preflight and does not need its Pillow dependency.
 #
 # AMD64-ONLY, matching ../claude and ../../image. pi itself ships dual-arch (its
 # payload sits at the arch-independent path pi/pi in both release tarballs), so

@@ -36,6 +36,11 @@ EXPECTED_DIVERGENCE: dict[str, str] = {
     "pnpm~10": _TOOLCHAIN_REASON,
     "py3.12-pytest": _TOOLCHAIN_REASON,
     "py3.12-pyyaml": _TOOLCHAIN_REASON,
+    "py3.12-pillow": (
+        "factory browser-evidence preflight decodes PNGs on claude-runtime; "
+        "Luna captures and independent reviewers share that workload, while "
+        "pi-spark uses a separate workload and cannot restore its lineage"
+    ),
 }
 
 
