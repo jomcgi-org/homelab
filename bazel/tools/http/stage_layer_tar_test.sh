@@ -92,7 +92,8 @@ fi
 # non-root uid, since an unpinned tar run as root also records 0. That holds
 # where it matters: the layer this guards recorded uid 1001 when it drifted, so
 # the CI executor is not root.
-OWNER_LINE=$(tar -tvf "$TMP/forward.tar" | head -1)
+# Read the full listing: head may close early and give tar SIGPIPE under pipefail.
+OWNER_LINE=$(tar -tvf "$TMP/forward.tar" | sed -n '1p')
 if grep -qE '(^|[[:space:]])0/0([[:space:]]|$)' <<<"$OWNER_LINE" ||
 	awk '{exit !($3 == 0 && $4 == 0)}' <<<"$OWNER_LINE"; then
 	pass "owner and group are recorded as 0"
