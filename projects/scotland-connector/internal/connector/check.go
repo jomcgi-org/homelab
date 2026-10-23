@@ -242,10 +242,10 @@ func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) Che
 			best, bestScore = o, score
 		}
 	}
-	// The windows are the most clear hours listed; a capped site may list
-	// none for this night and still be unknown rather than cloudy.
+	// The shortlist can omit sites with incomplete entity coverage or capped
+	// clear-hour lists. Neither is evidence that every site is cloudy.
 	if best.Verdict == verdict.No {
-		if site := ds.CappedNear(cp.lat, cp.lon, radius, cp.day); site != nil {
+		if site := ds.UncertainNear(cp.lat, cp.lon, radius, cp.day); site != nil {
 			if o, ok := siteNight(ds, site, cp.lat, cp.lon, cp.day, now); ok {
 				best = o
 			}

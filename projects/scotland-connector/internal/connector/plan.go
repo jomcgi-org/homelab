@@ -390,9 +390,9 @@ func planNights(ds *stars.Dataset, q PlanQuery, night int32, now time.Time) ([]N
 	if ranked[0].o.Verdict == verdict.Unknown {
 		return nil, ranked[0].o.Why
 	}
-	// The windows are the most clear hours listed; a capped site may list
-	// none for this night and still be unknown rather than cloudy.
-	if site := ds.CappedNear(q.Lat, q.Lon, q.RadiusKm, night); site != nil {
+	// The shortlist can omit sites with incomplete entity coverage or capped
+	// clear-hour lists. Neither is evidence that every site is cloudy.
+	if site := ds.UncertainNear(q.Lat, q.Lon, q.RadiusKm, night); site != nil {
 		if o, ok := siteNight(ds, site, q.Lat, q.Lon, night, now); ok {
 			return nil, fmt.Sprintf("At site %s, %.1f km away: %s", o.SiteID, o.FromPointKm, o.Why)
 		}

@@ -159,17 +159,17 @@ func (n *NightWindow) ClearUntil() (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// CappedNear is the nearest site within radiusKm whose capped hour list
-// ends before night does, so that its verdict for night is unknown however
-// few hours it lists; nil when there is none. Windows ranks sites on listed
-// counts and can pass such a site over: by being capped it is among the
-// clearest.
-func (d *Dataset) CappedNear(lat, lon, radiusKm float64, night int32) *Site {
+// UncertainNear is the nearest site within radiusKm whose entity forecast
+// or capped hour list ends before night does; nil when there is none.
+// Windows ranks by listed clear hours, so its bounded shortlist can omit
+// these sites. Aggregators must check them before declaring every site cloudy.
+func (d *Dataset) UncertainNear(lat, lon, radiusKm float64, night int32) *Site {
 	end := localHour(night+1, nightEndHour)
 	var best *Site
 	bestKm := 0.0
 	d.visit(lat, lon, radiusKm, func(s *Site, km float64) {
-		if s.Truncated() && s.listedUntil().Before(end) && (best == nil || km < bestKm || km == bestKm && s.ID < best.ID) {
+		uncertain := s.Horizon(d.HourlyUntil).Before(end) || s.Truncated() && s.listedUntil().Before(end)
+		if uncertain && (best == nil || km < bestKm || km == bestKm && s.ID < best.ID) {
 			best, bestKm = s, km
 		}
 	})

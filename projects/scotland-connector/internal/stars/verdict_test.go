@@ -101,7 +101,7 @@ func TestNightWording(t *testing.T) {
 	}
 }
 
-func TestCappedNear(t *testing.T) {
+func TestUncertainNear(t *testing.T) {
 	ds, err := Parse([]byte(`{"fetched_at":"2026-10-20T14:00:00+00:00","sites":[
 	  {"forecast_fetched_at":"2026-10-20T14:00:00Z","id":"capped","lat":57.0,"lon":-4.0,"clear_dark_hours":30,"clear_twilight_hours":30,"best_hours":[{"time":"2026-10-20T23:00:00+00:00","cloud_area_fraction":1,"dark":true}]},
 	  {"forecast_fetched_at":"2026-10-20T14:00:00Z","id":"whole","lat":57.01,"lon":-4.0,"clear_dark_hours":1,"clear_twilight_hours":1,"best_hours":[{"time":"2026-10-20T23:00:00+00:00","cloud_area_fraction":1,"dark":true}]}]}`), []byte(`{"sites":[]}`), "v")
@@ -109,14 +109,14 @@ func TestCappedNear(t *testing.T) {
 		t.Fatal(err)
 	}
 	night := NightDay(time.Date(2026, 10, 20, 22, 0, 0, 0, time.UTC))
-	if s := ds.CappedNear(57.01, -4.0, 5, night+1); s == nil || s.ID != "capped" {
+	if s := ds.UncertainNear(57.01, -4.0, 5, night+1); s == nil || s.ID != "capped" {
 		t.Fatalf("capped near = %+v", s)
 	}
 	// The night its list covers is counted in full.
-	if s := ds.CappedNear(57.01, -4.0, 5, night-1); s != nil {
+	if s := ds.UncertainNear(57.01, -4.0, 5, night-1); s != nil {
 		t.Fatalf("an earlier night = %+v", s.ID)
 	}
-	if s := ds.CappedNear(58, -4.0, 5, night+1); s != nil {
+	if s := ds.UncertainNear(58, -4.0, 5, night+1); s != nil {
 		t.Fatalf("out of range = %+v", s.ID)
 	}
 }
