@@ -215,9 +215,12 @@ def _node_prompt(
     branch: str = "",
 ) -> str:
     schema_json = json.dumps(schema, sort_keys=True)
-    # The server-authored dependency artifact contract selects the inspection
-    # prompt here, without changing execute_node's deployed durable body.
-    read_only = "dependency_assessment" in schema.get("required", [])
+    # Server-authored dependency/scout artifact contracts select inspection
+    # here, without changing execute_node's deployed durable body or steps.
+    read_only = (
+        "dependency_assessment" in schema.get("required", [])
+        or schema.get("x-factory-scout-read-only") is True
+    )
     working = (
         f"\n\nInspect branch {branch} read-only. Do not modify source, commit or push. "
         "Write only the declared transient artifact."

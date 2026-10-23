@@ -568,6 +568,11 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
             "task_paused": bool(receipt and receipt.task_paused),
             "cancellation_requested": bool(receipt and receipt.cancellation_requested),
             "nonrenewable_recovery": nonrenewable_recovery(receipt),
+            "improvement_scout": bool(
+                receipt
+                and receipt.actor == "factory:improvement-scout"
+                and receipt.task_class == "advisory-diagnosis"
+            ),
             "work_item_id": None if receipt is None else receipt.work_item_id,
             "funding_enrolled": latest(db, task_id, "funding_review_requested")
             is not None,

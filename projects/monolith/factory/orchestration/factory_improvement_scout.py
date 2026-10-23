@@ -12,8 +12,9 @@ from sqlalchemy import or_
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls
+from factory.orchestration import factory_improvement_fence as fence
 from factory.orchestration import factory_improvements as improvements
-from factory.orchestration.factory_improvement_preview import preview, quota_decisions
+from factory.orchestration.factory_improvement_preview import preview
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
 ACTOR = "factory:improvement-scout"
@@ -70,6 +71,7 @@ FINDING_SCHEMA = {
     },
 }
 COLLECT_SCHEMA = {
+    "x-factory-scout-read-only": True,
     "type": "object",
     "additionalProperties": False,
     "required": ["findings", "repo_head", "summary"],
@@ -80,6 +82,7 @@ COLLECT_SCHEMA = {
     },
 }
 REVIEW_SCHEMA = {
+    "x-factory-scout-read-only": True,
     "type": "object",
     "additionalProperties": False,
     "required": ["approved", "review_digest", "collection_digest", "evidence"],
@@ -160,39 +163,12 @@ def eligibility(current: dict) -> dict:
     ):
         return {"ok": False, "reason": "scout_charter_not_ready"}
     caps = block.get("subscription_caps", {})
-    quota = current.get("quota", {})
-    grants = quota.get("grants", {}) if isinstance(quota, dict) else {}
-    # Sidecar can choose any Codex account, including on failover. A single
-    # spare account cannot authorize a scout while another must conserve.
-    if (
-        not isinstance(grants, dict)
-        or not grants
-        or any(not isinstance(v, dict) for v in grants.values())
-    ):
-        return {"ok": False, "reason": "scout_grant_inventory_unknown"}
-    codex = {name for name, value in grants.items() if value.get("provider") == "codex"}
-    decisions = quota_decisions(
-        quota, now=controls._now(), policy=improvements.generation_policy(policy)
+    quota_permission = fence.grant_permission(
+        current.get("quota", {}), policy, now=controls._now()
     )
-    permitting = {
-        row["grant"]
-        for row in decisions
-        if row.get("provider") == "codex" and row.get("eligible")
-    }
-    if not codex or not codex <= permitting:
-        return {
-            "ok": False,
-            "reason": "scout_all_grants_required",
-            "quota_decisions": decisions,
-        }
-    if any(
-        not isinstance(caps.get(name), dict)
-        or caps[name].get("subscription_only") is not True
-        or caps[name].get("overage_disabled") is not True
-        or not caps[name].get("evidence")
-        for name in codex
-    ):
-        return {"ok": False, "reason": "scout_cap_evidence_required"}
+    if not quota_permission["ok"]:
+        return quota_permission
+    decisions = quota_permission["quota_decisions"]
     result = preview(
         improvements._snapshot(
             {"subscription_caps": caps, "findings": []},
@@ -225,6 +201,7 @@ def _claim(db, row):
         select(FactoryAudit)
         .where(
             FactoryAudit.action == CLAIM,
+            FactoryAudit.actor == ACTOR,
             or_(
                 FactoryAudit.detail_json.contains(marker + ","),
                 FactoryAudit.detail_json.contains(marker + "}"),
@@ -257,12 +234,34 @@ def _receipt(task_id):
         }
 
 
+def owns_task(task_id: str) -> bool:
+    """Identify the source even when its authorization evidence is corrupt.
+
+    This is a refusal fence, not an authorization grant. Missing claim proof
+    cannot turn a scout-owned receipt into an ordinary task with funding.
+    """
+    with controls._read_session() as db:
+        row = db.exec(
+            select(FactoryReceipt).where(
+                FactoryReceipt.task_id == task_id,
+            )
+        ).first()
+        return row is not None and row.actor == ACTOR
+
+
 def is_scout(task_id: str) -> bool:
     return _receipt(task_id) is not None
 
 
+def transport_allowed(task_id: str, node_key: str, attempt: int) -> bool:
+    """Compatibility seam; the executor imports the minimal leaf directly."""
+    return fence.transport_allowed(task_id, node_key, attempt)
+
+
 def dispatch_allowed(task_id: str) -> dict:
     """Rechecked at physical transport, including delayed starts and retries."""
+    if _prior_settlement(task_id) is not None:
+        return {"ok": False, "reason": "scout_already_settled"}
     receipt = _receipt(task_id)
     if receipt is None or receipt["state"] != "admitted":
         return {"ok": False, "reason": "scout_receipt_not_admitted"}

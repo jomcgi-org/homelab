@@ -158,8 +158,8 @@ supported surface. No such activation was performed by this change.
 of permission to spend. A reviewed, bounded batch makes discovery useful
 without enabling a speculative model loop. Reusing the existing issue writer
 preserves its ambiguous-outcome fence, instead of introducing another queue.
-A later autonomous scout must retain these gates and use verified subscription
-admission before any model execution; this change makes no such execution.
+The automatic scout below retains these gates and uses verified subscription
+admission before any model execution; the batch API itself makes no such execution.
 
 ## Automatic scout: one bounded trial per charter and generation
 
@@ -205,7 +205,7 @@ reviewer, each with one attempt, a maximum 300-second turn timeout, and the
 existing `sol` Codex subscription model. Both nodes are read-only apart from
 the declared result artifact. There is no model/provider fallback, broad test
 run, dependency installation, ticket-writing agent, or implementation work in
-the scout. Findings must include the existing reproducible evidence, benefit,
+the scout. Generic funding judges cannot extend this trial or add nodes. Findings must include the existing reproducible evidence, benefit,
 acceptance, ownership and active-goal fields. The review binds both the exact
 collection digest and fresh rules/goals/open-work context. Server verification
 requires successful, distinct collection/review sessions before candidate
@@ -219,7 +219,9 @@ grant in complete broker telemetry** to be fresh, individually eligible and
 covered by cap evidence. One account's `use_more` never overrides another's
 `conserve`. These checks run before graph dispatch and through the existing
 live transport fence on wake/retry immediately before execution. Task/capacity
-reservations alone do not constitute subscription eligibility. Missing or
+reservations alone do not constitute subscription eligibility. The executor uses
+a small dependency-isolated fence and rechecks durable controls after broker I/O
+to reject intervening pauses, policy changes or competing owners. Missing or
 changed evidence defers; no paid API fallback is introduced.
 
 Ownership checks exclude only the exact receipt backed by the scout claim;

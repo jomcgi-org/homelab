@@ -1465,6 +1465,11 @@ py_library(
 py_library(
     name = "swarm_factory_controls",
     srcs = [
+        "factory/execution/__init__.py",
+        "factory/execution/broker_client.py",
+        "factory/execution/provider_quota.py",
+        "factory/orchestration/factory_improvement_fence.py",
+        "factory/orchestration/factory_improvement_preview.py",
         "factory/orchestration/__init__.py",
         "factory/orchestration/api.py",
         "factory/orchestration/factory_controls.py",
@@ -1479,6 +1484,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":factory_goal_models",
         ":pkg_core",
         ":pkg_shared",
         "@pip//httpx",
