@@ -1642,8 +1642,8 @@ async def factory_preview_refinement_delivery(
 
     Requires paused admissions and no queued, active or uncertain execution.
     The source must have verified agent-ready refinement and only its conductor
-    staging hold and gates. Reads current issue ownership and PR references;
-    ambiguity refuses. Copies every restriction server-side, with no caller
+    staging hold and gates. Reads current issue ownership and PR references.
+    Ambiguity refuses. Copies every restriction server-side, with no caller
     override. Source receipt, task and accounting remain terminal and unchanged.
     Preview creates no receipt or reservation. Review its exact inherited
     restrictions and policy before applying. It grants no landing permission.
@@ -1670,7 +1670,7 @@ async def factory_apply_refinement_delivery(
     source restrictions, policy and unknown execution under the control lock.
     Creates one distinct delivery receipt with all conductor restrictions and
     the unmerged-delivery hold, retaining the terminal refinement unchanged.
-    Preserves generation and caps; disables auto-merge, broad intake and issue
+    Preserves generation and caps. Disables auto-merge, broad intake and issue
     production. Leaves admissions paused: inspect the receipt before enabling.
     Restrictions are audited and checked again before a task can be admitted.
     Replay the same request key and identical arguments after a lost response,
