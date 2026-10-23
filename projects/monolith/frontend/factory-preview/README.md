@@ -65,6 +65,15 @@ fetch function accepts only known synthetic read endpoints.
 Linux CI builds the same head-owned harness against the PR base source using
 `SHEET_SOURCE_ROOT`, then compares the base and head screenshots and scroll
 contracts with `sheet_check.py --before ... --after ... --output ... --acceptance`.
+The archived original updates implementation is recognized by its exact source
+file hash. Only that baseline uses the explicit OS-owned theme contract; unknown
+archived contracts fail closed. Its OS flips and reloads must preserve storage
+and follow the OS through the original day/night classes. Head captures always
+require persisted preference, and reject the historical-baseline flag. Both
+contracts record actual OS, storage, root theme, classes and background at each
+phase. This records the intentional theme migration without exempting head
+behavior or pixel/geometry comparison.
+
 Visible pixel changes, changed document height, changed scroll ownership and
 changed settled keyboard-focus treatment fail
 that comparison. Mobile journals also retain eight fresh-context renders: the

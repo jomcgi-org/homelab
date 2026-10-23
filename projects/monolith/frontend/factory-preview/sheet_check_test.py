@@ -4,13 +4,24 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
+from functools import partial
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
 from PIL import Image
-from sheet_check import compare, validate_capture, viewport_page_capture
+from sheet_check import (
+    QuietHandler,
+    capture,
+    check_schemes,
+    compare,
+    validate_capture,
+    viewport_page_capture,
+)
+from sheet_ci_check import baseline_updates_os_theme
 
 
 class ComparisonTest(unittest.TestCase):
@@ -126,10 +137,140 @@ class ComparisonTest(unittest.TestCase):
             self.compare()
 
 
+class BaselineContractTest(unittest.TestCase):
+    def test_unknown_or_mixed_source_contract_fails_closed(self):
+        for source in (b"", b"window.matchMedia('dark')", b"<SchemePreference />"):
+            with self.assertRaisesRegex(AssertionError, "unknown archived"):
+                baseline_updates_os_theme(source)
+        current = (
+            b'import SchemePreference from "$lib/public/components/SchemePreference.svelte";'
+            b"<SchemePreference />"
+        )
+        self.assertFalse(baseline_updates_os_theme(current))
+        with self.assertRaisesRegex(AssertionError, "unknown archived"):
+            baseline_updates_os_theme(current + b"window.matchMedia('dark')")
+
+
 @unittest.skipUnless(
     os.environ.get("SHEET_REAL_BROWSER") == "1", "real Chromium runs in preview CI"
 )
 class BrowserCaptureTest(unittest.TestCase):
+    def theme_fixture(self, browser, root, *, historical):
+        (root / "sheets.html").write_text(
+            """<style>main{min-height:1000px;background:rgb(255,255,255)}
+            html[data-theme=dark] main, main.night{background:rgb(0,0,0)}</style>
+            <main><button class="scheme">Toggle</button></main><script>
+            const oldUpdates = HISTORICAL && new URL(location).searchParams.get('view') === 'updates';
+            const media = matchMedia('(prefers-color-scheme: dark)');
+            const button = document.querySelector('button');
+            function render() {
+              const scheme = oldUpdates ? (media.matches ? 'dark' : 'light') : localStorage.getItem('td-theme');
+              if (oldUpdates) document.querySelector('main').className = scheme === 'dark' ? 'night' : 'day';
+              else document.documentElement.dataset.theme = scheme;
+              button.setAttribute('aria-label', scheme === 'dark' ? 'Switch to day scheme' : 'Switch to night scheme');
+            }
+            button.onclick = () => { localStorage.setItem('td-theme', localStorage.getItem('td-theme') === 'dark' ? 'light' : 'dark'); render(); };
+            media.addEventListener('change', render); render();
+            </script>""".replace("HISTORICAL", "true" if historical else "false")
+        )
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), partial(QuietHandler, directory=str(root))
+        )
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        records = [
+            {
+                "key": f"{view}-390-{scheme}",
+                "opening": {
+                    "geometry": {
+                        "elements": [
+                            {"selector": "main", "style": {"backgroundColor": color}}
+                        ]
+                    }
+                },
+            }
+            for view in ("post", "overview", "updates")
+            for scheme, color in (
+                ("light", "rgb(255, 255, 255)"),
+                ("dark", "rgb(0, 0, 0)"),
+            )
+        ]
+        return server.server_port, records
+
+    def test_real_theme_contracts_and_wrong_expectation(self):
+        from playwright.sync_api import sync_playwright
+
+        with tempfile.TemporaryDirectory() as directory, sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            try:
+                for historical in (False, True):
+                    root = Path(directory) / str(historical)
+                    root.mkdir()
+                    port, records = self.theme_fixture(
+                        browser, root, historical=historical
+                    )
+                    output = root / "correct"
+                    output.mkdir()
+                    result = check_schemes(
+                        browser,
+                        port,
+                        records,
+                        output,
+                        baseline_updates_os_theme=historical,
+                    )
+                    self.assertEqual(len(result), 6)
+                    updates = [row for row in result if row["view"] == "updates"]
+                    self.assertTrue(
+                        all(
+                            row["opposite_os_wins"] == (not historical)
+                            for row in updates
+                        )
+                    )
+                    self.assertTrue(all(row["reload_checked"] for row in result))
+                    wrong = root / "wrong"
+                    wrong.mkdir()
+                    with self.assertRaises(AssertionError):
+                        check_schemes(
+                            browser,
+                            port,
+                            records,
+                            wrong,
+                            baseline_updates_os_theme=not historical,
+                        )
+                    self.assertTrue((wrong / "scheme-updates-light-trace.zip").exists())
+                    self.assertEqual(
+                        json.loads((wrong / "failure.json").read_text())["status"],
+                        "incomplete",
+                    )
+            finally:
+                browser.close()
+
+    def test_legacy_contract_cannot_be_used_for_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(AssertionError, "head acceptance"):
+                capture(
+                    root,
+                    root / "acceptance",
+                    "head",
+                    acceptance=True,
+                    baseline_updates_os_theme=True,
+                )
+            (root / "sheet-build.json").write_text(
+                json.dumps(
+                    {
+                        "fixture_only": True,
+                        "production_sha": "head",
+                        "harness_sha": "head",
+                    }
+                )
+            )
+            with self.assertRaisesRegex(AssertionError, "archived baseline"):
+                capture(
+                    root, root / "capture-only", "head", baseline_updates_os_theme=True
+                )
+
     def test_real_long_page_and_corrupt_evidence(self):
         from playwright.sync_api import sync_playwright
 

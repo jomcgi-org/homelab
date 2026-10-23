@@ -272,14 +272,22 @@ def validate_bundle(root, result):
                 raise AssertionError("corrupt behavior trace")
 
 
-def capture(artifact, output, label, *, acceptance=False):
+def capture(
+    artifact, output, label, *, acceptance=False, baseline_updates_os_theme=False
+):
     from playwright.sync_api import sync_playwright
 
+    if acceptance and baseline_updates_os_theme:
+        raise AssertionError("legacy theme contract cannot be used for head acceptance")
     if output.exists() and any(output.iterdir()):
         raise AssertionError("stale evidence: output must be empty")
     output.mkdir(parents=True, exist_ok=True)
     build = json.loads((artifact / "sheet-build.json").read_text())
     assert build["fixture_only"] and build["production_sha"] == label, (label, build)
+    if baseline_updates_os_theme:
+        assert build["production_sha"] != build["harness_sha"], (
+            "legacy theme contract requires archived baseline source"
+        )
     server = ThreadingHTTPServer(
         ("127.0.0.1", 0), partial(QuietHandler, directory=str(artifact.resolve()))
     )
@@ -565,7 +573,13 @@ def capture(artifact, output, label, *, acceptance=False):
                                 ), (key, probe_errors)
                                 probes.append(name)
                                 probe_context.close()
-            scheme_checks = check_schemes(browser, server.server_port, records, output)
+            scheme_checks = check_schemes(
+                browser,
+                server.server_port,
+                records,
+                output,
+                baseline_updates_os_theme=baseline_updates_os_theme,
+            )
             behavior_checks = check_behaviors(browser, server.server_port, output)
             browser.close()
     finally:
@@ -584,6 +598,7 @@ def capture(artifact, output, label, *, acceptance=False):
         "chromium_version": browser_version,
         "playwright_version": importlib.metadata.version("playwright"),
         "captures": records,
+        "baseline_updates_os_theme": baseline_updates_os_theme,
         "scheme_checks": scheme_checks,
         "behavior_checks": behavior_checks,
     }
@@ -592,7 +607,7 @@ def capture(artifact, output, label, *, acceptance=False):
     return result
 
 
-def check_schemes(browser, port, records, output):
+def check_schemes(browser, port, records, output, *, baseline_updates_os_theme=False):
     results = []
     for view in ["post", "overview", "updates"]:
         for system in ["light", "dark"]:
@@ -619,38 +634,49 @@ def check_schemes(browser, port, records, output):
                 page.goto(f"http://127.0.0.1:{port}/sheets.html?view={view}")
                 page.wait_for_selector("main")
                 page.wait_for_timeout(100)
-                expected = next(
-                    row for row in records if row["key"] == f"{view}-390-{stored}"
-                )
-                ground = next(
-                    item
-                    for item in expected["opening"]["geometry"]["elements"]
-                    if item["selector"] == "main"
-                )["style"]["backgroundColor"]
-                assert (
-                    page.evaluate("document.documentElement.dataset.theme") == stored
-                ), (
-                    view,
-                    system,
-                    stored,
-                )
-                assert (
-                    page.locator("main").evaluate(
-                        "node => getComputedStyle(node).backgroundColor"
+                legacy_updates = baseline_updates_os_theme and view == "updates"
+                observations = {}
+
+                def observe(phase, os_scheme, saved):
+                    # Wait for the real matchMedia listener / Svelte effect.
+                    page.wait_for_timeout(100)
+                    actual = page.evaluate("""() => ({
+                      os: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+                      stored: localStorage.getItem('td-theme'),
+                      root_theme: document.documentElement.dataset.theme ?? null,
+                      classes: [...document.querySelector('main').classList],
+                      background: getComputedStyle(document.querySelector('main')).backgroundColor
+                    })""")
+                    scheme = os_scheme if legacy_updates else saved
+                    expected = next(
+                        row for row in records if row["key"] == f"{view}-390-{scheme}"
                     )
-                    == ground
-                ), (view, system, stored)
+                    ground = next(
+                        item
+                        for item in expected["opening"]["geometry"]["elements"]
+                        if item["selector"] == "main"
+                    )["style"]["backgroundColor"]
+                    observations[phase] = actual
+                    assert actual["os"] == os_scheme, (view, phase, actual)
+                    assert actual["stored"] == saved, (view, phase, actual)
+                    assert actual["background"] == ground, (view, phase, actual, ground)
+                    if legacy_updates:
+                        assert ("night" if os_scheme == "dark" else "day") in actual[
+                            "classes"
+                        ], (view, phase, actual)
+                        assert actual["root_theme"] is None, (view, phase, actual)
+                    else:
+                        assert actual["root_theme"] == saved, (view, phase, actual)
+
+                observe("initial", system, stored)
                 page.emulate_media(color_scheme=stored)
+                observe("os_flipped", stored, stored)
                 page.emulate_media(color_scheme=system)
-                assert (
-                    page.locator("main").evaluate(
-                        "node => getComputedStyle(node).backgroundColor"
-                    )
-                    == ground
-                ), view
+                observe("os_returned", system, stored)
                 viewport_page_capture(
                     page, output / f"scheme-{view}-{system}-persisted.png", 390
                 )
+                saved_after_reload = stored
                 if view != "updates":
                     button = page.locator("button.scheme")
                     assert button.get_attribute("aria-label") == (
@@ -659,12 +685,10 @@ def check_schemes(browser, port, records, output):
                         else "Switch to night scheme"
                     )
                     button.click()
-                    page.reload()
-                    page.wait_for_selector("main")
-                    assert (
-                        page.evaluate("document.documentElement.dataset.theme")
-                        == system
-                    ), view
+                    saved_after_reload = system
+                page.reload()
+                page.wait_for_selector("main")
+                observe("reloaded", system, saved_after_reload)
                 viewport_page_capture(
                     page, output / f"scheme-{view}-{system}-reload.png", 390
                 )
@@ -673,8 +697,12 @@ def check_schemes(browser, port, records, output):
                         "view": view,
                         "os": system,
                         "persisted": stored,
-                        "opposite_os_wins": True,
-                        "reload_checked": view != "updates",
+                        "contract": "historical-updates-os"
+                        if legacy_updates
+                        else "persisted-preference",
+                        "opposite_os_wins": not legacy_updates,
+                        "reload_checked": True,
+                        "observations": observations,
                     }
                 )
             except Exception as error:
@@ -901,13 +929,26 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--label", default="working-tree")
     parser.add_argument("--acceptance", action="store_true")
+    parser.add_argument(
+        "--baseline-updates-os-theme",
+        action="store_true",
+        help="assert the reviewed archived baseline OS-owned updates contract",
+    )
     parser.add_argument("--expected-base-sha")
     parser.add_argument("--expected-head-sha")
     parser.add_argument("--before", type=Path)
     parser.add_argument("--after", type=Path)
     args = parser.parse_args()
+    if args.baseline_updates_os_theme and not args.artifact:
+        parser.error("legacy baseline theme contract is only valid during capture")
     if args.artifact:
-        capture(args.artifact, args.output, args.label, acceptance=args.acceptance)
+        capture(
+            args.artifact,
+            args.output,
+            args.label,
+            acceptance=args.acceptance,
+            baseline_updates_os_theme=args.baseline_updates_os_theme,
+        )
     else:
         args.output.mkdir(parents=True, exist_ok=True)
         if not args.expected_base_sha or not args.expected_head_sha:

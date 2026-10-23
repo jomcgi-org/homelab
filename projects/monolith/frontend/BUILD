@@ -438,6 +438,7 @@ py_test(
     srcs = [
         "factory-preview/sheet_check.py",
         "factory-preview/sheet_check_test.py",
+        "factory-preview/sheet_ci_check.py",
     ],
     imports = ["factory-preview"],
     main = "factory-preview/sheet_check_test.py",

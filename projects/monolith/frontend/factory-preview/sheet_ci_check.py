@@ -4,6 +4,7 @@ This is test orchestration, not a fixture endpoint. Only public source history
 and a pinned test dependency are downloaded. Rendered pages remain offline.
 """
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -14,6 +15,25 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
+
+
+def baseline_updates_os_theme(source):
+    """Recognize only the reviewed historical OS-owned updates implementation."""
+    # Original migration base 48589107: exact file bytes, not a permissive
+    # heuristic that could excuse a newly broken preference implementation.
+    if hashlib.sha256(source).hexdigest() == (
+        "7abee92f1df0272cadbd960875230118d50df00f26702eeb839f88077fc81c4d"
+    ):
+        return True
+    text = source.decode()
+    if (
+        'import SchemePreference from "$lib/public/components/SchemePreference.svelte";'
+        in text
+        and "<SchemePreference />" in text
+        and "matchMedia" not in text
+    ):
+        return False
+    raise AssertionError("unknown archived updates theme contract")
 
 
 def run(output, expected_sha, *, capture_only=False):
@@ -128,6 +148,10 @@ def run(output, expected_sha, *, capture_only=False):
         (baseline_frontend / "node_modules").symlink_to(
             frontend / "node_modules", target_is_directory=True
         )
+        updates_source = (
+            baseline_frontend / "src/routes/private/updates/+page.svelte"
+        ).read_bytes()
+        legacy_updates = baseline_updates_os_theme(updates_source)
         artifact = baseline / "artifact"
         command(
             [
@@ -155,6 +179,7 @@ def run(output, expected_sha, *, capture_only=False):
                 str(output / "before"),
                 "--label",
                 base,
+                *(["--baseline-updates-os-theme"] if legacy_updates else []),
             ]
         )
     (output / "provenance.json").write_text(
@@ -164,6 +189,14 @@ def run(output, expected_sha, *, capture_only=False):
                 "target_sha": target,
                 "head_sha": expected_sha,
                 "harness_sha": expected_sha,
+                "base_updates_source_sha256": hashlib.sha256(
+                    updates_source
+                ).hexdigest(),
+                "base_updates_theme_contract": (
+                    "historical-updates-os"
+                    if legacy_updates
+                    else "persisted-preference"
+                ),
                 "role": "capture-only" if capture_only else "comparison",
                 "visual_acceptance": "independent review required",
             },
