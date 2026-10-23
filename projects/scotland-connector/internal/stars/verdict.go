@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 )
 
@@ -66,7 +67,7 @@ func moonPhrase(n *NightWindow) string {
 	switch {
 	case n.MoonLit < MoonlessMaxLit:
 		return "no moon to speak of"
-	case n.MoonlessDark == n.ClearDark:
+	case n.ClearDark > 0 && n.MoonlessDark == n.ClearDark:
 		return "the moon below the horizon"
 	case n.MoonlessDark == 0:
 		return fmt.Sprintf("under a %d%% moon", pct)
@@ -76,8 +77,15 @@ func moonPhrase(n *NightWindow) string {
 
 // AssessNight gives the verdict for one site on one night. climate, when
 // known, is quoted for nights past the forecast.
-func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, now time.Time, climate *Climate) NightAssessment {
-	a := NightAssessment{Coverage: d.NightCoverage(night)}
+func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, now time.Time, climate *Climate) (a NightAssessment) {
+	a = NightAssessment{Coverage: d.NightCoverage(night)}
+	defer func() {
+		if n.ClearDark == 0 {
+			a.Why += " " + MoonAdvice(site.Lat, site.Lon, night, now)
+		} else if n.MoonLit >= 0.8 && n.MoonlessDark < n.ClearDark {
+			a.Why += " Bright moonlight limits faint objects; lunar and planetary viewing can still be worthwhile if skies clear."
+		}
+	}()
 	if a.Coverage == CoverageNone {
 		a.Verdict, a.Why = verdict.Unknown, "Beyond the hourly forecast, which reaches "+localDay(d.HourlyUntil)+"."
 		if climate != nil && climate.Dark > 0 {
@@ -174,4 +182,37 @@ func hours(n int, unit string) string {
 		return "1 " + unit
 	}
 	return fmt.Sprintf("%d %ss", n, unit)
+}
+
+// MoonAdvice uses geometry independently of the forecast's clear-hour list.
+// Ten-minute samples describe the remaining sunset-to-sunrise interval, even
+// on twilight-only nights. Civil dates and zone labels disambiguate DST.
+func MoonAdvice(lat, lon float64, night int32, now time.Time) string {
+	day := time.Unix(int64(night)*86400, 0)
+	_, set, ok := astro.SunTimes(day, lat, lon)
+	rise, _, nextOK := astro.SunTimes(day.AddDate(0, 0, 1), lat, lon)
+	lit := NightMoonLit(night)
+	prefix := fmt.Sprintf("Moon illumination about %.0f%% at local midnight.", lit*100)
+	if !ok || !nextOK {
+		return prefix + " Nighttime horizon geometry unavailable."
+	}
+	from := set
+	if now.After(from) {
+		from = now
+	}
+	if !from.Before(rise) {
+		return prefix + " No sunset-to-sunrise interval remains for this night."
+	}
+	total, up := 0, 0
+	for at := from; at.Before(rise); at = at.Add(10 * time.Minute) {
+		total++
+		if astro.MoonAltitude(at, lat, lon) > 0 {
+			up++
+		}
+	}
+	prefix += fmt.Sprintf(" At ten-minute checks between %s and %s, the moon is above the horizon at %d of %d samples (independent of cloud).", from.In(london).Format("Mon 15:04 MST"), rise.In(london).Format("Mon 15:04 MST"), up, total)
+	if lit >= 0.8 && up > 0 {
+		prefix += " Bright moonlight limits faint objects while it is up; lunar and planetary viewing can still be worthwhile if skies clear."
+	}
+	return prefix
 }

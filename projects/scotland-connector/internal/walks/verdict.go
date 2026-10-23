@@ -2,10 +2,12 @@ package walks
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 )
 
@@ -84,9 +86,14 @@ func (w *Walk) Verdict(d Day) verdict.Verdict { return w.outcome(d).verdict() }
 
 // Assess turns one assessed day into a verdict. hourlyUntil is the dataset's
 // forecast horizon, quoted when the day cannot be decided.
-func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
+func (w *Walk) Assess(d Day, hourlyUntil time.Time) (a Assessment) {
 	o := w.outcome(d)
-	a := Assessment{Verdict: o.verdict()}
+	a = Assessment{Verdict: o.verdict()}
+	defer func() {
+		if d.Best != nil && d.Decided {
+			a.Why += w.cloudAdvice(d, a)
+		}
+	}()
 	switch o {
 	case beyondForecast:
 		a.Why = "Beyond the hourly forecast, which reaches " + localDay(hourlyUntil) + "."
@@ -142,6 +149,7 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) Assessment {
 	} else {
 		weather += ", dry"
 	}
+	weather += fmt.Sprintf(", rain in %d of %d qualifying hours (at least 0.1 mm/h)", b.WetHours, b.GoodHours)
 	switch o {
 	case darkShoulder:
 		a.Why = fmt.Sprintf("Fits only by starting or finishing in the dark: %s %s to %s, %s.", goodHours(b.GoodHours), local(b.Start), local(b.End), weather)
@@ -181,4 +189,79 @@ func goodHours(n int) string {
 		return "1 good hour"
 	}
 	return fmt.Sprintf("%d good hours", n)
+}
+
+// cloudAdvice describes only known start-point forecasts. A later suggestion
+// must fit the entire duration in contiguous qualifying daylight hours inside
+// the already feasible start window. It does not change viability or #7275.
+func (w *Walk) cloudAdvice(d Day, a Assessment) string {
+	b := d.Best
+	low, fog := float32(-1), float32(-1)
+	knownLow, knownFog := 0, 0
+	byTime := map[int64]Hour{}
+	for _, h := range d.Hours {
+		byTime[h.Unix] = h
+		if h.Unix < b.Start.Unix() || h.Unix >= b.End.Unix() {
+			continue
+		}
+		if Known(h.LowCloudPct) {
+			low = max(low, h.LowCloudPct)
+			knownLow++
+		}
+		if Known(h.FogPct) {
+			fog = max(fog, h.FogPct)
+			knownFog++
+		}
+	}
+	parts := []string{}
+	if knownLow > 0 {
+		parts = append(parts, fmt.Sprintf("low cloud up to %.0f%% (%d of %d qualifying hours known)", low, knownLow, b.GoodHours))
+	}
+	if knownFog > 0 {
+		parts = append(parts, fmt.Sprintf("fog up to %.0f%% (%d of %d qualifying hours known)", fog, knownFog, b.GoodHours))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	advice := " At the start point: " + strings.Join(parts, ", ") + ". This does not establish cloud base or summit visibility."
+	if a.StartFrom.IsZero() || w.DurationH <= 0 {
+		return advice
+	}
+	rise, set, ok := astro.SunTimes(b.Start, w.Lat, w.Lon)
+	if !ok {
+		return advice
+	}
+	score := func(start time.Time) (float64, bool) {
+		if start.Before(rise) || start.Add(time.Duration(w.DurationH*float64(time.Hour))).After(set) {
+			return 0, false
+		}
+		total := 0.0
+		count := int(math.Ceil(w.DurationH))
+		for i := 0; i < count; i++ {
+			h, exists := byTime[start.Add(time.Duration(i)*time.Hour).Unix()]
+			if !exists || !Known(h.LowCloudPct) || !Known(h.FogPct) {
+				return 0, false
+			}
+			total += float64(max(h.LowCloudPct, h.FogPct))
+		}
+		return total / float64(count), true
+	}
+	first := a.StartFrom.Truncate(time.Hour)
+	if first.Before(a.StartFrom) {
+		first = first.Add(time.Hour)
+	}
+	initial, ok := score(first)
+	if !ok || initial < 50 {
+		return advice
+	}
+	best, bestScore := first, initial
+	for t := first.Add(time.Hour); !t.After(a.StartBy); t = t.Add(time.Hour) {
+		if v, ok := score(t); ok && v < bestScore {
+			best, bestScore = t, v
+		}
+	}
+	if initial-bestScore >= 20 {
+		advice += fmt.Sprintf(" Prefer starting at %s for lower forecast low cloud/fog across the full %.1f h walk, within this start window; clearing is not guaranteed.", local(best), w.DurationH)
+	}
+	return advice
 }

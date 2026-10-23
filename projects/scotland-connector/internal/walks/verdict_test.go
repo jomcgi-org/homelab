@@ -247,3 +247,91 @@ func TestOtherwiseDryWhateverTheGapFailed(t *testing.T) {
 		t.Fatalf("assess = %+v", a)
 	}
 }
+
+// Synthetic weather sequences, not a reproduction of an unspecified Sunday.
+func TestRainFrequencyAdvice(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		rain      []float32
+		limit     float64
+		wet, good int
+	}{
+		{"dry", []float32{0, 0, 0, 0}, 2, 0, 4},
+		{"all wet", []float32{2, 2, 2, 2}, 2, 4, 4},
+		{"mixed and threshold", []float32{0, 0.099, 0.1, 0.2}, 2, 2, 4},
+		{"custom boundary", []float32{0, 0.1, 0.2, 0.1}, 0.1, 2, 3},
+		{"looser boundary", []float32{3, 3, 3, 3}, 3, 4, 4},
+		{"tolerated wet gap", []float32{0, 0, 3, 0}, 2, 0, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 2, 0, 0, 1, 2, 3)))
+			w := &ds.Walks[0]
+			for i := range w.Hours {
+				w.Hours[i].PrecipMM = tc.rain[i]
+			}
+			w.good = DefaultTest.filter(w.Hours)
+			d := ds.DayWithin(w, LocalDay(base), base, Limits{MaxPrecipMM: &tc.limit})
+			a := w.Assess(d, ds.HourlyUntil)
+			want := fmt.Sprintf("rain in %d of %d qualifying hours", tc.wet, tc.good)
+			if !strings.Contains(a.Why, want) {
+				t.Fatalf("want %q: %+v", want, a)
+			}
+		})
+	}
+}
+
+func TestCloudAdviceFeasibleClearing(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		duration     float64
+		unknown, gap bool
+		now          time.Time
+		prefer       bool
+	}{
+		{"clearer later", 2, false, false, base, true},
+		{"too long to wait", 6, false, false, base, false},
+		{"unknown is not clear", 2, true, false, base, false},
+		{"gap not a full clear walk", 2, false, true, base, false},
+		{"already cleared", 2, false, false, base.Add(3 * time.Hour), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := mustParse(t, snapshot(walkJSON("w", 57, -4, tc.duration, 0, 0, 1, 2, 3, 4, 5)))
+			w := &ds.Walks[0]
+			for i := range w.Hours {
+				w.Hours[i].LowCloudPct = 90
+				w.Hours[i].FogPct = 60
+				if i >= 3 {
+					w.Hours[i].LowCloudPct = 10
+					w.Hours[i].FogPct = 0
+				}
+				if tc.unknown {
+					w.Hours[i].FogPct = nan
+				}
+				if tc.gap && i == 3 {
+					w.Hours[i].LowCloudPct = 90
+					w.Hours[i].FogPct = 60
+				}
+				if tc.gap && i == 4 {
+					w.Hours[i].PrecipMM = 3
+				}
+			}
+			w.good = DefaultTest.filter(w.Hours)
+			d := ds.DayFor(w, LocalDay(base), tc.now)
+			a := w.Assess(d, ds.HourlyUntil)
+			if strings.Contains(a.Why, "Prefer starting") != tc.prefer || !strings.Contains(a.Why, "does not establish cloud base or summit visibility") {
+				t.Fatalf("%+v", a)
+			}
+			if tc.prefer && !strings.Contains(a.Why, "Prefer starting at 11:00") {
+				t.Fatal(a.Why)
+			}
+			if tc.unknown && strings.Contains(a.Why, "fog up to") {
+				t.Fatal(a.Why)
+			}
+		})
+	}
+	// Legacy missing values must not become clear skies.
+	a := assessDay(t, 2, 0, 1, 2)
+	if strings.Contains(a.Why, "low cloud") || strings.Contains(a.Why, "fog") {
+		t.Fatal(a.Why)
+	}
+}

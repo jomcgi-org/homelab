@@ -96,7 +96,7 @@ func TestNightWording(t *testing.T) {
 		t.Errorf("twilight-only clear_from %v", from)
 	}
 	late := time.Date(2026, 10, 20, 23, 30, 0, 0, time.UTC)
-	if a := ds.AssessNight(&Site{}, &NightWindow{}, night, late, nil); a.Verdict != verdict.No || a.Why != "No clear hour left tonight." {
+	if a := ds.AssessNight(&Site{}, &NightWindow{}, night, late, nil); a.Verdict != verdict.No || !strings.HasPrefix(a.Why, "No clear hour left tonight.") {
 		t.Errorf("night in progress: %s %q", a.Verdict, a.Why)
 	}
 }
@@ -118,5 +118,37 @@ func TestCappedNear(t *testing.T) {
 	}
 	if s := ds.CappedNear(58, -4.0, 5, night+1); s != nil {
 		t.Fatalf("out of range = %+v", s.ID)
+	}
+}
+
+// Synthetic cloudy nights cover winter, both DST changes and summer twilight.
+func TestCloudyMoonGeometryIndependentOfForecast(t *testing.T) {
+	for _, date := range []string{"2026-01-03", "2026-03-28", "2026-10-24", "2026-06-29"} {
+		now, err := time.Parse(time.DateOnly, date)
+		if err != nil {
+			t.Fatal(err)
+		}
+		night := NightDay(now.Add(18 * time.Hour))
+		ds := &Dataset{HourlyUntil: now.Add(72 * time.Hour)}
+		site := &Site{Lat: 57, Lon: -4}
+		a := ds.AssessNight(site, &NightWindow{}, night, now, nil)
+		if a.Verdict != verdict.No || !strings.Contains(a.Why, "Moon illumination") || !strings.Contains(a.Why, "above the horizon at") || strings.Contains(a.Why, "the moon below the horizon") {
+			t.Fatalf("%s: %+v", date, a)
+		}
+		if date == "2026-10-24" && (!strings.Contains(a.Why, "BST") || !strings.Contains(a.Why, "GMT")) {
+			t.Fatal(a.Why)
+		}
+		if date == "2026-01-03" && !strings.Contains(a.Why, "lunar and planetary") {
+			t.Fatal(a.Why)
+		}
+		ds.HourlyUntil = now.Add(24 * time.Hour)
+		a = ds.AssessNight(site, &NightWindow{}, night, now, nil)
+		if a.Verdict != verdict.Unknown || !strings.Contains(a.Why, "Moon illumination") {
+			t.Fatalf("partial: %+v", a)
+		}
+		ds.HourlyUntil = now
+		if a = ds.AssessNight(site, &NightWindow{}, night, now, nil); a.Verdict != verdict.Unknown {
+			t.Fatal(a)
+		}
 	}
 }
