@@ -1610,3 +1610,82 @@ async def factory_session_dispatch_diagnostics(
     from factory.execution.admission_diagnostics import inspect_session_turn
 
     return await asyncio.to_thread(inspect_session_turn, session_id, seq)
+
+
+def _refinement_delivery(
+    operation, receipt_id, reason, actor, request_key=None, digest=None
+):
+    from factory.orchestration import factory_refinement_delivery as owner
+
+    try:
+        if operation == "preview":
+            return {"ok": True, "preview": owner.preview(receipt_id, reason)}
+        return owner.apply(
+            receipt_id,
+            reason,
+            actor=actor,
+            request_key=request_key,
+            expected_preview_sha256=digest,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+    except httpx.HTTPError:
+        return {"ok": False, "reason": "refinement_delivery_github_read_failed"}
+
+
+@mcp.tool
+async def factory_preview_refinement_delivery(
+    receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+) -> dict:
+    """Preview a separate held delivery from completed refinement as an operator.
+
+    Requires paused admissions and no queued, active or uncertain execution.
+    The source must have verified agent-ready refinement and only its conductor
+    staging hold and gates. Reads current issue ownership and PR references;
+    ambiguity refuses. Copies every restriction server-side, with no caller
+    override. Source receipt, task and accounting remain terminal and unchanged.
+    Preview creates no receipt or reservation. Review its exact inherited
+    restrictions and policy before applying. It grants no landing permission.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    return await asyncio.to_thread(
+        _refinement_delivery, "preview", receipt_id, reason, principal.subject
+    )
+
+
+@mcp.tool
+async def factory_apply_refinement_delivery(
+    receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: Annotated[str, Field(min_length=1, max_length=256)],
+    expected_preview_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
+) -> dict:
+    """Queue the exact previewed held refinement continuation as an operator.
+
+    Requires identical receipt/reason and preview digest. Rechecks ownership,
+    source restrictions, policy and unknown execution under the control lock.
+    Creates one distinct delivery receipt with all conductor restrictions and
+    the unmerged-delivery hold, retaining the terminal refinement unchanged.
+    Preserves generation and caps; disables auto-merge, broad intake and issue
+    production. Leaves admissions paused: inspect the receipt before enabling.
+    Restrictions are audited and checked again before a task can be admitted.
+    Replay the same request key and identical arguments after a lost response,
+    then read current status. This neither starts a worker nor permits landing.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    return await asyncio.to_thread(
+        _refinement_delivery,
+        "apply",
+        receipt_id,
+        reason,
+        principal.subject,
+        request_key,
+        expected_preview_sha256,
+    )

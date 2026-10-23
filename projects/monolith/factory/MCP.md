@@ -225,3 +225,27 @@ reference is reported as `validation_refinement_pr_reference_ambiguous:<PR>`
 for inspection, not proof of implementation ownership. Even an incidental or
 closed PR reference refuses this path; there is no automatic override. This
 can require resolving scope ambiguity before preparation can proceed.
+
+## Continue held completed refinement
+
+`factory_preview_refinement_delivery` and `factory_apply_refinement_delivery`
+create a distinct delivery receipt from a verified completed refinement whose
+only direction is its conductor staging hold and conductor gates. The operator
+supplies an exact source receipt and reason, never replacement restrictions.
+The source receipt, task, accounting and evidence stay terminal and unchanged.
+
+Pause admissions first. Preview requires no queued/active work or uncertain
+starts, fresh open unassigned agent-ready issue evidence and no ambiguous PR
+references. It binds the entire source, its completed refinement proof, current
+ownership, policy and the inherited restrictions. Apply rechecks that evidence
+and requires the exact digest and an actor-scoped idempotency key. Source changes,
+new owners/deliveries, unsupported holds and stale previews refuse atomically.
+
+Apply derives the existing bounded selected-issue policy, preserving generation
+and caps, disabling automatic landing, broad intake and issue production. It
+queues one delivery with every source restriction intact and an audited lineage
+marker. Admissions remain paused; inspect the new receipt before enabling.
+Admission checks the destination restrictions, source identity and policy against
+that audit before creating any task, including when the marker was removed.
+No step releases a hold, accepts delivery, starts a worker, or permits landing.
+The operation does not reclassify ambiguous PR references or renew old work.

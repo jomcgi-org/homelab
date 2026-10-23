@@ -86,7 +86,7 @@ def locate(
         }
 
 
-def _refinement_state(db, row, rows):
+def _refinement_state(db, row, rows, *, inherit_landing_hold=False):
     """Only an unambiguous, quiescent agent-ready result can seed delivery."""
     from factory.execution.models import AgentSession, PendingMessage
     from factory.orchestration.models import SwarmTask
@@ -97,7 +97,7 @@ def _refinement_state(db, row, rows):
         raise ValueError("validation_refinement_unverified")
     direction = json.loads(row.direction_json or "{}")
     if (
-        controls.landing_held(row)
+        (controls.landing_held(row) and not inherit_landing_hold)
         or controls.review_recovery_held(row.task_id, session=db)
         or controls.decision_in_flight(db, row.id)
         or "review_only_hold" in direction
@@ -169,7 +169,7 @@ def _refinement_state(db, row, rows):
     }
 
 
-def _refinement_observation(receipt_id):
+def _refinement_observation(receipt_id, *, inherit_landing_hold=False):
     """Bounded GitHub reads outside the control lock, repeated before apply."""
     from factory.orchestration import factory_conductor as conductor
 
@@ -180,7 +180,7 @@ def _refinement_observation(receipt_id):
         if control.state != "paused":
             raise ValueError("validation_requires_paused_admissions")
         rows = db.exec(select(FactoryReceipt)).all()
-        _refinement_state(db, row, rows)
+        _refinement_state(db, row, rows, inherit_landing_hold=inherit_landing_hold)
         repo, number = _available_repo(row.repo), row.issue_number
     issue = conductor.github_get(repo, f"issues/{number}")
     # Timeline catches linked closed/merged PRs too. Open PR text catches work
@@ -262,7 +262,16 @@ def _refinement_eligible(row, policy, observation):
         raise ValueError("validation_refinement_issue_ineligible")
 
 
-def _preview(db, control, receipt_id, reason, *, issue_number=None, observation=None):
+def _preview(
+    db,
+    control,
+    receipt_id,
+    reason,
+    *,
+    issue_number=None,
+    observation=None,
+    inherit_landing_hold=False,
+):
     reason = controls._text(reason, "reason", 4000)
     if control.state != "paused":
         raise ValueError("validation_requires_paused_admissions")
@@ -296,7 +305,9 @@ def _preview(db, control, receipt_id, reason, *, issue_number=None, observation=
         if row.cancellation_requested:
             raise ValueError("validation_receipt_unavailable")
         if completed_refine:
-            refinement = _refinement_state(db, row, rows)
+            refinement = _refinement_state(
+                db, row, rows, inherit_landing_hold=inherit_landing_hold
+            )
             _refinement_eligible(row, policy, observation)
     if repo not in controls.enabled_repos(policy):
         raise ValueError("validation_receipt_unavailable")
