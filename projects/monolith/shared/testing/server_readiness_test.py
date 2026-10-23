@@ -70,6 +70,7 @@ def test_server_cleanup_runs_after_startup_failure_or_fixture_close(
 ):
     import sys
     from unittest.mock import Mock
+
     from core import db
 
     server = SimpleNamespace(run=Mock(), should_exit=False)
