@@ -2161,3 +2161,67 @@ def test_fresh_issue_dedicated_tools_require_typed_apply_and_operator(monkeypatc
     assert calls[1][2]["issue_number"] == 7275
     assert calls[1][2]["expected_preview_sha256"] == "a" * 64
     assert calls[1][2]["request_key"] == "exact-key"
+
+
+def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch):
+    import threading
+    from factory.execution import admission_diagnostics
+
+    caller = threading.get_ident()
+    calls = []
+
+    def read(sid, seq):
+        assert threading.get_ident() != caller
+        calls.append((sid, seq))
+        return {"recovery_authorized": False}
+
+    monkeypatch.setattr(admission_diagnostics, "inspect_session_turn", read)
+    result = _as(
+        _principal(groups=()),
+        lambda: mcp.factory_session_dispatch_diagnostics(21073, 2),
+    )
+    assert result["error"] == mcp.OPERATOR_REQUIRED and not calls
+    assert _as(
+        _principal(), lambda: mcp.factory_session_dispatch_diagnostics(21073, 2)
+    ) == {"recovery_authorized": False}
+    assert calls == [(21073, 2)]
+
+
+def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch):
+    from fastmcp import Client
+    from core.mcp_app import mcp as shared
+    from factory.execution import admission_diagnostics
+
+    calls = []
+    monkeypatch.setattr(
+        admission_diagnostics,
+        "inspect_session_turn",
+        lambda sid, seq: calls.append((sid, seq)) or {"recovery_authorized": False},
+    )
+    for principal in (
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(
+            principal, lambda: mcp.factory_session_dispatch_diagnostics(21073, 2)
+        )["ok"]
+    assert not calls
+
+    async def wire():
+        async with Client(shared) as client:
+            for field in ("session_id", "seq"):
+                for value in (True, "2", 0, -1, 2**63):
+                    args = {"session_id": 21073, "seq": 2, field: value}
+                    result = await client.call_tool(
+                        "factory_session_dispatch_diagnostics",
+                        args,
+                        raise_on_error=False,
+                    )
+                    assert result.is_error
+            result = await client.call_tool(
+                "factory_session_dispatch_diagnostics", {"session_id": 21073, "seq": 2}
+            )
+            assert result.data["recovery_authorized"] is False
+
+    _as(_principal(), wire)
+    assert calls == [(21073, 2)]
