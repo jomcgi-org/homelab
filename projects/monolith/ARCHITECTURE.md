@@ -2468,6 +2468,38 @@ per merged PR.
 
 ---
 
+### Browser capture workspace handoff
+
+`implement_browser_capture_` nodes select Luna for checklist execution and
+capture only. They do not enter source-writing branch waves. A separate review
+dependency consumes the evidence and owns acceptance. The supported capture
+format is the paired sheet bundle from the existing factory preview harness;
+the full-height harness must be present at the exact delivery head.
+
+The capture turn stores a small declaration. The server binds it to the exact
+completed turn, guest and lineage before cleanup removes active guest bindings.
+Review preparation confirms completed workspace export, pins the existing
+content fingerprint, and persists the handoff before dispatch. A reviewer uses
+a new session and CLI identity while adopting that exact workspace lineage.
+The trusted shim verifies server-pinned checker sources, then validates the
+inventory, input hashes, images, traces and source provenance before invoking
+the reviewer. An approval without the shim's matching preflight result fails.
+
+**Why.** A path in a guest and an archive enqueue acknowledgment are not durable
+evidence. Existing workspace export and restoration already provide the storage
+and content identity needed for independent review, without a second artifact
+service or a public URL. CI raw evidence remains until a real handoff is proven.
+
+New capture lineages register a three-day policy with the existing storage
+owner before the first model invocation. The allowed TTL is one hour to seven
+days; review leases are at most twelve hours and cannot extend the hard expiry.
+Expiry makes bulk archives eligible for fenced cleanup, subject to existing
+active-owner and metadata safety holds. Small turn results and provenance stay
+in the database. Existing archives are not retroactively opted in. Registration
+fails when destructive GC is disabled; the GKE safety disarm must not be
+changed merely to enable this feature. Thus local tests do not establish live
+TTL enforcement or an operational capture-to-review deployment.
+
 ## 12. Decision history
 
 The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`

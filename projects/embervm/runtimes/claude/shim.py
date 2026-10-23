@@ -27,6 +27,147 @@ import uuid
 import zlib
 
 
+BROWSER_PREFLIGHT_FILES = (
+    "projects/monolith/frontend/factory-preview/browser_handoff_check.py",
+    "projects/monolith/frontend/factory-preview/sheet_check.py",
+    "projects/monolith/factory/orchestration/browser_evidence.py",
+)
+BROWSER_PREFLIGHT_MAX_BYTES = 256 * 1024 + 8192
+BROWSER_PREFLIGHT_CODE_MAX_BYTES = 2 * 1024 * 1024
+BROWSER_PREFLIGHT_TIMEOUT_SECONDS = 120
+
+
+def _workspace_handoff_preflight(checkout, payload):
+    """Run only a server-pinned code closure before any reviewer model turn.
+
+    Pins must be authored by the server from trusted source, not copied from a
+    producer claim. No guest venv, PYTHONPATH, command or interpreter is accepted.
+    A successful check authorizes inspection only, never visual acceptance.
+    """
+
+    def failed(reason):
+        return {"status": "failed", "reason": reason}
+
+    def digest(value, length=64):
+        return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{%d}" % length, value)
+
+    try:
+        if type(payload) is not dict or set(payload) != {
+            "version",
+            "handoff",
+            "expected_workspace_fingerprint",
+            "preflight",
+        }:
+            return failed("invalid_contract")
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        if len(encoded) > BROWSER_PREFLIGHT_MAX_BYTES:
+            return failed("oversize_contract")
+        handoff, pins = payload["handoff"], payload["preflight"]
+        if (
+            type(payload["version"]) is not int
+            or payload["version"] != 1
+            or not digest(payload["expected_workspace_fingerprint"])
+            or type(handoff) is not dict
+            or type(pins) is not dict
+            or set(pins) != {"harness_sha", "files"}
+            or not digest(pins["harness_sha"], 40)
+            or type(pins["files"]) is not dict
+            or set(pins["files"]) != set(BROWSER_PREFLIGHT_FILES)
+            or not all(digest(value) for value in pins["files"].values())
+        ):
+            return failed("invalid_contract")
+        provenance = handoff.get("provenance", {})
+        if (
+            type(provenance) is not dict
+            or provenance.get("harness_sha") != pins["harness_sha"]
+        ):
+            return failed("harness_provenance_mismatch")
+        handoff_bytes = json.dumps(
+            handoff, sort_keys=True, separators=(",", ":")
+        ).encode()
+        if len(handoff_bytes) > 256 * 1024:
+            return failed("oversize_handoff")
+        expected = {
+            "handoff_sha256": hashlib.sha256(handoff_bytes).hexdigest(),
+            "manifest_sha256": handoff.get("manifest_sha256"),
+            "inventory_sha256": handoff.get("inventory_sha256"),
+            "base_sha": provenance.get("base_sha"),
+            "head_sha": provenance.get("head_sha"),
+            "harness_sha": provenance.get("harness_sha"),
+        }
+        if not all(
+            digest(value, 40 if key.endswith("_sha") else 64)
+            for key, value in expected.items()
+        ):
+            return failed("invalid_provenance")
+        # Stage precisely the bytes whose hashes were checked. Imports cannot
+        # silently execute a modified sibling or a producer package __init__.
+        with tempfile.TemporaryDirectory(prefix="ember-browser-preflight-") as stage:
+            os.chmod(stage, 0o755)
+            for relative in BROWSER_PREFLIGHT_FILES:
+                source = os.path.join(checkout, relative)
+                if os.path.realpath(source) != os.path.abspath(source):
+                    return failed("unsafe_checker_path")
+                fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, "rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    if (
+                        not stat.S_ISREG(info.st_mode)
+                        or info.st_size > BROWSER_PREFLIGHT_CODE_MAX_BYTES
+                    ):
+                        return failed("invalid_checker_file")
+                    content = stream.read(BROWSER_PREFLIGHT_CODE_MAX_BYTES + 1)
+                if (
+                    len(content) > BROWSER_PREFLIGHT_CODE_MAX_BYTES
+                    or hashlib.sha256(content).hexdigest() != pins["files"][relative]
+                ):
+                    return failed("checker_digest_mismatch")
+                target = os.path.join(stage, relative)
+                os.makedirs(os.path.dirname(target), mode=0o755, exist_ok=True)
+                with open(target, "wb") as stream:
+                    stream.write(content)
+                os.chmod(target, 0o444)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    os.path.join(stage, BROWSER_PREFLIGHT_FILES[0]),
+                ],
+                input=json.dumps(
+                    {"handoff": handoff, "checkout": os.path.abspath(checkout)}
+                ).encode(),
+                capture_output=True,
+                timeout=BROWSER_PREFLIGHT_TIMEOUT_SECONDS,
+                cwd=stage,
+                env={"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"},
+                **_cli_privilege_kwargs(),
+            )
+            if result.returncode != 0:
+                outcome = failed("checker_failed")
+                outcome["detail"] = result.stderr.decode("utf-8", "replace")[-1024:]
+                return outcome
+            if len(result.stdout) > 8192:
+                return failed("invalid_checker_result")
+            observed = json.loads(result.stdout)
+            if (
+                type(observed) is not dict
+                or set(observed) != set(expected) | {"status", "files", "bytes"}
+                or observed.get("status") != "ok"
+                or any(observed.get(key) != value for key, value in expected.items())
+                or type(observed.get("files")) is not int
+                or observed["files"] <= 0
+                or type(observed.get("bytes")) is not int
+                or observed["bytes"] < 0
+            ):
+                return failed("invalid_checker_result")
+            return observed
+    except subprocess.TimeoutExpired:
+        return failed("checker_timeout")
+    except (OSError, ValueError, TypeError, RecursionError):
+        return failed("checker_unavailable_or_invalid")
+
+
 GUEST_HTTP_PORT = 1027
 EGRESS_LOCALHOST = "127.0.0.1"
 EGRESS_PORT_ENV = "EMBER_EGRESS_PORT"
@@ -6850,6 +6991,7 @@ class ProcessManager:
         turn_seq=None,
         effort=None,
         runtime_meter=None,
+        workspace_handoff=None,
     ):
         total_start = _turn_timing_now()
         self._turn_started_at = total_start
@@ -6914,6 +7056,21 @@ class ProcessManager:
                 adapter._interrupt_requested = False
                 dispatch_bound = True
         try:
+            preflight = None
+            if workspace_handoff is not None:
+                preflight = _workspace_handoff_preflight(
+                    checkout_dir, workspace_handoff
+                )
+                if preflight.get("status") != "ok":
+                    return {
+                        "is_error": True,
+                        "result": "Browser evidence preflight failed before model execution",
+                        "terminal_reason": "workspace_preflight_failed",
+                        "workspace_preflight": preflight,
+                        "usage": {"workspace_preflight": preflight},
+                        "dispatch_id": dispatch_id,
+                        "turn_seq": turn_seq,
+                    }
             extra = {"progress_token": progress_token} if progress_token else {}
             prompt = {"system_prompt": system_prompt} if system_prompt else {}
             try:
@@ -6987,6 +7144,12 @@ class ProcessManager:
                     os.fsync(stream.fileno())
                 os.replace(target + ".tmp", target)
                 interrupted_record = record
+            if isinstance(record, dict) and preflight is not None:
+                record["workspace_preflight"] = preflight
+                usage = record.get("usage")
+                record["usage"] = (usage if isinstance(usage, dict) else {}) | {
+                    "workspace_preflight": preflight
+                }
             if isinstance(record, dict) and dispatch_bound:
                 record["dispatch_id"] = dispatch_id
                 record["turn_seq"] = turn_seq
@@ -7018,6 +7181,7 @@ class ProcessManager:
             # worth CLI state that a later park would otherwise lose.
             _sync_session_volume()
             if dispatch_bound:
+                self._active_provider_done.set()
                 with self._dispatch_lock:
                     if self._active_dispatch_id == dispatch_id:
                         if interrupted_record is not None:
@@ -7295,6 +7459,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         ):
             self._send(400, {"error": "artifact_path must be a non-empty string"})
             return
+        if "workspace_handoff" in payload and not isinstance(
+            payload["workspace_handoff"], dict
+        ):
+            self._send(400, {"error": "workspace_handoff must be an object"})
+            return
         thinking = payload.get("thinking")
         if thinking is not None and not (
             thinking is True
@@ -7340,6 +7509,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             thinking_override = {"thinking": thinking} if thinking is not None else {}
             effort_override = {"effort": effort} if effort is not None else {}
             dispatch = {"dispatch_id": dispatch_id.strip()} if dispatch_id else {}
+            if "workspace_handoff" in payload:
+                dispatch["workspace_handoff"] = payload["workspace_handoff"]
             if result_receipt and result_receipt.get("runtime_meter"):
                 dispatch["runtime_meter"] = result_receipt
             if payload.get("turn_seq") is not None:

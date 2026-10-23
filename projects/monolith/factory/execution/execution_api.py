@@ -41,6 +41,7 @@ from factory.execution.mcp import (
     recover_zombie_session_if_needed,
 )
 from factory.execution.transport import EmberSessionGone, EmberTurnNotInvoked
+from factory.execution.workspace_handoff import WorkspaceHandoff
 
 logger = logging.getLogger(__name__)
 
@@ -495,6 +496,8 @@ def start_session_for_swarm(
     admission_tier: str = "project",
     task_id: str | None = None,
     effort: str | None = None,
+    workspace_handoff: WorkspaceHandoff | None = None,
+    capture_evidence_ttl_seconds: int | None = None,
 ) -> int:
     """Create and schedule a swarm-owned session through the normal session path.
 
@@ -517,9 +520,21 @@ def start_session_for_swarm(
         raise ValueError(
             f"unknown effort {effort!r}; valid: {', '.join(EFFORT_LEVELS)}"
         )
+    if capture_evidence_ttl_seconds is not None:
+        if (type(capture_evidence_ttl_seconds) is not int
+            or not 3600 <= capture_evidence_ttl_seconds <= 604800
+            or model != "luna"
+            or not (node_key or "").startswith("implement_browser_capture_")
+            or workspace_handoff is not None):
+            raise ValueError("invalid explicit browser capture retention context")
+    handoff_json = workspace_handoff.to_json() if workspace_handoff is not None else None
     with Session(get_engine()) as session:
         existing = store.get_session_by_local_id(session, local_session_id)
     if existing is not None and existing.id is not None:
+        if getattr(existing, "workspace_handoff_json", None) != handoff_json:
+            raise ValueError("session idempotency key has different workspace handoff")
+        if getattr(existing, "capture_evidence_ttl_seconds", None) != capture_evidence_ttl_seconds:
+            raise ValueError("session idempotency key has different capture retention")
         return existing.id
     # Factory keys carry task identity without changing durable step bodies.
     if task_id is None and local_session_id.startswith("factory:"):
@@ -544,6 +559,8 @@ def start_session_for_swarm(
         admission_tier=admission_tier,
         task_id=task_id,
         first_message=first_message,
+        **({"workspace_handoff_json": handoff_json} if handoff_json is not None else {}),
+        **({"capture_evidence_ttl_seconds": capture_evidence_ttl_seconds} if capture_evidence_ttl_seconds is not None else {}),
     )
     assert row.id is not None
     try:

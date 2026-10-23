@@ -60,6 +60,8 @@ _CONTEXT_FIELDS = frozenset(
         "task_deadline_at",
         "effort",
         "closing_instruction",
+        "browser_evidence_review",
+        "capture_evidence_ttl_seconds",
     )
 )
 

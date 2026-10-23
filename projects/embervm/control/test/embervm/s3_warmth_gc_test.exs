@@ -11,6 +11,66 @@ defmodule Embervm.S3WarmthGcTest do
   @wall 1_750_000_000_000
   @day 86_400_000
 
+  describe "opted-in browser evidence retention" do
+    defp capture_identity do
+      %{session_id: "capture-new", lineage_id: "capture-lineage", workload: "wl", principal: "owner"}
+    end
+
+    test "registration requires enabled cleanup and a new empty lineage; replay preserves deadline" do
+      identity = capture_identity()
+      row = Map.merge(identity, %{generation: 0, state: :running, created_at: @wall})
+      {agent, s3} = new_s3(%{})
+      s3 = Map.put(s3, :put, fn key, body ->
+        Agent.update(agent, fn st -> %{st | objects: Map.put(st.objects, key, {byte_size(body), @wall, body}), puts: st.puts ++ [{key, body}]} end)
+        :ok
+      end)
+      disabled = start_gc(s3, enabled: false, session_store: start_store([row]))
+      assert {:error, :capture_cleanup_disabled} = S3WarmthGc.register_capture(disabled, identity)
+      assert puts(agent) == []
+      gc = start_gc(s3, enabled: true, session_store: start_store([row]))
+      assert {:ok, policy} = S3WarmthGc.register_capture(gc, identity)
+      assert policy["expires_at"] == @wall + 3 * @day
+      assert {:ok, ^policy} = S3WarmthGc.register_capture(gc, identity, 7 * @day)
+      assert length(puts(agent)) == 1
+      assert {:error, :capture_retention_owner_mismatch} = S3WarmthGc.lease_capture(gc, %{identity | principal: "other"}, 1_000)
+      assert {:ok, _} = S3WarmthGc.lease_capture(gc, identity, 12 * 3_600_000)
+      for objects <- [artifact("session-workspace/wl/capture-lineage", @wall - @day), %{"session-workspace/wl/capture-lineage/partial.tar" => {1, @wall, "x"}}] do
+        {old_agent, old_s3} = new_s3(objects)
+        old_gc = start_gc(old_s3, enabled: true, session_store: start_store([row]))
+        assert {:error, :capture_must_be_new_unarchived_lineage} = S3WarmthGc.register_capture(old_gc, identity)
+        assert puts(old_agent) == []
+      end
+    end
+
+    test "expired capture blobs are deleted while a review lease and legacy age floor hold" do
+      identity = capture_identity()
+      prefix = "session-workspace/wl/capture-lineage"
+      {:ok, policy} = Embervm.CaptureEvidenceRetention.new(identity, @wall - 3 * @day)
+      for {marker, owner_state, should_delete} <- [{policy, :parked, true}, {policy, :running, false}, {Map.put(policy, "lease_until", @wall + 1_000), :parked, false}, {nil, :parked, false}, {%{"invalid" => true}, :parked, false}] do
+        objects = artifact(prefix, @wall - 3 * @day)
+        objects = if marker do
+          body = :json.encode(marker) |> IO.iodata_to_binary()
+          Map.put(objects, prefix <> "/evidence-retention.json", {byte_size(body), @wall, body})
+        else
+          objects
+        end
+        {agent, s3} = new_s3(objects)
+        table = new_cap_table()
+        put_node_fact(table, "node-4", [], [])
+        gc = start_gc(s3, enabled: true, capacity_table: table,
+          stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+          group_store: start_store([]), session_store: start_store([session_row(owner_state, "wl", "capture-lineage", nil)]),
+          volume_fun: fn _ -> nil end)
+        assert {:ok, _} = S3WarmthGc.sweep_now(gc)
+        if should_delete do
+          assert Enum.sort(deleted(agent)) == Enum.sort(Map.keys(objects))
+        else
+          assert deleted(agent) == []
+        end
+      end
+    end
+  end
+
   # -- fakes -------------------------------------------------------------------
 
   # A minimal store stub answering :all with a fixed row list (drop-in for

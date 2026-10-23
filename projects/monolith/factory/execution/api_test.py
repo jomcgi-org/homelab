@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from dataclasses import replace
 from faas.embervm_client import EmberVMTransportError
 from knowledge import recall
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +12,68 @@ import factory.execution.execution_api as api
 from factory.execution import mcp
 from factory.execution.models import AgentSession
 from factory.execution.transport import EmberSessionGone, Turn
+from factory.execution.workspace_handoff import WorkspaceHandoff, first_turn_handoff
+
+
+def test_workspace_handoff_is_atomic_and_idempotent(swarm_start_db):
+    from sqlmodel import select
+    from factory.execution.models import PendingMessage
+
+    handoff = WorkspaceHandoff("lineage", "a" * 64, "producer-guest", "b" * 64)
+    args = ("review-handoff", "inspect", "luna", "jomcgi-org/homelab", "main")
+    sid = api.start_session_for_swarm(*args, workspace_handoff=handoff)
+    assert api.start_session_for_swarm(*args, workspace_handoff=handoff) == sid
+    with Session(swarm_start_db) as db:
+        row = db.get(AgentSession, sid)
+        assert row.workspace_handoff_json == handoff.to_json()
+        assert row.cli_session_id is None and row.prior_cli_session_id is None
+        assert row.ember_session_id is None
+        pending = db.exec(select(PendingMessage)).all()
+        assert len(pending) == 1 and pending[0].seq == 1
+    for different in (None, replace(handoff, expected_fingerprint="c" * 64)):
+        with pytest.raises(ValueError, match="different workspace handoff"):
+            api.start_session_for_swarm(*args, workspace_handoff=different)
+
+
+def test_workspace_handoff_enqueue_failure_rolls_back(swarm_start_db):
+    from sqlalchemy import event
+    from sqlmodel import select
+
+    def fail_enqueue(_conn, _cursor, statement, *_args):
+        if statement.startswith("INSERT INTO") and "pending_messages" in statement:
+            raise RuntimeError("enqueue failed")
+
+    event.listen(swarm_start_db, "before_cursor_execute", fail_enqueue)
+    try:
+        with pytest.raises(RuntimeError, match="enqueue failed"):
+            api.start_session_for_swarm(
+                "review-rollback", "inspect", "luna", "jomcgi-org/homelab", "main",
+                workspace_handoff=WorkspaceHandoff("lineage", "a" * 64, "producer", "b" * 64),
+            )
+    finally:
+        event.remove(swarm_start_db, "before_cursor_execute", fail_enqueue)
+    with Session(swarm_start_db) as db:
+        assert db.exec(select(AgentSession)).all() == []
+
+
+def test_workspace_handoff_requires_new_reviewer_guest_and_first_turn():
+    handoff = WorkspaceHandoff("lineage", "a" * 64, "producer", "b" * 64)
+    row = SimpleNamespace(workspace_handoff_json=handoff.to_json())
+    assert first_turn_handoff(row, 1, None) == handoff
+    assert first_turn_handoff(row, 1, SimpleNamespace(session_id="reviewer")) == handoff
+    with pytest.raises(ValueError, match="producer guest"):
+        first_turn_handoff(row, 1, SimpleNamespace(session_id="producer"))
+    assert first_turn_handoff(row, 2, SimpleNamespace(session_id="reviewer")) is None
+
+
+@pytest.mark.parametrize("field,value", [("lineage_id", ""), ("expected_fingerprint", "bad"), ("producer_ember_session_id", "x\ny"), ("handoff_sha256", "A" * 64)])
+def test_workspace_handoff_rejects_invalid_context_before_session_creation(field, value):
+    handoff = WorkspaceHandoff("lineage", "a" * 64, "producer", "b" * 64)
+    with pytest.raises(ValueError, match="workspace handoff"):
+        api.start_session_for_swarm(
+            "invalid-review", "inspect", "luna", "jomcgi-org/homelab", "main",
+            workspace_handoff=replace(handoff, **{field: value}),
+        )
 
 
 @pytest.fixture
@@ -1427,3 +1490,28 @@ def test_start_session_for_swarm_refuses_an_unknown_effort():
             "main",
             effort="ultra",
         )
+
+
+def test_capture_retention_is_atomic_and_idempotent(swarm_start_db):
+    engine = swarm_start_db
+    args = ("capture-retention", "capture only", "luna", "jomcgi-org/homelab", "main")
+    kwargs = {"node_key": "implement_browser_capture_mobile", "capture_evidence_ttl_seconds": 259200}
+    sid = api.start_session_for_swarm(*args, **kwargs)
+    assert api.start_session_for_swarm(*args, **kwargs) == sid
+    with Session(engine) as session:
+        row = session.get(AgentSession, sid)
+        assert row.capture_evidence_ttl_seconds == 259200
+    with pytest.raises(ValueError, match="different capture retention"):
+        api.start_session_for_swarm(*args, **{**kwargs, "capture_evidence_ttl_seconds": 3600})
+
+
+@pytest.mark.parametrize("model,node,ttl", [
+    ("luna", "implement_browser_capture_mobile", True),
+    ("luna", "implement_browser_capture_mobile", 3599),
+    ("luna", "implement_browser_capture_mobile", 604801),
+    ("sol", "implement_browser_capture_mobile", 259200),
+    ("luna", "implement_other", 259200),
+])
+def test_capture_retention_rejects_unscoped_or_unbounded_context(model, node, ttl):
+    with pytest.raises(ValueError, match="capture retention"):
+        api.start_session_for_swarm("invalid", "capture", model, "jomcgi-org/homelab", "main", node_key=node, capture_evidence_ttl_seconds=ttl)

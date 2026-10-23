@@ -71,6 +71,8 @@ contents:
     # bazel/requirements/all.txt venv is deliberately NOT shipped (see README).
     - py3.12-pytest
     - py3.12-pyyaml
+    # Mandatory browser evidence preflight validates screenshot dimensions.
+    - py3.12-pillow
 
 archs:
   - x86_64
