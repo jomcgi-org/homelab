@@ -66,6 +66,28 @@ it("SSR uses the same explicit locale for visible and exact values", async () =>
   expect(body).not.toContain("12,345.6789");
 });
 
+it("SSR keeps renders independent after rejected props", async () => {
+  await expect(serverRender("Metric", { label: "" })).rejects.toThrow(
+    /metric label/,
+  );
+  const first = await serverRender("Metric", {
+    label: "First render",
+    value: 1234.5,
+    unit: "bytes",
+    locale: "de-DE",
+  });
+  const second = await serverRender("Metric", {
+    label: "Second render",
+    value: 6789.5,
+    unit: "seconds",
+    locale: "en-US",
+  });
+  expect(first.body).toContain("1.234,5 bytes");
+  expect(second.body).toContain("6,789.5 seconds");
+  expect(second.body).not.toContain("First render");
+  expect(second.body).not.toContain("bytes");
+});
+
 it.each([2, 3, 4, 5, 6])(
   "SSR renders a real h%s and labelled section",
   async (headingLevel) => {
