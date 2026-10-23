@@ -2388,8 +2388,7 @@ py_test(
         "frontend/factory-preview/browser_handoff_prepare_test.py",
     ],
     data = ["frontend/factory-preview/browser_handoff_check.py"],
-    main = "frontend/factory-preview/browser_handoff_prepare_test.py",
-    deps = [":pkg_swarm"],
+    deps = [":pkg_swarm", "@pip//pytest"],
 )
 
 py_test(
@@ -2398,12 +2397,12 @@ py_test(
         "factory/orchestration/browser_evidence_test.py",
         "factory/orchestration/browser_review_handoff_test.py",
     ],
-    main = "factory/orchestration/browser_review_handoff_test.py",
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
         ":pkg_swarm",
         "@pip//httpx",
+        "@pip//pytest",
     ],
 )
 
@@ -2413,16 +2412,15 @@ py_test(
         "factory/orchestration/browser_evidence_test.py",
         "factory/orchestration/browser_review_dispatch_test.py",
     ],
-    main = "factory/orchestration/browser_review_dispatch_test.py",
     imports = ["."],
-    deps = [":pkg_agent_sessions", ":pkg_swarm", "@pip//sqlmodel"],
+    deps = [":pkg_agent_sessions", ":pkg_swarm", "@pip//pytest", "@pip//sqlmodel"],
 )
 
 py_test(
     name = "factory_browser_evidence_test",
     srcs = ["factory/orchestration/browser_evidence_test.py"],
     imports = ["."],
-    deps = [":pkg_swarm"],
+    deps = [":pkg_swarm", "@pip//pytest"],
 )
 
 py_test(
