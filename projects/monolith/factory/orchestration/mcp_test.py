@@ -2283,3 +2283,66 @@ def test_refinement_delivery_tool_schema_has_no_restriction_override():
         ),
     ):
         assert set(tools[name].parameters["properties"]) == fields
+
+
+def test_raw_extraction_diagnostics_operator_and_worker_thread(monkeypatch):
+    import threading
+    from factory.execution import admission_diagnostics
+
+    caller = threading.get_ident()
+    calls = []
+
+    def read(name):
+        assert threading.get_ident() != caller
+        calls.append(name)
+        return {"recovery_authorized": False}
+
+    monkeypatch.setattr(admission_diagnostics, "inspect_raw_extraction", read)
+    name = "kg:" + "a" * 64
+    result = _as(
+        _principal(groups=()), lambda: mcp.factory_raw_extraction_diagnostics(name)
+    )
+    assert result["error"] == mcp.OPERATOR_REQUIRED
+    assert calls == []
+    assert _as(_principal(), lambda: mcp.factory_raw_extraction_diagnostics(name)) == {
+        "recovery_authorized": False
+    }
+    assert calls == [name]
+
+
+def test_raw_extraction_diagnostics_declared_schema(monkeypatch):
+    from fastmcp import Client
+    from core.mcp_app import mcp as shared
+    from factory.execution import admission_diagnostics
+
+    calls = []
+
+    def read(name):
+        calls.append(name)
+        return {"recovery_authorized": False}
+
+    monkeypatch.setattr(admission_diagnostics, "inspect_raw_extraction", read)
+
+    async def exercise():
+        async with Client(shared) as client:
+            for name in (
+                True,
+                "",
+                "kg-fact-review",
+                "kg:" + "a" * 65,
+                "kg:" + "a" * 64 + "\n",
+                "kg:" + "A" * 64,
+            ):
+                result = await client.call_tool(
+                    "factory_raw_extraction_diagnostics",
+                    {"job_name": name},
+                    raise_on_error=False,
+                )
+                assert result.is_error
+            result = await client.call_tool(
+                "factory_raw_extraction_diagnostics", {"job_name": "kg:" + "a" * 64}
+            )
+            assert result.data["recovery_authorized"] is False
+        assert calls == ["kg:" + "a" * 64]
+
+    _as(_principal(), exercise)

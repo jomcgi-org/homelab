@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import os
+import re
 
 from sqlalchemy import text
 from sqlmodel import Session
@@ -11,7 +12,7 @@ from core.db import get_engine
 
 def _rows(db, sql, params):
     if db.bind.dialect.name == "sqlite":
-        for schema in ("agent_sessions.", "claude_agent.", "dbos."):
+        for schema in ("agent_sessions.", "claude_agent.", "dbos.", "knowledge."):
             sql = sql.replace(schema, "")
     return [dict(row) for row in db.execute(text(sql), params).mappings()]
 
@@ -344,3 +345,113 @@ def inspect_session_turn(session_id, seq, *, session=None):
             "recovery_authorized": False,
         }
     )
+
+
+def inspect_raw_extraction(job_name, *, session=None):
+    """Read bounded outcome metadata for one exact content-addressed raw job."""
+    if (
+        not isinstance(job_name, str)
+        or re.fullmatch(r"kg:[0-9a-f]{64}", job_name) is None
+    ):
+        raise ValueError("Supply one exact kg:<64 lowercase hex characters> job ID")
+    if session is None:
+        with Session(get_engine(), autoflush=False) as db:
+            return inspect_raw_extraction(job_name, session=db)
+    from knowledge.api import EXTRACTION_VERSION
+
+    db = session
+    params = {"raw": job_name[3:], "job": job_name, "version": EXTRACTION_VERSION}
+    # Only project the numeric counter, never the raw's content or extra object.
+    if db.bind.dialect.name == "sqlite":
+        doc = "CASE WHEN json_valid(extra) THEN extra ELSE '{}' END"
+        passes = f"CASE WHEN json_type({doc}, '$.extraction_passes') = 'integer' THEN json_extract({doc}, '$.extraction_passes') END"
+    else:
+        passes = "CASE WHEN jsonb_typeof(extra->'extraction_passes') = 'number' THEN extra->'extraction_passes' END"
+    raw = _rows(
+        db,
+        f"SELECT id, {passes} AS passes FROM knowledge.raw_inputs WHERE raw_id=:raw",
+        params,
+    )
+    result = {
+        "observed_at": datetime.now(timezone.utc),
+        "job_name": job_name,
+        "raw_found": bool(raw),
+        "extraction_version": EXTRACTION_VERSION,
+        "extraction_passes": None,
+        "provenance": None,
+        "attempts": [],
+        "coverage": "Persisted metadata only; reads may race. Provenance is scoped to the current extraction version, not attributed to an attempt. Absence is not proof of no effects or cessation.",
+        "recovery_authorized": False,
+    }
+    if raw:
+        count = raw[0]["passes"]
+        result["extraction_passes"] = (
+            count if type(count) is int and 0 <= count <= 2**63 - 1 else None
+        )
+        params["raw_fk"] = raw[0]["id"]
+        rows = _rows(
+            db,
+            """
+            SELECT created_at, error IS NOT NULL AS has_error,
+                   atom_fk IS NOT NULL AS has_atom
+            FROM knowledge.atom_raw_provenance
+            WHERE raw_fk=:raw_fk AND gardener_version=:version
+            ORDER BY id DESC LIMIT 1001
+        """,
+            params,
+        )
+        bounded = rows[:1000]
+        stamps = [row["created_at"] for row in bounded if row["created_at"] is not None]
+        result["provenance"] = {
+            "rows_observed": len(bounded),
+            "truncated": len(rows) > 1000,
+            "error_rows": sum(bool(row["has_error"]) for row in bounded),
+            "atom_rows_without_error": sum(
+                bool(row["has_atom"]) and not row["has_error"] for row in bounded
+            ),
+            "first_observed_at": min(stamps) if stamps else None,
+            "last_observed_at": max(stamps) if stamps else None,
+        }
+    attempts = _rows(
+        db,
+        """
+        SELECT p.id AS permit_id, p.session_id, p.pending_seq,
+               p.created_at, p.settled_at, p.state,
+               a.status AS session_status, t.terminal_reason, t.created_at AS turn_at
+        FROM agent_sessions.capacity_reservations AS p
+        LEFT JOIN agent_sessions.agent_sessions AS a ON a.id=p.session_id
+        LEFT JOIN agent_sessions.agent_turns AS t
+          ON t.session_id=p.session_id AND t.seq=p.pending_seq
+        WHERE p.routine_job_name=:job AND p.tier='kg'
+        ORDER BY p.id DESC LIMIT 6
+    """,
+        params,
+    )
+    # Even status columns are untrusted strings. Never echo free-form failures.
+    allowed = {
+        "state": {"reserved", "running", "uncertain", "settled"},
+        "session_status": {
+            "pending",
+            "running",
+            "completed",
+            "failed",
+            "warn",
+            "idle",
+            "cancelled",
+        },
+        "terminal_reason": {
+            "success",
+            "error",
+            "cancelled",
+            "complete",
+            "completed",
+            "end_turn",
+        },
+    }
+    for attempt in attempts[:5]:
+        for key, values in allowed.items():
+            if attempt[key] is not None and attempt[key] not in values:
+                attempt[key] = "unrecognized"
+    result["attempts"] = attempts[:5]
+    result["attempts_truncated"] = len(attempts) > 5
+    return _safe(result)
