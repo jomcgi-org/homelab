@@ -8,15 +8,27 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.orchestration import factory_controls as controls
+from factory.orchestration import factory_improvement_fence as fence
 from factory.orchestration import factory_improvement_scout as scout
 from factory.orchestration import factory_improvements as service
 from factory.orchestration.factory_models import (
     FactoryAudit,
+    FactoryClassTier,
     FactoryControl,
     FactoryReceipt,
+    FactoryReviewVerdict,
+    FactoryStart,
     WorkItem,
+    WorkItemEdge,
+    WorkItemEvent,
 )
-from factory.orchestration.models import SwarmNodeRun, SwarmTask
+from factory.orchestration.models import (
+    SwarmConductorCall,
+    SwarmNodeRun,
+    SwarmPlanNode,
+    SwarmPlanVersion,
+    SwarmTask,
+)
 
 NOW = datetime(2026, 10, 23, 12, tzinfo=UTC)
 
@@ -227,6 +239,14 @@ def db(tmp_path, monkeypatch):
                 WorkItem,
                 SwarmNodeRun,
                 SwarmTask,
+                FactoryStart,
+                FactoryClassTier,
+                FactoryReviewVerdict,
+                WorkItemEdge,
+                WorkItemEvent,
+                SwarmPlanNode,
+                SwarmPlanVersion,
+                SwarmConductorCall,
             )
         ],
     )
@@ -245,6 +265,10 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_inventory", lambda: deepcopy(data["inventory"]))
     monkeypatch.setattr(service, "_quota", lambda: deepcopy(data["quota"]))
     monkeypatch.setattr(service, "_goals", lambda db: deepcopy(data["goals"]))
+    monkeypatch.setattr(fence, "list_active_goals", lambda db: deepcopy(data["goals"]))
+    monkeypatch.setattr(
+        fence, "fetch_provider_quota_sync", lambda **kw: deepcopy(data["quota"])
+    )
     with Session(engine) as session:
         session.add(
             FactoryAudit(
@@ -645,29 +669,33 @@ def test_approved_scout_persists_candidate_through_real_service(db, monkeypatch)
         ).one()
 
 
-def test_transport_checks_scout_on_each_wake_and_fails_closed(monkeypatch):
+def test_transport_checks_scout_on_each_wake_and_fails_closed(db, monkeypatch):
     from factory.orchestration.api import factory_session_allowed
 
+    engine, data = db
+    assert scout.tick(data["policy"])["ok"]
+    attach_task(engine)
+    seed_run(engine, scout.COLLECT_KEY)
+    seed_run(engine, scout.REVIEW_KEY)
     monkeypatch.setattr(controls, "can_start", lambda *a, **kw: {"ok": True})
     calls = []
-    allowed = {"value": True}
 
-    def gate(task_id):
-        calls.append(task_id)
-        return {"ok": allowed["value"]}
+    def quota(**kwargs):
+        calls.append(kwargs)
+        return deepcopy(data["quota"])
 
-    monkeypatch.setattr(scout, "dispatch_allowed", gate)
+    monkeypatch.setattr(fence, "fetch_provider_quota_sync", quota)
     assert factory_session_allowed("factory:t-scout:scout_collect_1:1")
-    allowed["value"] = False
+    data["quota"]["grants"]["codex-a"]["pacing"]["state"] = "conserve"
     assert not factory_session_allowed("factory:t-scout:scout_collect_1:1")
-    assert calls == ["t-scout", "t-scout"]
+    assert calls == [{"force": True}, {"force": True}]
     assert factory_session_allowed("factory:t-other:implement_1:1")
     assert len(calls) == 2
 
-    def unavailable(task_id):
+    def unavailable(**kwargs):
         raise RuntimeError("quota telemetry unavailable")
 
-    monkeypatch.setattr(scout, "dispatch_allowed", unavailable)
+    monkeypatch.setattr(fence, "fetch_provider_quota_sync", unavailable)
     assert not factory_session_allowed("factory:t-scout:scout_review_1:1")
 
 
@@ -713,3 +741,293 @@ def test_conductor_scout_nodes_are_bounded_and_read_only(monkeypatch, key):
     assert "Output the requested structured artifact only" in args["prompt"]
     assert "Deliver repository changes" not in args["prompt"]
     assert conductor._schema(key) is scout.schema(key)
+
+
+@pytest.mark.parametrize("schema", [scout.COLLECT_SCHEMA, scout.REVIEW_SCHEMA])
+def test_physical_guest_prompt_keeps_scout_read_only(schema):
+    from factory.orchestration.node_workflows import _node_prompt
+
+    prompt = _node_prompt(
+        scout.boundary({"id": "t"}), ".factory/result.json", schema, branch="factory/t"
+    )
+    assert "Inspect branch factory/t read-only" in prompt
+    assert "Do not modify source, commit or push" in prompt
+    assert "Commit and push source changes" not in prompt
+    assert "Write only the declared transient artifact" in prompt
+
+
+def test_unknown_grant_provider_cannot_hide_routable_account(monkeypatch):
+    monkeypatch.setattr(controls, "_now", lambda: NOW)
+    data = current()
+    next(iter(data["quota"]["grants"].values()))["provider"] = None
+    assert scout.eligibility(data)["reason"] == "scout_grant_inventory_unknown"
+
+
+def seed_run(engine, node_key, *, model="sol", pin_model="sol", attempt=1):
+    with Session(engine) as session:
+        session.add(
+            SwarmNodeRun(
+                task_id="t-scout",
+                node_key=node_key,
+                attempt=attempt,
+                status="admitted",
+                model=model,
+                pin_json=controls._json(
+                    {
+                        "task_id": "t-scout",
+                        "node_key": node_key,
+                        "attempt": attempt,
+                        "model": pin_model,
+                    }
+                ),
+            )
+        )
+        session.commit()
+
+
+@pytest.mark.parametrize(
+    "key,model,pin_model,attempt",
+    [
+        ("conductor_funding_1", "sol", "sol", 1),
+        (scout.COLLECT_KEY, "opus", "sol", 1),
+        (scout.COLLECT_KEY, "sol", "opus", 1),
+        (scout.COLLECT_KEY, "sol", "sol", 2),
+    ],
+)
+def test_scout_transport_rejects_generic_nodes_changed_models_and_retries(
+    db, key, model, pin_model, attempt
+):
+    engine, data = db
+    assert scout.tick(data["policy"])["ok"]
+    attach_task(engine)
+    seed_run(engine, key, model=model, pin_model=pin_model, attempt=attempt)
+    assert not scout.transport_allowed("t-scout", key, attempt)
+    assert scout.transport_allowed("ordinary-task", key, attempt)
+
+
+@pytest.mark.parametrize("action", [scout.SETTLED, service.ATTEMPT])
+def test_settlement_waiting_for_unresolved_starts_fences_all_transport(db, action):
+    engine, data = db
+    assert scout.tick(data["policy"])["ok"]
+    attach_task(engine)
+    seed_run(engine, scout.COLLECT_KEY)
+    with Session(engine) as session:
+        session.add(
+            FactoryAudit(
+                actor=scout.ACTOR,
+                action=action,
+                task_id="t-scout",
+                detail_json=controls._json(
+                    {"reason": "scout_nonrenewable", "success": False}
+                ),
+            )
+        )
+        session.commit()
+    assert scout.dispatch_allowed("t-scout")["reason"] == "scout_already_settled"
+    assert not scout.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+
+
+@pytest.mark.parametrize("entrypoint", ["request", "reconcile"])
+def test_funding_cannot_add_judge_for_audited_scout(db, monkeypatch, entrypoint):
+    engine, data = db
+    assert scout.tick(data["policy"])["ok"]
+    task = attach_task(engine)
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_funding as funding
+
+    monkeypatch.setattr(funding, "enabled", lambda: True)
+    monkeypatch.setattr(
+        conductor, "_add", lambda *a, **kw: pytest.fail("funding judge escaped")
+    )
+    monkeypatch.setattr(controls, "finish_task", lambda *a, **kw: {"ok": True})
+    if entrypoint == "request":
+        assert not funding.request(task, "turn limit")
+    else:
+        assert funding.reconcile(
+            task, data["policy"], [], {"ok": False, "reason": "task_deadline"}
+        )
+    with Session(engine) as session:
+        assert session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == scout.SETTLED)
+        ).one()
+        assert not session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "funding_review_requested"
+            )
+        ).all()
+        assert not session.exec(select(SwarmPlanNode)).all()
+
+
+def test_healthy_scout_passes_funding_without_judge(db, monkeypatch):
+    engine, data = db
+    assert scout.tick(data["policy"])["ok"]
+    task = attach_task(engine)
+    from factory.orchestration import factory_funding as funding
+
+    monkeypatch.setattr(funding, "enabled", lambda: True)
+    assert funding.reconcile(task, data["policy"], [], {"ok": True}) is False
+    with Session(engine) as session:
+        assert not session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == scout.SETTLED)
+        ).all()
+
+
+def test_real_admission_and_funding_reconcile_keep_scout_on_bounded_path(
+    db, monkeypatch
+):
+    engine, data = db
+    import knowledge.api
+
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration.factory_intake import admit_next
+
+    monkeypatch.setattr(knowledge.api, "prepare_recall", lambda *a, **kw: None)
+    monkeypatch.setattr(conductor, "get_engine", lambda: engine)
+    monkeypatch.setattr(funding, "enabled", lambda: True)
+    policy = controls.validate_policy(
+        {
+            **data["policy"],
+            "issue_numbers": [1],
+            "max_tasks": {"advisory": 1, "delivery": 1},
+            "max_turns_per_task": 2,
+            "conductor_model": "sol",
+            "worker_model": "sol",
+            "base_branch": "main",
+            "max_attempts": 1,
+            "task_timeout_seconds": 3600,
+        }
+    )
+    data["policy"] = policy
+    with Session(engine) as session:
+        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.commit()
+    assert scout.tick(policy)["ok"]
+    admitted = admit_next("scheduler", lanes=("advisory",))
+    assert admitted["ok"], admitted
+    task = conductor._task(admitted["task_id"])
+    assert task["improvement_scout"] is True
+    assert scout.is_scout(task["id"])
+    assert funding.reconcile(task, policy, [], {"ok": True}) is False
+    assert (
+        funding.reconcile(task, policy, [], {"ok": False, "reason": "task_deadline"})
+        is True
+    )
+    with Session(engine) as session:
+        receipt = session.exec(select(FactoryReceipt)).one()
+        assert receipt.state == "failed"
+        assert not session.exec(select(SwarmPlanNode)).all()
+        assert not session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "funding_review_requested"
+            )
+        ).all()
+
+
+def test_missing_claim_cannot_reclassify_scout_as_ordinary_transport(db):
+    engine, data = db
+    assert scout.tick(data["policy"])["ok"]
+    attach_task(engine)
+    seed_run(engine, scout.COLLECT_KEY)
+    with Session(engine) as session:
+        event = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == scout.CLAIM)
+        ).one()
+        event.actor = "untrusted"
+        session.commit()
+    assert scout.owns_task("t-scout")
+    assert not scout.is_scout("t-scout")
+    assert not scout.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+    assert not scout.transport_allowed("t-scout", "conductor_funding_1", 1)
+
+
+@pytest.mark.parametrize(
+    "change", ["stale_intake", "ready_backlog", "new_owner", "no_goals", "stale_quota"]
+)
+def test_leaf_transport_requires_current_database_and_quota_evidence(db, change):
+    engine, data = db
+    assert scout.tick(data["policy"])["ok"]
+    attach_task(engine)
+    seed_run(engine, scout.COLLECT_KEY)
+    assert fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+    if change == "no_goals":
+        data["goals"] = []
+    elif change == "stale_quota":
+        data["quota"]["fetched_at"] = (NOW - timedelta(seconds=901)).isoformat()
+    else:
+        with Session(engine) as session:
+            if change == "new_owner":
+                session.add(
+                    FactoryReceipt(
+                        repo=service.REPO,
+                        issue_number=7001,
+                        generation=1,
+                        title="Important existing task",
+                        body="known work",
+                        url="https://github.com/jomcgi-org/homelab/issues/7001",
+                        actor="factory:intake",
+                        task_class="bug-fix",
+                        state="queued",
+                    )
+                )
+            else:
+                sweep = session.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == "intake_evaluated"
+                    )
+                ).one()
+                if change == "stale_intake":
+                    sweep.created_at = NOW - timedelta(seconds=901)
+                else:
+                    sweep.detail_json = controls._json(
+                        {
+                            "github": "completed",
+                            "truncated": False,
+                            "generation": 1,
+                            "candidates": {"delivery": 1, "advisory": 0},
+                        }
+                    )
+            session.commit()
+    assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+
+
+@pytest.mark.parametrize("change", ["pause", "policy", "new_owner", "goals"])
+def test_broker_delay_cannot_carry_stale_transport_permission(db, monkeypatch, change):
+    engine, data = db
+    assert scout.tick(data["policy"])["ok"]
+    attach_task(engine)
+    seed_run(engine, scout.COLLECT_KEY)
+
+    def delayed_read(**kwargs):
+        assert kwargs == {"force": True}
+        assert engine.pool.checkedout() == 0
+        if change == "goals":
+            data["goals"] = []
+        else:
+            with Session(engine) as session:
+                control = session.get(FactoryControl, "factory")
+                if change == "pause":
+                    control.state = "paused"
+                elif change == "policy":
+                    updated = deepcopy(data["policy"])
+                    updated["generation"] = 2
+                    control.policy_json = controls._json(updated)
+                else:
+                    session.add(
+                        FactoryReceipt(
+                            repo=service.REPO,
+                            issue_number=7001,
+                            generation=1,
+                            title="Existing priority task",
+                            body="ready",
+                            url="https://github.com/jomcgi-org/homelab/issues/7001",
+                            actor="factory:intake",
+                            task_class="bug-fix",
+                            state="queued",
+                        )
+                    )
+                session.commit()
+        return deepcopy(data["quota"])
+
+    monkeypatch.setattr(fence, "fetch_provider_quota_sync", delayed_read)
+    assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)

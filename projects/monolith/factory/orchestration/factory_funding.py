@@ -328,6 +328,11 @@ def request(task, reason, *, recover=False):
     """Reserve one exact judge decision, even when task soft limits ran out."""
     from factory.orchestration import factory_conductor as c
 
+    from factory.orchestration import factory_improvement_scout as scout
+
+    if scout.owns_task(task["id"]):
+        scout._finish(task["id"], "scout_nonrenewable")
+        return False
     if controls.pause_nonrenewable_recovery(task["id"], reason):
         return False
     # No funding decision can extend an expired landing-recovery cap.
@@ -785,6 +790,18 @@ def settle(task, run, request):
 def reconcile(task, policy, runs, permission):
     """Run oversight through the existing durable conductor executor."""
     from factory.orchestration import factory_conductor as c
+
+    from factory.orchestration import factory_improvement_scout as scout
+
+    # A configured scout is an explicitly bounded trial, never an allocation
+    # that a funding judge may extend or move to another provider/model.
+    if (task.get("improvement_scout") or enabled()) and scout.owns_task(task["id"]):
+        if not permission.get("ok"):
+            scout._finish(
+                task["id"], "scout_nonrenewable:" + str(permission.get("reason"))
+            )
+            return True
+        return False
 
     if (
         not enabled()

@@ -24,6 +24,10 @@ def test_pending_execution_rechecks_current_stop(monkeypatch):
         return state if task == "t-1" else {"ok": False}
 
     monkeypatch.setattr(controls, "can_start", can_start)
+    monkeypatch.setattr(
+        "factory.orchestration.factory_improvement_fence.transport_allowed",
+        lambda *args: True,
+    )
     assert factory_session_allowed("factory:t-1:work:1")
     state["ok"] = False
     assert not factory_session_allowed("factory:t-1:work:1")

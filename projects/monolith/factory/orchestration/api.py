@@ -81,16 +81,16 @@ def factory_session_allowed(local_session_id: str | None) -> bool:
     allowed = can_start(fields[1], start_key="factory-node:" + ":".join(fields[1:]))[
         "ok"
     ]
-    if allowed and fields[2] in {"scout_collect_1", "scout_review_1"}:
-        # Live transport fence: recheck on wake and retry, never trust a
-        # checkpointed quota preview as execution permission.
-        from factory.orchestration.factory_improvement_scout import dispatch_allowed
+    if not allowed:
+        return False
+    # Task-wide live transport fence: even an accidental generic funding node
+    # cannot escape a scout's fixed two-node/model subscription contract.
+    from factory.orchestration.factory_improvement_fence import transport_allowed
 
-        try:
-            return dispatch_allowed(fields[1])["ok"]
-        except Exception:  # unavailable evidence must not start speculative work
-            return False
-    return allowed
+    try:
+        return transport_allowed(fields[1], fields[2], int(fields[3]))
+    except Exception:  # unavailable evidence must not start speculative work
+        return False
 
 
 def get_decision_reference(session, decision_id: int) -> dict | None:
