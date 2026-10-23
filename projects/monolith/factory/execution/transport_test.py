@@ -39,6 +39,39 @@ def _brick_events():
     ]
 
 
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"restore_from": "existing-workspace"},
+        {"cli_session_id": "existing-transcript"},
+        {"expected_workspace_fingerprint": "a" * 64},
+        {"workspace_handoff": {}},
+        {"model": "sol"},
+    ],
+)
+def test_capture_refuses_inherited_workspace_before_creation(monkeypatch, override):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(transport, "EMBERVM_URL", "http://ember.test")
+    client = transport.EmberVmShimTransport()
+    create = AsyncMock()
+    register = AsyncMock()
+    monkeypatch.setattr(client, "create_session", create)
+    monkeypatch.setattr(client, "register_capture_evidence", register)
+    args = dict(
+        ember=None,
+        cli_session_id=None,
+        message="capture",
+        model="luna",
+        capture_evidence_ttl_seconds=259200,
+    )
+    args.update(override)
+    with pytest.raises(EmberVMTransportError, match="dedicated fresh lineage"):
+        asyncio.run(client._deliver(**args))
+    create.assert_not_called()
+    register.assert_not_called()
+
+
 def test_missing_native_duration_remains_unavailable_through_persistence(
     monkeypatch, tmp_path
 ):

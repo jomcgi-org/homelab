@@ -919,6 +919,7 @@ defmodule Embervm.Application do
   defp s3_warmth_gc_opts do
     [
       enabled: warmth_s3_gc_enabled(),
+      capture_evidence_enabled: boolean_env("EMBERVM_CAPTURE_EVIDENCE_GC"),
       endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT"),
       bucket: store_bucket(),
       access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),

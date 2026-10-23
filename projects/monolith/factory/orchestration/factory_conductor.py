@@ -7581,8 +7581,10 @@ def _dispatch_ready(
                 "Producer identity is attached by the server. A separate review "
                 "dependency must inspect the evidence. New bulk evidence becomes "
                 "eligible for cleanup after three days, with a bounded active-review "
-                "lease and existing owner safety holds. Cleanup must be enabled "
-                "before capture starts; never change its global controls."
+                "lease and existing owner safety holds. Use only this dedicated "
+                "disposable capture workspace; do not import unrelated work. "
+                "Capture-scoped cleanup must be enabled before capture starts; "
+                "never change its global controls."
             )
 
         if task.get("dependency_review"):
