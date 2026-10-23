@@ -2867,3 +2867,63 @@ def settle_lost_before_guest_factory_attempt(
         cessation_confirmed=True,
     )
     db.add(agent)
+
+
+def accept_review_recomputation(
+    db: Session, session_id: int, permit_id: int, *, cessation_confirmed: bool = False
+) -> None:
+    """Mark one unknown review reservation for explicit operator recomputation.
+
+    Caller holds pool/session/job locks, validates the latest held job, and writes
+    its audit in this transaction. This does not prove remote cessation or success;
+    the failed session, unknown turn and guest binding remain historical evidence.
+    """
+    agent = _locked_session(db, session_id)
+    permits = db.exec(
+        select(AgentCapacityReservation)
+        .where(
+            AgentCapacityReservation.routine_job_name == "kg-fact-review",
+            AgentCapacityReservation.state != "settled",
+        )
+        .with_for_update()
+    ).all()
+    if len(permits) != 1:
+        raise ValueError("Review has another active reservation")
+    permit = permits[0]
+    if (
+        permit.id != permit_id
+        or permit.session_id != session_id
+        or permit.local_session_id != agent.local_session_id
+        or permit.tier != "kg"
+        or permit.state != "uncertain"
+        or permit.settled_at is not None
+        or agent.status != "failed"
+        or agent.result_receipt_fence_id is not None
+        or any(getattr(agent, field) is not None for field in _CLEANUP_FIELDS)
+    ):
+        raise ValueError("Exact unknown review reservation is not recoverable")
+    # Keep uncertainty charged against every capacity limit until normal
+    # cessation reconciliation settles it. Only same-job exclusion is waived.
+    permit.outcome = "operator_recompute_unknown"
+    if cessation_confirmed:
+        # The routine owner validated fresh authoritative exact-dispatch evidence.
+        # Its missing result is still unknown, never a successful completion.
+        permit.state = "settled"
+        permit.settled_at = _utcnow()
+        permit.outcome = "operator_recompute_ceased_unknown"
+    db.flush()
+
+
+def read_review_cessation_observation(db: Session, permit_id: int) -> dict | None:
+    """Bounded continuity metadata, without stored evidence bodies."""
+    from factory.execution.models import ProbeObservation
+
+    row = db.exec(
+        select(
+            ProbeObservation.guest_id,
+            ProbeObservation.generation,
+            ProbeObservation.invoke_started_at,
+            ProbeObservation.cp_updated_at,
+        ).where(ProbeObservation.permit_id == permit_id)
+    ).first()
+    return None if row is None else dict(row._mapping)

@@ -139,3 +139,56 @@ async def test_routine_list_is_bounded_and_does_not_export_payloads(monkeypatch)
     assert result["jobs"][0]["truncated_fields"] == ["last_status"]
     monkeypatch.setattr(mcp.routine_jobs, "list_jobs", lambda **kwargs: [])
     assert (await mcp.monolith_agent_list_routine_jobs())["next_offset"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "authority,kind,groups,allowed",
+    [
+        ("standing", "human", ("operators",), True),
+        ("standing", "human", (), False),
+        ("standing", "workload", ("operators",), False),
+        ("delegated", "human", ("operators",), False),
+    ],
+)
+async def test_explicit_review_recovery_requires_existing_operator_gate(
+    monkeypatch, authority, kind, groups, allowed
+):
+    import threading
+    from auth.api import Authority, Principal, PrincipalKind
+    from auth.dependencies import reset_current_principal, set_current_principal
+    from agent import mcp, routine_reconciliation
+
+    caller, calls = threading.get_ident(), []
+
+    def recover(**kwargs):
+        assert threading.get_ident() != caller
+        calls.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(routine_reconciliation, "recover_review_job", recover)
+    token = set_current_principal(
+        Principal(
+            subject="operator",
+            actor=(),
+            scope=(),
+            groups=groups,
+            email=None,
+            kind=PrincipalKind(kind),
+            authority=Authority(authority),
+        )
+    )
+    recovery = {"mode": "preview", "session_id": 20412, "permit_id": 17827}
+    try:
+        result = await mcp.monolith_agent_trigger_routine_job(
+            "kg-fact-review", recovery
+        )
+        assert result["ok"] is allowed
+        if allowed:
+            assert calls == [{"actor": "operator", "recovery": recovery}]
+            with pytest.raises(ValueError, match="limited"):
+                await mcp.monolith_agent_trigger_routine_job("other", recovery)
+        else:
+            assert calls == []
+    finally:
+        reset_current_principal(token)

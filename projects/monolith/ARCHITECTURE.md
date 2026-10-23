@@ -1524,6 +1524,20 @@ The fact allowance counts every selected member, including failures and
 unsupported sources. Prepared claim revisions cannot be selected again while
 their outcomes remain unresolved. Fewer-attempted revisions precede retries.
 
+**Why explicit review recomputation.** Node loss can leave a prepared review
+batch with an unknown model result indefinitely. Automatic reconciliation keeps
+that uncertainty fenced. A standing human operator may instead preview/apply
+`monolith_agent_trigger_routine_job` recovery for the exact `kg-fact-review`
+session and permit, acknowledging duplicate computation and writes. The state
+digest and idempotency key bind one audited decision. Only unfinished members
+become abandoned; completed receipts, source evidence, unknown turns and prior
+session bindings remain. Abandoned members reject late writes and become
+eligible for a fresh cycle under the existing daily allowance. The old permit
+stays capacity-charged unless a fresh server-owned control-plane read proves
+cessation of the exact persisted dispatch. Cessation can precede the client's
+unknown-result timestamp without proving a successful result. The override
+never changes automatic recovery defaults, admission limits or coverage flags.
+
 A batch shares source responses only during its bounded preparation, at the
 same pinned main revision. Collection permits at most 64 requests, 512 KB of
 cached responses and 90 seconds; the complete prompt is bounded to 256 KB.
@@ -2576,7 +2590,9 @@ request that reached the application.
 until exact cessation evidence is reconciled. The operator-only
 `factory_permit_diagnostics` read accepts at most twenty exact permit IDs and
 projects reservation, session, pending-claim, DBOS status, routine lease and
-stored supervision refusal metadata. It excludes prompts, results, payloads,
+stored supervision refusal metadata, bounded dispatch ownership and up to five
+result-receipt metadata rows. Receipt presence is not validity or adoption proof.
+It excludes prompts, results, payloads,
 credentials and raw evidence. Observation timestamps describe persisted evidence,
 not a fresh guest check, and the read never settles a permit or authorizes recovery.
 Routine-job MCP listing is paginated (twenty rows by default, fifty maximum),

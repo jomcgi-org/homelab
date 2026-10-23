@@ -362,7 +362,8 @@ def reserve_start_verdict(
         )
     ).all()
     if routine_job_name is not None and any(
-        row.routine_job_name == routine_job_name for row in active
+        row.routine_job_name == routine_job_name and not _operator_recomputation(row)
+        for row in active
     ):
         return "routine_job_already_reserved"
     background_full = (
@@ -580,16 +581,30 @@ def cancel_unbound(
     return True
 
 
+def _operator_recomputation(row: AgentCapacityReservation) -> bool:
+    return (
+        row.routine_job_name == "kg-fact-review"
+        and row.tier == "kg"
+        and row.state == "uncertain"
+        and row.outcome == "operator_recompute_unknown"
+    )
+
+
 def reserved_routine_jobs(db: Session) -> set[str]:
-    """An expired routine lease cannot free an unresolved execution identity."""
-    return set(
-        db.exec(
-            select(AgentCapacityReservation.routine_job_name).where(
+    """Exclude unresolved jobs, except explicitly audited review recomputation.
+
+    Exemption affects job exclusion only, never capacity or daily accounting.
+    """
+    return {
+        row.routine_job_name
+        for row in db.exec(
+            select(AgentCapacityReservation).where(
                 AgentCapacityReservation.state != "settled",
                 AgentCapacityReservation.routine_job_name.isnot(None),
             )
         ).all()
-    )
+        if not _operator_recomputation(row)
+    }
 
 
 def confirm_guest_cessation(db: Session, agent: AgentSession) -> None:

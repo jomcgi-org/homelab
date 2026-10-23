@@ -48,6 +48,7 @@ __all__ = [
     "append_message_recall",
     "apply_audit",
     "apply_extraction",
+    "abandon_fact_review_for_recomputation",
     "apply_fact_review",
     "apply_repo_diff",
     "attach_recall",
@@ -517,3 +518,12 @@ def __getattr__(name: str):
     from importlib import import_module
 
     return getattr(import_module(module), name)
+
+
+def abandon_fact_review_for_recomputation(
+    session: Session, invocation_key: str
+) -> dict:
+    """Explicit operator recovery only; preserve receipts and release unfinished claims."""
+    from knowledge.fact_review_batch import abandon_for_recomputation
+
+    return abandon_for_recomputation(session, invocation_key)

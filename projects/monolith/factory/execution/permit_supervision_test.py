@@ -12,6 +12,7 @@ from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.models import (
     AgentCapacityPool,
     AgentCapacityReservation,
+    AgentResultReceipt,
     AgentSession,
     AgentTurn,
     PendingMessage,
@@ -42,6 +43,7 @@ def database(tmp_path, monkeypatch):
                 PendingMessage,
                 AgentCapacityPool,
                 AgentCapacityReservation,
+                AgentResultReceipt,
                 ProbeObservation,
                 SwarmTask,
                 FactoryStart,
@@ -1861,6 +1863,57 @@ def test_permit_diagnostics_are_select_only_and_redacted(database):
         agent = db.get(AgentSession, permit.session_id)
         agent.workflow_id = "wf-one"
         db.add(agent)
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == agent.id)).one()
+        turn.usage_json = json.dumps(
+            {
+                "recovery": {
+                    "claim_owner": "worker",
+                    "dispatch_count": 1,
+                    "last_dispatch_at": "2026-10-18T10:42:00+00:00",
+                    "partial_text": "private-partial-output",
+                    "response_lost": {"token": "private-callback-token"},
+                }
+            }
+        )
+        db.add(turn)
+        now = datetime.now(timezone.utc)
+        receipts = []
+        for index in range(7):
+            receipts.append(
+                AgentResultReceipt(
+                    id=f"receipt-{index}",
+                    token_sha256=f"private-token-digest-{index}",
+                    session_id=agent.id,
+                    local_session_id=agent.local_session_id,
+                    seq=permit.pending_seq,
+                    dispatch_count=index + 1,
+                    claim_owner="worker",
+                    guest_id=agent.ember_session_id,
+                    request_sha256="private-request-digest",
+                    created_at=now,
+                    accept_until=now,
+                    retain_until=now,
+                    result_sha256="private-result-digest" if index == 6 else None,
+                    result_body=b"private-result-body" if index == 6 else None,
+                )
+            )
+        db.add_all(receipts)
+        db.add(
+            AgentResultReceipt(
+                id="other-turn",
+                token_sha256="other-token-digest",
+                session_id=agent.id,
+                local_session_id=agent.local_session_id,
+                seq=permit.pending_seq + 1,
+                dispatch_count=1,
+                claim_owner="worker",
+                guest_id=agent.ember_session_id,
+                request_sha256="other-request-digest",
+                created_at=now,
+                accept_until=now,
+                retain_until=now,
+            )
+        )
         db.add(
             ProbeObservation(
                 permit_id=permit_id,
@@ -1887,6 +1940,17 @@ def test_permit_diagnostics_are_select_only_and_redacted(database):
     assert item["workflow"]["status"] == "ERROR"
     assert item["routine"]["next_run_at"] is None
     assert item["pending_count"] == 0
+    assert item["dispatch"] == {
+        "claim_owner": "worker",
+        "dispatch_count": 1,
+        "last_dispatch_at": "2026-10-18T10:42:00+00:00",
+    }
+    assert item["result_receipts_truncated"] is True
+    assert [row["id"] for row in item["result_receipts"]] == [
+        f"receipt-{i}" for i in (6, 5, 4, 3, 2)
+    ]
+    assert item["result_receipts"][0]["result_body_present"]
+    assert not item["result_receipts"][1]["result_body_present"]
     assert result["items"][1] == {"permit_id": 999999, "found": False}
     assert result["recovery_authorized"] is False
     encoded = json.dumps(result)
@@ -1895,6 +1959,13 @@ def test_permit_diagnostics_are_select_only_and_redacted(database):
         "original prompt",
         "lost response",
         "private-evidence",
+        "private-partial-output",
+        "private-callback-token",
+        "private-token-digest",
+        "private-request-digest",
+        "private-result-digest",
+        "private-result-body",
+        "other-turn",
         "artifact_blob",
         "usage_json",
         "ember_session_token",
@@ -1982,3 +2053,34 @@ def test_routine_permit_lookup_rejects_invalid_bounds(database, name, options):
 
     with Session(database) as db, pytest.raises(ValueError):
         find_routine_permits(name, session=db, **options)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        "not-json",
+        "null",
+        "[]",
+        '{"recovery":null}',
+        '{"recovery":{"claim_owner":{"secret":"no-export"},"dispatch_count":true,"last_dispatch_at":["no-export"]}}',
+    ],
+)
+def test_dispatch_diagnostics_reject_malformed_metadata(database, usage):
+    from factory.execution.admission_diagnostics import _dispatch_metadata
+
+    pid = seed(database)
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        turn = db.exec(
+            select(AgentTurn).where(AgentTurn.session_id == permit.session_id)
+        ).one()
+        turn.usage_json = usage
+        db.add(turn)
+        params = {"id": permit.session_id, "seq": permit.pending_seq}
+    with Session(database) as db:
+        result = _dispatch_metadata(db, params)
+    assert result == {
+        "claim_owner": None,
+        "dispatch_count": None,
+        "last_dispatch_at": None,
+    }

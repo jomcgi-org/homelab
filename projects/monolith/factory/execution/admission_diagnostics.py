@@ -1,6 +1,7 @@
 """Bounded, SELECT-only permit metadata. Never infer permission to recover work."""
 
 from datetime import datetime, timezone
+import os
 
 from sqlalchemy import text
 from sqlmodel import Session
@@ -27,6 +28,60 @@ def _safe(value):
     if isinstance(value, dict):
         return {key: _safe(item) for key, item in value.items()}
     return value
+
+
+def _dispatch_metadata(db, params):
+    # Project only the three fields consumed by terminal_dispatch_cessation.
+    # Never load the recovery document: it can contain partial private output.
+    if db.bind.dialect.name == "sqlite":
+        document = "CASE WHEN json_valid(usage_json) THEN usage_json ELSE '{}' END"
+        fields = ", ".join(
+            f"CASE WHEN json_type({document}, '$.recovery.{key}') = '{kind}' "
+            f"THEN {('substr(' if kind == 'text' else '')}"
+            f"json_extract({document}, '$.recovery.{key}')"
+            f"{(', 1, 256)' if kind == 'text' else '')} END AS {key}"
+            for key, kind in (
+                ("claim_owner", "text"),
+                ("dispatch_count", "integer"),
+                ("last_dispatch_at", "text"),
+            )
+        )
+    else:
+        document = (
+            "CASE WHEN pg_input_is_valid(usage_json, 'jsonb') "
+            "THEN usage_json::jsonb ELSE '{}'::jsonb END"
+        )
+        fields = ", ".join(
+            f"CASE WHEN jsonb_typeof(({document})->'recovery'->'{key}') = '{kind}' "
+            f"THEN {('left(' if kind == 'string' else '')}"
+            f"({document})->'recovery'{('->>' if kind == 'string' else '->')}'{key}'"
+            f"{(', 256)' if kind == 'string' else '')} END AS {key}"
+            for key, kind in (
+                ("claim_owner", "string"),
+                ("dispatch_count", "number"),
+                ("last_dispatch_at", "string"),
+            )
+        )
+    rows = _rows(
+        db,
+        f"SELECT {fields} FROM agent_sessions.agent_turns "
+        "WHERE session_id=:id AND seq=:seq",
+        params,
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "claim_owner": row["claim_owner"]
+        if isinstance(row["claim_owner"], str)
+        else None,
+        "dispatch_count": row["dispatch_count"]
+        if type(row["dispatch_count"]) is int
+        else None,
+        "last_dispatch_at": row["last_dispatch_at"]
+        if isinstance(row["last_dispatch_at"], str)
+        else None,
+    }
 
 
 def inspect_permits(permit_ids, *, session=None):
@@ -101,6 +156,23 @@ def inspect_permits(permit_ids, *, session=None):
             ),
             None,
         )
+        item["dispatch"] = _dispatch_metadata(db, params)
+        receipts = _rows(
+            db,
+            """
+            SELECT id, seq, dispatch_count, claim_owner, guest_id, created_at,
+                   accept_until, retain_until, superseded_at, received_at,
+                   response_observed_at, response_observer_released_at,
+                   result_sha256 IS NOT NULL AS result_digest_present,
+                   result_body IS NOT NULL AS result_body_present
+            FROM agent_sessions.result_receipts
+            WHERE session_id=:id AND seq=:seq
+            ORDER BY created_at DESC, id DESC LIMIT 6
+            """,
+            params,
+        )
+        item["result_receipts"] = receipts[:5]
+        item["result_receipts_truncated"] = len(receipts) > 5
         item["pending_count"] = _rows(
             db,
             """
@@ -155,7 +227,16 @@ def inspect_permits(permit_ids, *, session=None):
         {
             "observed_at": datetime.now(timezone.utc),
             "items": items,
-            "coverage": "Persisted metadata only. Guest cessation is not verified.",
+            "controls": {
+                name: os.getenv(name, "false").lower() == "true"
+                for name in (
+                    "AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED",
+                    "FACTORY_RESERVATION_REVIEW_ENABLED",
+                    "FACTORY_INVOKE_FAILURE_CESSATION_ENABLED",
+                    "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
+                )
+            },
+            "coverage": "Persisted metadata only. Receipt presence does not establish validity or adoption. Guest cessation is not verified.",
             "recovery_authorized": False,
         }
     )

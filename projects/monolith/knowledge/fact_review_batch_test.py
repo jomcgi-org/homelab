@@ -797,3 +797,62 @@ def test_invalid_batch_size_is_refused(monkeypatch, value):
     monkeypatch.setenv("KG_FACT_REVIEW_BATCH_SIZE", value)
     with pytest.raises(ValueError):
         batch.batch_size()
+
+
+def test_operator_abandonment_fences_old_writers_and_releases_only_unfinished_claims(
+    db,
+):
+    notes(db, 2)
+    keys = batch._reserve(db, "unknown-batch", NOW)
+    completed = db.get(FactReviewRun, keys[0])
+    completed.status, completed.completed_at, completed.result = (
+        "complete",
+        NOW,
+        {"outcome": "supported"},
+    )
+    db.commit()
+    db.refresh(completed)
+    before = completed.model_dump()
+    counts = batch.abandon_for_recomputation(db, "unknown-batch")
+    db.commit()
+    assert counts == {"abandoned_members": 1, "retained_completed_members": 1}
+    assert db.get(FactReviewRun, keys[0]).model_dump() == before
+    assert db.get(FactReviewRun, keys[1]).status == "abandoned"
+    assert db.get(FactReviewRun, keys[1]).completed_at is None
+    for operation in (
+        lambda: batch.prepare(db, "unknown-batch", now=NOW),
+        lambda: batch.apply(db, "unknown-batch", "bad", now=NOW),
+        lambda: batch._finish(db, "unknown-batch", NOW),
+        lambda: batch._failure(db, keys[1], "unavailable", "late failure", NOW),
+        lambda: review.apply(db, keys[1], "bad", now=NOW),
+        lambda: review.prepare(db, keys[1], now=NOW),
+    ):
+        with pytest.raises(ExtractionOutputInvalid, match="abandoned"):
+            operation()
+        db.rollback()
+    batch.fail(db, "unknown-batch", "late failure", now=NOW)
+    assert db.get(FactReviewRun, keys[0]).model_dump() == before
+    assert db.get(FactReviewRun, keys[1]).status == "abandoned"
+    new_keys = batch._reserve(db, "replacement", NOW)
+    assert any(
+        db.get(FactReviewRun, k).note_id == db.get(FactReviewRun, keys[1]).note_id
+        for k in new_keys
+    )
+    assert db.get(FactReviewBatch, "unknown-batch").status == "abandoned"
+
+
+def test_recovery_during_source_fetch_fences_late_single_writer(db):
+    notes(db, 1)
+    key = batch._reserve(db, "inflight", NOW)[0]
+
+    def collector(claim):
+        batch.abandon_for_recomputation(db, "inflight")
+        db.commit()
+        return [{"id": "late", "text": "late source"}], NOW
+
+    with pytest.raises(ExtractionOutputInvalid, match="abandoned"):
+        review.prepare(db, key, collector=collector, now=NOW)
+    db.rollback()
+    assert db.get(FactReviewRun, key).status == "abandoned"
+    assert db.get(FactReviewRun, key).sources == []
+    assert db.exec(select(ReviewOutcome)).first() is None
