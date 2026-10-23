@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 
 from sqlmodel import select
 
@@ -10,6 +11,9 @@ from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
     FactoryStart,
+    WorkItem,
+    WorkItemEdge,
+    same_work,
 )
 
 ACTION = "bounded_validation_prepared"
@@ -82,7 +86,183 @@ def locate(
         }
 
 
-def _preview(db, control, receipt_id, reason, *, issue_number=None):
+def _refinement_state(db, row, rows):
+    """Only an unambiguous, quiescent agent-ready result can seed delivery."""
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration.models import SwarmTask
+
+    if any(other.id != row.id and same_work(other, row) for other in rows):
+        raise ValueError("validation_refinement_history_ambiguous")
+    if not row.task_id or row.cancellation_requested or row.routing_tier != "advisory":
+        raise ValueError("validation_refinement_unverified")
+    direction = json.loads(row.direction_json or "{}")
+    if (
+        controls.landing_held(row)
+        or controls.review_recovery_held(row.task_id, session=db)
+        or controls.decision_in_flight(db, row.id)
+        or "review_only_hold" in direction
+        or controls.nonrenewable_recovery(row)
+    ):
+        raise ValueError("validation_refinement_held")
+    task = db.get(SwarmTask, row.task_id)
+    audits = db.exec(
+        select(FactoryAudit).where(
+            FactoryAudit.task_id == row.task_id,
+            FactoryAudit.action == "finish_task",
+        )
+    ).all()
+    if (
+        task is None
+        or task.settled_at is None
+        or task.start_state != "succeeded"
+        or len(audits) != 1
+    ):
+        raise ValueError("validation_refinement_unverified")
+    audit = audits[0]
+    detail = json.loads(audit.detail_json)
+    if (
+        audit.actor != "factory:refine"
+        or detail.get("outcome") != "succeeded"
+        or detail.get("evidence", {}).get("state") != "refine_agent_ready"
+    ):
+        raise ValueError("validation_refinement_unverified")
+    if (
+        controls._quiescence_refusal(db, row.task_id)
+        or db.exec(
+            select(PendingMessage.id)
+            .join(AgentSession)
+            .where(
+                AgentSession.local_session_id.startswith(
+                    f"factory:{row.task_id}:", autoescape=True
+                )
+            )
+        ).first()
+        is not None
+    ):
+        raise ValueError("validation_refinement_not_quiescent")
+    item = None
+    if row.work_item_id:
+        item = db.get(WorkItem, row.work_item_id)
+        if (
+            item is None
+            or item.state not in ("open", "ready")
+            or "human" in {label.lower() for label in item.labels}
+        ):
+            raise ValueError("validation_refinement_work_unavailable")
+        if (
+            db.exec(
+                select(WorkItemEdge.id)
+                .join(WorkItem, WorkItem.id == WorkItemEdge.from_id)
+                .where(
+                    WorkItemEdge.to_id == row.work_item_id,
+                    WorkItemEdge.kind == "blocks",
+                    WorkItem.state != "closed",
+                )
+            ).first()
+            is not None
+        ):
+            raise ValueError("validation_refinement_work_blocked")
+    return {
+        "audit": audit.model_dump(mode="json"),
+        "task": task.model_dump(mode="json"),
+        "work_item": item.model_dump(mode="json") if item else None,
+    }
+
+
+def _refinement_observation(receipt_id):
+    """Bounded GitHub reads outside the control lock, repeated before apply."""
+    from factory.orchestration import factory_conductor as conductor
+
+    with controls._locked_session() as (db, control):
+        row = db.get(FactoryReceipt, receipt_id) if receipt_id is not None else None
+        if row is None or row.task_class != "refine" or row.state != "succeeded":
+            return None
+        if control.state != "paused":
+            raise ValueError("validation_requires_paused_admissions")
+        rows = db.exec(select(FactoryReceipt)).all()
+        _refinement_state(db, row, rows)
+        repo, number = _available_repo(row.repo), row.issue_number
+    issue = conductor.github_get(repo, f"issues/{number}")
+    # Timeline catches linked closed/merged PRs too. Open PR text catches work
+    # that mentions this issue without an explicit closing relationship.
+    for endpoint in (f"issues/{number}/timeline", "pulls?state=open"):
+        for page in range(1, 6):
+            separator = "&" if "?" in endpoint else "?"
+            batch = conductor.github_list(
+                repo, f"{endpoint}{separator}per_page=100&page={page}"
+            )
+            if not isinstance(batch, list) or any(
+                not isinstance(item, dict) for item in batch
+            ):
+                raise ValueError("validation_refinement_pr_lookup_incomplete")
+            for item in batch:
+                if endpoint.startswith("issues/"):
+                    source = item.get("source", {}).get("issue", {})
+                    linked = "pull_request" in source
+                    pr_number = source.get("number")
+                else:
+                    linked = number in {
+                        int(short or url)
+                        for short, url in re.findall(
+                            rf"(?<![\w/])#(\d+)\b|https://github\.com/{re.escape(repo)}/issues/(\d+)\b",
+                            (item.get("title") or "") + " " + (item.get("body") or ""),
+                        )
+                    }
+                    pr_number = item.get("number")
+                if linked:
+                    # A reference is evidence to inspect, not proof of ownership.
+                    # Do not silently waive it, including closed/merged PRs.
+                    identity = (
+                        str(pr_number)
+                        if type(pr_number) is int and pr_number > 0
+                        else "unknown"
+                    )
+                    raise ValueError(
+                        f"validation_refinement_pr_reference_ambiguous:{identity}"
+                    )
+            if len(batch) < 100:
+                break
+        else:
+            raise ValueError("validation_refinement_pr_lookup_incomplete")
+    return {
+        "receipt_id": receipt_id,
+        "repo": repo,
+        "issue_number": number,
+        "issue": issue,
+    }
+
+
+def _refinement_eligible(row, policy, observation):
+    from factory.orchestration.factory_intake_loop import _label_names
+
+    if observation is None or any(
+        observation[key] != value
+        for key, value in (
+            ("receipt_id", row.id),
+            ("repo", row.repo),
+            ("issue_number", row.issue_number),
+        )
+    ):
+        raise ValueError("validation_refinement_observation_changed")
+    issue = observation["issue"]
+    labels = _label_names(issue)
+    entry = controls.repo_entry(policy, row.repo)
+    if (
+        issue.get("number") != row.issue_number
+        or issue.get("html_url")
+        != f"https://github.com/{row.repo}/issues/{row.issue_number}"
+        or issue.get("state") != "open"
+        or "pull_request" in issue
+        or issue.get("assignees") != []
+        or "agent-ready" not in labels
+        or "human" in labels
+        or labels & {label.lower() for label in entry["exclude_labels"]}
+        or not labels & {label.lower() for label in entry["labels"]}
+    ):
+        raise ValueError("validation_refinement_issue_ineligible")
+
+
+def _preview(db, control, receipt_id, reason, *, issue_number=None, observation=None):
     reason = controls._text(reason, "reason", 4000)
     if control.state != "paused":
         raise ValueError("validation_requires_paused_admissions")
@@ -91,6 +271,7 @@ def _preview(db, control, receipt_id, reason, *, issue_number=None):
     if (receipt_id is None) == (issue_number is None):
         raise ValueError("validation_requires_one_selector")
     row = None
+    refinement = None
     if issue_number is not None:
         if type(issue_number) is not int or not 1 <= issue_number <= 2**63 - 1:
             raise ValueError("validation_invalid_issue_number")
@@ -101,7 +282,12 @@ def _preview(db, control, receipt_id, reason, *, issue_number=None):
             raise ValueError("validation_existing_receipt_requires_receipt_selector")
     else:
         row = next((item for item in rows if item.id == receipt_id), None)
-        if row is None or row.state not in ("queued", "escalated"):
+        completed_refine = (
+            row is not None and row.task_class == "refine" and row.state == "succeeded"
+        )
+        if row is None or (
+            row.state not in ("queued", "escalated") and not completed_refine
+        ):
             raise ValueError("validation_requires_waiting_receipt")
         repo = _available_repo(row.repo)
         issue_number = row.issue_number
@@ -109,6 +295,9 @@ def _preview(db, control, receipt_id, reason, *, issue_number=None):
             raise ValueError("validation_requires_current_primary_receipt")
         if row.cancellation_requested:
             raise ValueError("validation_receipt_unavailable")
+        if completed_refine:
+            refinement = _refinement_state(db, row, rows)
+            _refinement_eligible(row, policy, observation)
     if repo not in controls.enabled_repos(policy):
         raise ValueError("validation_receipt_unavailable")
     if any(
@@ -164,6 +353,11 @@ def _preview(db, control, receipt_id, reason, *, issue_number=None):
             controls._json([item.model_dump(mode="json") for item in rows]).encode()
         ).hexdigest(),
     }
+    if refinement is not None:
+        result["selection_kind"] = "refined_issue"
+        result["refinement_fingerprint"] = hashlib.sha256(
+            controls._json({"state": refinement, "observation": observation}).encode()
+        ).hexdigest()
     result["preview_sha256"] = hashlib.sha256(
         controls._json(result).encode()
     ).hexdigest()
@@ -171,8 +365,16 @@ def _preview(db, control, receipt_id, reason, *, issue_number=None):
 
 
 def preview(receipt_id, reason, *, issue_number=None):
+    observation = _refinement_observation(receipt_id)
     with controls._locked_session() as (db, control):
-        return _preview(db, control, receipt_id, reason, issue_number=issue_number)
+        return _preview(
+            db,
+            control,
+            receipt_id,
+            reason,
+            issue_number=issue_number,
+            observation=observation,
+        )
 
 
 def _replay(db, actor, request):
@@ -211,7 +413,19 @@ def apply(
         replay = _replay(db, actor, request)
         if replay is not None:
             return replay
-        proposal = _preview(db, control, receipt_id, reason, issue_number=issue_number)
+    observation = _refinement_observation(receipt_id)
+    with controls._locked_session() as (db, control):
+        replay = _replay(db, actor, request)
+        if replay is not None:
+            return replay
+        proposal = _preview(
+            db,
+            control,
+            receipt_id,
+            reason,
+            issue_number=issue_number,
+            observation=observation,
+        )
         if proposal["preview_sha256"] != expected_preview_sha256:
             raise ValueError("validation_preview_changed")
         result = controls.set_control(
@@ -227,6 +441,9 @@ def apply(
             "execution_authorized": False,
             "preview_sha256": proposal["preview_sha256"],
         }
+        if "selection_kind" in proposal:
+            result["selection_kind"] = proposal["selection_kind"]
+            result["delivery_receipt_created"] = False
         controls._audit(
             db,
             actor,

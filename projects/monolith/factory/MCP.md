@@ -206,3 +206,22 @@ authorized execution, inspect live ownership, existing PRs and other owners,
 then use the existing recovery and execution checks. Never restart externally
 delivered work merely because its receipt remains escalated. Both tools retain
 the existing standing-human `operators` requirement.
+
+For a completed advisory refinement, the receipt selector can prepare its issue
+for a **new delivery receipt**. It requires one authoritative `factory:refine`
+`finish_task` audit with outcome `succeeded` and evidence `refine_agent_ready`,
+a settled task, quiescent execution, current generation and an eligible open,
+unassigned, `agent-ready` issue. Failed, deferred or ambiguous refinement,
+other receipt history for the same work, unresolved starts, blocking work-item
+edges and operator holds refuse preparation. The refinement receipt, task,
+accounting and audit remain unchanged; no delivery receipt is created here.
+
+Preview and apply independently read GitHub outside the control lock, then
+recheck database state under that lock. The preview binds issue content and
+refinement provenance as well as policy/version/receipt state. GitHub reads
+are not an atomic reservation: repeat ownership and eligibility checks before
+separate submission. Bounded PR searches fail closed if incomplete. A PR
+reference is reported as `validation_refinement_pr_reference_ambiguous:<PR>`
+for inspection, not proof of implementation ownership. Even an incidental or
+closed PR reference refuses this path; there is no automatic override. This
+can require resolving scope ambiguity before preparation can proceed.
