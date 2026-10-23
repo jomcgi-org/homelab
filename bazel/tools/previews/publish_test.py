@@ -4,9 +4,12 @@ import copy
 import io
 import json
 import stat
+import tempfile
 import unittest
+import urllib.error
 import warnings
 import zipfile
+from pathlib import Path
 from unittest import mock
 
 import publish
@@ -258,6 +261,98 @@ class ProvenanceTests(unittest.TestCase):
             with self.assertRaises(publish.StalePreview):
                 publish.validate_run(run, workflow, run, pull)
 
+    def test_valid_non_main_build_is_ineligible(self):
+        run, workflow = run_and_workflow()
+        for base in ["factory/held-stack", "release/v2", "MAIN"]:
+            pull = pr()
+            pull["base"]["ref"] = base
+            with self.subTest(base=base), self.assertRaises(publish.IneligiblePreview):
+                publish.validate_run(run, workflow, run, pull)
+
+    def test_missing_or_malformed_base_is_not_an_ineligible_build(self):
+        run, workflow = run_and_workflow()
+        for base in [None, "", False, 0, [], {}]:
+            pull = pr()
+            pull["base"]["ref"] = base
+            with self.subTest(base=base), self.assertRaises(publish.Unsafe) as error:
+                publish.validate_run(run, workflow, run, pull)
+            self.assertIs(type(error.exception), publish.Unsafe)
+        pull = pr()
+        del pull["base"]["ref"]
+        with self.assertRaisesRegex(publish.Unsafe, "invalid PR base ref"):
+            publish.validate_run(run, workflow, run, pull)
+
+    def test_non_main_base_does_not_mask_untrusted_run_metadata(self):
+        run, workflow = run_and_workflow()
+        pull = pr()
+        pull["base"]["ref"] = "factory/held-stack"
+        for field, value in [
+            ("id", 10),
+            ("run_attempt", 2),
+            ("repository", {"full_name": "attacker/repo"}),
+            ("event", "push"),
+            ("status", "in_progress"),
+            ("conclusion", "failure"),
+            ("path", ".github/workflows/evil.yml"),
+            ("workflow_id", 999),
+            ("head_sha", "invalid"),
+            ("head_sha", B),
+            ("pull_requests", []),
+            ("pull_requests", [{"number": 41, "head": {"sha": A}}]),
+            ("pull_requests", run["pull_requests"] * 2),
+            ("head_repository", {"full_name": "attacker/repo"}),
+        ]:
+            with self.subTest(field=field), self.assertRaises(publish.Unsafe) as error:
+                publish.validate_run({**run, field: value}, workflow, run, pull)
+            self.assertIs(type(error.exception), publish.Unsafe)
+
+    def test_non_main_base_does_not_mask_untrusted_pr_or_workflow(self):
+        run, workflow = run_and_workflow()
+        pull = pr()
+        pull["base"]["ref"] = "factory/held-stack"
+        bad_pr = copy.deepcopy(pull)
+        bad_pr["base"]["repo"]["full_name"] = "attacker/repo"
+        missing_head = copy.deepcopy(pull)
+        missing_head["head"]["repo"] = {}
+        cases = [
+            (run, workflow, bad_pr),
+            (run, workflow, missing_head),
+            ({**run, "head_repository": {}}, workflow, missing_head),
+            (run, {**workflow, "path": ".github/workflows/evil.yml"}, pull),
+            (run, {**workflow, "name": "Untrusted workflow"}, pull),
+        ]
+        for metadata in cases:
+            with (
+                self.subTest(metadata=metadata),
+                self.assertRaises(publish.Unsafe) as error,
+            ):
+                publish.validate_run(metadata[0], metadata[1], run, metadata[2])
+            self.assertIs(type(error.exception), publish.Unsafe)
+
+    def test_direct_publication_validation_still_requires_main(self):
+        pull = pr()
+        pull["base"]["ref"] = "factory/held-stack"
+        with self.assertRaisesRegex(publish.Unsafe, "PR does not target main") as error:
+            publish.validate_pr(pull, 42, A)
+        self.assertIs(type(error.exception), publish.Unsafe)
+
+    def test_non_main_build_requires_positive_integer_provenance_ids(self):
+        for field in ["id", "run_attempt", "workflow_id"]:
+            for invalid in [None, False, 0, -1, "9", 1.0]:
+                run, workflow = run_and_workflow()
+                event_run = copy.deepcopy(run)
+                pull = pr()
+                pull["base"]["ref"] = "factory/held-stack"
+                run[field] = invalid
+                if field == "workflow_id":
+                    workflow["id"] = invalid
+                else:
+                    event_run[field] = invalid
+                with self.subTest(field=field, invalid=invalid):
+                    with self.assertRaises(publish.Unsafe) as error:
+                        publish.validate_run(run, workflow, event_run, pull)
+                    self.assertIs(type(error.exception), publish.Unsafe)
+
     def test_pages_url_from_api_must_be_dedicated_github_io(self):
         self.assertEqual(
             publish.pages_url(
@@ -410,6 +505,180 @@ class AggregateTests(unittest.TestCase):
         api.repo.side_effect = lambda path: responses[path]
         with self.assertRaisesRegex(publish.Unsafe, "unmarked state branch"):
             publish.load_state(api, URL)
+
+
+class PrepareTests(unittest.TestCase):
+    def setUp(self):
+        self.run, self.workflow = run_and_workflow()
+        self.event = {
+            "repository": {"full_name": publish.REPOSITORY},
+            "workflow_run": copy.deepcopy(self.run),
+        }
+        self.responses = {
+            "/pages": {"build_type": "workflow", "html_url": URL},
+            "/actions/runs/9": self.run,
+            "/actions/workflows/fixture-preview-build.yml": self.workflow,
+            "/pulls/42": pr(),
+            "/pulls/43": pr(43, B),
+        }
+        self.api = mock.Mock()
+        self.api.repo.side_effect = lambda path: self.responses[path]
+        self.api.all.return_value = [
+            {"name": f"fixture-preview-{A}", "workflow_run": {"id": 9, "head_sha": A}}
+        ]
+        self.api.artifact.return_value = archive([("index.html", HTML)])
+        self.state, self.files = publish.empty_state(URL), {}
+        self.now = 2_000_000_000
+        publish.add_preview(
+            self.state, self.files, 43, B, {"index.html": HTML}, self.now, 8
+        )
+        publish.finish_site(self.state, self.files)
+        self.loaded = mock.Mock(return_value=(B, self.state, self.files))
+        self.saved = mock.Mock(return_value=C)
+        self.outputs = mock.Mock()
+
+    def prepare(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(publish, "load_state", self.loaded),
+            mock.patch.object(publish, "save_state", self.saved),
+            mock.patch.object(publish, "output", self.outputs),
+            mock.patch.object(publish.time, "time", return_value=self.now),
+        ):
+            publish.prepare(
+                self.api, self.event, "workflow_run", Path(directory) / "site"
+            )
+
+    def test_non_main_build_skips_artifacts_and_preserves_existing_previews(self):
+        self.responses["/pulls/42"]["base"]["ref"] = "factory/held-stack"
+        original_files = self.files.copy()
+        with mock.patch("builtins.print") as printed:
+            self.prepare()
+        self.api.all.assert_not_called()
+        self.api.artifact.assert_not_called()
+        self.assertEqual(self.files, original_files)
+        self.assertEqual(set(self.state["previews"]), {"43"})
+        self.saved.assert_called_once()
+        self.outputs.assert_any_call("pr", "")
+        self.outputs.assert_any_call("sha", "")
+        self.outputs.assert_any_call("ready", "true")
+        self.assertIn("Skipping ineligible build", printed.call_args.args[0])
+
+    def test_main_build_remains_eligible(self):
+        self.prepare()
+        self.api.all.assert_called_once_with("/actions/runs/9/artifacts", "artifacts")
+        self.api.artifact.assert_called_once()
+        self.assertEqual(set(self.state["previews"]), {"42", "43"})
+        self.assertEqual(self.files[f"site/pr/42/{A}/index.html"], HTML)
+        self.outputs.assert_any_call("pr", 42)
+        self.outputs.assert_any_call("sha", A)
+
+    def test_non_main_untrusted_build_fails_before_artifacts_or_reconciliation(self):
+        self.responses["/pulls/42"]["base"]["ref"] = "factory/held-stack"
+        self.run["head_repository"] = {"full_name": "attacker/repo"}
+        with self.assertRaisesRegex(publish.Unsafe, "head repository mismatch"):
+            self.prepare()
+        self.api.all.assert_not_called()
+        self.api.artifact.assert_not_called()
+        self.loaded.assert_not_called()
+        self.saved.assert_not_called()
+        self.outputs.assert_not_called()
+
+    def test_non_main_missing_provenance_ids_fail_before_reconciliation(self):
+        self.responses["/pulls/42"]["base"]["ref"] = "factory/held-stack"
+        for field in ["id", "run_attempt", "workflow_id"]:
+            with (
+                self.subTest(field=field),
+                mock.patch.dict(self.run),
+                mock.patch.dict(self.event["workflow_run"]),
+                mock.patch.dict(self.workflow),
+            ):
+                del self.run[field]
+                if field == "workflow_id":
+                    del self.workflow["id"]
+                else:
+                    del self.event["workflow_run"][field]
+                with self.assertRaises(publish.Unsafe) as error:
+                    self.prepare()
+                self.assertIs(type(error.exception), publish.Unsafe)
+        self.api.all.assert_not_called()
+        self.api.artifact.assert_not_called()
+        self.loaded.assert_not_called()
+        self.saved.assert_not_called()
+        self.outputs.assert_not_called()
+
+    def test_non_main_missing_or_malformed_pr_metadata_fails_before_reconciliation(
+        self,
+    ):
+        pull = self.responses["/pulls/42"]
+        pull["base"]["ref"] = "factory/held-stack"
+        for target, field, invalid in [
+            (pull, "state", [None, "", False, [], "invalid"]),
+            (pull["head"], "sha", [None, "", False, [], "invalid"]),
+            (pull, "number", [None, 0, False, "42"]),
+        ]:
+            for value in invalid:
+                with self.subTest(field=field, value=value), mock.patch.dict(target):
+                    target[field] = value
+                    with self.assertRaises(publish.Unsafe) as error:
+                        self.prepare()
+                    self.assertIs(type(error.exception), publish.Unsafe)
+            with self.subTest(field=field, missing=True), mock.patch.dict(target):
+                del target[field]
+                with self.assertRaises(publish.Unsafe) as error:
+                    self.prepare()
+                self.assertIs(type(error.exception), publish.Unsafe)
+        self.api.all.assert_not_called()
+        self.api.artifact.assert_not_called()
+        self.loaded.assert_not_called()
+        self.saved.assert_not_called()
+        self.outputs.assert_not_called()
+
+    def test_non_main_skip_does_not_hide_http_or_stored_state_failures(self):
+        self.responses["/pulls/42"]["base"]["ref"] = "factory/held-stack"
+        errors = [
+            urllib.error.HTTPError(
+                "https://api.github.com/", 403, "Forbidden", {}, None
+            ),
+            publish.Unsafe("state blob hash mismatch"),
+        ]
+        for error in errors:
+            self.loaded.side_effect = error
+            with self.subTest(error=type(error)), mock.patch("builtins.print"):
+                with self.assertRaises(type(error)) as raised:
+                    self.prepare()
+            self.assertIs(raised.exception, error)
+        self.api.all.assert_not_called()
+        self.api.artifact.assert_not_called()
+        self.saved.assert_not_called()
+        self.outputs.assert_not_called()
+
+    def test_main_build_still_rejects_wrong_artifact_provenance(self):
+        self.api.all.return_value[0]["workflow_run"]["head_sha"] = B
+        with self.assertRaisesRegex(publish.Unsafe, "artifact run provenance mismatch"):
+            self.prepare()
+        self.api.artifact.assert_not_called()
+        self.loaded.assert_not_called()
+        self.saved.assert_not_called()
+
+    def test_main_build_still_rejects_malicious_artifact(self):
+        self.api.artifact.return_value = archive([("../index.html", HTML)])
+        with self.assertRaises(publish.Unsafe):
+            self.prepare()
+        self.loaded.assert_not_called()
+        self.saved.assert_not_called()
+
+    def test_retarget_after_artifact_download_still_fails_publication_guard(self):
+        retargeted = pr()
+        retargeted["base"]["ref"] = "factory/held-stack"
+        pulls = iter([pr(), retargeted])
+        self.api.repo.side_effect = lambda path: (
+            next(pulls) if path == "/pulls/42" else self.responses[path]
+        )
+        with self.assertRaisesRegex(publish.Unsafe, "PR does not target main"):
+            self.prepare()
+        self.saved.assert_not_called()
+        self.outputs.assert_not_called()
 
 
 class GuardAndCommentTests(unittest.TestCase):

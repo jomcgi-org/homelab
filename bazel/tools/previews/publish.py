@@ -69,6 +69,10 @@ class StalePreview(Unsafe):
     """A valid run is no longer the current open PR head."""
 
 
+class IneligiblePreview(Unsafe):
+    """A valid current build targets a base outside publication scope."""
+
+
 def require(condition, message):
     if not condition:
         raise Unsafe(message)
@@ -235,25 +239,50 @@ def extract_assets(raw):
     return assets
 
 
-def validate_pr(pr, number, sha=None):
-    require(pr.get("number") == number, "PR identity mismatch")
+def validate_pr_metadata(pr, number, sha=None):
+    require(
+        type(pr.get("number")) is int and pr["number"] > 0 and pr["number"] == number,
+        "PR identity mismatch",
+    )
     require(
         pr.get("base", {}).get("repo", {}).get("full_name") == REPOSITORY,
         "PR base repository mismatch",
     )
-    require(pr.get("base", {}).get("ref") == "main", "PR does not target main")
-    if sha is not None and (
-        pr.get("state") != "open" or pr.get("head", {}).get("sha") != sha
-    ):
-        raise StalePreview("closed PR or stale head")
+    base_ref = pr.get("base", {}).get("ref")
+    require(isinstance(base_ref, str) and base_ref, "invalid PR base ref")
+    if sha is not None:
+        state = pr.get("state")
+        require(
+            isinstance(state, str) and state in {"open", "closed"}, "invalid PR state"
+        )
+        head_sha = pr.get("head", {}).get("sha")
+        require(
+            isinstance(head_sha, str) and SHA.fullmatch(head_sha) is not None,
+            "invalid PR head SHA",
+        )
+        if state != "open" or head_sha != sha:
+            raise StalePreview("closed PR or stale head")
+    return base_ref
+
+
+def validate_pr(pr, number, sha=None):
+    require(validate_pr_metadata(pr, number, sha) == "main", "PR does not target main")
 
 
 def validate_run(run, workflow, event_run, pr):
     """All identity facts come from authenticated API responses and the event."""
-    require(run.get("id") == event_run.get("id"), "run identity mismatch")
-    require(
-        run.get("run_attempt") == event_run.get("run_attempt"), "superseded run attempt"
-    )
+    for field, message in [
+        ("id", "run identity mismatch"),
+        ("run_attempt", "superseded run attempt"),
+    ]:
+        actual, expected = run.get(field), event_run.get(field)
+        require(
+            type(actual) is int
+            and actual > 0
+            and type(expected) is int
+            and actual == expected,
+            message,
+        )
     require(
         run.get("repository", {}).get("full_name") == REPOSITORY,
         "run repository mismatch",
@@ -267,8 +296,12 @@ def validate_run(run, workflow, event_run, pr):
         workflow.get("path") == BUILD_WORKFLOW and workflow.get("name") == BUILD_NAME,
         "workflow identity mismatch",
     )
+    workflow_id = workflow.get("id")
     require(
-        run.get("workflow_id") == workflow.get("id")
+        type(workflow_id) is int
+        and workflow_id > 0
+        and type(run.get("workflow_id")) is int
+        and run["workflow_id"] == workflow_id
         and run.get("path", "").partition("@")[0] == BUILD_WORKFLOW,
         "run workflow mismatch",
     )
@@ -280,12 +313,16 @@ def validate_run(run, workflow, event_run, pr):
         "ambiguous run PR association",
     )
     require(associated[0].get("head", {}).get("sha") == sha, "run PR head mismatch")
-    validate_pr(pr, pr["number"], sha)
+    head_repository = run.get("head_repository", {}).get("full_name")
     require(
-        run.get("head_repository", {}).get("full_name")
-        == pr.get("head", {}).get("repo", {}).get("full_name"),
+        isinstance(head_repository, str)
+        and head_repository
+        and head_repository == pr.get("head", {}).get("repo", {}).get("full_name"),
         "head repository mismatch",
     )
+    # Classify an unsupported base only after every provenance check has passed.
+    if validate_pr_metadata(pr, pr["number"], sha) != "main":
+        raise IneligiblePreview("PR does not target main")
     return pr["number"], sha
 
 
@@ -646,7 +683,10 @@ def prepare(api, event, event_name, directory):
     candidate = None
     if event_name == "workflow_run":
         event_run = event["workflow_run"]
-        require(type(event_run.get("id")) is int, "invalid event run id")
+        require(
+            type(event_run.get("id")) is int and event_run["id"] > 0,
+            "invalid event run id",
+        )
         run = api.repo(f"/actions/runs/{event_run['id']}")
         workflow = api.repo(
             f"/actions/workflows/{urllib.parse.quote(BUILD_WORKFLOW.rsplit('/', 1)[1])}"
@@ -659,6 +699,11 @@ def prepare(api, event, event_name, directory):
         pr = api.repo(f"/pulls/{associations[0]['number']}")
         try:
             number, sha = validate_run(run, workflow, event_run, pr)
+        except IneligiblePreview:
+            print(
+                "Skipping ineligible build: PR does not target main; "
+                "reconciling existing previews."
+            )
         except StalePreview:
             print("Ignoring a closed/superseded build; reconciling existing previews.")
         else:
