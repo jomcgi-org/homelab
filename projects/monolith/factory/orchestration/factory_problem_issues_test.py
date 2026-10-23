@@ -1100,3 +1100,41 @@ def test_improvement_review_requires_existing_attempt_and_reason(improvements):
         session.commit()
     with pytest.raises(ValueError, match="exact_attempt_audit"):
         service.context()
+
+
+def test_improvement_old_duplicate_survives_bounded_history(improvements):
+    service, engine, _clock, policy, batch, _inventory, _quota, _writes = improvements
+    from factory.orchestration.factory_improvement_preview import fingerprint
+
+    with Session(engine) as session:
+        for i in range(1002):
+            row = FactoryAudit(
+                actor="test",
+                action="improvement_attempt",
+                created_at=START - timedelta(days=1003 - i),
+                detail_json=controls._json(
+                    {
+                        "fingerprint": fingerprint(
+                            service.REPO, batch["findings"][0]["problem_key"]
+                        )
+                        if i == 0
+                        else None,
+                        "reason": "candidates" if i == 0 else "no_actionable_findings",
+                    }
+                ),
+            )
+            session.add(row)
+        session.commit()
+        session.refresh(row)
+        policy["problem_issues"]["improvement_review"] = {
+            "through_audit_id": row.id,
+            "reason": "reviewed evidence",
+        }
+        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.commit()
+    current = service.context()
+    assert len(current["improvement_history"]) == 20
+    batch["review_digest"] = current["review_digest"]
+    result = service.submit(batch, actor="operator:test")
+    assert result["reason"] == "duplicate_or_owned"
+    assert result["drafts"] == []

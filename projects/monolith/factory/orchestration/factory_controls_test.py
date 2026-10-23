@@ -5192,6 +5192,56 @@ def test_receipt_landing_hold_finishes_without_entering_global_merge_lane(
         ).all()
 
 
+@pytest.mark.parametrize("wrong_action", [None, "control_configure"])
+def test_improvement_review_reference_rejected_before_configure(
+    db, policy, wrong_action
+):
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    with Session(db) as session:
+        before = session.get(FactoryControl, "factory").policy_json
+        if wrong_action:
+            row = FactoryAudit(actor="operator", action=wrong_action, detail_json="{}")
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            reviewed_id = row.id
+        else:
+            reviewed_id = 999999
+    policy["problem_issues"] = {
+        "improvement_review": {"through_audit_id": reviewed_id, "reason": "reviewed"}
+    }
+    with pytest.raises(
+        ValueError, match="improvement_review_requires_exact_attempt_audit"
+    ):
+        controls.set_control("configure", "operator", policy=policy)
+    with Session(db) as session:
+        assert session.get(FactoryControl, "factory").policy_json == before
+
+
+def test_improvement_review_exact_attempt_can_be_configured(db, policy):
+    with Session(db) as session:
+        row = FactoryAudit(
+            actor="operator", action="improvement_attempt", detail_json="{}"
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        reviewed_id = row.id
+    policy["problem_issues"] = {
+        "improvement_review": {
+            "through_audit_id": reviewed_id,
+            "reason": "reviewed trial",
+        }
+    }
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    with Session(db) as session:
+        stored = json.loads(session.get(FactoryControl, "factory").policy_json)
+        assert (
+            stored["problem_issues"]["improvement_review"]["through_audit_id"]
+            == reviewed_id
+        )
+
+
 def stopped_pause(policy):
     from factory.orchestration import factory_decisions as decisions, factory_pause
 
