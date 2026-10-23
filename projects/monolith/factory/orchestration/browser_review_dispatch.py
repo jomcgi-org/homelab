@@ -62,6 +62,46 @@ def verify_review_preflight(
         raise EvidenceError("invalid authoritative workspace inventory counts")
 
 
+def verify_stored_review_preflight(
+    path: str, artifact_blob: bytes | None, digest: str
+) -> None:
+    """Bind both completion readers to one exact durable review turn.
+
+    Artifact paths are globally scoped to factory task/node/attempt identities.
+    Ambiguous paths cannot borrow another session's successful preflight.
+    """
+    if artifact_blob is None:
+        raise EvidenceError("browser review requires stored artifact bytes")
+    with Session(get_engine()) as db:
+        turns = db.exec(
+            select(AgentTurn).where(AgentTurn.artifact_path == path).limit(2)
+        ).all()
+        if len(turns) != 1:
+            raise EvidenceError("browser review artifact path is missing or ambiguous")
+        turn = turns[0]
+        if (
+            turn.seq != 1
+            or turn.artifact_outcome != "ok"
+            or turn.artifact_blob is None
+            or bytes(turn.artifact_blob) != bytes(artifact_blob)
+        ):
+            raise EvidenceError("browser review artifact bytes or turn mismatch")
+        owner = db.get(AgentSession, turn.session_id)
+        if owner is None:
+            raise EvidenceError("browser review artifact has no owner")
+        parts = owner.local_session_id.split(":")
+        if (
+            len(parts) != 4
+            or parts[0] != "factory"
+            or not parts[2].startswith("review_")
+            or owner.node_key != parts[2]
+            or str(owner.node_attempt) != parts[3]
+            or path != f".factory/{parts[1]}/{parts[2]}-{parts[3]}.json"
+        ):
+            raise EvidenceError("browser review artifact owner identity mismatch")
+        verify_review_preflight(owner.workspace_handoff_json, turn.usage_json, digest)
+
+
 def capture_dependency(node: dict, runs: list[dict]) -> dict | None:
     """A review may consume one exact successful capture dependency."""
     if not node["node_key"].startswith("review_"):
