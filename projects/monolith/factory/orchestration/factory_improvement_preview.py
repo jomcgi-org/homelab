@@ -100,16 +100,15 @@ def quota_decisions(
             result["reason"] = "quota_blocked"
             continue
         pacing = view.get("pacing")
-        if pacing is not None:
-            if not isinstance(pacing, dict) or pacing.get("state") not in (
-                "on_pace",
-                "use_more",
-            ):
-                result["reason"] = "broker_pacing_not_permissive"
-                result["pacing_state"] = (
-                    pacing.get("state") if isinstance(pacing, dict) else None
-                )
-                continue
+        if pacing is not None and (
+            not isinstance(pacing, dict)
+            or pacing.get("state") not in ("on_pace", "use_more")
+        ):
+            result["reason"] = "broker_pacing_not_permissive"
+            result["pacing_state"] = (
+                pacing.get("state") if isinstance(pacing, dict) else None
+            )
+            continue
         windows = view.get("windows")
         if not isinstance(windows, list) or not 1 <= len(windows) <= 16:
             continue
