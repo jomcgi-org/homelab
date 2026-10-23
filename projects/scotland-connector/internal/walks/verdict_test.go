@@ -318,10 +318,10 @@ func TestCloudAdviceFeasibleClearing(t *testing.T) {
 			w.good = DefaultTest.filter(w.Hours)
 			d := ds.DayFor(w, LocalDay(base), tc.now)
 			a := w.Assess(d, ds.HourlyUntil)
-			if strings.Contains(a.Why, "Prefer starting") != tc.prefer || !strings.Contains(a.Why, "does not establish cloud base or summit visibility") {
+			if strings.Contains(a.Why, "Prefer ") != tc.prefer || strings.Contains(a.Why, "cloud base") {
 				t.Fatalf("%+v", a)
 			}
-			if tc.prefer && !strings.Contains(a.Why, "Prefer starting at 11:00") {
+			if tc.prefer && !strings.Contains(a.Why, "Prefer 11:00") {
 				t.Fatal(a.Why)
 			}
 			if tc.unknown && strings.Contains(a.Why, "fog up to") {
@@ -332,6 +332,76 @@ func TestCloudAdviceFeasibleClearing(t *testing.T) {
 	// Legacy missing values must not become clear skies.
 	a := assessDay(t, 2, 0, 1, 2)
 	if strings.Contains(a.Why, "low cloud") || strings.Contains(a.Why, "fog") {
+		t.Fatal(a.Why)
+	}
+}
+
+// Synthetic route profiles: ascent is not summit elevation. Low cloud alone
+// must not delay a low-relief walk; local fog can justify waiting there.
+func TestCloudTimingRouteProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		ascent          int
+		length          float64
+		fog, unknownLow bool
+		want            bool
+		reason          string
+	}{
+		{"urban cloud only", 50, 4, false, false, false, ""},
+		{"urban fog", 50, 4, true, false, true, "less fog"},
+		{"urban fog unknown cloud", 50, 4, true, true, true, "less fog"},
+		{"substantial climb", 990, 12, false, false, true, "less low cloud/fog"},
+		{"ascent boundary", 500, 12.5, false, false, true, "less low cloud/fog"},
+		{"below ascent boundary", 499, 12, false, false, false, ""},
+		{"rolling long route", 600, 20, false, false, false, ""},
+		{"unknown length", 600, 0, false, false, false, ""},
+		{"hill unknown cloud", 990, 12, true, true, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 2, 0, 0, 1, 2, 3, 4, 5)))
+			w := &ds.Walks[0]
+			w.AscentM = tc.ascent
+			w.LengthKm = tc.length
+			for i := range w.Hours {
+				cover := float32(90)
+				if i >= 3 {
+					cover = 10
+				}
+				w.Hours[i].LowCloudPct = cover
+				w.Hours[i].FogPct = 0
+				if tc.fog {
+					w.Hours[i].FogPct = cover
+				}
+				if tc.unknownLow {
+					w.Hours[i].LowCloudPct = nan
+				}
+			}
+			w.good = DefaultTest.filter(w.Hours)
+			a := w.Assess(ds.DayFor(w, LocalDay(base), base), ds.HourlyUntil)
+			if strings.Contains(a.Why, "Prefer ") != tc.want || tc.want && !strings.Contains(a.Why, tc.reason) {
+				t.Fatal(a.Why)
+			}
+			if a.Verdict != verdict.Go {
+				t.Fatal(a)
+			}
+			if strings.Contains(a.Why, "known)") || len(a.Why) > 340 {
+				t.Fatalf("verbose (%d): %s", len(a.Why), a.Why)
+			}
+		})
+	}
+}
+
+func TestCloudKnownCountsOnlyForPartialCoverage(t *testing.T) {
+	ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 2, 0, 0, 1, 2, 3)))
+	w := &ds.Walks[0]
+	for i := range w.Hours {
+		w.Hours[i].LowCloudPct = 80
+		w.Hours[i].FogPct = nan
+	}
+	w.Hours[0].LowCloudPct = nan
+	w.good = DefaultTest.filter(w.Hours)
+	a := w.Assess(ds.DayFor(w, LocalDay(base), base), ds.HourlyUntil)
+	if !strings.Contains(a.Why, "low cloud up to 80% (3 of 4 qualifying hours known)") || strings.Contains(a.Why, "fog up to") {
 		t.Fatal(a.Why)
 	}
 }

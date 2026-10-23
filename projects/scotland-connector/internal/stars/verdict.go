@@ -203,16 +203,38 @@ func MoonAdvice(lat, lon float64, night int32, now time.Time) string {
 	if !from.Before(rise) {
 		return prefix + " No sunset-to-sunrise interval remains for this night."
 	}
-	total, up := 0, 0
+
+	total, up := rise.Sub(from), time.Duration(0)
 	for at := from; at.Before(rise); at = at.Add(10 * time.Minute) {
-		total++
+		end := at.Add(10 * time.Minute)
+		if end.After(rise) {
+			end = rise
+		}
 		if astro.MoonAltitude(at, lat, lon) > 0 {
-			up++
+			up += end.Sub(at)
 		}
 	}
-	prefix += fmt.Sprintf(" At ten-minute checks between %s and %s, the moon is above the horizon at %d of %d samples (independent of cloud).", from.In(london).Format("Mon 15:04 MST"), rise.In(london).Format("Mon 15:04 MST"), up, total)
+	period := "night"
+	if now.After(set) {
+		period = "remaining night"
+	}
+	prefix += " " + moonDuration(up, total, period) + fmt.Sprintf(" (%s to %s).", from.In(london).Format("Mon 15:04 MST"), rise.In(london).Format("Mon 15:04 MST"))
+
 	if lit >= 0.8 && up > 0 {
 		prefix += " Bright moonlight limits faint objects while it is up; lunar and planetary viewing can still be worthwhile if skies clear."
 	}
 	return prefix
+}
+
+func moonDuration(up, total time.Duration, period string) string {
+	if up == 0 {
+		return "The moon is expected below the horizon for the " + period
+	}
+	extent := "for part of the " + period
+	if up == total {
+		extent = "all " + period
+	} else if float64(up)/float64(total) >= 0.9 {
+		extent = "almost all " + period
+	}
+	return fmt.Sprintf("The moon is up %s, about %.1f of %.1f h", extent, up.Hours(), total.Hours())
 }

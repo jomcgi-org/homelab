@@ -215,15 +215,15 @@ func (w *Walk) cloudAdvice(d Day, a Assessment) string {
 	}
 	parts := []string{}
 	if knownLow > 0 {
-		parts = append(parts, fmt.Sprintf("low cloud up to %.0f%% (%d of %d qualifying hours known)", low, knownLow, b.GoodHours))
+		parts = append(parts, cloudCover("low cloud", low, knownLow, b.GoodHours))
 	}
 	if knownFog > 0 {
-		parts = append(parts, fmt.Sprintf("fog up to %.0f%% (%d of %d qualifying hours known)", fog, knownFog, b.GoodHours))
+		parts = append(parts, cloudCover("fog", fog, knownFog, b.GoodHours))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	advice := " At the start point: " + strings.Join(parts, ", ") + ". This does not establish cloud base or summit visibility."
+	advice := " At the start point: " + strings.Join(parts, ", ") + "."
 	if a.StartFrom.IsZero() || w.DurationH <= 0 {
 		return advice
 	}
@@ -231,6 +231,7 @@ func (w *Walk) cloudAdvice(d Day, a Assessment) string {
 	if !ok {
 		return advice
 	}
+	hill := w.SubstantialClimb()
 	score := func(start time.Time) (float64, bool) {
 		if start.Before(rise) || start.Add(time.Duration(w.DurationH*float64(time.Hour))).After(set) {
 			return 0, false
@@ -239,10 +240,14 @@ func (w *Walk) cloudAdvice(d Day, a Assessment) string {
 		count := int(math.Ceil(w.DurationH))
 		for i := 0; i < count; i++ {
 			h, exists := byTime[start.Add(time.Duration(i)*time.Hour).Unix()]
-			if !exists || !Known(h.LowCloudPct) || !Known(h.FogPct) {
+			if !exists || !Known(h.FogPct) || hill && !Known(h.LowCloudPct) {
 				return 0, false
 			}
-			total += float64(max(h.LowCloudPct, h.FogPct))
+			cover := h.FogPct
+			if hill {
+				cover = max(cover, h.LowCloudPct)
+			}
+			total += float64(cover)
 		}
 		return total / float64(count), true
 	}
@@ -261,7 +266,27 @@ func (w *Walk) cloudAdvice(d Day, a Assessment) string {
 		}
 	}
 	if initial-bestScore >= 20 {
-		advice += fmt.Sprintf(" Prefer starting at %s for lower forecast low cloud/fog across the full %.1f h walk, within this start window; clearing is not guaranteed.", local(best), w.DurationH)
+		reason := "fog"
+		if hill {
+			reason = "low cloud/fog"
+		}
+		advice += fmt.Sprintf(" Prefer %s for less %s over the %.1f h walk; clearing is not guaranteed.", local(best), reason, w.DurationH)
 	}
 	return advice
+}
+
+// SubstantialClimb is a conservative route-profile proxy, not a terrain label
+// or summit elevation. Requiring both 500 m total ascent and 40 m per km
+// avoids treating long gently rolling urban routes as hill days. The snapshot
+// has neither terrain categories nor maximum elevation.
+func (w *Walk) SubstantialClimb() bool {
+	return w.AscentM >= 500 && w.LengthKm > 0 && float64(w.AscentM)/w.LengthKm >= 40
+}
+
+func cloudCover(kind string, cover float32, known, total int) string {
+	phrase := fmt.Sprintf("%s up to %.0f%%", kind, cover)
+	if known < total {
+		phrase += fmt.Sprintf(" (%d of %d qualifying hours known)", known, total)
+	}
+	return phrase
 }

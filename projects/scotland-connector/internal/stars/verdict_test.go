@@ -132,7 +132,7 @@ func TestCloudyMoonGeometryIndependentOfForecast(t *testing.T) {
 		ds := &Dataset{HourlyUntil: now.Add(72 * time.Hour)}
 		site := &Site{Lat: 57, Lon: -4}
 		a := ds.AssessNight(site, &NightWindow{}, night, now, nil)
-		if a.Verdict != verdict.No || !strings.Contains(a.Why, "Moon illumination") || !strings.Contains(a.Why, "above the horizon at") || strings.Contains(a.Why, "the moon below the horizon") {
+		if a.Verdict != verdict.No || !strings.Contains(a.Why, "Moon illumination") || !strings.Contains(a.Why, "The moon is up") || strings.Contains(a.Why, "the moon below the horizon") {
 			t.Fatalf("%s: %+v", date, a)
 		}
 		if date == "2026-10-24" && (!strings.Contains(a.Why, "BST") || !strings.Contains(a.Why, "GMT")) {
@@ -150,5 +150,32 @@ func TestCloudyMoonGeometryIndependentOfForecast(t *testing.T) {
 		if a = ds.AssessNight(site, &NightWindow{}, night, now, nil); a.Verdict != verdict.Unknown {
 			t.Fatal(a)
 		}
+	}
+}
+
+func TestMoonDurationWording(t *testing.T) {
+	for _, tc := range []struct {
+		up, total time.Duration
+		want      string
+	}{
+		{0, 14 * time.Hour, "below the horizon"},
+		{14 * time.Hour, 14 * time.Hour, "up all night"},
+		{800 * time.Minute, 860 * time.Minute, "up almost all night"},
+		{6 * time.Hour, 14 * time.Hour, "up for part of the night"},
+	} {
+		got := moonDuration(tc.up, tc.total, "night")
+		if !strings.Contains(got, tc.want) || strings.Contains(got, "samples") || len(got) > 100 {
+			t.Fatal(got)
+		}
+	}
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	night := NightDay(now.Add(6 * time.Hour))
+	advice := MoonAdvice(57, -4, night, now)
+	if !strings.Contains(advice, "almost all night") || strings.Contains(advice, "samples") || len(advice) > 350 {
+		t.Fatal(advice)
+	}
+	late := now.Add(12 * time.Hour)
+	if got := MoonAdvice(57, -4, night, late); !strings.Contains(got, "remaining night") {
+		t.Fatal(got)
 	}
 }
