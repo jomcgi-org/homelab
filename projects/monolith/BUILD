@@ -2382,6 +2382,13 @@ py_test(
 )
 
 py_test(
+    name = "factory_browser_evidence_test",
+    srcs = ["factory/orchestration/browser_evidence_test.py"],
+    imports = ["."],
+    deps = [":pkg_swarm"],
+)
+
+py_test(
     name = "swarm_turn_artifact_test",
     srcs = ["factory/orchestration/turn_artifact_test.py"],
     imports = ["."],
