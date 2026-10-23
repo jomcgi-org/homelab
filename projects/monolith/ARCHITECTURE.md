@@ -1994,16 +1994,19 @@ by trust in the guest.
 - `/app/stars`: astronomy forecasts and historical climatology heatmaps. (see: /projects/monolith/stars/router.py)
 - `/app/ships`: current and historical maritime tracks and heat cells. (see: /projects/monolith/ships/router.py)
 - `/app/wc2026`: cached dynamic tournament summary and odds data. (see: /projects/monolith/worldcup/router.py)
-- `/app/campsites`: cached recreation-area search with weather-enriched snapshots. (see: /projects/monolith/campsites/router.py)
 - `/app/grimoire`: public knowledge graph, entity explorer, adventure index, and open-book reader with extracted illustrations. (see: /projects/monolith/grimoire/router_public.py)
 - `/app/notes`: public knowledge graph browsing, including note links from the factory context viewer. Notes chat is retired.
 - `/app/grimoire/chat`: Turnstile-gated Grimoire RAG chat. (see: /projects/monolith/grimoire_chat/router.py)
-- `/app/dr-jobs`: NHS job search over the scraped listings feed. (see: /projects/monolith/dr_jobs/router.py)
 - `/app/llm-leaderboard`: model-bench results scatter. (see: /projects/monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte)
 - `/ember/firecracker`: recorded restore timings and a local replay. The retired Bazel and Postgres exhibit URLs redirect to this replay; `/ember/agents` remains an explainer.
 - `/artifact/{id}`: agent-built HTML served from object storage in a sandboxed opaque origin. (see: /projects/monolith/artifact/router.py)
 - `/blog`, `/docs`, `/engineering`: the posts, the published repository documents (this file among them), and the engineering index. (see: /projects/monolith/frontend/src/routes/public/docs)
 - `/agents` (private hostname): the agent console of section 4. (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
+
+The obsolete `/app/dr-jobs` and `/app/campsites` frontend pages are retired.
+Their former URLs, including query-string bookmarks, use the root path-aware
+404 page. They have no replacement destination. Their backend APIs, records,
+refresh jobs and backups remain independent of this frontend retirement.
 
 Public application responses follow the anonymous cache pattern established by
 the platform CDN decisions, with route handlers declaring cache and ETag
