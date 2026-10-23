@@ -37,3 +37,43 @@ links stay in the fixture; no production requests or credentials are allowed.
 This tests real route components and synthetic loader data, not SvelteKit
 server routing, live API availability, or real-time revalidation. A passing
 layout check does not replace visual review of the phone and desktop images.
+
+## Complete sheet layout comparisons
+
+`sheet-vite.config.js` adds a separate, synthetic-only entry for blog index,
+TOC, single-column and demo posts, every public factory detail consumer, and
+the private updates journal. It mounts the production root and tier layouts,
+reset, navigation suppression and chrome. It uses the same local font as the
+older harness. The root error boundary's preloaded reset remains represented
+by the public stylesheet import; no production loader enters the browser bundle.
+
+```sh
+pnpm exec vitest run --config factory-preview/sheet-vitest.config.js
+FACTORY_PREVIEW_SHA=$(git rev-parse HEAD) pnpm exec vite build --config factory-preview/sheet-vite.config.js
+python factory-preview/sheet_check.py --artifact sheet-fixture-preview --output sheet-evidence --label "$(git rev-parse HEAD)" --acceptance
+```
+
+The DOM target generates its invented loader records within its own test run,
+so it does not rely on another target's output. The browser suite captures
+390px and 1440px light/dark pages, including maintenance notices, long content,
+filtered and empty journals. It records computed overflow and sticky positioning
+before and after scrolling, exercises detail disclosures, checks persisted scheme
+choices opposite the OS, and advances the clock to check polling and cleanup.
+All network access other than the local static artifact is denied. The fake
+fetch function accepts only known synthetic read endpoints.
+
+Linux CI builds the same head-owned harness against the PR base source using
+`SHEET_SOURCE_ROOT`, then compares the base and head screenshots and scroll
+contracts with `sheet_check.py --before ... --after ... --output ... --acceptance`.
+Visible pixel changes, changed document height and changed scroll ownership fail
+that comparison. Mobile journals also retain eight fresh-context renders: the
+unchanged base's fractional sticky/backdrop layer can rasterize text a pixel apart.
+The check requires identical geometry in all probes and an exact whole-image
+base/head match, with no masked pixels, blur removal or tolerance. The comparison
+names any matching probe pair and retains all original images and primary diffs.
+Comparator unit tests reject a one-pixel change, including when probes exist.
+Extra off-viewport columns from a previously overflowing base
+are recorded separately; the head must have no horizontal page overflow. The
+`factory-preview-evidence-<head-sha>` artifact's `sheets/` directory includes both revisions, comparisons,
+geometry and interaction screenshots. Review those images before acceptance.
+These invented fixtures are not live-host, deployment or authorized-access checks.

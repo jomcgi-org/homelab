@@ -7,6 +7,7 @@ import http.server
 import importlib.metadata
 import itertools
 import json
+import os
 import re
 import threading
 from pathlib import Path
@@ -670,3 +671,9 @@ if __name__ == "__main__":
     parser.add_argument("--expected-sha", required=True)
     args = parser.parse_args()
     check(args.artifact.resolve(), args.output.resolve(), args.expected_sha)
+    # Extend the existing Linux job and its evidence upload, without requiring
+    # a new workflow, permission, credential or production endpoint.
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        from sheet_ci_check import run as check_sheets
+
+        check_sheets(args.output.resolve() / "sheets", args.expected_sha)

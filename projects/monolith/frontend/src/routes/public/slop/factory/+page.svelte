@@ -274,7 +274,7 @@
   path="/slop/factory"
 />
 
-<main class="td factory-page">
+<main class="td sheet factory-page">
   <div class="frame">
     <header class="masthead">
       <h1 class="sr-only">Ember Software Factory</h1>
