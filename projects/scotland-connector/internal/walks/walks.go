@@ -576,28 +576,28 @@ func sameHours(a, b []Hour) bool {
 
 // longestRun is _longest_good_run: the longest run of good hours allowing
 // one single-hour gap, as indices into hours (sorted, one day, unique hours).
+// Bounds are inclusive; tied runs keep the earliest slot. A second gap slides
+// the start past the previous gap, while two or more missing hours break it.
 func longestRun(hours []Hour) (count, start, end int) {
 	if len(hours) == 0 {
 		return 0, 0, 0
 	}
-	best, bestStart, bestEnd := 0, 0, 0
-	run, runStart, gapUsed := 1, 0, false
+	best, bestStart, bestEnd := 1, 0, 0
+	runStart, gapAfter := 0, -1
 	for i := 1; i < len(hours); i++ {
 		switch delta := (hours[i].Unix - hours[i-1].Unix) / 3600; {
 		case delta == 1:
-			run++
-		case delta == 2 && !gapUsed:
-			run++
-			gapUsed = true
-		default:
-			if run > best {
-				best, bestStart, bestEnd = run, runStart, i-1
+		case delta == 2:
+			if gapAfter >= 0 {
+				runStart = gapAfter
 			}
-			run, runStart, gapUsed = 1, i, false
+			gapAfter = i
+		default:
+			runStart, gapAfter = i, -1
 		}
-	}
-	if run > best {
-		best, bestStart, bestEnd = run, runStart, len(hours)-1
+		if run := i - runStart + 1; run > best {
+			best, bestStart, bestEnd = run, runStart, i
+		}
 	}
 	return best, bestStart, bestEnd
 }

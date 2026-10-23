@@ -82,28 +82,26 @@ def _longest_good_run(hour_indices: list[int]) -> int:
     walk's daylight band, so an interior missing hour means bad weather, not
     darkness: bridging exactly one such gap implements "I'll accept one bad hour
     in the slot". The return value counts GOOD hours only; the tolerated bad hour
-    is not counted toward the run length. A gap of two or more missing hours, or a
-    second single-hour gap, ends the run.
+    is not counted toward the run length. A gap of two or more missing hours ends
+    the run; a second single-hour gap slides its start past the previous gap.
     """
     if not hour_indices:
         return 0
 
-    best = 0
-    run = 1  # good hours in the current run (the first hour starts it)
-    gap_used = False
+    best = 1
+    start = 0
+    gap_after = None  # index of the first good hour after the current gap
     for i in range(1, len(hour_indices)):
         delta = hour_indices[i] - hour_indices[i - 1]
-        if delta == 1:
-            run += 1
-        elif delta == 2 and not gap_used:
-            # One missing hour: bridge it once, spending the bad-hour allowance.
-            run += 1
-            gap_used = True
-        else:
-            best = max(best, run)
-            run = 1
-            gap_used = False
-    return max(best, run)
+        if delta == 2:
+            if gap_after is not None:
+                start = gap_after
+            gap_after = i
+        elif delta != 1:
+            start = i
+            gap_after = None
+        best = max(best, i - start + 1)
+    return best
 
 
 def _doable_days(hours: list[datetime], duration_h: float) -> list[str]:
