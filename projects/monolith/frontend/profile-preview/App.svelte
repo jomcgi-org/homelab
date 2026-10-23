@@ -14,6 +14,7 @@
         "/public/cv": "cv",
         "/public/engineering": "engineering",
         "/public/ember": "ember",
+        "/public/ember/firecracker": "firecracker",
         "/public/legacy-fixture": "legacy",
       }[routed] ?? "error";
     data = {
@@ -48,9 +49,14 @@
     if (
       next.origin !== location.origin ||
       next.hash ||
-      !["/", "/cv", "/engineering", "/ember", "/legacy-fixture"].includes(
-        next.pathname,
-      )
+      ![
+        "/",
+        "/cv",
+        "/engineering",
+        "/ember",
+        "/ember/firecracker",
+        "/legacy-fixture",
+      ].includes(next.pathname)
     )
       return;
     event.preventDefault();
@@ -73,7 +79,7 @@
     >Engineering fixture</a
   ><a href="/ember">Legacy Ember fixture</a><a href="/legacy-fixture"
     >Legacy Nav fixture</a
-  >
+  ><a href="/ember/firecracker">Firecracker fixture</a>
 </nav>
 
 <style>
