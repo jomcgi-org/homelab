@@ -6,11 +6,11 @@ acceptance on the real hosts remains separate.
 """
 
 import argparse
+import json
+import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-import json
 from pathlib import Path
-import threading
 
 VIEWS = [
     "blog",
@@ -68,8 +68,9 @@ def viewport_page_capture(page, path, width):
     that raw full-page image too; geometry checks still reject head overflow.
     The comparison image contains every pixel in the viewport, at full height.
     """
-    from PIL import Image
     import hashlib
+
+    from PIL import Image
 
     geometry = page.evaluate("""() => ({width: document.documentElement.scrollWidth,
         height: document.documentElement.scrollHeight, viewport: innerHeight,
@@ -142,8 +143,9 @@ def viewport_page_capture(page, path, width):
 
 def validate_capture(path):
     """Fail closed on absent, replaced, or clipped files before review."""
-    from PIL import Image
     import hashlib
+
+    from PIL import Image
 
     manifest = json.loads(path.with_suffix(".capture.json").read_text())
     for record in manifest["images"]:
@@ -207,11 +209,14 @@ def capture(artifact, output, label, *, acceptance=False):
                         context.add_init_script(INIT_SCRIPT)
                         page = context.new_page()
                         errors, external = [], []
-                        page.on("pageerror", lambda error: errors.append(str(error)))
+                        page.on(
+                            "pageerror",
+                            lambda error, errors=errors: errors.append(str(error)),
+                        )
 
                         # Deny even layout font hints. The local font is the only
                         # font used and both revisions have identical bytes.
-                        def route(request_route):
+                        def route(request_route, external=external):
                             if request_route.request.url.startswith(
                                 f"http://127.0.0.1:{server.server_port}/"
                             ):
@@ -418,7 +423,9 @@ def capture(artifact, output, label, *, acceptance=False):
                                 probe_errors = []
                                 probe_page.on(
                                     "pageerror",
-                                    lambda error: probe_errors.append(str(error)),
+                                    lambda error, probe_errors=probe_errors: (
+                                        probe_errors.append(str(error))
+                                    ),
                                 )
                                 probe_page.route("**/*", route)
                                 probe_page.goto(url)
@@ -436,14 +443,8 @@ def capture(artifact, output, label, *, acceptance=False):
                                 ), (key, probe_errors)
                                 probes.append(name)
                                 probe_context.close()
-            scheme_checks = (
-                check_schemes(browser, server.server_port, records)
-                if acceptance
-                else []
-            )
-            behavior_checks = (
-                check_behaviors(browser, server.server_port) if acceptance else []
-            )
+            scheme_checks = check_schemes(browser, server.server_port, records)
+            behavior_checks = check_behaviors(browser, server.server_port)
             browser.close()
     finally:
         server.shutdown()

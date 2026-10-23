@@ -1,15 +1,14 @@
 """The repeatability check requires exact pixels, not a visual tolerance."""
 
-from contextlib import redirect_stdout
 import io
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 
 from PIL import Image
-
 from sheet_check import compare, validate_capture, viewport_page_capture
 
 
