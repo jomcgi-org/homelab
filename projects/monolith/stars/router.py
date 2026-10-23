@@ -177,7 +177,12 @@ def _build_sites_from_db(
         site.id: site
         for site in session.exec(
             select(
-                Site.id, Site.name, Site.lat, Site.lon, Site.altitude_m, Site.lp_zone,
+                Site.id,
+                Site.name,
+                Site.lat,
+                Site.lon,
+                Site.altitude_m,
+                Site.lp_zone,
                 Site.forecast_fetched_at,
             )
         ).all()
@@ -201,8 +206,11 @@ def _build_sites_from_db(
     # web pod and the 512 MiB materializer job.
     by_site: dict[str, list[tuple[datetime, float, float]]] = {}
     max_fetched = max(
-        (as_utc(site.forecast_fetched_at) for site in by_id.values()
-         if site.forecast_fetched_at is not None),
+        (
+            as_utc(site.forecast_fetched_at)
+            for site in by_id.values()
+            if site.forecast_fetched_at is not None
+        ),
         default=None,
     )
     for site_id, hour_time, cloud, sun, fetched_at in rows:

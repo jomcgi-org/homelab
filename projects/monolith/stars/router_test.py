@@ -56,11 +56,13 @@ def _seed_site(session, site_id):
 
 def test_serialized_sites_keep_empty_success_and_legacy_visibility(client, session):
     old = FETCHED - timedelta(days=1)
-    session.add_all([
-        Site(id="fresh", lat=57, lon=-4, forecast_fetched_at=FETCHED),
-        Site(id="stale", lat=57, lon=-4, forecast_fetched_at=old),
-        Site(id="never", lat=57, lon=-4),
-    ])
+    session.add_all(
+        [
+            Site(id="fresh", lat=57, lon=-4, forecast_fetched_at=FETCHED),
+            Site(id="stale", lat=57, lon=-4, forecast_fetched_at=old),
+            Site(id="never", lat=57, lon=-4),
+        ]
+    )
     session.commit()
     response = client.get("/api/stars/sites")
     assert response.status_code == 200

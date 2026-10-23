@@ -36,9 +36,16 @@ def test_fetch_boundary_keeps_empty_success_and_omits_failure():
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            result = await forecast_module.fetch_all_windows(client, [("empty", 57.0, -4), ("failed", 58.0, -4)], NOW)
+            result = await forecast_module.fetch_all_windows(
+                client, [("empty", 57.0, -4), ("failed", 58.0, -4)], NOW
+            )
             assert result == {"empty": []}
-            assert await forecast_module.fetch_all_windows(client, [("failed", 58.0, -4)], NOW) == {}
+            assert (
+                await forecast_module.fetch_all_windows(
+                    client, [("failed", 58.0, -4)], NOW
+                )
+                == {}
+            )
 
     asyncio.run(run())
 

@@ -23,10 +23,18 @@ from stars.models import Site, SiteHour
 def test_entity_success_time_includes_empty_and_survives_prune(session, monkeypatch):
     now = datetime(2026, 10, 23, 14, tzinfo=timezone(timedelta(hours=2)))
     old = now.astimezone(timezone.utc) - timedelta(days=1)
-    session.add_all([Site(id=key, lat=57, lon=-4, forecast_fetched_at=old) for key in ("full", "empty", "failed")])
+    session.add_all(
+        [
+            Site(id=key, lat=57, lon=-4, forecast_fetched_at=old)
+            for key in ("full", "empty", "failed")
+        ]
+    )
     session.add(Site(id="never", lat=57, lon=-4))
     session.commit()
-    assert jobs._write_sites(session, {"full": [_hour(now.isoformat())], "empty": []}, now) == 1
+    assert (
+        jobs._write_sites(session, {"full": [_hour(now.isoformat())], "empty": []}, now)
+        == 1
+    )
     session.commit()
     session.expire_all()
     for key in ("full", "empty"):
