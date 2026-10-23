@@ -109,6 +109,11 @@
 
   /* The index keeps its smaller headlines and continuous ruled editions.
      Its date rail is a grouped journal index, not the post's TOC strip. */
+  .blog-page :global(:focus-visible) {
+    /* Preserve the inherited public reset's focus shape, not a new radius. */
+    border-radius: calc(var(--radius) * 0.75);
+  }
+
   .blog-page .ed-head {
     display: block;
     gap: normal;

@@ -382,6 +382,33 @@
 <style>
   /* The post retains its panel-per-section rhythm, first-viewport landing
      and nested numbered TOC. The shared strip has different mobile spacing. */
+  .post-page :global(:focus-visible) {
+    /* Retain the public reset's focus shape with its existing radius token. */
+    border-radius: calc(var(--radius) * 0.75);
+  }
+
+  /* HTML prose and the demo selector previously inherited the public reset's
+     blue ring. TOC, Trail and embedded controls keep their own ring colours. */
+  :global(.post-page .post-body a:focus-visible),
+  :global(.post-page .replay a:focus-visible),
+  .post-page .demo-switch button:focus-visible {
+    outline-color: var(--blue);
+  }
+
+  .post-page :global(.replay input[type="range"]) {
+    /* The range retains its native control colour rather than sheet ink. */
+    color: revert;
+  }
+
+  /* The conformance replay already owns two smaller control shapes. Its
+     topology identifies that embedded figure without changing other replays. */
+  .post-page :global(.replay:has(.topo) button:focus-visible) {
+    border-radius: calc(var(--radius) / 4);
+  }
+  .post-page :global(.replay:has(.topo) button.cell:focus-visible) {
+    border-radius: 0;
+  }
+
   .post-page .frame {
     position: static;
   }

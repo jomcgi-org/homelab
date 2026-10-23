@@ -65,15 +65,18 @@ fetch function accepts only known synthetic read endpoints.
 Linux CI builds the same head-owned harness against the PR base source using
 `SHEET_SOURCE_ROOT`, then compares the base and head screenshots and scroll
 contracts with `sheet_check.py --before ... --after ... --output ... --acceptance`.
-Visible pixel changes, changed document height and changed scroll ownership fail
+Visible pixel changes, changed document height, changed scroll ownership and
+changed settled keyboard-focus treatment fail
 that comparison. Mobile journals also retain eight fresh-context renders: the
 unchanged base's fractional sticky/backdrop layer can rasterize text a pixel apart.
 The check requires identical geometry in all probes and an exact whole-image
 base/head match, with no masked pixels, blur removal or tolerance. The comparison
 names any matching probe pair and retains all original images and primary diffs.
 Comparator unit tests reject a one-pixel change, including when probes exist.
-Extra off-viewport columns from a previously overflowing base
-are recorded separately; the head must have no horizontal page overflow. The
+Both comparison images use the exact viewport width and full document height,
+so an overflowing baseline does not silently expand Chromium's raster surface.
+Its raw expanded full-page capture is retained as `*-overflow.png`, and geometry
+still records those extra columns; the head must have no horizontal page overflow. The
 `factory-preview-evidence-<head-sha>` artifact's `sheets/` directory includes both revisions, comparisons,
 geometry and interaction screenshots. Review those images before acceptance.
 These invented fixtures are not live-host, deployment or authorized-access checks.

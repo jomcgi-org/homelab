@@ -61,6 +61,27 @@ class QuietHandler(SimpleHTTPRequestHandler):
         pass
 
 
+def viewport_page_capture(page, path, width):
+    """Keep the raster surface identical without changing document styles.
+
+    A baseline overflow must not expand Chromium's screenshot surface. Keep
+    that raw full-page image too; geometry checks still reject head overflow.
+    The comparison image contains every pixel in the viewport, at full height.
+    """
+    height = page.evaluate("document.documentElement.scrollHeight")
+    if page.evaluate("document.documentElement.scrollWidth") > width:
+        page.screenshot(
+            path=str(path.with_stem(path.stem + "-overflow")),
+            full_page=True,
+            animations="disabled",
+        )
+    page.screenshot(
+        path=str(path),
+        clip={"x": 0, "y": 0, "width": width, "height": height},
+        animations="disabled",
+    )
+
+
 def capture(artifact, output, label, *, acceptance=False):
     from playwright.sync_api import sync_playwright
 
@@ -122,11 +143,7 @@ def capture(artifact, output, label, *, acceptance=False):
                             page.wait_for_selector(".replay")
                         page.wait_for_timeout(100)
                         geometry = page.evaluate(GEOMETRY)
-                        page.screenshot(
-                            path=str(output / f"{key}.png"),
-                            full_page=True,
-                            animations="disabled",
-                        )
+                        viewport_page_capture(page, output / f"{key}.png", width)
                         opening = {
                             "top": page.evaluate("scrollY"),
                             "geometry": geometry,
@@ -223,6 +240,33 @@ def capture(artifact, output, label, *, acceptance=False):
                                 full_page=True,
                                 animations="disabled",
                             )
+                        page.keyboard.press("Tab")
+                        checks["focus"] = page.evaluate("""async () => {
+                          const nodes = [...document.querySelectorAll('main a[href],main button,main summary,main input')]
+                            .filter(node => node.getClientRects().length && !node.disabled);
+                          const checks = [];
+                          for (const node of nodes) {
+                            node.focus({preventScroll:true});
+                            // Flush the transition's start, then wait for its
+                            // final rendered value, even in reduced motion.
+                            getComputedStyle(node).outline;
+                            await new Promise(requestAnimationFrame);
+                            await new Promise(requestAnimationFrame);
+                            await Promise.all(node.getAnimations().map(animation => animation.finished));
+                            const style = getComputedStyle(node);
+                            checks.push({tag:node.tagName, label:(node.getAttribute('aria-label') || node.textContent).trim().slice(0,60),
+                              visible:node.matches(':focus-visible'), radius:style.borderRadius,
+                              outline:style.outline, offset:style.outlineOffset});
+                          }
+                          nodes[0]?.focus({preventScroll:true});
+                          return checks;
+                        }""")
+                        if checks["focus"]:
+                            page.screenshot(
+                                path=str(output / f"{key}-focus.png"),
+                                full_page=True,
+                                animations="disabled",
+                            )
                         assert not errors, (key, errors)
                         assert not page.evaluate("window.__fixtureUnexpectedFetches"), (
                             key
@@ -278,11 +322,7 @@ def capture(artifact, output, label, *, acceptance=False):
                                     "repeatability geometry changed",
                                 )
                                 name = f"{key}-repeat-{repeat}.png"
-                                probe_page.screenshot(
-                                    path=str(output / name),
-                                    full_page=True,
-                                    animations="disabled",
-                                )
+                                viewport_page_capture(probe_page, output / name, width)
                                 assert not probe_errors and not probe_page.evaluate(
                                     "window.__fixtureUnexpectedFetches"
                                 ), (key, probe_errors)
@@ -481,6 +521,15 @@ def compare(before, after, output, *, acceptance=False):
                 if match:
                     break
         if acceptance:
+            if old.get("checks", {}).get("focus") != new.get("checks", {}).get("focus"):
+                regressions.append(
+                    [
+                        key,
+                        "keyboard focus treatment changed",
+                        old.get("checks", {}).get("focus"),
+                        new.get("checks", {}).get("focus"),
+                    ]
+                )
             if common is not None and match is None:
                 regressions.append([key, "visible pixel regression", common])
             if left.height != right.height:

@@ -6,10 +6,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock, call
 
 from PIL import Image
 
-from sheet_check import compare
+from sheet_check import compare, viewport_page_capture
 
 
 class ComparisonTest(unittest.TestCase):
@@ -64,6 +65,27 @@ class ComparisonTest(unittest.TestCase):
     def test_identical_pixels_pass(self):
         self.assertEqual(self.compare()["regressions"], [])
 
+    def test_overflow_keeps_raw_image_and_equal_viewport_capture_surface(self):
+        page = Mock()
+        page.evaluate.side_effect = [1255, 396]
+        path = self.output / "blog.png"
+        viewport_page_capture(page, path, 390)
+        self.assertEqual(
+            page.screenshot.call_args_list,
+            [
+                call(
+                    path=str(self.output / "blog-overflow.png"),
+                    full_page=True,
+                    animations="disabled",
+                ),
+                call(
+                    path=str(path),
+                    clip={"x": 0, "y": 0, "width": 390, "height": 1255},
+                    animations="disabled",
+                ),
+            ],
+        )
+
     def test_single_changed_pixel_fails(self):
         image = Image.open(self.after / "journal.png")
         image.putpixel((10, 10), (0, 0, 0))
@@ -94,6 +116,14 @@ class ComparisonTest(unittest.TestCase):
     def test_document_height_change_fails(self):
         Image.new("RGB", (20, 21), "white").save(self.after / "journal.png")
         with self.assertRaisesRegex(AssertionError, "document height changed"):
+            self.compare()
+
+    def test_identical_pixels_do_not_excuse_keyboard_focus_change(self):
+        path = self.after / "results.json"
+        result = json.loads(path.read_text())
+        result["captures"][0]["checks"] = {"focus": [{"radius": "0px"}]}
+        path.write_text(json.dumps(result))
+        with self.assertRaisesRegex(AssertionError, "keyboard focus treatment changed"):
             self.compare()
 
 

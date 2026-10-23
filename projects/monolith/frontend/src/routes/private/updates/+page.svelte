@@ -388,6 +388,10 @@
     padding: clamp(3.25rem, 5vh, 3.75rem) clamp(1.5em, 5vw, 4.5em) 6em;
     font-size: 16px;
   }
+  .updates-page :global(:focus-visible) {
+    /* Keep the inherited public-reset focus shape during this migration. */
+    border-radius: calc(var(--radius) * 0.75);
+  }
   .updates-page .ed-head {
     display: block;
     gap: normal;

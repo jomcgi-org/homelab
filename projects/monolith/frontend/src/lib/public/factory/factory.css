@@ -19,7 +19,15 @@
 }
 
 .factory-page.sheet :focus-visible {
+  /* Preserve the inherited reset's shape using its existing radius token. */
+  border-radius: calc(var(--radius) * 0.75);
   outline-offset: 2px;
+}
+
+/* The fitted frame must not override these components' existing inset rings. */
+.factory-page.sheet .crumb:focus-visible,
+.factory-page.sheet button.scheme:focus-visible {
+  outline-offset: -2px;
 }
 
 .factory-page.sheet .frame {
