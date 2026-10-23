@@ -66,6 +66,25 @@ class ComparisonTest(unittest.TestCase):
     def test_identical_pixels_pass(self):
         self.assertEqual(self.compare()["regressions"], [])
 
+    def test_empty_image_manifest_cannot_claim_coverage(self):
+        path = self.output / "missing.png"
+        path.with_suffix(".capture.json").write_text(
+            json.dumps(
+                {
+                    "document": {
+                        "height": 6352,
+                        "width": 390,
+                        "viewportWidth": 390,
+                        "viewport": 900,
+                    },
+                    "images": [],
+                    "segments": [],
+                }
+            )
+        )
+        with self.assertRaisesRegex(AssertionError, "missing required"):
+            validate_capture(path)
+
     def test_single_changed_pixel_fails(self):
         image = Image.open(self.after / "journal.png")
         image.putpixel((10, 10), (0, 0, 0))

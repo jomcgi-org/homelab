@@ -73,8 +73,10 @@ def viewport_page_capture(page, path, width):
     from PIL import Image
 
     geometry = page.evaluate("""() => ({width: document.documentElement.scrollWidth,
-        height: document.documentElement.scrollHeight, viewport: innerHeight,
+        height: document.documentElement.scrollHeight, viewport: innerHeight, viewportWidth: innerWidth,
         x: scrollX, y: scrollY})""")
+    if geometry["viewportWidth"] != width:
+        raise AssertionError("capture viewport width mismatch")
     height = geometry["height"]
     manifest = {"document": geometry, "images": [], "segments": []}
 
@@ -148,7 +150,30 @@ def validate_capture(path):
     from PIL import Image
 
     manifest = json.loads(path.with_suffix(".capture.json").read_text())
+    document = manifest["document"]
+    expected = {
+        path.name: (document["viewportWidth"], document["height"]),
+        path.with_stem(path.stem + "-raw").name: (
+            document["width"],
+            document["height"],
+        ),
+    }
+    for index, segment in enumerate(manifest["segments"]):
+        name = path.with_stem(f"{path.stem}-segment-{index:03d}").name
+        if segment["path"] != name:
+            raise AssertionError("missing or reordered segment image")
+        expected[name] = (document["viewportWidth"], document["viewport"])
+        if segment["bottom"] != min(
+            segment["top"] + document["viewport"], document["height"]
+        ):
+            raise AssertionError("clipped segment coverage")
+    if len(manifest["images"]) != len(expected) or {
+        r["path"] for r in manifest["images"]
+    } != set(expected):
+        raise AssertionError("missing required capture images")
     for record in manifest["images"]:
+        if (record["width"], record["height"]) != expected[record["path"]]:
+            raise AssertionError("clipped evidence dimensions")
         image_path = path.parent / record["path"]
         if hashlib.sha256(image_path.read_bytes()).hexdigest() != record["sha256"]:
             raise AssertionError(f"stale evidence: {image_path}")
@@ -184,6 +209,8 @@ def validate_bundle(root, result):
     for record in records:
         key = record["key"]
         names = list(record["repeatability_images"])
+        if not names or names[0] != f"{key}.png" or len(names) != len(set(names)):
+            raise AssertionError("missing primary capture")
         if key.rsplit("-", 2)[0] in ("task", "attempt", "landing", "updates-filter"):
             names.append(f"{key}-interaction.png")
         if record["checks"].get("focus"):
@@ -203,6 +230,19 @@ def validate_bundle(root, result):
                 raise AssertionError("missing or corrupt browser trace")
     if len(result["scheme_checks"]) != 6 or len(result["behavior_checks"]) != 2:
         raise AssertionError("incomplete theme or behavior checklist")
+    for view in ("post", "overview", "updates"):
+        for scheme in ("light", "dark"):
+            for state in ("persisted", "reload"):
+                validate_capture(root / f"scheme-{view}-{scheme}-{state}.png")
+            with zipfile.ZipFile(root / f"scheme-{view}-{scheme}-trace.zip") as trace:
+                if trace.testzip() is not None:
+                    raise AssertionError("corrupt theme trace")
+    validate_capture(root / "behavior-activity-filtered.png")
+    for view in ("activity", "overview"):
+        validate_capture(root / f"behavior-{view}-polled.png")
+        with zipfile.ZipFile(root / f"behavior-{view}-trace.zip") as trace:
+            if trace.testzip() is not None:
+                raise AssertionError("corrupt behavior trace")
 
 
 def capture(artifact, output, label, *, acceptance=False):
@@ -483,8 +523,8 @@ def capture(artifact, output, label, *, acceptance=False):
                                 ), (key, probe_errors)
                                 probes.append(name)
                                 probe_context.close()
-            scheme_checks = check_schemes(browser, server.server_port, records)
-            behavior_checks = check_behaviors(browser, server.server_port)
+            scheme_checks = check_schemes(browser, server.server_port, records, output)
+            behavior_checks = check_behaviors(browser, server.server_port, output)
             browser.close()
     finally:
         server.shutdown()
@@ -508,7 +548,7 @@ def capture(artifact, output, label, *, acceptance=False):
     return result
 
 
-def check_schemes(browser, port, records):
+def check_schemes(browser, port, records, output):
     results = []
     for view in ["post", "overview", "updates"]:
         for system in ["light", "dark"]:
@@ -521,6 +561,7 @@ def check_schemes(browser, port, records):
             context.add_init_script(
                 f"if (!localStorage.getItem('td-theme')) localStorage.setItem('td-theme', '{stored}');"
             )
+            context.tracing.start(screenshots=True, snapshots=True, sources=False)
             page = context.new_page()
             page.route(
                 "**/*",
@@ -560,6 +601,9 @@ def check_schemes(browser, port, records):
                 )
                 == ground
             ), view
+            viewport_page_capture(
+                page, output / f"scheme-{view}-{system}-persisted.png", 390
+            )
             if view != "updates":
                 button = page.locator("button.scheme")
                 assert button.get_attribute("aria-label") == (
@@ -573,6 +617,9 @@ def check_schemes(browser, port, records):
                 assert (
                     page.evaluate("document.documentElement.dataset.theme") == system
                 ), view
+            viewport_page_capture(
+                page, output / f"scheme-{view}-{system}-reload.png", 390
+            )
             results.append(
                 {
                     "view": view,
@@ -582,16 +629,18 @@ def check_schemes(browser, port, records):
                     "reload_checked": view != "updates",
                 }
             )
+            context.tracing.stop(path=str(output / f"scheme-{view}-{system}-trace.zip"))
             context.close()
     return results
 
 
-def check_behaviors(browser, port):
+def check_behaviors(browser, port, output):
     results = []
     for view in ["activity", "overview"]:
         context = browser.new_context(
             viewport={"width": 390, "height": 900}, reduced_motion="reduce"
         )
+        context.tracing.start(screenshots=True, snapshots=True, sources=False)
         page = context.new_page()
         page.clock.install(time=1791028800000)
         page.route(
@@ -611,17 +660,20 @@ def check_behaviors(browser, port):
             assert "nothing matches" in page.locator("main").inner_text(), page.locator(
                 "main"
             ).inner_text()
+            viewport_page_capture(page, output / "behavior-activity-filtered.png", 390)
             page.get_by_role("searchbox", name="Search tasks").fill("")
         page.clock.fast_forward(61_000)
         assert not page.evaluate("window.__fixtureUnexpectedFetches"), view
         if view == "activity":
             assert page.evaluate("window.__fixturePolls") > 0, view
+        viewport_page_capture(page, output / f"behavior-{view}-polled.png", 390)
         page.evaluate("window.__fixtureUnmount()")
         page.wait_for_timeout(20)
         count = page.evaluate("window.__fixturePolls")
         page.clock.fast_forward(61_000)
         assert page.evaluate("window.__fixturePolls") == count, view
         results.append({"view": view, "poll_and_cleanup": True})
+        context.tracing.stop(path=str(output / f"behavior-{view}-trace.zip"))
         context.close()
     return results
 
