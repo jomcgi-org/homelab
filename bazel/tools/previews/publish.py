@@ -459,10 +459,62 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def http_route(path):
+    """Return a fixed category, never a caller-supplied path or query."""
+    prefix = f"/repos/{REPOSITORY}"
+    path = path.partition("?")[0]
+    routes = (
+        (r"/pages", "pages"),
+        (r"/actions/runs/[0-9]+", "build-run"),
+        (r"/actions/runs/[0-9]+/artifacts", "run-artifacts"),
+        (r"/actions/workflows/[^/]+", "build-workflow"),
+        (r"/actions/artifacts/[0-9]+/zip", "artifact-redirect"),
+        (r"/pulls/[0-9]+", "pull-request"),
+        (r"/git/refs?(?:/heads/[^/]+)?", "git-reference"),
+        (r"/git/blobs(?:/[^/]+)?", "git-blob"),
+        (r"/git/trees(?:/[^/]+)?", "git-tree"),
+        (r"/git/commits(?:/[^/]+)?", "git-commit"),
+        (r"/contents/.+", "repository-content"),
+        (r"/issues/(?:[0-9]+/comments|comments/[0-9]+)", "preview-comment"),
+    )
+    for pattern, category in routes:
+        if re.fullmatch(re.escape(prefix) + pattern, path):
+            return category
+    return "repository-api"
+
+
 class API:
     def __init__(self, token):
         self.token = token
         self.opener = urllib.request.build_opener(NoRedirect)
+
+    def _read(self, req, limit, route):
+        try:
+            with self.opener.open(req, timeout=60) as response:
+                return response.read(limit + 1)
+        except urllib.error.HTTPError as error:
+            method = req.get_method()
+            if method not in {
+                "GET",
+                "HEAD",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "OPTIONS",
+            }:
+                method = "OTHER"
+            status = (
+                error.code
+                if type(error.code) is int and 100 <= error.code <= 599
+                else 0
+            )
+            # Only fixed categories, allowlisted methods and numeric status.
+            # Never stringify the exception, request URL, headers or body.
+            print(
+                f"HTTP method={method} route={route} status={status}", file=sys.stderr
+            )
+            raise
 
     def request(self, path, method="GET", payload=None, limit=MAX_SITE):
         require(path.startswith("/repos/"), "unexpected API path")
@@ -479,8 +531,7 @@ class API:
                 "User-Agent": "homelab-fixture-publisher",
             },
         )
-        with self.opener.open(req, timeout=60) as response:
-            raw = response.read(limit + 1)
+        raw = self._read(req, limit, http_route(path))
         require(len(raw) <= limit, "API response exceeds limit")
         return json.loads(raw) if raw else None
 
@@ -540,8 +591,9 @@ class API:
             ),
             "unexpected artifact storage host",
         )
-        with self.opener.open(urllib.request.Request(location), timeout=60) as response:
-            raw = response.read(MAX_ARCHIVE + 1)
+        raw = self._read(
+            urllib.request.Request(location), MAX_ARCHIVE, "artifact-storage"
+        )
         require(
             len(raw) <= MAX_ARCHIVE
             and "sha256:" + hashlib.sha256(raw).hexdigest() == digest,
