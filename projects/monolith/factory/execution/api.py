@@ -5,6 +5,7 @@ Existing execution functions resolve lazily to their unchanged implementation.
 """
 
 from factory.execution import admission as _admission
+from factory.execution.workspace_handoff import WorkspaceHandoff as WorkspaceHandoff
 from factory.execution.constants import DRAINER_NODE_KEY as DRAINER_NODE_KEY
 from factory.execution.constants import KG_NODE_KEY as KG_NODE_KEY
 from factory.execution.reconciliation import (

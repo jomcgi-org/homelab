@@ -125,6 +125,14 @@ defmodule Embervm.RouterTest do
     # The 5th arg is the create-call opts (the #4919 idempotency key rides in as
     # idempotency_key: <header value or nil>); every clause below ignores it
     # unless it exists to prove header threading.
+    def export_workspace(_server, "s-live", "lineage"), do: {:ok, %{status: "pending", lineage_id: "lineage"}}
+    def workspace_export_status(_server, _session), do: %{status: "unknown"}
+    def create(_srv, "wl-bound-restore", _principal, lineage, opts) do
+      {:ok, %{session_id: "bound", lineage_id: lineage, token: "bound-token", expires_at: 9_000_000,
+        base_digest: "sha256:x", state: :running, restored: true,
+        workspace_fingerprint: Keyword.fetch!(opts, :expected_workspace_fingerprint)}}
+    end
+
     def create(_srv, "wl-ok", _principal, _restore_lineage, _opts),
       do:
         {:ok,
@@ -342,7 +350,7 @@ defmodule Embervm.RouterTest do
     def verify_token(_srv, _id, _token), do: {:error, :not_found}
 
     def get(_srv, "s-live"),
-      do: {:ok, %{session_id: "s-live", workload: "wl-ok", principal: "p", state: :running, generation: 0, base_digest: "sha256:x", created_at: 1, invoke_started_at: 123, inflight_dispatch_id: "persisted-dispatch", last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: nil}}
+      do: {:ok, %{session_id: "s-live", lineage_id: "lineage", workload: "wl-ok", principal: "p", state: :running, generation: 0, base_digest: "sha256:x", created_at: 1, invoke_started_at: 123, inflight_dispatch_id: "persisted-dispatch", last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: nil}}
 
     def get(_srv, "s-term"),
       do: {:ok, %{session_id: "s-term", workload: "wl-ok", principal: "p", state: :destroyed, generation: 0, base_digest: "sha256:x", created_at: 1, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: "destroyed"}}
@@ -1700,6 +1708,53 @@ defmodule Embervm.RouterTest do
              "retryable" => true,
              "workload" => "wl-prime-pressure"
            }
+  end
+
+  defmodule RetentionProbe do
+    use GenServer
+    def init(owner), do: {:ok, owner}
+    def handle_call({:capture_retention, operation, identity, duration}, _from, owner) do
+      send(owner, {:retention_request, operation, identity, duration})
+      {:reply, {:error, :capture_cleanup_disabled}, owner}
+    end
+  end
+
+  test "capture retention preserves owner auth and passes trusted identity with bounded policy handled by GC" do
+    with_session_fakes()
+    {:ok, probe} = GenServer.start_link(RetentionProbe, self())
+    Application.put_env(:embervm, :s3_warmth_gc, probe)
+    on_exit(fn -> Application.delete_env(:embervm, :s3_warmth_gc) end)
+    body = Jason.encode!(%{operation: "register", lineage_id: "lineage"})
+    response = req(:post, "/v1/sessions/s-live/evidence-retention", auth("good"), body)
+    assert response.status == 409
+    assert json(response.body)["reason"] == "capture_cleanup_disabled"
+    assert_receive {:retention_request, :register, %{session_id: "s-live", lineage_id: "lineage", principal: "p", workload: "wl-ok"}, 259_200_000}
+    assert req(:post, "/v1/sessions/s-live/evidence-retention", auth("good2"), body).status == 404
+    assert req(:post, "/v1/sessions/s-live/evidence-retention", auth("sess-token-live"), body).status == 401
+    assert req(:post, "/v1/sessions/s-live/evidence-retention", auth("good"), Jason.encode!(%{operation: "register", lineage_id: "wrong"})).status == 400
+    refute_receive {:retention_request, _, _, _}
+  end
+
+  test "workspace export preserves management and owner authorization" do
+    with_session_fakes()
+    body = Jason.encode!(%{lineage_id: "lineage"})
+    assert req(:post, "/v1/sessions/s-live/workspace-export", auth("good"), body).status == 202
+    assert req(:post, "/v1/sessions/s-live/workspace-export", auth("good2"), body).status == 404
+    assert req(:post, "/v1/sessions/s-live/workspace-export", auth("sess-token-live"), body).status == 401
+    assert req(:post, "/v1/sessions/s-live/workspace-export", auth("good"), "{}").status == 400
+    view = req(:get, "/v1/sessions/s-live", auth("good")) |> Map.fetch!(:body) |> json()
+    assert view["workspace_export"] == %{"status" => "unknown"}
+  end
+
+  test "bound restore body requires lineage and exact fingerprint then echoes observed fingerprint" do
+    with_session_fakes()
+    fingerprint = String.duplicate("a", 64)
+    for body <- [%{expected_workspace_fingerprint: fingerprint}, %{restore_lineage: "lineage", expected_workspace_fingerprint: nil}, %{restore_lineage: "lineage", expected_workspace_fingerprint: "short"}] do
+      assert req(:post, "/v1/workloads/wl-bound-restore/sessions", auth("good"), Jason.encode!(body)).status == 400
+    end
+    response = req(:post, "/v1/workloads/wl-bound-restore/sessions", auth("good"), Jason.encode!(%{restore_lineage: "lineage", expected_workspace_fingerprint: fingerprint}))
+    assert response.status == 201
+    assert json(response.body)["workspace_fingerprint"] == fingerprint
   end
 
   # -- restore_lineage (#4306 slice 3) ---------------------------------------

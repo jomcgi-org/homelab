@@ -203,6 +203,14 @@ defmodule Embervm.Router do
     handle_residency(conn, id, {:cancel, operation_id})
   end
 
+  post "/v1/sessions/:id/evidence-retention" do
+    handle_evidence_retention(conn, id)
+  end
+
+  post "/v1/sessions/:id/workspace-export" do
+    handle_workspace_export(conn, id)
+  end
+
   post "/v1/sessions/:id/invoke" do
     handle_session_invoke(conn, id)
   end
@@ -1405,7 +1413,16 @@ defmodule Embervm.Router do
   end
 
   defp do_handle_create_session(conn, workload, principal) do
-    {restore_lineage, conn} = optional_restore_lineage(conn)
+    {restore_lineage, fingerprint, conn} = optional_restore_lineage(conn)
+    if fingerprint != nil and (is_nil(restore_lineage) or not is_binary(fingerprint) or
+         not Regex.match?(~r/\A[0-9a-f]{64}\z/, fingerprint)) do
+      send_json(conn, 400, %{error: "invalid expected_workspace_fingerprint", retryable: false})
+    else
+      create_session_with_workspace(conn, workload, principal, restore_lineage, fingerprint)
+    end
+  end
+
+  defp create_session_with_workspace(conn, workload, principal, restore_lineage, fingerprint) do
     idempotency_key = header_value(conn, "idempotency-key")
 
     # Cold-boot persistence creates legitimately take tens of seconds; the
@@ -1413,7 +1430,7 @@ defmodule Embervm.Router do
     result =
       try do
         session_manager().create(session_manager_server(), workload, principal, restore_lineage,
-          idempotency_key: idempotency_key
+          idempotency_key: idempotency_key, expected_workspace_fingerprint: fingerprint
         )
       catch
         :exit, {:timeout, _} -> :control_plane_busy
@@ -1450,7 +1467,8 @@ defmodule Embervm.Router do
           expires_at: created.expires_at,
           base_digest: created.base_digest,
           state: to_string(Map.get(created, :state, :running)),
-          restored: Map.get(created, :restored, false)
+          restored: Map.get(created, :restored, false),
+          workspace_fingerprint: Map.get(created, :workspace_fingerprint, "")
         })
 
       # A key whose holder is terminal (destroyed/expired/evicted/failed):
@@ -1483,6 +1501,8 @@ defmodule Embervm.Router do
   # requested" rather than an error: an empty body is the normal, by-far-most-
   # common case for this route, so this is tolerant by design, matching
   # decode_registration's own body-parsing idiom elsewhere in this router.
+  # A present expected_workspace_fingerprint is different: the create handler
+  # validates it strictly and requires a restore lineage, never silent fallback.
   defp optional_restore_lineage(conn) do
     case read_capped_body(conn) do
       {:ok, body, conn} ->
@@ -1492,10 +1512,15 @@ defmodule Embervm.Router do
             _ -> nil
           end
 
-        {restore_lineage, conn}
+        fingerprint = case safe_decode(body) do
+          %{"expected_workspace_fingerprint" => value} when is_binary(value) -> value
+          %{"expected_workspace_fingerprint" => _} -> :invalid
+          _ -> nil
+        end
+        {restore_lineage, fingerprint, conn}
 
       {:error, _} ->
-        {nil, conn}
+        {nil, nil, conn}
     end
   end
 
@@ -2126,7 +2151,10 @@ defmodule Embervm.Router do
             # principal (or an admin); otherwise the session reads as not found.
             if authority == :session_token or owner_or_admin?(conn, session.principal) do
               view = session_view(session, session_node_statuses([session]))
-              send_json(conn, 200, Map.put(view, :stop_precondition, session_stop_identity(session_id)))
+              view = view |> Map.put(:stop_precondition, session_stop_identity(session_id))
+                |> Map.put(:workspace_export, session_workspace_export(session_id))
+                |> Map.put(:workspace_fingerprint, session_workspace_fingerprint(session_id))
+              send_json(conn, 200, view)
             else
               send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
             end
@@ -2138,6 +2166,79 @@ defmodule Embervm.Router do
       {:error, status, body} ->
         send_json(conn, status, body)
     end
+  end
+
+  # Management auth is enforced by the normal route plug. Export additionally
+  # requires ownership, as destroy does. This does not grant artifact-store access.
+  defp handle_workspace_export(conn, session_id) do
+    case session_store().get(session_store_server(), session_id) do
+      {:ok, session} ->
+        if owner_or_admin?(conn, session.principal) do
+          with {:ok, body, conn} <- read_capped_body(conn),
+               %{"lineage_id" => lineage_id} = request <- safe_decode(body),
+               true <- map_size(request) == 1 and is_binary(lineage_id) and lineage_id != "" do
+            case session_manager().export_workspace(session_manager_server(), session_id, lineage_id) do
+              {:ok, receipt} -> send_json(conn, if(receipt.status == "pending", do: 202, else: 200), receipt)
+              {:error, reason} -> send_json(conn, 409, %{error: "workspace export unavailable", reason: to_string(reason), retryable: false})
+            end
+          else
+            _ -> send_json(conn, 400, %{error: "expected lineage_id", retryable: false})
+          end
+        else
+          send_json(conn, 404, %{error: "session not found", retryable: false})
+        end
+      :error -> send_json(conn, 404, %{error: "session not found", retryable: false})
+    end
+  end
+
+  # The same management identity and owner check as workspace export. Registration
+  # is opt-in and refuses an existing unmarked archive; it is never a backfill.
+  defp handle_evidence_retention(conn, session_id) do
+    case session_store().get(session_store_server(), session_id) do
+      {:ok, session} ->
+        if owner_or_admin?(conn, session.principal) do
+          with {:ok, body, conn} <- read_capped_body(conn),
+               %{"operation" => operation, "lineage_id" => lineage} = request <- safe_decode(body),
+               true <- lineage == session.lineage_id,
+               true <- Map.keys(request) -- ["operation", "lineage_id", "ttl_ms", "lease_ms"] == [] do
+            identity = Map.take(session, [:session_id, :lineage_id, :workload, :principal])
+            result = case operation do
+              "register" -> Embervm.S3WarmthGc.register_capture(capture_retention_server(), identity,
+                Map.get(request, "ttl_ms", Embervm.CaptureEvidenceRetention.default_ttl_ms()))
+              "lease" -> Embervm.S3WarmthGc.lease_capture(capture_retention_server(), identity,
+                Map.get(request, "lease_ms", Embervm.CaptureEvidenceRetention.max_review_lease_ms()))
+              _ -> {:error, :invalid_operation}
+            end
+            case result do
+              {:ok, policy} -> send_json(conn, 200, %{status: "retained", policy: policy})
+              {:error, reason} -> send_json(conn, 409, %{error: "capture retention unavailable", reason: to_string(reason), retryable: false})
+            end
+          else
+            _ -> send_json(conn, 400, %{error: "invalid capture retention request", retryable: false})
+          end
+        else
+          send_json(conn, 404, %{error: "session not found", retryable: false})
+        end
+      :error -> send_json(conn, 404, %{error: "session not found", retryable: false})
+    end
+  end
+
+  defp capture_retention_server, do: Application.get_env(:embervm, :s3_warmth_gc, Embervm.S3WarmthGc)
+
+  defp session_workspace_fingerprint(session_id) do
+    session_manager().workspace_fingerprint(session_manager_server(), session_id)
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp session_workspace_export(session_id) do
+    session_manager().workspace_export_status(session_manager_server(), session_id)
+  rescue
+    _ -> %{status: "unknown"}
+  catch
+    _, _ -> %{status: "unknown"}
   end
 
   # DELETE /v1/sessions/:id (management auth): destroy. The caller must be the

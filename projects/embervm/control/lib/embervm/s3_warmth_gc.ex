@@ -107,6 +107,7 @@ defmodule Embervm.S3WarmthGc do
   use GenServer
   require Logger
 
+  alias Embervm.CaptureEvidenceRetention
   alias Embervm.{GroupState, GroupStore, NodeCapacity, NodeRegistry, S3Client, SessionState, SessionStore, ServingState, ServingStore, StatefulState, StatefulStore}
 
   # Slow-moving reconcile: an S3 orphan is born rarely (a binding lost across a
@@ -183,6 +184,16 @@ defmodule Embervm.S3WarmthGc do
   @spec sweep_now(GenServer.server()) :: {:ok, map()} | {:error, term()}
   def sweep_now(server \\ __MODULE__) do
     GenServer.call(server, :sweep_now, 120_000)
+  end
+
+  @doc "Register a new capture before its first archive; never relabel old evidence."
+  def register_capture(server \\ __MODULE__, identity, ttl_ms \\ CaptureEvidenceRetention.default_ttl_ms()) do
+    GenServer.call(server, {:capture_retention, :register, identity, ttl_ms}, 30_000)
+  end
+
+  @doc "Extend active review only within the original capture's hard expiry."
+  def lease_capture(server \\ __MODULE__, identity, lease_ms) do
+    GenServer.call(server, {:capture_retention, :lease, identity, lease_ms}, 30_000)
   end
 
   # -- GenServer callbacks -----------------------------------------------------
@@ -267,6 +278,12 @@ defmodule Embervm.S3WarmthGc do
 
     schedule_sweep(state)
     {:ok, state}
+  end
+
+  @impl true
+  def handle_call({:capture_retention, operation, identity, duration}, _from, state) do
+    result = capture_retention_write(state, operation, identity, duration)
+    {:reply, result, state}
   end
 
   @impl true
@@ -875,12 +892,15 @@ defmodule Embervm.S3WarmthGc do
 
   defp classify(state, snapshot, %{kind: :session_workspace} = cand, created, _protected, now) do
     created_at = Map.get(created, cand.prefix)
+    retention = capture_retention_state(state, cand, created_at, now)
 
     cond do
       created_at == :error -> {:held, "meta_unreadable"}
       MapSet.member?(snapshot.referenced_lineages, cand.lineage) -> {:held, "lineage_referenced"}
       MapSet.member?(snapshot.reported_lineages, cand.lineage) -> {:held, "node_reported"}
       parked_session_not_expired?(snapshot, cand.lineage, now, :lineage) -> {:held, "session_not_expired"}
+      match?({:held, _}, retention) -> retention
+      retention == :expired -> {:eligible, 1, created_at}
       now - created_at < ttl(state, :session_workspace) -> {:held, "younger_than_age_floor"}
       true -> {:eligible, 1, created_at}
     end
@@ -898,6 +918,79 @@ defmodule Embervm.S3WarmthGc do
       now - created_at < ttl(state, :group) -> {:held, "younger_than_age_floor"}
       true -> {:eligible, 1, created_at}
     end
+  end
+
+  defp capture_retention_state(state, candidate, archive_created_at, now) do
+    key = candidate.prefix <> "/" <> CaptureEvidenceRetention.filename()
+    marked = Enum.any?(candidate.files, &(&1.key == key))
+    if marked do
+      with {:ok, body} <- state.s3.get.(key),
+           policy when is_map(policy) <- safe_json_decode(body),
+           :ok <- CaptureEvidenceRetention.eligible?(policy,
+             %{lineage_id: candidate.lineage, workload: candidate.workload, principal: policy["principal"]}, archive_created_at, now) do
+        :expired
+      else
+        _ -> {:held, "capture_retention_held"}
+      end
+    else
+      :legacy
+    end
+  end
+
+  defp capture_retention_write(%{s3: nil}, _operation, _identity, _duration), do: {:error, :store_unavailable}
+  defp capture_retention_write(%{enabled: false}, _operation, _identity, _duration), do: {:error, :capture_cleanup_disabled}
+  defp capture_retention_write(state, operation, identity, duration) do
+    now = state.wall_clock.()
+    with {:ok, _proposed} <- CaptureEvidenceRetention.new(identity, now),
+         rows <- SessionStore.all(state.session_store),
+         [latest | _] <- rows |> Enum.filter(&(&1.lineage_id == identity.lineage_id)) |> Enum.sort_by(& &1.created_at, :desc),
+         true <- latest.session_id == identity.session_id and latest.workload == identity.workload and latest.principal == identity.principal do
+      prefix = "session-workspace/#{identity.workload}/#{identity.lineage_id}"
+      key = prefix <> "/" <> CaptureEvidenceRetention.filename()
+      result = case {operation, state.s3.get.(key)} do
+        {:register, {:ok, body}} ->
+          policy = safe_json_decode(body)
+          with :ok <- CaptureEvidenceRetention.validate(policy),
+               true <- policy["session_id"] == identity.session_id and CaptureEvidenceRetention.same_lineage?(policy, identity),
+               true <- now < CaptureEvidenceRetention.deadline(policy) do
+            {:existing, policy}
+          else
+            _ -> {:error, :capture_retention_mismatch}
+          end
+        {:register, {:error, :not_found}} ->
+          with true <- latest.generation == 0 and not SessionState.terminal?(latest.state),
+               true <- Enum.count(rows, &(&1.lineage_id == identity.lineage_id)) == 1,
+               {:error, :not_found} <- state.s3.get.(prefix <> "/meta.json"),
+               {:ok, []} <- state.s3.list.(prefix <> "/"),
+               {:ok, policy} <- CaptureEvidenceRetention.new(identity, now, duration) do
+            {:write, policy}
+          else
+            _ -> {:error, :capture_must_be_new_unarchived_lineage}
+          end
+        {:lease, {:ok, body}} ->
+          case CaptureEvidenceRetention.renew(safe_json_decode(body), identity, now, duration) do
+            {:ok, policy} -> {:write, policy}
+            error -> error
+          end
+        _ -> {:error, :capture_retention_unavailable}
+      end
+      case result do
+        {:existing, policy} -> {:ok, policy}
+        {:write, policy} ->
+          case state.s3.put.(key, :json.encode(policy) |> IO.iodata_to_binary()) do
+            :ok -> {:ok, policy}
+            {:ok, _} -> {:ok, policy}
+            _ -> {:error, :capture_retention_write_failed}
+          end
+        error -> error
+      end
+    else
+      _ -> {:error, :capture_retention_owner_mismatch}
+    end
+  rescue
+    _ -> {:error, :capture_retention_unavailable}
+  catch
+    _, _ -> {:error, :capture_retention_unavailable}
   end
 
   defp ttl(state, kind), do: Map.fetch!(state.ttls, kind)
@@ -1242,6 +1335,10 @@ defmodule Embervm.S3WarmthGc do
         now = state.wall_clock.()
 
         cond do
+          kind == :session_workspace and
+              match?({:held, _}, capture_retention_state(state, entry, entry.created_at_ms, now)) ->
+            {:blocked, "capture retention lease or policy became held"}
+
           kind == :session and parked_session_not_expired?(parked, entry.ref, now) ->
             {:blocked, "session parked expiry became held"}
 

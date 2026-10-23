@@ -309,7 +309,7 @@ defmodule Embervm.SessionManager do
       server,
       {:create, workload, principal, normalize_restore_lineage(restore_lineage),
        normalize_idempotency_key(Keyword.get(opts, :idempotency_key)),
-       SessionTrace.current_traceparent()},
+       SessionTrace.current_traceparent(), Keyword.get(opts, :expected_workspace_fingerprint)},
       240_000
     )
   end
@@ -385,6 +385,26 @@ defmodule Embervm.SessionManager do
   @doc "Retires an exact cold parked snapshot only when no wake-up is queued."
   def destroy_parked(server, session_id, expected) do
     GenServer.call(server, {:destroy_parked, session_id, expected}, 30_000)
+  end
+
+  @doc """
+  Requests an observed export of the latest terminal workspace owner.
+  The receipt describes one completed mutable-lineage export, not an immutable
+  object version. It is memory-only; callers must durably retain a completed
+  observation and bind a later restore to its fingerprint. Pending is not proof.
+  """
+  def export_workspace(server, session_id, lineage_id) do
+    GenServer.call(server, {:export_workspace, session_id, lineage_id})
+  end
+
+  @doc "Returns the fingerprint verified at creation, or nil after unknown/restart."
+  def workspace_fingerprint(server, session_id) do
+    GenServer.call(server, {:workspace_fingerprint, session_id})
+  end
+
+  @doc "Returns ephemeral export observations; restart means unknown, never success."
+  def workspace_export_status(server, session_id) do
+    GenServer.call(server, {:workspace_export_status, session_id})
   end
 
   @doc "Returns the current exact stop identity or the immutable pending stop identity."
@@ -567,6 +587,8 @@ defmodule Embervm.SessionManager do
       cross_node_rejoin: Keyword.get(opts, :cross_node_rejoin, false),
       attach_epochs: %{},
       workspace_evidence: %{},
+      handoff_exports: %{},
+      verified_workspace_fingerprints: %{},
       # {node_id, lineage_id} => requested_at, last_result, acked_at and in_flight.
       # These enqueue acknowledgements never authorize brick removal.
       archive_acks: %{},
@@ -815,8 +837,15 @@ defmodule Embervm.SessionManager do
   end
 
   def handle_call({:create, workload, principal, restore_lineage, idempotency_key, traceparent}, from, state) do
+    handle_call({:create, workload, principal, restore_lineage, idempotency_key, traceparent, nil}, from, state)
+  end
+
+  def handle_call({:create, workload, principal, restore_lineage, idempotency_key, traceparent, fingerprint}, from, state) do
     SessionTrace.with_parent(traceparent, fn ->
       cond do
+      fingerprint != nil and (not valid_workspace_fingerprint?(fingerprint) or is_nil(restore_lineage)) ->
+        {:reply, {:error, {:denied, :invalid_workspace_fingerprint}}, state}
+
       # A present-but-malformed key is a client bug: deny before anything runs.
       idempotency_key != nil and not valid_idempotency_key?(idempotency_key) ->
         reason = :invalid_idempotency_key
@@ -835,11 +864,11 @@ defmodule Embervm.SessionManager do
             {:reply, {:error, {:conflict, :session_idempotency_key_reused}}, state}
 
           :unbound ->
-            create_unbound(state, from, workload, principal, restore_lineage, idempotency_key)
+            create_unbound(state, from, workload, principal, restore_lineage, idempotency_key, fingerprint)
         end
 
       true ->
-        create_unbound(state, from, workload, principal, restore_lineage, nil)
+        create_unbound(state, from, workload, principal, restore_lineage, nil, fingerprint)
       end
     end)
   end
@@ -850,7 +879,7 @@ defmodule Embervm.SessionManager do
   # runs synchronously here; if it admits the create, its worker (claim/prime)
   # runs OUTSIDE this process, so a second same-key caller arriving before
   # finish_create parks on {principal, key} instead of racing a duplicate.
-  defp create_unbound(state, from, workload, principal, restore_lineage, idempotency_key) do
+  defp create_unbound(state, from, workload, principal, restore_lineage, idempotency_key, fingerprint) do
     waiter_key = {principal, idempotency_key}
 
     cond do
@@ -894,6 +923,7 @@ defmodule Embervm.SessionManager do
                 workload: workload,
                 principal: principal,
                 restore_lineage: restore_lineage,
+                expected_workspace_fingerprint: fingerprint || "",
                 idempotency_key: idempotency_key
               })
 
@@ -996,6 +1026,53 @@ defmodule Embervm.SessionManager do
 
       _ ->
         {:reply, {:error, :not_active}, state}
+    end
+  end
+
+  def handle_call({:workspace_fingerprint, session_id}, _from, state) do
+    {:reply, Map.get(state.verified_workspace_fingerprints, session_id), state}
+  end
+
+  def handle_call({:workspace_export_status, session_id}, _from, state) do
+    {:reply, handoff_export_status(state, session_id), state}
+  end
+
+  def handle_call({:export_workspace, session_id, lineage_id}, _from, state) do
+    with {:ok, session} <- SessionStore.get(state.session_store, session_id),
+         true <- session.lineage_id == lineage_id and is_binary(lineage_id) and lineage_id != "",
+         :ok <- latest_terminal_workspace_owner(state, session),
+         :ok <- check_restore_not_inflight(state, lineage_id) do
+      case handoff_export_status(state, session_id) do
+        %{status: status} = receipt when status in ["pending", "completed"] ->
+          {:reply, {:ok, receipt}, state}
+        _ ->
+          receipt = %{status: "pending", receipt_id: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false),
+            session_id: session_id, lineage_id: lineage_id, workload: session.workload,
+            principal: session.principal, generation: session.generation, volume_node_id: session.volume_node_id}
+          owner = self()
+          spawn(fn ->
+            result = try do
+              dial = WakeInstance.dial_for_session_volume(state.capacity_table, session.volume_node_id, lineage_id)
+              if is_binary(dial) and dial != session.volume_node_id do
+                req = %ExportArtifactRequest{artifact: %ArtifactRef{kind: :ARTIFACT_KIND_SESSION_WORKSPACE,
+                  workload: session.workload, ref: lineage_id}, trace: %Trace{workload: session.workload}}
+                export_workspace(state, dial, req, 1)
+              else
+                {:error, :no_owning_instance}
+              end
+            rescue
+              _ -> {:error, :export_exception}
+            catch
+              _, _ -> {:error, :export_exception}
+            end
+            send(owner, {:handoff_exported, receipt, result})
+          end)
+          {:reply, {:ok, receipt}, %{state | handoff_exports: Map.put(state.handoff_exports, session_id, receipt)}}
+      end
+    else
+      :error -> {:reply, {:error, :not_found}, state}
+      false -> {:reply, {:error, :lineage_mismatch}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
@@ -1270,6 +1347,24 @@ defmodule Embervm.SessionManager do
     {:noreply, finish_rejoin(state, session_id, outcome)}
   end
 
+  def handle_info({:handoff_exported, receipt, result}, state) do
+    current = Map.get(state.handoff_exports, receipt.session_id)
+    if current == receipt do
+      updated = case {handoff_export_status(state, receipt.session_id), result} do
+        {%{status: "pending"}, {:ok, response}} when is_map(response) ->
+          fingerprint = Map.get(response, :content_fingerprint, "")
+          if valid_workspace_fingerprint?(fingerprint),
+            do: Map.merge(receipt, %{status: "completed", fingerprint: fingerprint}),
+            else: Map.merge(receipt, %{status: "failed", reason: "missing_fingerprint"})
+        {%{status: "pending"}, _} -> Map.merge(receipt, %{status: "failed", reason: "export_failed"})
+        _ -> Map.merge(receipt, %{status: "failed", reason: "stale_owner"})
+      end
+      {:noreply, %{state | handoff_exports: Map.put(state.handoff_exports, receipt.session_id, updated)}}
+    else
+      {:noreply, state}
+    end
+  end
+
   def handle_info({:workspace_exported, session_id, captured, result}, state) do
     fingerprint = case result do
       {:ok, response} -> Map.get(response, :content_fingerprint, "")
@@ -1452,6 +1547,7 @@ defmodule Embervm.SessionManager do
            {:ok, restore_holder} <-
              validate_restore_lineage(state, restore_lineage, workload, principal),
            :ok <- check_restore_not_inflight(state, restore_lineage),
+           :ok <- check_workspace_export_not_pending(state, restore_lineage),
            :ok <- validate_restore_volume_owner(state, restore_holder, restore_lineage, workload),
            {:ok, retirement_dial_id} <-
              restore_lineage_retirement_dial(
@@ -1865,7 +1961,8 @@ defmodule Embervm.SessionManager do
              restore_lineage
            ),
          {:ok, restored} <-
-           restore_session_workspace(state, dial_id, workload, restore_lineage, create.principal, 0),
+           restore_session_workspace(state, dial_id, workload, restore_lineage, create.principal, 0,
+             Map.get(create, :expected_workspace_fingerprint, "")),
          {:ok, vm_id} <- prime(state, dial_id, workload, create.snapshot_ref, create.entry, restore_lineage) do
       Inflight.settle(dial_id, create.claim_ref, table: state.inflight_table)
       {:ok, vm_id, restored, node_id, dial_id}
@@ -1920,7 +2017,18 @@ defmodule Embervm.SessionManager do
             {:ok, vm_id, restored, node_id, dial_id} ->
               settle_create_claim(state, create, dial_id)
 
-              register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage, restored, idempotency_key)
+              {registered, next_state} = register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage, restored, idempotency_key)
+              registered = case registered do
+                {:ok, response} -> {:ok, Map.put(response, :workspace_fingerprint,
+                  if(restored, do: Map.get(create, :expected_workspace_fingerprint, ""), else: ""))}
+                other -> other
+              end
+              next_state = case registered do
+                {:ok, %{session_id: session_id, workspace_fingerprint: fingerprint}} when fingerprint != "" ->
+                  %{next_state | verified_workspace_fingerprints: Map.put(next_state.verified_workspace_fingerprints, session_id, fingerprint)}
+                _ -> next_state
+              end
+              {registered, next_state}
 
             {:error, reason} ->
               # Every hop the worker reached released its own claim; a killed or
@@ -4074,6 +4182,39 @@ defmodule Embervm.SessionManager do
   # actual hit, {:ok, false} on a tolerated store miss (#4306 slice 3 needs to
   # tell these apart to report `restored` on a create; a rejoin's one caller,
   # perform_rejoin_prime, only cares that it is `:ok`).
+  defp valid_workspace_fingerprint?(value), do: is_binary(value) and Regex.match?(~r/\A[0-9a-f]{64}\z/, value)
+
+  defp latest_terminal_workspace_owner(state, session) do
+    with true <- SessionState.terminal?(session.state),
+         {:ok, latest} <- SessionStore.get_latest_by_lineage(state.session_store, session.lineage_id),
+         true <- latest.session_id == session.session_id and latest.generation == session.generation do
+      :ok
+    else
+      _ -> {:error, :stale_workspace_owner}
+    end
+  end
+
+  defp check_workspace_export_not_pending(state, lineage_id) do
+    if Enum.any?(Map.get(state, :handoff_exports, %{}), fn {_, receipt} ->
+         receipt.lineage_id == lineage_id and receipt.status == "pending"
+       end), do: {:error, :workspace_export_pending}, else: :ok
+  end
+
+  defp handoff_export_status(state, session_id) do
+    case Map.get(Map.get(state, :handoff_exports, %{}), session_id) do
+      nil -> %{status: "unknown"}
+      receipt ->
+        with {:ok, session} <- SessionStore.get(state.session_store, session_id),
+             :ok <- latest_terminal_workspace_owner(state, session),
+             true <- session.lineage_id == receipt.lineage_id and session.volume_node_id == receipt.volume_node_id and
+               session.generation == receipt.generation and session.workload == receipt.workload and session.principal == receipt.principal do
+          receipt
+        else
+          _ -> %{status: "failed", reason: "stale_owner"}
+        end
+    end
+  end
+
   defp restore_session_workspace(
          state,
          node_id,

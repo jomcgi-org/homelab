@@ -215,10 +215,10 @@ def _node_prompt(
     branch: str = "",
 ) -> str:
     schema_json = json.dumps(schema, sort_keys=True)
-    # Server-authored dependency/scout artifact contracts select inspection
-    # here, without changing execute_node's deployed durable body or steps.
+    # Server-authored dependency, scout and capture contracts select inspection
+    # without changing execute_node's deployed durable body or steps.
     read_only = (
-        "dependency_assessment" in schema.get("required", [])
+        any(key in schema.get("required", []) for key in ("dependency_assessment", "browser_evidence"))
         or schema.get("x-factory-scout-read-only") is True
     )
     working = (
@@ -475,6 +475,8 @@ def _session_api(
     if bound_session_id is not None:
         _validate_or_recover_started_session(bound_session_id, expected, prompt)
     effort = _pinned_effort(task_id, node_key, node_attempt, start_session)
+    handoff = _pinned_workspace_handoff(task_id, node_key, node_attempt, start_session)
+    capture_ttl = _pinned_capture_ttl(task_id, node_key, node_attempt, start_session)
     session_id = start_session_for_swarm(
         local_session_id,
         prompt,
@@ -485,6 +487,8 @@ def _session_api(
         node_key=node_key,
         node_attempt=node_attempt,
         **({"effort": effort} if effort is not None else {}),
+        **({"workspace_handoff": handoff} if handoff is not None else {}),
+        **({"capture_evidence_ttl_seconds": capture_ttl} if capture_ttl is not None else {}),
     )
     _validate_or_recover_started_session(
         session_id,
@@ -504,6 +508,50 @@ def _session_api(
     if not binding.ok:
         raise ValueError(f"node session binding refused: {binding.refusal_code}")
     return session_id
+
+
+def _pinned_capture_ttl(task_id, node_key, node_attempt, session):
+    if not node_key.startswith("implement_browser_capture_"):
+        return None
+    from contextlib import nullcontext
+    from sqlmodel import Session, select
+    from core.db import get_engine
+    from factory.orchestration.models import SwarmNodeRun
+
+    with (nullcontext(session) if session is not None else Session(get_engine())) as db:
+        raw = db.exec(select(SwarmNodeRun.pin_json).where(
+            SwarmNodeRun.task_id == task_id, SwarmNodeRun.node_key == node_key,
+            SwarmNodeRun.attempt == node_attempt,
+        )).first()
+    value = (json.loads(raw) if raw else {}).get("capture_evidence_ttl_seconds")
+    if type(value) is not int or not 3600 <= value <= 604800:
+        raise ValueError("capture node requires admitted retention context")
+    return value
+
+
+def _pinned_workspace_handoff(task_id: str, node_key: str, node_attempt: int, session):
+    """Read only the admitted immutable server pin; never a model prompt."""
+    from contextlib import nullcontext
+    from sqlmodel import Session, select
+    from core.db import get_engine
+    from factory.execution.workspace_handoff import WorkspaceHandoff
+    from factory.orchestration.models import SwarmNodeRun
+
+    owned = nullcontext(session) if session is not None else Session(get_engine())
+    with owned as db:
+        raw = db.exec(select(SwarmNodeRun.pin_json).where(
+            SwarmNodeRun.task_id == task_id, SwarmNodeRun.node_key == node_key,
+            SwarmNodeRun.attempt == node_attempt,
+        )).first()
+    prepared = (json.loads(raw) if raw else {}).get("browser_evidence_review")
+    if prepared is None:
+        return None
+    if not node_key.startswith("review_") or prepared.get("status") != "prepared":
+        raise ValueError("invalid browser evidence review pin")
+    handoff = WorkspaceHandoff.from_json(prepared["workspace_handoff"])
+    if handoff.preflight_json is None:
+        raise ValueError("browser review requires mandatory preflight")
+    return handoff
 
 
 def _pinned_effort(
@@ -766,7 +814,7 @@ def _read_turn_artifact(
     """
     from sqlmodel import Session, select
 
-    from factory.execution.models import AgentTurn
+    from factory.execution.models import AgentSession, AgentTurn
     from core.db import get_engine
 
     with Session(get_engine()) as session:
@@ -792,6 +840,19 @@ def _read_turn_artifact(
         diff_blob = bytes(turn.diff_blob) if turn.diff_blob is not None else None
         diff_truncated = bool(turn.diff_truncated)
         artifact_outcome = turn.artifact_outcome
+        marker = schema.get("properties", {}).get("browser_evidence_handoff_sha256")
+        if marker is not None:
+            from factory.orchestration.browser_review_dispatch import verify_review_preflight
+
+            try:
+                owner = session.get(AgentSession, session_id)
+                verify_review_preflight(
+                    owner.workspace_handoff_json if owner else None,
+                    turn.usage_json,
+                    marker["enum"][0],
+                )
+            except (ValueError, KeyError, TypeError, IndexError) as exc:
+                return {"status": "invalid", "value": None, "errors": [str(exc)]}
     return _evaluate_stored_artifact(
         stored_path,
         artifact_blob,

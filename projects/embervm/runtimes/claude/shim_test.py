@@ -6403,6 +6403,17 @@ def test_system_prompt_validation_and_forwarding():
     assert manager.calls[0][1] == {"artifact_path": "plan.json"}
 
     manager = _Manager()
+    assert post({"message": "hello", "workspace_handoff": {"version": 1}}, manager) == [
+        (200, {"result": "ok"})
+    ]
+    assert manager.calls[0][1] == {"workspace_handoff": {"version": 1}}
+    manager = _Manager()
+    assert post({"message": "hello", "workspace_handoff": None}, manager) == [
+        (400, {"error": "workspace_handoff must be an object"})
+    ]
+    assert manager.calls == []
+
+    manager = _Manager()
     assert post({"message": "hello", "thinking": "high"}, manager) == [
         (200, {"result": "ok"})
     ]
@@ -11770,3 +11781,177 @@ def test_runtime_meter_freshness_deadline_is_not_extended_by_output(
         manager.turn("work", model="astra", runtime_meter={"fixture": True})
     assert observed[-1] == "unknown"
     assert manager.process is None
+
+
+@pytest.fixture
+def browser_preflight_contract(tmp_path):
+    checker = b"""import hashlib,json,os,sys
+request=json.load(sys.stdin)
+h=request["handoff"]
+p=h["provenance"]
+assert os.path.isabs(request["checkout"])
+assert "PYTHONPATH" not in os.environ
+assert sys.flags.isolated == 1
+print(json.dumps({"status":"ok", "handoff_sha256":hashlib.sha256(json.dumps(h,sort_keys=True,separators=(",",":")).encode()).hexdigest(), "manifest_sha256":h["manifest_sha256"], "inventory_sha256":h["inventory_sha256"], "base_sha":p["base_sha"], "head_sha":p["head_sha"], "harness_sha":p["harness_sha"], "files":2, "bytes":10}))
+"""
+    pins = {}
+    for relative in shim.BROWSER_PREFLIGHT_FILES:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = (
+            checker
+            if relative == shim.BROWSER_PREFLIGHT_FILES[0]
+            else b"# pinned helper\n"
+        )
+        path.write_bytes(content)
+        pins[relative] = hashlib.sha256(content).hexdigest()
+    payload = {
+        "version": 1,
+        "expected_workspace_fingerprint": "a" * 64,
+        "handoff": {
+            "manifest_sha256": "b" * 64,
+            "inventory_sha256": "c" * 64,
+            "provenance": {
+                "base_sha": "d" * 40,
+                "head_sha": "e" * 40,
+                "harness_sha": "f" * 40,
+            },
+        },
+        "preflight": {"harness_sha": "f" * 40, "files": pins},
+    }
+    return tmp_path, payload
+
+
+def test_browser_preflight_runs_only_pinned_isolated_closure(
+    browser_preflight_contract, monkeypatch
+):
+    checkout, payload = browser_preflight_contract
+    monkeypatch.setenv("PYTHONPATH", "/untrusted/producer")
+    monkeypatch.setattr(shim, "_cli_privilege_kwargs", lambda: {})
+    result = shim._workspace_handoff_preflight(str(checkout), payload)
+    assert result["status"] == "ok"
+    assert result["files"] == 2
+    assert result["head_sha"] == "e" * 40
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["code", "helper", "symlink", "missing", "extra", "sha", "oversize", "command"],
+)
+def test_browser_preflight_fails_closed_before_checker(
+    browser_preflight_contract, monkeypatch, damage
+):
+    checkout, payload = browser_preflight_contract
+    first = checkout / shim.BROWSER_PREFLIGHT_FILES[0]
+    if damage == "code":
+        first.write_bytes(b"raise Exception('tampered')")
+    elif damage == "helper":
+        (checkout / shim.BROWSER_PREFLIGHT_FILES[1]).write_bytes(b"# tampered helper")
+    elif damage == "symlink":
+        content = first.read_bytes()
+        first.unlink()
+        other = checkout / "other.py"
+        other.write_bytes(content)
+        first.symlink_to(other)
+    elif damage == "missing":
+        first.unlink()
+    elif damage == "extra":
+        payload["preflight"]["files"]["other.py"] = "a" * 64
+    elif damage == "sha":
+        payload["preflight"]["harness_sha"] = "0" * 40
+    elif damage == "oversize":
+        payload["handoff"]["extra"] = "x" * shim.BROWSER_PREFLIGHT_MAX_BYTES
+    else:
+        payload["command"] = ["sh", "-c", "false"]
+    monkeypatch.setattr(
+        shim.subprocess, "run", lambda *a, **k: pytest.fail("checker must not run")
+    )
+    assert (
+        shim._workspace_handoff_preflight(str(checkout), payload)["status"] == "failed"
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["nonzero", "missing_dependency", "timeout", "malformed", "stale", "oversize"],
+)
+def test_browser_preflight_rejects_failed_or_stale_checker(
+    browser_preflight_contract, monkeypatch, outcome
+):
+    checkout, payload = browser_preflight_contract
+
+    def run(*args, **kwargs):
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(args[0], 120)
+        if outcome == "missing_dependency":
+            return subprocess.CompletedProcess(
+                args[0], 1, b"", b"ModuleNotFoundError: PIL"
+            )
+        if outcome == "nonzero":
+            return subprocess.CompletedProcess(args[0], 1, b'{"status":"ok"}', b"")
+        stdout = {
+            "malformed": b"not-json",
+            "stale": b'{"status":"ok","head_sha":"wrong"}',
+            "oversize": b" " * 8193,
+        }[outcome]
+        return subprocess.CompletedProcess(args[0], 0, stdout, b"")
+
+    monkeypatch.setattr(shim.subprocess, "run", run)
+    assert (
+        shim._workspace_handoff_preflight(str(checkout), payload)["status"] == "failed"
+    )
+
+
+def test_browser_preflight_failure_never_calls_model(monkeypatch, tmp_path):
+    manager = _new_process_manager()
+    manager.workspace = str(tmp_path)
+    manager._hydration_error = None
+    manager._hydration_status = None
+
+    class Adapter:
+        workspace = None
+
+        def turn(self, *args, **kwargs):
+            pytest.fail("model must not run after failed browser preflight")
+
+    manager.claude = manager.codex = manager.pi = manager.muse = Adapter()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+    monkeypatch.setattr(shim, "_capture_turn_base", lambda *_: None)
+    result = manager.turn("review", workspace_handoff={})
+    assert result["is_error"] is True
+    assert result["terminal_reason"] == "workspace_preflight_failed"
+    assert result["workspace_preflight"]["status"] == "failed"
+    assert result["usage"]["workspace_preflight"] == result["workspace_preflight"]
+
+
+def test_browser_preflight_success_overwrites_model_usage_claim(monkeypatch, tmp_path):
+    manager = _new_process_manager()
+    manager.workspace = str(tmp_path)
+    manager._hydration_error = None
+    manager._hydration_status = None
+    observed = {"status": "ok", "handoff_sha256": "a" * 64}
+
+    class Adapter:
+        workspace = None
+
+        def turn(self, *args, **kwargs):
+            return {
+                "result": "review",
+                "usage": {
+                    "tokens": 10,
+                    "workspace_preflight": {"status": "model_claim"},
+                },
+            }
+
+    manager.claude = manager.codex = manager.pi = manager.muse = Adapter()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+    monkeypatch.setattr(shim, "_capture_turn_base", lambda *_: None)
+    monkeypatch.setattr(shim, "_capture_turn_diff", lambda *_: None)
+    monkeypatch.setattr(shim, "_capture_turn_artifact", lambda *_: None)
+    monkeypatch.setattr(shim, "_workspace_handoff_preflight", lambda *_: observed)
+    result = manager.turn("review", workspace_handoff={})
+    assert result["usage"] == {"tokens": 10, "workspace_preflight": observed}

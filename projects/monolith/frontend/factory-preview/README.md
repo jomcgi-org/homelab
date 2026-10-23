@@ -37,3 +37,38 @@ links stay in the fixture; no production requests or credentials are allowed.
 This tests real route components and synthetic loader data, not SvelteKit
 server routing, live API availability, or real-time revalidation. A passing
 layout check does not replace visual review of the phone and desktop images.
+
+### Prepare an Ember capture handoff
+
+`browser_handoff_prepare.py` prepares the paired `output/sheets` bundle emitted
+by the corrected `browser_check.py --capture-only` / `sheet_ci_check.py` harness.
+It requires that reviewed harness, including `sheet_check.py`, to be present
+beside the helper. The original generic browser-check output is not a paired
+sheet bundle. This remains a dependency on the capture stack until integrated.
+
+After capture, run the helper with the exact captured source revisions and the
+actual input files used for that run. For a multi-file fixture, supply its exact
+archive, not an invented digest. The browser input is the actual Chromium
+executable, not its path string. All four inputs are copied into the inventory.
+
+```sh
+python projects/monolith/frontend/factory-preview/browser_handoff_prepare.py \
+  --checkout /workspace/src --evidence-root output/sheets \
+  --repo jomcgi-org/homelab \
+  --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" --target-sha "$TARGET_SHA" \
+  --harness-sha "$HARNESS_SHA" --browser-version "$CHROMIUM_VERSION" \
+  --fixture "$FIXTURE_FILE" --checklist "$CHECKLIST_FILE" \
+  --dependency-lock pnpm-lock.yaml --browser-binary "$CHROMIUM_EXECUTABLE" \
+  --output browser-handoff.json
+```
+
+The helper invokes the existing mandatory checker and full-height bundle
+validation, preserves and checks the harness-created `provenance.json` against
+the supplied revisions, writes `inputs.json` and `manifest.json`, and emits
+only a capture declaration. It does not review content, assert visual acceptance,
+or claim an Ember producer/export identity. The server binds producer identity
+from its completion receipt before canonical handoff validation. Stale metadata,
+missing dependencies (including Pillow), missing/clipped captures and provenance
+mismatches fail without emitting a handoff. Existing captures survive a failed
+preparation; files created by that failed preparation are removed. The output
+handoff must be outside the evidence directory to avoid a self-referential hash.

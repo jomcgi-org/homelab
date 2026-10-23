@@ -1725,6 +1725,52 @@ def test_clear_ember_bindings_by_ember_id_preserves_prior_lineage_and_cli(sessio
     assert reloaded.prior_cli_session_id == "cli-1"
 
 
+@pytest.mark.parametrize("existing_binding", [False, True])
+def test_workspace_handoff_first_turn_is_fresh_then_continues_reviewer(monkeypatch, session, existing_binding):
+    from factory.execution.workspace_handoff import WorkspaceHandoff
+
+    handoff = WorkspaceHandoff("producer-lineage", "a" * 64, "producer-guest", "b" * 64)
+    row = store.create_session(
+        session, "review-workspace", "/workspace", "main",
+        workspace_handoff_json=handoff.to_json(),
+    )
+    # A stale transcript pointer must never turn the first review into a
+    # continuation of the producer's conversation.
+    row.prior_cli_session_id = "producer-cli"
+    row.prior_ember_lineage_id = "producer-lineage"
+    session.add(row)
+    session.commit()
+    if existing_binding:
+        store.set_ember_session(session, row.id, "reviewer-guest", "reviewer-token", None, "producer-lineage")
+    store.create_pending_message(session, row.id, "inspect")
+    calls = []
+    reviewer = EmberSession("reviewer-guest", "reviewer-token", None, lineage_id="producer-lineage", restored=True)
+
+    async def deliver(ember, cli_session_id, message, model=None, **kwargs):
+        calls.append((ember, cli_session_id, kwargs))
+        return _completed_turn(message)._replace(session_id="reviewer-cli"), reviewer
+
+    async def notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+    asyncio.run(mcp._execute_pending_message(row.id))
+    assert len(calls) == 1
+    assert (calls[0][0] is not None) == existing_binding
+    assert calls[0][1] is None
+    assert calls[0][2]["restore_from"] == "producer-lineage"
+    assert calls[0][2]["expected_workspace_fingerprint"] == "a" * 64
+    session.expire_all()
+    store.create_pending_message(session, row.id, "continue review")
+    asyncio.run(mcp._execute_pending_message(row.id))
+    assert len(calls) == 2
+    assert calls[1][0].session_id == "reviewer-guest"
+    assert calls[1][1] == "reviewer-cli"
+    assert calls[1][2]["restore_from"] is None
+    assert "expected_workspace_fingerprint" not in calls[1][2]
+
+
 def test_send_after_cleared_binding_restores_from_prior_lineage(monkeypatch, session):
     """#4306 slice 5: no active ember binding, but a prior lineage survived
     the clear. The next send must restore from it and resume the prior CLI
@@ -3013,3 +3059,23 @@ def test_drain_continuation_emits_no_terminal_discord_notice(monkeypatch):
         terminal_reason="interrupted_for_drain", stop_reason="interrupted_for_drain"
     )
     asyncio.run(mcp._notify_terminal(turn, "partial", "recovering"))
+
+
+def test_capture_retention_reaches_only_first_model_turn(monkeypatch, session):
+    row = store.create_session(session, "capture-retention", "/workspace", "main", capture_evidence_ttl_seconds=259200)
+    store.create_pending_message(session, row.id, "capture")
+    calls = []
+    guest = EmberSession("capture-guest", "token", None, lineage_id="capture-lineage")
+    async def deliver(ember, cli_session_id, message, model=None, **kwargs):
+        calls.append(kwargs)
+        return _completed_turn(message)._replace(session_id="capture-cli"), guest
+    async def notify(*args, **kwargs):
+        return None
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+    asyncio.run(mcp._execute_pending_message(row.id))
+    assert calls[0]["capture_evidence_ttl_seconds"] == 259200
+    session.expire_all()
+    store.create_pending_message(session, row.id, "continue")
+    asyncio.run(mcp._execute_pending_message(row.id))
+    assert "capture_evidence_ttl_seconds" not in calls[1]

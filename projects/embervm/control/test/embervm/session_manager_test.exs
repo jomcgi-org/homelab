@@ -3644,6 +3644,93 @@ defmodule Embervm.SessionManagerTest do
     assert_receive {:restore_request, %{capability: ""}}, 1_000
   end
 
+  test "workspace export reports pending then completed identity and blocks restore during export" do
+    parent = self()
+    fingerprint = String.duplicate("a", 64)
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-evidence"),
+      export_artifact_fun: fn _, req ->
+        send(parent, {:evidence_export, self(), req})
+        receive do
+          :finish -> {:ok, %{content_fingerprint: fingerprint}}
+        end
+      end)
+    original = create_persistence_session(ctx)
+    assert %{status: "unknown"} = SessionManager.workspace_export_status(ctx.mgr, original.session_id)
+    assert {:error, :stale_workspace_owner} = SessionManager.export_workspace(ctx.mgr, original.session_id, original.lineage_id)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    wait_for_state(ctx, original.session_id, :destroyed)
+    put_brick(ctx, "wl-persist", "volume", session_volumes: [%{workload: "wl-persist", lineage_id: original.lineage_id, size_bytes: 1}])
+    assert {:error, :lineage_mismatch} = SessionManager.export_workspace(ctx.mgr, original.session_id, "wrong")
+    assert {:ok, %{status: "pending"} = pending} = SessionManager.export_workspace(ctx.mgr, original.session_id, original.lineage_id)
+    assert_receive {:evidence_export, worker, req}
+    assert req.artifact.ref == original.lineage_id
+    assert {:ok, ^pending} = SessionManager.export_workspace(ctx.mgr, original.session_id, original.lineage_id)
+    assert {:error, {:denied, :workspace_export_pending}} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id)
+    send(worker, :finish)
+    completed = wait_workspace_export(ctx.mgr, original.session_id)
+    assert completed.status == "completed"
+    assert completed.fingerprint == fingerprint
+    assert completed.session_id == original.session_id
+    assert completed.lineage_id == original.lineage_id
+    assert completed.principal == "p1"
+    assert completed.generation == 0
+    assert {:ok, _} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id)
+    assert %{status: "failed", reason: "stale_owner"} = SessionManager.workspace_export_status(ctx.mgr, original.session_id)
+  end
+
+  test "workspace export failure is never a completed receipt" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-evidence-fail"), export_artifact_fun: fn _, _ -> {:error, :unavailable} end)
+    original = create_persistence_session(ctx)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    wait_for_state(ctx, original.session_id, :destroyed)
+    put_brick(ctx, "wl-persist", "volume", session_volumes: [%{workload: "wl-persist", lineage_id: original.lineage_id, size_bytes: 1}])
+    assert {:ok, %{status: "pending"}} = SessionManager.export_workspace(ctx.mgr, original.session_id, original.lineage_id)
+    assert %{status: "failed", reason: "export_failed"} = wait_workspace_export(ctx.mgr, original.session_id)
+  end
+
+  test "fingerprint bound restore checks exact daemon reply and exposes verified fingerprint" do
+    parent = self()
+    fingerprint = String.duplicate("b", 64)
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-evidence-restore"),
+      restore_artifact_fun: fn _, req ->
+        send(parent, {:restore_fingerprint, req.expected_fingerprint})
+        {:ok, %{content_fingerprint: fingerprint}}
+      end)
+    original = create_persistence_session(ctx)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    wait_for_state(ctx, original.session_id, :destroyed)
+    assert {:error, {:denied, {:session_workspace_restore_failed, :fingerprint_mismatch}}} =
+      SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id, expected_workspace_fingerprint: String.duplicate("c", 64))
+    assert {:ok, restored} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id, expected_workspace_fingerprint: fingerprint)
+    assert restored.restored
+    assert restored.workspace_fingerprint == fingerprint
+    assert SessionManager.workspace_fingerprint(ctx.mgr, restored.session_id) == fingerprint
+    :sys.replace_state(ctx.mgr, &%{&1 | verified_workspace_fingerprints: %{}})
+    assert SessionManager.workspace_fingerprint(ctx.mgr, restored.session_id) == nil
+    assert_receive {:restore_fingerprint, ^fingerprint}
+    assert {:error, :stale_workspace_owner} = SessionManager.export_workspace(ctx.mgr, original.session_id, original.lineage_id)
+  end
+
+  test "bound restore denies missing lineage malformed fingerprint and missing workspace" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-evidence-missing"))
+    original = create_persistence_session(ctx)
+    assert {:error, {:denied, :invalid_workspace_fingerprint}} = SessionManager.create(ctx.mgr, "wl-persist", "p1", nil, expected_workspace_fingerprint: String.duplicate("a", 64))
+    assert {:error, {:denied, :invalid_workspace_fingerprint}} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id, expected_workspace_fingerprint: "")
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    wait_for_state(ctx, original.session_id, :destroyed)
+    assert {:error, {:denied, {:session_workspace_restore_failed, %GRPC.RPCError{status: 5}}}} =
+      SessionManager.create(ctx.mgr, "wl-persist", "p1", original.lineage_id, expected_workspace_fingerprint: String.duplicate("a", 64))
+  end
+
+  defp wait_workspace_export(manager, session_id, attempts \\ 100)
+  defp wait_workspace_export(manager, session_id, attempts) when attempts > 0 do
+    case SessionManager.workspace_export_status(manager, session_id) do
+      %{status: "pending"} -> Process.sleep(10); wait_workspace_export(manager, session_id, attempts - 1)
+      result -> result
+    end
+  end
+  defp wait_workspace_export(_, _, 0), do: flunk("workspace export did not finish")
+
   # -- restore_lineage: cross-generation create (#4306 slice 3) -------------
   #
   # "restore"/"inherit"/"restore_lineage" throughout, deliberately never

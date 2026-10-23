@@ -865,6 +865,7 @@ class EmberSession(NamedTuple):
     lineage_id: str | None = None
     restored: bool = False
     workspace_lost: bool = False
+    workspace_fingerprint: str | None = None
 
 
 class ShimTransport(Protocol):
@@ -890,6 +891,9 @@ class ShimTransport(Protocol):
         receipt_claim_owner: str | None = None,
         invocation_record: dict | None = None,
         residency: dict | None = None,
+        expected_workspace_fingerprint: str | None = None,
+        workspace_handoff: dict | None = None,
+        capture_evidence_ttl_seconds: int | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -954,6 +958,8 @@ class EmberVmShimTransport:
         restore_from: str | None = None,
         model: str | None = None,
         _attempt: int = 0,
+        *,
+        expected_workspace_fingerprint: str | None = None,
     ) -> EmberSession:
         """Create a new session on the guest and return the session ID.
 
@@ -987,6 +993,12 @@ class EmberVmShimTransport:
         if not EMBERVM_URL:
             raise EmberVMTransportError("EMBERVM_URL is not configured")
 
+        if expected_workspace_fingerprint is not None and (
+            not restore_from
+            or re.fullmatch(r"[0-9a-f]{64}", expected_workspace_fingerprint) is None
+        ):
+            raise EmberVMTransportError("invalid workspace handoff restore")
+
         url = f"{EMBERVM_URL}/v1/workloads/{self._workload_for(model)}/sessions"
         headers = auth_headers()
         timeout = httpx.Timeout(
@@ -1000,6 +1012,10 @@ class EmberVmShimTransport:
         post_kwargs = {"headers": headers}
         if restore_from:
             post_kwargs["json"] = {"restore_lineage": restore_from}
+            if expected_workspace_fingerprint is not None:
+                post_kwargs["json"]["expected_workspace_fingerprint"] = (
+                    expected_workspace_fingerprint
+                )
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -1019,6 +1035,15 @@ class EmberVmShimTransport:
                     raise EmberVMTransportError(
                         "EmberVM session response missing session_token"
                     )
+                if expected_workspace_fingerprint is not None and (
+                    data.get("restored") is not True
+                    or data.get("lineage_id") != restore_from
+                    or data.get("workspace_fingerprint")
+                    != expected_workspace_fingerprint
+                ):
+                    raise EmberVMTransportError(
+                        "workspace handoff restore proof mismatch"
+                    )
                 create_outcome.record(True, f"created on {self._workload_for(model)}")
                 return EmberSession(
                     session_id=session_id,
@@ -1026,6 +1051,7 @@ class EmberVmShimTransport:
                     expires_at=data.get("expires_at"),
                     lineage_id=data.get("lineage_id"),
                     restored=bool(data.get("restored", False)),
+                    workspace_fingerprint=data.get("workspace_fingerprint"),
                 )
         except httpx.TimeoutException as exc:
             logger.warning("embervm session creation timed out: %s", exc)
@@ -1061,7 +1087,12 @@ class EmberVmShimTransport:
                         },
                     )
                     await asyncio.sleep(delay)
-                    return await self.create_session(restore_from, model, _attempt + 1)
+                    return await self.create_session(
+                        restore_from,
+                        model,
+                        _attempt + 1,
+                        expected_workspace_fingerprint=expected_workspace_fingerprint,
+                    )
                 _capacity_event(
                     "agent_sessions.capacity_exhausted",
                     {
@@ -1077,7 +1108,12 @@ class EmberVmShimTransport:
                 exc
             ):
                 await asyncio.sleep(_CREATE_RETRY_SECONDS[_attempt])
-                return await self.create_session(restore_from, model, _attempt + 1)
+                return await self.create_session(
+                    restore_from,
+                    model,
+                    _attempt + 1,
+                    expected_workspace_fingerprint=expected_workspace_fingerprint,
+                )
             raise EmberVMTransportError(_status_error_detail(exc)) from exc
         except httpx.TransportError as exc:
             logger.warning("embervm session creation transport error: %s", exc)
@@ -1312,6 +1348,107 @@ class EmberVmShimTransport:
                 reason="control_plane_unavailable",
             ) from exc
 
+    async def register_capture_evidence(
+        self, session_id: str, lineage_id: str, ttl_seconds: int
+    ) -> dict:
+        """Opt a fresh capture lineage into durable cleanup before any model work."""
+        if type(ttl_seconds) is not int or not 3600 <= ttl_seconds <= 604800:
+            raise EmberVMTransportError("invalid capture retention TTL")
+        if not EMBERVM_URL or not all(
+            re.fullmatch(r"[A-Za-z0-9_-]+", value) for value in (session_id, lineage_id)
+        ):
+            raise EmberVMTransportError("invalid capture retention identity")
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                LIST_SESSIONS_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT
+            )
+        ) as client:
+            response = await client.post(
+                f"{EMBERVM_URL}/v1/sessions/{session_id}/evidence-retention",
+                headers=auth_headers(),
+                json={
+                    "operation": "register",
+                    "lineage_id": lineage_id,
+                    "ttl_ms": ttl_seconds * 1000,
+                },
+            )
+            response.raise_for_status()
+            result = response.json()
+        policy = result.get("policy", {})
+        if (
+            result.get("status") != "retained"
+            or policy.get("session_id") != session_id
+            or policy.get("lineage_id") != lineage_id
+        ):
+            raise EmberVMTransportError("capture retention proof mismatch")
+        return result
+
+    async def lease_capture_evidence(
+        self, session_id: str, lineage_id: str, lease_seconds: int
+    ) -> dict:
+        """Bound active review protection through the existing archive owner."""
+        if type(lease_seconds) is not int or not 1 <= lease_seconds <= 43200:
+            raise EmberVMTransportError("invalid capture review lease")
+        if not EMBERVM_URL or not all(
+            re.fullmatch(r"[A-Za-z0-9_-]+", value) for value in (session_id, lineage_id)
+        ):
+            raise EmberVMTransportError("invalid capture lease identity")
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                LIST_SESSIONS_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT
+            )
+        ) as client:
+            response = await client.post(
+                f"{EMBERVM_URL}/v1/sessions/{session_id}/evidence-retention",
+                headers=auth_headers(),
+                json={
+                    "operation": "lease",
+                    "lineage_id": lineage_id,
+                    "lease_ms": lease_seconds * 1000,
+                },
+            )
+            response.raise_for_status()
+            result = response.json()
+        if (
+            result.get("status") != "retained"
+            or result.get("policy", {}).get("lineage_id") != lineage_id
+        ):
+            raise EmberVMTransportError("capture lease proof mismatch")
+        return result
+
+    async def request_workspace_export(
+        self, ember_session_id: str, lineage_id: str
+    ) -> dict:
+        """Request export through the existing owner-authorized control plane.
+
+        An accepted response is not completion. Callers read the exact session's
+        workspace_export observation before dispatching a reviewer. A lost
+        response is uncertain; this method never retries a mutation.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
+        if not all(
+            re.fullmatch(r"[A-Za-z0-9_-]+", value)
+            for value in (ember_session_id, lineage_id)
+        ):
+            raise EmberVMTransportError("invalid producer session identity")
+        timeout = httpx.Timeout(
+            LIST_SESSIONS_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT
+        )
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    f"{EMBERVM_URL}/v1/sessions/{ember_session_id}/workspace-export",
+                    headers=auth_headers(),
+                    json={"lineage_id": lineage_id},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as exc:
+            raise EmberVMTransportError(_status_error_detail(exc)) from exc
+        except httpx.TransportError as exc:
+            raise EmberVMTransportError(str(exc)) from exc
+
     async def get_session(
         self, ember_session_id: str, session_token: str | None = None
     ) -> dict:
@@ -1463,6 +1600,9 @@ class EmberVmShimTransport:
         receipt_claim_owner: str | None = None,
         invocation_record: dict | None = None,
         residency: dict | None = None,
+        expected_workspace_fingerprint: str | None = None,
+        workspace_handoff: dict | None = None,
+        capture_evidence_ttl_seconds: int | None = None,
     ) -> tuple[Turn, EmberSession]:
         # Set None explicitly for unrelated deliveries, including a nested
         # delivery started in a factory callback. Always restore the caller's
@@ -1512,6 +1652,9 @@ class EmberVmShimTransport:
                     dispatch_count=dispatch_count,
                     receipt_claim_owner=receipt_claim_owner,
                     residency=residency,
+                    expected_workspace_fingerprint=expected_workspace_fingerprint,
+                    workspace_handoff=workspace_handoff,
+                    capture_evidence_ttl_seconds=capture_evidence_ttl_seconds,
                 )
                 if turn.terminal_reason is not None:
                     span.set_attribute("agent.terminal_reason", turn.terminal_reason)
@@ -1554,6 +1697,9 @@ class EmberVmShimTransport:
         dispatch_count: int = 0,
         receipt_claim_owner: str | None = None,
         residency: dict | None = None,
+        expected_workspace_fingerprint: str | None = None,
+        workspace_handoff: dict | None = None,
+        capture_evidence_ttl_seconds: int | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -1592,12 +1738,39 @@ class EmberVmShimTransport:
 
         timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
 
+        if expected_workspace_fingerprint is not None:
+            if cli_session_id is not None:
+                raise EmberVMTransportError(
+                    "handoff must start an independent CLI session"
+                )
+            if ember is not None:
+                observed = await self.get_session(ember.session_id)
+                if (
+                    observed.get("session_id") != ember.session_id
+                    or observed.get("lineage_id") != restore_from
+                    or observed.get("lineage_id") != ember.lineage_id
+                    or observed.get("workspace_fingerprint")
+                    != expected_workspace_fingerprint
+                ):
+                    raise EmberVMTransportError(
+                        "bound workspace handoff proof mismatch"
+                    )
+            elif not restore_from:
+                raise EmberVMTransportError("handoff requires a workspace lineage")
         created = ember is None
         workspace_recovery = None
         if ember is None:
             if restore_from:
                 ember = await self.create_session(
-                    restore_from=restore_from, model=model
+                    restore_from=restore_from,
+                    model=model,
+                    **(
+                        {
+                            "expected_workspace_fingerprint": expected_workspace_fingerprint
+                        }
+                        if expected_workspace_fingerprint is not None
+                        else {}
+                    ),
                 )
                 workspace_recovery = {
                     "created": True,
@@ -1620,6 +1793,13 @@ class EmberVmShimTransport:
                 }
                 if on_create is not None:
                     await on_create(ember, None)
+
+        if capture_evidence_ttl_seconds is not None:
+            if model != "luna" or workspace_handoff is not None or not ember.lineage_id:
+                raise EmberVMTransportError("invalid capture retention context")
+            await self.register_capture_evidence(
+                ember.session_id, ember.lineage_id, capture_evidence_ttl_seconds
+            )
 
         async def invoke(
             current: EmberSession, current_cli_session_id: str | None
@@ -1652,6 +1832,8 @@ class EmberVmShimTransport:
             if repo is not None:
                 payload["repo"] = repo
                 payload["branch"] = branch or "main"
+            if workspace_handoff is not None:
+                payload["workspace_handoff"] = workspace_handoff
             if progress_token is not None:
                 payload["progress_token"] = progress_token
             if system_prompt is not None:
@@ -1838,6 +2020,9 @@ class EmberVmShimTransport:
                 turn = turn._replace(workspace_recovery=workspace_recovery)
             return turn, ember
         except EmberBrickGone as exc:
+            if expected_workspace_fingerprint is not None:
+                # A handoff must reconcile the exact workspace before another start.
+                raise
             if residency is not None:
                 raise
             # Import at runtime to avoid the store -> transport type import
@@ -1913,7 +2098,11 @@ class EmberVmShimTransport:
                 ) from retry_exc
             return turn._replace(workspace_recovery=workspace_recovery), new_ember
         except httpx.HTTPStatusError as exc:
-            if created or exc.response.status_code not in (403, 410):
+            if (
+                expected_workspace_fingerprint is not None
+                or created
+                or exc.response.status_code not in (403, 410)
+            ):
                 raise EmberVMTransportError(_status_error_detail(exc)) from exc
 
             # #4306 slice 4: restore keys on the LINEAGE handle, not

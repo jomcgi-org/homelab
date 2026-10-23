@@ -1742,6 +1742,8 @@ def create_session(
     admission_tier: str = "interactive",
     commit: bool = True,
     recall_pending: bool = False,
+    workspace_handoff_json: str | None = None,
+    capture_evidence_ttl_seconds: int | None = None,
 ) -> AgentSession:
     if admission_tier not in admission.TIERS:
         raise ValueError("Invalid server admission tier")
@@ -1757,6 +1759,8 @@ def create_session(
         progress_token=secrets.token_urlsafe(32),
         system_prompt=system_prompt,
         recall_pending=recall_pending,
+        workspace_handoff_json=workspace_handoff_json,
+        capture_evidence_ttl_seconds=capture_evidence_ttl_seconds,
         reasoning=reasoning,
         effort=effort,
         workflow_id=workflow_id,
@@ -2803,6 +2807,24 @@ def persist_turn_from_pending_sync(
                 )
             receipt_provenance = captured["provenance"]
         usage = {**turn.usage, "activities": turn.activities}
+        # Capture identity is a server observation, never a guest usage claim.
+        # Commit it with the exact completed turn before cleanup clears bindings.
+        usage.pop("browser_capture_producer", None)
+        if (
+            turn_seq == 1
+            and sess_row.capture_evidence_ttl_seconds is not None
+            and (sess_row.node_key or "").startswith("implement_browser_capture_")
+        ):
+            if not sess_row.ember_session_id or not sess_row.ember_lineage_id:
+                raise PendingClaimLost("capture completion has no authenticated guest binding")
+            usage["browser_capture_producer"] = {
+                "agent_session_id": session_id,
+                "session_id": sess_row.ember_session_id,
+                "lineage_id": sess_row.ember_lineage_id,
+                "node_id": sess_row.node_key,
+                "attempt": sess_row.node_attempt,
+                "turn": turn_seq,
+            }
         usage.pop("observation", None)
         usage["observation"] = turn_observation(
             pending,
