@@ -283,13 +283,36 @@ func planWalks(ds *walks.Dataset, q PlanQuery, inRange []walkCandidate, day int3
 // stays first; subsequent choices may travel at most 10 km farther than the
 // nearest remaining peer for a different length, ascent or start area. These
 // are coarse variety measures, not claims of more precise weather fit.
+// For three or more options, reserve the third for a substantial-climb peer
+// if none was selected. Only that slot can use the full caller radius rather
+// than the 10 km allowance; verdict and exact good-hour rank still take priority.
 func diverseWalks(candidates []walkCandidate, limit int) []walkCandidate {
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].better(candidates[j]) })
 	var out []walkCandidate
 	for len(candidates) > 0 && len(out) < limit {
 		leader := candidates[0]
 		best, bestNovelty := 0, -1.0
+		needClimb := len(out) == 2
+		for _, chosen := range out {
+			if chosen.w.SubstantialClimb() {
+				needClimb = false
+			}
+		}
+		if needClimb {
+			for i, c := range candidates {
+				if c.rank != leader.rank || c.good != leader.good {
+					break
+				}
+				if c.w.SubstantialClimb() {
+					best = i
+					break
+				}
+			}
+		}
 		for i, c := range candidates {
+			if needClimb && candidates[best].w.SubstantialClimb() {
+				break
+			}
 			if c.rank != leader.rank || c.good != leader.good {
 				break
 			}

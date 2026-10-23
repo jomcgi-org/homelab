@@ -19,7 +19,7 @@ const (
 
 // Notes every answer that covers walks or nights carries.
 const (
-	noteWalkStart    = "Walk weather is forecast at each walk's start, not on summits; for hill days also check the Mountain Weather Information Service (mwis.org.uk), and follow each walk's url for the route and safety notes."
+	noteWalkStart    = "Walk weather is forecast at each walk's start, not on summits. Low cloud/fog cover does not establish cloud base or summit visibility; for hill days also check the Mountain Weather Information Service (mwis.org.uk), and follow each walk's url for the route and safety notes."
 	noteWalksLoading = "Walk data is not loaded yet; retry in a few minutes."
 	noteVerdicts     = "verdict is go, marginal, no or unknown (the hourly forecast, about two and a half days ahead, does not reach that far yet); why says what decided it, in UK local time."
 )

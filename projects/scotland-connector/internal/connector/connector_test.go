@@ -644,7 +644,139 @@ func TestCloudyPlanKeepsMoonContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	note := env.Data.(connector.PlanResult).Days[0].StarNote
-	if !strings.Contains(note, "Cloudy at every") || !strings.Contains(note, "Moon illumination") || !strings.Contains(note, "above the horizon") {
+	if !strings.Contains(note, "Cloudy at every") || !strings.Contains(note, "Moon illumination") || !strings.Contains(note, "The moon is up") {
 		t.Fatal(note)
+	}
+}
+
+// Labelled synthetic city/hill profiles with identical qualifying hours. This
+// is not the user's unspecified original request or forecast.
+func refinementWalks(t *testing.T) *walks.Dataset {
+	t.Helper()
+	var rows []string
+	for _, r := range []struct {
+		id          string
+		lat, length float64
+		ascent      int
+		duration    float64
+	}{
+		{"urban", 57, 4, 50, 2}, {"long", 57.03, 17, 380, 5}, {"canal", 57.04, 16, 140, 5},
+		{"hill", 57.4, 12, 990, 5.5}, {"bad", 57.01, 12, 990, 5.5},
+	} {
+		var hours []string
+		for h := 0; h < 8; h++ {
+			low := "90"
+			if h >= 4 {
+				low = "10"
+			}
+			if r.id == "canal" && h == 0 {
+				low = "null"
+			}
+			rain := 0.2
+			if r.id == "bad" {
+				rain = 3
+			}
+			hours = append(hours, fmt.Sprintf("[%d,10,%.1f,20,90,0,%s]", 1792483200+h*3600, rain, low))
+		}
+		rows = append(rows, fmt.Sprintf(`{"id":%q,"name":%q,"url":"https://example.com/walk","lat":%g,"lon":-4,"distance_km":%g,"ascent_m":%d,"duration_h":%g,"hours":[%s]}`, r.id, r.id, r.lat, r.length, r.ascent, r.duration, strings.Join(hours, ",")))
+	}
+	ds, err := walks.Parse([]byte(`{"schema_version":2,"fetched_at":"2026-10-19T14:20:00Z","walks":[`+strings.Join(rows, ",")+`]}`), "synthetic-refinements")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ds
+}
+
+func TestRefinedPlanDiversityAndFilters(t *testing.T) {
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: refinementWalks(t)}
+	base := connector.PlanParams{Lat: f(57), Lon: f(-4), RadiusKm: f(50), From: s("2026-10-20"), To: s("2026-10-20"), Activities: []string{"walk"}, Limit: i(3)}
+	for _, tc := range []struct {
+		name     string
+		edit     func(*connector.PlanParams)
+		wantHill bool
+	}{
+		{"full radius", func(*connector.PlanParams) {}, true},
+		{"radius", func(p *connector.PlanParams) { p.RadiusKm = f(30) }, false},
+		{"ascent", func(p *connector.PlanParams) { p.MaxAscentM = i(400) }, false},
+		{"duration", func(p *connector.PlanParams) { p.MaxDurationH = f(3) }, false},
+		{"length", func(p *connector.PlanParams) { p.MaxLengthKm = f(5) }, false},
+		{"rain", func(p *connector.PlanParams) { p.MaxRainMMH = f(0) }, false},
+		{"unknown day", func(p *connector.PlanParams) { p.From = s("2026-10-22"); p.To = p.From }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := base
+			tc.edit(&p)
+			env, err := svc.Plan(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := env.Data.(connector.PlanResult)
+			found := false
+			for _, w := range res.Days[0].Walks {
+				found = found || w.WalkID == "hill"
+				if w.WalkID == "bad" || w.Verdict == verdict.No || w.Verdict == verdict.Unknown {
+					t.Fatal(w)
+				}
+			}
+			if found != tc.wantHill {
+				t.Fatalf("%+v", res.Days[0])
+			}
+			notes := strings.Join(env.Meta.Notes, " ")
+			if strings.Count(notes, "cloud base or summit visibility") != 1 {
+				t.Fatal(notes)
+			}
+		})
+	}
+}
+
+func TestRefinedAdviceMetadataAndSize(t *testing.T) {
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: refinementWalks(t)}
+	env, err := svc.Plan(connector.PlanParams{Lat: f(57), Lon: f(-4), RadiusKm: f(50), From: s("2026-10-20"), To: s("2026-10-20"), Activities: []string{"walk"}, Limit: i(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := env.Data.(connector.PlanResult)
+	for _, w := range res.Days[0].Walks {
+		if strings.Contains(w.Why, "cloud base") || strings.Contains(w.Why, "8 of 8 qualifying hours known") || len(w.Why) > 340 {
+			t.Fatal(w.Why)
+		}
+	}
+	data, _ := json.Marshal(env.Data)
+	if len(data) > 3500 {
+		t.Fatalf("compact three-walk plan is %d bytes", len(data))
+	}
+	checked, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{
+		{Activity: "walk", Date: "2026-10-20", WalkID: "urban"},
+		{Activity: "walk", Date: "2026-10-20", WalkID: "canal"},
+		{Activity: "walk", Date: "2026-10-22", WalkID: "hill"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := checked.Data.(connector.CheckResult).Items
+	if strings.Contains(items[0].Why, "Prefer ") || !strings.Contains(items[1].Why, "7 of 8 qualifying hours known") || items[2].Verdict != verdict.Unknown {
+		t.Fatalf("%+v", items)
+	}
+	serialized, _ := json.Marshal(checked)
+	if strings.Count(string(serialized), "cloud base or summit visibility") != 1 {
+		t.Fatal("cloud caveat must occur once in metadata")
+	}
+	// Loaded but empty data still gives the common uncertainty note.
+	svc.Walks = fixture.WalkSource{DS: &walks.Dataset{}}
+	empty, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkID: "missing"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(strings.Join(empty.Meta.Notes, " "), "cloud base or summit visibility") != 1 {
+		t.Fatal(empty.Meta.Notes)
+	}
+	sky, err := svc.Plan(connector.PlanParams{Lat: f(57), Lon: f(-4), Activities: []string{"stargaze"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(sky.Meta.Notes, " "), "cloud base") {
+		t.Fatal(sky.Meta.Notes)
 	}
 }
