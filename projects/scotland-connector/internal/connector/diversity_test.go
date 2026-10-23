@@ -1,8 +1,9 @@
 package connector
 
 import (
-	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 	"testing"
+
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
 
 // Synthetic candidates isolate the conservative tie policy from weather math.

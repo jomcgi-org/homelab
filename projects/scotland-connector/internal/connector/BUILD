@@ -23,9 +23,10 @@ go_test(
     srcs = [
         "bench_test.go",
         "connector_test.go",
+        "diversity_test.go",
     ],
+    embed = [":connector"],
     deps = [
-        ":connector",
         "//projects/scotland-connector/internal/fixture",
         "//projects/scotland-connector/internal/stars",
         "//projects/scotland-connector/internal/verdict",
