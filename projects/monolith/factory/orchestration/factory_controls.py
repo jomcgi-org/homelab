@@ -230,6 +230,12 @@ DEFAULT_PROBLEM_ISSUES = {
     "issues_per_page": 100,
     "max_per_tick": 1,
     "max_per_24_hours": 3,
+    "improvement_limits": {
+        "max_findings": 20,
+        "cooldown_seconds": 86400,
+        "max_unproven_attempts": 3,
+    },
+    "improvement_review": {"through_audit_id": 0, "reason": ""},
     "labels": ["bug"],
     "retry_minutes": [2, 4, 8, 16, 32, 60],
 }
@@ -839,6 +845,38 @@ def _validate_problem_issues(value: object) -> dict:
         ("max_per_24_hours", 1, 100),
     ):
         result[key] = _integer(value.get(key, result[key]), key, low, high)
+    limits = value.get("improvement_limits", {})
+    if not isinstance(limits, dict) or set(limits) - set(
+        DEFAULT_PROBLEM_ISSUES["improvement_limits"]
+    ):
+        raise ValueError("invalid improvement_limits")
+    result["improvement_limits"] = {
+        key: _integer(
+            limits.get(key, DEFAULT_PROBLEM_ISSUES["improvement_limits"][key]),
+            key,
+            low,
+            high,
+        )
+        for key, low, high in (
+            ("max_findings", 1, 20),
+            ("cooldown_seconds", 3600, 604800),
+            ("max_unproven_attempts", 1, 3),
+        )
+    }
+    review = value.get(
+        "improvement_review", DEFAULT_PROBLEM_ISSUES["improvement_review"]
+    )
+    if not isinstance(review, dict) or set(review) != {"through_audit_id", "reason"}:
+        raise ValueError("invalid improvement_review")
+    reviewed_id = _integer(review["through_audit_id"], "through_audit_id", 0, 2**63 - 1)
+    reason = review["reason"]
+    if (
+        not isinstance(reason, str)
+        or len(reason) > 1000
+        or (reviewed_id and not reason.strip())
+    ):
+        raise ValueError("improvement review requires a reason")
+    result["improvement_review"] = {"through_audit_id": reviewed_id, "reason": reason}
     result["max_per_tick"] = _integer(
         value.get("max_per_tick", result["max_per_tick"]),
         "max_per_tick",

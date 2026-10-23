@@ -989,3 +989,114 @@ def test_new_important_ready_issue_wins_over_recent_empty_sweep(improvements):
     assert result["ready_issue_numbers"] == [7002, 7001]
     producer.problem_issues_tick(policy)
     assert not writes
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"cooldown_seconds": 3599},
+        {"max_findings": 21},
+        {"max_unproven_attempts": 4},
+        {"unknown": 1},
+    ],
+)
+def test_improvement_policy_limits_reject_unbounded_values(limits):
+    with pytest.raises(ValueError):
+        controls._validate_problem_issues({"improvement_limits": limits})
+
+
+def test_improvement_cooldown_is_configurable_without_changing_intake(improvements):
+    service, engine, _clock, policy, batch, _inventory, _quota, writes = improvements
+    with Session(engine) as session:
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action="improvement_attempt",
+                created_at=START - timedelta(hours=2),
+                detail_json=controls._json({"reason": "no_actionable_findings"}),
+            )
+        )
+        session.commit()
+    assert service.submit(batch, actor="operator:test")["reason"] == "cooldown"
+    policy["problem_issues"]["improvement_limits"] = {
+        "cooldown_seconds": 3600,
+        "max_findings": 1,
+    }
+    with Session(engine) as session:
+        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.commit()
+    batch["review_digest"] = service.context()["review_digest"]
+    assert service.submit(batch, actor="operator:test")["reason"] == "candidates"
+    producer.problem_issues_tick(policy)
+    assert len(writes) == 1
+    assert "intake" not in policy  # generation tuning does not alter intake policy
+
+
+def test_improvement_ineligible_context_does_not_use_scouting_trial(improvements):
+    service, engine, _clock, _policy, batch, _inventory, quota, _writes = improvements
+    quota["available"] = False
+    for _ in range(4):
+        assert (
+            service.submit(batch, actor="operator:test")["reason"]
+            == "no_verified_spare_subscription"
+        )
+    with Session(engine) as session:
+        assert not session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "improvement_attempt")
+        ).all()
+
+
+def test_improvement_operator_review_reopens_trial_without_forgetting_duplicates(
+    improvements,
+):
+    service, engine, _clock, policy, batch, _inventory, _quota, _writes = improvements
+    from factory.orchestration.factory_improvement_preview import fingerprint
+
+    duplicate = fingerprint(service.REPO, batch["findings"][0]["problem_key"])
+    with Session(engine) as session:
+        rows = [
+            FactoryAudit(
+                actor="test",
+                action="improvement_attempt",
+                created_at=START - timedelta(days=i),
+                detail_json=controls._json(
+                    {"fingerprint": duplicate, "reason": "candidates"}
+                ),
+            )
+            for i in (4, 3, 2)
+        ]
+        session.add_all(rows)
+        session.commit()
+        review_id = rows[-1].id
+    assert (
+        service.submit(batch, actor="operator:test")["reason"]
+        == "usefulness_review_required"
+    )
+    policy["problem_issues"]["improvement_review"] = {
+        "through_audit_id": review_id,
+        "reason": "Reviewed failed attempts; new reproduction evidence is available",
+    }
+    with Session(engine) as session:
+        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.commit()
+    batch["review_digest"] = service.context()["review_digest"]
+    result = service.submit(batch, actor="operator:test")
+    assert result["reason"] == "no_actionable_findings"
+    assert result["skipped"] == ["duplicate_or_owned"]
+
+
+def test_improvement_review_requires_existing_attempt_and_reason(improvements):
+    service, engine, _clock, policy, _batch, _inventory, _quota, _writes = improvements
+    with pytest.raises(ValueError, match="requires a reason"):
+        controls._validate_problem_issues(
+            {"improvement_review": {"through_audit_id": 1, "reason": ""}}
+        )
+    policy["problem_issues"]["improvement_review"] = {
+        "through_audit_id": 999999,
+        "reason": "reviewed",
+    }
+    with Session(engine) as session:
+        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.commit()
+    with pytest.raises(ValueError, match="exact_attempt_audit"):
+        service.context()
