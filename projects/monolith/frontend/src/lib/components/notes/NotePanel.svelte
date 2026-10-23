@@ -2,6 +2,7 @@
   import { renderMarkdown } from "./markdown.js";
   import { colorFor, labelFor } from "./clusters.js";
   import { describeFreshness } from "./freshness.js";
+  import { Button } from "@homelab/design-system/components";
 
   let {
     selectedId,
@@ -10,6 +11,7 @@
     onSelect,
     onClose,
     apiBase = "/api/knowledge/notes",
+    sheet = false,
   } = $props();
 
   let byId = $derived(new Map(nodes.map((n) => [n.id, n])));
@@ -133,7 +135,9 @@
 {#if selectedNode}
   <aside class="panel">
     <div class="panel-head">
-      <span class="panel-dot" style:background={colorFor(selectedNode.type)}
+      <span
+        class="panel-dot"
+        style:background={colorFor(selectedNode.type, sheet)}
       ></span>
       <div class="panel-titlewrap">
         <div class="panel-eyebrow">
@@ -141,8 +145,15 @@
         </div>
         <div class="panel-title">{selectedNode.title}</div>
       </div>
-      <button class="panel-close" onclick={onClose} aria-label="close">×</button
-      >
+      {#if sheet}
+        <Button variant="secondary" onclick={onClose} aria-label="close"
+          >×</Button
+        >
+      {:else}
+        <button class="panel-close" onclick={onClose} aria-label="close"
+          >×</button
+        >
+      {/if}
     </div>
 
     {#if freshness}
@@ -184,7 +195,7 @@
                 class="link-row"
                 onclick={() => onSelect(nb.id)}
               >
-                <span class="swatch" style:background={colorFor(nb.type)}
+                <span class="swatch" style:background={colorFor(nb.type, sheet)}
                 ></span>
                 <span>{nb.title}</span>
               </button>
@@ -208,7 +219,7 @@
                 class="link-row"
                 onclick={() => onSelect(nb.id)}
               >
-                <span class="swatch" style:background={colorFor(nb.type)}
+                <span class="swatch" style:background={colorFor(nb.type, sheet)}
                 ></span>
                 <span>{nb.title}</span>
               </button>
@@ -236,9 +247,9 @@
        doesn't dominate the canvas on big screens. */
     width: min(640px, 45vw);
     max-height: calc(100% - 40px);
-    background: #ffffff;
-    border: 1.5px solid #141414;
-    box-shadow: 4px 4px 0 #141414;
+    background: var(--notes-sheet, #ffffff);
+    border: var(--notes-rule-width, 1.5px) solid var(--notes-ink, #141414);
+    box-shadow: var(--notes-shadow, 4px 4px 0 #141414);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -247,7 +258,8 @@
   }
   .panel-head {
     padding: 14px 16px;
-    border-bottom: 1.5px dashed #141414;
+    border-bottom: var(--notes-rule-width, 1.5px)
+      var(--notes-rule-style, dashed) var(--notes-ink, #141414);
     display: flex;
     align-items: flex-start;
     gap: 10px;
@@ -255,7 +267,7 @@
   .panel-dot {
     width: 12px;
     height: 12px;
-    border: 1.5px solid #141414;
+    border: var(--notes-rule-width, 1.5px) solid var(--notes-ink, #141414);
     margin-top: 4px;
     flex-shrink: 0;
   }
@@ -266,7 +278,7 @@
   .panel-eyebrow {
     font-size: 9px;
     letter-spacing: 0.14em;
-    color: #8a857a;
+    color: var(--notes-muted, #8a857a);
     margin-bottom: 3px;
   }
   .panel-title {
@@ -275,8 +287,8 @@
     word-break: break-word;
   }
   .panel-close {
-    background: #f1ebdc;
-    border: 1.5px solid #141414;
+    background: var(--notes-band, #f1ebdc);
+    border: var(--notes-rule-width, 1.5px) solid var(--notes-ink, #141414);
     width: 22px;
     height: 22px;
     cursor: pointer;
@@ -286,38 +298,39 @@
     line-height: 1;
   }
   .panel-close:hover {
-    background: #141414;
-    color: #ffffff;
+    background: var(--notes-ink, #141414);
+    color: var(--notes-sheet, #ffffff);
   }
   .panel-freshness {
     display: flex;
     gap: 10px;
     align-items: flex-start;
     padding: 8px 16px;
-    border-bottom: 1.5px dashed #141414;
+    border-bottom: var(--notes-rule-width, 1.5px)
+      var(--notes-rule-style, dashed) var(--notes-ink, #141414);
     font-size: 10.5px;
     line-height: 1.45;
   }
   .fresh-badge {
     flex-shrink: 0;
     padding: 1px 6px;
-    border: 1.5px solid #141414;
+    border: var(--notes-rule-width, 1.5px) solid var(--notes-ink, #141414);
     font-size: 9px;
     letter-spacing: 0.14em;
     font-weight: 700;
     background: #5dd879;
   }
   .panel-freshness[data-state="due"] .fresh-badge {
-    background: #ff6b5b;
+    background: var(--notes-accent, #ff6b5b);
   }
   .panel-freshness[data-state="unknown"] .fresh-badge {
-    background: #f5d90a;
+    background: var(--notes-highlight, #f5d90a);
   }
   .fresh-lines {
     list-style: none;
     margin: 0;
     padding: 0;
-    color: #141414;
+    color: var(--notes-ink, #141414);
   }
   .panel-body {
     padding: 14px 18px 18px;
@@ -331,7 +344,7 @@
     font-weight: 700;
     margin: 16px 0 8px;
     text-transform: uppercase;
-    border-top: 1px dashed #141414;
+    border-top: 1px dashed var(--notes-ink, #141414);
     padding-top: 10px;
   }
   .panel-body :global(h2:first-child) {
@@ -344,7 +357,7 @@
     letter-spacing: 0.1em;
     font-weight: 700;
     margin: 12px 0 6px;
-    color: #8a857a;
+    color: var(--notes-muted, #8a857a);
   }
   .panel-body :global(p) {
     margin: 0 0 10px;
@@ -372,28 +385,28 @@
   }
   .panel-body :global(th),
   .panel-body :global(td) {
-    border: 1px solid #141414;
+    border: 1px solid var(--notes-ink, #141414);
     padding: 4px 8px;
     text-align: left;
     vertical-align: top;
   }
   .panel-body :global(th) {
-    background: #f1ebdc;
+    background: var(--notes-band, #f1ebdc);
     font-weight: 700;
     font-size: 10px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
   .panel-body :global(code) {
-    background: #f1ebdc;
+    background: var(--notes-band, #f1ebdc);
     padding: 1px 5px;
     font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
     font-size: 11.5px;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--notes-rule, rgba(0, 0, 0, 0.15));
   }
   .panel-body :global(pre) {
-    background: #f1ebdc;
-    border: 1px solid #141414;
+    background: var(--notes-band, #f1ebdc);
+    border: 1px solid var(--notes-ink, #141414);
     padding: 10px 12px;
     margin: 10px 0;
     overflow-x: auto;
@@ -415,43 +428,44 @@
   .panel-body :global(blockquote) {
     margin: 10px 0;
     padding: 8px 12px;
-    border-left: 3px solid #141414;
-    background: #f1ebdc;
+    border-left: 3px solid var(--notes-ink, #141414);
+    background: var(--notes-band, #f1ebdc);
   }
   .panel-body :global(a.wl) {
-    color: #141414;
+    color: var(--notes-ink, #141414);
     text-decoration: underline;
-    text-decoration-color: #ff6b5b;
+    text-decoration-color: var(--notes-accent, #ff6b5b);
     text-underline-offset: 2px;
     cursor: pointer;
   }
   .panel-body :global(a.wl:hover) {
-    background: #f5d90a;
+    background: var(--notes-highlight, #f5d90a);
   }
   .panel-body :global(a.wl.dead) {
-    color: #8a857a;
+    color: var(--notes-muted, #8a857a);
     text-decoration-style: dotted;
-    text-decoration-color: #8a857a;
+    text-decoration-color: var(--notes-muted, #8a857a);
     cursor: default;
   }
   .panel-body :global(.tag) {
     display: inline-block;
     font-size: 10px;
     padding: 1px 6px;
-    border: 1px solid #141414;
-    background: #ffffff;
+    border: 1px solid var(--notes-ink, #141414);
+    background: var(--notes-sheet, #ffffff);
     margin-right: 4px;
   }
   .panel-loading,
   .panel-error {
-    color: #8a857a;
+    color: var(--notes-muted, #8a857a);
     font-style: italic;
   }
   .panel-error {
-    color: #cc0000;
+    color: var(--notes-error, #cc0000);
   }
   .panel-foot {
-    border-top: 1.5px dashed #141414;
+    border-top: var(--notes-rule-width, 1.5px) var(--notes-rule-style, dashed)
+      var(--notes-ink, #141414);
     padding: 12px 16px;
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -462,7 +476,7 @@
     margin: 0 0 6px;
     font-size: 9px;
     letter-spacing: 0.14em;
-    color: #8a857a;
+    color: var(--notes-muted, #8a857a);
     font-weight: 700;
   }
   .link-list {
@@ -490,21 +504,21 @@
     color: inherit;
   }
   .link-list .link-row:hover {
-    color: #ff6b5b;
+    color: var(--notes-accent, #ff6b5b);
   }
   .link-list .link-row:focus-visible {
-    outline: 1.5px solid #141414;
+    outline: 1.5px solid var(--notes-ink, #141414);
     outline-offset: 2px;
   }
   .link-list .swatch {
     width: 8px;
     height: 8px;
-    border: 1.2px solid #141414;
+    border: var(--notes-rule-width, 1.2px) solid var(--notes-ink, #141414);
     flex-shrink: 0;
   }
   .link-list .empty,
   .link-list .more {
-    color: #8a857a;
+    color: var(--notes-muted, #8a857a);
     font-size: 10px;
     cursor: default;
   }
