@@ -2382,16 +2382,6 @@ py_test(
 )
 
 py_test(
-    name = "factory_browser_handoff_prepare_test",
-    srcs = [
-        "frontend/factory-preview/browser_handoff_prepare.py",
-        "frontend/factory-preview/browser_handoff_prepare_test.py",
-    ],
-    data = ["frontend/factory-preview/browser_handoff_check.py"],
-    deps = [":pkg_swarm", "@pip//pytest"],
-)
-
-py_test(
     name = "factory_browser_review_handoff_test",
     srcs = [
         "factory/orchestration/browser_evidence_test.py",

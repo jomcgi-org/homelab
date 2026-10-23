@@ -628,6 +628,17 @@ build_test(
     targets = [":controls_fixture_preview"],
 )
 
+py_test(
+    name = "browser_handoff_prepare_test",
+    srcs = [
+        "factory-preview/browser_handoff_prepare.py",
+        "factory-preview/browser_handoff_prepare_test.py",
+    ],
+    data = ["factory-preview/browser_handoff_check.py"],
+    imports = ["factory-preview"],
+    main = "factory-preview/browser_handoff_prepare_test.py",
+)
+
 # Opt-in token fixture only, never part of :src or :src_public.
 py_test(
     name = "gallery_evidence_test",
