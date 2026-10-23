@@ -71,19 +71,19 @@
 <style>
   .generic {
     padding: clamp(1rem, 3vw, 1.5rem);
-    border: 1px solid var(--grim-paper-line);
-    border-top: 3px solid var(--grim-accent);
+    border: 1px solid var(--stroke);
+    border-top: 1px solid var(--accent-ink);
     max-width: 40rem;
   }
 
   .name {
     font-size: clamp(1.4rem, 4vw, 1.9rem);
-    color: var(--grim-accent-strong);
+    color: var(--accent-ink);
   }
 
   .strap {
     font-size: 0.8rem;
-    color: var(--grim-ink-soft);
+    color: var(--ink-2);
   }
 
   .fields {
@@ -99,18 +99,18 @@
   }
 
   .key {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 0.6rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--grim-ink-soft);
+    color: var(--ink-2);
     min-width: 7rem;
     flex-shrink: 0;
   }
 
   .val {
-    font-family: var(--grim-serif);
-    color: var(--grim-ink);
+    font-family: var(--font-ui);
+    color: var(--ink);
   }
 
   .prose .key {
@@ -119,16 +119,16 @@
   }
 
   .para {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 0.95rem;
     line-height: 1.55;
-    color: var(--grim-ink);
+    color: var(--ink);
     margin-bottom: 0.3rem;
   }
 
   .none {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-style: italic;
-    color: var(--grim-ink-soft);
+    color: var(--ink-2);
   }
 </style>

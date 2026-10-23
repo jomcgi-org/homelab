@@ -127,19 +127,19 @@
     align-items: center;
     gap: 8px;
     padding: 6px 12px 6px 6px;
-    border: 1px solid var(--grim-line);
-    border-radius: 999px;
-    background: var(--grim-surface);
-    color: var(--grim-ink);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
+    color: var(--ink);
     cursor: pointer;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+
     transition:
       transform 160ms ease,
       border-color 120ms ease;
   }
   .dock-pill:hover,
   .dock-pill:focus-visible {
-    border-color: var(--grim-accent);
+    border-color: var(--accent-ink);
     transform: translateY(-1px);
   }
   .constel-dock.reduced .dock-pill:hover {
@@ -149,19 +149,19 @@
   .dock-preview {
     width: 34px;
     height: 34px;
-    border-radius: 50%;
+    border-radius: 0;
     overflow: hidden;
     display: block;
     flex: none;
-    background: var(--grim-paper);
+    background: var(--sheet);
   }
 
   .dock-count {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.04em;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .dock-panel {
@@ -169,10 +169,10 @@
     max-height: min(360px, 60vh);
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--grim-line);
-    border-radius: 10px;
-    background: var(--grim-surface);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
+
     overflow: hidden;
     transform-origin: bottom right;
     animation: dock-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -196,14 +196,14 @@
     align-items: center;
     justify-content: space-between;
     padding: 10px 8px 10px 14px;
-    border-bottom: 1px solid var(--grim-line);
+    border-bottom: 1px solid var(--stroke);
   }
   .dock-panel-title {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.14em;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
   .dock-close {
     font-size: 16px;
@@ -211,13 +211,13 @@
     padding: 4px 8px;
     border: none;
     background: none;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     cursor: pointer;
-    border-radius: 6px;
+    border-radius: 0;
   }
   .dock-close:hover {
-    background: var(--grim-accent-soft);
-    color: var(--grim-ink);
+    background: var(--band);
+    color: var(--ink);
   }
 
   .dock-list {
@@ -232,20 +232,20 @@
     align-items: center;
     gap: 8px;
     padding: 7px 8px;
-    border-radius: 6px;
+    border-radius: 0;
     text-decoration: none;
-    color: var(--grim-ink);
+    color: var(--ink);
     font-size: 12.5px;
     transition: background 120ms ease;
   }
   .dock-item:hover,
   .dock-item:focus-visible {
-    background: var(--grim-accent-soft);
+    background: var(--band);
   }
   .dock-dot {
     width: 8px;
     height: 8px;
-    border-radius: 999px;
+    border-radius: 0;
     background: var(--dock-item-color);
     flex: none;
   }
