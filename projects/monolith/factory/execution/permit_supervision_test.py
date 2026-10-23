@@ -2184,3 +2184,124 @@ def test_session_dispatch_diagnostics_reject_invalid_identity(sid, seq):
 
     with pytest.raises(ValueError):
         inspect_session_turn(sid, seq)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        None,
+        True,
+        "",
+        "kg-fact-review",
+        "kg:" + "A" * 64,
+        "kg:" + "a" * 63,
+        "kg:" + "a" * 64 + "\n",
+        "kg:' OR 1=1",
+    ],
+)
+def test_raw_diagnostics_reject_nonexact_job_before_read(name):
+    from factory.execution.admission_diagnostics import inspect_raw_extraction
+
+    with pytest.raises(ValueError):
+        inspect_raw_extraction(name, session=object())
+
+
+def test_raw_diagnostics_bounded_select_only_and_redacted(database):
+    from sqlalchemy import event
+    from factory.execution.admission_diagnostics import inspect_raw_extraction
+    from knowledge.api import EXTRACTION_VERSION
+
+    raw_id = "a" * 64
+    permit_id = seed(database, tier="kg", job_held=True)
+    with database.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE raw_inputs (id INTEGER, raw_id TEXT, extra TEXT, content TEXT)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE atom_raw_provenance (id INTEGER, raw_fk INTEGER, gardener_version TEXT, created_at TEXT, error TEXT, atom_fk INTEGER)"
+            )
+        )
+        conn.execute(
+            text("INSERT INTO raw_inputs VALUES (1, :raw, :extra, :secret)"),
+            {
+                "raw": raw_id,
+                "extra": json.dumps({"extraction_passes": 2, "token": "PRIVATE_TOKEN"}),
+                "secret": "PRIVATE_CONTENT",
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO atom_raw_provenance VALUES (:id, 1, :version, :stamp, :error, :atom)"
+            ),
+            [
+                dict(
+                    id=i,
+                    version=EXTRACTION_VERSION,
+                    stamp="2026-10-23T22:40:00+00:00",
+                    error="PRIVATE_ERROR" if i % 2 else None,
+                    atom=i if i % 2 == 0 else None,
+                )
+                for i in range(1001)
+            ],
+        )
+        conn.execute(
+            text("UPDATE capacity_reservations SET routine_job_name=:job WHERE id=:id"),
+            {"job": "kg:" + raw_id, "id": permit_id},
+        )
+        conn.execute(text("UPDATE agent_sessions SET status='PRIVATE_STATUS'"))
+    statements = []
+
+    def record(_conn, _cursor, statement, _params, _context, _many):
+        statements.append(statement)
+
+    event.listen(database, "before_cursor_execute", record)
+    try:
+        with Session(database) as db:
+            result = inspect_raw_extraction("kg:" + raw_id, session=db)
+            absent = inspect_raw_extraction("kg:" + "b" * 64, session=db)
+    finally:
+        event.remove(database, "before_cursor_execute", record)
+    assert all(s.lstrip().upper().startswith("SELECT") for s in statements)
+    assert "PRIVATE_" not in json.dumps(result)
+    assert result["extraction_passes"] == 2
+    assert result["provenance"]["rows_observed"] == 1000
+    assert result["provenance"]["truncated"] is True
+    assert result["provenance"]["error_rows"] == 500
+    assert result["provenance"]["atom_rows_without_error"] == 500
+    assert result["attempts"][0]["permit_id"] == permit_id
+    assert result["attempts"][0]["session_status"] == "unrecognized"
+    assert result["recovery_authorized"] is False
+    assert absent["raw_found"] is False
+    assert absent["extraction_passes"] is None
+    assert absent["provenance"] is None
+
+
+def test_raw_diagnostics_attempt_bound_and_foreign_job(database):
+    from factory.execution.admission_diagnostics import inspect_raw_extraction
+
+    ids = [seed(database, key=f"raw-{i}", tier="kg") for i in range(7)]
+    foreign = seed(database, key="foreign", tier="kg")
+    with database.begin() as conn:
+        conn.execute(
+            text("CREATE TABLE raw_inputs (id INTEGER, raw_id TEXT, extra TEXT)")
+        )
+        conn.execute(
+            text(
+                "UPDATE capacity_reservations SET routine_job_name=:job WHERE id!=:foreign"
+            ),
+            {"job": "kg:" + "a" * 64, "foreign": foreign},
+        )
+    with database.begin() as conn:
+        conn.execute(
+            text("UPDATE capacity_reservations SET state='running' WHERE id=:id"),
+            {"id": ids[-1]},
+        )
+    with Session(database) as db:
+        result = inspect_raw_extraction("kg:" + "a" * 64, session=db)
+    assert result["attempts"][0]["state"] == "running"
+    assert [a["permit_id"] for a in result["attempts"]] == list(reversed(ids))[:5]
+    assert result["attempts_truncated"] is True
+    assert result["raw_found"] is False

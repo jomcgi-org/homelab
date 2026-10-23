@@ -1689,3 +1689,25 @@ async def factory_apply_refinement_delivery(
         request_key,
         expected_preview_sha256,
     )
+
+
+@mcp.tool
+async def factory_raw_extraction_diagnostics(
+    job_name: Annotated[
+        str, Field(pattern=r"^kg:[0-9a-f]{64}$", min_length=67, max_length=67)
+    ],
+) -> dict:
+    """Read bounded outcome metadata for one exact raw extraction job.
+
+    Requires a standing human operator. Returns up to five permit attempts and
+    counts/timestamps for up to 1000 current-version provenance rows. No raw
+    content, results, error text or credentials. Does not contact guests,
+    change reservations, schedule work or authorize recovery. Missing evidence
+    does not establish nonexecution; provenance is not attributed to an attempt.
+    """
+    refusal = _refuse(current_principal())
+    if refusal is not None:
+        return refusal
+    from factory.execution.admission_diagnostics import inspect_raw_extraction
+
+    return await asyncio.to_thread(inspect_raw_extraction, job_name)
