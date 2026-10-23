@@ -68,23 +68,106 @@ def viewport_page_capture(page, path, width):
     that raw full-page image too; geometry checks still reject head overflow.
     The comparison image contains every pixel in the viewport, at full height.
     """
-    height = page.evaluate("document.documentElement.scrollHeight")
-    if page.evaluate("document.documentElement.scrollWidth") > width:
-        page.screenshot(
-            path=str(path.with_stem(path.stem + "-overflow")),
-            full_page=True,
-            animations="disabled",
+    from PIL import Image
+    import hashlib
+
+    geometry = page.evaluate("""() => ({width: document.documentElement.scrollWidth,
+        height: document.documentElement.scrollHeight, viewport: innerHeight,
+        x: scrollX, y: scrollY})""")
+    height = geometry["height"]
+    manifest = {"document": geometry, "images": [], "segments": []}
+
+    def save(target, expected, **options):
+        page.screenshot(path=str(target), animations="disabled", scale="css", **options)
+        with Image.open(target) as image:
+            if image.size != expected:
+                raise AssertionError(
+                    f"clipped evidence {target}: {image.size} != {expected}"
+                )
+        manifest["images"].append(
+            {
+                "path": target.name,
+                "width": expected[0],
+                "height": expected[1],
+                "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            }
         )
-    page.screenshot(
-        path=str(path),
-        clip={"x": 0, "y": 0, "width": width, "height": height},
-        animations="disabled",
+
+    # full_page is required even with a clip: without it Chromium truncates the
+    # clip at the viewport height (900px in this harness).
+    save(
+        path.with_stem(path.stem + "-raw"), (geometry["width"], height), full_page=True
     )
+    save(
+        path,
+        (width, height),
+        full_page=True,
+        clip={"x": 0, "y": 0, "width": width, "height": height},
+    )
+    try:
+        covered = 0
+        for index, top in enumerate(range(0, height, geometry["viewport"])):
+            page.evaluate(
+                "top => window.scrollTo({left:0, top, behavior:'instant'})", top
+            )
+            page.evaluate(
+                "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+            )
+            actual = page.evaluate("scrollY")
+            if actual > covered or actual + geometry["viewport"] <= covered:
+                raise AssertionError(
+                    f"missing scroll coverage at {actual}, covered {covered}"
+                )
+            target = path.with_stem(f"{path.stem}-segment-{index:03d}")
+            save(target, (width, geometry["viewport"]), full_page=False)
+            covered = actual + geometry["viewport"]
+            manifest["segments"].append(
+                {"path": target.name, "top": actual, "bottom": min(covered, height)}
+            )
+            if covered >= height:
+                break
+        if covered < height:
+            raise AssertionError(f"missing lower document: {covered} < {height}")
+        if page.evaluate("document.documentElement.scrollHeight") != height:
+            raise AssertionError(
+                "stale evidence: document height changed during capture"
+            )
+    finally:
+        page.evaluate(
+            "p => window.scrollTo({left:p.x, top:p.y, behavior:'instant'})", geometry
+        )
+    path.with_suffix(".capture.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return manifest
+
+
+def validate_capture(path):
+    """Fail closed on absent, replaced, or clipped files before review."""
+    from PIL import Image
+    import hashlib
+
+    manifest = json.loads(path.with_suffix(".capture.json").read_text())
+    for record in manifest["images"]:
+        image_path = path.parent / record["path"]
+        if hashlib.sha256(image_path.read_bytes()).hexdigest() != record["sha256"]:
+            raise AssertionError(f"stale evidence: {image_path}")
+        with Image.open(image_path) as image:
+            if image.size != (record["width"], record["height"]):
+                raise AssertionError(f"clipped evidence: {image_path}")
+    covered = 0
+    for segment in manifest["segments"]:
+        if segment["top"] > covered or segment["bottom"] <= covered:
+            raise AssertionError("missing scroll segment")
+        covered = segment["bottom"]
+    if covered != manifest["document"]["height"]:
+        raise AssertionError("incomplete document coverage")
+    return manifest
 
 
 def capture(artifact, output, label, *, acceptance=False):
     from playwright.sync_api import sync_playwright
 
+    if output.exists() and any(output.iterdir()):
+        raise AssertionError("stale evidence: output must be empty")
     output.mkdir(parents=True, exist_ok=True)
     build = json.loads((artifact / "sheet-build.json").read_text())
     assert build["fixture_only"] and build["production_sha"] == label, (label, build)
@@ -118,6 +201,9 @@ def capture(artifact, output, label, *, acceptance=False):
                             reduced_motion="reduce",
                             device_scale_factor=1,
                         )
+                        context.tracing.start(
+                            screenshots=True, snapshots=True, sources=False
+                        )
                         context.add_init_script(INIT_SCRIPT)
                         page = context.new_page()
                         errors, external = [], []
@@ -136,161 +222,183 @@ def capture(artifact, output, label, *, acceptance=False):
 
                         page.route("**/*", route)
                         url = f"http://127.0.0.1:{server.server_port}/sheets.html?view={view}{'&banner=1' if banner else ''}"
-                        page.goto(url)
-                        page.wait_for_selector("main")
-                        page.evaluate("document.fonts.ready")
-                        if view == "landing":
-                            page.wait_for_selector(".replay")
-                        page.wait_for_timeout(100)
-                        geometry = page.evaluate(GEOMETRY)
-                        viewport_page_capture(page, output / f"{key}.png", width)
-                        opening = {
-                            "top": page.evaluate("scrollY"),
-                            "geometry": geometry,
-                        }
-                        page.evaluate(
-                            "window.scrollTo(0, document.documentElement.scrollHeight)"
-                        )
-                        page.wait_for_timeout(50)
-                        scrolled = page.evaluate(GEOMETRY)
-                        page.evaluate("window.scrollTo(0, 0)")
-                        page.wait_for_timeout(300)
-                        checks = {}
-                        if view.startswith("updates"):
-                            checks["links"] = page.locator("main a").evaluate_all(
-                                "nodes => nodes.map(node => node.getAttribute('href'))"
+                        try:
+                            page.goto(url)
+                            page.wait_for_selector("main")
+                            page.evaluate("document.fonts.ready")
+                            if view == "landing":
+                                page.wait_for_selector(".replay")
+                            page.wait_for_timeout(100)
+                            geometry = page.evaluate(GEOMETRY)
+                            viewport_page_capture(page, output / f"{key}.png", width)
+                            opening = {
+                                "top": page.evaluate("scrollY"),
+                                "geometry": geometry,
+                            }
+                            page.evaluate(
+                                "window.scrollTo(0, document.documentElement.scrollHeight)"
                             )
-                            if acceptance:
-                                if view != "updates-empty":
-                                    assert page.locator(
-                                        'a[href*="month=2026-09"]'
-                                    ).count(), key
-                                assert (
-                                    page.locator('a[href*="project=monolith"]').count()
-                                    or "filter" in view
-                                ), key
-                            if view == "updates-filter":
-                                page.locator(".spine-group summary").filter(
-                                    has_text="Technologies"
-                                ).click()
-                                page.locator(
-                                    '.spine-list a[href*="technology=frontend"]'
-                                ).click()
-                                page.get_by_role(
-                                    "link", name="Open September 2026"
-                                ).click()
-                                checks["clickedLinks"] = page.evaluate(
-                                    "window.__fixtureLinks"
+                            page.wait_for_timeout(50)
+                            scrolled = page.evaluate(GEOMETRY)
+                            page.evaluate("window.scrollTo(0, 0)")
+                            page.wait_for_timeout(300)
+                            checks = {}
+                            if view.startswith("updates"):
+                                checks["links"] = page.locator("main a").evaluate_all(
+                                    "nodes => nodes.map(node => node.getAttribute('href'))"
                                 )
-                                assert any(
-                                    "technology=frontend" in link
-                                    and "project=monolith" in link
-                                    for link in checks["clickedLinks"]
-                                ), key
-                                assert any(
-                                    "month=2026-09" in link
-                                    and "project=monolith" in link
-                                    for link in checks["clickedLinks"]
-                                ), key
-                        if view == "post":
-                            # Read the click's immediate history update. Once
-                            # scrolling settles, the production reading-band
-                            # observer may correctly choose the next heading.
-                            checks["tocHash"] = page.locator(
-                                '.toc a[href="#2-what-to-inspect"]'
-                            ).evaluate(
-                                "node => { node.click(); return location.hash; }"
-                            )
-                            assert checks["tocHash"] == "#2-what-to-inspect", key
-                        if view == "landing":
-                            page.get_by_role(
-                                "button", name="Agentic coding", exact=True
-                            ).click()
-                            assert (
+                                if acceptance:
+                                    if view != "updates-empty":
+                                        assert page.locator(
+                                            'a[href*="month=2026-09"]'
+                                        ).count(), key
+                                    assert (
+                                        page.locator(
+                                            'a[href*="project=monolith"]'
+                                        ).count()
+                                        or "filter" in view
+                                    ), key
+                                if view == "updates-filter":
+                                    page.locator(".spine-group summary").filter(
+                                        has_text="Technologies"
+                                    ).click()
+                                    page.locator(
+                                        '.spine-list a[href*="technology=frontend"]'
+                                    ).click()
+                                    page.get_by_role(
+                                        "link", name="Open September 2026"
+                                    ).click()
+                                    checks["clickedLinks"] = page.evaluate(
+                                        "window.__fixtureLinks"
+                                    )
+                                    assert any(
+                                        "technology=frontend" in link
+                                        and "project=monolith" in link
+                                        for link in checks["clickedLinks"]
+                                    ), key
+                                    assert any(
+                                        "month=2026-09" in link
+                                        and "project=monolith" in link
+                                        for link in checks["clickedLinks"]
+                                    ), key
+                            if view == "post":
+                                # Read the click's immediate history update. Once
+                                # scrolling settles, the production reading-band
+                                # observer may correctly choose the next heading.
+                                checks["tocHash"] = page.locator(
+                                    '.toc a[href="#2-what-to-inspect"]'
+                                ).evaluate(
+                                    "node => { node.click(); return location.hash; }"
+                                )
+                                assert checks["tocHash"] == "#2-what-to-inspect", key
+                            if view == "landing":
                                 page.get_by_role(
                                     "button", name="Agentic coding", exact=True
-                                ).get_attribute("aria-pressed")
-                                == "true"
+                                ).click()
+                                assert (
+                                    page.get_by_role(
+                                        "button", name="Agentic coding", exact=True
+                                    ).get_attribute("aria-pressed")
+                                    == "true"
+                                ), key
+                            if view == "attempt":
+                                page.locator("details.ask summary").click()
+                                assert page.locator("details.ask[open]").count() == 1, (
+                                    key
+                                )
+                                page.get_by_role("button", name="chars +").click()
+                                assert (
+                                    page.locator(
+                                        '.more-tog[aria-expanded="true"]'
+                                    ).count()
+                                    == 1
+                                ), key
+                            if view == "task":
+                                page.get_by_role(
+                                    "button", name="implement, done, open step 1"
+                                ).click()
+                                assert page.evaluate("location.hash") == "#step-1", key
+                            if acceptance:
+                                assert geometry["document"]["scrollWidth"] <= width, (
+                                    key,
+                                    geometry["document"],
+                                )
+                                assert (
+                                    page.evaluate(
+                                        "document.documentElement.scrollWidth"
+                                    )
+                                    <= width
+                                ), (key, "interaction overflow")
+                            if view in ["task", "attempt", "landing", "updates-filter"]:
+                                viewport_page_capture(
+                                    page, output / f"{key}-interaction.png", width
+                                )
+                            page.keyboard.press("Tab")
+                            checks["focus"] = page.evaluate("""async () => {
+                              const nodes = [...document.querySelectorAll('main a[href],main button,main summary,main input')]
+                                .filter(node => node.getClientRects().length && !node.disabled);
+                              const checks = [];
+                              for (const node of nodes) {
+                                node.focus({preventScroll:true});
+                                // Flush the transition's start, then wait for its
+                                // final rendered value, even in reduced motion.
+                                getComputedStyle(node).outline;
+                                await new Promise(requestAnimationFrame);
+                                await new Promise(requestAnimationFrame);
+                                await Promise.all(node.getAnimations().map(animation => animation.finished));
+                                const style = getComputedStyle(node);
+                                checks.push({tag:node.tagName, label:(node.getAttribute('aria-label') || node.textContent).trim().slice(0,60),
+                                  visible:node.matches(':focus-visible'), radius:style.borderRadius,
+                                  outline:style.outline, offset:style.outlineOffset});
+                              }
+                              nodes[0]?.focus({preventScroll:true});
+                              return checks;
+                            }""")
+                            if checks["focus"]:
+                                viewport_page_capture(
+                                    page, output / f"{key}-focus.png", width
+                                )
+                            assert not errors, (key, errors)
+                            assert not page.evaluate(
+                                "window.__fixtureUnexpectedFetches"
                             ), key
-                        if view == "attempt":
-                            page.locator("details.ask summary").click()
-                            assert page.locator("details.ask[open]").count() == 1, key
-                            page.get_by_role("button", name="chars +").click()
-                            assert (
-                                page.locator('.more-tog[aria-expanded="true"]').count()
-                                == 1
-                            ), key
-                        if view == "task":
-                            page.get_by_role(
-                                "button", name="implement, done, open step 1"
-                            ).click()
-                            assert page.evaluate("location.hash") == "#step-1", key
-                        if acceptance:
-                            assert geometry["document"]["scrollWidth"] <= width, (
+                            page.evaluate("window.__fixtureUnmount()")
+                            page.wait_for_timeout(20)
+                            observer = page.evaluate("window.__observers")
+                            assert observer["created"] == observer["disconnected"], (
                                 key,
-                                geometry["document"],
+                                observer,
                             )
-                            assert (
-                                page.evaluate("document.documentElement.scrollWidth")
-                                <= width
-                            ), (key, "interaction overflow")
-                        if view in ["task", "attempt", "landing", "updates-filter"]:
-                            page.screenshot(
-                                path=str(output / f"{key}-interaction.png"),
-                                full_page=True,
-                                animations="disabled",
+                            probes = [f"{key}.png"]
+                            records.append(
+                                {
+                                    "key": key,
+                                    "opening": opening,
+                                    "scrolled": scrolled,
+                                    "checks": checks,
+                                    "observers": observer,
+                                    "blocked_external_hints": external,
+                                    "repeatability_images": probes,
+                                }
                             )
-                        page.keyboard.press("Tab")
-                        checks["focus"] = page.evaluate("""async () => {
-                          const nodes = [...document.querySelectorAll('main a[href],main button,main summary,main input')]
-                            .filter(node => node.getClientRects().length && !node.disabled);
-                          const checks = [];
-                          for (const node of nodes) {
-                            node.focus({preventScroll:true});
-                            // Flush the transition's start, then wait for its
-                            // final rendered value, even in reduced motion.
-                            getComputedStyle(node).outline;
-                            await new Promise(requestAnimationFrame);
-                            await new Promise(requestAnimationFrame);
-                            await Promise.all(node.getAnimations().map(animation => animation.finished));
-                            const style = getComputedStyle(node);
-                            checks.push({tag:node.tagName, label:(node.getAttribute('aria-label') || node.textContent).trim().slice(0,60),
-                              visible:node.matches(':focus-visible'), radius:style.borderRadius,
-                              outline:style.outline, offset:style.outlineOffset});
-                          }
-                          nodes[0]?.focus({preventScroll:true});
-                          return checks;
-                        }""")
-                        if checks["focus"]:
-                            page.screenshot(
-                                path=str(output / f"{key}-focus.png"),
-                                full_page=True,
-                                animations="disabled",
+                        except Exception as error:
+                            (output / "failure.json").write_text(
+                                json.dumps(
+                                    {
+                                        "revision": label,
+                                        "case": key,
+                                        "error": str(error),
+                                        "status": "incomplete",
+                                        "completed_cases": len(records),
+                                    },
+                                    indent=2,
+                                )
+                                + "\n"
                             )
-                        assert not errors, (key, errors)
-                        assert not page.evaluate("window.__fixtureUnexpectedFetches"), (
-                            key
-                        )
-                        page.evaluate("window.__fixtureUnmount()")
-                        page.wait_for_timeout(20)
-                        observer = page.evaluate("window.__observers")
-                        assert observer["created"] == observer["disconnected"], (
-                            key,
-                            observer,
-                        )
-                        probes = [f"{key}.png"]
-                        records.append(
-                            {
-                                "key": key,
-                                "opening": opening,
-                                "scrolled": scrolled,
-                                "checks": checks,
-                                "observers": observer,
-                                "blocked_external_hints": external,
-                                "repeatability_images": probes,
-                            }
-                        )
-                        context.close()
+                            raise
+                        finally:
+                            context.tracing.stop(path=str(output / f"{key}-trace.zip"))
+                            context.close()
                         # Fractional sticky/backdrop layers can snap a glyph
                         # differently on two renders of the unchanged base.
                         # Keep fresh-context probes for these mobile journals.
@@ -340,7 +448,11 @@ def capture(artifact, output, label, *, acceptance=False):
     finally:
         server.shutdown()
         server.server_close()
+    for record in records:
+        validate_capture(output / f"{record['key']}.png")
     result = {
+        "role": "capture-only",
+        "visual_acceptance": "not assessed; independent review required",
         "revision": label,
         "build": build,
         "fixture_only": True,

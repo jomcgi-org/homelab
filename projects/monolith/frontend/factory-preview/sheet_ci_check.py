@@ -16,7 +16,7 @@ import tarfile
 import tempfile
 
 
-def run(output, expected_sha):
+def run(output, expected_sha, *, capture_only=False):
     frontend = Path(__file__).resolve().parent.parent
     repo = frontend.parents[2]
     assert re.fullmatch(r"[0-9a-f]{40}", expected_sha), expected_sha
@@ -74,7 +74,8 @@ def run(output, expected_sha):
             "factory-preview",
             "-p",
             "sheet_check_test.py",
-        ]
+        ],
+        env={**os.environ, "SHEET_REAL_BROWSER": "1"},
     )
     env = {**os.environ, "FACTORY_PREVIEW_SHA": expected_sha}
     command(
@@ -98,7 +99,7 @@ def run(output, expected_sha):
             str(output / "after"),
             "--label",
             expected_sha,
-            "--acceptance",
+            *([] if capture_only else ["--acceptance"]),
         ]
     )
     with tempfile.TemporaryDirectory(
@@ -143,6 +144,22 @@ def run(output, expected_sha):
                 base,
             ]
         )
+    (output / "provenance.json").write_text(
+        json.dumps(
+            {
+                "base_sha": base,
+                "target_sha": target,
+                "head_sha": expected_sha,
+                "harness_sha": expected_sha,
+                "role": "capture-only" if capture_only else "comparison",
+                "visual_acceptance": "independent review required",
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    if capture_only:
+        return
     command(
         [
             sys.executable,

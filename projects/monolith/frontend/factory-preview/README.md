@@ -80,3 +80,45 @@ still records those extra columns; the head must have no horizontal page overflo
 `factory-preview-evidence-<head-sha>` artifact's `sheets/` directory includes both revisions, comparisons,
 geometry and interaction screenshots. Review those images before acceptance.
 These invented fixtures are not live-host, deployment or authorized-access checks.
+
+### Capture-only Luna handoff
+
+Luna executes the existing checklist and gathers evidence. It must not assess
+copy, approve design, declare visual parity, merge, or perform live acceptance.
+An independent reviewer owns those judgments. The known comparison failures and
+updates smooth-scroll finding on #7293 remain open regardless of capture success.
+
+Use a clean exact-head checkout and the existing frozen dependencies/Chromium
+setup from `.github/workflows/factory-mobile-preview.yml`. Supply the actual PR
+event file in `GITHUB_EVENT_PATH`, then run:
+
+```sh
+python projects/monolith/frontend/factory-preview/browser_check.py \
+  --artifact projects/monolith/frontend/factory-fixture-preview \
+  --output factory-preview-evidence --expected-sha "$HEAD_SHA" --capture-only
+```
+
+This reuses the sheet builder, source archive, local network fence and checklist;
+it does not invoke the pixel comparator or the layout acceptance assertions.
+It captures 80 mobile/desktop, light/dark and banner cases for each source
+revision, interaction/focus states, raw full pages, equal-width full pages,
+viewport-sized scroll segments and per-case traces. PNG dimensions must match
+the measured document or viewport, segment coverage must reach the document
+bottom, and a changing document height fails. Each capture manifest records
+image hashes and dimensions. Nonempty output directories are rejected. A case
+failure writes `failure.json` and retains its trace; partial evidence is not a
+successful run.
+
+`provenance.json` records the merge-base, PR target, exact head and harness SHA.
+Each build records its production and harness SHA. Pass the entire before/after
+bundle, capture manifests, traces and provenance to a separate reviewer. The
+reviewer must revalidate hashes with `validate_capture`, verify all expected
+cases/states exist and compare the recorded SHAs with the current PR. Evidence
+from an older head is stale even when its pixels match. The capture role reports
+only checklist completion, artifact locations and failures. Runtime model/tool
+routing must be observed in a real Luna session; local Chromium tests alone do
+not establish Luna capability.
+
+The real long-page regression test runs with `SHEET_REAL_BROWSER=1` in preview
+CI. It checks both viewport widths against a 6352px document and rejects missing
+and replaced images. The ordinary Bazel comparator unit target needs no browser.

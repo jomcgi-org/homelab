@@ -3,14 +3,14 @@
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, call
 
 from PIL import Image
 
-from sheet_check import compare, viewport_page_capture
+from sheet_check import compare, validate_capture, viewport_page_capture
 
 
 class ComparisonTest(unittest.TestCase):
@@ -65,27 +65,6 @@ class ComparisonTest(unittest.TestCase):
     def test_identical_pixels_pass(self):
         self.assertEqual(self.compare()["regressions"], [])
 
-    def test_overflow_keeps_raw_image_and_equal_viewport_capture_surface(self):
-        page = Mock()
-        page.evaluate.side_effect = [1255, 396]
-        path = self.output / "blog.png"
-        viewport_page_capture(page, path, 390)
-        self.assertEqual(
-            page.screenshot.call_args_list,
-            [
-                call(
-                    path=str(self.output / "blog-overflow.png"),
-                    full_page=True,
-                    animations="disabled",
-                ),
-                call(
-                    path=str(path),
-                    clip={"x": 0, "y": 0, "width": 390, "height": 1255},
-                    animations="disabled",
-                ),
-            ],
-        )
-
     def test_single_changed_pixel_fails(self):
         image = Image.open(self.after / "journal.png")
         image.putpixel((10, 10), (0, 0, 0))
@@ -125,6 +104,36 @@ class ComparisonTest(unittest.TestCase):
         path.write_text(json.dumps(result))
         with self.assertRaisesRegex(AssertionError, "keyboard focus treatment changed"):
             self.compare()
+
+
+@unittest.skipUnless(
+    os.environ.get("SHEET_REAL_BROWSER") == "1", "real Chromium runs in preview CI"
+)
+class BrowserCaptureTest(unittest.TestCase):
+    def test_real_long_page_and_corrupt_evidence(self):
+        from playwright.sync_api import sync_playwright
+
+        with tempfile.TemporaryDirectory() as directory, sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            for width in (390, 1440):
+                page = browser.new_page(viewport={"width": width, "height": 900})
+                page.set_content(
+                    "<style>body{margin:0;height:6352px}</style><button>Capture</button>"
+                )
+                page.get_by_role("button", name="Capture").click()
+                path = Path(directory) / f"{width}.png"
+                manifest = viewport_page_capture(page, path, width)
+                self.assertEqual(manifest["document"]["height"], 6352)
+                self.assertEqual(len(manifest["segments"]), 8)
+                validate_capture(path)
+                Image.new("RGB", (width, 900)).save(path)
+                with self.assertRaisesRegex(AssertionError, "stale evidence"):
+                    validate_capture(path)
+                path.unlink()
+                with self.assertRaises(FileNotFoundError):
+                    validate_capture(path)
+                page.close()
+            browser.close()
 
 
 if __name__ == "__main__":
