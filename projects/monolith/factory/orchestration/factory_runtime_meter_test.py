@@ -2138,3 +2138,469 @@ def test_fresh_issue_rechecks_inventory(database, validation_ready, change):
 def test_fresh_issue_selector_refusals(validation_ready, receipt_id, issue_number):
     with pytest.raises(ValueError):
         validation_ready.preview(receipt_id, "selected work", issue_number=issue_number)
+
+
+@pytest.fixture
+def completed_refinement(database, validation_ready, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor
+
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.direction_json = "{}"
+        row.task_class = "refine"
+        row.routing_tier = "advisory"
+        row.state = "succeeded"
+        task = db.get(SwarmTask, "task")
+        task.start_state = "succeeded"
+        task.settled_at = datetime.now(timezone.utc)
+        controls._audit(
+            db,
+            "factory:refine",
+            "finish_task",
+            task_id="task",
+            outcome="succeeded",
+            evidence={"state": "refine_agent_ready"},
+        )
+    issue = {
+        "number": 7001,
+        "html_url": "https://github.com/org/repo/issues/7001",
+        "state": "open",
+        "labels": [{"name": "agent-ready"}],
+        "assignees": [],
+        "updated_at": "2026-10-23T18:00:00Z",
+    }
+    monkeypatch.setattr(conductor, "github_get", lambda *args: dict(issue))
+    monkeypatch.setattr(conductor, "github_list", lambda *args: [])
+    return validation_ready, issue
+
+
+def test_completed_refinement_prepares_delivery_without_reviving_receipt(
+    database, completed_refinement
+):
+    validation, _ = completed_refinement
+    with Session(database) as db:
+        before = db.get(FactoryReceipt, 838).model_dump()
+        task_before = db.get(SwarmTask, "task").model_dump()
+    preview = validation.preview(838, "delivery after verified refinement")
+    assert preview["selection_kind"] == "refined_issue"
+    result = validation.apply(
+        838,
+        "delivery after verified refinement",
+        actor="operator",
+        request_key="refined-issue",
+        expected_preview_sha256=preview["preview_sha256"],
+    )
+    assert result["state"] == "paused" and not result["execution_authorized"]
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump() == before
+        assert db.get(SwarmTask, "task").model_dump() == task_before
+        assert len(db.exec(select(FactoryReceipt)).all()) == 1
+        policy = json.loads(db.get(FactoryControl, "factory").policy_json)
+        assert policy["issue_numbers"] == [7001]
+        assert not policy["auto_merge"]
+        for key in ("generation", "task_budget_usd", "max_turns_per_task"):
+            assert policy[key] == preview["policy_before"][key]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"state": "closed"},
+        {"number": 7002},
+        {"html_url": "https://example.invalid/7001"},
+        {"labels": []},
+        {"labels": ["agent-ready", "human"]},
+        {"labels": ["agent-ready", "needs-human"]},
+        {"assignees": [{"login": "owner"}]},
+        {"assignees": None},
+        {"pull_request": {}},
+    ],
+)
+def test_refinement_requires_current_issue_eligibility(completed_refinement, change):
+    validation, issue = completed_refinement
+    issue.update(change)
+    with pytest.raises(ValueError, match="validation_refinement_issue_ineligible"):
+        validation.preview(838, "prepare")
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "refine_needs_human",
+        "refine_deferred",
+        "refine_rejected",
+        "refine_stale",
+        "refine_failed",
+    ],
+)
+def test_refinement_success_is_not_itself_readiness(
+    database, completed_refinement, outcome
+):
+    validation, _ = completed_refinement
+    with Session(database) as db, db.begin():
+        audit = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+        ).one()
+        audit.detail_json = json.dumps(
+            {"outcome": "succeeded", "evidence": {"state": outcome}}
+        )
+    with pytest.raises(ValueError, match="validation_refinement_unverified"):
+        validation.preview(838, "prepare")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing_audit",
+        "duplicate_audit",
+        "wrong_actor",
+        "unsettled",
+        "cancelled",
+        "pending",
+        "uncertain",
+    ],
+)
+def test_refinement_requires_authoritative_quiescent_result(
+    database, completed_refinement, change
+):
+    validation, _ = completed_refinement
+    with Session(database) as db, db.begin():
+        audit = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+        ).one()
+        if change == "missing_audit":
+            db.delete(audit)
+        elif change == "duplicate_audit":
+            controls._audit(
+                db,
+                "factory:refine",
+                "finish_task",
+                task_id="task",
+                outcome="succeeded",
+                evidence={"state": "refine_agent_ready"},
+            )
+        elif change == "wrong_actor":
+            audit.actor = "worker"
+        elif change == "unsettled":
+            db.get(SwarmTask, "task").settled_at = None
+        elif change == "cancelled":
+            db.get(FactoryReceipt, 838).cancellation_requested = True
+        elif change == "pending":
+            db.add(PendingMessage(session_id=1, seq=2, message_text="pending"))
+        else:
+            start = db.exec(select(FactoryStart)).one()
+            start.status = "uncertain"
+    with pytest.raises(ValueError, match="validation_refinement_"):
+        validation.preview(838, "prepare")
+
+
+@pytest.mark.parametrize(
+    "state", ["queued", "admitted", "escalated", "succeeded", "failed", "cancelled"]
+)
+def test_refinement_rejects_any_other_delivery_history(
+    database, completed_refinement, state
+):
+    validation, _ = completed_refinement
+    with Session(database) as db, db.begin():
+        source = db.get(FactoryReceipt, 838).model_dump()
+        source.update(
+            id=839,
+            task_id=None,
+            task_class="bugfix",
+            routing_tier="delivery",
+            state=state,
+        )
+        db.add(FactoryReceipt(**source))
+    with pytest.raises(ValueError, match="validation_refinement_history_ambiguous"):
+        validation.preview(838, "prepare")
+
+
+@pytest.mark.parametrize("kind", ["open", "closed", "truncated", "malformed"])
+def test_refinement_rejects_linked_pr_or_incomplete_lookup(
+    completed_refinement, monkeypatch, kind
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    validation, _ = completed_refinement
+
+    def lookup(repo, endpoint):
+        if kind == "open" and endpoint.startswith("pulls"):
+            return [{"title": "Implement #7001", "body": ""}]
+        if kind == "closed" and endpoint.startswith("issues"):
+            return [
+                {
+                    "event": "cross-referenced",
+                    "source": {
+                        "issue": {
+                            "state": "closed",
+                            "pull_request": {
+                                "url": "https://github.com/org/repo/pull/42"
+                            },
+                        }
+                    },
+                }
+            ]
+        if kind == "truncated":
+            return [{}] * 100
+        if kind == "malformed":
+            return {"message": "unavailable"}
+        return []
+
+    monkeypatch.setattr(conductor, "github_list", lookup)
+    with pytest.raises(
+        ValueError,
+        match="validation_refinement_(pr_reference_ambiguous|pr_lookup_incomplete)",
+    ):
+        validation.preview(838, "prepare")
+
+
+@pytest.mark.parametrize(
+    "change", ["issue", "audit", "receipt", "new_delivery", "control"]
+)
+def test_refinement_apply_rejects_changed_state(database, completed_refinement, change):
+    validation, issue = completed_refinement
+    proposal = validation.preview(838, "prepare")
+    with Session(database) as db, db.begin():
+        if change == "issue":
+            issue["updated_at"] = "2026-10-23T19:00:00Z"
+        elif change == "audit":
+            audit = db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+            ).one()
+            detail = json.loads(audit.detail_json)
+            detail["evidence"]["reason"] = "changed"
+            audit.detail_json = json.dumps(detail)
+        elif change == "receipt":
+            db.get(FactoryReceipt, 838).body = "changed scope"
+        elif change == "new_delivery":
+            source = db.get(FactoryReceipt, 838).model_dump()
+            source.update(
+                id=839,
+                task_id=None,
+                task_class="bugfix",
+                routing_tier="delivery",
+                state="queued",
+            )
+            db.add(FactoryReceipt(**source))
+        else:
+            db.get(FactoryControl, "factory").version += 1
+    with Session(database) as db:
+        control_before = db.get(FactoryControl, "factory").model_dump()
+    with pytest.raises(
+        ValueError, match="validation_(preview_changed|refinement_history_ambiguous)"
+    ):
+        validation.apply(
+            838,
+            "prepare",
+            actor="operator",
+            request_key="changed",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        assert db.get(FactoryControl, "factory").model_dump() == control_before
+        assert (
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == validation.ACTION)
+            ).first()
+            is None
+        )
+
+
+def test_refinement_replay_does_not_read_github(completed_refinement, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor
+
+    validation, _ = completed_refinement
+    proposal = validation.preview(838, "prepare")
+    args = dict(
+        actor="operator",
+        request_key="once",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    result = validation.apply(838, "prepare", **args)
+
+    def forbidden(*args):
+        raise AssertionError("replay must not fetch")
+
+    monkeypatch.setattr(conductor, "github_get", forbidden)
+    assert validation.apply(838, "prepare", **args) == result
+    with pytest.raises(ValueError, match="conflicting_validation_request"):
+        validation.apply(838, "different", **args)
+
+
+def test_refinement_state_rechecked_after_github_read(
+    database, completed_refinement, monkeypatch
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    validation, issue = completed_refinement
+
+    def github_get(*args):
+        with Session(database) as db, db.begin():
+            db.get(FactoryReceipt, 838).cancellation_requested = True
+        return dict(issue)
+
+    monkeypatch.setattr(conductor, "github_get", github_get)
+    with pytest.raises(ValueError, match="validation_receipt_unavailable"):
+        validation.preview(838, "prepare")
+
+
+@pytest.mark.parametrize(
+    "hold",
+    ["landing_hold", "review_only_hold", "nonrenewable_recovery", "review_audit"],
+)
+def test_refinement_cannot_bypass_old_holds(database, completed_refinement, hold):
+    validation, _ = completed_refinement
+    with Session(database) as db, db.begin():
+        if hold == "review_audit":
+            controls._audit(
+                db, "operator", "review_recovery_authorized", task_id="task"
+            )
+        else:
+            db.get(FactoryReceipt, 838).direction_json = json.dumps(
+                {hold: {"reason": "preserve"}}
+            )
+    with Session(database) as db:
+        before = db.get(FactoryReceipt, 838).model_dump()
+    with pytest.raises(ValueError, match="validation_refinement_held"):
+        validation.preview(838, "prepare")
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump() == before
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "open",
+        "ready",
+        "active",
+        "needs_human",
+        "deferred",
+        "done",
+        "closed",
+        "human",
+        "blocked",
+    ],
+)
+def test_refinement_respects_work_item_readiness(database, completed_refinement, state):
+    from factory.orchestration.factory_models import WorkItem, WorkItemEdge
+
+    validation, _ = completed_refinement
+    SQLModel.metadata.create_all(
+        database, tables=[WorkItem.__table__, WorkItemEdge.__table__]
+    )
+    with Session(database) as db, db.begin():
+        db.add(
+            WorkItem(
+                id=1,
+                title="refined",
+                state=state if state not in ("human", "blocked") else "ready",
+                labels=["human"] if state == "human" else [],
+                source_kind="github",
+                trust="trusted",
+                close_reason="completed" if state == "closed" else None,
+            )
+        )
+        db.get(FactoryReceipt, 838).work_item_id = 1
+        if state == "blocked":
+            db.add(
+                WorkItem(
+                    id=2,
+                    title="dependency",
+                    state="open",
+                    source_kind="github",
+                    trust="trusted",
+                )
+            )
+            db.add(WorkItemEdge(from_id=2, to_id=1, kind="blocks"))
+    if state in ("open", "ready"):
+        assert validation.preview(838, "prepare")["selection_kind"] == "refined_issue"
+    else:
+        with pytest.raises(
+            ValueError, match="validation_refinement_work_(unavailable|blocked)"
+        ):
+            validation.preview(838, "prepare")
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["other/repo#7001", "https://github.com/other/repo/issues/7001", "#70010"],
+)
+def test_refinement_ignores_other_issue_references(
+    completed_refinement, monkeypatch, reference
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    validation, _ = completed_refinement
+    monkeypatch.setattr(
+        conductor,
+        "github_list",
+        lambda repo, path: (
+            [{"number": 42, "title": "Documentation", "body": reference}]
+            if path.startswith("pulls")
+            else []
+        ),
+    )
+    assert validation.preview(838, "prepare")["selection_kind"] == "refined_issue"
+
+
+@pytest.mark.parametrize(
+    "reference", ["#7001", "https://github.com/org/repo/issues/7001"]
+)
+def test_refinement_reports_reference_ambiguity_with_pr_identity(
+    completed_refinement, monkeypatch, reference
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    validation, _ = completed_refinement
+    monkeypatch.setattr(
+        conductor,
+        "github_list",
+        lambda repo, path: (
+            [{"number": 42, "title": "Documentation", "body": reference}]
+            if path.startswith("pulls")
+            else []
+        ),
+    )
+    with pytest.raises(
+        ValueError, match="validation_refinement_pr_reference_ambiguous:42"
+    ):
+        validation.preview(838, "prepare")
+
+
+@pytest.mark.parametrize("change", ["generation", "failed", "delivery_tier", "new_pr"])
+def test_refinement_late_changes_refuse_apply(
+    database, completed_refinement, monkeypatch, change
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    validation, _ = completed_refinement
+    proposal = validation.preview(838, "prepare")
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if change == "generation":
+            row.generation += 1
+        elif change == "failed":
+            row.state = "failed"
+        elif change == "delivery_tier":
+            row.routing_tier = "delivery"
+    if change == "new_pr":
+        monkeypatch.setattr(
+            conductor,
+            "github_list",
+            lambda *args: [{"source": {"issue": {"number": 42, "pull_request": {}}}}],
+        )
+    with pytest.raises(ValueError, match="validation_"):
+        validation.apply(
+            838,
+            "prepare",
+            actor="operator",
+            request_key="late",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        assert (
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == validation.ACTION)
+            ).first()
+            is None
+        )

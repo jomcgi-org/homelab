@@ -1498,8 +1498,12 @@ async def factory_prepare_validation(
     For a fresh primary-repository issue, pass receipt_id null and issue_number.
     Existing receipt history requires the receipt selector instead. Admitted
     tasks, including paused tasks, must first settle through existing controls.
-    This does not validate GitHub eligibility.
-    submit_issue must subsequently check live eligibility before queueing.
+    A succeeded advisory refinement can select a new delivery issue only with
+    verified refine_agent_ready evidence, no holds or competing history, and
+    fresh GitHub eligibility/PR-reference checks. It never revives that receipt.
+    Other selectors do not validate GitHub eligibility. Before subsequent
+    submission, recheck live ownership and eligibility. Preparation is not an
+    execution grant or an atomic reservation across GitHub and the factory.
 
     Preview first while admissions are paused and no other work is queued,
     active or landing, with no reserved or uncertain starts. The derived policy
