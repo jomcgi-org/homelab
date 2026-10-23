@@ -29,7 +29,7 @@ def argo_handled(job_name: str) -> bool:
     return job_name in handled
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (last_run_at/locked_at are intentionally NULL until set)
+# last_run_at/locked_at are intentionally NULL until set
 class ScheduledJob(SQLModel, table=True):
     __tablename__ = "scheduled_jobs"
     __table_args__ = {"schema": "scheduler", "extend_existing": True}

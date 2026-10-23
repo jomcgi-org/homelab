@@ -482,12 +482,12 @@
      the viewport (global.css clamp), and every rem here assumes 16px. The
      literal day and night sheet values mirror the updates page. */
   :global(html:has(.factory-page)) {
-    background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #ffffff;
     font-size: 16px;
   }
   @media (prefers-color-scheme: dark) {
     :global(html:has(.factory-page)) {
-      background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
+      background: #181a20;
     }
   }
 

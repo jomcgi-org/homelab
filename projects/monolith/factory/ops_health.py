@@ -118,7 +118,7 @@ class _CachedCheck:
             now = time.monotonic()
             if self._value is not None and now - self._value[0] < self.ttl_s:
                 return self._value[1]
-            try:  # nosemgrep: no-broad-except-swallow - a check must never raise
+            try:  # a check must never raise
                 result = await asyncio.wait_for(self.compute(), self.timeout_s)
                 if not isinstance(result, dict) or "ok" not in result:
                     result = _unknown(f"check returned {type(result).__name__}")
@@ -219,7 +219,7 @@ def evaluate_create_streak(latest, since, now: datetime) -> tuple[bool, str]:
 
 async def _embervm_capacity() -> dict:
     replicas, brick_note = await _brick_replicas()
-    try:  # nosemgrep: no-broad-except-swallow - reported in detail
+    try:  # reported in detail
         latest, since = await asyncio.to_thread(_create_streak_sync)
         streak_failing, streak_detail = evaluate_create_streak(latest, since, _now())
     except Exception as exc:  # noqa: BLE001

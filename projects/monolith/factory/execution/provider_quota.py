@@ -106,7 +106,6 @@ async def fetch_provider_quota(*, force: bool = False) -> dict:
     try:
         response = await broker_client.request("GET", url, timeout=5)
         result = _classify(response)
-    # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
         result = _classify(exc)
     return _store_result(now, result)
@@ -127,7 +126,6 @@ def fetch_provider_quota_sync(*, force: bool = False) -> dict:
     try:
         response = broker_client.request_sync("GET", url, timeout=5)
         result = _classify(response)
-    # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
         result = _classify(exc)
     return _store_result(now, result)

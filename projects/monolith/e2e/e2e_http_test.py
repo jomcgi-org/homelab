@@ -161,7 +161,7 @@ def _seed_knowledge_note(
         session.add(note)
         session.flush()
 
-        for idx, text in enumerate(chunk_texts):  # nosemgrep: session-add-in-loop
+        for idx, text in enumerate(chunk_texts):
             session.add(
                 Chunk(
                     note_fk=note.id,

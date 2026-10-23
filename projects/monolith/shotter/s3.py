@@ -52,11 +52,8 @@ def _client():
     endpoint = _normalized_endpoint()
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot store screenshot")
-    # Scheme guaranteed by _normalized_endpoint; the inline nosemgrep clears
-    # the pre-commit boto3-endpoint-url-missing-scheme hook (the Bazel
-    # semgrep test, which ignores nosemgrep, is covered by exclude_rules in
-    # projects/monolith/BUILD).
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+    # Scheme guaranteed by _normalized_endpoint.
+    return boto3.client(
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),

@@ -50,10 +50,8 @@ def _s3_client():
     # scheme-less legacy/test endpoints; preserve explicit schemes.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
-    # Scheme is guaranteed by the guard above; the inline nosemgrep clears the
-    # pre-commit hook (boto3-endpoint-url-missing-scheme). Bare nosemgrep: this
-    # line has no other rule matches.
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+    # Scheme guaranteed by the guard above.
+    return boto3.client(
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),

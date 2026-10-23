@@ -98,10 +98,8 @@ spec:
   replicas: {{ index $ctx.Values.bricks.desiredReplicas $class.name | default 0 }}
   selector:
     # embervm.brick.selectorLabels renders app.kubernetes.io/component: noded-brick
-    # plus the size-class label inside the include (the rule's regex cannot see
-    # through it); each class's selector is disjoint from the DaemonSet's and from
-    # every other class.
-    # nosemgrep: require-component-label-in-selector
+    # plus the size-class label inside the include; each class's selector is
+    # disjoint from the DaemonSet's and from every other class.
     matchLabels:
       {{- include "embervm.brick.selectorLabels" (dict "ctx" $ctx "class" $class.name) | nindent 6 }}
   template:
@@ -196,7 +194,6 @@ spec:
   # nothing ever writes a different value, so it is inert for floor Deployments.
   replicas: 1
   selector:
-    # nosemgrep: require-component-label-in-selector
     matchLabels:
       {{- include "embervm.brickFloor.selectorLabels" (dict "ctx" $ctx "class" $class "identifier" $floorIdentifier) | nindent 6 }}
   template:

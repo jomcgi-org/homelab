@@ -9,7 +9,7 @@ import {
   versionedEtag,
 } from "../../../../lib/cache-headers.js";
 
-const API_BASE = process.env.API_BASE || "http://localhost:8000"; // nosemgrep: sveltekit-server-hardcoded-api-base-fallback
+const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
 // SSR-only: the browser never calls /api/campsites/* directly (that surface is
 // not exposed publicly). This load runs server-side in the same pod and the CDN

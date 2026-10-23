@@ -1693,7 +1693,7 @@ py_library(
     ],
 )
 
-# nosemgrep: py-glob-missing-tests-exclude — this IS a testing library
+# this IS a testing library
 py_library(
     name = "shared_testing",
     srcs = glob(["shared/testing/**/*.py"]),

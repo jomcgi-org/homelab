@@ -387,7 +387,7 @@
      Tokens are scoped to .shell and cannot reach html, so these are the
      literal day and night card values. */
   :global(html:has(.updates-page)) {
-    background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #ffffff;
     /* The tier scales the root font with the viewport (global.css clamp
        up to 48px); a fixed document wants a fixed basis, and every rem
        on this page assumes it. */
@@ -396,7 +396,7 @@
 
   @media (prefers-color-scheme: dark) {
     :global(html:has(.updates-page)) {
-      background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
+      background: #181a20;
     }
   }
 

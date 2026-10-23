@@ -471,12 +471,12 @@
   }
 
   :global(html:has(.work-item-page)) {
-    background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #ffffff;
     font-size: 16px;
   }
   @media (prefers-color-scheme: dark) {
     :global(html:has(.work-item-page)) {
-      background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
+      background: #181a20;
     }
   }
 

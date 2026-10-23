@@ -61,7 +61,7 @@ DOCFIX_REVIEW_SUMMARY_RE = re.compile(
 
 @DBOS.step()
 def _quota_span_attributes() -> dict:
-    try:  # nosemgrep: no-broad-except-swallow - optional telemetry only
+    try:  # optional telemetry only
         from factory.execution.provider_quota import (
             fetch_provider_quota_sync,
             summarise,
@@ -190,7 +190,6 @@ def provider_walled() -> tuple[bool, str]:
 
         ok, reason = availability(DRAIN_MODEL, quota_summary(), DRAINER_QUOTA_ROLE)
         return (not ok), reason
-    # nosemgrep: no-broad-except-swallow
     except Exception:
         logger.debug("drain provider quota unreadable", exc_info=True)
         return False, "unreadable"
@@ -203,7 +202,6 @@ def model_walled(model: str) -> tuple[bool, str]:
 
         ok, reason = availability(model, quota_summary(), DRAINER_QUOTA_ROLE)
         return (not ok), reason
-    # nosemgrep: no-broad-except-swallow
     except Exception:
         logger.debug("drain provider quota unreadable", exc_info=True)
         return False, "unreadable"
@@ -231,7 +229,6 @@ def kg_provider_walled() -> tuple[bool, str]:
         if not ok:
             return True, reason
         return False, confirmed_reason
-    # nosemgrep: no-broad-except-swallow
     except Exception:  # unknown capacity must not admit KG work
         logger.debug("KG drain provider quota unreadable", exc_info=True)
         return True, "unreadable"
@@ -447,7 +444,7 @@ def _kg_due_count(session) -> int | None:
     from shared.invocation_outcomes import UNKNOWN_INVOCATION as unknown
     from sqlalchemy import text
 
-    try:  # nosemgrep: no-broad-except-swallow - optional telemetry only
+    try:  # optional telemetry only
         sqlite = session.get_bind().dialect.name == "sqlite"
         table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
         now_expr = "CURRENT_TIMESTAMP" if sqlite else "now()"

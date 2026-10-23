@@ -300,7 +300,7 @@
         if (pts.length > 0) {
           const startEl = document.createElement("div");
           startEl.style.cssText =
-            "width:16px;height:16px;background:#1a1a1a;border:3px solid #ffffff;border-radius:50%;"; /* nosemgrep: svelte-hardcoded-color-in-style */
+            "width:16px;height:16px;background:#1a1a1a;border:3px solid #ffffff;border-radius:50%;";
           new maplibre.Marker({ element: startEl })
             .setLngLat([pts[0].lng, pts[0].lat])
             .addTo(map);
@@ -313,7 +313,7 @@
           if (distance > 0.01) {
             const endEl = document.createElement("div");
             endEl.style.cssText =
-              "width:14px;height:14px;background:#ffffff;border:3px solid #1a1a1a;border-radius:50%;"; /* nosemgrep: svelte-hardcoded-color-in-style */
+              "width:14px;height:14px;background:#ffffff;border:3px solid #1a1a1a;border-radius:50%;";
             new maplibre.Marker({ element: endEl })
               .setLngLat([last.lng, last.lat])
               .addTo(map);

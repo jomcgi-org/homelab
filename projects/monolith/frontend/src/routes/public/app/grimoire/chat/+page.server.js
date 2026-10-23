@@ -12,7 +12,6 @@
 // The localhost fallback is the established convention across every public
 // proxy/loader (ships/stars/notes/campsites/grimoire); prod sets CHAT_API_BASE
 // via values.yaml.
-// nosemgrep: sveltekit-server-hardcoded-api-base-fallback
 const CHAT_API_BASE = process.env.CHAT_API_BASE || "http://localhost:8000";
 // "gcs" (grimoire chat session), distinct from the notes chat's "cps" cookie.
 const SESSION_COOKIE = "gcs";

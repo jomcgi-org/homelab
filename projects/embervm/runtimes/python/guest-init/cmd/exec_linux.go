@@ -16,7 +16,7 @@ import (
 func execShim(logger *slog.Logger) error {
 	logger.Info("exec python bootstrap shim", "cmd", shimCmd)
 	if err := unix.Exec(shimCmd[0], shimCmd, os.Environ()); err != nil {
-		return err // nosemgrep: no-bare-error-return
+		return err
 	}
 	return nil
 }

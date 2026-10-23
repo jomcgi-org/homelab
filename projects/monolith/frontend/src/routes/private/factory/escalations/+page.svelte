@@ -569,12 +569,12 @@
   /* One bright sheet with a fixed root basis, the same pairing the factory
      board and the updates page use. */
   :global(html:has(.escalations-page)) {
-    background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #ffffff;
     font-size: 16px;
   }
   @media (prefers-color-scheme: dark) {
     :global(html:has(.escalations-page)) {
-      background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
+      background: #181a20;
     }
   }
 

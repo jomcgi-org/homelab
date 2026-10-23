@@ -938,7 +938,7 @@ func (s *Store) DeleteArtifact(ctx context.Context, prefix string) error {
 			firstErr = fmt.Errorf("delete artifact file %q: %w", name, derr)
 		}
 	}
-	return firstErr // nosemgrep: no-bare-error-return (already wrapped with fmt.Errorf above; the rule cannot see through the deferred-assignment indirection)
+	return firstErr // Already wrapped with fmt.Errorf above before assignment.
 }
 
 // Present reports whether the store holds a complete artifact at prefix (a

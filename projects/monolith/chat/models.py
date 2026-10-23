@@ -112,7 +112,7 @@ class ChannelMemory(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (posted_at is intentionally NULL until the drain posts the row)
+# posted_at is intentionally NULL until the drain posts the row
 class DiscordOutbox(SQLModel, table=True):
     """Pending Discord posts. Producers on any replica (or an Argo job) insert a
     row; the leader's bot drain loop posts it and stamps posted_at. Decouples
@@ -176,7 +176,7 @@ class DiscordOutbox(SQLModel, table=True):
     uncertain_at: datetime | None = Field(default=None)
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (posted_at/sent_message_id are intentionally NULL until the gateway sends the row)
+# posted_at/sent_message_id are intentionally NULL until the gateway sends the row
 class DiscordFeatureGrant(SQLModel, table=True):
     """Generic per-server Discord bot feature ACL (ADR 029).
 
@@ -361,7 +361,7 @@ class OrchestratorBrief(SQLModel, table=True):
     error: str | None = Field(default=None)
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (delivered_at is intentionally NULL until the drain delivers the row)
+# delivered_at is intentionally NULL until the drain delivers the row
 class Reminder(SQLModel, table=True):
     """A user-scheduled reminder (ambient-assistant parity, Phase 2).
 
@@ -393,7 +393,7 @@ class Reminder(SQLModel, table=True):
     delivered_at: datetime | None = Field(default=None)
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (claim/completion timestamps are lifecycle markers)
+# claim/completion timestamps are lifecycle markers
 class ScheduledTask(SQLModel, table=True):
     """Durable one-shot reminders and recurring Discord digests.
 
@@ -445,7 +445,7 @@ class ScheduledTask(SQLModel, table=True):
     completed_at: datetime | None = Field(default=None)
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (enqueued_at is NULL until finalized)
+# enqueued_at is NULL until finalized
 class ScheduledTaskOccurrence(SQLModel, table=True):
     """Audit and deduplication record for one scheduled firing."""
 
@@ -541,7 +541,7 @@ class UserStylePref(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (last_signal_at is intentionally NULL until the user's first signal)
+# last_signal_at is intentionally NULL until the user's first signal
 class UserTrust(SQLModel, table=True):
     """Per-(guild, user) decaying trust score (ADR chat/003).
 
@@ -652,7 +652,7 @@ class TrustModel(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (applied_at/validate_after get a DB now() default; the model factory mirrors it)
+# applied_at/validate_after get a DB now() default; the model factory mirrors it
 class DirectiveAutopilot(SQLModel, table=True):
     """Autopilot decision + self-validation log (ADR chat/007, PR 3).
 

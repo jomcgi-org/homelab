@@ -439,7 +439,7 @@
       system-ui,
       -apple-system,
       sans-serif;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
   }
   .inner {
     max-width: 1200px;
@@ -473,7 +473,7 @@
     display: block;
     padding: 0;
     border: none;
-    background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #1a1a1a;
   }
   .photo img {
     width: 100%;
@@ -505,25 +505,25 @@
   .label {
     font-size: 9px;
     font-weight: 700;
-    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #6b7280;
     letter-spacing: 0.08em;
     margin-bottom: 4px;
   }
   .val {
     font-size: 18px;
     font-weight: 700;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
   }
   .val.sm {
     font-size: 14px;
   }
   .unit {
     font-size: 10px;
-    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #9ca3af;
   }
   .sub {
     font-size: 9px;
-    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #9ca3af;
     font-weight: 600;
   }
 
@@ -542,13 +542,13 @@
   .time-big {
     font-size: 24px;
     font-weight: 900;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
     line-height: 1;
   }
   .period {
     font-size: 11px;
     font-weight: 700;
-    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #6b7280;
     margin-left: 4px;
   }
   /* TIME hero: white readout on the solid day-colour block (set inline). */
@@ -566,22 +566,22 @@
     flex-direction: column;
     border-right: 2px solid #1a1a1a;
     border-bottom: 2px solid #1a1a1a;
-    background: #fafafa; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #fafafa;
   }
   .optics {
     padding: 12px;
     border-bottom: 2px solid #1a1a1a;
-    background: #f5f5f5; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #f5f5f5;
   }
   .optics-line {
     font-size: 14px;
     font-weight: 700;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
   }
   .optics-sub {
     font-size: 11px;
     font-weight: 600;
-    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #6b7280;
     margin-top: 2px;
   }
   .nav {
@@ -599,7 +599,7 @@
     justify-content: center;
     background: white;
     border: none;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
     cursor: pointer;
     transition:
       background 0.15s,
@@ -614,7 +614,7 @@
     height: 24px;
   }
   .navstep:hover:not(:disabled) {
-    background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #1a1a1a;
     color: white;
   }
   /* Tactile press to match the day-nav buttons. */
@@ -646,12 +646,12 @@
   .bearing .arrow {
     font-size: 36px;
     line-height: 1;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
   }
   .bearing-deg {
     font-size: 11px;
     font-weight: 700;
-    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #6b7280;
     margin-top: 4px;
   }
 
@@ -682,32 +682,32 @@
   .coords {
     font-size: 10px;
     font-weight: 600;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
     line-height: 1.6;
   }
   .cell-stat {
     padding: 10px;
-    background: #fafafa; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #fafafa;
   }
   .km-val {
     font-size: 16px;
     font-weight: 900;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
   }
   .small {
     font-size: 10px;
-    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #9ca3af;
   }
   .stat-val {
     font-size: 14px;
     font-weight: 900;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
   }
   .stat-val.up {
-    color: #059669; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #059669;
   }
   .stat-val.down {
-    color: #dc2626; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #dc2626;
   }
 
   /* Fullscreen photo overlay. */

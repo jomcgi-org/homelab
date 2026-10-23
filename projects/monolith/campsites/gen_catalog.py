@@ -161,7 +161,7 @@ def geocode(name):
         q = urllib.parse.urlencode({"name": cand, "count": 8, "language": "en"})
         url = f"https://geocoding-api.open-meteo.com/v1/search?{q}"
         # Offline generator: skip a flaky geocoder candidate and try the next.
-        try:  # nosemgrep: no-broad-except-swallow
+        try:
             data = _get(url)
         except Exception:
             time.sleep(0.4)
@@ -195,7 +195,7 @@ def main():
         source = None
         if row["gps_raw"]:
             # Offline generator: a malformed gps string falls through to the geocoder.
-            try:  # nosemgrep: no-broad-except-swallow
+            try:
                 a, b = row["gps_raw"].split(",")
                 lat, lon = float(a), float(b)
                 source = "gps"

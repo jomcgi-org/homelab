@@ -38,7 +38,6 @@ export async function POST({ request, cookies }) {
 
   // No AbortSignal.timeout here: this is a streamed SSE response and a short
   // timeout would truncate the token stream (mirrors the notes-chat proxy).
-  // nosemgrep: fetch-no-timeout
   const resp = await fetch(`${CHAT_API_BASE}/internal/grimoire-chat/message`, {
     method: "POST",
     headers: { "content-type": "application/json" },

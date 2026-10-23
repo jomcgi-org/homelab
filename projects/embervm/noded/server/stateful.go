@@ -458,7 +458,7 @@ func (s *Server) waitStatefulReady(ctx context.Context, ip net.IP, port uint32, 
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			return ctx.Err() // nosemgrep: no-bare-error-return
+			return ctx.Err()
 		default:
 		}
 		d := net.Dialer{Timeout: 2 * time.Second}
@@ -474,7 +474,7 @@ func (s *Server) waitStatefulReady(ctx context.Context, ip net.IP, port uint32, 
 	if lastErr == nil {
 		lastErr = fmt.Errorf("timed out after %s", budget)
 	}
-	return lastErr // nosemgrep: no-bare-error-return
+	return lastErr
 }
 
 // defaultStatefulResolveTimeout is noded's deadline T for an unresolved

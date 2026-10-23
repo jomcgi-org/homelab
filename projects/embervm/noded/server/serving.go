@@ -252,7 +252,7 @@ func (s *Server) waitServingReady(ctx context.Context, ip net.IP, port uint32, h
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			return ctx.Err() // nosemgrep: no-bare-error-return
+			return ctx.Err()
 		default:
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -278,7 +278,7 @@ func (s *Server) waitServingReady(ctx context.Context, ip net.IP, port uint32, h
 	// lastErr is always a freshly-constructed fmt.Errorf (a status code, a dial
 	// error, or the timeout above), not a bare pass-through; the caller wraps it
 	// with the serving-guest context.
-	return lastErr // nosemgrep: no-bare-error-return
+	return lastErr
 }
 
 // StopServing tears down a live serving VM. BANK pauses it, writes a serving snapshot

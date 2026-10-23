@@ -46,9 +46,8 @@ def _s3_client():
         return None
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
-    # Scheme guaranteed by the guard above; the inline nosemgrep
-    # suppresses boto3-endpoint-url-missing-scheme for Semgrep scans.
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+    # Scheme guaranteed by the guard above.
+    return boto3.client(
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),

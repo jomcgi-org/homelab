@@ -52,9 +52,8 @@ def _client():
     # SeaweedFS S3 is plaintext HTTP.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
-    # Scheme guaranteed above; clears the boto3-endpoint-url-missing-scheme hook
-    # (see artifact/s3.py for the same nosemgrep + exclude_rules rationale).
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+    # Scheme guaranteed by the guard above, as in artifact/s3.py.
+    return boto3.client(
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),

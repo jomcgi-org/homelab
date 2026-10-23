@@ -126,7 +126,7 @@
       sans-serif;
     font-size: 13px;
     font-weight: 600;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
     background: white;
     border: 3px solid #1a1a1a;
     box-shadow: 3px 3px 0 0 #1a1a1a;
@@ -139,7 +139,7 @@
       transform 0.1s;
   }
   a.navbtn:hover {
-    background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #1a1a1a;
     color: white;
   }
   /* Tactile "press": the button shifts onto its shadow. */
@@ -174,7 +174,7 @@
     font-weight: 500;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #9ca3af;
   }
   .date {
     margin-left: 8px;
@@ -186,7 +186,7 @@
       sans-serif;
     font-size: 18px;
     font-weight: 700;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: #1a1a1a;
     padding-bottom: 4px;
     letter-spacing: 0.02em;
   }
