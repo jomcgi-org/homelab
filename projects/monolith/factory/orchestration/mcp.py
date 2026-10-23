@@ -1397,6 +1397,28 @@ async def factory_context(
 
 
 @mcp.tool
+async def factory_find_routine_permits(
+    job_name: Annotated[str, Field(min_length=1, max_length=256)],
+    offset: Annotated[MCPInteger, Field(ge=0, le=1000000)] = 0,
+    limit: Annotated[MCPInteger, Field(ge=1, le=20)] = 20,
+) -> dict:
+    """Locate permits by exact routine job name as a standing human operator.
+
+    Follow next_offset for older attempts, then inspect exact returned IDs with
+    factory_permit_diagnostics. Does not contact guests or authorize recovery.
+    Empty results do not prove non-dispatch. No payloads or results are returned.
+    """
+    refusal = _refuse(current_principal())
+    if refusal is not None:
+        return refusal
+    from factory.execution.admission_diagnostics import find_routine_permits
+
+    return await asyncio.to_thread(
+        find_routine_permits, job_name, offset=offset, limit=limit
+    )
+
+
+@mcp.tool
 async def factory_permit_diagnostics(
     permit_ids: Annotated[
         list[Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)]],

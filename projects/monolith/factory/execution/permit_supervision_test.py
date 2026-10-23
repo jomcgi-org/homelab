@@ -1911,3 +1911,74 @@ def test_permit_diagnostics_reject_unbounded_or_ambiguous_requests(ids):
 
     with pytest.raises(ValueError):
         inspect_permits(ids)
+
+
+def test_routine_permit_lookup_is_exact_bounded_and_select_only(database):
+    from sqlalchemy import event
+    from factory.execution.admission_diagnostics import find_routine_permits
+
+    first = seed(
+        database, key="lookup-first", tier="kg", routine_job_name="kg-fact-review"
+    )
+    second = seed(
+        database,
+        key="lookup-second",
+        tier="kg",
+        routine_job_name="kg-fact-review-previous",
+    )
+    seed(
+        database, key="lookup-other", tier="kg", routine_job_name="kg-fact-review-other"
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, second)
+        permit.routine_job_name = "kg-fact-review"
+        db.add(permit)
+    statements = []
+
+    def capture(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(database, "before_cursor_execute", capture)
+    try:
+        with Session(database) as db:
+            page = find_routine_permits("kg-fact-review", limit=1, session=db)
+            following = find_routine_permits(
+                "kg-fact-review", limit=1, offset=page["next_offset"], session=db
+            )
+            empty = find_routine_permits("kg-fact-review%", session=db)
+    finally:
+        event.remove(database, "before_cursor_execute", capture)
+    assert all(s.lstrip().upper().startswith("SELECT") for s in statements)
+    assert [page["items"][0]["id"], following["items"][0]["id"]] == [second, first]
+    assert following["next_offset"] is None
+    assert empty["items"] == []
+    assert page["recovery_authorized"] is False
+    assert set(page["items"][0]) == {
+        "id",
+        "session_id",
+        "pending_seq",
+        "tier",
+        "state",
+        "outcome",
+        "created_at",
+        "settled_at",
+    }
+
+
+@pytest.mark.parametrize(
+    "name,options",
+    [
+        ("", {}),
+        (" kg-fact-review", {}),
+        ("x" * 257, {}),
+        (None, {}),
+        ("kg-fact-review", {"limit": 21}),
+        ("kg-fact-review", {"offset": -1}),
+        ("kg-fact-review", {"offset": True}),
+    ],
+)
+def test_routine_permit_lookup_rejects_invalid_bounds(database, name, options):
+    from factory.execution.admission_diagnostics import find_routine_permits
+
+    with Session(database) as db, pytest.raises(ValueError):
+        find_routine_permits(name, session=db, **options)
