@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 
 import pytest
+from pydantic import ValidationError
 
 EXPECTED_TOOLS = {
     "monolith_agent_acquire_lock",
@@ -21,6 +22,8 @@ EXPECTED_TOOLS = {
     "monolith_agent_register_routine_job",
     "monolith_agent_deregister_routine_job",
     "monolith_agent_trigger_routine_job",
+    "monolith_agent_preview_fact_review_recovery",
+    "monolith_agent_apply_fact_review_recovery",
     "monolith_agent_set_factory_goals",
     "monolith_agent_schema_retirement_inventory",
 }
@@ -38,9 +41,9 @@ async def test_all_agent_tools_registered():
     assert "monolith_agent_check_orphan_jobs" not in registered
 
 
-def test_expected_tool_count_is_sixteen():
+def test_expected_tool_count_is_eighteen():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
-    assert len(EXPECTED_TOOLS) == 16
+    assert len(EXPECTED_TOOLS) == 18
 
 
 def test_admission_api_import_does_not_require_private_operator_module(monkeypatch):
@@ -190,5 +193,114 @@ async def test_explicit_review_recovery_requires_existing_operator_gate(
                 await mcp.monolith_agent_trigger_routine_job("other", recovery)
         else:
             assert calls == []
+    finally:
+        reset_current_principal(token)
+
+
+@pytest.mark.asyncio
+async def test_recovery_tools_publish_distinct_required_schemas():
+    from agent import mcp as agent_mcp
+
+    tools = {tool.name: tool for tool in await agent_mcp.mcp.list_tools()}
+    preview = tools["monolith_agent_preview_fact_review_recovery"].parameters
+    apply = tools["monolith_agent_apply_fact_review_recovery"].parameters
+    assert set(preview["properties"]) == {"session_id", "permit_id"}
+    assert set(preview["required"]) == {"session_id", "permit_id"}
+    assert (
+        set(apply["required"])
+        == set(apply["properties"])
+        == {
+            "session_id",
+            "permit_id",
+            "expected_state_sha256",
+            "reconciliation_key",
+            "acknowledgment",
+        }
+    )
+    for schema in (preview, apply):
+        assert schema["additionalProperties"] is False
+        for name in ("session_id", "permit_id"):
+            assert schema["properties"][name] == {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+            }
+    assert (
+        apply["properties"]["acknowledgment"]["const"]
+        == "accept_duplicate_compute_and_writes"
+    )
+    assert apply["properties"]["expected_state_sha256"]["pattern"] == "^[0-9a-f]{64}$"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["preview", "apply"])
+@pytest.mark.parametrize("authorized", [False, True])
+async def test_registered_recovery_tools_cannot_fall_back_to_trigger(
+    monkeypatch, mode, authorized
+):
+    from auth.api import Authority, Principal, PrincipalKind
+    from auth.dependencies import reset_current_principal, set_current_principal
+    from agent import mcp, routine_reconciliation
+
+    calls = []
+
+    def recover(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True}
+
+    def forbidden_trigger(*args, **kwargs):
+        pytest.fail("Dedicated recovery must never call the legacy trigger")
+
+    monkeypatch.setattr(routine_reconciliation, "recover_review_job", recover)
+    monkeypatch.setattr(mcp.routine_jobs, "trigger_job", forbidden_trigger)
+    principal = Principal(
+        subject="operator",
+        actor=(),
+        scope=(),
+        groups=("operators",),
+        email=None,
+        kind=PrincipalKind("human"),
+        authority=Authority("standing" if authorized else "delegated"),
+    )
+    token = set_current_principal(principal)
+    args = {"session_id": 20412, "permit_id": 17827}
+    if mode == "apply":
+        args.update(
+            expected_state_sha256="a" * 64,
+            reconciliation_key="review-once",
+            acknowledgment="accept_duplicate_compute_and_writes",
+        )
+    try:
+        tool = next(
+            t
+            for t in await mcp.mcp.list_tools()
+            if t.name == f"monolith_agent_{mode}_fact_review_recovery"
+        )
+        await tool.run(args)
+        assert calls == (
+            [{"actor": "operator", "recovery": {"mode": mode, **args}}]
+            if authorized
+            else []
+        )
+        calls.clear()
+        invalid = [
+            {**args, "mode": "apply"},
+            {**args, "name": "kg-fact-review"},
+            {**args, "session_id": True},
+            {**args, "permit_id": 0},
+        ]
+        if mode == "apply":
+            invalid.extend(
+                [{k: v for k, v in args.items() if k != field} for field in args]
+            )
+            invalid.extend(
+                [
+                    {**args, "acknowledgment": "yes"},
+                    {**args, "expected_state_sha256": "bad"},
+                ]
+            )
+        for bad in invalid:
+            with pytest.raises(ValidationError):
+                await tool.run(bad)
+        assert calls == []
     finally:
         reset_current_principal(token)

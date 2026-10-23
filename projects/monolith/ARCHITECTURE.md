@@ -1526,9 +1526,16 @@ their outcomes remain unresolved. Fewer-attempted revisions precede retries.
 
 **Why explicit review recomputation.** Node loss can leave a prepared review
 batch with an unknown model result indefinitely. Automatic reconciliation keeps
-that uncertainty fenced. A standing human operator may instead preview/apply
-`monolith_agent_trigger_routine_job` recovery for the exact `kg-fact-review`
-session and permit, acknowledging duplicate computation and writes. The state
+that uncertainty fenced. A standing human operator may instead use
+`monolith_agent_preview_fact_review_recovery` and
+`monolith_agent_apply_fact_review_recovery` for the exact `kg-fact-review`
+session and permit, acknowledging duplicate computation and writes. These are
+separate tool identities with required typed arguments, so stale discovery
+cannot mistake a recovery preview for an ordinary scheduling call. Preview
+accepts no operation selector and cannot apply. Apply requires the digest, key
+and exact acknowledgment, with no legacy-trigger fallback. The older trigger's
+optional recovery interface remains compatible, but operators must wait for
+the dedicated callable schemas before using these tools. The state
 digest and idempotency key bind one audited decision. Only unfinished members
 become abandoned; completed receipts, source evidence, unknown turns and prior
 session bindings remain. Abandoned members reject late writes and become

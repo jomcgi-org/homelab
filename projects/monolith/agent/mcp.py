@@ -360,6 +360,63 @@ async def monolith_agent_trigger_routine_job(
     return {"ok": routine_jobs.trigger_job(name)}
 
 
+async def _recover_fact_review(recovery: dict) -> dict:
+    principal = current_principal()
+    refusal = operator_access_error(principal)
+    if refusal:
+        return {"ok": False, "error": refusal}
+    from agent.routine_reconciliation import recover_review_job
+
+    return await asyncio.to_thread(
+        recover_review_job, actor=principal.subject, recovery=recovery
+    )
+
+
+@mcp.tool
+async def monolith_agent_preview_fact_review_recovery(
+    session_id: Annotated[int, Field(strict=True, gt=0)],
+    permit_id: Annotated[int, Field(strict=True, gt=0)],
+) -> dict:
+    """Read an exact held kg-fact-review attempt and preview operator recovery.
+
+    Requires a standing human operator. Does not schedule work or change claims,
+    permits, receipts or audit history. Returns expected_state_sha256 for the
+    separate apply tool. Session and permit identity are checked server-side.
+    """
+    return await _recover_fact_review(
+        {"mode": "preview", "session_id": session_id, "permit_id": permit_id}
+    )
+
+
+@mcp.tool
+async def monolith_agent_apply_fact_review_recovery(
+    session_id: Annotated[int, Field(strict=True, gt=0)],
+    permit_id: Annotated[int, Field(strict=True, gt=0)],
+    expected_state_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
+    reconciliation_key: str,
+    acknowledgment: Literal["accept_duplicate_compute_and_writes"],
+) -> dict:
+    """Apply one digest-bound operator recovery of a held kg-fact-review attempt.
+
+    Requires a standing human operator and the digest from the separate preview
+    tool. Preserves completed receipts and prior state, abandons only unfinished
+    claims, and rearms under existing caps. Capacity remains charged unless fresh
+    server evidence proves cessation. The reconciliation key makes replay
+    idempotent. Explicit acknowledgment accepts duplicate computation and writes
+    for this attempt only. Never use this as automatic retry policy.
+    """
+    return await _recover_fact_review(
+        {
+            "mode": "apply",
+            "session_id": session_id,
+            "permit_id": permit_id,
+            "expected_state_sha256": expected_state_sha256,
+            "reconciliation_key": reconciliation_key,
+            "acknowledgment": acknowledgment,
+        }
+    )
+
+
 @mcp.tool
 async def monolith_agent_set_factory_goals(
     goals: list[dict], declared_by: str = "opus"
