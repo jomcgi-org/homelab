@@ -1,9 +1,13 @@
 """Offline adversarial tests for the privileged publisher's trust boundaries."""
 
 import copy
+import hashlib
 import io
 import json
+import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -505,6 +509,158 @@ class AggregateTests(unittest.TestCase):
         api.repo.side_effect = lambda path: responses[path]
         with self.assertRaisesRegex(publish.Unsafe, "unmarked state branch"):
             publish.load_state(api, URL)
+
+
+class HTTPDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self.api = publish.API("secret-token")
+        self.api.opener = mock.Mock()
+
+    def error(self, code=403, headers=None):
+        return urllib.error.HTTPError(
+            "https://storage.blob.core.windows.net/private?sig=secret-signature",
+            code,
+            "private error secret-message",
+            headers or {"Authorization": "secret-header"},
+            io.BytesIO(b"private response secret-body"),
+        )
+
+    def test_api_failure_logs_only_fixed_context_and_preserves_exception(self):
+        error = self.error()
+        self.api.opener.open.side_effect = error
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                self.api.repo(
+                    "/pages?secret-query=private",
+                    method="POST",
+                    payload={"private": "secret-payload"},
+                )
+        self.assertIs(raised.exception, error)
+        self.assertEqual(stderr.getvalue(), "HTTP method=POST route=pages status=403\n")
+        error.fp.seek(0)
+        self.assertEqual(error.read(), b"private response secret-body")
+
+    def test_routes_never_include_identifiers_queries_or_contents(self):
+        routes = {
+            "/pages": "pages",
+            "/actions/runs/123": "build-run",
+            "/actions/runs/123/artifacts": "run-artifacts",
+            "/actions/workflows/private-workflow.yml": "build-workflow",
+            "/actions/artifacts/123/zip": "artifact-redirect",
+            "/pulls/123": "pull-request",
+            "/git/ref/heads/private-branch": "git-reference",
+            "/git/refs/heads/private-branch": "git-reference",
+            "/git/refs": "git-reference",
+            "/git/blobs/private-sha": "git-blob",
+            "/git/blobs": "git-blob",
+            "/git/trees/private-sha": "git-tree",
+            "/git/trees": "git-tree",
+            "/git/commits/private-sha": "git-commit",
+            "/git/commits": "git-commit",
+            "/contents/private/file.json": "repository-content",
+            "/issues/123/comments": "preview-comment",
+            "/issues/comments/123": "preview-comment",
+            "/private/contents": "repository-api",
+        }
+        for path, category in routes.items():
+            with self.subTest(path=path):
+                self.assertEqual(
+                    publish.http_route(
+                        f"/repos/{publish.REPOSITORY}{path}?secret-query=private"
+                    ),
+                    category,
+                )
+        self.assertEqual(
+            publish.http_route("/repos/private/secret/pages?token=private"),
+            "repository-api",
+        )
+
+    def test_unrecognized_method_route_and_status_are_redacted(self):
+        error = self.error("secret-status")
+        self.api.opener.open.side_effect = error
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                self.api.repo("/private/secret?token=secret", method="SECRET-METHOD")
+        self.assertIs(raised.exception, error)
+        self.assertEqual(
+            stderr.getvalue(), "HTTP method=OTHER route=repository-api status=0\n"
+        )
+
+    def test_optional_missing_state_remains_optional(self):
+        error = self.error(404)
+        self.api.opener.open.side_effect = error
+        with mock.patch.object(sys, "stderr", io.StringIO()) as stderr:
+            self.assertIsNone(self.api.optional("/git/ref/heads/private-branch"))
+        self.assertEqual(
+            stderr.getvalue(), "HTTP method=GET route=git-reference status=404\n"
+        )
+
+    def test_artifact_redirect_and_storage_failure_preserve_behavior(self):
+        location = "https://storage.blob.core.windows.net/private?sig=secret-signature"
+        redirect = self.error(302, {"Location": location})
+        data = b"synthetic artifact"
+        artifact = {
+            "id": 123,
+            "size_in_bytes": len(data),
+            "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+        }
+        for fail in [False, True]:
+            storage_error = self.error(403)
+            self.api.opener.open.side_effect = [
+                redirect,
+                storage_error if fail else io.BytesIO(data),
+            ]
+            self.api.opener.open.reset_mock()
+            stderr = io.StringIO()
+            with self.subTest(fail=fail), mock.patch.object(sys, "stderr", stderr):
+                if fail:
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        self.api.artifact(artifact)
+                    self.assertIs(raised.exception, storage_error)
+                else:
+                    self.assertEqual(self.api.artifact(artifact), data)
+            expected = "HTTP method=GET route=artifact-redirect status=302\n"
+            if fail:
+                expected += "HTTP method=GET route=artifact-storage status=403\n"
+            self.assertEqual(stderr.getvalue(), expected)
+            storage_request = self.api.opener.open.call_args_list[1].args[0]
+            self.assertEqual(storage_request.full_url, location)
+            self.assertFalse(storage_request.has_header("Authorization"))
+
+    def test_cli_failure_still_exits_one_without_sensitive_output(self):
+        script = Path(publish.__file__).resolve()
+        code = """
+import io, runpy, sys, urllib.error
+from unittest import mock
+sys.argv = [sys.argv[1], 'guard']
+error = urllib.error.HTTPError(
+    'https://private.invalid/?sig=secret-signature', 403, 'secret-message',
+    {'Authorization': 'secret-header'}, io.BytesIO(b'secret-body'))
+with mock.patch('urllib.request.OpenerDirector.open', side_effect=error):
+    runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", code, str(script)],
+            env={
+                **os.environ,
+                "GITHUB_REPOSITORY": publish.REPOSITORY,
+                "GH_TOKEN": "secret-token",
+                "STATE_COMMIT": A,
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "HTTP method=GET route=pages status=403\n"
+            "Fixture preview stopped: HTTPError: remote request or artifact validation failed\n",
+        )
 
 
 class PrepareTests(unittest.TestCase):
