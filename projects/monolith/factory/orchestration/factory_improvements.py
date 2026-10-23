@@ -172,10 +172,8 @@ def _history(db, policy):
         select(FactoryAudit)
         .where(FactoryAudit.action == ATTEMPT)
         .order_by(FactoryAudit.id.desc())
-        .limit(1001)
+        .limit(20)
     ).all()
-    if len(rows) > 1000:
-        raise ValueError("improvement_history_limit")
     result = []
     for row in rows:
         detail = json.loads(row.detail_json)
@@ -345,7 +343,22 @@ def submit(reviewed: dict, *, actor: str) -> dict:
         if result["reason"] not in ("candidates", "no_actionable_findings"):
             return result
         drafts = result["drafts"]
-        if drafts and _duplicates(drafts[0], current["inventory"]):
+        # Trial/cooldown evaluation needs only recent attempts. Deduplication
+        # still searches the entire durable ledger without loading its history.
+        seen = None
+        if drafts:
+            fingerprint = drafts[0]["fingerprint"]
+            seen = db.exec(
+                select(FactoryAudit.id)
+                .where(
+                    FactoryAudit.action == ATTEMPT,
+                    FactoryAudit.detail_json.contains(f'"fingerprint":"{fingerprint}"'),
+                )
+                .limit(1)
+            ).first()
+        if drafts and (
+            seen is not None or _duplicates(drafts[0], current["inventory"])
+        ):
             drafts.clear()
             result["reason"] = "duplicate_or_owned"
         draft = drafts[0] if drafts else None

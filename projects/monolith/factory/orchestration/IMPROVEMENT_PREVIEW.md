@@ -116,8 +116,9 @@ the runtime owner can tune the existing `problem_issues` policy:
 
 One candidate per batch remains a hard bound. Both the scouting cooldown and
 the existing shared writer cap apply, so shortening the cooldown alone cannot
-exceed the writer cap. History is capped at 1000 attempts and refuses on
-overflow rather than discarding old evidence. Pure previews additionally allow
+exceed the writer cap. Trial and cooldown evaluation read the latest 20 attempts (the trial maximum is
+three). Duplicate checks search the full durable ledger; there is no lifetime
+attempt cap or deletion of old evidence. Pure previews additionally allow
 tighter quota thresholds through `PreviewPolicy`; the live quota freshness,
 reset, grant pacing and burst safeguards are unchanged by generation tuning.
 
@@ -159,3 +160,48 @@ without enabling a speculative model loop. Reusing the existing issue writer
 preserves its ambiguous-outcome fence, instead of introducing another queue.
 A later autonomous scout must retain these gates and use verified subscription
 admission before any model execution; this change makes no such execution.
+
+## Smallest automatic scouting integration (not implemented or enabled)
+
+This increment accepts reviewed evidence; it does not automatically discover
+findings. Add the next integration to the existing conductor/intake tick, after
+ordinary intake and admission have had first claim on capacity. Do not add a
+scheduler, external recurring task, competing queue, or a second GitHub writer.
+
+Use one durable advisory receipt/work item for an eligible scouting attempt.
+Claim it under the existing factory lock with an idempotency key covering the
+repository and attempt, and refuse another claim while any scout is queued,
+running, unresolved or awaiting review. The scout's own receipt must be excluded
+by exact identity from its completion revalidation; other owners must still
+block generation. Otherwise the producer's current no-active-owner gate would
+incorrectly reject its own scout. Preserve the original reviewed context and
+recheck rules, goals, backlog, quotas and deduplication before publication.
+
+Dispatch at most one bounded evidence-collection node through existing
+`admit_next` and conductor `authorize_start`, subscription grant admission and
+start settlement. A spare-quota preview is not an execution reservation.
+Require verified subscription-only funding on the actual selected grant,
+including all short windows, before dispatch; unknown funding or an unavailable
+admission surface must defer, never fall through to paid API execution. Pin
+turn/runtime limits and the configured finding limit to the receipt. Collect
+reproducible failures or existing measured evidence at a recorded repo head;
+do not broaden into arbitrary improvements or execute fixes as part of scouting.
+
+Validate the structured findings against the existing schema and pass them
+through an explicit review decision in the existing receipt/decision system.
+The reviewer must attest semantic deduplication, rules and cap evidence; an
+automatic collector cannot simply set the current human-review booleans true.
+Accepted findings then call the same candidate admission and issue writer.
+Persist empty/error attempts as trial feedback, preserving cooldown and the
+useful merged-delivery criterion. Stop after the configured unproductive trial;
+never count tickets created as success or repeatedly restart evidence-free runs.
+
+Before enabling this integration, test concurrent tick claims, backlog arriving
+before dispatch/publication, own-receipt versus unrelated-owner checks, unknown
+subscription admission, burst exhaustion after preview, failed/empty scout
+results, review rejection, duplicate findings, crash recovery, and cancellation
+with an unresolved start. Runtime ownership remains with the factory owner;
+STOP reconciliation and selected-issue admission changes belong to #7300 and
+must be reused, not reimplemented. Expose the existing preview/submission service
+through a supported authenticated operator tool separately if needed; do not
+work around the absence of those routes in the current MCP tool surface.

@@ -3170,6 +3170,14 @@ def set_control(
 
             return resume_escalated(task_id, actor)
     with _locked_session(session) as (db, control):
+        if configured is not None:
+            reviewed_id = configured["problem_issues"]["improvement_review"][
+                "through_audit_id"
+            ]
+            if reviewed_id:
+                reviewed = db.get(FactoryAudit, reviewed_id)
+                if reviewed is None or reviewed.action != "improvement_attempt":
+                    raise ValueError("improvement_review_requires_exact_attempt_audit")
         reason = None
         configure_detail = {}
         release_result = {}
