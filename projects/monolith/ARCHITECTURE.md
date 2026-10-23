@@ -2495,10 +2495,20 @@ owner before the first model invocation. The allowed TTL is one hour to seven
 days; review leases are at most twelve hours and cannot extend the hard expiry.
 Expiry makes bulk archives eligible for fenced cleanup, subject to existing
 active-owner and metadata safety holds. Small turn results and provenance stay
-in the database. Existing archives are not retroactively opted in. Registration
-fails when destructive GC is disabled; the GKE safety disarm must not be
-changed merely to enable this feature. Thus local tests do not establish live
-TTL enforcement or an operational capture-to-review deployment.
+in the database. Capture starts use dedicated fresh lineages and cannot restore
+an existing workspace or transcript. The whole exported capture workspace,
+including its temporary checkout, is disposable; Git and Postgres are outside
+this cleanup scope. Existing archives are not retroactively opted in.
+
+`warmthS3Gc.captureEvidenceEnabled` is a separate, default-disabled destructive
+gate for these explicitly marked exports. It does not arm the global warmth
+collector. Capture-only selection happens before sweep caps and is rechecked
+under the lineage fence before deletion. A durable intent binds the exact
+inventory and policy so interrupted deletion can resume without expanding to
+new or changed objects. The policy survives until the last delete. Owner,
+active-review, fleet-freshness and restore holds still apply. Registration
+fails if neither cleanup scope is enabled. The GKE global safety disarm remains
+unchanged; local tests alone do not establish live expiry enforcement.
 
 ## 12. Decision history
 

@@ -79,6 +79,18 @@ def test_workspace_archive_ack_gate_is_staged_default_off() -> None:
     assert "EMBERVM_BRICK_ARCHIVE_ACK_TIMEOUT_MS" not in env
 
 
+def test_capture_evidence_cleanup_is_separate_and_default_off() -> None:
+    env = _render_env([])
+    assert env["EMBERVM_CAPTURE_EVIDENCE_GC"] == "false"
+    assert "EMBERVM_WARMTH_S3_GC" not in env
+    env = _render_env(["warmthS3Gc.captureEvidenceEnabled=true"])
+    assert env["EMBERVM_CAPTURE_EVIDENCE_GC"] == "true"
+    assert "EMBERVM_WARMTH_S3_GC" not in env
+    env = _render_env(["warmthS3Gc.enabled=1"])
+    assert env["EMBERVM_CAPTURE_EVIDENCE_GC"] == "false"
+    assert env["EMBERVM_WARMTH_S3_GC"] == "1"
+
+
 def test_workspace_archive_ack_gate_uses_default_timeout_when_enabled() -> None:
     env = _render_env(
         ["bricks.enabled=true", "bricks.autoscale.archiveAckGate.enabled=true"]

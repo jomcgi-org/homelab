@@ -1738,6 +1738,18 @@ class EmberVmShimTransport:
 
         timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
 
+        if capture_evidence_ttl_seconds is not None and (
+            model != "luna"
+            or restore_from is not None
+            or cli_session_id is not None
+            or workspace_handoff is not None
+            or expected_workspace_fingerprint is not None
+        ):
+            # Disposable capture lineages must not adopt an existing personal
+            # or implementation workspace. Retry of the same fresh binding is
+            # allowed; CP registration rechecks its generation and policy.
+            raise EmberVMTransportError("capture requires a dedicated fresh lineage")
+
         if expected_workspace_fingerprint is not None:
             if cli_session_id is not None:
                 raise EmberVMTransportError(

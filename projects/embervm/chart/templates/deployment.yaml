@@ -651,6 +651,10 @@ spec:
             - name: EMBERVM_WARMTH_S3_GC
               value: {{ .Values.warmthS3Gc.enabled | quote }}
             {{- end }}
+            # Independent scope: newly registered disposable capture workspaces.
+            # The global warmth cleanup gate remains separate and unchanged.
+            - name: EMBERVM_CAPTURE_EVIDENCE_GC
+              value: {{ .Values.warmthS3Gc.captureEvidenceEnabled | quote }}
             {{- $generationRetentionCap := toString .Values.warmthS3Gc.generationRetentionCap }}
             {{- if not (regexMatch "^[1-9][0-9]*$" $generationRetentionCap) }}
             {{- fail "warmthS3Gc.generationRetentionCap must be a positive integer" }}
