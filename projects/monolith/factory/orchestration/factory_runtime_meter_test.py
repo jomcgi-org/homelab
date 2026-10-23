@@ -2068,3 +2068,73 @@ def test_validation_preserves_implicit_primary_repository(database, validation_r
         policy = json.loads(db.get(FactoryControl, "factory").policy_json)
         assert controls.enabled_repos(policy) == ["org/repo"]
         assert not policy["auto_merge"]
+
+
+def test_fresh_issue_preparation_preserves_paused_history(database, validation_ready):
+    validation = validation_ready
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.state = "escalated"
+        row.task_paused = True
+    with Session(database) as db:
+        before = db.get(FactoryReceipt, 838).model_dump()
+    proposal = validation.preview(None, "selected work", issue_number=7275)
+    assert proposal["policy_after"]["issue_numbers"] == [7275]
+    assert not proposal["policy_after"]["auto_merge"]
+    assert proposal["receipt_id"] is None
+    args = dict(
+        actor="operator",
+        request_key="fresh",
+        issue_number=7275,
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    result = validation.apply(None, "selected work", **args)
+    assert validation.apply(None, "selected work", **args) == result
+    assert result["state"] == "paused"
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump() == before
+        assert len(db.exec(select(FactoryReceipt)).all()) == 1
+    with pytest.raises(ValueError, match="conflicting_validation_request"):
+        validation.apply(None, "selected work", **{**args, "issue_number": 7274})
+
+
+@pytest.mark.parametrize(
+    "change", ["admitted_paused", "start", "queued", "landing", "direction", "version"]
+)
+def test_fresh_issue_rechecks_inventory(database, validation_ready, change):
+    validation = validation_ready
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.state = "escalated"
+        row.task_paused = True
+    proposal = validation.preview(None, "selected work", issue_number=7275)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if change == "admitted_paused":
+            row.state = "admitted"
+        elif change == "start":
+            db.exec(select(FactoryStart)).one().status = "uncertain"
+        elif change in ("queued", "landing"):
+            row.state = change
+        elif change == "direction":
+            row.direction_json = "{}"
+        else:
+            db.get(FactoryControl, "factory").version += 1
+    with pytest.raises(ValueError):
+        validation.apply(
+            None,
+            "selected work",
+            issue_number=7275,
+            actor="operator",
+            request_key="stale-fresh",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+
+
+@pytest.mark.parametrize(
+    "receipt_id,issue_number",
+    [(None, None), (838, 7275), (None, 7001), (None, True), (None, 0)],
+)
+def test_fresh_issue_selector_refusals(validation_ready, receipt_id, issue_number):
+    with pytest.raises(ValueError):
+        validation_ready.preview(receipt_id, "selected work", issue_number=issue_number)

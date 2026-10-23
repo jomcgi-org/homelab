@@ -82,23 +82,39 @@ def locate(
         }
 
 
-def _preview(db, control, receipt_id, reason):
+def _preview(db, control, receipt_id, reason, *, issue_number=None):
     reason = controls._text(reason, "reason", 4000)
     if control.state != "paused":
         raise ValueError("validation_requires_paused_admissions")
     rows = db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
-    row = next((item for item in rows if item.id == receipt_id), None)
-    if row is None or row.state not in ("queued", "escalated"):
-        raise ValueError("validation_requires_waiting_receipt")
     policy = controls.validate_policy(json.loads(control.policy_json))
-    _available_repo(row.repo)
-    if row.repo != policy["repo"] or row.generation != policy["generation"]:
-        raise ValueError("validation_requires_current_primary_receipt")
-    if row.repo not in controls.enabled_repos(policy) or row.cancellation_requested:
+    if (receipt_id is None) == (issue_number is None):
+        raise ValueError("validation_requires_one_selector")
+    row = None
+    if issue_number is not None:
+        if type(issue_number) is not int or not 1 <= issue_number <= 2**63 - 1:
+            raise ValueError("validation_invalid_issue_number")
+        repo = _available_repo(policy["repo"])
+        if any(
+            item.repo == repo and item.issue_number == issue_number for item in rows
+        ):
+            raise ValueError("validation_existing_receipt_requires_receipt_selector")
+    else:
+        row = next((item for item in rows if item.id == receipt_id), None)
+        if row is None or row.state not in ("queued", "escalated"):
+            raise ValueError("validation_requires_waiting_receipt")
+        repo = _available_repo(row.repo)
+        issue_number = row.issue_number
+        if repo != policy["repo"] or row.generation != policy["generation"]:
+            raise ValueError("validation_requires_current_primary_receipt")
+        if row.cancellation_requested:
+            raise ValueError("validation_receipt_unavailable")
+    if repo not in controls.enabled_repos(policy):
         raise ValueError("validation_receipt_unavailable")
     if any(
-        item.state in (*controls._ACTIVE, "landing")
-        or (item.state == "queued" and item.id != row.id)
+        item.state == "landing"
+        or item.state in controls._ACTIVE
+        or (item.state == "queued" and (row is None or item.id != row.id))
         for item in rows
     ):
         raise ValueError("validation_other_work_present")
@@ -115,7 +131,7 @@ def _preview(db, control, receipt_id, reason):
     # human ownership, decision, execution and immutable recovery-bound checks.
     proposed = json.loads(controls._json(policy))
     proposed["auto_merge"] = False
-    proposed["issue_numbers"] = [row.issue_number]
+    proposed["issue_numbers"] = [issue_number]
     proposed["intake"] = {
         **controls.intake_policy(policy),
         "enabled": False,
@@ -128,16 +144,16 @@ def _preview(db, control, receipt_id, reason):
     }
     # Disable other repositories without changing any envelope or generation.
     # Explicit primary landing overrides must not defeat the global fence.
-    for repo, entry in proposed.get("repos", {}).items():
+    for entry_repo, entry in proposed.get("repos", {}).items():
         entry["auto_merge"] = False
-        if repo != row.repo:
+        if entry_repo != repo:
             entry["paused"] = True
     proposed = controls.validate_policy(proposed)
     result = {
-        "receipt_id": row.id,
-        "task_id": row.task_id,
-        "repo": row.repo,
-        "issue_number": row.issue_number,
+        "receipt_id": row.id if row else None,
+        "task_id": row.task_id if row else None,
+        "repo": repo,
+        "issue_number": issue_number,
         "reason": reason,
         "expected_version": control.version,
         "policy_before": policy,
@@ -154,9 +170,9 @@ def _preview(db, control, receipt_id, reason):
     return result
 
 
-def preview(receipt_id, reason):
+def preview(receipt_id, reason, *, issue_number=None):
     with controls._locked_session() as (db, control):
-        return _preview(db, control, receipt_id, reason)
+        return _preview(db, control, receipt_id, reason, issue_number=issue_number)
 
 
 def _replay(db, actor, request):
@@ -173,7 +189,15 @@ def _replay(db, actor, request):
     return None
 
 
-def apply(receipt_id, reason, *, actor, request_key, expected_preview_sha256):
+def apply(
+    receipt_id,
+    reason,
+    *,
+    actor,
+    request_key,
+    expected_preview_sha256,
+    issue_number=None,
+):
     actor = controls._text(actor, "actor")
     request = {
         "receipt_id": receipt_id,
@@ -181,11 +205,13 @@ def apply(receipt_id, reason, *, actor, request_key, expected_preview_sha256):
         "request_key": controls._text(request_key, "request_key"),
         "expected_preview_sha256": expected_preview_sha256,
     }
+    if issue_number is not None:
+        request["issue_number"] = issue_number
     with controls._locked_session() as (db, control):
         replay = _replay(db, actor, request)
         if replay is not None:
             return replay
-        proposal = _preview(db, control, receipt_id, reason)
+        proposal = _preview(db, control, receipt_id, reason, issue_number=issue_number)
         if proposal["preview_sha256"] != expected_preview_sha256:
             raise ValueError("validation_preview_changed")
         result = controls.set_control(
