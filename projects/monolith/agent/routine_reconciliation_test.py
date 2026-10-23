@@ -2424,7 +2424,19 @@ def test_operator_recomputation_preserves_unknown_history_and_completed_receipts
         )
         completed = db.get(FactReviewRun, key + ":fact:1").model_dump()
         unfinished = db.get(FactReviewRun, key + ":fact:2").model_dump()
+        permit_before = db.get(
+            AgentCapacityReservation, preview["permit_id"]
+        ).model_dump()
         request = apply_request(db, preview)
+        db.commit()
+        assert db.get(FactReviewRun, key + ":fact:1").model_dump() == completed
+        assert db.get(FactReviewRun, key + ":fact:2").model_dump() == unfinished
+        assert db.get(FactReviewBatch, key).status == "prepared"
+        assert (
+            db.get(AgentCapacityReservation, preview["permit_id"]).model_dump()
+            == permit_before
+        )
+        assert db.exec(select(RoutineReconciliation)).all() == []
         assert (
             reconciliation.read_reconciliation_state(
                 db, "kg-fact-review", preview["session_id"]
