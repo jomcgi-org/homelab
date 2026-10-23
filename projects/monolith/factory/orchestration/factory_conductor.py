@@ -328,6 +328,51 @@ DECISION_SCHEMA = {
 }
 
 
+def _github_failure_metadata(response: httpx.Response) -> dict:
+    """Allowlisted diagnostics only, never headers, URLs or error text wholesale."""
+    metadata = {"status": response.status_code}
+    for name, key, pattern in (
+        ("x-github-request-id", "request_id", r"[0-9a-fA-F:]{1,128}"),
+        ("x-ratelimit-remaining", "remaining", r"[0-9]{1,12}"),
+        ("x-ratelimit-reset", "reset", r"[0-9]{1,12}"),
+        ("retry-after", "retry_after", r"[0-9]{1,12}"),
+    ):
+        value = response.headers.get(name, "")
+        metadata[key] = value if re.fullmatch(pattern, value) else None
+    message = ""
+    try:
+        body = bytearray()
+        for chunk in response.iter_bytes(chunk_size=1024):
+            body.extend(chunk)
+            if len(body) > 8192:
+                break
+        if len(body) <= 8192:
+            payload = json.loads(body)
+            if isinstance(payload, dict) and isinstance(payload.get("message"), str):
+                message = payload["message"].lower()
+    except (httpx.HTTPError, ValueError):
+        # Diagnostic parsing must not replace the original HTTP refusal.
+        pass
+    classification = "unknown"
+    if response.status_code in (403, 429):
+        # Same rate-limit markers used by factory_problem_issues._ambiguous,
+        # without importing its write/reconciliation policy into this reader.
+        if "secondary rate limit" in message:
+            classification = "secondary_rate_limit"
+        elif metadata["remaining"] == "0" or "api rate limit exceeded" in message:
+            classification = "primary_rate_limit"
+        elif metadata["retry_after"] is not None or response.status_code == 429:
+            classification = "rate_limited"
+        elif "resource not accessible" in message:
+            classification = "resource_access_denied"
+        elif "saml" in message or "single sign-on" in message:
+            classification = "sso_authorization_required"
+    elif response.status_code == 401:
+        classification = "authentication_failed"
+    metadata["classification"] = classification
+    return metadata
+
+
 def _github_read(repo: str, suffix: str) -> object:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("invalid repository")
@@ -339,7 +384,14 @@ def _github_read(repo: str, suffix: str) -> object:
         with client.stream(
             "GET", f"{GITHUB_API}/repos/{repo}/{suffix}", headers=headers
         ) as response:
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError:
+                logger.warning(
+                    "factory GitHub read refused: %s",
+                    json.dumps(_github_failure_metadata(response), sort_keys=True),
+                )
+                raise
             data = bytearray()
             for chunk in response.iter_bytes():
                 data.extend(chunk)

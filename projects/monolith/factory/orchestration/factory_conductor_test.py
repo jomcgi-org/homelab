@@ -23723,3 +23723,154 @@ def test_failed_closed_objective_with_merged_pr_keeps_unknown_review_history(
                     assert json.loads(cessation[0].detail_json)["cessation_confirmed"]
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "status,headers,message,expected",
+    [
+        (
+            403,
+            {"x-ratelimit-remaining": "0"},
+            "API rate limit exceeded",
+            "primary_rate_limit",
+        ),
+        (
+            403,
+            {"retry-after": "60"},
+            "You have exceeded a secondary rate limit",
+            "secondary_rate_limit",
+        ),
+        (403, {"retry-after": "60"}, "", "rate_limited"),
+        (429, {}, "", "rate_limited"),
+        (403, {}, "Resource not accessible by integration", "resource_access_denied"),
+        (
+            403,
+            {},
+            "Organization requires SAML authorization",
+            "sso_authorization_required",
+        ),
+        (403, {}, "unrecognized refusal", "unknown"),
+        (401, {}, "Bad credentials", "authentication_failed"),
+        (500, {}, "server failure", "unknown"),
+    ],
+)
+def test_github_failure_diagnostics_are_sanitized_without_retry(
+    monkeypatch, caplog, status, headers, message, expected
+):
+    import httpx
+
+    secret = "private-token-body-and-header"
+    monkeypatch.setenv("GITHUB_API_TOKEN", secret)
+    requests = []
+    response_headers = {
+        **headers,
+        "x-github-request-id": "ABCD:1234:EF56",
+        "x-ratelimit-reset": "1792719000",
+        "authorization": secret,
+        "set-cookie": secret,
+        "x-unrelated": secret,
+    }
+
+    def handle(request):
+        requests.append(request)
+        assert request.headers["authorization"] == f"Bearer {secret}"
+        return httpx.Response(
+            status,
+            headers=response_headers,
+            json={
+                "message": message + " " + secret,
+                "token": secret,
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(conductor.httpx, "Client", lambda **kwargs: client)
+    with pytest.raises(httpx.HTTPStatusError) as failure:
+        conductor.github_get("owner/repo", "issues/7159?private=query-secret")
+    assert failure.value.response.status_code == status
+    assert len(requests) == 1 and client.is_closed
+    records = [
+        r
+        for r in caplog.records
+        if r.message.startswith("factory GitHub read refused:")
+    ]
+    assert len(records) == 1
+    metadata = json.loads(records[0].message.split(": ", 1)[1])
+    assert metadata == {
+        "status": status,
+        "request_id": "ABCD:1234:EF56",
+        "remaining": headers.get("x-ratelimit-remaining"),
+        "reset": "1792719000",
+        "retry_after": headers.get("retry-after"),
+        "classification": expected,
+    }
+    assert secret not in caplog.text and "query-secret" not in caplog.text
+    assert "authorization" not in metadata and "message" not in metadata
+
+
+@pytest.mark.parametrize("body_kind", ["oversized", "invalid", "stream_error"])
+def test_github_failure_diagnostics_bound_body_and_preserve_original_error(
+    monkeypatch, caplog, body_kind
+):
+    import httpx
+
+    seen = []
+
+    class ErrorBody(httpx.SyncByteStream):
+        def __iter__(self):
+            if body_kind == "stream_error":
+                raise httpx.ReadError("sensitive-stream-error")
+            for _ in range(100):
+                seen.append(1)
+                yield b"x" * 1024
+
+    def handle(request):
+        return httpx.Response(
+            403,
+            headers={
+                "x-github-request-id": "secret-request-id",
+                "x-ratelimit-remaining": "secret-remaining",
+                "x-ratelimit-reset": "secret-reset",
+                "retry-after": "secret-retry",
+            },
+            **(
+                {"content": b"invalid-secret-json"}
+                if body_kind == "invalid"
+                else {"stream": ErrorBody()}
+            ),
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(conductor.httpx, "Client", lambda **kwargs: client)
+    with pytest.raises(httpx.HTTPStatusError) as failure:
+        conductor.github_get("owner/repo", "issues/7159")
+    assert failure.value.response.status_code == 403
+    assert len(seen) <= 9
+    record = next(
+        r
+        for r in caplog.records
+        if r.message.startswith("factory GitHub read refused:")
+    )
+    metadata = json.loads(record.message.split(": ", 1)[1])
+    assert metadata == {
+        "status": 403,
+        "request_id": None,
+        "remaining": None,
+        "reset": None,
+        "retry_after": None,
+        "classification": "unknown",
+    }
+    assert "secret" not in record.message
+
+
+def test_successful_github_read_does_not_emit_failure_diagnostics(monkeypatch, caplog):
+    import httpx
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"id": 1})
+        )
+    )
+    monkeypatch.setattr(conductor.httpx, "Client", lambda **kwargs: client)
+    assert conductor.github_get("owner/repo", "issues/1") == {"id": 1}
+    assert "factory GitHub read refused" not in caplog.text
