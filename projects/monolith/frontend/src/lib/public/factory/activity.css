@@ -9,7 +9,7 @@
  * radii, no shadows, no gradients, no fills except the accent markers, the
  * --band strips and the two diff tints. */
 
-.factory-page.activity-page {
+.factory-page.sheet.activity-page {
   /* One accent token beyond the shared set: a running node's box needs a fill
      faint enough to stay behind its label, and --band is the neutral strip, not
      an accent one. --hatch is already defined on .factory-page. */
@@ -491,6 +491,8 @@
 }
 
 .factory-page.activity-page .spec {
+  /* Session metadata keeps its compact, fully boxed span rows. The shared
+     document spec's dt/dd measure and row padding are intentionally wider. */
   min-width: 17em;
   max-width: 100%;
   border: 1px solid var(--ink);
@@ -1541,7 +1543,7 @@
 }
 
 @media (max-width: 760px) {
-  .factory-page.activity-page {
+  .factory-page.sheet.activity-page {
     padding: 0.5rem 0.75rem 2rem;
   }
 
