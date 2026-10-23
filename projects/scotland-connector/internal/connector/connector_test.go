@@ -631,3 +631,20 @@ func TestWireShape(t *testing.T) {
 		}
 	}
 }
+
+func TestCloudyPlanKeepsMoonContext(t *testing.T) {
+	sky, err := stars.Parse([]byte(`{"fetched_at":"2026-10-20T14:00:00+00:00","sites":[{"id":"cloudy","lat":57,"lon":-4,"best_hours":[]}]}`), []byte(`{"sites":[]}`), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := fixture.Service(true)
+	svc.Data = fixture.Source{DS: sky}
+	env, err := svc.Plan(connector.PlanParams{Lat: f(57), Lon: f(-4), Activities: []string{"stargaze"}, From: s("2026-10-20"), To: s("2026-10-20")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := env.Data.(connector.PlanResult).Days[0].StarNote
+	if !strings.Contains(note, "Cloudy at every") || !strings.Contains(note, "Moon illumination") || !strings.Contains(note, "above the horizon") {
+		t.Fatal(note)
+	}
+}

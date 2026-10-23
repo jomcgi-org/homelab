@@ -240,7 +240,7 @@ func walksInRange(ds *walks.Dataset, q PlanQuery) []walkCandidate {
 }
 
 // planWalks is the day's best walks near the point that fit: go first, then
-// marginal, longest good slot, nearest.
+// marginal, longest good slot, then conservative variety among nearby peers.
 func planWalks(ds *walks.Dataset, q PlanQuery, inRange []walkCandidate, day int32, now time.Time) ([]WalkOption, string) {
 	var top []walkCandidate // the best q.Limit that fit, best first
 	var unknown *walks.Walk
@@ -256,15 +256,7 @@ func planWalks(ds *walks.Dataset, q PlanQuery, inRange []walkCandidate, day int3
 			continue
 		}
 		c.rank, c.good = v.Rank(), d.Best.GoodHours
-		if len(top) == q.Limit && !c.better(top[len(top)-1]) {
-			continue
-		}
-		at := sort.Search(len(top), func(j int) bool { return c.better(top[j]) })
-		if len(top) < q.Limit {
-			top = append(top, walkCandidate{})
-		}
-		copy(top[at+1:], top[at:])
-		top[at] = c
+		top = append(top, c)
 	}
 	switch {
 	case len(inRange) == 0:
@@ -277,6 +269,7 @@ func planWalks(ds *walks.Dataset, q PlanQuery, inRange []walkCandidate, day int3
 	case len(top) == 0:
 		return nil, fmt.Sprintf("None of the %d walks starting within %.0f km fits the weather.", len(inRange), q.RadiusKm)
 	}
+	top = diverseWalks(top, q.Limit)
 	out := make([]WalkOption, len(top))
 	for i, c := range top {
 		out[i], _ = walkOption(ds, c.w, day, now, ask)
@@ -284,6 +277,42 @@ func planWalks(ds *walks.Dataset, q PlanQuery, inRange []walkCandidate, day int3
 		out[i].FromPointKm = &km
 	}
 	return out, ""
+}
+
+// diverseWalks preserves verdict and exact good-hour rank. The nearest leader
+// stays first; subsequent choices may travel at most 10 km farther than the
+// nearest remaining peer for a different length, ascent or start area. These
+// are coarse variety measures, not claims of more precise weather fit.
+func diverseWalks(candidates []walkCandidate, limit int) []walkCandidate {
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].better(candidates[j]) })
+	var out []walkCandidate
+	for len(candidates) > 0 && len(out) < limit {
+		leader := candidates[0]
+		best, bestNovelty := 0, -1.0
+		for i, c := range candidates {
+			if c.rank != leader.rank || c.good != leader.good {
+				break
+			}
+			if c.dist > leader.dist+10 {
+				continue
+			}
+			novelty := 0.0
+			if len(out) > 0 {
+				novelty = math.Inf(1)
+				for _, chosen := range out {
+					distance := stars.DistanceKm(c.w.Lat, c.w.Lon, chosen.w.Lat, chosen.w.Lon)
+					v := math.Min(math.Abs(c.w.LengthKm-chosen.w.LengthKm)/5, 1) + math.Min(math.Abs(float64(c.w.AscentM-chosen.w.AscentM))/300, 1) + math.Min(distance/10, 1)
+					novelty = math.Min(novelty, v)
+				}
+			}
+			if novelty > bestNovelty {
+				best, bestNovelty = i, novelty
+			}
+		}
+		out = append(out, candidates[best])
+		candidates = append(candidates[:best], candidates[best+1:]...)
+	}
+	return out
 }
 
 type rankedNight struct {
@@ -345,7 +374,7 @@ func planNights(ds *stars.Dataset, q PlanQuery, night int32, now time.Time) ([]N
 			return nil, fmt.Sprintf("At site %s, %.1f km away: %s", o.SiteID, o.FromPointKm, o.Why)
 		}
 	}
-	return nil, fmt.Sprintf("Cloudy at every dark-sky site within %.0f km.", q.RadiusKm)
+	return nil, fmt.Sprintf("Cloudy at every dark-sky site within %.0f km.", q.RadiusKm) + " At the requested point: " + stars.MoonAdvice(q.Lat, q.Lon, night, now)
 }
 
 // Plan answers "where and when should I go": for each day, the sun and moon,
