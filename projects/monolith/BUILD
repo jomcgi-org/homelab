@@ -9541,3 +9541,13 @@ py_test(
         "@pip//sqlmodel",
     ],
 )
+
+py_test(
+    name = "factory_improvement_preview_test",
+    srcs = ["factory/orchestration/factory_improvement_preview_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
