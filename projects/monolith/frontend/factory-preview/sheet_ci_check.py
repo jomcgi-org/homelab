@@ -8,15 +8,15 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import tarfile
 import tempfile
+from pathlib import Path
 
 
-def run(output, expected_sha):
+def run(output, expected_sha, *, capture_only=False):
     frontend = Path(__file__).resolve().parent.parent
     repo = frontend.parents[2]
     assert re.fullmatch(r"[0-9a-f]{40}", expected_sha), expected_sha
@@ -31,6 +31,19 @@ def run(output, expected_sha):
     assert git("rev-parse", "HEAD") == expected_sha, (
         "Preview checkout is not the PR head"
     )
+    assert not git("status", "--porcelain", "--untracked-files=no"), (
+        "dirty checkout cannot claim exact SHA evidence"
+    )
+    assert not git(
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "--",
+        "projects/monolith/frontend/src",
+        "projects/monolith/frontend/factory-preview",
+        "projects/monolith/frontend/preview",
+        "projects/design-system",
+    ), "untracked source inputs cannot claim exact SHA evidence"
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     target = event["pull_request"]["base"]["sha"]
     assert re.fullmatch(r"[0-9a-f]{40}", target), target
@@ -74,7 +87,8 @@ def run(output, expected_sha):
             "factory-preview",
             "-p",
             "sheet_check_test.py",
-        ]
+        ],
+        env={**os.environ, "SHEET_REAL_BROWSER": "1"},
     )
     env = {**os.environ, "FACTORY_PREVIEW_SHA": expected_sha}
     command(
@@ -98,7 +112,7 @@ def run(output, expected_sha):
             str(output / "after"),
             "--label",
             expected_sha,
-            "--acceptance",
+            *([] if capture_only else ["--acceptance"]),
         ]
     )
     with tempfile.TemporaryDirectory(
@@ -143,10 +157,30 @@ def run(output, expected_sha):
                 base,
             ]
         )
+    (output / "provenance.json").write_text(
+        json.dumps(
+            {
+                "base_sha": base,
+                "target_sha": target,
+                "head_sha": expected_sha,
+                "harness_sha": expected_sha,
+                "role": "capture-only" if capture_only else "comparison",
+                "visual_acceptance": "independent review required",
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    if capture_only:
+        return
     command(
         [
             sys.executable,
             "factory-preview/sheet_check.py",
+            "--expected-base-sha",
+            base,
+            "--expected-head-sha",
+            expected_sha,
             "--before",
             str(output / "before"),
             "--after",
