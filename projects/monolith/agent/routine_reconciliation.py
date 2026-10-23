@@ -862,3 +862,72 @@ def recover_review_job(
     observation = observe_guest_for_recomputation(guest_id) if guest_id else None
     with Session(get_engine()) as db, db.begin():
         return _recover_review(db, request, observation)
+
+
+def recovered_review_original_outcome(
+    db: Session, session_id: int, permit_id: int
+) -> str:
+    """Validate an existing operator decision without replaying or changing it."""
+    rows = db.exec(
+        select(RoutineReconciliation).where(
+            RoutineReconciliation.session_id == session_id,
+            RoutineReconciliation.job_name == "kg-fact-review",
+        )
+    ).all()
+    if len(rows) != 1:
+        raise ValueError("missing_review_recomputation")
+    row = rows[0]
+    try:
+        evidence = json.loads(row.evidence_json)
+        request, before, after = (evidence[k] for k in ("request", "before", "after"))
+        result = json.loads(row.result_json)
+        if (
+            request["mode"] != "apply"
+            or request["session_id"] != session_id
+            or request["permit_id"] != permit_id
+            or request["actor"] != row.actor
+            or request["reconciliation_key"] != row.reconciliation_key
+            or request["acknowledgment"] != "accept_duplicate_compute_and_writes"
+            or _sha(request) != row.request_sha256
+            or request["expected_state_sha256"] != before["state_sha256"]
+            or row.disposition != "rearm"
+            or row.unknown_turn_seq != after["latest_turn_seq"]
+            or result["permit_id"] != permit_id
+            or result["session_id"] != session_id
+            or result["capacity_reservation_retained"] is not True
+            or result["guest_cessation_confirmed"] is not False
+        ):
+            raise ValueError("changed_review_recomputation")
+        current = read_reconciliation_state(db, "kg-fact-review", session_id)
+        protected = (
+            "session_sha256",
+            "turns_sha256",
+            "payload_sha256",
+            "guest_id",
+            "local_session_id",
+            "workflow_id",
+            "workflow",
+            "latest_dispatch",
+            "reservation_owner",
+            "reservation_id",
+            "reservation_count",
+            "reservation_tier",
+            "reservation_job_name",
+            "reservation_session_id",
+            "reservation_local_session_id",
+            "review_batch",
+        )
+        if (
+            current["reservation_state"] != "uncertain"
+            or current["reservation_outcome"] != "operator_recompute_unknown"
+            or any(current[k] != after[k] for k in protected)
+            or any(
+                before[k] != after[k]
+                for k in ("session_sha256", "turns_sha256", "guest_id")
+            )
+            or not isinstance(before["reservation_outcome"], str)
+        ):
+            raise ValueError("changed_review_recomputation")
+        return before["reservation_outcome"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("malformed_review_recomputation") from exc

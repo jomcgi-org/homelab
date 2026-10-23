@@ -47,6 +47,7 @@ __all__ = [
 # loading execution or writer code into read-only domain compositions.
 _FACTORY_EXPORTS = {
     "stop_unattempted_job": "agent.routine_jobs",
+    "recovered_review_original_outcome": "agent.routine_reconciliation",
     "read_reconciliation_state": "agent.routine_reconciliation",
     "reconcile_held_job": "agent.routine_reconciliation",
     "drainer_worker_intents": "agent.routine_jobs",

@@ -1545,6 +1545,16 @@ cessation of the exact persisted dispatch. Cessation can precede the client's
 unknown-result timestamp without proving a successful result. The override
 never changes automatic recovery defaults, admission limits or coverage flags.
 
+An already-audited recomputation may retain its old permit until cessation is
+observed. Supervision validates that durable decision and all protected attempt
+state before recognizing its outcome-only identity transition. For a two-dispatch
+retry attached to the same guest invocation, matching receipt ownership and
+supersession must place both receipt issuances before the fresh terminal guest
+stamp. This releases only the old permit as `operator_recompute_ceased_unknown`,
+without another rearm, a successful-result claim, or changes to the original
+operator audit and guest binding. Missing receipts or changed identity remain
+fenced. Unreviewed unknown attempts retain the existing stricter dispatch rule.
+
 A batch shares source responses only during its bounded preparation, at the
 same pinned main revision. Collection permits at most 64 requests, 512 KB of
 cached responses and 90 seconds; the complete prompt is bounded to 256 KB.
