@@ -31,9 +31,19 @@ def run(output, expected_sha, *, capture_only=False):
     assert git("rev-parse", "HEAD") == expected_sha, (
         "Preview checkout is not the PR head"
     )
-    assert not git("status", "--porcelain", "--untracked-files=normal"), (
+    assert not git("status", "--porcelain", "--untracked-files=no"), (
         "dirty checkout cannot claim exact SHA evidence"
     )
+    assert not git(
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "--",
+        "projects/monolith/frontend/src",
+        "projects/monolith/frontend/factory-preview",
+        "projects/monolith/frontend/preview",
+        "projects/design-system",
+    ), "untracked source inputs cannot claim exact SHA evidence"
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     target = event["pull_request"]["base"]["sha"]
     assert re.fullmatch(r"[0-9a-f]{40}", target), target
