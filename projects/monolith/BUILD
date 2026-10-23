@@ -1506,6 +1506,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":factory_goal_models",
         ":agent_sessions_admission",
         ":agent_sessions_rationale",
         ":factory_access",
@@ -9549,5 +9550,16 @@ py_test(
     deps = [
         ":pkg_swarm",
         "@pip//pytest",
+    ],
+)
+
+py_library(
+    name = "factory_goal_models",
+    srcs = ["observability/factory_goals.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
     ],
 )

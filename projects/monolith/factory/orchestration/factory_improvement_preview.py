@@ -84,7 +84,11 @@ def quota_decisions(
         if not isinstance(view, dict):
             continue
         result["provider"] = view.get("provider")
-        if view.get("grant") != grant or view.get("observed") is not True:
+        if (
+            view.get("provider") not in ("codex", "claude")
+            or view.get("grant") != grant
+            or view.get("observed") is not True
+        ):
             continue
         if not _fresh(view.get("observed_at"), now, policy):
             result["reason"] = "quota_stale_or_unknown"

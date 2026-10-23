@@ -76,6 +76,8 @@ def test_factory_controls_require_verified_standing_operator(authority, kind, gr
         authority=authority,
     )
     client = TestClient(app)
+    assert client.get("/api/swarm/factory/improvements/context").status_code == 403
+    assert client.post("/api/swarm/factory/improvements", json={}).status_code == 403
     response = client.post(
         "/api/swarm/factory/control",
         json={"action": "enable"},
@@ -455,3 +457,64 @@ def test_a_decision_error_becomes_its_own_status(monkeypatch):
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "already decided as close"
+
+
+def test_improvement_routes_use_existing_operator_and_bounded_request(monkeypatch):
+    from factory.orchestration import factory_improvements
+
+    seen = {}
+    monkeypatch.setattr(
+        factory_improvements, "context", lambda: {"review_digest": "a" * 64}
+    )
+
+    def submit(batch, *, actor):
+        seen.update(batch=batch, actor=actor)
+        return {"mode": "audit_candidate", "reason": "no_actionable_findings"}
+
+    monkeypatch.setattr(factory_improvements, "submit", submit)
+    client = operator_client("operator:joe")
+    assert client.get("/api/swarm/factory/improvements/context").json() == {
+        "review_digest": "a" * 64
+    }
+    body = {
+        "review_digest": "a" * 64,
+        "rules_reviewed": True,
+        "dedup_reviewed": True,
+        "subscription_caps": {},
+        "findings": [],
+    }
+    assert client.post("/api/swarm/factory/improvements", json=body).status_code == 200
+    assert seen == {"batch": body, "actor": "operator:joe"}
+    assert (
+        client.post(
+            "/api/swarm/factory/improvements", json={**body, "findings": [{}] * 21}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/api/swarm/factory/improvements", json={**body, "history": []}
+        ).status_code
+        == 422
+    )
+
+
+def test_improvement_source_refusal_is_observable(monkeypatch):
+    from factory.orchestration import factory_improvements
+
+    def refused(*args, **kwargs):
+        raise ValueError("improvement_source_disabled")
+
+    monkeypatch.setattr(factory_improvements, "submit", refused)
+    response = operator_client().post(
+        "/api/swarm/factory/improvements",
+        json={
+            "review_digest": "a" * 64,
+            "rules_reviewed": True,
+            "dedup_reviewed": True,
+            "subscription_caps": {},
+            "findings": [],
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "improvement_source_disabled"

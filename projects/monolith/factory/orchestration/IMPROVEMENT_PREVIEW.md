@@ -1,9 +1,49 @@
 # Quota improvement preview
 
-`factory_problem_issues.improvement_preview` is a read-only first increment of
-problem-issue discovery. It returns draft payloads and reasons, never creates an
-issue, calls a model, reserves capacity, or changes runtime policy. The live
-problem-issue tick deliberately does not call it. There is no new queue.
+The pure `factory_problem_issues.improvement_preview` returns draft payloads
+and reasons without effects. The opt-in `quota_improvement` source can now
+persist one reviewed candidate and create its ordinary GitHub issue through
+the existing problem-issue producer. Both the overall producer and the new
+source default off. No scouting/model loop or competing queue is added.
+
+An authenticated standing factory operator uses the existing private factory
+router, with unchanged permission checks:
+
+1. Read `GET /api/swarm/factory/improvements/context`. This loads broker grant
+   telemetry, current factory policy/version, active goals from their existing
+   database table, active/queued/escalated owners, and bounded complete open
+   issue/PR listings. A fresh, complete existing intake sweep must report zero
+   candidates in both lanes and no active owners. Missing/partial/stale intake
+   evidence abstains, even when capacity is idle.
+2. Review the rules, goals and all open work, including semantic duplicates
+   whose titles differ. Submit `POST /api/swarm/factory/improvements` with that
+   `review_digest`, `rules_reviewed: true`, `dedup_reviewed: true`, verified
+   `subscription_caps` and at most 20 evidence-backed `findings` (fields below).
+   The server reloads context and rejects a changed digest. Caller-supplied
+   quota, backlog, goals and history are not accepted by this endpoint.
+3. With factory enabled and `problem_issues.enabled` plus
+   `problem_issues.sources.quota_improvement` explicitly enabled, submission
+   records an `improvement_attempt` and at most one `improvement_candidate` in
+   the existing audit ledger. No-findings and duplicate attempts also count.
+   Concurrent submissions share the existing factory lock. Defaults are one
+   batch per 24 hours and at most three attempts without useful completion.
+4. The existing problem-issue tick rechecks the live context and quota, then
+   uses its single writer, daily cap, fingerprint and ambiguous-write
+   reconciliation. A candidate expires after 900 seconds. Rules/goal/owner
+   changes and stale evidence refuse it. Issues receive no readiness label;
+   existing refinement and intake own admission. No model/provider calls are
+   made by scouting submission or issue creation.
+
+Usefulness feedback is derived from a succeeded non-advisory delivery receipt
+plus its `owned_pr_merged` evidence. An issue write, refinement success or
+closed ticket alone never resets the three-attempt stop. Existing audit history
+also suppresses repeated fingerprints across restarts. The status endpoint's
+existing problem-issues activity includes attempts and candidates.
+
+Activation belongs to the runtime owner after the bounded behavior and current
+rules have been reviewed. This change does not enable the source, alter cash
+caps, change providers, restart factory/KG, or modify Luna capture. The endpoint
+can create issues only after opt-in; it never authorizes model execution.
 
 For a local, manual preview of a reviewed snapshot:
 
@@ -52,20 +92,15 @@ above the fraction of the window's time remaining. Zero percent used means
 reset, surplus percentage points, provider, grant and reset provenance. It
 never interprets accounting list-price USD as actual cash charges.
 
-`PreviewPolicy` allows tighter configurable limits within hard bounds. Default
-cooldown is 24 hours; three attempts without evidence of useful completion stop
-further candidates pending a usefulness review. Ticket count is not a success
-metric. Repeated fingerprints are suppressed even after cooldown. A preview
-cannot persist attempts: any future caller must record empty/failed attempts
-in the existing audit ledger as well as successful drafts, and use its existing
-write-start/reconcile protocol for uncertain GitHub outcomes.
+`PreviewPolicy` allows tighter configurable limits within hard bounds for local
+previews. The integrated source uses the fixed conservative policy with one
+draft per batch. The pure preview cannot persist attempts; the integrated
+source always loads and writes the existing ledger itself. History is capped
+at 1000 attempts and refuses on overflow rather than discarding old evidence.
 
 **Why.** A quota balance is neither an instruction to invent work nor evidence
-of permission to spend. Starting with a pure preview makes the decision and
-its bounds reviewable before adding effects to the existing problem-issue
-producer. Drafts carry that producer's marker and no `agent-ready` label.
-Ordinary refinement and intake remain responsible for readiness and admission.
-No deployment flag is added, and deploying this code alone enables no loop.
-Live integration needs separately reviewed audit-backed cooldown/history,
-current rule and goal reads, complete dedup checks and subscription admission
-at dispatch time. It must retain current cash, owner and runtime controls.
+of permission to spend. A reviewed, bounded batch makes discovery useful
+without enabling a speculative model loop. Reusing the existing issue writer
+preserves its ambiguous-outcome fence, instead of introducing another queue.
+A later autonomous scout must retain these gates and use verified subscription
+admission before any model execution; this change makes no such execution.

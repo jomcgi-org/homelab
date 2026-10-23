@@ -217,6 +217,7 @@ DEFAULT_AUTO_MERGE = False
 # remaining values are conservative repository defaults supplied by the
 # conductor rescope for #6002; changing live policy remains an operator act.
 PROBLEM_ISSUE_SOURCES = (
+    "quota_improvement",
     "node_stalled",
     "workflow_stranded",
     "landing_recovery_exhausted",
@@ -2742,6 +2743,8 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
 
 
 _PROBLEM_ISSUE_ACTIONS = (
+    "improvement_attempt",
+    "improvement_candidate",
     "problem_issue_policy_observed",
     "problem_issue_scan_capped",
     "problem_issue_issue_scan_capped",
