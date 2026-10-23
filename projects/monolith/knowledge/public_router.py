@@ -27,7 +27,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
-from core.clock import as_utc
+from core.clock import as_utc, iso_z
 from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from shared.embedding import EmbeddingClient
@@ -609,11 +609,7 @@ def get_public_search_index(
 
     latest = max((as_utc(note.indexed_at) for note in rows), default=None)
     payload = {
-        "generated_at": (
-            latest.isoformat().replace("+00:00", "Z")
-            if latest is not None
-            else "1970-01-01T00:00:00Z"
-        ),
+        "generated_at": iso_z(latest) or "1970-01-01T00:00:00Z",
         "states": list(_SEARCH_INDEX_STATES),
         "entities": entities,
         "notes": notes,
