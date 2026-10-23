@@ -161,47 +161,75 @@ preserves its ambiguous-outcome fence, instead of introducing another queue.
 A later autonomous scout must retain these gates and use verified subscription
 admission before any model execution; this change makes no such execution.
 
-## Smallest automatic scouting integration (not implemented or enabled)
+## Automatic scout: one bounded trial per charter and generation
 
-This increment accepts reviewed evidence; it does not automatically discover
-findings. Add the next integration to the existing conductor/intake tick, after
-ordinary intake and admission have had first claim on capacity. Do not add a
-scheduler, external recurring task, competing queue, or a second GitHub writer.
+The default-off `problem_issues.improvement_scout` integration collects evidence
+automatically on the existing conductor tick after ordinary intake/admission.
+It creates one durable `advisory-diagnosis` receipt with a `scout_claim` audit,
+uses the existing graph and execution admission, and submits reviewed findings
+to the same candidate ledger and single issue writer. There is no added timer,
+queue, provider, runtime flag change, or direct GitHub writer.
 
-Use one durable advisory receipt/work item for an eligible scouting attempt.
-Claim it under the existing factory lock with an idempotency key covering the
-repository and attempt, and refuse another claim while any scout is queued,
-running, unresolved or awaiting review. The scout's own receipt must be excluded
-by exact identity from its completion revalidation; other owners must still
-block generation. Otherwise the producer's current no-active-owner gate would
-incorrectly reject its own scout. Preserve the original reviewed context and
-recheck rules, goals, backlog, quotas and deduplication before publication.
+Configuration requires a real, open, dedicated scouting charter issue:
 
-Dispatch at most one bounded evidence-collection node through existing
-`admit_next` and conductor `authorize_start`, subscription grant admission and
-start settlement. A spare-quota preview is not an execution reservation.
-Require verified subscription-only funding on the actual selected grant,
-including all short windows, before dispatch; unknown funding or an unavailable
-admission surface must defer, never fall through to paid API execution. Pin
-turn/runtime limits and the configured finding limit to the receipt. Collect
-reproducible failures or existing measured evidence at a recorded repo head;
-do not broaden into arbitrary improvements or execute fixes as part of scouting.
+```json
+{
+  "improvement_scout": {
+    "enabled": false,
+    "issue_number": 0,
+    "subscription_caps": {}
+  }
+}
+```
 
-Validate the structured findings against the existing schema and pass them
-through an explicit review decision in the existing receipt/decision system.
-The reviewer must attest semantic deduplication, rules and cap evidence; an
-automatic collector cannot simply set the current human-review booleans true.
-Accepted findings then call the same candidate admission and issue writer.
-Persist empty/error attempts as trial feedback, preserving cooldown and the
-useful merged-delivery criterion. Stop after the configured unproductive trial;
-never count tickets created as success or repeatedly restart evidence-free runs.
+Replace zero with the reviewed charter issue number and provide per-account
+subscription-only/no-overage evidence using the same cap attestation structure
+as reviewed batches. The charter must have `needs-thought`, a nonempty scoped
+body, no assignee, and no `agent-ready`, `human`, `needs-human`, or
+`security-finding` label. Do not add it to the normal delivery allowlist or use
+an unrelated goal issue. Both the existing producer and quota-improvement source
+must also be enabled; ordinary factory/repository/advisory admission controls
+still apply. Enabling requires the existing authenticated configuration route.
+No charter has been created and none of these settings has been enabled here.
 
-Before enabling this integration, test concurrent tick claims, backlog arriving
-before dispatch/publication, own-receipt versus unrelated-owner checks, unknown
-subscription admission, burst exhaustion after preview, failed/empty scout
-results, review rejection, duplicate findings, crash recovery, and cancellation
-with an unresolved start. Runtime ownership remains with the factory owner;
-STOP reconciliation and selected-issue admission changes belong to #7300 and
-must be reused, not reimplemented. Expose the existing preview/submission service
-through a supported authenticated operator tool separately if needed; do not
-work around the absence of those routes in the current MCP tool surface.
+The first increment admits **at most one scout per charter and policy
+generation**. It never automatically requeues a settled receipt or increments
+policy generation. The operator reviews the trial before authorizing another;
+this limit applies only to novel scouting and leaves existing useful backlog
+execution unchanged. Existing cooldown, finding limits and unproductive-trial
+limits also apply across generations. Settled claims short-circuit without
+repeating network scouting every tick.
+
+Each trial has at most two nodes: one evidence collector and a separate-session
+reviewer, each with one attempt, a maximum 300-second turn timeout, and the
+existing `sol` Codex subscription model. Both nodes are read-only apart from
+the declared result artifact. There is no model/provider fallback, broad test
+run, dependency installation, ticket-writing agent, or implementation work in
+the scout. Findings must include the existing reproducible evidence, benefit,
+acceptance, ownership and active-goal fields. The review binds both the exact
+collection digest and fresh rules/goals/open-work context. Server verification
+requires successful, distinct collection/review sessions before candidate
+submission. Empty, failed and rejected attempts count toward the trial stop;
+only useful merged delivery resets that feedback, never ticket count.
+
+Codex currently uses ChatGPT subscription authentication in
+`runtimes/claude/shim.py` and the existing broker-backed sidecar. Since the
+sidecar chooses the account and may fail over, the scout requires **every Codex
+grant in complete broker telemetry** to be fresh, individually eligible and
+covered by cap evidence. One account's `use_more` never overrides another's
+`conserve`. These checks run before graph dispatch and through the existing
+live transport fence on wake/retry immediately before execution. Task/capacity
+reservations alone do not constitute subscription eligibility. Missing or
+changed evidence defers; no paid API fallback is introduced.
+
+Ownership checks exclude only the exact receipt backed by the scout claim;
+new ready backlog and all other owners still block scouting/publication. The
+writer revalidates context after review. Durable attempt/settlement history
+handles a crash after submission without creating a second candidate.
+
+Rollout remains with the runtime owner. Land and verify this separate increment,
+review the charter and current policy/cap evidence through supported surfaces,
+then enable a single trial only with fresh complete intake and quota telemetry.
+Observe `scout_claim`, `scout_review`, `scout_settled`, `improvement_attempt` and
+existing issue-write outcomes. Broader recurring scouting is not enabled by
+this one-trial integration and must retain the same ownership/admission gates.

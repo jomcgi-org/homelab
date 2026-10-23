@@ -1138,3 +1138,97 @@ def test_improvement_old_duplicate_survives_bounded_history(improvements):
     result = service.submit(batch, actor="operator:test")
     assert result["reason"] == "duplicate_or_owned"
     assert result["drafts"] == []
+
+
+def test_scout_context_excludes_only_exact_durable_owner(improvements):
+    service, engine, _clock, _policy, _batch, _inventory, _quota, _writes = improvements
+    with Session(engine) as session:
+        row = session.exec(select(FactoryReceipt)).first()
+        row.repo = service.REPO
+        row.actor = "factory:improvement-scout"
+        row.task_class = "advisory-diagnosis"
+        row.state = "admitted"
+        receipt_id = row.id
+        session.commit()
+    with pytest.raises(ValueError, match="scout_claim_missing"):
+        service.context(scout_receipt_id=receipt_id)
+    with controls._locked_session() as (session, _):
+        controls._audit(
+            session, "factory:improvement-scout", "scout_claim", receipt_id=receipt_id
+        )
+    assert service.context()["intake_complete"] is False
+    assert service.context(scout_receipt_id=receipt_id)["intake_complete"] is True
+    with Session(engine) as session:
+        session.add(
+            FactoryReceipt(
+                repo=service.REPO,
+                issue_number=999,
+                title="Other work",
+                body="",
+                url="https://github.com/jomcgi-org/homelab/issues/999",
+                actor="operator",
+                state="queued",
+            )
+        )
+        session.commit()
+    current = service.context(scout_receipt_id=receipt_id)
+    assert not current["intake_complete"]
+    assert [owner["issue_number"] for owner in current["owners"]] == [999]
+
+
+def test_scout_review_requires_successful_independent_sessions(improvements):
+    service, engine, _clock, _policy, batch, _inventory, _quota, _writes = improvements
+    from factory.orchestration.models import SwarmNodeRun
+
+    SwarmNodeRun.__table__.create(engine)
+    with Session(engine) as session:
+        row = session.exec(select(FactoryReceipt)).first()
+        row.repo, row.actor, row.task_class = (
+            service.REPO,
+            "factory:improvement-scout",
+            "advisory-diagnosis",
+        )
+        receipt_id, task_id = row.id, row.task_id
+        collect = SwarmNodeRun(
+            task_id=task_id,
+            node_key="scout_collect_1",
+            attempt=1,
+            status="succeeded",
+            session_id=1,
+        )
+        review = SwarmNodeRun(
+            task_id=task_id,
+            node_key="scout_review_1",
+            attempt=1,
+            status="succeeded",
+            session_id=1,
+        )
+        session.add_all([collect, review])
+        session.commit()
+        session.refresh(review)
+        review_id = review.id
+    with controls._locked_session() as (session, _):
+        controls._audit(
+            session, "factory:improvement-scout", "scout_claim", receipt_id=receipt_id
+        )
+        controls._audit(
+            session,
+            "factory:improvement-scout",
+            "scout_review",
+            task_id=task_id,
+            receipt_id=receipt_id,
+            approved=True,
+            review_digest=batch["review_digest"],
+            findings_digest=service._digest(batch["findings"]),
+            run_id=review_id,
+        )
+    with Session(engine) as session:
+        with pytest.raises(ValueError, match="scout_review_not_verified"):
+            service._verify_scout_review(session, receipt_id, batch)
+        session.get(SwarmNodeRun, review_id).session_id = 2
+        session.commit()
+        service._verify_scout_review(session, receipt_id, batch)
+        session.get(SwarmNodeRun, review_id).status = "failed"
+        session.commit()
+        with pytest.raises(ValueError, match="scout_review_not_verified"):
+            service._verify_scout_review(session, receipt_id, batch)

@@ -83,7 +83,38 @@ def _inventory():
     return rows
 
 
-def _database_context(db, control):
+def _scout_receipt(db, receipt_id):
+    if type(receipt_id) is not int or receipt_id <= 0:
+        raise ValueError("invalid_scout_receipt")
+    row = db.get(FactoryReceipt, receipt_id)
+    if (
+        row is None
+        or row.repo != REPO
+        or row.actor != "factory:improvement-scout"
+        or row.task_class != "advisory-diagnosis"
+    ):
+        raise ValueError("invalid_scout_receipt")
+    claims = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.action == "scout_claim",
+            FactoryAudit.actor == "factory:improvement-scout",
+            (
+                FactoryAudit.detail_json.contains(f'"receipt_id":{receipt_id},')
+                | FactoryAudit.detail_json.contains(f'"receipt_id":{receipt_id}}}')
+            ),
+        )
+        .limit(2)
+    ).all()
+    if not any(
+        json.loads(claim.detail_json).get("receipt_id") == receipt_id
+        for claim in claims
+    ):
+        raise ValueError("scout_claim_missing")
+    return row
+
+
+def _database_context(db, control, *, scout_receipt_id=None):
     policy = json.loads(control.policy_json or "{}")
     goals = _goals(db)
     active = db.exec(
@@ -97,6 +128,9 @@ def _database_context(db, control):
         .order_by(FactoryReceipt.id)
         .limit(1001)
     ).all()
+    if scout_receipt_id is not None:
+        _scout_receipt(db, scout_receipt_id)
+        active = [row for row in active if row.id != scout_receipt_id]
     owners = [
         {
             "receipt_id": row.id,
@@ -143,13 +177,13 @@ def _review_digest(db_context, inventory):
     return _digest({**db_context, "inventory": inventory})
 
 
-def context() -> dict:
+def context(*, scout_receipt_id=None) -> dict:
     """Fresh read-only context for a bounded operator review, no reservations."""
     inventory = _inventory()
     quota = _quota()
     with controls._read_session() as db:
         control = db.get(FactoryControl, "factory")
-        current = _database_context(db, control)
+        current = _database_context(db, control, scout_receipt_id=scout_receipt_id)
         history = _history(db, current["policy"])
     return {
         **current,
@@ -303,7 +337,53 @@ def _duplicates(draft, inventory):
     )
 
 
-def submit(reviewed: dict, *, actor: str) -> dict:
+def _verify_scout_review(db, receipt_id, reviewed):
+    from factory.orchestration.models import SwarmNodeRun
+
+    receipt = _scout_receipt(db, receipt_id)
+    if not receipt.task_id:
+        raise ValueError("scout_task_missing")
+    audit = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.action == "scout_review",
+            FactoryAudit.actor == "factory:improvement-scout",
+            FactoryAudit.task_id == receipt.task_id,
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    detail = json.loads(audit.detail_json) if audit else {}
+    run = (
+        db.get(SwarmNodeRun, detail.get("run_id"))
+        if type(detail.get("run_id")) is int
+        else None
+    )
+    collection = db.exec(
+        select(SwarmNodeRun).where(
+            SwarmNodeRun.task_id == receipt.task_id,
+            SwarmNodeRun.node_key == "scout_collect_1",
+            SwarmNodeRun.status == "succeeded",
+        )
+    ).first()
+    if (
+        detail.get("receipt_id") != receipt_id
+        or detail.get("approved") is not True
+        or detail.get("review_digest") != reviewed.get("review_digest")
+        or detail.get("findings_digest") != _digest(reviewed.get("findings"))
+        or run is None
+        or run.task_id != receipt.task_id
+        or run.node_key != "scout_review_1"
+        or run.status != "succeeded"
+        or run.session_id is None
+        or collection is None
+        or collection.session_id is None
+        or run.session_id == collection.session_id
+    ):
+        raise ValueError("scout_review_not_verified")
+
+
+def submit(reviewed: dict, *, actor: str, scout_receipt_id=None) -> dict:
     """Persist at most one candidate; the existing tick writes the issue later.
 
     Exact reviewed context prevents stale policy/owner/goal approval. History is
@@ -316,14 +396,33 @@ def submit(reviewed: dict, *, actor: str) -> dict:
         or reviewed.get("dedup_reviewed") is not True
     ):
         raise ValueError("rules_and_semantic_dedup_review_required")
-    current = context()
+    current = context(scout_receipt_id=scout_receipt_id)
     from factory.orchestration.factory_problem_issues import _observe_policy
 
     # Establish the source watermark before adding a new source event.
     _observe_policy(controls.problem_issues_policy(current["policy"]))
     with controls._locked_session() as (db, control):
-        live = _database_context(db, control)
+        live = _database_context(db, control, scout_receipt_id=scout_receipt_id)
         block = controls.problem_issues_policy(live["policy"])
+        scout_task_id = None
+        if scout_receipt_id is not None:
+            _verify_scout_review(db, scout_receipt_id, reviewed)
+            scout_task_id = _scout_receipt(db, scout_receipt_id).task_id
+            prior = db.exec(
+                select(FactoryAudit)
+                .where(
+                    FactoryAudit.action == ATTEMPT,
+                    FactoryAudit.task_id == scout_task_id,
+                )
+                .order_by(FactoryAudit.id.desc())
+                .limit(1)
+            ).first()
+            if prior:
+                return {
+                    "reason": json.loads(prior.detail_json)["reason"],
+                    "drafts": [],
+                    "replayed": True,
+                }
         if (
             control.state != "enabled"
             or not live["repo_enabled"]
@@ -366,6 +465,7 @@ def submit(reviewed: dict, *, actor: str) -> dict:
             db,
             actor,
             ATTEMPT,
+            task_id=scout_task_id,
             reason=result["reason"],
             fingerprint=draft["fingerprint"] if draft else None,
             review_digest=reviewed["review_digest"],
@@ -377,6 +477,7 @@ def submit(reviewed: dict, *, actor: str) -> dict:
                 actor,
                 CANDIDATE,
                 repo=REPO,
+                scout_receipt_id=scout_receipt_id,
                 draft=draft,
                 control_version=control.version,
                 database_digest=_digest(live),
@@ -413,7 +514,7 @@ def candidate_matches(detail: dict, current: dict) -> bool:
 
 def validate_candidate(detail: dict) -> dict | None:
     """Recheck current conditions immediately before the shared writer claims."""
-    current = context()
+    current = context(scout_receipt_id=detail.get("scout_receipt_id"))
     block = controls.problem_issues_policy(current["policy"])
     if (
         current["control_state"] != "enabled"

@@ -741,7 +741,9 @@ def problem_issues_tick(policy: dict) -> None:
             )
 
             # Final local rule/owner/goal check under the same lock as intent.
-            live = _database_context(db, _control)
+            live = _database_context(
+                db, _control, scout_receipt_id=source_detail.get("scout_receipt_id")
+            )
             live_block = problem_issues_policy(live["policy"])
             if (
                 _control.state != "enabled"

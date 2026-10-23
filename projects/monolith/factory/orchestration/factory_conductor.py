@@ -1008,6 +1008,10 @@ def _budget_evidence(task_id: str) -> dict:
 
 
 def _schema(node_key: str) -> dict:
+    if node_key in {"scout_collect_1", "scout_review_1"}:
+        from factory.orchestration.factory_improvement_scout import schema
+
+        return schema(node_key)
     if node_key.startswith("conductor_funding_"):
         from factory.orchestration.factory_funding import SCHEMA
 
@@ -1376,6 +1380,13 @@ def _add(
             refine=refine,
         )
     )
+    scouting = key in {"scout_collect_1", "scout_review_1"}
+    if scouting:
+        from factory.orchestration.factory_improvement_scout import (
+            boundary as scout_boundary,
+        )
+
+        boundary = scout_boundary(task)
     if max_cost_usd is None:
         max_cost_usd = (
             _review_reservation_usd(task, policy, model)
@@ -1414,7 +1425,7 @@ def _add(
         effort=effort,
         deps=deps,
         max_cost_usd=max_cost_usd,
-        side_effects=not review and not task.get("dependency_review"),
+        side_effects=not review and not scouting and not task.get("dependency_review"),
         max_attempts=policy["max_attempts"] if max_attempts is None else max_attempts,
         turn_timeout_seconds=(
             policy["turn_timeout_seconds"]
@@ -5788,6 +5799,11 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
     # DBOS 2.29. get_workflow_status is the supported nullable lookup.
     state = dbos.get_workflow_status(key)
     if state is None:
+        if pin["node_key"] in {"scout_collect_1", "scout_review_1"}:
+            from factory.orchestration.factory_improvement_scout import dispatch_allowed
+
+            if pin["model"] != "sol" or not dispatch_allowed(task["id"])["ok"]:
+                return None
         grant = authorize_start(
             task["id"], key, ACTOR, model=pin["model"], max_cost_usd=pin["max_cost_usd"]
         )
@@ -6880,6 +6896,15 @@ def reconcile_task(
 
         task_class = factory_refine.task_class_for(task_id)
         if is_advisory(task_class):
+            from factory.orchestration import factory_improvement_scout
+
+            if (policy.get("problem_issues") or {}).get("improvement_scout", {}).get(
+                "enabled"
+            ) and factory_improvement_scout.is_scout(task_id):
+                factory_improvement_scout.reconcile(
+                    task, policy, nodes, runs, insertion_revision
+                )
+                return
             # Advisory work has no plan: the server admits its one node and
             # settles on a re-read of the issue, never on the artifact.
             factory_refine.reconcile(
@@ -7420,6 +7445,12 @@ def _dispatch_ready(
         if dispatched >= limit:
             break
         node_key = node["node_key"]
+        scouting = node_key in {"scout_collect_1", "scout_review_1"}
+        if scouting:
+            from factory.orchestration.factory_improvement_scout import dispatch_allowed
+
+            if not dispatch_allowed(task_id)["ok"]:
+                continue
         branch = (
             delivery_branch(task)
             if task.get("dependency_review")
@@ -7440,7 +7471,9 @@ def _dispatch_ready(
                 continue
         escalation = (
             _attempt_escalation(task, node, nodes, runs, policy)
-            if policy is not None and not node_key.startswith("review_")
+            if policy is not None
+            and not node_key.startswith("review_")
+            and not scouting
             else None
         )
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
@@ -7477,11 +7510,14 @@ def _dispatch_ready(
             # Refinement briefs do not deliver a PR or check its body.
             "closing_instruction": (
                 ""
-                if node_key.startswith("refine_")
+                if node_key.startswith("refine_") or scouting
                 else _closing_instruction(task, review=node_key.startswith("review_"))
             ),
         }
 
+        if scouting:
+            context["read_only"] = True
+            reviewer = "sol"  # Exact subscription model; no quota/provider fallback.
         if task.get("dependency_review"):
             context["read_only"] = True
             if node_key.startswith("review_"):
@@ -8580,6 +8616,12 @@ def tick() -> None:
                 break
             # A task admitted this tick is reconciled on the next one.
             occupied += 1
+        # Existing queued/intake work receives first claim. The scout only
+        # queues a bounded advisory receipt; this same tick owner admits it
+        # on a later pass through the normal admission path.
+        from factory.orchestration.factory_improvement_scout import tick as scout_tick
+
+        scout_tick(snapshot["policy"])
     except Exception:  # noqa: BLE001 - admission problems are logged, not fatal
         logger.exception("factory admission failed")
 
