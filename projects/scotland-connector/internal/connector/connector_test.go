@@ -660,8 +660,11 @@ func refinementWalks(t *testing.T) *walks.Dataset {
 		ascent      int
 		duration    float64
 	}{
-		{"urban", 57, 4, 50, 2}, {"long", 57.03, 17, 380, 5}, {"canal", 57.04, 16, 140, 5},
-		{"hill", 57.4, 12, 990, 5.5}, {"bad", 57.01, 12, 990, 5.5},
+		{"urban", 57, 4, 50, 2},
+		{"long", 57.03, 17, 380, 5},
+		{"canal", 57.04, 16, 140, 5},
+		{"hill", 57.4, 12, 990, 5.5},
+		{"bad", 57.01, 12, 990, 5.5},
 	} {
 		var hours []string
 		for h := 0; h < 8; h++ {
