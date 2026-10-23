@@ -28,6 +28,11 @@ REPO = "jomcgi-org/homelab"
 POLICY = PreviewPolicy(max_drafts=1)
 
 
+def generation_policy(policy):
+    limits = controls.problem_issues_policy(policy)["improvement_limits"]
+    return PreviewPolicy(max_drafts=1, **limits)
+
+
 def _digest(value):
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
@@ -145,16 +150,24 @@ def context() -> dict:
     with controls._read_session() as db:
         control = db.get(FactoryControl, "factory")
         current = _database_context(db, control)
+        history = _history(db, current["policy"])
     return {
         **current,
         "inventory": inventory,
+        "improvement_history": history,
         "quota": quota,
         "review_digest": _review_digest(current, inventory),
         "captured_at": controls._now().isoformat(),
     }
 
 
-def _history(db):
+def _history(db, policy):
+    review = controls.problem_issues_policy(policy)["improvement_review"]
+    reviewed_id = review["through_audit_id"]
+    if reviewed_id:
+        row = db.get(FactoryAudit, reviewed_id)
+        if row is None or row.action != ATTEMPT:
+            raise ValueError("improvement_review_requires_exact_attempt_audit")
     rows = db.exec(
         select(FactoryAudit)
         .where(FactoryAudit.action == ATTEMPT)
@@ -166,7 +179,12 @@ def _history(db):
     result = []
     for row in rows:
         detail = json.loads(row.detail_json)
-        item = {"attempted_at": aware(row.created_at).isoformat(), **detail}
+        item = {
+            "attempted_at": aware(row.created_at).isoformat(),
+            **detail,
+            "audit_id": row.id,
+            "operator_reviewed": row.id <= reviewed_id,
+        }
         # Only delivery settlement is useful completion. Issue creation,
         # advisory refinement and ticket counts never reset the trial budget.
         fingerprint = detail.get("fingerprint")
@@ -319,12 +337,12 @@ def submit(reviewed: dict, *, actor: str) -> dict:
             raise ValueError("improvement_context_changed")
         current.update(live)
         result = preview(
-            _snapshot(reviewed, current, _history(db)),
+            _snapshot(reviewed, current, _history(db, live["policy"])),
             now=controls._now(),
-            policy=POLICY,
+            policy=generation_policy(live["policy"]),
         )
         # Throttle denied retries without growing the ledger on each request.
-        if result["reason"] in ("cooldown", "usefulness_review_required"):
+        if result["reason"] not in ("candidates", "no_actionable_findings"):
             return result
         drafts = result["drafts"]
         if drafts and _duplicates(drafts[0], current["inventory"]):
@@ -369,7 +387,9 @@ def candidate_matches(detail: dict, current: dict) -> bool:
     if expires is None or expires <= controls._now():
         return False
     result = preview(
-        _snapshot(detail["reviewed"], current, []), now=controls._now(), policy=POLICY
+        _snapshot(detail["reviewed"], current, []),
+        now=controls._now(),
+        policy=generation_policy(current["policy"]),
     )
     return bool(
         result["drafts"]

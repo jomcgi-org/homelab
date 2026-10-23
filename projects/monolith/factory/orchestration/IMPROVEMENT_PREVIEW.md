@@ -27,6 +27,8 @@ router, with unchanged permission checks:
    the existing audit ledger. No-findings and duplicate attempts also count.
    Concurrent submissions share the existing factory lock. Defaults are one
    batch per 24 hours and at most three attempts without useful completion.
+   Missing prerequisites (stale quota, ready backlog, incomplete context) defer
+   discovery without consuming the scouting trial.
 4. The existing problem-issue tick rechecks the live context and quota, then
    uses its single writer, daily cap, fingerprint and ambiguous-write
    reconciliation. A candidate expires after 900 seconds. Rules/goal/owner
@@ -97,11 +99,59 @@ above the fraction of the window's time remaining. Zero percent used means
 reset, surplus percentage points, provider, grant and reset provenance. It
 never interprets accounting list-price USD as actual cash charges.
 
-`PreviewPolicy` allows tighter configurable limits within hard bounds for local
-previews. The integrated source uses the fixed conservative policy with one
-draft per batch. The pure preview cannot persist attempts; the integrated
-source always loads and writes the existing ledger itself. History is capped
-at 1000 attempts and refuses on overflow rather than discarding old evidence.
+## Generation policy and activation
+
+The 24-hour default is a pilot limit on novel scouting, allowing useful-delivery
+feedback to arrive before more speculative work is added. It never changes
+existing intake, execution concurrency, task budgets or backlog throughput.
+There is no minimum daily issue target. As useful completions establish value,
+the runtime owner can tune the existing `problem_issues` policy:
+
+| Key | Default | Allowed |
+| --- | --- | --- |
+| `improvement_limits.cooldown_seconds` | 86400 | 3600 to 604800 |
+| `improvement_limits.max_findings` | 20 | 1 to 20 |
+| `improvement_limits.max_unproven_attempts` | 3 | 1 to 3 |
+| `max_per_24_hours` (shared writer) | 3 | 1 to 100, shared with other problem sources |
+
+One candidate per batch remains a hard bound. Both the scouting cooldown and
+the existing shared writer cap apply, so shortening the cooldown alone cannot
+exceed the writer cap. History is capped at 1000 attempts and refuses on
+overflow rather than discarding old evidence. Pure previews additionally allow
+tighter quota thresholds through `PreviewPolicy`; the live quota freshness,
+reset, grant pacing and burst safeguards are unchanged by generation tuning.
+
+A stopped unproductive trial requires a deliberate review, not endless retries.
+The context response exposes durable `improvement_history` including audit IDs.
+After reviewing why prior attempts failed and what new evidence makes further
+scouting useful, the operator can configure
+`improvement_review: {"through_audit_id": <exact attempt ID>, "reason": "<evidence and rationale>"}`.
+The ID must exist and name an improvement attempt, preventing a future watermark
+from exempting later attempts. Existing policy configuration records the reason
+and watermark in its audit. This only restarts the consecutive-attempt trial;
+it does not clear cooldowns, fingerprints or GitHub write outcomes.
+
+These are verified repository routes, available only after this code rolls out:
+
+- `GET /api/swarm/factory` reads the current full policy and status.
+- `GET /api/swarm/factory/improvements/context` is read-only and returns current
+  rule/goal/inventory evidence plus its review digest and durable history.
+- `POST /api/swarm/factory/control`, `action: configure`, `policy: <complete
+  preserved policy with the reviewed changes>` is the existing authenticated
+  policy path. Enable both `problem_issues.enabled` and the
+  `sources.quota_improvement` entry there. Configuration records an audit and
+  changes policy; preserve unrelated settings and the operator's runtime state.
+- `POST /api/swarm/factory/improvements` accepts only the bounded request fields
+  described above. It records eligible scouting attempts and at most one source
+  candidate. It does not itself write GitHub, change policy, or run a model.
+  The existing producer tick later makes at most one GitHub write per tick.
+
+The currently exposed MCP `factory_control` tool supports runtime controls,
+**not policy configuration or these new batch routes**. Do not invent MCP
+arguments, guess a service hostname, acquire credentials, or bypass access to
+invoke them. Use the existing authenticated private operator API/UI when
+available after rollout; otherwise hand off activation as blocked on that
+supported surface. No such activation was performed by this change.
 
 **Why.** A quota balance is neither an instruction to invent work nor evidence
 of permission to spend. A reviewed, bounded batch makes discovery useful

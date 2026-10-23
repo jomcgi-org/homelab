@@ -279,6 +279,8 @@ def preview(
         return {**result, "reason": "cooldown"}
     unproven = 0
     for row in attempts:
+        if row.get("operator_reviewed") is True:
+            break
         if (
             row.get("outcome") == "useful_completion"
             and row.get("merged_pr")
