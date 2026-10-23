@@ -327,13 +327,36 @@ async def monolith_agent_deregister_routine_job(name: str) -> dict:
 
 
 @mcp.tool
-async def monolith_agent_trigger_routine_job(name: str) -> dict:
+async def monolith_agent_trigger_routine_job(
+    name: str, recovery: dict | None = None
+) -> dict:
     """Kick a routine_jobs row to immediately due by setting ``next_run_at = now()``.
 
     This re-arms a completed one-shot. A drain-lane job that failed on a bad
     guest (session_down, workspace does not exist, a dropped connection) is
     terminal as a one-shot and usually passes when triggered again.
+
+    Unknown outcomes remain held unless recovery is explicitly supplied for
+    kg-fact-review by a standing human operator. Preview takes mode=preview,
+    session_id and permit_id. Apply takes the same IDs, mode=apply, the returned
+    expected_state_sha256, a unique reconciliation_key and acknowledgment equal
+    to accept_duplicate_compute_and_writes. This abandons only unfinished review
+    claims, preserves receipts and execution history, and rearms under existing
+    caps. Capacity stays charged unless a fresh control-plane read proves the
+    exact dispatch ceased. No successful result is invented. Never use this risk acceptance as automatic retry policy.
     """
+    if recovery is not None:
+        principal = current_principal()
+        refusal = operator_access_error(principal)
+        if refusal:
+            return {"ok": False, "error": refusal}
+        if name != "kg-fact-review":
+            raise ValueError("Explicit recovery is limited to kg-fact-review")
+        from agent.routine_reconciliation import recover_review_job
+
+        return await asyncio.to_thread(
+            recover_review_job, actor=principal.subject, recovery=recovery
+        )
     return {"ok": routine_jobs.trigger_job(name)}
 
 

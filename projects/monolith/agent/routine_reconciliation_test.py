@@ -20,6 +20,7 @@ from factory.execution.models import (
     AgentSession,
     AgentTurn,
     PendingMessage,
+    ProbeObservation,
 )
 
 
@@ -2333,3 +2334,329 @@ def test_completed_review_requires_fresh_cessation(database):
     with Session(database) as db:
         assert db.execute(text("SELECT next_run_at FROM routine_jobs")).scalar() is None
         assert db.get(AgentSession, request["session_id"]).ember_session_id == "guest"
+
+
+def recomputation_attempt(engine):
+    from knowledge.models import FactReviewBatch, FactReviewRun
+
+    request, _ = held(engine, scout=True)
+    key = "cycle:kg-drain:kg-fact-review"
+    engine = engine.execution_options(
+        schema_translate_map={
+            "agent_sessions": None,
+            "claude_agent": None,
+            "knowledge": None,
+        }
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            FactReviewBatch.__table__,
+            FactReviewRun.__table__,
+            ProbeObservation.__table__,
+        ],
+    )
+    with Session(engine) as db, db.begin():
+        db.execute(
+            text("UPDATE routine_jobs SET name='kg-fact-review',payload=:payload"),
+            {"payload": json.dumps({"mode": "fact-review", "review_protocol": 3})},
+        )
+        agent = db.get(AgentSession, request["session_id"])
+        agent.local_session_id = key
+        permit = AgentCapacityReservation(
+            local_session_id=key,
+            session_id=agent.id,
+            pending_seq=1,
+            tier="kg",
+            state="uncertain",
+            outcome="response_lost_guest_ceased",
+            routine_job_name="kg-fact-review",
+        )
+        db.add_all(
+            [
+                permit,
+                FactReviewBatch(
+                    invocation_key=key, member_keys=[key + ":fact:1", key + ":fact:2"]
+                ),
+                FactReviewRun(
+                    invocation_key=key + ":fact:1",
+                    status="complete",
+                    completed_at=datetime.now(timezone.utc),
+                    result={"outcome": "supported", "evidence": "retained"},
+                ),
+                FactReviewRun(
+                    invocation_key=key + ":fact:2",
+                    sources=[{"text": "retained source"}],
+                ),
+            ]
+        )
+        db.flush()
+        pid = permit.id
+    return (
+        engine,
+        {"mode": "preview", "session_id": request["session_id"], "permit_id": pid},
+        key,
+    )
+
+
+def apply_request(db, preview):
+    result = reconciliation.recover_review_job(
+        actor="operator", recovery=preview, session=db
+    )
+    return {
+        **preview,
+        "mode": "apply",
+        "reconciliation_key": "exact-review-recovery",
+        "expected_state_sha256": result["expected_state_sha256"],
+        "acknowledgment": "accept_duplicate_compute_and_writes",
+    }
+
+
+def test_operator_recomputation_preserves_unknown_history_and_completed_receipts(
+    database,
+):
+    from knowledge.models import FactReviewBatch, FactReviewRun
+
+    engine, preview, key = recomputation_attempt(database)
+    with Session(engine) as db:
+        before = reconciliation.read_reconciliation_state(
+            db, "kg-fact-review", preview["session_id"]
+        )
+        completed = db.get(FactReviewRun, key + ":fact:1").model_dump()
+        unfinished = db.get(FactReviewRun, key + ":fact:2").model_dump()
+        request = apply_request(db, preview)
+        assert (
+            reconciliation.read_reconciliation_state(
+                db, "kg-fact-review", preview["session_id"]
+            )
+            == before
+        )
+        result = reconciliation.recover_review_job(
+            actor="operator", recovery=request, session=db
+        )
+        db.commit()
+        assert result["abandoned_members"] == result["retained_completed_members"] == 1
+        assert not result["guest_cessation_confirmed"]
+        assert result["capacity_reservation_retained"]
+        assert db.get(FactReviewRun, key + ":fact:1").model_dump() == completed
+        assert db.get(FactReviewRun, key + ":fact:2").model_dump() == {
+            **unfinished,
+            "status": "abandoned",
+        }
+        assert db.get(FactReviewBatch, key).status == "abandoned"
+        after = reconciliation.read_reconciliation_state(
+            db, "kg-fact-review", preview["session_id"]
+        )
+        for field in ("session_sha256", "turns_sha256", "payload_sha256", "guest_id"):
+            assert after[field] == before[field]
+        permit = db.get(AgentCapacityReservation, preview["permit_id"])
+        assert permit.state == "uncertain" and permit.settled_at is None
+        assert permit.outcome == "operator_recompute_unknown"
+        assert "kg-fact-review" not in admission.reserved_routine_jobs(db)
+        assert db.exec(select(RoutineReconciliation)).one().actor == "operator"
+        assert (
+            reconciliation.recover_review_job(
+                actor="operator", recovery=request, session=db
+            )
+            == result
+        )
+        with pytest.raises(ValueError, match="conflicts"):
+            reconciliation.recover_review_job(
+                actor="another", recovery=request, session=db
+            )
+        assert db.exec(select(RoutineReconciliation)).one()
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["digest", "permit", "pending", "workflow", "lock", "ack", "fence", "new_permit"],
+)
+def test_operator_recomputation_refuses_changed_or_active_ownership(database, change):
+    from knowledge.models import FactReviewBatch
+
+    engine, preview, key = recomputation_attempt(database)
+    with Session(engine) as db:
+        request = apply_request(db, preview)
+        if change == "digest":
+            request["expected_state_sha256"] = "0" * 64
+        elif change == "permit":
+            request["permit_id"] += 1
+        elif change == "pending":
+            db.add(
+                PendingMessage(
+                    session_id=preview["session_id"],
+                    seq=2,
+                    message_text="active",
+                    model="luna",
+                )
+            )
+        elif change == "workflow":
+            db.execute(text("UPDATE workflow_status SET status='PENDING'"))
+        elif change == "lock":
+            db.execute(text("UPDATE routine_jobs SET locked_by='new-owner'"))
+        elif change == "ack":
+            request["acknowledgment"] = "yes"
+        elif change == "fence":
+            db.get(
+                AgentSession, preview["session_id"]
+            ).result_receipt_fence_id = "active-recovery"
+        elif change == "new_permit":
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id="new",
+                    pending_seq=1,
+                    tier="kg",
+                    routine_job_name="kg-fact-review",
+                )
+            )
+        db.commit()
+        with pytest.raises(ValueError):
+            reconciliation.recover_review_job(
+                actor="operator", recovery=request, session=db
+            )
+        assert db.get(FactReviewBatch, key).status == "prepared"
+        assert (
+            db.get(AgentCapacityReservation, preview["permit_id"]).outcome
+            == "response_lost_guest_ceased"
+        )
+        assert db.exec(select(RoutineReconciliation)).first() is None
+        assert db.execute(text("SELECT next_run_at FROM routine_jobs")).scalar() is None
+
+
+def test_operator_recomputation_rolls_back_with_outer_transaction(database):
+    from knowledge.models import FactReviewBatch
+
+    engine, preview, key = recomputation_attempt(database)
+    with Session(engine) as db:
+        request = apply_request(db, preview)
+        reconciliation.recover_review_job(
+            actor="operator", recovery=request, session=db
+        )
+        db.rollback()
+    with Session(engine) as db:
+        assert db.get(FactReviewBatch, key).status == "prepared"
+        assert (
+            db.get(AgentCapacityReservation, preview["permit_id"]).state == "uncertain"
+        )
+        assert db.exec(select(RoutineReconciliation)).first() is None
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "missing",
+        "wrong_guest",
+        "wrong_owner",
+        "wrong_dispatch",
+        "stale",
+        "future",
+        "active",
+        "generation_regression",
+        "invoke_changed",
+        "cp_regression",
+        "bad_completion",
+    ],
+)
+def test_operator_recomputation_releases_capacity_only_for_exact_fresh_cessation(
+    database, monkeypatch, fault
+):
+    import factory.api
+
+    engine, preview, key = recomputation_attempt(database)
+    monkeypatch.setattr(reconciliation, "get_engine", lambda: engine)
+    now = datetime.now(timezone.utc)
+    dispatched = now - timedelta(minutes=3)
+    started = dispatched + timedelta(seconds=1)
+    stopped = now - timedelta(minutes=2)
+    with Session(engine) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, preview["permit_id"])
+        permit.owner = "original-owner"
+        turn = db.exec(select(AgentTurn)).one()
+        turn.usage_json = json.dumps(
+            {
+                "recovery": {
+                    "claim_owner": "original-owner",
+                    "dispatch_count": 1,
+                    "last_dispatch_at": dispatched.isoformat(),
+                }
+            }
+        )
+    observation = {
+        "session_id": "guest",
+        "state": "evicted",
+        "generation": 0,
+        "invoke_started_at": int(started.timestamp() * 1000),
+        "updated_at": int(stopped.timestamp() * 1000),
+        "observed_at": now.isoformat(),
+    }
+    if fault == "missing":
+        observation = None
+    elif fault == "wrong_guest":
+        observation["session_id"] = "different"
+    elif fault == "wrong_owner":
+        with Session(engine) as db, db.begin():
+            db.get(
+                AgentCapacityReservation, preview["permit_id"]
+            ).owner = "another-owner"
+    elif fault == "wrong_dispatch":
+        observation["invoke_started_at"] = int(
+            (dispatched - timedelta(seconds=1)).timestamp() * 1000
+        )
+    elif fault == "stale":
+        observation["observed_at"] = (now - timedelta(minutes=1)).isoformat()
+    elif fault == "future":
+        observation["updated_at"] = int((now + timedelta(minutes=1)).timestamp() * 1000)
+    elif fault == "active":
+        observation["state"] = "running"
+    if fault in {"generation_regression", "invoke_changed", "cp_regression"}:
+        with Session(engine) as db, db.begin():
+            db.add(
+                ProbeObservation(
+                    permit_id=preview["permit_id"],
+                    guest_id="guest",
+                    checked_at=now,
+                    generation=1 if fault == "generation_regression" else 0,
+                    invoke_started_at=int(started.timestamp() * 1000)
+                    + (1 if fault == "invoke_changed" else 0),
+                    cp_updated_at=int(stopped.timestamp() * 1000)
+                    + (1 if fault == "cp_regression" else 0),
+                )
+            )
+    elif fault == "bad_completion":
+        observation["last_invoke_at"] = observation["updated_at"] + 1
+    calls = []
+
+    def observe(guest):
+        calls.append(guest)
+        return observation
+
+    monkeypatch.setattr(factory.api, "observe_guest_for_recomputation", observe)
+    result = reconciliation.recover_review_job(actor="operator", recovery=preview)
+    request = {
+        **preview,
+        "mode": "apply",
+        "reconciliation_key": "cessation-recompute",
+        "expected_state_sha256": result["expected_state_sha256"],
+        "acknowledgment": "accept_duplicate_compute_and_writes",
+    }
+    result = reconciliation.recover_review_job(actor="operator", recovery=request)
+    assert calls == ["guest", "guest"]
+    assert result["guest_cessation_confirmed"] is (fault is None)
+    assert result["capacity_reservation_retained"] is (fault is not None)
+    with Session(engine) as db:
+        permit = db.get(AgentCapacityReservation, preview["permit_id"])
+        assert permit.state == ("settled" if fault is None else "uncertain")
+        assert permit.outcome == (
+            "operator_recompute_ceased_unknown"
+            if fault is None
+            else "operator_recompute_unknown"
+        )
+        assert db.exec(select(AgentTurn)).one().stop_reason == UNKNOWN_INVOCATION
+        assert db.get(AgentSession, preview["session_id"]).status == "failed"
+        audit = json.loads(db.exec(select(RoutineReconciliation)).one().evidence_json)
+        assert audit["observation"] == observation
+    assert (
+        reconciliation.recover_review_job(actor="operator", recovery=request) == result
+    )
+    assert calls == ["guest", "guest"]

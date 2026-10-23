@@ -390,6 +390,8 @@ def prepare(
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": JOB_NAME}
         )
     run = session.get(FactReviewRun, invocation_key)
+    if run is not None and run.status == "abandoned":
+        raise ExtractionOutputInvalid("review member abandoned by operator recovery")
     if run is not None and (run.status == "complete" or run.sources):
         return _prompt(run, progress_signal)
     if run is None:
@@ -445,6 +447,8 @@ def prepare(
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one()
+    if run.status == "abandoned":
+        raise ExtractionOutputInvalid("review member abandoned by operator recovery")
     if run.sources or run.status == "complete":
         # A recovered executor may have completed the same read-only fetch.
         # Keep the first durable evidence bundle, including after application.
@@ -512,6 +516,8 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
     ).first()
     if run is None:
         raise ExtractionOutputInvalid("source review was not prepared")
+    if run.status == "abandoned":
+        raise ExtractionOutputInvalid("review member abandoned by operator recovery")
     if run.status == "complete":
         return {**run.result, "replayed": True}
     try:

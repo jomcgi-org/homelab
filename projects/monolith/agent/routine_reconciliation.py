@@ -598,3 +598,267 @@ def reconcile_held_job(
             return _reconcile(session, request)
     with Session(get_engine()) as db, db.begin():
         return _reconcile(db, request)
+
+
+def _review_guest_ceased(state, observation):
+    if not isinstance(observation, dict):
+        return False
+    try:
+        observed = _proof_time(observation)
+        turn = datetime.fromisoformat(state["latest_turn_at"].replace("Z", "+00:00"))
+        if turn.tzinfo is None:
+            turn = turn.replace(tzinfo=timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return False
+    prior = state.get("permit_observation")
+    if prior is not None and (
+        prior["guest_id"] not in {None, state["guest_id"]}
+        or (
+            prior["generation"] is not None
+            and (
+                type(observation.get("generation")) is not int
+                or observation["generation"] < prior["generation"]
+            )
+        )
+        or (
+            prior["invoke_started_at"] is not None
+            and observation.get("invoke_started_at") != prior["invoke_started_at"]
+        )
+        or (
+            prior["cp_updated_at"] is not None
+            and (
+                type(observation.get("updated_at")) is not int
+                or observation["updated_at"] < prior["cp_updated_at"]
+            )
+        )
+    ):
+        return False
+    return (
+        observation.get("session_id") == state["guest_id"]
+        and observation.get("state") in {"evicted", "destroyed"}
+        and type(observation.get("generation")) is int
+        and observation["generation"] >= 0
+        and 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 30
+        and type(observation.get("updated_at")) is int
+        and 0 <= observation["updated_at"] <= int(observed.timestamp() * 1000)
+        and terminal_dispatch_cessation(
+            observation,
+            state["latest_dispatch"],
+            state["reservation_owner"],
+            turn,
+        )
+    )
+
+
+def _recover_review(db, request, observation=None):
+    from factory.api import (
+        accept_review_recomputation,
+        read_review_cessation_observation,
+    )
+    from knowledge.api import abandon_fact_review_for_recomputation
+
+    apply = request["mode"] == "apply"
+    if apply:
+        lock_capacity_pool(db)
+        previous = db.get(RoutineReconciliation, request["reconciliation_key"])
+        if previous is not None:
+            if previous.request_sha256 != _sha(request):
+                raise ValueError("Recovery key conflicts with recorded request")
+            return json.loads(previous.result_json)
+        lock_cessation_session(db, request["session_id"])
+        lock = " FOR UPDATE" if db.bind.dialect.name != "sqlite" else ""
+        db.execute(
+            text(
+                f"SELECT name FROM {_table(db, 'claude_agent', 'routine_jobs')} "
+                f"WHERE name='kg-fact-review'{lock}"
+            )
+        ).one()
+        # Serialize against the batch writer before binding the preview digest.
+        local = _rows(
+            db,
+            f"SELECT local_session_id FROM {_table(db, 'agent_sessions', 'agent_sessions')} WHERE id=:id",
+            {"id": request["session_id"]},
+        )[0]
+        db.execute(
+            text(
+                f"SELECT invocation_key FROM {_table(db, 'knowledge', 'fact_review_batches')} "
+                f"WHERE invocation_key=:key{lock}"
+            ),
+            {"key": local["local_session_id"]},
+        ).one()
+    state = read_reconciliation_state(db, "kg-fact-review", request["session_id"])
+    state["permit_observation"] = read_review_cessation_observation(
+        db, request["permit_id"]
+    )
+    state["state_sha256"] = _sha(
+        {k: v for k, v in state.items() if k != "state_sha256"}
+    )
+    if (
+        state["job_status"] != UNKNOWN_INVOCATION
+        or state["routine_kind"] != KG_NODE_KEY
+        or state["node_key"] != KG_NODE_KEY
+        or state["session_status"] != "failed"
+        or state["latest_stop_reason"] != UNKNOWN_INVOCATION
+        or state["latest_terminal_reason"] != "error"
+        or state["latest_routine_session_id"] != request["session_id"]
+        or state["binding_session_ids"] != [request["session_id"]]
+        or state["pending"]
+        or state["locked_by"] is not None
+        or state["locked_at"] is not None
+        or state["next_run_at"] is not None
+        or state["reservation_count"] != 1
+        or state["reservation_id"] != request["permit_id"]
+        or state["reservation_state"] != "uncertain"
+        or state["reservation_tier"] != "kg"
+        or state["reservation_job_name"] != "kg-fact-review"
+        or state["reservation_session_id"] != request["session_id"]
+        or state["reservation_local_session_id"] != state["local_session_id"]
+        or state["active_reservation_ids"] != [request["permit_id"]]
+        or state["local_session_id"]
+        != f"{state['workflow_id']}:kg-drain:kg-fact-review"
+        or not (state["last_summary"] or "").startswith(
+            f"session_id={request['session_id']}:"
+        )
+        or len(state["workflow"]) != 1
+        or state["workflow"][0]["name"] != "drain_cycle"
+        or state["workflow"][0]["status"] not in {"SUCCESS", "ERROR", "CANCELLED"}
+        or state["review_batch"]["complete"]
+    ):
+        raise ValueError(
+            "Exact held review attempt is not eligible for operator recomputation"
+        )
+    if db.exec(
+        select(RoutineReconciliation).where(
+            RoutineReconciliation.session_id == request["session_id"],
+            RoutineReconciliation.unknown_turn_seq == state["latest_turn_seq"],
+        )
+    ).first():
+        raise ValueError("This attempt already has a recovery decision")
+    ceased = _review_guest_ceased(state, observation)
+    if not apply:
+        return {
+            "ok": True,
+            "mode": "preview",
+            "job_name": "kg-fact-review",
+            "session_id": request["session_id"],
+            "permit_id": request["permit_id"],
+            "expected_state_sha256": state["state_sha256"],
+            "batch_key": state["local_session_id"],
+            "original_outcome": UNKNOWN_INVOCATION,
+            "capacity_reservation_retained": not ceased,
+            "required_acknowledgment": "accept_duplicate_compute_and_writes",
+        }
+    if state["state_sha256"] != request["expected_state_sha256"]:
+        raise ValueError("Expected recovery state changed; preview again")
+    counts = abandon_fact_review_for_recomputation(db, state["local_session_id"])
+    accept_review_recomputation(
+        db, request["session_id"], request["permit_id"], cessation_confirmed=ceased
+    )
+    now = datetime.now(timezone.utc)
+    db.execute(
+        text(
+            f"UPDATE {_table(db, 'claude_agent', 'routine_jobs')} "
+            "SET next_run_at=:now,last_status='operator_recompute_unknown' WHERE name='kg-fact-review'"
+        ),
+        {"now": now},
+    )
+    db.flush()
+    after = read_reconciliation_state(db, "kg-fact-review", request["session_id"])
+    for field in ("session_sha256", "turns_sha256", "payload_sha256", "guest_id"):
+        if after[field] != state[field]:
+            raise ValueError("Recovery changed protected execution history")
+    if ceased and not _review_guest_ceased(state, observation):
+        raise ValueError(
+            "Cessation evidence expired while acquiring recovery ownership"
+        )
+    result = {
+        "ok": True,
+        "mode": "apply",
+        "job_name": "kg-fact-review",
+        "session_id": request["session_id"],
+        "permit_id": request["permit_id"],
+        "reconciliation_key": request["reconciliation_key"],
+        "original_outcome": UNKNOWN_INVOCATION,
+        "guest_cessation_confirmed": ceased,
+        "capacity_reservation_retained": not ceased,
+        "next_run_at": now.isoformat(),
+        **counts,
+    }
+    db.add(
+        RoutineReconciliation(
+            reconciliation_key=request["reconciliation_key"],
+            request_sha256=_sha(request),
+            actor=request["actor"],
+            job_name="kg-fact-review",
+            session_id=request["session_id"],
+            unknown_turn_seq=state["latest_turn_seq"],
+            disposition="rearm",
+            evidence_json=_json(
+                {
+                    "request": request,
+                    "before": state,
+                    "after": after,
+                    "observation": observation,
+                }
+            ),
+            result_json=_json(result),
+            created_at=now,
+        )
+    )
+    db.flush()
+    return result
+
+
+def recover_review_job(
+    *, actor: str, recovery: dict, session: Session | None = None
+) -> dict:
+    """Explicit one-attempt operator override, never used by automatic supervision.
+
+    No success is inferred. Capacity remains charged unless a fresh server-owned
+    control-plane read proves this exact dispatch ceased. A new
+    cycle uses ordinary subscriptions, admission and daily caps; no job is run
+    directly. Only unfinished review claims are abandoned, with their data kept.
+    """
+    if not isinstance(recovery, dict) or recovery.get("mode") not in {
+        "preview",
+        "apply",
+    }:
+        raise ValueError("Recovery requires preview or apply")
+    keys = {"mode", "session_id", "permit_id"}
+    if recovery["mode"] == "apply":
+        keys |= {"reconciliation_key", "expected_state_sha256", "acknowledgment"}
+    if set(recovery) != keys or any(
+        type(recovery[k]) is not int or recovery[k] <= 0
+        for k in ("session_id", "permit_id")
+    ):
+        raise ValueError("Exact recovery fields and positive IDs required")
+    if recovery["mode"] == "apply":
+        _identifier(recovery["reconciliation_key"], "recovery key")
+        _digest(recovery["expected_state_sha256"])
+        if recovery["acknowledgment"] != "accept_duplicate_compute_and_writes":
+            raise ValueError(
+                "Explicit duplicate computation and write risk acknowledgment required"
+            )
+    request = {**recovery, "actor": _identifier(actor, "actor")}
+    if session is not None:
+        if request["mode"] == "preview":
+            return _recover_review(session, request)
+        lock_capacity_pool(session)
+        with session.begin_nested():
+            return _recover_review(session, request)
+    from factory.api import observe_guest_for_recomputation
+
+    # Never perform network I/O while holding ownership locks. Replays return
+    # their durable result even after the routine or session has disappeared.
+    with Session(get_engine()) as db:
+        if request["mode"] == "apply":
+            previous = db.get(RoutineReconciliation, request["reconciliation_key"])
+            if previous is not None:
+                if previous.request_sha256 != _sha(request):
+                    raise ValueError("Recovery key conflicts with recorded request")
+                return json.loads(previous.result_json)
+        before = read_reconciliation_state(db, "kg-fact-review", request["session_id"])
+        guest_id = before["guest_id"]
+    observation = observe_guest_for_recomputation(guest_id) if guest_id else None
+    with Session(get_engine()) as db, db.begin():
+        return _recover_review(db, request, observation)
