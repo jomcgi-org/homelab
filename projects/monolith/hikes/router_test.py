@@ -283,9 +283,23 @@ class TestLongestGoodRun:
         # Missing hour 102 (bad weather) is tolerated once: 100,101,_,103,104.
         assert _longest_good_run([100, 101, 103, 104]) == 4
 
-    def test_second_gap_ends_the_run(self):
-        # 100,102,104: first gap bridged (run 2), second gap breaks it.
+    def test_second_gap_slides_the_run(self):
+        # Both overlapping two-hour runs qualify, but all three hours do not.
         assert _longest_good_run([100, 102, 104]) == 2
+
+    @pytest.mark.parametrize(
+        "offsets,want",
+        [
+            ([0, 2, 3, 5, 6, 7], 5),
+            ([0, 2, 3, 5, 6, 8, 9, 10], 5),
+            ([0, 2, 5, 6, 8, 9, 10], 5),
+            ([0, 1, 2, 4, 5, 7], 5),
+            ([0, 2, 3, 5, 6], 4),
+            ([0, 1, 3, 4, 6, 7], 4),
+        ],
+    )
+    def test_sliding_windows(self, offsets, want):
+        assert _longest_good_run([100 + o for o in offsets]) == want
 
     def test_two_hour_gap_is_not_bridged(self):
         # Two missing hours (102,103) is too long: the run ends at 101.
@@ -297,6 +311,10 @@ class TestLongestGoodRun:
 
 
 class TestDoableDays:
+    def test_second_gap_slides_to_a_doable_slot(self):
+        hours = _hours_at(UNIT_BASE, 0, 2, 3, 5, 6, 7)
+        assert _doable_days(hours, 5.0) == ["2026-06-15"]
+
     def test_run_meets_eighty_percent_floor(self):
         # 5.5 h walk needs 0.8 * 5.5 = 4.4 -> 5 good hours; a 5-hour run qualifies.
         hours = _hours_at(UNIT_BASE, 0, 1, 2, 3, 4)

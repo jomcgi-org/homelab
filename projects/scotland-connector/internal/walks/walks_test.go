@@ -27,17 +27,25 @@ func TestLongestRunMatchesHikes(t *testing.T) {
 	for _, c := range []struct {
 		offsets []int
 		want    int
+		start   int
+		end     int
 	}{
-		{nil, 0},
-		{[]int{0}, 1},
-		{[]int{0, 1, 2, 3}, 4},
-		{[]int{0, 1, 3, 4}, 4},
-		{[]int{0, 2, 4}, 2},
-		{[]int{0, 1, 4, 5}, 2},
-		{[]int{0, 1, 3, 4, 7, 8}, 4},
+		{nil, 0, 0, 0},
+		{[]int{0}, 1, 0, 0},
+		{[]int{0, 1, 2, 3}, 4, 0, 3},
+		{[]int{0, 1, 3, 4}, 4, 0, 3},
+		{[]int{0, 2, 4}, 2, 0, 1},
+		{[]int{0, 1, 4, 5}, 2, 0, 1},
+		{[]int{0, 1, 3, 4, 7, 8}, 4, 0, 3},
+		{[]int{0, 2, 3, 5, 6, 7}, 5, 1, 5},
+		{[]int{0, 2, 3, 5, 6, 8, 9, 10}, 5, 3, 7},
+		{[]int{0, 2, 5, 6, 8, 9, 10}, 5, 2, 6},
+		{[]int{0, 1, 2, 4, 5, 7}, 5, 0, 4},
+		{[]int{0, 2, 3, 5, 6}, 4, 1, 4},
+		{[]int{0, 1, 3, 4, 6, 7}, 4, 0, 3},
 	} {
-		if got, _, _ := longestRun(hoursAt(c.offsets...)); got != c.want {
-			t.Errorf("longestRun(%v) = %d, want %d", c.offsets, got, c.want)
+		if got, s, e := longestRun(hoursAt(c.offsets...)); got != c.want || s != c.start || e != c.end {
+			t.Errorf("longestRun(%v) = (%d, %d, %d), want (%d, %d, %d)", c.offsets, got, s, e, c.want, c.start, c.end)
 		}
 	}
 }
@@ -52,6 +60,7 @@ func TestDoableMatchesHikes(t *testing.T) {
 		{[]int{0, 1, 2, 3, 4}, 5.5, true},
 		{[]int{0, 1, 2, 3}, 5.5, false},
 		{[]int{0, 1, 2, 3}, 5.0, true},
+		{[]int{0, 2, 3, 5, 6, 7}, 5.0, true},
 		{[]int{0, 1, 2, 4, 5}, 5.5, true},
 		{[]int{0, 1, 2, 3, 4, 5}, 10.0, true},
 		{[]int{0, 1, 2, 3, 4}, 10.0, false},
@@ -72,6 +81,26 @@ func TestBestRunBoundsTheSlot(t *testing.T) {
 	d := w.day(LocalDay(base), w.Hours)
 	if d.Best == nil || d.Best.GoodHours != 3 || !d.Best.Start.Equal(base.Add(4*time.Hour)) || !d.Best.End.Equal(base.Add(7*time.Hour)) {
 		t.Fatalf("best = %+v", d.Best)
+	}
+}
+
+func TestSlidingRunAssessment(t *testing.T) {
+	body := strings.Replace(walkJSON("w", 57, -4, 5, 0, 0, 2, 3, 5, 6, 7, 24), "9.5,0.2,18,40", "9.5,0.2,49,40", 1)
+	ds := mustParse(t, snapshot(body))
+	w := &ds.Walks[0]
+	// The excluded first hour must not leak into the selected slot's weather.
+	d := ds.DayFor(w, LocalDay(base), base.Add(-time.Hour))
+	if d.Coverage != CoverageFull || !d.Decided || !d.Doable || d.Best == nil {
+		t.Fatalf("day = %+v", d)
+	}
+	b := d.Best
+	if b.GoodHours != 5 || !b.Start.Equal(base.Add(2*time.Hour)) || !b.End.Equal(base.Add(8*time.Hour)) || b.MaxWindKmh != 18 || b.TotalPrecipMM != 1 {
+		t.Fatalf("best = %+v", b)
+	}
+	a := w.Assess(d, ds.HourlyUntil)
+	// The tolerated bad hour still makes the existing verdict marginal, not go.
+	if a.Verdict != verdict.Marginal || w.Verdict(d) != a.Verdict || !a.StartFrom.Equal(b.Start) || !a.StartBy.Equal(base.Add(3*time.Hour)) {
+		t.Fatalf("assessment = %+v", a)
 	}
 }
 
