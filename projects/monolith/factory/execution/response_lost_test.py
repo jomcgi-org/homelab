@@ -50,6 +50,8 @@ _REAL_CLAIM_PENDING_MESSAGE = mcp._claim_pending_message_sync
 
 @pytest.fixture
 def database(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp, "_response_lost_sweep_ceiling", 0)
+    monkeypatch.setattr(mcp, "_response_lost_sweep_cursor", 0)
     monkeypatch.setattr(mcp, "_rollout_shutdown_started", False)
     monkeypatch.setattr(mcp, "_rollout_drain_started", False)
     monkeypatch.setattr(mcp, "_rollout_handoffs", {})
@@ -2298,3 +2300,140 @@ def test_rollout_cancels_non_adoptable_turns_only_after_grace_expires(
 
     asyncio.run(scenario())
     assert waits == [5.0, 5.0]
+
+
+@pytest.mark.parametrize("blocked", ["waiting", "refused", "exception"])
+def test_sweep_reaches_later_holds_when_first_batch_never_resolves(
+    monkeypatch, blocked
+):
+    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
+    monkeypatch.setattr(mcp, "_response_lost_sweep_cursor", 0, raising=False)
+    seen = []
+
+    monkeypatch.setattr(mcp, "_response_lost_sweep_ceiling", 0)
+    monkeypatch.setattr(store, "response_lost_session_ceiling", lambda: 6)
+
+    def candidates(limit=5, *, after_session_id=0, through_session_id=None):
+        return [
+            sid for sid in range(1, 7) if after_session_id < sid <= through_session_id
+        ][:limit]
+
+    def adopt(sid):
+        seen.append(sid)
+        if sid != 6 and blocked == "exception":
+            raise RuntimeError("unavailable")
+        return {"status": "adopted" if sid == 6 else blocked}
+
+    monkeypatch.setattr(store, "find_response_lost_session_ids", candidates)
+    monkeypatch.setattr(store, "adopt_response_lost_result", adopt)
+    monkeypatch.setattr(
+        mcp, "_recover_terminal_response_lost", lambda sid, result: result
+    )
+    assert mcp._adopt_response_lost_results() == []
+    assert mcp._adopt_response_lost_results() == [6]
+    assert seen == [1, 2, 3, 4, 5, 6]
+    # Finish the finite pass, then revisit unresolved earlier holds.
+    assert mcp._adopt_response_lost_results() == []
+    assert mcp._adopt_response_lost_results() == []
+    assert seen[-5:] == [1, 2, 3, 4, 5]
+
+
+def test_response_loss_candidates_page_without_mutating_holds(database):
+    ids = [queue(database, key=f"held-{index}") for index in range(7)]
+    with Session(database) as db:
+        for sid in ids:
+            pending = db.exec(
+                select(PendingMessage).where(PendingMessage.session_id == sid)
+            ).one()
+            pending.claimed_by_replica = "old-owner"
+            store.create_turn(
+                db,
+                sid,
+                pending.seq,
+                "task",
+                None,
+                "interrupted",
+                "interrupted",
+                RESPONSE_LOST,
+                [],
+                None,
+                {},
+                None,
+            )
+    before = [snapshot(database, sid) for sid in ids]
+    assert store.response_lost_session_ceiling() == ids[-1]
+    assert store.find_response_lost_session_ids(5, through_session_id=ids[2]) == ids[:3]
+    assert store.find_response_lost_session_ids(5) == ids[:5]
+    assert store.find_response_lost_session_ids(5, after_session_id=ids[4]) == ids[5:]
+    assert store.find_response_lost_session_ids(5, after_session_id=ids[-1]) == []
+    assert [snapshot(database, sid) for sid in ids] == before
+
+
+def test_sweep_revisits_old_and_newly_eligible_holds_despite_continuous_arrivals(
+    monkeypatch,
+):
+    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
+    monkeypatch.setattr(mcp, "_response_lost_sweep_cursor", 0)
+    monkeypatch.setattr(mcp, "_response_lost_sweep_ceiling", 0)
+    eligible = {1, 3, 4, 5, 6, 7, 8}
+    ready = set()
+    seen = []
+    monkeypatch.setattr(
+        store, "response_lost_session_ceiling", lambda: max(eligible, default=0)
+    )
+
+    def candidates(limit=5, *, after_session_id=0, through_session_id=None):
+        return sorted(
+            sid for sid in eligible if after_session_id < sid <= through_session_id
+        )[:limit]
+
+    def adopt(sid):
+        seen.append(sid)
+        if sid in ready:
+            eligible.remove(sid)
+            return {"status": "adopted"}
+        return {"status": "waiting"}
+
+    monkeypatch.setattr(store, "find_response_lost_session_ids", candidates)
+    monkeypatch.setattr(store, "adopt_response_lost_result", adopt)
+    monkeypatch.setattr(
+        mcp, "_recover_terminal_response_lost", lambda sid, outcome: outcome
+    )
+    assert mcp._adopt_response_lost_results() == []
+    assert seen == [1, 3, 4, 5, 6]
+    # A late result and a newly eligible older session must both get a turn.
+    ready.update({1, 2})
+    eligible.add(2)
+    eligible.remove(7)
+    adopted = []
+    for index in range(3):
+        eligible.update(range(9 + index * 5, 14 + index * 5))
+        before = len(seen)
+        adopted.extend(mcp._adopt_response_lost_results())
+        assert len(seen) - before <= 5
+    assert adopted == [1, 2]
+
+
+def test_sweep_restart_safely_revisits_candidates(monkeypatch):
+    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
+    monkeypatch.setattr(mcp, "_response_lost_sweep_cursor", 9)
+    monkeypatch.setattr(mcp, "_response_lost_sweep_ceiling", 10)
+    monkeypatch.setattr(store, "response_lost_session_ceiling", lambda: 10)
+    seen = []
+
+    def candidates(limit=5, *, after_session_id=0, through_session_id=None):
+        return [sid for sid in (1, 10) if after_session_id < sid <= through_session_id][
+            :limit
+        ]
+
+    monkeypatch.setattr(store, "find_response_lost_session_ids", candidates)
+    monkeypatch.setattr(
+        store, "adopt_response_lost_result", lambda sid: seen.append(sid)
+    )
+    assert mcp._adopt_response_lost_results() == []
+    assert seen == [10]
+    # A process restart loses only scheduling state, never durable validation.
+    mcp._response_lost_sweep_cursor = 0
+    mcp._response_lost_sweep_ceiling = 0
+    assert mcp._adopt_response_lost_results() == []
+    assert seen == [10, 1, 10]

@@ -1086,32 +1086,55 @@ def read_response_lost_hold_sync(session_id: int) -> dict | None:
         return _response_lost_hold(get_turn(session, session_id, pending.seq), pending)
 
 
-def find_response_lost_session_ids(limit: int = 5) -> list[int]:
-    """A bounded batch of sessions carrying a response-loss marker.
+def _response_lost_session_query():
+    return (
+        select(PendingMessage.session_id)
+        .join(
+            AgentTurn,
+            and_(
+                AgentTurn.session_id == PendingMessage.session_id,
+                AgentTurn.seq == PendingMessage.seq,
+            ),
+        )
+        .where(
+            PendingMessage.claimed_by_replica.isnot(None),
+            AgentTurn.stop_reason == RESPONSE_LOST,
+            AgentTurn.terminal_reason.in_(INTERRUPTED_TERMINAL_REASONS),
+        )
+        .distinct()
+    )
 
-    The bound is checked per session when the hold is read, so this predicate
-    deliberately selects expired markers too: an expired one simply reads as no
-    hold and is left to the ordinary lease path.
+
+def response_lost_session_ceiling() -> int:
+    """Freeze a finite pass so new arrivals cannot prevent revisiting old holds."""
+    with Session(get_engine()) as session:
+        return (
+            session.exec(
+                _response_lost_session_query()
+                .order_by(PendingMessage.session_id.desc())
+                .limit(1)
+            ).first()
+            or 0
+        )
+
+
+def find_response_lost_session_ids(
+    limit: int = 5, *, after_session_id: int = 0, through_session_id: int | None = None
+) -> list[int]:
+    """A bounded identity page of sessions carrying a response-loss marker.
+
+    Callers freeze through_session_id for one pass, then start a new pass to
+    revisit earlier holds and eligibility changes. Expired markers are included:
+    they read as no hold and remain owned by the ordinary lease path.
     """
+    query = _response_lost_session_query().where(
+        PendingMessage.session_id > after_session_id
+    )
+    if through_session_id is not None:
+        query = query.where(PendingMessage.session_id <= through_session_id)
     with Session(get_engine()) as session:
         return list(
-            session.exec(
-                select(PendingMessage.session_id)
-                .join(
-                    AgentTurn,
-                    and_(
-                        AgentTurn.session_id == PendingMessage.session_id,
-                        AgentTurn.seq == PendingMessage.seq,
-                    ),
-                )
-                .where(
-                    PendingMessage.claimed_by_replica.isnot(None),
-                    AgentTurn.stop_reason == RESPONSE_LOST,
-                    AgentTurn.terminal_reason.in_(INTERRUPTED_TERMINAL_REASONS),
-                )
-                .order_by(PendingMessage.session_id)
-                .limit(limit)
-            ).all()
+            session.exec(query.order_by(PendingMessage.session_id).limit(limit)).all()
         )
 
 

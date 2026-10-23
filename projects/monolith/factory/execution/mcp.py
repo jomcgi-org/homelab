@@ -1682,6 +1682,10 @@ def _recover_terminal_response_lost(session_id: int, outcome: dict) -> dict | No
     return retried
 
 
+_response_lost_sweep_cursor = 0
+_response_lost_sweep_ceiling = 0
+
+
 def _adopt_response_lost_results() -> list[int]:
     """Adopt committed results and reconcile holds over confirmed ceased guests.
 
@@ -1695,7 +1699,23 @@ def _adopt_response_lost_results() -> list[int]:
     if not response_lost_recovery_enabled():
         return []
     adopted = []
-    for session_id in store.find_response_lost_session_ids(5):
+    global _response_lost_sweep_cursor, _response_lost_sweep_ceiling
+    if _response_lost_sweep_ceiling == 0:
+        _response_lost_sweep_ceiling = store.response_lost_session_ceiling()
+    candidates = store.find_response_lost_session_ids(
+        5,
+        after_session_id=_response_lost_sweep_cursor,
+        through_session_id=_response_lost_sweep_ceiling,
+    )
+    if not candidates:
+        _response_lost_sweep_cursor = 0
+        _response_lost_sweep_ceiling = 0
+        return []
+    for session_id in candidates:
+        # Advance even on refusal or failure. This is scheduling only: every
+        # adoption still checks its durable identity, hold and receipt. A new
+        # replica starts at zero and safely revisits earlier holds.
+        _response_lost_sweep_cursor = session_id
         try:
             outcome = store.adopt_response_lost_result(session_id)
             if outcome is not None and outcome.get("status") == "waiting":
