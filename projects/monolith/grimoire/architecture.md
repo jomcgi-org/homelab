@@ -541,10 +541,48 @@ Batch commands in `app/jobs_main.py` invoke the domain jobs:
   loads books, adventures, chunks, and embeddings.
 - `grimoire-extract-entities` produces typed entities, mentions, and graph
   relationships.
+- `grimoire-verify-entities` checks extracted numeric and structured fields
+  against marker-bearing mention chunks.
 - `grimoire-backfill-hierarchy` repairs or derives entity hierarchy data.
 
 The jobs are discrete read, compute, and write stages with recorded provenance.
 Bad inputs fail or dead-letter without partially publishing a book.
+
+## Manual entity verification
+
+`grimoire-verify-entities` is a private-tier CronWorkflow, suspended with an
+inert yearly schedule. It uses the extraction model and endpoint, exposed as
+`GRIMOIRE_VERIFY_MODEL` and `GRIMOIRE_VERIFY_BASE_URL`. The production overlay
+selects direct DeepSeek V4 Flash; `GRIMOIRE_VERIFY_API_KEY` references the
+existing optional `goosecracker/DEEPSEEK_API_KEY` field. A missing hosted-provider
+key skips the run. No new credential is provisioned.
+
+The job caps each run at 25 entities and six evidence chunks per entity, with a
+25-minute deadline and a 512Mi memory limit. A Workflow mutex serializes manual
+submissions as well as any future scheduled run. `GRIMOIRE_VERIFIER_VERSION=v1`
+is the replay marker: an entity already processed at that version is skipped;
+changing the version deliberately requests another pass. Accepted field changes
+and the version marker commit atomically per entity. Provider failures and
+rejected model output remain pending.
+
+After resolving the evidence-value validation gap in #7190 and inspecting the
+intended corpus, an operator can submit the existing template:
+
+```bash
+argo submit --from cronworkflow/grimoire-verify-entities -n monolith-workflows
+```
+
+The retained run-now name is `grimoire.verify_entities`. Both entry points
+create a one-off Workflow. Suspension prevents scheduled execution; it does not
+prevent manual execution. This workflow does not enable sourcebook extraction,
+transcript capture or session-to-KG extraction. No live verifier run is claimed
+by this wiring change (#7022).
+
+**Why.** The verifier command existed without an Argo invocation path. Manual
+submission exposes the bounded job while leaving scheduling and model spend
+under operator control. Citation shape and field markers alone do not prove a
+corrected value is supported by the cited text; #7190 tracks that remaining
+validation requirement before operational use.
 
 ## Alias review and merge
 

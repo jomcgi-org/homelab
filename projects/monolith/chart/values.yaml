@@ -1120,7 +1120,7 @@ jobs:
     # book_id+chunk_ref; only new content is re-embedded), so a daily run over an
     # unchanged corpus is cheap. `grimoire: true` injects the SeaweedFS S3 env,
     # GRIMOIRE_S3_BUCKET, and EMBEDDING_URL the loader reads. The cronworkflows
-    # template skips both grimoire entries unless grimoire.enabled (private tier).
+    # template skips grimoire entries unless grimoire.enabled (private tier).
     - name: grimoire-embed-play
       args: ["grimoire-embed-play"]
       schedule: "*/5 * * * *"
@@ -1183,6 +1183,32 @@ jobs:
           memory: 1Gi
         limits:
           memory: 1Gi
+    # Entity verification writes corrections and version markers. Keep manual-only;
+    # #7190 tracks evidence-value validation required before operational use.
+    - name: grimoire-verify-entities
+      replaces: grimoire.verify_entities
+      args: ["grimoire-verify-entities"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 1500
+      suspend: true
+      grimoire: true
+      grimoireVerify: true
+      env:
+        GRIMOIRE_VERIFY_LIMIT: "25"
+        GRIMOIRE_VERIFY_EVIDENCE_LIMIT: "6"
+        GRIMOIRE_VERIFIER_VERSION: "v1"
+      secretEnv:
+        GRIMOIRE_VERIFY_API_KEY:
+          secretName: goosecracker
+          key: DEEPSEEK_API_KEY
+          optional: true
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
     # grimoire.backfill_hierarchy: one-off metadata backfill (NOT a re-load). Some
     # books were loaded before marker.py emitted section_hierarchy, so their rows
     # have it NULL. This re-runs marker's chunking over each book's archived raw
