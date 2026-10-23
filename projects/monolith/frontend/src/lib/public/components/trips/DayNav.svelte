@@ -1,15 +1,12 @@
 <script>
-  // Per-day navigation header, a faithful port of the original React
-  // DayNavigation: Summary link on the left, the day eyebrow + colour-underlined
-  // title centred, prev/next day buttons on the right. Buttons invert on hover;
-  // unavailable prev/next render as dimmed, non-interactive spans. `date` is the
-  // already-formatted day date (e.g. "Sep 15, 2024").
+  // Summary and adjacent-day links retain their existing URLs. Unavailable
+  // neighbours remain non-interactive spans. The page supplies the zoned date.
   let {
     slug,
     dayNumber,
     totalDays,
     label,
-    dayColor = "#1a1a1a",
+    dayColor = "var(--ink)",
     date = "",
   } = $props();
 
@@ -37,7 +34,7 @@
       Day {dayNumber} of {totalDays}{#if date}<span class="date">{date}</span
         >{/if}
     </div>
-    <div class="label" style={`border-bottom:3px solid ${dayColor}`}>
+    <div class="label" style={`border-bottom:1px solid ${dayColor}`}>
       {label}
     </div>
   </div>
@@ -106,107 +103,56 @@
 <style>
   .daynav {
     display: flex;
-    justify-content: space-between;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 20px;
-    padding: 20px 0;
-    border-bottom: 3px solid #1a1a1a;
-    margin-bottom: 24px;
+    gap: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--ink);
+    margin-bottom: 1.5rem;
+    background: var(--band);
   }
-
-  /* Neo-brutalist nav buttons: chunky ink border + hard offset drop-shadow. */
   .navbtn {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 8px 14px;
-    font-family:
-      system-ui,
-      -apple-system,
-      sans-serif;
-    font-size: 13px;
-    font-weight: 600;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
-    background: white;
-    border: 3px solid #1a1a1a;
-    box-shadow: 3px 3px 0 0 #1a1a1a;
+    min-height: 44px;
+    padding: 0.5rem;
+    font: 0.8rem var(--font-code);
+    color: var(--ink);
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
     text-decoration: none;
-    cursor: pointer;
-    transition:
-      background 0.15s,
-      color 0.15s,
-      box-shadow 0.1s,
-      transform 0.1s;
   }
   a.navbtn:hover {
-    background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
-    color: white;
-  }
-  /* Tactile "press": the button shifts onto its shadow. */
-  a.navbtn:active {
-    transform: translate(2px, 2px);
-    box-shadow: 1px 1px 0 0 #1a1a1a;
+    color: var(--accent-ink);
   }
   .navbtn.disabled {
-    opacity: 0.4;
+    color: var(--ink-2);
     cursor: not-allowed;
-    pointer-events: none;
-    box-shadow: none;
   }
   .chev {
     width: 16px;
     height: 16px;
     flex: none;
   }
-
   .title {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
     flex: 1;
-    text-align: center;
-    min-width: 0;
+    min-width: min(100%, 12rem);
   }
   .eyebrow {
-    font-family: monospace;
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+    font: 0.7rem var(--font-code);
+    color: var(--ink-2);
   }
   .date {
-    margin-left: 8px;
+    margin-left: 0.5rem;
   }
   .label {
-    font-family:
-      system-ui,
-      -apple-system,
-      sans-serif;
-    font-size: 18px;
-    font-weight: 700;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    font: 700 1.2rem var(--font-ui);
+    color: var(--ink);
     padding-bottom: 4px;
-    letter-spacing: 0.02em;
   }
-
   .arrows {
     display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-  }
-
-  @media (max-width: 768px) {
-    .daynav {
-      flex-direction: column;
-      align-items: stretch;
-      gap: 16px;
-      padding: 16px 0;
-      margin-bottom: 16px;
-    }
-    .arrows {
-      justify-content: center;
-    }
+    gap: 0.5rem;
   }
 </style>
