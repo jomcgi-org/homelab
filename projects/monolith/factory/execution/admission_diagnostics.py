@@ -159,3 +159,42 @@ def inspect_permits(permit_ids, *, session=None):
             "recovery_authorized": False,
         }
     )
+
+
+def find_routine_permits(job_name, *, offset=0, limit=20, session=None):
+    """Locate exact routine ownership without exporting job payloads or results."""
+    if (
+        not isinstance(job_name, str)
+        or not 1 <= len(job_name) <= 256
+        or job_name != job_name.strip()
+        or type(offset) is not int
+        or not 0 <= offset <= 1000000
+        or type(limit) is not int
+        or not 1 <= limit <= 20
+    ):
+        raise ValueError("Supply an exact routine job name and bounded pagination")
+    if session is None:
+        with Session(get_engine(), autoflush=False) as db:
+            return find_routine_permits(
+                job_name, offset=offset, limit=limit, session=db
+            )
+    rows = _rows(
+        session,
+        """
+        SELECT id, session_id, pending_seq, tier, state, outcome, created_at, settled_at
+        FROM agent_sessions.capacity_reservations
+        WHERE routine_job_name = :name
+        ORDER BY id DESC LIMIT :limit OFFSET :offset
+        """,
+        {"name": job_name, "limit": limit + 1, "offset": offset},
+    )
+    return _safe(
+        {
+            "observed_at": datetime.now(timezone.utc),
+            "job_name": job_name,
+            "items": rows[:limit],
+            "next_offset": offset + limit if len(rows) > limit else None,
+            "coverage": "Persisted permits only. Empty results do not prove non-dispatch or cessation.",
+            "recovery_authorized": False,
+        }
+    )

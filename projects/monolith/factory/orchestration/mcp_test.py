@@ -2022,3 +2022,30 @@ def test_receipt_locator_resolves_granted_queued_delivery(
     assert result["receipts"][0]["recorded_pr_number"] == 7199
     pull["head"]["ref"] = "factory/unrelated"
     assert not validation.locate("org/repo", pr_number=7199)["receipts"]
+
+
+def test_routine_permit_lookup_operator_gate_and_worker_thread(monkeypatch):
+    import threading
+    from factory.execution import admission_diagnostics
+
+    caller = threading.get_ident()
+    calls = []
+
+    def read(name, **kwargs):
+        assert threading.get_ident() != caller
+        calls.append((name, kwargs))
+        return {"items": [], "recovery_authorized": False}
+
+    monkeypatch.setattr(admission_diagnostics, "find_routine_permits", read)
+    result = _as(
+        _principal(groups=()),
+        lambda: mcp.factory_find_routine_permits("kg-fact-review"),
+    )
+    assert result["error"] == mcp.OPERATOR_REQUIRED
+    assert calls == []
+    result = _as(
+        _principal(),
+        lambda: mcp.factory_find_routine_permits("kg-fact-review", offset=1, limit=2),
+    )
+    assert result["recovery_authorized"] is False
+    assert calls == [("kg-fact-review", {"offset": 1, "limit": 2})]

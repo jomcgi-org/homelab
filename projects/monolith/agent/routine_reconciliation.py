@@ -56,6 +56,46 @@ def _payload(value):
     return value
 
 
+def _review_batch_state(db, key):
+    batches = _rows(
+        db,
+        f"SELECT invocation_key, member_keys, status, completed_at FROM "
+        f"{_table(db, 'knowledge', 'fact_review_batches')} WHERE invocation_key=:key",
+        {"key": key},
+    )
+    if not batches:
+        return {"complete": False, "sha256": _sha([])}
+    batch = batches[0]
+    keys = batch["member_keys"]
+    keys = json.loads(keys) if isinstance(keys, str) else keys
+    if (
+        not isinstance(keys, list)
+        or len(keys) > 32
+        or keys != [f"{key}:fact:{i + 1}" for i in range(len(keys))]
+    ):
+        raise ValueError("Fact-review batch membership identity mismatch")
+    members = []
+    for member in keys:
+        members.extend(
+            _rows(
+                db,
+                f"SELECT invocation_key, status, completed_at FROM "
+                f"{_table(db, 'knowledge', 'fact_review_runs')} WHERE invocation_key=:key",
+                {"key": member},
+            )
+        )
+    complete = (
+        batch["status"] == "complete"
+        and batch["completed_at"] is not None
+        and len(members) == len(keys)
+        and all(
+            row["status"] == "complete" and row["completed_at"] is not None
+            for row in members
+        )
+    )
+    return {"complete": complete, "sha256": _sha([batch, members])}
+
+
 def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> dict:
     """SELECT-only expected-state evidence, without prompts, tokens or raw text."""
     jobs = _rows(
@@ -103,9 +143,14 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
     )
     payload = _payload(job["payload"])
     raw = None
+    review_batch = None
     provenance = []
     if routine_kind == KG_NODE_KEY:
-        if job_name == "kg-repo-diff":
+        if job_name == "kg-fact-review":
+            if payload != {"mode": "fact-review", "review_protocol": 3}:
+                raise ValueError("Fact-review payload identity mismatch")
+            review_batch = _review_batch_state(db, agent["local_session_id"])
+        elif job_name == "kg-repo-diff":
             if payload.get("mode") != "repo-diff":
                 raise ValueError("Scout payload identity mismatch")
         else:
@@ -208,6 +253,7 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
         ),
         "active_reservation_ids": [row["id"] for row in active_reservations],
         "extraction_version": EXTRACTION_VERSION,
+        "review_batch": review_batch,
         "raw_sha256": _sha(raw),
         "provenance_sha256": _sha(provenance),
         "provenance_count": len(provenance),
@@ -259,6 +305,14 @@ def _reconcile(db, request):
         text(f"SELECT name FROM {jobs} WHERE name=:name{lock}"),
         {"name": request["job_name"]},
     ).one()
+    if request["job_name"] == "kg-fact-review":
+        db.execute(
+            text(
+                f"SELECT invocation_key FROM {_table(db, 'knowledge', 'fact_review_batches')} "
+                f"WHERE invocation_key=:key{lock}"
+            ),
+            {"key": agent["local_session_id"]},
+        ).all()
     state = read_reconciliation_state(db, request["job_name"], agent["id"])
     if state["state_sha256"] != request["expected_state_sha256"]:
         raise ValueError("Expected reconciliation state changed")
@@ -338,7 +392,7 @@ def _reconcile(db, request):
         raise ValueError("This held attempt was already reconciled")
     # Lock the raw against the existing atomic extraction writer before checking
     # its evidence again. The operator never changes raw/provenance records.
-    if routine_kind == KG_NODE_KEY and request["job_name"] != "kg-repo-diff":
+    if routine_kind == KG_NODE_KEY and request["job_name"].startswith("kg:"):
         raw_table = _table(db, "knowledge", "raw_inputs")
         db.execute(
             text(f"SELECT id FROM {raw_table} WHERE raw_id=:raw{lock}"),
@@ -346,6 +400,11 @@ def _reconcile(db, request):
         ).one()
         if read_reconciliation_state(db, request["job_name"], agent["id"]) != state:
             raise ValueError("Provenance changed during reconciliation")
+    if state["review_batch"] is not None:
+        # Cessation proves the guest stopped, not that its review was applied.
+        # Incomplete/missing receipts stay fenced, even after a known guest exit.
+        if not state["review_batch"]["complete"]:
+            raise ValueError("Fact-review outcome requires reconciliation before rearm")
     if request["disposition"] == "rearm":
         if routine_kind == KG_NODE_KEY and (
             state["provenance_count"] or state["extraction_passes"] != 0
@@ -354,6 +413,7 @@ def _reconcile(db, request):
     elif (
         request["disposition"] == "retain_applied"
         and routine_kind == KG_NODE_KEY
+        and state["review_batch"] is None
         and not state["applied_count"]
     ):
         raise ValueError("Retain-applied requires existing extraction provenance")
@@ -405,6 +465,7 @@ def _reconcile(db, request):
         "raw_sha256",
         "provenance_sha256",
         "cursor_sha",
+        "review_batch",
     ):
         if after[field] != state[field]:
             raise ValueError("Reconciliation changed protected history")
@@ -456,7 +517,11 @@ def reconcile_held_job(
     interruption, and proof that this dispatch's invoke never completed.
     It is not accepted from guest/model output. Identical lost-response replays
     return the durable result, even after the ordinary job has run or disappeared.
-    For KG jobs, retain_applied is additionally backed by extraction provenance.
+    Protocol-3 fact-review jobs require an exact, durably completed batch and
+    completed members in addition to cessation. Rearm starts a new cycle;
+    missing or unfinished review receipts require separate result reconciliation
+    and remain fenced. Neither claims nor verdicts are changed here.
+    For raw KG jobs, retain_applied is backed by extraction provenance.
     For qwen-drain jobs it remains the operator-selected no-rearm disposition.
     """
     if (

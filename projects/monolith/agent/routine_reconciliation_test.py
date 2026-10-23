@@ -2215,3 +2215,121 @@ def test_composed_interruption_old_notifications_preserve_new_attempt(
         assert before_permit["state"] == "running"
     assert routine_jobs.claim_job("duplicate-scheduler", 2100, kind="kg-drain") is None
     assert_interrupted_evidence(attempt, settled=True, active_count=1)
+
+
+def held_review(engine, *, complete=True):
+    request, _ = held(engine, scout=True)
+    key = "cycle:kg-drain:kg-fact-review"
+    member = key + ":fact:1"
+    with Session(engine) as db, db.begin():
+        db.execute(
+            text("UPDATE routine_jobs SET name='kg-fact-review', payload=:payload"),
+            {"payload": json.dumps({"mode": "fact-review", "review_protocol": 3})},
+        )
+        agent = db.get(AgentSession, request["session_id"])
+        agent.local_session_id = key
+        db.add(agent)
+        db.execute(
+            text(
+                "CREATE TABLE fact_review_batches (invocation_key TEXT PRIMARY KEY, member_keys TEXT, status TEXT, completed_at TEXT)"
+            )
+        )
+        db.execute(
+            text(
+                "CREATE TABLE fact_review_runs (invocation_key TEXT PRIMARY KEY, status TEXT, completed_at TEXT)"
+            )
+        )
+        params = {
+            "key": key,
+            "keys": json.dumps([member]),
+            "status": "complete" if complete else "prepared",
+            "done": "2026-10-18" if complete else None,
+        }
+        db.execute(
+            text("INSERT INTO fact_review_batches VALUES (:key,:keys,:status,:done)"),
+            params,
+        )
+        db.execute(
+            text("INSERT INTO fact_review_runs VALUES (:key,:status,:done)"),
+            {**params, "key": member},
+        )
+    request["job_name"] = "kg-fact-review"
+    with Session(engine) as db:
+        before = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+    request["expected_state_sha256"] = before["state_sha256"]
+    return request, before
+
+
+def test_completed_review_rearms_without_replaying_or_changing_receipts(database):
+    request, before = held_review(database)
+    result = reconciliation.reconcile_held_job(**request)
+    assert result["next_run_at"]
+    assert reconciliation.reconcile_held_job(**request) == result
+    with Session(database) as db:
+        after = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+    assert after["review_batch"] == before["review_batch"]
+    assert after["turns_sha256"] == before["turns_sha256"]
+    assert after["session_status"] == "failed"
+    assert after["guest_id"] is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "prepared",
+        "missing",
+        "member_missing",
+        "member_incomplete",
+        "wrong_membership",
+        "wrong_payload",
+        "wrong_guest",
+    ],
+)
+def test_review_uncertainty_or_identity_mismatch_preserves_hold(database, change):
+    request, _ = held_review(database, complete=change != "prepared")
+    with Session(database) as db, db.begin():
+        if change == "missing":
+            db.execute(text("DELETE FROM fact_review_batches"))
+        elif change == "member_missing":
+            db.execute(text("DELETE FROM fact_review_runs"))
+        elif change == "member_incomplete":
+            db.execute(
+                text("UPDATE fact_review_runs SET status='prepared', completed_at=NULL")
+            )
+        elif change == "wrong_membership":
+            db.execute(
+                text("UPDATE fact_review_batches SET member_keys='[\"other:fact:1\"]'")
+            )
+        elif change == "wrong_payload":
+            db.execute(text("UPDATE routine_jobs SET payload='{}'"))
+    if change == "wrong_guest":
+        request["cessation"]["session_id"] = "other-guest"
+    if change not in {"wrong_membership", "wrong_payload"}:
+        with Session(database) as db:
+            request["expected_state_sha256"] = reconciliation.read_reconciliation_state(
+                db, request["job_name"], request["session_id"]
+            )["state_sha256"]
+    with pytest.raises(ValueError):
+        reconciliation.reconcile_held_job(**request)
+    with Session(database) as db:
+        assert db.execute(
+            text("SELECT last_status,next_run_at FROM routine_jobs")
+        ).one() == (UNKNOWN_INVOCATION, None)
+        assert db.get(AgentSession, request["session_id"]).ember_session_id == "guest"
+        assert db.exec(select(RoutineReconciliation)).all() == []
+
+
+def test_completed_review_requires_fresh_cessation(database):
+    request, _ = held_review(database)
+    request["cessation"]["observed_at"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=5)
+    ).isoformat()
+    with pytest.raises(ValueError):
+        reconciliation.reconcile_held_job(**request)
+    with Session(database) as db:
+        assert db.execute(text("SELECT next_run_at FROM routine_jobs")).scalar() is None
+        assert db.get(AgentSession, request["session_id"]).ember_session_id == "guest"
