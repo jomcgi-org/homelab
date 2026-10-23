@@ -177,6 +177,10 @@ def run(output, expected_sha, *, capture_only=False):
         [
             sys.executable,
             "factory-preview/sheet_check.py",
+            "--expected-base-sha",
+            base,
+            "--expected-head-sha",
+            expected_sha,
             "--before",
             str(output / "before"),
             "--after",

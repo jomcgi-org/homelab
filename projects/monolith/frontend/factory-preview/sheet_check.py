@@ -61,6 +61,31 @@ class QuietHandler(SimpleHTTPRequestHandler):
         pass
 
 
+def settle_capture(page):
+    """Let Chromium's full-page resize observers settle before measuring.
+
+    Full-page screenshots briefly resize the raster surface. Production chart
+    observers can consequently change document height by a pixel or two. Never
+    label that first, stale raster as evidence or suppress later height changes.
+    """
+    for _ in range(3):
+        before = page.evaluate(
+            "[document.documentElement.scrollWidth, document.documentElement.scrollHeight]"
+        )
+        page.screenshot(full_page=True, animations="disabled", scale="css")
+        page.evaluate(
+            "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+        )
+        if (
+            page.evaluate(
+                "[document.documentElement.scrollWidth, document.documentElement.scrollHeight]"
+            )
+            == before
+        ):
+            return
+    raise AssertionError("unstable document during full-page preflight")
+
+
 def viewport_page_capture(page, path, width):
     """Keep the raster surface identical without changing document styles.
 
@@ -72,6 +97,7 @@ def viewport_page_capture(page, path, width):
 
     from PIL import Image
 
+    settle_capture(page)
     geometry = page.evaluate("""() => ({width: document.documentElement.scrollWidth,
         height: document.documentElement.scrollHeight, viewport: innerHeight, viewportWidth: innerWidth,
         x: scrollX, y: scrollY})""")
@@ -314,6 +340,7 @@ def capture(artifact, output, label, *, acceptance=False):
                             if view == "landing":
                                 page.wait_for_selector(".replay")
                             page.wait_for_timeout(100)
+                            settle_capture(page)
                             geometry = page.evaluate(GEOMETRY)
                             viewport_page_capture(page, output / f"{key}.png", width)
                             opening = {
@@ -512,6 +539,7 @@ def capture(artifact, output, label, *, acceptance=False):
                                 probe_page.wait_for_selector("main")
                                 probe_page.evaluate("document.fonts.ready")
                                 probe_page.wait_for_timeout(100)
+                                settle_capture(probe_page)
                                 assert probe_page.evaluate(GEOMETRY) == geometry, (
                                     key,
                                     "repeatability geometry changed",
@@ -562,75 +590,93 @@ def check_schemes(browser, port, records, output):
                 f"if (!localStorage.getItem('td-theme')) localStorage.setItem('td-theme', '{stored}');"
             )
             context.tracing.start(screenshots=True, snapshots=True, sources=False)
-            page = context.new_page()
-            page.route(
-                "**/*",
-                lambda route: (
-                    route.continue_()
-                    if route.request.url.startswith(f"http://127.0.0.1:{port}/")
-                    else route.abort()
-                ),
-            )
-            page.goto(f"http://127.0.0.1:{port}/sheets.html?view={view}")
-            page.wait_for_selector("main")
-            page.wait_for_timeout(100)
-            expected = next(
-                row for row in records if row["key"] == f"{view}-390-{stored}"
-            )
-            ground = next(
-                item
-                for item in expected["opening"]["geometry"]["elements"]
-                if item["selector"] == "main"
-            )["style"]["backgroundColor"]
-            assert page.evaluate("document.documentElement.dataset.theme") == stored, (
-                view,
-                system,
-                stored,
-            )
-            assert (
-                page.locator("main").evaluate(
-                    "node => getComputedStyle(node).backgroundColor"
+            try:
+                page = context.new_page()
+                page.route(
+                    "**/*",
+                    lambda route: (
+                        route.continue_()
+                        if route.request.url.startswith(f"http://127.0.0.1:{port}/")
+                        else route.abort()
+                    ),
                 )
-                == ground
-            ), (view, system, stored)
-            page.emulate_media(color_scheme=stored)
-            page.emulate_media(color_scheme=system)
-            assert (
-                page.locator("main").evaluate(
-                    "node => getComputedStyle(node).backgroundColor"
-                )
-                == ground
-            ), view
-            viewport_page_capture(
-                page, output / f"scheme-{view}-{system}-persisted.png", 390
-            )
-            if view != "updates":
-                button = page.locator("button.scheme")
-                assert button.get_attribute("aria-label") == (
-                    "Switch to day scheme"
-                    if stored == "dark"
-                    else "Switch to night scheme"
-                )
-                button.click()
-                page.reload()
+                page.goto(f"http://127.0.0.1:{port}/sheets.html?view={view}")
                 page.wait_for_selector("main")
+                page.wait_for_timeout(100)
+                expected = next(
+                    row for row in records if row["key"] == f"{view}-390-{stored}"
+                )
+                ground = next(
+                    item
+                    for item in expected["opening"]["geometry"]["elements"]
+                    if item["selector"] == "main"
+                )["style"]["backgroundColor"]
                 assert (
-                    page.evaluate("document.documentElement.dataset.theme") == system
+                    page.evaluate("document.documentElement.dataset.theme") == stored
+                ), (
+                    view,
+                    system,
+                    stored,
+                )
+                assert (
+                    page.locator("main").evaluate(
+                        "node => getComputedStyle(node).backgroundColor"
+                    )
+                    == ground
+                ), (view, system, stored)
+                page.emulate_media(color_scheme=stored)
+                page.emulate_media(color_scheme=system)
+                assert (
+                    page.locator("main").evaluate(
+                        "node => getComputedStyle(node).backgroundColor"
+                    )
+                    == ground
                 ), view
-            viewport_page_capture(
-                page, output / f"scheme-{view}-{system}-reload.png", 390
-            )
-            results.append(
-                {
-                    "view": view,
-                    "os": system,
-                    "persisted": stored,
-                    "opposite_os_wins": True,
-                    "reload_checked": view != "updates",
-                }
-            )
-            context.tracing.stop(path=str(output / f"scheme-{view}-{system}-trace.zip"))
-            context.close()
+                viewport_page_capture(
+                    page, output / f"scheme-{view}-{system}-persisted.png", 390
+                )
+                if view != "updates":
+                    button = page.locator("button.scheme")
+                    assert button.get_attribute("aria-label") == (
+                        "Switch to day scheme"
+                        if stored == "dark"
+                        else "Switch to night scheme"
+                    )
+                    button.click()
+                    page.reload()
+                    page.wait_for_selector("main")
+                    assert (
+                        page.evaluate("document.documentElement.dataset.theme")
+                        == system
+                    ), view
+                viewport_page_capture(
+                    page, output / f"scheme-{view}-{system}-reload.png", 390
+                )
+                results.append(
+                    {
+                        "view": view,
+                        "os": system,
+                        "persisted": stored,
+                        "opposite_os_wins": True,
+                        "reload_checked": view != "updates",
+                    }
+                )
+            except Exception as error:
+                (output / "failure.json").write_text(
+                    json.dumps(
+                        {
+                            "case": f"scheme-{view}-{system}-trace.zip",
+                            "error": str(error),
+                            "status": "incomplete",
+                        }
+                    )
+                )
+                raise
+            finally:
+                context.tracing.stop(
+                    path=str(output / f"scheme-{view}-{system}-trace.zip")
+                )
+                context.close()
     return results
 
 
@@ -641,48 +687,72 @@ def check_behaviors(browser, port, output):
             viewport={"width": 390, "height": 900}, reduced_motion="reduce"
         )
         context.tracing.start(screenshots=True, snapshots=True, sources=False)
-        page = context.new_page()
-        page.clock.install(time=1791028800000)
-        page.route(
-            "**/*",
-            lambda route: (
-                route.continue_()
-                if route.request.url.startswith(f"http://127.0.0.1:{port}/")
-                else route.abort()
-            ),
-        )
-        page.goto(f"http://127.0.0.1:{port}/sheets.html?view={view}")
-        page.wait_for_selector("main")
-        if view == "activity":
-            page.get_by_role("searchbox", name="Search tasks").fill(
-                "not-a-synthetic-task"
+        try:
+            page = context.new_page()
+            page.clock.install(time=1791028800000)
+            page.route(
+                "**/*",
+                lambda route: (
+                    route.continue_()
+                    if route.request.url.startswith(f"http://127.0.0.1:{port}/")
+                    else route.abort()
+                ),
             )
-            assert "nothing matches" in page.locator("main").inner_text(), page.locator(
-                "main"
-            ).inner_text()
-            viewport_page_capture(page, output / "behavior-activity-filtered.png", 390)
-            page.get_by_role("searchbox", name="Search tasks").fill("")
-        page.clock.fast_forward(61_000)
-        assert not page.evaluate("window.__fixtureUnexpectedFetches"), view
-        if view == "activity":
-            assert page.evaluate("window.__fixturePolls") > 0, view
-        viewport_page_capture(page, output / f"behavior-{view}-polled.png", 390)
-        page.evaluate("window.__fixtureUnmount()")
-        page.wait_for_timeout(20)
-        count = page.evaluate("window.__fixturePolls")
-        page.clock.fast_forward(61_000)
-        assert page.evaluate("window.__fixturePolls") == count, view
-        results.append({"view": view, "poll_and_cleanup": True})
-        context.tracing.stop(path=str(output / f"behavior-{view}-trace.zip"))
-        context.close()
+            page.goto(f"http://127.0.0.1:{port}/sheets.html?view={view}")
+            page.wait_for_selector("main")
+            if view == "activity":
+                page.get_by_role("searchbox", name="Search tasks").fill(
+                    "not-a-synthetic-task"
+                )
+                assert "nothing matches" in page.locator("main").inner_text(), (
+                    page.locator("main").inner_text()
+                )
+                viewport_page_capture(
+                    page, output / "behavior-activity-filtered.png", 390
+                )
+                page.get_by_role("searchbox", name="Search tasks").fill("")
+            page.clock.fast_forward(61_000)
+            assert not page.evaluate("window.__fixtureUnexpectedFetches"), view
+            if view == "activity":
+                assert page.evaluate("window.__fixturePolls") > 0, view
+            viewport_page_capture(page, output / f"behavior-{view}-polled.png", 390)
+            page.evaluate("window.__fixtureUnmount()")
+            page.wait_for_timeout(20)
+            count = page.evaluate("window.__fixturePolls")
+            page.clock.fast_forward(61_000)
+            assert page.evaluate("window.__fixturePolls") == count, view
+            results.append({"view": view, "poll_and_cleanup": True})
+        except Exception as error:
+            (output / "failure.json").write_text(
+                json.dumps(
+                    {
+                        "case": f"behavior-{view}-trace.zip",
+                        "error": str(error),
+                        "status": "incomplete",
+                    }
+                )
+            )
+            raise
+        finally:
+            context.tracing.stop(path=str(output / f"behavior-{view}-trace.zip"))
+            context.close()
     return results
 
 
-def compare(before, after, output, *, acceptance=False):
+def compare(
+    before, after, output, *, acceptance=False, expected_base=None, expected_head=None
+):
     from PIL import Image, ImageChops
 
     base = json.loads((before / "results.json").read_text())
     head = json.loads((after / "results.json").read_text())
+    if expected_base is not None and base["revision"] != expected_base:
+        raise AssertionError("stale base SHA")
+    if expected_head is not None and (
+        head["revision"] != expected_head
+        or head["build"]["harness_sha"] != expected_head
+    ):
+        raise AssertionError("stale head or harness SHA")
     validate_bundle(before, base)
     validate_bundle(after, head)
     assert base["build"]["harness_sha"] == head["build"]["harness_sha"], (
@@ -815,6 +885,8 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--label", default="working-tree")
     parser.add_argument("--acceptance", action="store_true")
+    parser.add_argument("--expected-base-sha")
+    parser.add_argument("--expected-head-sha")
     parser.add_argument("--before", type=Path)
     parser.add_argument("--after", type=Path)
     args = parser.parse_args()
@@ -822,4 +894,15 @@ if __name__ == "__main__":
         capture(args.artifact, args.output, args.label, acceptance=args.acceptance)
     else:
         args.output.mkdir(parents=True, exist_ok=True)
-        compare(args.before, args.after, args.output, acceptance=args.acceptance)
+        if not args.expected_base_sha or not args.expected_head_sha:
+            parser.error(
+                "comparison requires --expected-base-sha and --expected-head-sha"
+            )
+        compare(
+            args.before,
+            args.after,
+            args.output,
+            acceptance=args.acceptance,
+            expected_base=args.expected_base_sha,
+            expected_head=args.expected_head_sha,
+        )
