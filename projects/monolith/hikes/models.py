@@ -13,6 +13,7 @@ Mirrors chart/migrations/20260613000000_hikes_schema.sql (walks) and
 
 from datetime import datetime, timezone
 
+from sqlalchemy import Column, DateTime
 from sqlmodel import Field, SQLModel
 
 
@@ -29,6 +30,9 @@ class Walk(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     summary: str = Field(default="")
     latitude: float
     longitude: float
+    forecast_fetched_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     scraped_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

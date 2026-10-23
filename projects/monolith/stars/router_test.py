@@ -49,8 +49,29 @@ def _seed_site(session, site_id):
             altitude_m=alt,
             lp_zone=lp,
             source="grid",
+            forecast_fetched_at=FETCHED,
         )
     )
+
+
+def test_serialized_sites_keep_empty_success_and_legacy_visibility(client, session):
+    old = FETCHED - timedelta(days=1)
+    session.add_all([
+        Site(id="fresh", lat=57, lon=-4, forecast_fetched_at=FETCHED),
+        Site(id="stale", lat=57, lon=-4, forecast_fetched_at=old),
+        Site(id="never", lat=57, lon=-4),
+    ])
+    session.commit()
+    response = client.get("/api/stars/sites")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == body["total_sites"] == 3
+    assert body["fetched_at"] == FETCHED.isoformat()
+    sites = {s["id"]: s for s in body["sites"]}
+    assert sites["fresh"]["forecast_fetched_at"] == FETCHED.isoformat()
+    assert sites["stale"]["forecast_fetched_at"] == old.isoformat()
+    assert sites["never"]["forecast_fetched_at"] is None
+    assert all(s["best_hours"] == [] for s in sites.values())
 
 
 @pytest.fixture(name="session")
@@ -157,8 +178,9 @@ class TestSites:
         r = client.get("/api/stars/sites")
         assert r.status_code == 200
         body = r.json()
-        assert body["count"] == 1
-        assert [s["id"] for s in body["sites"]] == ["tomintoul"]
+        assert body["count"] == 2
+        assert [s["id"] for s in body["sites"]] == ["tomintoul", "galloway-forest"]
+        assert body["sites"][1]["best_hours"] == []
         tomintoul = body["sites"][0]
         # Only the two future hours; the past clear-dark hour is gone.
         assert len(tomintoul["best_hours"]) == 2
@@ -229,7 +251,7 @@ class TestSites:
 
         r = client.get("/api/stars/sites")
         body = r.json()
-        assert body["count"] == 1
+        assert body["count"] == 2
         assert body["total_sites"] == 2
 
     def test_best_hours_capped_at_display_limit(self, client, session):
@@ -363,7 +385,7 @@ class TestSites:
         r = client.get("/api/stars/sites")
         assert r.status_code == 200
         body = r.json()
-        assert body["count"] == 0
+        assert body["count"] == 1
         assert body["darkness"] == "none"
 
 

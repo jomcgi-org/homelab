@@ -170,10 +170,14 @@ func (d *Dataset) Windows(q WindowsQuery) []Window {
 	// sorted window of k beats sorting every candidate in a wide radius.
 	top := make([]Window, 0, q.Limit+1)
 	d.visit(q.Lat, q.Lon, q.RadiusKm, func(site *Site, dist float64) {
+		until := site.Horizon(d.HourlyUntil)
 		w := Window{Site: site, DistanceKm: dist}
 		hours := site.Hours
 		for i := sort.Search(len(hours), func(i int) bool { return hours[i].Unix >= cutoff }); i < len(hours); i++ {
 			h := hours[i]
+			if time.Unix(h.Unix+3600, 0).After(until) {
+				break
+			}
 			if h.Night >= last {
 				break // hours are time-ordered, so every later hour is too
 			}
@@ -215,6 +219,9 @@ func (d *Dataset) Windows(q WindowsQuery) []Window {
 			w.Nights[j].MoonLit = moonLit[j]
 		}
 		for _, h := range w.Site.Hours {
+			if time.Unix(h.Unix+3600, 0).After(w.Site.Horizon(d.HourlyUntil)) {
+				break
+			}
 			if h.Unix < cutoff || h.Night < first || h.Night >= last {
 				continue
 			}

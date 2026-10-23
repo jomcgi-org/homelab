@@ -32,10 +32,14 @@ func localHour(day int32, hour int) time.Time {
 // NightCoverage is how much of night (a NightDay) lies before the hourly
 // horizon.
 func (d *Dataset) NightCoverage(night int32) Coverage {
+	return nightCoverageUntil(night, d.HourlyUntil)
+}
+
+func nightCoverageUntil(night int32, until time.Time) Coverage {
 	switch {
-	case !d.HourlyUntil.Before(localHour(night+1, nightEndHour)):
+	case !until.Before(localHour(night+1, nightEndHour)):
 		return CoverageFull
-	case !d.HourlyUntil.After(localHour(night, nightStartHour)):
+	case !until.After(localHour(night, nightStartHour)):
 		return CoverageNone
 	}
 	return CoveragePartial
@@ -78,7 +82,8 @@ func moonPhrase(n *NightWindow) string {
 // AssessNight gives the verdict for one site on one night. climate, when
 // known, is quoted for nights past the forecast.
 func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, now time.Time, climate *Climate) (a NightAssessment) {
-	a = NightAssessment{Coverage: d.NightCoverage(night)}
+	until := site.Horizon(d.HourlyUntil)
+	a = NightAssessment{Coverage: nightCoverageUntil(night, until)}
 	defer func() {
 		if n.ClearDark == 0 {
 			a.Why += " " + MoonAdvice(site.Lat, site.Lon, night, now)
@@ -87,7 +92,10 @@ func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, now time.
 		}
 	}()
 	if a.Coverage == CoverageNone {
-		a.Verdict, a.Why = verdict.Unknown, "Beyond the hourly forecast, which reaches "+localDay(d.HourlyUntil)+"."
+		a.Verdict, a.Why = verdict.Unknown, "Beyond the hourly forecast, which reaches "+localDay(until)+"."
+		if until.IsZero() {
+			a.Why = "No successful forecast fetch is recorded for this site."
+		}
 		if climate != nil && climate.Dark > 0 {
 			a.Why += fmt.Sprintf(" In %s about %d%% of dark hours here are clear.",
 				time.Month(climate.Month), (100*climate.ClearDark+climate.Dark/2)/climate.Dark)
@@ -105,7 +113,7 @@ func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, now time.
 		a.Why = fmt.Sprintf("%s%s, %s.", hours(n.ClearDark, "clear dark hour"), from, moonPhrase(n))
 	case a.Coverage == CoveragePartial:
 		a.Verdict = verdict.Unknown
-		a.Why = "The hourly forecast reaches only " + localDay(d.HourlyUntil) + "; the rest of the night is not forecast yet."
+		a.Why = "The hourly forecast reaches only " + localDay(until) + "; the rest of the night is not forecast yet."
 	case site.Truncated() && site.listedUntil().Before(localHour(night+1, nightEndHour)):
 		// The snapshot lists a site's first clear hours only (#7246), so a
 		// night past the last listed hour reads as fewer than it has.

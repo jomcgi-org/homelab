@@ -9,6 +9,21 @@ False) so the read path can still count it toward the denominators.
 """
 
 import stars.forecast as forecast
+import asyncio
+import httpx
+
+
+def test_fetch_boundary_keeps_empty_success_and_omits_failure(monkeypatch):
+    def respond(request):
+        if request.url.params["lat"] == "58.0":
+            return httpx.Response(503)
+        return httpx.Response(200, json={"properties": {"timeseries": []}})
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(forecast.httpx, "AsyncClient", lambda **kwargs: client_type(transport=httpx.MockTransport(respond), **kwargs))
+    sites = [{"id": "empty", "lat": 57.0, "lon": -4, "altitude_m": 0}, {"id": "failed", "lat": 58.0, "lon": -4, "altitude_m": 0}]
+    assert asyncio.run(forecast.fetch_all(sites)) == {"empty": []}
+    assert asyncio.run(forecast.fetch_all(sites[1:])) == {}
 
 # A grid-sourced site dict (the shape stars.jobs._load_sites passes to fetch_all).
 _LOC: dict = {

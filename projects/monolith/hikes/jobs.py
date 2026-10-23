@@ -14,8 +14,9 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, delete, select, update
 
+from core.clock import as_utc
 from hikes import models
 from hikes.forecast import fetch_all_windows
 from hikes.materialize import materialize_handler
@@ -169,6 +170,13 @@ def _write_walk_hours(
     UTC hour_time.
     """
     walk_uuids = list(windows_by_uuid.keys())
+    now = as_utc(now)
+    session.execute(
+        update(models.Walk)
+        .where(models.Walk.uuid.in_(walk_uuids))
+        .values(forecast_fetched_at=now)
+        .execution_options(synchronize_session=False)
+    )
     session.execute(
         delete(models.WalkHour).where(models.WalkHour.walk_uuid.in_(walk_uuids))
     )

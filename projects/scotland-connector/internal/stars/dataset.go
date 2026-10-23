@@ -33,10 +33,11 @@ type Hour struct {
 
 // Site is one dark-sky grid point.
 type Site struct {
-	ID        string
-	Lat, Lon  float64
-	AltitudeM int
-	LPZone    string
+	ForecastFetchedAt time.Time
+	ID                string
+	Lat, Lon          float64
+	AltitudeM         int
+	LPZone            string
 	// ClearDark and ClearTwilight are the snapshot's counts over the whole
 	// forecast horizon. Hours is capped by the materializer, so when
 	// ClearTwilight exceeds len(Hours) the list is truncated (#7246).
@@ -81,14 +82,15 @@ type sitesDoc struct {
 	FetchedAt *string `json:"fetched_at"`
 	Darkness  string  `json:"darkness"`
 	Sites     []struct {
-		ID            string  `json:"id"`
-		Lat           float64 `json:"lat"`
-		Lon           float64 `json:"lon"`
-		AltitudeM     float64 `json:"altitude_m"`
-		LPZone        string  `json:"lp_zone"`
-		ClearDark     int     `json:"clear_dark_hours"`
-		ClearTwilight int     `json:"clear_twilight_hours"`
-		BestHours     []struct {
+		ForecastFetchedAt *string `json:"forecast_fetched_at"`
+		ID                string  `json:"id"`
+		Lat               float64 `json:"lat"`
+		Lon               float64 `json:"lon"`
+		AltitudeM         float64 `json:"altitude_m"`
+		LPZone            string  `json:"lp_zone"`
+		ClearDark         int     `json:"clear_dark_hours"`
+		ClearTwilight     int     `json:"clear_twilight_hours"`
+		BestHours         []struct {
 			Time  string  `json:"time"`
 			Cloud float64 `json:"cloud_area_fraction"`
 			Dark  bool    `json:"dark"`
@@ -155,6 +157,13 @@ func Parse(sitesJSON, historyJSON []byte, version string) (*Dataset, error) {
 			Hours:         make([]Hour, 0, len(raw.BestHours)),
 			cosLat:        math.Cos(raw.Lat * math.Pi / 180),
 		}
+		if raw.ForecastFetchedAt != nil && *raw.ForecastFetchedAt != "" {
+			t, err := time.Parse(time.RFC3339, *raw.ForecastFetchedAt)
+			if err != nil {
+				return nil, fmt.Errorf("stars: site %s forecast_fetched_at: %w", raw.ID, err)
+			}
+			site.ForecastFetchedAt = t.UTC()
+		}
 		for _, h := range raw.BestHours {
 			t, err := time.Parse(time.RFC3339, h.Time)
 			if err != nil {
@@ -175,4 +184,16 @@ func Parse(sitesJSON, historyJSON []byte, version string) (*Dataset, error) {
 		ds.HourlyUntil = ds.FetchedAt.Add(hourlyHorizon)
 	}
 	return ds, nil
+}
+
+// Horizon is the earlier dataset/entity horizon. Missing metadata is unknown.
+func (s *Site) Horizon(datasetUntil time.Time) time.Time {
+	if s.ForecastFetchedAt.IsZero() || datasetUntil.IsZero() {
+		return time.Time{}
+	}
+	until := s.ForecastFetchedAt.Add(hourlyHorizon)
+	if datasetUntil.Before(until) {
+		return datasetUntil
+	}
+	return until
 }

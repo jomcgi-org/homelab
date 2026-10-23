@@ -9,6 +9,9 @@ divergence: it now follows real sunrise/sunset at the walk's coordinates
 """
 
 from datetime import UTC, datetime, timedelta, timezone
+import asyncio
+import httpx
+import hikes.forecast as forecast_module
 
 from hikes.forecast import (
     HOUR_FIELDS,
@@ -23,6 +26,21 @@ from hikes.forecast import (
 NOW = datetime(2026, 6, 13, 12, 0, tzinfo=UTC)
 LAT = 56.7969
 LON = -5.0036
+
+
+def test_fetch_boundary_keeps_empty_success_and_omits_failure():
+    def respond(request):
+        if request.url.params["lat"] == "58.0":
+            return httpx.Response(503)
+        return httpx.Response(200, json={"properties": {"timeseries": []}})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            result = await forecast_module.fetch_all_windows(client, [("empty", 57.0, -4), ("failed", 58.0, -4)], NOW)
+            assert result == {"empty": []}
+            assert await forecast_module.fetch_all_windows(client, [("failed", 58.0, -4)], NOW) == {}
+
+    asyncio.run(run())
 
 
 def _entry(

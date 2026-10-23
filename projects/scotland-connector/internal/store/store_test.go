@@ -61,6 +61,10 @@ func TestRefreshSwapsOnlyOnGoodChange(t *testing.T) {
 	}
 
 	// A good change to one object re-parses against the cached other.
+	f.objects["sites.json"] = r2.Object{Body: []byte(`{"sites":[{"id":"a","lat":57,"lon":-4,"forecast_fetched_at":"invalid"}]}`), ETag: `"bad-time"`}
+	if err := s.Refresh(ctx); err == nil || s.Current() != first {
+		t.Fatal("malformed entity timestamp replaced the good snapshot")
+	}
 	f.objects["sites.json"] = r2.Object{Body: []byte(`{"sites":[{"id":"a","lat":57,"lon":-4},{"id":"b","lat":58,"lon":-4}]}`), ETag: `"s3"`}
 	if err := s.Refresh(ctx); err != nil {
 		t.Fatal(err)

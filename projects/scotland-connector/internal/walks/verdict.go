@@ -87,6 +87,7 @@ func (w *Walk) Verdict(d Day) verdict.Verdict { return w.outcome(d).verdict() }
 // Assess turns one assessed day into a verdict. hourlyUntil is the dataset's
 // forecast horizon, quoted when the day cannot be decided.
 func (w *Walk) Assess(d Day, hourlyUntil time.Time) (a Assessment) {
+	hourlyUntil = w.Horizon(hourlyUntil)
 	o := w.outcome(d)
 	a = Assessment{Verdict: o.verdict()}
 	defer func() {
@@ -96,6 +97,10 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) (a Assessment) {
 	}()
 	switch o {
 	case beyondForecast:
+		if hourlyUntil.IsZero() {
+			a.Why = "No successful forecast fetch is recorded for this walk."
+			return a
+		}
 		a.Why = "Beyond the hourly forecast, which reaches " + localDay(hourlyUntil) + "."
 		return a
 	case forecastEnds:

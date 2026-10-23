@@ -98,6 +98,7 @@ def build_payload(
                 "ascent_m": w.ascent_m,
                 "duration_h": w.duration_h,
                 "hours": by_walk.get(w.uuid, []),
+                "forecast_fetched_at": iso(w.forecast_fetched_at),
             }
             for w in sorted(walks, key=lambda w: w.uuid)
             if _publishable(w)
@@ -117,7 +118,7 @@ def _load(session: Session, now: datetime) -> dict:
             ).where(h.hour_time >= top_of_hour(now))
         ).all()
     )
-    fetched_at = session.exec(select(func.max(models.WalkHour.fetched_at))).one()
+    fetched_at = session.exec(select(func.max(models.Walk.forecast_fetched_at))).one()
     return build_payload(walks, hours, as_utc(fetched_at), now)
 
 
