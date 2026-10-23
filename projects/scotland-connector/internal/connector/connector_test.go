@@ -76,6 +76,39 @@ func TestEntityFreshnessAcrossCheckAndCombinedPlan(t *testing.T) {
 	}
 }
 
+func TestUnknownSiteOutsideStarShortlist(t *testing.T) {
+	for _, stamp := range []string{`null`, `"2026-10-17T00:00:00Z"`, `"2026-10-19T00:00:00Z"`} {
+		var sites []string
+		for n := 0; n < 50; n++ {
+			sites = append(sites, fmt.Sprintf(`{"id":"cloudy-%d","lat":57.3,"lon":-3.7,"lp_zone":"rural","forecast_fetched_at":"2026-10-19T14:05:00Z","best_hours":[]}`, n))
+		}
+		sites = append(sites, `{"id":"unknown","lat":57.35,"lon":-3.7,"lp_zone":"rural","forecast_fetched_at":`+stamp+`,"best_hours":[]}`)
+		body := `{"fetched_at":"2026-10-19T14:05:00Z","sites":[` + strings.Join(sites, ",") + `]}`
+		ds, err := stars.Parse([]byte(body), []byte(`{"sites":[]}`), "mixed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		svc := fixture.Service(true)
+		svc.Data = fixture.Source{DS: ds}
+		env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-20", Lat: f(57.3), Lon: f(-3.7)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := env.Data.(connector.CheckResult).Items[0]
+		if item.Verdict != verdict.Unknown || strings.Contains(item.Why, "0001") {
+			t.Fatalf("%s: excluded unknown site: %+v", stamp, item)
+		}
+		env, err = svc.Plan(connector.PlanParams{Lat: f(57.3), Lon: f(-3.7), From: s("2026-10-20"), To: s("2026-10-20")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := env.Data.(connector.PlanResult).Days[0]
+		if len(day.Stargazing) != 0 || day.StarNote == "" || strings.Contains(day.StarNote, "Cloudy at every") || strings.Contains(day.StarNote, "0001") {
+			t.Fatalf("%s: excluded unknown site: %+v", stamp, day)
+		}
+	}
+}
+
 func sourceNames(m connector.Meta) string {
 	var names []string
 	for _, src := range m.Sources {
