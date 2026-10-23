@@ -2096,3 +2096,68 @@ def test_fresh_issue_preparation_wire_and_authority(monkeypatch):
 
     _as(_principal(), wire)
     assert calls == [((None, "selected work"), {"issue_number": 7275})]
+
+
+def test_fresh_issue_dedicated_tools_require_typed_apply_and_operator(monkeypatch):
+    from fastmcp import Client
+    from core.mcp_app import mcp as shared
+    from factory.orchestration import factory_validation as validation
+
+    calls = []
+    monkeypatch.setattr(
+        validation,
+        "preview",
+        lambda *a, **kw: calls.append(("preview", a, kw)) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        validation,
+        "apply",
+        lambda *a, **kw: calls.append(("apply", a, kw)) or {"ok": True},
+    )
+
+    async def preview():
+        return await mcp.factory_preview_issue_admission(7275, "selected work")
+
+    async def apply():
+        return await mcp.factory_apply_issue_admission(
+            7275, "selected work", "a" * 64, "exact-key"
+        )
+
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(principal, preview)["ok"]
+        assert not _as(principal, apply)["ok"]
+    assert not calls
+
+    async def wire():
+        async with Client(shared) as client:
+            valid = {
+                "issue_number": 7275,
+                "reason": "selected work",
+                "expected_preview_sha256": "a" * 64,
+                "request_key": "exact-key",
+            }
+            for field in valid:
+                result = await client.call_tool(
+                    "factory_apply_issue_admission",
+                    {k: v for k, v in valid.items() if k != field},
+                    raise_on_error=False,
+                )
+                assert result.is_error
+            result = await client.call_tool(
+                "factory_preview_issue_admission",
+                {"issue_number": 7275, "reason": "selected work"},
+            )
+            assert result.data["ok"]
+            result = await client.call_tool("factory_apply_issue_admission", valid)
+            assert result.data["ok"]
+
+    _as(_principal(), wire)
+    assert calls[0] == ("preview", (None, "selected work"), {"issue_number": 7275})
+    assert calls[1][0:2] == ("apply", (None, "selected work"))
+    assert calls[1][2]["issue_number"] == 7275
+    assert calls[1][2]["expected_preview_sha256"] == "a" * 64
+    assert calls[1][2]["request_key"] == "exact-key"

@@ -374,6 +374,12 @@ def test_automatic_pause_stop_is_local_and_keeps_unknown_reservations(
     after = controls.task_snapshot(task_id)
     assert after["task_paused"] and after["cancellation_requested"]
     assert after["state"] == "admitted" and after["starts"] == before["starts"]
+    evidence = controls.cancellation_evidence(task_id)
+    assert evidence and evidence["state"] == "operator_cancelled"
+    assert not controls.finish_task(
+        task_id, "cancelled", "reconciler", evidence=evidence
+    )["ok"]
+    assert controls.task_snapshot(task_id)["starts"] == before["starts"]
     assert after["policy"] == before["policy"]
     assert not decisions.apply_decision(
         before["id"], "stop", "operator", expected_decision_id=card["decision_id"]
@@ -5184,3 +5190,77 @@ def test_receipt_landing_hold_finishes_without_entering_global_merge_lane(
         assert not session.exec(
             select(FactoryAudit).where(FactoryAudit.action == "delivery_ready")
         ).all()
+
+
+def stopped_pause(policy):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task = admitted(policy)
+    assert factory_pause.pause(task, "test", "bounded work stopped")
+    snapshot = controls.task_snapshot(task)
+    card = controls.escalation_view(snapshot)
+    decisions.apply_decision(
+        snapshot["id"], "stop", "operator", expected_decision_id=card["decision_id"]
+    )
+    return task
+
+
+def test_committed_automatic_stop_reconciles_without_new_command(db, policy):
+    task = stopped_pause(policy)
+    before = controls.task_snapshot(task)
+    evidence = controls.cancellation_evidence(task)
+    assert evidence and evidence["state"] == "operator_cancelled"
+    assert controls.finish_task(task, "cancelled", "reconciler", evidence=evidence)[
+        "ok"
+    ]
+    after = controls.task_snapshot(task)
+    assert after["state"] == "cancelled"
+    assert after["policy"] == before["policy"]
+    assert after["direction"] == before["direction"]
+    assert after["escalation"] == before["escalation"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "actor",
+        "receipt_id",
+        "issue_number",
+        "decision_id",
+        "option_key",
+        "effect",
+        "effects",
+        "card_kind",
+        "card_task",
+        "card_question",
+        "card_options",
+    ],
+)
+def test_automatic_stop_requires_exact_audit_and_card(db, policy, field):
+    task = stopped_pause(policy)
+    with controls._locked_session() as (session, _):
+        row = controls._receipt(session, task)
+        if field.startswith("card_"):
+            card = json.loads(row.escalation_json)
+            key = {
+                "card_kind": "kind",
+                "card_task": "task_id",
+                "card_question": "question",
+                "card_options": "options",
+            }[field]
+            card[key] = [] if field == "card_options" else "other"
+            row.escalation_json = json.dumps(card)
+        else:
+            event = session.exec(
+                select(controls.FactoryAudit).where(
+                    controls.FactoryAudit.task_id == task,
+                    controls.FactoryAudit.action == "decision_applied",
+                )
+            ).one()
+            if field == "actor":
+                event.actor = "other"
+            else:
+                detail = json.loads(event.detail_json)
+                detail[field] = {} if field == "effects" else "other"
+                event.detail_json = json.dumps(detail)
+    assert controls.cancellation_evidence(task) is None
