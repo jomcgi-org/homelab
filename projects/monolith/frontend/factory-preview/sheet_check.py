@@ -165,6 +165,46 @@ def validate_capture(path):
     return manifest
 
 
+def validate_bundle(root, result):
+    """Validate the complete checklist before an independent consumer reads it."""
+    expected = {
+        f"{view}{'-banner' if banner else ''}-{width}-{scheme}"
+        for view in VIEWS
+        for banner in ([False, True] if view in ["blog", "post", "single"] else [False])
+        for width in (390, 1440)
+        for scheme in ("light", "dark")
+    }
+    records = result["captures"]
+    if len(records) != len(expected) or {r["key"] for r in records} != expected:
+        raise AssertionError("missing or duplicate checklist cases")
+    if result["build"]["production_sha"] != result["revision"]:
+        raise AssertionError("stale source provenance")
+    import zipfile
+
+    for record in records:
+        key = record["key"]
+        names = list(record["repeatability_images"])
+        if key.rsplit("-", 2)[0] in ("task", "attempt", "landing", "updates-filter"):
+            names.append(f"{key}-interaction.png")
+        if record["checks"].get("focus"):
+            names.append(f"{key}-focus.png")
+        for name in names:
+            manifest = validate_capture(root / name)
+            if (
+                name == f"{key}.png"
+                and manifest["document"]["height"]
+                != record["opening"]["geometry"]["document"]["scrollHeight"]
+            ):
+                raise AssertionError("stale opening geometry")
+        with zipfile.ZipFile(root / f"{key}-trace.zip") as trace:
+            if trace.testzip() is not None or not any(
+                n.endswith(".trace") for n in trace.namelist()
+            ):
+                raise AssertionError("missing or corrupt browser trace")
+    if len(result["scheme_checks"]) != 6 or len(result["behavior_checks"]) != 2:
+        raise AssertionError("incomplete theme or behavior checklist")
+
+
 def capture(artifact, output, label, *, acceptance=False):
     from playwright.sync_api import sync_playwright
 
@@ -463,6 +503,7 @@ def capture(artifact, output, label, *, acceptance=False):
         "scheme_checks": scheme_checks,
         "behavior_checks": behavior_checks,
     }
+    validate_bundle(output, result)
     (output / "results.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -590,6 +631,8 @@ def compare(before, after, output, *, acceptance=False):
 
     base = json.loads((before / "results.json").read_text())
     head = json.loads((after / "results.json").read_text())
+    validate_bundle(before, base)
+    validate_bundle(after, head)
     assert base["build"]["harness_sha"] == head["build"]["harness_sha"], (
         "Both source revisions must use the same harness"
     )

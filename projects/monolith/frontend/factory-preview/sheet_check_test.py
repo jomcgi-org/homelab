@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 from sheet_check import compare, validate_capture, viewport_page_capture
@@ -58,7 +59,8 @@ class ComparisonTest(unittest.TestCase):
         )
 
     def compare(self):
-        with redirect_stdout(io.StringIO()):
+        # Comparator unit fixtures intentionally isolate pixel comparison.
+        with patch("sheet_check.validate_bundle"), redirect_stdout(io.StringIO()):
             return compare(self.before, self.after, self.output, acceptance=True)
 
     def test_identical_pixels_pass(self):
