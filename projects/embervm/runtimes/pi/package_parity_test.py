@@ -29,6 +29,10 @@ _TOOLCHAIN_REASON = (
     "factory toolchain for sessions that run repo tests and renders (#6642); "
     "the pi-spark rollback harness stays lean and its lock is not re-resolved"
 )
+_BROWSER_REASON = (
+    "native libraries and fonts for factory pinned Playwright capture on "
+    "claude-runtime; pi-spark does not host the capture/reviewer lineage"
+)
 EXPECTED_DIVERGENCE: dict[str, str] = {
     "helm-3": _TOOLCHAIN_REASON,
     "go-1.26": _TOOLCHAIN_REASON,
@@ -41,6 +45,26 @@ EXPECTED_DIVERGENCE: dict[str, str] = {
         "Luna captures and independent reviewers share that workload, while "
         "pi-spark uses a separate workload and cannot restore its lineage"
     ),
+    "glib": _BROWSER_REASON,
+    "libnspr": _BROWSER_REASON,
+    "libnss": _BROWSER_REASON,
+    "libatk-1.0": _BROWSER_REASON,
+    "libatk-bridge-2.0": _BROWSER_REASON,
+    "at-spi2-core": _BROWSER_REASON,
+    "dbus-libs": _BROWSER_REASON,
+    "libx11": _BROWSER_REASON,
+    "libxcomposite": _BROWSER_REASON,
+    "libxdamage": _BROWSER_REASON,
+    "libxext": _BROWSER_REASON,
+    "libxfixes": _BROWSER_REASON,
+    "libxrandr": _BROWSER_REASON,
+    "mesa-gbm": _BROWSER_REASON,
+    "libxkbcommon": _BROWSER_REASON,
+    "libudev": _BROWSER_REASON,
+    "alsa-lib": _BROWSER_REASON,
+    "libfontconfig1": _BROWSER_REASON,
+    "freetype": _BROWSER_REASON,
+    "ttf-dejavu": _BROWSER_REASON,
 }
 
 

@@ -29,6 +29,8 @@
 # claude-runtime: Luna captures and independent reviewers share that workload.
 # The pi-spark rollback workload cannot restore a different workload's lineage,
 # so it does not run that preflight and does not need its Pillow dependency.
+# The same factory-only boundary excludes the pinned Playwright browser's
+# native libraries and fonts, recorded explicitly in package_parity_test.py.
 #
 # AMD64-ONLY, matching ../claude and ../../image. pi itself ships dual-arch (its
 # payload sits at the arch-independent path pi/pi in both release tarballs), so

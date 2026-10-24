@@ -73,6 +73,28 @@ contents:
     - py3.12-pyyaml
     # Mandatory browser evidence preflight validates screenshot dimensions.
     - py3.12-pillow
+    # Native libraries for the pinned Playwright Chromium, plus stable fonts.
+    # Keep the browser version in the capture harness, not a second APK browser.
+    - glib
+    - libnspr
+    - libnss
+    - libatk-1.0
+    - libatk-bridge-2.0
+    - at-spi2-core
+    - dbus-libs
+    - libx11
+    - libxcomposite
+    - libxdamage
+    - libxext
+    - libxfixes
+    - libxrandr
+    - mesa-gbm
+    - libxkbcommon
+    - libudev
+    - alsa-lib
+    - libfontconfig1
+    - freetype
+    - ttf-dejavu
 
 archs:
   - x86_64
