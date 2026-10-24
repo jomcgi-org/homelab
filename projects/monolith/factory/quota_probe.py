@@ -10,11 +10,12 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta, timezone
 import logging
+import json
 import math
 from uuid import uuid4
 
 from sqlalchemy import or_
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from factory.execution.models import (
     AgentCapacityReservation,
@@ -74,6 +75,122 @@ def _fresh(reading: dict | None, interval: int) -> bool:
     )
 
 
+def _unresolved_probe_filter():
+    pending = (
+        select(PendingMessage.id)
+        .where(PendingMessage.session_id == AgentSession.id)
+        .exists()
+    )
+    return (
+        AgentSession.local_session_id.startswith(PREFIX),
+        or_(
+            AgentSession.status == "running",
+            AgentSession.ember_session_id.is_not(None),
+            pending,
+            store._unknown_outcome_exists(AgentSession.id),
+        ),
+    )
+
+
+def probe_status(*, after_session_id=0, limit=20):
+    """Read bounded Claude probe identity and fences, never dispatch or settle."""
+    if type(after_session_id) is not int or after_session_id < 0:
+        raise ValueError("invalid_session_cursor")
+    if type(limit) is not int or not 1 <= limit <= 50:
+        raise ValueError("invalid_limit")
+    from core.clock import aware_iso
+
+    with Session(controls.get_engine()) as db:
+        latest = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.action == "quota_probe_started",
+                FactoryAudit.actor == ACTOR,
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        key = None
+        if latest is not None:
+            try:
+                key = json.loads(latest.detail_json).get("session_key")
+            except (ValueError, TypeError, AttributeError):
+                pass
+        valid_key = isinstance(key, str) and key.startswith(PREFIX)
+        latest_id = (
+            db.exec(
+                select(AgentSession.id).where(AgentSession.local_session_id == key)
+            ).first()
+            if valid_key
+            else None
+        )
+        blockers = db.exec(
+            select(AgentSession.id)
+            .where(*_unresolved_probe_filter(), AgentSession.id > after_session_id)
+            .order_by(AgentSession.id)
+            .limit(limit + 1)
+        ).all()
+        has_blocker = (
+            db.exec(
+                select(AgentSession.id).where(*_unresolved_probe_filter()).limit(1)
+            ).first()
+            is not None
+        )
+
+        def metadata(session_id):
+            if session_id is None:
+                return None
+            row = db.exec(
+                select(
+                    AgentSession.id,
+                    AgentSession.status,
+                    AgentSession.ember_session_id.is_not(None),
+                    store._unknown_outcome_exists(AgentSession.id),
+                ).where(AgentSession.id == session_id)
+            ).first()
+            if row is None:
+                return {"session_id": session_id, "state": "disappeared_during_read"}
+            pending_seq = db.exec(
+                select(PendingMessage.seq)
+                .where(PendingMessage.session_id == session_id)
+                .order_by(PendingMessage.seq)
+                .limit(1)
+            ).first()
+            turn_seq = db.exec(
+                select(AgentTurn.seq)
+                .where(AgentTurn.session_id == session_id)
+                .order_by(AgentTurn.seq.desc())
+                .limit(1)
+            ).first()
+            return {
+                "session_id": row[0],
+                "status": row[1],
+                "guest_bound": row[2],
+                "unknown_outcome": row[3],
+                "first_pending_seq": pending_seq,
+                "latest_turn_seq": turn_seq,
+            }
+
+        return {
+            "provider": "claude",
+            "observed_at": aware_iso(controls._now()),
+            "latest_start": None
+            if latest is None
+            else {
+                "audit_id": latest.id,
+                "created_at": aware_iso(latest.created_at),
+                "identity_valid": valid_key,
+                "session": metadata(latest_id),
+            },
+            "unresolved_probe_present": has_blocker,
+            "blocking_sessions": [metadata(i) for i in blockers[:limit]],
+            "next_after_session_id": blockers[limit - 1]
+            if len(blockers) > limit
+            else None,
+            "execution_authorized": False,
+        }
+
+
 def claim(payload: dict) -> str | None:
     """Atomically reserve a probe, independent of reviewer fallback selection."""
     with controls._locked_session() as (db, control):
@@ -109,23 +226,8 @@ def claim(payload: dict) -> str | None:
                 return None
         # No second guest while a prior probe is running, still bound, or has
         # an unresolved pending turn. Session maintenance owns its recovery.
-        pending = (
-            select(PendingMessage.id)
-            .where(PendingMessage.session_id == AgentSession.id)
-            .exists()
-        )
         unresolved = db.exec(
-            select(AgentSession.id)
-            .where(
-                AgentSession.local_session_id.startswith(PREFIX),
-                or_(
-                    AgentSession.status == "running",
-                    AgentSession.ember_session_id.is_not(None),
-                    pending,
-                    store._unknown_outcome_exists(AgentSession.id),
-                ),
-            )
-            .limit(1)
+            select(AgentSession.id).where(*_unresolved_probe_filter()).limit(1)
         ).first()
         if unresolved is not None:
             return None

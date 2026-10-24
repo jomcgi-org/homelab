@@ -2346,3 +2346,34 @@ def test_raw_extraction_diagnostics_declared_schema(monkeypatch):
         assert calls == ["kg:" + "a" * 64]
 
     _as(_principal(), exercise)
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.ANONYMOUS, groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_quota_probe_status_requires_operator_before_read(monkeypatch, principal):
+    from factory import quota_probe
+
+    def forbidden(**kwargs):
+        raise AssertionError("unauthorized read")
+
+    monkeypatch.setattr(quota_probe, "probe_status", forbidden)
+    assert (
+        _as(principal, mcp.factory_quota_probe_status)["error"] == mcp.OPERATOR_REQUIRED
+    )
+
+
+def test_quota_probe_status_delegates_only_bounded_selectors(monkeypatch):
+    from factory import quota_probe
+
+    monkeypatch.setattr(quota_probe, "probe_status", lambda **kwargs: kwargs)
+    assert _as(_principal(), lambda: mcp.factory_quota_probe_status(7, 3)) == {
+        "after_session_id": 7,
+        "limit": 3,
+    }

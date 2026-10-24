@@ -1711,3 +1711,26 @@ async def factory_raw_extraction_diagnostics(
     from factory.execution.admission_diagnostics import inspect_raw_extraction
 
     return await asyncio.to_thread(inspect_raw_extraction, job_name)
+
+
+@mcp.tool
+async def factory_quota_probe_status(
+    after_session_id: Annotated[MCPInteger, Field(ge=0)] = 0,
+    limit: Annotated[MCPInteger, Field(ge=1, le=50)] = 20,
+) -> dict:
+    """Read Claude quota probe identity and unresolved session fences as an operator.
+
+    Shows the latest recorded start and a bounded page of all blocking probes,
+    including older sessions. Follow next_after_session_id for more blockers.
+    Session and turn IDs can be inspected with session dispatch diagnostics.
+    No prompts, results, credentials or guest tokens are returned. This does
+    not refresh provider quota, invoke a model, clear fences or authorize retry.
+    """
+    refusal = _refuse(current_principal())
+    if refusal is not None:
+        return refusal
+    from factory.quota_probe import probe_status
+
+    return await asyncio.to_thread(
+        probe_status, after_session_id=after_session_id, limit=limit
+    )

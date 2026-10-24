@@ -629,3 +629,145 @@ def test_unconfirmed_cleanup_blocks_until_exact_guest_confirmed(
     asyncio.run(probe._cleanup())
     assert deleted == ["guest"]
     assert probe.claim(payload(observed=False))
+
+
+def test_probe_status_retains_older_blocker_and_redacts(db):
+    import json
+
+    with Session(db) as session:
+        older = AgentSession(
+            local_session_id=probe.PREFIX + "old",
+            workspace="secret",
+            branch="secret",
+            status="failed",
+            ember_session_id="guest-secret",
+            ember_session_token="token-secret",
+        )
+        newer = AgentSession(
+            local_session_id=probe.PREFIX + "new",
+            workspace="secret",
+            branch="secret",
+            status="completed",
+        )
+        session.add_all([older, newer])
+        session.flush()
+        session.add_all(
+            [
+                PendingMessage(
+                    session_id=older.id, seq=2, message_text="prompt-secret"
+                ),
+                AgentTurn(
+                    session_id=newer.id,
+                    seq=1,
+                    prompt="prompt-secret",
+                    result_text="result-secret",
+                ),
+                FactoryAudit(
+                    actor=probe.ACTOR,
+                    action="quota_probe_started",
+                    detail_json=json.dumps(
+                        {"session_key": newer.local_session_id, "extra": "secret"}
+                    ),
+                ),
+            ]
+        )
+        session.commit()
+        older_id, newer_id = older.id, newer.id
+    result = probe.probe_status()
+    assert result["latest_start"]["session"]["session_id"] == newer_id
+    assert result["latest_start"]["session"]["latest_turn_seq"] == 1
+    assert result["unresolved_probe_present"] is True
+    assert result["blocking_sessions"][0]["session_id"] == older_id
+    assert result["blocking_sessions"][0]["first_pending_seq"] == 2
+    assert "secret" not in json.dumps(result)
+    assert result["execution_authorized"] is False
+    assert probe.claim(payload(age=7200)) is None
+
+
+def test_probe_status_pagination_and_missing_session(db):
+    import json
+
+    with Session(db) as session:
+        rows = [
+            AgentSession(
+                local_session_id=probe.PREFIX + str(i),
+                workspace="x",
+                branch="x",
+                status="running",
+            )
+            for i in range(3)
+        ]
+        session.add_all(rows)
+        session.add(
+            FactoryAudit(
+                actor=probe.ACTOR,
+                action="quota_probe_started",
+                detail_json=json.dumps({"session_key": probe.PREFIX + "missing"}),
+            )
+        )
+        session.commit()
+    first = probe.probe_status(limit=2)
+    assert first["latest_start"]["session"] is None
+    assert len(first["blocking_sessions"]) == 2
+    second = probe.probe_status(
+        limit=2, after_session_id=first["next_after_session_id"]
+    )
+    assert len(second["blocking_sessions"]) == 1
+    assert second["next_after_session_id"] is None
+    assert {r["session_id"] for r in first["blocking_sessions"]}.isdisjoint(
+        {r["session_id"] for r in second["blocking_sessions"]}
+    )
+    assert probe.probe_status(after_session_id=999)["unresolved_probe_present"] is True
+
+
+def test_probe_status_empty_is_not_permission_and_does_not_write(db):
+    result = probe.probe_status()
+    assert result["latest_start"] is None
+    assert result["blocking_sessions"] == []
+    assert result["execution_authorized"] is False
+    with Session(db) as session:
+        assert session.exec(select(FactoryAudit)).all() == []
+    with pytest.raises(ValueError):
+        probe.probe_status(limit=0)
+
+
+@pytest.mark.parametrize(
+    "details", ["not-json", "[]", '{"session_key":"unrelated-secret"}']
+)
+def test_probe_status_invalid_audit_identity_is_not_linked(db, details):
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor=probe.ACTOR, action="quota_probe_started", detail_json=details
+            )
+        )
+        session.commit()
+    result = probe.probe_status()
+    assert result["latest_start"]["identity_valid"] is False
+    assert result["latest_start"]["session"] is None
+    assert "secret" not in str(result)
+
+
+def test_probe_status_unknown_outcome_without_guest_remains_blocking(db):
+    with Session(db) as session:
+        row = AgentSession(
+            local_session_id=probe.PREFIX + "unknown",
+            workspace="x",
+            branch="x",
+            status="failed",
+        )
+        session.add(row)
+        session.flush()
+        session.add(
+            AgentTurn(
+                session_id=row.id,
+                seq=1,
+                prompt="private",
+                result_text="private",
+                stop_reason=probe.UNKNOWN_INVOCATION,
+            )
+        )
+        session.commit()
+    result = probe.probe_status()
+    assert result["unresolved_probe_present"] is True
+    assert result["blocking_sessions"][0]["unknown_outcome"] is True
