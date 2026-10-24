@@ -23891,41 +23891,76 @@ def test_browser_review_prepares_before_reserving(monkeypatch, pending):
     monkeypatch.setattr(conductor, "_dispatch_branch", lambda *a: "factory/test")
     calls = []
     handoff = WorkspaceHandoff("lineage", "a" * 64, "producer", "b" * 64)
-    prepared = {"status": "pending"} if pending else {
-        "status": "prepared", "workspace_handoff": handoff.to_json(), "raw_capture": "{}",
-    }
+    prepared = (
+        {"status": "pending"}
+        if pending
+        else {
+            "status": "prepared",
+            "workspace_handoff": handoff.to_json(),
+            "raw_capture": "{}",
+        }
+    )
+
     def prepare(*a, **k):
         calls.append("prepare")
         return prepared
+
     monkeypatch.setattr(dispatch, "prepare_dependency", prepare)
+
     def reserve(task, key, workflow, context, **kwargs):
         calls.append("reserve")
         assert context["browser_evidence_review"] == prepared
-        assert context["artifact_schema"]["properties"]["browser_evidence_handoff_sha256"]["enum"] == ["b" * 64]
-        assert "browser_evidence_handoff_sha256" in context["artifact_schema"]["required"]
+        assert context["artifact_schema"]["properties"][
+            "browser_evidence_handoff_sha256"
+        ]["enum"] == ["b" * 64]
+        assert (
+            "browser_evidence_handoff_sha256" in context["artifact_schema"]["required"]
+        )
         return True
+
     monkeypatch.setattr(conductor, "reserve_node", reserve)
     task = {"id": "t-browser", "repo": "owner/repo"}
-    runs = [{"id": 1, "node_key": node["deps"][0], "status": "succeeded", "session_id": 11,
-             "outcome_json": json.dumps({"value": {"status": "complete", "browser_evidence": {}}})}]
-    assert conductor._dispatch_ready(task, [node], runs, 1, fan_out=True, parallel=4) is (not pending)
+    runs = [
+        {
+            "id": 1,
+            "node_key": node["deps"][0],
+            "status": "succeeded",
+            "session_id": 11,
+            "outcome_json": json.dumps(
+                {"value": {"status": "complete", "browser_evidence": {}}}
+            ),
+        }
+    ]
+    assert conductor._dispatch_ready(
+        task, [node], runs, 1, fan_out=True, parallel=4
+    ) is (not pending)
     assert calls == (["prepare"] if pending else ["prepare", "reserve"])
 
 
 def test_capture_and_implementation_do_not_create_source_fan_in(monkeypatch):
     from factory.orchestration import factory_controls
+
     capture = "implement_browser_capture_mobile"
-    nodes = [{"node_key": capture, "deps": []}, {"node_key": "implement_source", "deps": []}]
+    nodes = [
+        {"node_key": capture, "deps": []},
+        {"node_key": "implement_source", "deps": []},
+    ]
     monkeypatch.setattr(factory_controls, "parallel_limit", lambda policy: 4)
     assert conductor.fan_out_wave("task", nodes, [], 4) == []
     assert conductor._pending_fan_ins("task", nodes, [], 4) == 0
     assert conductor._planned_fan_ins("task", {}, nodes) == 0
     assert conductor._dispatch_branch("task", capture, nodes, [], 4) == "factory/task"
-    assert conductor._dispatch_branch("task", "implement_source", nodes, [], 4) == "factory/task"
+    assert (
+        conductor._dispatch_branch("task", "implement_source", nodes, [], 4)
+        == "factory/task"
+    )
     # Genuine parallel source work still requires its normal fan-in; capture
     # proceeds on the delivery branch without becoming a member of that wave.
     nodes.append({"node_key": "implement_second", "deps": []})
-    assert conductor.fan_out_wave("task", nodes, [], 4) == ["implement_second", "implement_source"]
+    assert conductor.fan_out_wave("task", nodes, [], 4) == [
+        "implement_second",
+        "implement_source",
+    ]
     assert conductor._planned_fan_ins("task", {}, nodes) == 1
     assert conductor._dispatch_branch("task", capture, nodes, [], 4) == "factory/task"
     assert conductor._dispatch_branch("task", "implement_source", nodes, [], 4) is None
@@ -23950,14 +23985,24 @@ def test_capture_admission_routes_luna_without_source_side_effects(feedback_db):
 
 
 def test_capture_dispatch_pins_readonly_and_default_ttl(monkeypatch):
-    node = {**_review_node("implement_browser_capture_mobile"), "model": "luna", "deps": []}
+    node = {
+        **_review_node("implement_browser_capture_mobile"),
+        "model": "luna",
+        "deps": [],
+    }
     monkeypatch.setattr(conductor, "_ready_nodes", lambda *a, **k: [node])
     monkeypatch.setattr(conductor, "hydration_branch", lambda task: "main")
     monkeypatch.setattr(conductor, "branch_hydration", lambda *a: "main")
     monkeypatch.setattr(conductor, "_free_background_slots", lambda: 1)
     captured = []
-    monkeypatch.setattr(conductor, "reserve_node", lambda task, key, workflow, context, **kw: captured.append(context) or True)
-    assert conductor._dispatch_ready({"id": "task", "repo": "owner/repo"}, [node], [], 1, fan_out=True, parallel=4)
+    monkeypatch.setattr(
+        conductor,
+        "reserve_node",
+        lambda task, key, workflow, context, **kw: captured.append(context) or True,
+    )
+    assert conductor._dispatch_ready(
+        {"id": "task", "repo": "owner/repo"}, [node], [], 1, fan_out=True, parallel=4
+    )
     context = captured[0]
     assert context["read_only"] is True
     assert context["capture_evidence_ttl_seconds"] == 259200
@@ -23966,4 +24011,11 @@ def test_capture_dispatch_pins_readonly_and_default_ttl(monkeypatch):
     assert "browser_evidence" in context["artifact_schema"]["required"]
     node["model"] = "sol"
     with pytest.raises(ValueError, match="non-Luna"):
-        conductor._dispatch_ready({"id": "task", "repo": "owner/repo"}, [node], [], 1, fan_out=True, parallel=4)
+        conductor._dispatch_ready(
+            {"id": "task", "repo": "owner/repo"},
+            [node],
+            [],
+            1,
+            fan_out=True,
+            parallel=4,
+        )

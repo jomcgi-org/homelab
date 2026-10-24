@@ -1726,12 +1726,17 @@ def test_clear_ember_bindings_by_ember_id_preserves_prior_lineage_and_cli(sessio
 
 
 @pytest.mark.parametrize("existing_binding", [False, True])
-def test_workspace_handoff_first_turn_is_fresh_then_continues_reviewer(monkeypatch, session, existing_binding):
+def test_workspace_handoff_first_turn_is_fresh_then_continues_reviewer(
+    monkeypatch, session, existing_binding
+):
     from factory.execution.workspace_handoff import WorkspaceHandoff
 
     handoff = WorkspaceHandoff("producer-lineage", "a" * 64, "producer-guest", "b" * 64)
     row = store.create_session(
-        session, "review-workspace", "/workspace", "main",
+        session,
+        "review-workspace",
+        "/workspace",
+        "main",
         workspace_handoff_json=handoff.to_json(),
     )
     # A stale transcript pointer must never turn the first review into a
@@ -1741,10 +1746,23 @@ def test_workspace_handoff_first_turn_is_fresh_then_continues_reviewer(monkeypat
     session.add(row)
     session.commit()
     if existing_binding:
-        store.set_ember_session(session, row.id, "reviewer-guest", "reviewer-token", None, "producer-lineage")
+        store.set_ember_session(
+            session,
+            row.id,
+            "reviewer-guest",
+            "reviewer-token",
+            None,
+            "producer-lineage",
+        )
     store.create_pending_message(session, row.id, "inspect")
     calls = []
-    reviewer = EmberSession("reviewer-guest", "reviewer-token", None, lineage_id="producer-lineage", restored=True)
+    reviewer = EmberSession(
+        "reviewer-guest",
+        "reviewer-token",
+        None,
+        lineage_id="producer-lineage",
+        restored=True,
+    )
 
     async def deliver(ember, cli_session_id, message, model=None, **kwargs):
         calls.append((ember, cli_session_id, kwargs))
@@ -3062,15 +3080,24 @@ def test_drain_continuation_emits_no_terminal_discord_notice(monkeypatch):
 
 
 def test_capture_retention_reaches_only_first_model_turn(monkeypatch, session):
-    row = store.create_session(session, "capture-retention", "/workspace", "main", capture_evidence_ttl_seconds=259200)
+    row = store.create_session(
+        session,
+        "capture-retention",
+        "/workspace",
+        "main",
+        capture_evidence_ttl_seconds=259200,
+    )
     store.create_pending_message(session, row.id, "capture")
     calls = []
     guest = EmberSession("capture-guest", "token", None, lineage_id="capture-lineage")
+
     async def deliver(ember, cli_session_id, message, model=None, **kwargs):
         calls.append(kwargs)
         return _completed_turn(message)._replace(session_id="capture-cli"), guest
+
     async def notify(*args, **kwargs):
         return None
+
     monkeypatch.setattr(mcp._transport, "deliver", deliver)
     monkeypatch.setattr(mcp.agent_api, "notify", notify)
     asyncio.run(mcp._execute_pending_message(row.id))
