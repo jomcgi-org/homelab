@@ -373,10 +373,8 @@ def current_operator_allowlist(*, session: Session | None = None) -> set[int] | 
         except ValueError:
             return None
     issues = policy.get("issue_numbers") if isinstance(policy, dict) else None
-    if (
-        not isinstance(issues, list)
-        or not issues
-        or any(type(number) is not int for number in issues)
+    if not isinstance(issues, list) or any(
+        type(number) is not int for number in issues
     ):
         return None
     return set(issues)

@@ -261,3 +261,25 @@ No prompt, result, credential or guest token is returned. Missing sessions or an
 empty page do not authorize retry, cancellation or release of a fence. This tool
 neither refreshes provider observations nor starts inference. The normal probe
 claim uses the same unresolved-session predicate as this diagnostic.
+
+### Return to backlog intake
+
+`factory_preview_backlog_intake(reason)` and
+`factory_apply_backlog_intake(reason, expected_preview_sha256, request_key)`
+prepare the primary repository to consume its existing agent-ready backlog after
+a bounded validation. Both require a standing human operator. Preview requires
+paused admissions, no active, queued or landing receipts and no reserved or
+uncertain starts. Apply locks and rechecks that snapshot, including receipt
+history and the policy version, and records the before/after policy in audit.
+
+The change enables existing intake while preserving its label/exclusion,
+dependency, cooldown and daily-limit settings, generation and task bounds. It
+clears the manual issue allowlist so it cannot bypass backlog eligibility. An
+empty manual list is valid only with intake enabled. The effective primary
+repository filter must be exactly `agent-ready` and retain the needs-human,
+security-finding and wontfix exclusions. Automatic
+landing, refinement, closure and issue production remain off; other repositories
+are paused. No receipt or hold is changed. Apply leaves admissions paused. A
+separate explicit enable permits normal live eligibility and ownership checks;
+a preview does not promise that any candidate is eligible or reserve work.
+Identical request replay returns the recorded result; changed arguments conflict.

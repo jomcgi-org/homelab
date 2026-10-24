@@ -1734,3 +1734,66 @@ async def factory_quota_probe_status(
     return await asyncio.to_thread(
         probe_status, after_session_id=after_session_id, limit=limit
     )
+
+
+@mcp.tool
+async def factory_preview_backlog_intake(
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+) -> dict:
+    """Preview returning the primary repository to existing agent-ready intake.
+
+    Standing operators only. Requires paused, idle admissions with no unknown
+    starts. Clears manual issue selection and preserves eligibility filters,
+    generation and bounds, disables landing, refinement, closure and issue
+    production, and pauses other repositories. No work is submitted or enabled.
+    Review the full policy diff before applying its exact digest.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+
+    def preview():
+        from factory.orchestration import factory_validation
+
+        try:
+            return factory_validation.preview_backlog(reason)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    return await asyncio.to_thread(preview)
+
+
+@mcp.tool
+async def factory_apply_backlog_intake(
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    expected_preview_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
+    request_key: Annotated[str, Field(min_length=1, max_length=256)],
+) -> dict:
+    """Apply an exact reviewed backlog-intake preview as a standing operator.
+
+    Rechecks idle state, policy version and receipt history under the control
+    lock. Preserves all task bounds and holds. Leaves admissions paused: a
+    separate explicit enable permits the existing intake eligibility checks.
+    No task is submitted, resumed or recovered. Replay identical arguments
+    after a lost response, then read current state before further actions.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+
+    def apply():
+        from factory.orchestration import factory_validation
+
+        try:
+            return factory_validation.apply_backlog(
+                reason,
+                actor=principal.subject,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    return await asyncio.to_thread(apply)

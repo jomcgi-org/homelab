@@ -388,10 +388,10 @@ def preview(receipt_id, reason, *, issue_number=None):
         )
 
 
-def _replay(db, actor, request):
+def _replay(db, actor, request, *, action=ACTION):
     for raw in db.exec(
         select(FactoryAudit.detail_json).where(
-            FactoryAudit.action == ACTION, FactoryAudit.actor == actor
+            FactoryAudit.action == action, FactoryAudit.actor == actor
         )
     ).all():
         previous = json.loads(raw)
@@ -460,6 +460,120 @@ def apply(
             actor,
             ACTION,
             task_id=proposal["task_id"],
+            request=request,
+            result=result,
+            policy_before=proposal["policy_before"],
+            policy_after=proposal["policy_after"],
+        )
+        return result
+
+
+BACKLOG_ACTION = "backlog_intake_prepared"
+
+
+def _backlog_preview(db, control, reason):
+    """Return to reviewed intake explicitly, never as a task-completion effect."""
+    reason = controls._text(reason, "reason", 4000)
+    if control.state != "paused":
+        raise ValueError("validation_requires_paused_admissions")
+    rows = db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
+    if any(row.state in (*controls._ACTIVE, "queued", "landing") for row in rows):
+        raise ValueError("validation_other_work_present")
+    if (
+        db.exec(
+            select(FactoryStart.id).where(
+                FactoryStart.status.in_(("reserved", "uncertain"))
+            )
+        ).first()
+        is not None
+    ):
+        raise ValueError("validation_unresolved_execution")
+    before = controls.validate_policy(json.loads(control.policy_json))
+    repo = _available_repo(before["repo"])
+    if repo not in controls.enabled_repos(before):
+        raise ValueError("validation_receipt_unavailable")
+    after = json.loads(controls._json(before))
+    after["auto_merge"] = False
+    after["issue_numbers"] = []
+    intake = controls.intake_policy(before)
+    # This surface cannot broaden labels, exclusions, dependency trust or caps.
+    # Require the existing agent-ready filter, rather than inventing readiness.
+    primary = controls.repo_entry(before, repo)
+    if primary["labels"] != ["agent-ready"]:
+        raise ValueError("backlog_requires_agent_ready_filter")
+    if not {"needs-human", "security-finding", "wontfix"} <= set(
+        primary["exclude_labels"]
+    ):
+        raise ValueError("backlog_requires_safe_exclusions")
+    after["intake"] = {
+        **intake,
+        "enabled": True,
+        "refine_enabled": False,
+        "close_enabled": False,
+    }
+    after["problem_issues"] = {
+        **controls.problem_issues_policy(before),
+        "enabled": False,
+    }
+    for entry_repo, entry in after.get("repos", {}).items():
+        entry["auto_merge"] = False
+        if entry_repo != repo:
+            entry["paused"] = True
+    after = controls.validate_policy(after)
+    result = {
+        "repo": repo,
+        "reason": reason,
+        "expected_version": control.version,
+        "policy_before": before,
+        "policy_after": after,
+        "state_after": "paused",
+        "execution_authorized": False,
+        "eligibility": "Existing intake ownership, dependencies, linked PR, receipt history and readiness checks apply after explicit enable.",
+        "receipt_fingerprint": hashlib.sha256(
+            controls._json([row.model_dump(mode="json") for row in rows]).encode()
+        ).hexdigest(),
+    }
+    result["preview_sha256"] = hashlib.sha256(
+        controls._json(result).encode()
+    ).hexdigest()
+    return result
+
+
+def preview_backlog(reason):
+    with controls._locked_session() as (db, control):
+        return _backlog_preview(db, control, reason)
+
+
+def apply_backlog(reason, *, actor, request_key, expected_preview_sha256):
+    actor = controls._text(actor, "actor")
+    request = {
+        "reason": reason,
+        "request_key": controls._text(request_key, "request_key"),
+        "expected_preview_sha256": expected_preview_sha256,
+    }
+    with controls._locked_session() as (db, control):
+        replay = _replay(db, actor, request, action=BACKLOG_ACTION)
+        if replay is not None:
+            return replay
+        proposal = _backlog_preview(db, control, reason)
+        if proposal["preview_sha256"] != expected_preview_sha256:
+            raise ValueError("validation_preview_changed")
+        result = controls.set_control(
+            "configure", actor, policy=proposal["policy_after"], session=db
+        )
+        if not result["ok"]:
+            raise ValueError(result["reason"])
+        result = {
+            "ok": True,
+            "version": result["version"],
+            "state": "paused",
+            "execution_authorized": False,
+            "preview_sha256": proposal["preview_sha256"],
+        }
+        controls._audit(
+            db,
+            actor,
+            BACKLOG_ACTION,
             request=request,
             result=result,
             policy_before=proposal["policy_before"],
