@@ -20,6 +20,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
+from core.db import retryable_conflict
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     AliasCandidate,
@@ -55,11 +56,6 @@ class ApprovalRequired(AliasError):
 
 class StaleApproval(AliasError):
     pass
-
-
-def _retryable_conflict(exc: DBAPIError) -> bool:
-    code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
-    return code in {"40001", "40P01"}
 
 
 def _dialect_name(session: Session) -> str:
@@ -526,7 +522,7 @@ def generate_candidates(session: Session) -> dict[str, Any]:
             return _generate_candidates_once(session)
         except DBAPIError as exc:
             session.rollback()
-            if not _retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
+            if not retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
                 raise
     raise AssertionError("unreachable")
 
@@ -631,7 +627,7 @@ def approve_candidate(
             )
         except DBAPIError as exc:
             session.rollback()
-            if not _retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
+            if not retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
                 raise
     raise AssertionError("unreachable")
 
@@ -680,7 +676,7 @@ def reject_candidate(
             )
         except DBAPIError as exc:
             session.rollback()
-            if not _retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
+            if not retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
                 raise
     raise AssertionError("unreachable")
 
@@ -725,7 +721,7 @@ def reopen_candidate(
             )
         except DBAPIError as exc:
             session.rollback()
-            if not _retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
+            if not retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
                 raise
     raise AssertionError("unreachable")
 
@@ -1162,6 +1158,6 @@ async def execute_approved_candidate(
             return _apply_merge(session, plan, embed_client.model, vector)
         except DBAPIError as exc:
             session.rollback()
-            if not _retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
+            if not retryable_conflict(exc) or attempt + 1 == MAX_CONFLICT_RETRIES:
                 raise
     raise AssertionError("unreachable")

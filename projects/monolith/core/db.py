@@ -1,6 +1,7 @@
 import os
 from functools import lru_cache
 
+from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, create_engine
 
 _raw_url = os.environ.get(
@@ -28,3 +29,8 @@ def row_value(row: object, name: str) -> object:
     if isinstance(row, dict):
         return row[name]
     return getattr(row, name)
+
+
+def retryable_conflict(exc: DBAPIError) -> bool:
+    code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+    return code in {"40001", "40P01"}
