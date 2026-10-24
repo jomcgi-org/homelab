@@ -1703,7 +1703,7 @@ async def factory_raw_extraction_diagnostics(
     counts/timestamps for up to 1000 current-version provenance rows. No raw
     content, results, error text or credentials. Does not contact guests,
     change reservations, schedule work or authorize recovery. Missing evidence
-    does not establish nonexecution; provenance is not attributed to an attempt.
+    does not establish nonexecution. Provenance is not attributed to an attempt.
     """
     refusal = _refuse(current_principal())
     if refusal is not None:
