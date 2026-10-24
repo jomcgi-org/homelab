@@ -494,11 +494,15 @@ def _backlog_preview(db, control, reason):
         raise ValueError("validation_receipt_unavailable")
     after = json.loads(controls._json(before))
     after["auto_merge"] = False
+    after["issue_numbers"] = []
     intake = controls.intake_policy(before)
     # This surface cannot broaden labels, exclusions, dependency trust or caps.
     # Require the existing agent-ready filter, rather than inventing readiness.
-    if "agent-ready" not in intake["labels"]:
+    primary = controls.repo_entry(before, repo)
+    if primary["labels"] != ["agent-ready"]:
         raise ValueError("backlog_requires_agent_ready_filter")
+    if not {"needs-human", "security-finding", "wontfix"} <= set(primary["exclude_labels"]):
+        raise ValueError("backlog_requires_safe_exclusions")
     after["intake"] = {
         **intake,
         "enabled": True,

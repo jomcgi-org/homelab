@@ -1743,7 +1743,7 @@ async def factory_preview_backlog_intake(
     """Preview returning the primary repository to existing agent-ready intake.
 
     Standing operators only. Requires paused, idle admissions with no unknown
-    starts. Preserves the manual issue allowlist and eligibility filters,
+    starts. Clears manual issue selection and preserves eligibility filters,
     generation and bounds, disables landing, refinement, closure and issue
     production, and pauses other repositories. No work is submitted or enabled.
     Review the full policy diff before applying its exact digest.

@@ -2895,7 +2895,7 @@ def test_backlog_preparation_preserves_bounds_holds_and_requires_enable(
     validation = validation_ready
     proposal = validation.preview_backlog("resume useful backlog")
     before, after = proposal["policy_before"], proposal["policy_after"]
-    assert after["issue_numbers"] == before["issue_numbers"]
+    assert after["issue_numbers"] == []
     assert after["intake"]["enabled"]
     assert not after["auto_merge"]
     assert not after["intake"]["refine_enabled"]
@@ -2998,3 +2998,45 @@ def test_backlog_rechecks_authority_snapshot(database, validation_ready, change)
         assert not db.exec(
             select(FactoryAudit).where(FactoryAudit.action == validation.BACKLOG_ACTION)
         ).all()
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_backlog_rejects_or_matched_nonready_labels(database, validation_ready, override):
+    with Session(database) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        if override:
+            policy["repos"]["org/repo"]["labels"] = ["bug"]
+        else:
+            policy["intake"]["labels"] = ["agent-ready", "bug"]
+        control.policy_json = json.dumps(policy)
+    with pytest.raises(ValueError, match="backlog_requires_agent_ready_filter"):
+        validation_ready.preview_backlog("resume")
+
+
+def test_backlog_empty_manual_allowlist_cannot_ingest_unreviewed_work(database, validation_ready, monkeypatch):
+    from factory.orchestration import factory_conductor
+
+    proposal = validation_ready.preview_backlog("resume")
+    def forbidden(*args, **kwargs):
+        pytest.fail("manual ingest must not read or receive formerly allowlisted work")
+    monkeypatch.setattr(factory_conductor, "github_get", forbidden)
+    from factory.orchestration import factory_intake
+    monkeypatch.setattr(factory_intake, "receive_issue", forbidden)
+    factory_conductor.ingest_eligible(proposal["policy_after"])
+    inactive = {**proposal["policy_after"], "intake": {**proposal["policy_after"]["intake"], "enabled": False}}
+    with pytest.raises(ValueError, match="invalid issue_numbers"):
+        controls.validate_policy(inactive)
+
+
+def test_backlog_concurrent_apply_has_one_winner(database, validation_ready):
+    proposal = validation_ready.preview_backlog("resume")
+    def attempt(key):
+        try:
+            return validation_ready.apply_backlog("resume", actor="operator", request_key=key, expected_preview_sha256=proposal["preview_sha256"])
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(attempt, ["one", "two"]))
+    assert sum(result["ok"] for result in results) == 1
+    assert next(result for result in results if not result["ok"])["reason"] == "validation_preview_changed"
