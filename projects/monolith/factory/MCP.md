@@ -249,3 +249,15 @@ Admission checks the destination restrictions, source identity and policy agains
 that audit before creating any task, including when the marker was removed.
 No step releases a hold, accepts delivery, starts a worker, or permits landing.
 The operation does not reclassify ambiguous PR references or renew old work.
+
+### Claude quota probe diagnosis
+
+`factory_quota_probe_status` is a standing-operator read. It locates the latest
+Claude probe audit and session and pages every unresolved probe, including older
+ones. Pass `next_after_session_id` as `after_session_id` to continue. The global
+`unresolved_probe_present` flag is independent of that page. Use returned session
+and turn IDs with `factory_session_dispatch_diagnostics` for exact dispatch state.
+No prompt, result, credential or guest token is returned. Missing sessions or an
+empty page do not authorize retry, cancellation or release of a fence. This tool
+neither refreshes provider observations nor starts inference. The normal probe
+claim uses the same unresolved-session predicate as this diagnostic.
