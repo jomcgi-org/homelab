@@ -148,7 +148,7 @@ def test_opt_in_changes_only_grimoire_profile_and_adds_separate_flow():
         and write["create_users_group"] == "null"
     )
     assert (
-        yaml.safe_load((CHART / "values.yaml").read_text())["platformEnrollment"][
+        yaml.safe_load((CHART / "values.yaml").read_text())["grimoireLinkEnrollment"][
             "enabled"
         ]
         is False
