@@ -17,6 +17,7 @@ from faas.embervm_client import EmberVMTransportError
 from opentelemetry import metrics
 from sqlmodel import Session, select
 
+from core.clock import aware
 from factory.execution.models import AgentSession, PendingMessage
 
 _meter = metrics.get_meter("factory.capacity_wait")
@@ -33,10 +34,6 @@ def get_engine():
 
 def enabled() -> bool:
     return os.getenv("FACTORY_ASYNC_RESIDENCY_ENABLED", "").lower() in {"1", "true"}
-
-
-def _utc(value: datetime) -> datetime:
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def _read(session_id: int, *, include_claimed: bool = False) -> dict | None:
@@ -90,7 +87,7 @@ def _read(session_id: int, *, include_claimed: bool = False) -> dict | None:
             "token": agent.ember_session_token,
             "lineage_id": agent.ember_lineage_id or agent.ember_session_id,
             "context": context,
-            "next_poll": _utc(pending.capacity_next_poll_at)
+            "next_poll": aware(pending.capacity_next_poll_at)
             if pending.capacity_next_poll_at
             else None,
         }

@@ -6,6 +6,7 @@ import httpx
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from core.clock import aware
 from factory.execution import admission, capacity_wait, store, transport
 from factory.execution.constants import UNKNOWN_INVOCATION, exact_dispatch_id
 from factory.execution.models import (
@@ -404,7 +405,7 @@ def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
     if original:
         for field in ("deadline", "task_deadline", "first_wait_at"):
             assert current[field] == original[field]
-    assert capacity_wait._utc(pending(engine).capacity_started_at) == started
+    assert aware(pending(engine).capacity_started_at) == started
     with Session(engine) as db:
         turn = store.get_turn(db, sid, 1)
         assert json.loads(turn.usage_json)["retry_dispatch_count"] == 1
@@ -423,7 +424,7 @@ def test_permitted_continuation_uses_fresh_intent_and_keeps_costs_and_deadlines(
         "reason": "residency_changed",
     }
     assert capacity_wait.resolve_not_dispatched(sid, 1, "second", 2, proof, None)
-    assert capacity_wait._utc(pending(engine).capacity_started_at) == started
+    assert aware(pending(engine).capacity_started_at) == started
     assert pending(engine).dispatch_count == 1
     with Session(engine) as db:
         turn = store.get_turn(db, sid, 1)
