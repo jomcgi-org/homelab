@@ -3001,7 +3001,9 @@ def test_backlog_rechecks_authority_snapshot(database, validation_ready, change)
 
 
 @pytest.mark.parametrize("override", [False, True])
-def test_backlog_rejects_or_matched_nonready_labels(database, validation_ready, override):
+def test_backlog_rejects_or_matched_nonready_labels(
+    database, validation_ready, override
+):
     with Session(database) as db, db.begin():
         control = db.get(FactoryControl, "factory")
         policy = json.loads(control.policy_json)
@@ -3014,29 +3016,47 @@ def test_backlog_rejects_or_matched_nonready_labels(database, validation_ready, 
         validation_ready.preview_backlog("resume")
 
 
-def test_backlog_empty_manual_allowlist_cannot_ingest_unreviewed_work(database, validation_ready, monkeypatch):
+def test_backlog_empty_manual_allowlist_cannot_ingest_unreviewed_work(
+    database, validation_ready, monkeypatch
+):
     from factory.orchestration import factory_conductor
 
     proposal = validation_ready.preview_backlog("resume")
+
     def forbidden(*args, **kwargs):
         pytest.fail("manual ingest must not read or receive formerly allowlisted work")
+
     monkeypatch.setattr(factory_conductor, "github_get", forbidden)
     from factory.orchestration import factory_intake
+
     monkeypatch.setattr(factory_intake, "receive_issue", forbidden)
     factory_conductor.ingest_eligible(proposal["policy_after"])
-    inactive = {**proposal["policy_after"], "intake": {**proposal["policy_after"]["intake"], "enabled": False}}
+    inactive = {
+        **proposal["policy_after"],
+        "intake": {**proposal["policy_after"]["intake"], "enabled": False},
+    }
     with pytest.raises(ValueError, match="invalid issue_numbers"):
         controls.validate_policy(inactive)
 
 
 def test_backlog_concurrent_apply_has_one_winner(database, validation_ready):
     proposal = validation_ready.preview_backlog("resume")
+
     def attempt(key):
         try:
-            return validation_ready.apply_backlog("resume", actor="operator", request_key=key, expected_preview_sha256=proposal["preview_sha256"])
+            return validation_ready.apply_backlog(
+                "resume",
+                actor="operator",
+                request_key=key,
+                expected_preview_sha256=proposal["preview_sha256"],
+            )
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
+
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(attempt, ["one", "two"]))
     assert sum(result["ok"] for result in results) == 1
-    assert next(result for result in results if not result["ok"])["reason"] == "validation_preview_changed"
+    assert (
+        next(result for result in results if not result["ok"])["reason"]
+        == "validation_preview_changed"
+    )
