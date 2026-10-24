@@ -2405,14 +2405,22 @@ py_test(
         "factory/orchestration/browser_review_dispatch_test.py",
     ],
     imports = ["."],
-    deps = [":pkg_agent_sessions", ":pkg_swarm", "@pip//pytest", "@pip//sqlmodel"],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
 )
 
 py_test(
     name = "factory_browser_evidence_test",
     srcs = ["factory/orchestration/browser_evidence_test.py"],
     imports = ["."],
-    deps = [":pkg_swarm", "@pip//pytest"],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
 )
 
 py_test(

@@ -218,7 +218,10 @@ def _node_prompt(
     # Server-authored dependency, scout and capture contracts select inspection
     # without changing execute_node's deployed durable body or steps.
     read_only = (
-        any(key in schema.get("required", []) for key in ("dependency_assessment", "browser_evidence"))
+        any(
+            key in schema.get("required", [])
+            for key in ("dependency_assessment", "browser_evidence")
+        )
         or schema.get("x-factory-scout-read-only") is True
     )
     working = (
@@ -500,7 +503,11 @@ def _session_api(
         node_attempt=node_attempt,
         **({"effort": effort} if effort is not None else {}),
         **({"workspace_handoff": handoff} if handoff is not None else {}),
-        **({"capture_evidence_ttl_seconds": capture_ttl} if capture_ttl is not None else {}),
+        **(
+            {"capture_evidence_ttl_seconds": capture_ttl}
+            if capture_ttl is not None
+            else {}
+        ),
     )
     _validate_or_recover_started_session(
         session_id,
@@ -530,11 +537,14 @@ def _pinned_capture_ttl(task_id, node_key, node_attempt, session):
     from core.db import get_engine
     from factory.orchestration.models import SwarmNodeRun
 
-    with (nullcontext(session) if session is not None else Session(get_engine())) as db:
-        raw = db.exec(select(SwarmNodeRun.pin_json).where(
-            SwarmNodeRun.task_id == task_id, SwarmNodeRun.node_key == node_key,
-            SwarmNodeRun.attempt == node_attempt,
-        )).first()
+    with nullcontext(session) if session is not None else Session(get_engine()) as db:
+        raw = db.exec(
+            select(SwarmNodeRun.pin_json).where(
+                SwarmNodeRun.task_id == task_id,
+                SwarmNodeRun.node_key == node_key,
+                SwarmNodeRun.attempt == node_attempt,
+            )
+        ).first()
     value = (json.loads(raw) if raw else {}).get("capture_evidence_ttl_seconds")
     if type(value) is not int or not 3600 <= value <= 604800:
         raise ValueError("capture node requires admitted retention context")
@@ -551,10 +561,13 @@ def _pinned_workspace_handoff(task_id: str, node_key: str, node_attempt: int, se
 
     owned = nullcontext(session) if session is not None else Session(get_engine())
     with owned as db:
-        raw = db.exec(select(SwarmNodeRun.pin_json).where(
-            SwarmNodeRun.task_id == task_id, SwarmNodeRun.node_key == node_key,
-            SwarmNodeRun.attempt == node_attempt,
-        )).first()
+        raw = db.exec(
+            select(SwarmNodeRun.pin_json).where(
+                SwarmNodeRun.task_id == task_id,
+                SwarmNodeRun.node_key == node_key,
+                SwarmNodeRun.attempt == node_attempt,
+            )
+        ).first()
     prepared = (json.loads(raw) if raw else {}).get("browser_evidence_review")
     if prepared is None:
         return None

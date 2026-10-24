@@ -473,8 +473,16 @@ def _persist_session(
             node_attempt=node_attempt,
             admission_tier=admission_tier,
             recall_pending=recall_pending,
-            **({"workspace_handoff_json": workspace_handoff_json} if workspace_handoff_json is not None else {}),
-            **({"capture_evidence_ttl_seconds": capture_evidence_ttl_seconds} if capture_evidence_ttl_seconds is not None else {}),
+            **(
+                {"workspace_handoff_json": workspace_handoff_json}
+                if workspace_handoff_json is not None
+                else {}
+            ),
+            **(
+                {"capture_evidence_ttl_seconds": capture_evidence_ttl_seconds}
+                if capture_evidence_ttl_seconds is not None
+                else {}
+            ),
             **({"commit": False} if first_message is not None else {}),
         )
         if first_message is not None:
@@ -1117,9 +1125,13 @@ async def _execute_pending_message(session_id: int) -> None:
             if handoff is not None:
                 cli_session_id = None
                 deliver_kwargs["restore_from"] = handoff.lineage_id
-                deliver_kwargs["expected_workspace_fingerprint"] = handoff.expected_fingerprint
+                deliver_kwargs["expected_workspace_fingerprint"] = (
+                    handoff.expected_fingerprint
+                )
                 if handoff.preflight_json is not None:
-                    deliver_kwargs["workspace_handoff"] = json.loads(handoff.preflight_json)
+                    deliver_kwargs["workspace_handoff"] = json.loads(
+                        handoff.preflight_json
+                    )
             capture_ttl = getattr(session_row, "capture_evidence_ttl_seconds", None)
             if claimed_seq == 1 and capture_ttl is not None:
                 deliver_kwargs["capture_evidence_ttl_seconds"] = capture_ttl
