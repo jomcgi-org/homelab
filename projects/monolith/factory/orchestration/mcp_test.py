@@ -2377,3 +2377,36 @@ def test_quota_probe_status_delegates_only_bounded_selectors(monkeypatch):
         "after_session_id": 7,
         "limit": 3,
     }
+
+
+def test_backlog_preparation_requires_standing_operator_before_any_read(monkeypatch):
+    from factory.orchestration import factory_validation as validation
+
+    calls = []
+    monkeypatch.setattr(
+        validation,
+        "preview_backlog",
+        lambda *a, **kw: calls.append((a, kw)) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        validation,
+        "apply_backlog",
+        lambda *a, **kw: calls.append((a, kw)) or {"ok": True},
+    )
+    for principal in (_principal(groups=()), _principal(authority=Authority.DELEGATED)):
+        assert not _as(principal, lambda: mcp.factory_preview_backlog_intake("resume"))[
+            "ok"
+        ]
+        assert not _as(
+            principal,
+            lambda: mcp.factory_apply_backlog_intake("resume", "a" * 64, "key"),
+        )["ok"]
+    assert not calls
+    assert _as(_principal(), lambda: mcp.factory_preview_backlog_intake("resume"))["ok"]
+    assert _as(
+        _principal(),
+        lambda: mcp.factory_apply_backlog_intake("resume", "a" * 64, "key"),
+    )["ok"]
+    assert calls[0] == (("resume",), {})
+    assert calls[1][1]["expected_preview_sha256"] == "a" * 64
+    assert calls[1][1]["request_key"] == "key"
