@@ -1,18 +1,29 @@
-// Module-level cache of the parsed public knowledge graph.
-//
-// GraphView remounts on every client-side navigation back to /app/notes, and
-// its onMount re-fetched and re-parsed the full ~3.4 MB graph each time. A
-// module-level singleton persists across those remounts within one page
-// session, so the second and later opens are instant: no fetch, no JSON parse,
-// no rebuild. A full page reload starts a fresh module and clears it, which is
-// the correct TTL -- cross-load freshness is already governed by the HTTP layer
-// (s-maxage / ETag on /app/notes/graph).
+// Parsed public graph only, bounded by its HTTP lease (including response age).
 let cache = null;
-
-export function getCachedGraph() {
-  return cache;
+export function getCachedGraph(now = Date.now()) {
+  if (!cache || now >= cache.expiresAt) {
+    cache = null;
+    return null;
+  }
+  return cache.graph;
 }
-
-export function setCachedGraph(graph) {
-  cache = graph;
+export function setCachedGraph(graph, headers, now = Date.now()) {
+  const policy = headers?.get("cache-control") || "";
+  const ttl = Number(policy.match(/(?:^|,)\s*max-age=(\d+)/)?.[1] || 0);
+  const date = Date.parse(headers?.get("date"));
+  const age = Math.max(
+    Number(headers?.get("age") || 0),
+    Number.isFinite(date) ? Math.max(0, (now - date) / 1000) : 0,
+  );
+  const remaining = /(?:no-store|no-cache|private)/.test(policy)
+    ? 0
+    : ttl - age;
+  cache =
+    remaining > 0 && Number.isFinite(remaining)
+      ? {
+          graph: { ...graph, expiresAt: now + remaining * 1000 },
+          expiresAt: now + remaining * 1000,
+        }
+      : null;
+  return cache?.expiresAt ?? now;
 }

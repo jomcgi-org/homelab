@@ -1,72 +1,31 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { GET } from "./+server.js";
+import { readPublicSnapshot } from "../../../../../../lib/server/public-snapshots.js";
+vi.mock("../../../../../../lib/server/public-snapshots.js", () => ({
+  readPublicSnapshot: vi.fn(),
+}));
+beforeEach(() => vi.clearAllMocks());
 
-function makeHeaders(map = {}) {
-  const lower = Object.fromEntries(
-    Object.entries(map).map(([key, value]) => [key.toLowerCase(), value]),
-  );
-  return { get: (name) => lower[name.toLowerCase()] ?? null };
-}
-
-const activity = {
-  now: {
-    active_last_hour: 1,
-    sessions_today: 2,
-    running: 1,
-    last_turn_at: null,
-  },
-  daily: [],
-  local_daily: [],
-  spend_daily: [{ day: "2026-09-07", spend_usd: 3.75 }],
-  totals_7d: {
-    ember: {},
-    local: {},
-    combined: {
-      sessions: 0,
-      turns: 0,
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_read_tokens: 0,
-      spend_usd: 3.75,
-    },
-  },
-};
-
-describe("/public/slop/factory/data/activity GET", () => {
-  it("proxies the public agent activity endpoint unchanged", async () => {
+describe("activity public snapshot proxy", () => {
+  it("serves the fixed public projection with its remaining lease", async () => {
+    const headers = {
+      "cache-control": "public, max-age=13, s-maxage=13, must-revalidate",
+      etag: '\"testbuild-data\"',
+    };
+    readPublicSnapshot.mockResolvedValue({ body: '{"safe":true}', headers });
     const setHeaders = vi.fn();
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: makeHeaders(),
-      json: async () => activity,
-    });
-
-    const response = await GET({ fetch, setHeaders });
-
-    expect(fetch.mock.calls[0][0]).toMatch(/\/api\/agents\/public\/activity$/);
-    expect(await response.json()).toEqual(activity);
+    const response = await GET({ setHeaders });
+    expect(readPublicSnapshot).toHaveBeenCalledWith("activity");
+    expect(setHeaders).toHaveBeenCalledWith(headers);
+    expect(await response.json()).toEqual({ safe: true });
   });
-
-  it("sets five-minute browser and Cloudflare cache headers", async () => {
+  it("makes a failed refresh uncacheable", async () => {
+    readPublicSnapshot.mockRejectedValue(new Error("backend unavailable"));
     const setHeaders = vi.fn();
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: makeHeaders({ ETag: '"activity"' }),
-      json: async () => activity,
-    });
-
-    await GET({ fetch, setHeaders });
-
+    await expect(GET({ setHeaders })).rejects.toMatchObject({ status: 503 });
     expect(setHeaders).toHaveBeenCalledWith({
-      "cache-control": "public, max-age=300, s-maxage=300",
-      "cloudflare-cdn-cache-control": "public, max-age=300",
-      etag: '"testbuild-activity"',
+      "cache-control": "no-store",
+      "cloudflare-cdn-cache-control": "no-store",
     });
-  });
-
-  it("returns 503 when the backend request fails", async () => {
-    const fetch = vi.fn().mockResolvedValue({ ok: false });
-
-    await expect(GET({ fetch, setHeaders: vi.fn() })).rejects.toThrow();
   });
 });

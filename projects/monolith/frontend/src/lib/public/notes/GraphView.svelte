@@ -65,20 +65,36 @@
     if (sel != null) selectedId = sel;
   });
 
+  let expiryTimer;
+  let stopped = false;
+  let pending = false;
+
+  function expireAt(expiresAt) {
+    clearTimeout(expiryTimer);
+    expiryTimer = setTimeout(
+      () => {
+        nodes = [];
+        edges = [];
+        status = "loading";
+        if (!document.hidden) void loadGraph();
+      },
+      Math.max(0, expiresAt - Date.now()),
+    );
+  }
+
   async function loadGraph() {
-    // Client-side navigation back to /app/notes remounts this component.
-    // Reuse the parsed graph from a prior open in this page session instead of
-    // re-fetching and re-parsing ~3.4 MB every time (the HTTP layer's
-    // s-maxage/ETag still governs freshness across full page loads, when the
-    // module cache resets).
+    if (pending || stopped) return;
+    // Reuse only a still-fresh parsed snapshot; HTTP age survives remounts.
     const cached = getCachedGraph();
     if (cached) {
       nodes = cached.nodes;
       edges = cached.edges;
       status = "ready";
+      expireAt(cached.expiresAt);
       return;
     }
     status = "loading";
+    pending = true;
     try {
       const res = await fetch("/app/notes/graph", {
         signal: AbortSignal.timeout(10_000),
@@ -90,14 +106,33 @@
       const graph = await res.json();
       nodes = graph.nodes ?? [];
       edges = graph.edges ?? [];
-      setCachedGraph({ nodes, edges });
+      const expiresAt = setCachedGraph({ nodes, edges }, res.headers);
+      if (stopped) return;
       status = "ready";
+      if (expiresAt <= Date.now()) {
+        nodes = [];
+        edges = [];
+        status = graph.nodes?.length ? "error" : "ready";
+      } else expireAt(expiresAt);
     } catch {
-      status = "error";
+      if (!stopped) status = "error";
+    } finally {
+      pending = false;
     }
   }
 
-  onMount(loadGraph);
+  onMount(() => {
+    void loadGraph();
+    const visible = () => {
+      if (!document.hidden && !getCachedGraph()) void loadGraph();
+    };
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      stopped = true;
+      clearTimeout(expiryTimer);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  });
 
   function toggleCluster(type) {
     const next = new Set(activeClusters);

@@ -1,6 +1,10 @@
 """Disjoint fact totals using only the public reader's views."""
 
-from sqlalchemy import case, func, or_, union
+import math
+from datetime import timedelta
+
+from core.clock import as_utc
+from sqlalchemy import case, func, or_, true, union
 from sqlmodel import select
 
 from knowledge.freshness import current_predicate
@@ -8,6 +12,10 @@ from knowledge.public_models import PublicNote, PublicNoteLink
 
 
 def fact_summary(session, *, now) -> dict:
+    return fact_summary_snapshot(session, now=now)[0]
+
+
+def fact_summary_snapshot(session, *, now):
     # The links view filters only the source. Require both ends to be public
     # and active before counting a contradiction, and deduplicate fact IDs.
     active = select(PublicNote.note_id).where(
@@ -50,12 +58,40 @@ def fact_summary(session, *, now) -> dict:
         ),
         else_="review_due",
     ).label("bucket")
-    rows = session.execute(
+    summary = (
         select(bucket, func.count().label("n"))
         .where(PublicNote.type == "fact")
         .group_by(bucket)
+        .cte("public_fact_buckets")
+    )
+    # Same SQL statement/snapshot as the counts, including under READ COMMITTED.
+    # A concurrent publication cannot introduce a deadline between these reads.
+    fields = (
+        PublicNote.review_after,
+        PublicNote.valid_from,
+        PublicNote.valid_until,
+        PublicNote.observed_at,
+        PublicNote.last_reviewed_at,
+    )
+    deadlines = select(
+        *(
+            func.min(case((field > now, field), else_=None)).label(f"deadline_{index}")
+            for index, field in enumerate(fields)
+        )
+    ).cte("public_fact_deadlines")
+    rows = session.execute(
+        select(summary.c.bucket, summary.c.n, *deadlines.c).select_from(
+            deadlines.outerjoin(summary, true())
+        )
     ).all()
-    counts = {row.bucket: int(row.n) for row in rows}
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+        days=1
+    )
+    deadline = min(
+        [now + timedelta(seconds=60), midnight]
+        + [as_utc(value) for value in rows[0][2:] if value is not None]
+    )
+    counts = {row.bucket: int(row.n) for row in rows if row.bucket is not None}
     pending = {
         key: counts.get(key, 0)
         for key in ("unverified", "review_due", "review_unknown", "not_yet_valid")
@@ -67,4 +103,11 @@ def fact_summary(session, *, now) -> dict:
         "contradicted": counts.get("contradicted", 0),
         "retired": counts.get("retired", 0),
         "to_confirm_breakdown": pending,
-    }
+    }, deadline
+
+
+def fact_cache_control(deadline, *, served_at):
+    remaining = math.floor((deadline - served_at).total_seconds())
+    if remaining <= 0:
+        return "no-store"
+    return f"public, max-age={remaining}, s-maxage={remaining}, must-revalidate"
