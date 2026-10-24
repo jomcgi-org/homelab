@@ -2867,3 +2867,39 @@ dispatch pins and deadline supervision. A second recovery cannot renew it.
 **Why:** ordinary Continue deliberately creates a new task and clears its
 pinned policy. Merely reopening the old task would replay its previous decision
 or retry its failed preflight before the operator's replacement plan was read.
+
+### Public factory and graph warm snapshots
+
+The public frontend prewarms six fixed, anonymous backend projections at startup
+and checks them every ten seconds. Factory inputs reuse the existing publication
+jobs' public snapshots; graph and fact JSON is materialized from `public_reader`
+views. Each frontend process retains at most one serialized body per projection
+(up to 16 MiB each), keyed by build version, deployment API base and projection.
+There is no caller-controlled cache key, credential forwarding or private route.
+
+**Why.** An edge miss previously repeated backend work during SSR or graph load.
+A fresh process snapshot makes that path independent of backend latency. Requests
+share one refresh promise per projection per process. Refresh begins with twenty
+seconds left on a maximum sixty-second lease; a failed refresh backs off for five
+seconds and never extends the prior lease. Process restart is cold until prewarm
+finishes. No distributed cache, new database grants or Cloudflare configuration
+is introduced. Deployment/publication changes are observed within the lease;
+frontend builds reset process entries and version all emitted validators.
+
+Every hop consumes response age. The factory HTML uses its shortest constituent
+lease, and partial/error pages are no-store. Public fact aggregate leases end at
+the earliest review, validity, evidence-time transition or UTC midnight. Graph
+leases end at the earlier review or validity deadline; expired, future-valid and
+invalidated nodes are excluded on refresh. Browser graph reuse and displayed nodes
+expire with the response lease, including after client navigation. These changes
+support #6823's freshness acceptance; its migration/rollout acceptance and #3879's
+Cloudflare dashboard/HIT verification remain open and separately owned.
+
+Acceptance targets for this slice: fresh process hits perform zero backend
+requests; twenty concurrent same-key cold reads perform one backend request;
+no cached current data is reused at or after expiry. Once permitted, measure two
+ordinary requests per selected public URL and correlate edge status/age with
+origin traces. Targets, not measured claims: warm origin JSON TTFB p95 below
+100 ms, warm factory SSR TTFB p95 below 200 ms, and edge HIT TTFB below 200 ms
+from the same observation location. Network, parsing and canvas rendering are
+separate from origin TTFB. No live target is accepted from unit tests alone.

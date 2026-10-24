@@ -1,3 +1,9 @@
+import { startPublicSnapshotPrewarm } from "./lib/server/public-snapshots.js";
+
+export function init() {
+  startPublicSnapshotPrewarm();
+}
+
 // SvelteKit server hook: negotiated response compression.
 //
 // adapter-node does not compress dynamic responses, and Cloudflare in front of

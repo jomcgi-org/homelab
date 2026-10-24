@@ -1,5 +1,5 @@
 import {
-  AGENT_ACTIVITY_CACHE_CONTROL,
+  boundedCacheHeaders,
   cloudflareCacheHeaders,
   versionedEtag,
 } from "../../../../lib/cache-headers.js";
@@ -41,14 +41,33 @@ export async function load({ fetch, setHeaders }) {
     section.status === "fulfilled" ? section.value.data : fallback[index],
   );
 
-  const headers = cloudflareCacheHeaders(AGENT_ACTIVITY_CACHE_CONTROL);
+  // A composed response cannot outlive any constituent or cache a fallback.
+  const policies = sections.map((section) =>
+    section.status === "fulfilled"
+      ? boundedCacheHeaders(
+          "public, max-age=60, s-maxage=60, must-revalidate",
+          section.value.response.headers,
+        )
+      : cloudflareCacheHeaders("no-store"),
+  );
+  const ttl = Math.min(
+    ...policies.map((policy) =>
+      Number(policy["cache-control"].match(/s-maxage=(\d+)/)?.[1] || 0),
+    ),
+  );
+  const headers = cloudflareCacheHeaders(
+    ttl > 0
+      ? `public, max-age=${ttl}, s-maxage=${ttl}, must-revalidate`
+      : "no-store",
+  );
+  if (ttl > 0) headers.date = new Date().toUTCString();
   const validators = sections
     .filter((section) => section.status === "fulfilled")
     .map((section) => section.value.response.headers?.get?.("etag"))
     .filter(Boolean)
     .join("-");
   const etag = versionedEtag(validators);
-  if (etag) headers.etag = etag;
+  if (etag && ttl > 0) headers.etag = etag;
   setHeaders(headers);
 
   return {

@@ -1,60 +1,31 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { GET } from "./+server.js";
+import { readPublicSnapshot } from "../../../../../../lib/server/public-snapshots.js";
+vi.mock("../../../../../../lib/server/public-snapshots.js", () => ({
+  readPublicSnapshot: vi.fn(),
+}));
+beforeEach(() => vi.clearAllMocks());
 
-function makeHeaders(map = {}) {
-  const lower = Object.fromEntries(
-    Object.entries(map).map(([key, value]) => [key.toLowerCase(), value]),
-  );
-  return { get: (name) => lower[name.toLowerCase()] ?? null };
-}
-
-const board = {
-  snapshotted_at: "2026-09-11T14:32:00Z",
-  state: "running",
-  policy: { generation: 7, max_tasks: 2 },
-  active: [],
-  queued: [],
-  recent: [],
-};
-
-describe("/public/slop/factory/data/board GET", () => {
-  it("proxies the public factory activity endpoint unchanged", async () => {
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: makeHeaders(),
-      json: async () => board,
-    });
-
-    const response = await GET({ fetch, setHeaders: vi.fn() });
-
-    expect(fetch.mock.calls[0][0]).toMatch(
-      /\/api\/agents\/public\/factory\/activity$/,
-    );
-    expect(await response.json()).toEqual(board);
-  });
-
-  it("sets one-minute browser and Cloudflare cache headers", async () => {
+describe("board public snapshot proxy", () => {
+  it("serves the fixed public projection with its remaining lease", async () => {
+    const headers = {
+      "cache-control": "public, max-age=13, s-maxage=13, must-revalidate",
+      etag: '\"testbuild-data\"',
+    };
+    readPublicSnapshot.mockResolvedValue({ body: '{"safe":true}', headers });
     const setHeaders = vi.fn();
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: makeHeaders({ ETag: '"board"' }),
-      json: async () => board,
-    });
-
-    await GET({ fetch, setHeaders });
-
-    expect(setHeaders).toHaveBeenCalledWith({
-      "cache-control": "public, max-age=60, s-maxage=60",
-      "cloudflare-cdn-cache-control": "public, max-age=60",
-      etag: '"testbuild-board"',
-    });
+    const response = await GET({ setHeaders });
+    expect(readPublicSnapshot).toHaveBeenCalledWith("board");
+    expect(setHeaders).toHaveBeenCalledWith(headers);
+    expect(await response.json()).toEqual({ safe: true });
   });
-
-  it("returns 503 when the backend request fails", async () => {
-    const fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
-
-    await expect(GET({ fetch, setHeaders: vi.fn() })).rejects.toMatchObject({
-      status: 503,
+  it("makes a failed refresh uncacheable", async () => {
+    readPublicSnapshot.mockRejectedValue(new Error("backend unavailable"));
+    const setHeaders = vi.fn();
+    await expect(GET({ setHeaders })).rejects.toMatchObject({ status: 503 });
+    expect(setHeaders).toHaveBeenCalledWith({
+      "cache-control": "no-store",
+      "cloudflare-cdn-cache-control": "no-store",
     });
   });
 });

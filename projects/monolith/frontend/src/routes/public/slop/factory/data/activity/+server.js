@@ -1,25 +1,18 @@
-import { error, json } from "@sveltejs/kit";
-import {
-  AGENT_ACTIVITY_CACHE_CONTROL,
-  cloudflareCacheHeaders,
-  versionedEtag,
-} from "../../../../../../lib/cache-headers.js";
+import { error } from "@sveltejs/kit";
+import { readPublicSnapshot } from "../../../../../../lib/server/public-snapshots.js";
 
-// nosemgrep: sveltekit-server-hardcoded-api-base-fallback
-const API_BASE = process.env.API_BASE || "http://localhost:8000";
-
-export async function GET({ fetch, setHeaders }) {
-  const res = await fetch(`${API_BASE}/api/agents/public/activity`, {
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) {
-    throw error(503, "agent activity unavailable");
+export async function GET({ setHeaders }) {
+  try {
+    const snapshot = await readPublicSnapshot("activity");
+    setHeaders(snapshot.headers);
+    return new Response(snapshot.body, {
+      headers: { "content-type": "application/json" },
+    });
+  } catch {
+    setHeaders({
+      "cache-control": "no-store",
+      "cloudflare-cdn-cache-control": "no-store",
+    });
+    throw error(503, "activity snapshot unavailable");
   }
-
-  const headers = cloudflareCacheHeaders(AGENT_ACTIVITY_CACHE_CONTROL);
-  const etag = versionedEtag(res.headers?.get?.("etag"));
-  if (etag) headers.etag = etag;
-  setHeaders(headers);
-
-  return json(await res.json());
 }

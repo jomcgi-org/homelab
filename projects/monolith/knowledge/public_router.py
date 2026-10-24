@@ -27,6 +27,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
+from core.clock import as_utc
 from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from shared.embedding import EmbeddingClient
@@ -36,10 +37,12 @@ from sqlmodel import Session, select
 from knowledge.api import search_public_chunks
 from knowledge.freshness import current_predicate
 from knowledge.gardener import _slugify
-from core.clock import as_utc
 from knowledge.http_cache import _GRAPH_CACHE_CONTROL, public_cache_control
 from knowledge.notes import resolve_note_body
-from knowledge.public_fact_counts import fact_summary
+from knowledge.public_fact_counts import (
+    fact_cache_control,
+    fact_summary_snapshot,
+)
 from knowledge.public_limits import allow_semantic_search
 from knowledge.public_models import (
     PublicEntity,
@@ -284,7 +287,15 @@ def get_public_graph(
             PublicNote.type,
             PublicNote.verification_state,
             PublicNote.indexed_at,
-            PublicNote.review_after,
+            # The internal lease field is the earliest end of current validity
+            # or review freshness. _cache_response rechecks it at serve time.
+            case(
+                (
+                    PublicNote.valid_until < PublicNote.review_after,
+                    PublicNote.valid_until,
+                ),
+                else_=PublicNote.review_after,
+            ).label("review_after"),
             # The view already COALESCEs layout_x_public/layout_x (and y), so
             # these columns are the public-preferred positions. Keep both
             # nullable in the response; the client handles either.
@@ -293,6 +304,9 @@ def get_public_graph(
         ).where(
             PublicNote.type.in_(list(GRAPH_NOTE_TYPES)),
             current_predicate(now=now, model=PublicNote),
+            PublicNote.verification_state != "invalidated",
+            or_(PublicNote.valid_from.is_(None), PublicNote.valid_from <= now),
+            or_(PublicNote.valid_until.is_(None), PublicNote.valid_until > now),
         )
     ).all()
 
@@ -733,7 +747,8 @@ def get_public_facts_daily(
     session: Session = Depends(get_session),
 ):
     """Return record history plus disjoint, freshness-aware public fact totals."""
-    today = datetime.now(timezone.utc).date()
+    now = _now()
+    today = now.date()
     first_day = today - timedelta(days=29)
     tomorrow = today + timedelta(days=1)
     day = func.date(PublicNote.observed_at).label("d")
@@ -781,6 +796,7 @@ def get_public_facts_daily(
             PublicNoteLink.edge_type == "contradicts"
         )
     ).one()
+    summary, deadline = fact_summary_snapshot(session, now=now)
     payload = {
         "daily": [
             {
@@ -792,14 +808,24 @@ def get_public_facts_daily(
         ],
         "totals": totals,
         "contradictions": int(contradictions or 0),
-        "summary": fact_summary(session, now=_now()),
+        "summary": summary,
     }
     latest = session.exec(select(func.max(PublicNote.indexed_at))).one()
     etag = _record_etag("facts-daily", payload)
-    # A fact can become due or expire without a row update. Never reuse this
-    # live summary through the historical graph's stale-serving policy.
+    # No stale serving: a summary changes on deadlines even without writes.
+    policy = fact_cache_control(deadline, served_at=_now())
+    if policy == "no-store":
+        raise HTTPException(
+            status_code=503,
+            detail="Fact snapshot expired; retry",
+            headers={"Cache-Control": "no-store"},
+        )
     cached = _cache_response(
-        request, response, etag=etag, last_modified=latest, cache_control="no-store"
+        request,
+        response,
+        etag=etag,
+        last_modified=latest,
+        cache_control=policy,
     )
     if cached is not None:
         return cached

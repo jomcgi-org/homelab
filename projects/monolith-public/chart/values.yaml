@@ -394,6 +394,9 @@ frontend:
   # $env/dynamic/private to sign /img URLs server-side and they never reach the
   # browser ($lib/server is never client-bundled).
   env:
+    # Fixed public projections only; no private chart enables this warmer.
+    - name: PUBLIC_SNAPSHOT_PREWARM
+      value: "true"
     - name: SHUTDOWN_TIMEOUT
       value: "20"
     - name: API_BASE

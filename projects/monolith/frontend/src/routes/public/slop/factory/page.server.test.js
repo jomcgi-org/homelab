@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { load } from "./+page.server.js";
+import { boundedCacheHeaders } from "../../../../lib/cache-headers.js";
 import { flushSync, mount, unmount } from "svelte";
 import Page from "./+page.svelte";
 const NOW = "2026-10-03T12:00:00.000Z";
@@ -48,12 +49,55 @@ const payloads = {
 function response(path, ok = true) {
   return {
     ok,
-    headers: { get: () => null },
+    headers: new Headers({
+      "cache-control": "public, max-age=60, s-maxage=60, must-revalidate",
+    }),
     json: async () => payloads[path],
   };
 }
 
 describe("factory overview loader", () => {
+  it("anchors a short composed lease before subsequent HTML rendering", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+    const fetch = vi.fn(async (path) => ({
+      ...response(path),
+      headers: new Headers({
+        "cache-control": "public, max-age=1, s-maxage=1, must-revalidate",
+      }),
+    }));
+    const setHeaders = vi.fn();
+    await load({ fetch, setHeaders });
+    const headers = new Headers(setHeaders.mock.calls[0][0]);
+    expect(headers.get("date")).toBe(new Date(NOW).toUTCString());
+    vi.setSystemTime(new Date(Date.parse(NOW) + 1000));
+    expect(
+      boundedCacheHeaders("public, max-age=60, s-maxage=60", headers)[
+        "cache-control"
+      ],
+    ).toBe("no-store");
+  });
+
+  it.each(["no-store", "public, max-age=1, s-maxage=1, must-revalidate"])(
+    "honours the tightest section policy %s",
+    async (policy) => {
+      const fetch = vi.fn(async (path) => ({
+        ...response(path),
+        headers: new Headers({
+          "cache-control": path.endsWith("facts")
+            ? policy
+            : "public, max-age=300, s-maxage=300",
+          etag: '"data"',
+        }),
+      }));
+      const setHeaders = vi.fn();
+      await load({ fetch, setHeaders });
+      expect(setHeaders.mock.calls[0][0]["cache-control"]).toBe(policy);
+      if (policy === "no-store")
+        expect(setHeaders.mock.calls[0][0]).not.toHaveProperty("etag");
+    },
+  );
+
   it("loads live inputs through same-origin proxies", async () => {
     const fetch = vi.fn((path) => Promise.resolve(response(path)));
     const result = await load({ fetch, setHeaders: vi.fn() });
@@ -83,7 +127,12 @@ describe("factory overview loader", () => {
       Promise.resolve(response(path, path !== failedPath)),
     );
 
-    const result = await load({ fetch, setHeaders: vi.fn() });
+    const setHeaders = vi.fn();
+    const result = await load({ fetch, setHeaders });
+    expect(setHeaders).toHaveBeenCalledWith({
+      "cache-control": "no-store",
+      "cloudflare-cdn-cache-control": "no-store",
+    });
 
     expect(result.unavailable[section]).toBe(true);
     expect(result.title).toBe("Factory");
