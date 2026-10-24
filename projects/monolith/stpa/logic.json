@@ -1,11 +1,11 @@
 {
   "lens": "logic",
-  "commit": "ac81a1554",
+  "commit": "e7905ea1c",
   "scope": {
     "summary": "A single Postgres-backed personal platform served as two composed binaries: a private read-write binary (full app capabilities, private.jomcgi.dev) and an isolated public binary (jomcgi.dev via the separate monolith-public chart). The public binary is read-only for public datasets with two constrained write/invocation paths, the private binary now also serves an agent-session console, a six-language code sandbox, a screenshot tool, and MCP over native streamable HTTP; safety is governed data access, bounded public capabilities, the secret boundary, and correct claim/lease ownership of queued agent work.",
-    "built": "framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/ingest_queue.py ingest_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (agent_sessions/kg_feed.py), a daily-capped DBOS drainer (swarm/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py).",
+    "built": "framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/ingest_queue.py ingest_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (agent_sessions/kg_feed.py), a daily-capped DBOS drainer (swarm/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py). The shared CNPG backup checker publishes bounded observations through one precreated ConfigMap, the private monolith evaluates their freshness and 36-hour backup age as advisory health, and its leader queues transitions through the existing durable Discord outbox.",
     "designed": "Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet.",
-    "note": "Policy-removal corrections for #5816 only; other findings retain their earlier review stamp."
+    "note": "Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update."
   },
   "losses": [
     {
@@ -224,6 +224,15 @@
       "losses": [
         "L.silent-incorrectness",
         "L.provenance-loss"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "backup-observability-blind",
+      "view": "logical",
+      "statement": "The backup checker stops publishing fresh observations while base backups fail, leaving operators without a backup-failure notification because unknown observations intentionally cause neither a transition nor reminder",
+      "losses": [
+        "L.silent-incorrectness"
       ],
       "maturity": "built"
     }
@@ -538,6 +547,20 @@
         "kg-dead-letter-unreachable"
       ],
       "evidence": "projects/monolith/knowledge/store.py:523"
+    },
+    {
+      "key": "backup-observations.missing",
+      "view": "logical",
+      "from": "backup-health",
+      "to": "health-alerts",
+      "signal": "Healthy, known failure or unknown backup advisory result",
+      "guideword": "missing",
+      "condition": "Absent, unreadable or older-than-two-hour snapshots produce status unknown, which preserves the last announced state and cannot falsely recover an alert, but also cannot send a checker-absence alert or repeat a previously failing backup alert while evidence remains unavailable; operators must inspect private health detail and CronJob failures",
+      "severity": "medium",
+      "hazards": [
+        "backup-observability-blind"
+      ],
+      "evidence": "projects/monolith/factory/ops_health.py:688; projects/monolith/factory/health_alerts.py:110; docs/observability.md; #7002"
     }
   ],
   "non_ucas": [
@@ -596,6 +619,30 @@
     {
       "item": "Luna claiming verification_state=verified with no evidence array",
       "reason": "apply_extraction force-downgrades to unverified server-side whenever assertion.evidence is empty, regardless of what the model claimed (projects/monolith/knowledge/extraction.py:364)"
+    },
+    {
+      "item": "an absent, malformed, future-dated or failed-export observation falsely clearing a backup alert",
+      "reason": "evaluate_cnpg_backups validates target identity and timestamps, rejects observations over 7200 seconds old, and requires successful export for every healthy target; decide skips unknown before changing the durable state (projects/monolith/factory/ops_health.py:664, projects/monolith/factory/health_alerts.py:110)."
+    },
+    {
+      "item": "a new cluster with no successful base backup being reported healthy because its creation age is small",
+      "reason": "A false has_successful_backup with a null successful-backup timestamp always produces a known failure, including age zero; successful backups become failures strictly after 129600 seconds, recomputed between checker runs (projects/monolith/factory/ops_health.py:703)."
+    },
+    {
+      "item": "one unreadable target masking a known failed backup on another target",
+      "reason": "The checker records each target independently and the evaluator returns known failures before unknowns; the 120-second job deadline bounds at most four targets (projects/platform/otel-collector/files/backup_check.py:206, projects/monolith/factory/ops_health.py:722, projects/platform/otel-collector/templates/backup-check.yaml:147)."
+    },
+    {
+      "item": "backup degradation restarting monolith or making public health fail",
+      "reason": "The check is registered only as private advisory health and liveness stays /healthz; composition tests assert private health HTTP 200, unchanged kubelet liveness and no public backup component (projects/monolith/factory/module.py:174, projects/monolith/factory/module_test.py:72)."
+    },
+    {
+      "item": "normal leader handover resending the last backup transition on every new leader",
+      "reason": "The transition notifier reads platform_probe state and persists only after enqueue; normal handover deduplicates, while the existing enqueue-before-latch crash window can produce an at-least-once duplicate and is not claimed exactly-once (projects/monolith/factory/health_alerts.py:58, projects/monolith/factory/health_alerts.py:137)."
+    },
+    {
+      "item": "the rendered checker acquiring broad CNPG privileges or writing application status through a public route",
+      "reason": "Per-namespace Roles grant get only on configured Cluster resourceNames, and a separate Role grants get/patch only on one ConfigMap; no ClusterRole or application write route is introduced. Live additive bindings remain an explicit acceptance check (projects/platform/otel-collector/templates/backup-check.yaml:55, docs/observability.md, #7002)."
     }
   ],
   "open_questions": [
@@ -611,7 +658,8 @@
     "When the scratch-Postgres feature is re-enabled (embervm side), should run_code's docstring be corrected to stop claiming zero network for python, or should the DSN injection move behind a separate, explicitly-network-capable tool so the isolation claim stays true for the tool most callers reach for?",
     "#5568's claude-session/codex-session producers are not yet shipped, but EXTRACTABLE_SOURCES already accepts those source labels via the generic POST /api/knowledge/raws endpoint today; will that producer route through the same unredacted shared boundary, or call agent_sessions.redact.redact_text itself the way kg_feed.py does?",
     "Should an enqueue_extraction failure inside ingest_raw_with_status roll back the whole raw write instead of being swallowed, now that no sweep exists anywhere to repair a missed enqueue?",
-    "Is there an intended path to make a KG-lane dead letter recoverable (re-create the routine_jobs row on replay, or align the ExtractionOutputInvalid retry policy with MAX_GARDENER_RETRIES), or is a stuck-open dispute meant to be resolved by hand in Postgres today?"
+    "Is there an intended path to make a KG-lane dead letter recoverable (re-create the routine_jobs row on replay, or align the ExtractionOutputInvalid retry policy with MAX_GARDENER_RETRIES), or is a stuck-open dispute meant to be resolved by hand in Postgres today?",
+    "#7002: verify fresh successful-backup timestamps, scheduled checker completion, metric/advisory arrival, runtime ConfigMap preservation and effective additive RBAC on the hub; live Cluster/RBAC reads and Honeycomb queries were unavailable to this activation session. Checker-absence notifications remain outside the current advisory contract."
   ],
   "system_dir": "projects/monolith"
 }
