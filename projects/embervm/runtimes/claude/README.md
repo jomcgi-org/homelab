@@ -284,3 +284,17 @@ divergence is recorded in `EXPECTED_DIVERGENCE` in
   bootstrap order to respect: the `apko.translate_lock` entry in `MODULE.bazel`
   reads the lock, so a from-scratch regeneration means removing that entry,
   generating, then restoring it.
+
+### Browser capture dependencies
+
+The image supplies the native libraries and DejaVu fonts required by the factory
+harness's pinned Playwright Chromium. The browser itself remains the harness's
+versioned download; installing Wolfi Chromium would add a second unused browser.
+The explicit library roots cover the browser ELF's GLib, NSS/NSPR, accessibility,
+DBus, X11, GBM, keyboard, device and audio dependencies. `apko.lock.json` pins their
+resolved dependency closure. Pillow remains available to the independent review
+preflight. Pi's separate rollback workload does not host this evidence lineage.
+
+Package guards do not prove browser execution. Validate the pinned browser's
+loader and a real full-page capture against the resolved native libraries, then
+verify the deployed guest separately before claiming live capture support.
