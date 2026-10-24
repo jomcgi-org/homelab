@@ -5,9 +5,10 @@ import json
 import os
 import re
 import secrets
-from datetime import timedelta, timezone
+from datetime import timedelta
 from uuid import UUID
 
+from core.clock import as_utc
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -37,14 +38,6 @@ def enabled(name="management"):
 def gate(name="management"):
     if not enabled(name):
         raise HTTPException(404, "Platform authentication feature is not enabled.")
-
-
-def utc(value):
-    return (
-        value.replace(tzinfo=timezone.utc)
-        if value.tzinfo is None
-        else value.astimezone(timezone.utc)
-    )
 
 
 def actor_key(principal):
@@ -211,9 +204,9 @@ def invitation_view(row):
         "recipient_label": row.recipient_label,
         "status": "expired"
         if row.status in ("awaiting_delivery", "pending")
-        and utc(row.expires_at) <= now()
+        and as_utc(row.expires_at) <= now()
         else row.status,
-        "expires_at": utc(row.expires_at).isoformat(),
+        "expires_at": as_utc(row.expires_at).isoformat(),
         "delivery_reference": f"/grimoire/platform?invitation_id={row.id}",
     }
 
@@ -397,7 +390,7 @@ def _command(
         ):
             raise HTTPException(400, "Invalid delivery fields.")
         row = target_invitation(session, arguments["invitation_id"])
-        if utc(row.expires_at) <= now() or row.status not in (
+        if as_utc(row.expires_at) <= now() or row.status not in (
             "awaiting_delivery",
             "pending",
         ):
@@ -516,7 +509,7 @@ def inspect_invitation(session, token, *, allow_completed=False):
         row is None
         or row.status
         not in (("pending", "accepted") if allow_completed else ("pending",))
-        or utc(row.expires_at) <= now()
+        or as_utc(row.expires_at) <= now()
     ):
         raise HTTPException(410, "Platform invitation unavailable.")
     return row

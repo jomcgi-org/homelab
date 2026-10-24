@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_CEILING
 import asyncio
-import hashlib
 import json
 import os
 import re
@@ -40,10 +39,6 @@ SYSTEM = (
     "Approve only when the supplied complete changed-file evidence suffices; "
     "missing context or unverified acceptance means needs_work."
 )
-
-
-def _digest(value):
-    return hashlib.sha256(controls._json(value).encode()).hexdigest()
 
 
 def _events(db, task_id, action):
@@ -325,8 +320,8 @@ def run(
         "cumulative_budget_usd": cap,
         "cumulative_turn_limit": cumulative_turn_limit,
     }
-    command_hash = _digest(command)
-    start_key = "review-recovery:" + _digest(
+    command_hash = controls.digest(command)
+    start_key = "review-recovery:" + controls.digest(
         {"receipt_id": receipt_id, "request_key": request_key}
     )
     with controls._read_session() as db:
@@ -423,7 +418,7 @@ def run(
             "command_hash": command_hash,
             "start_key": start_key,
             "task_id": task.id,
-            "evidence_sha256": _digest(evidence),
+            "evidence_sha256": controls.digest(evidence),
             "base_sha": evidence["base_sha"],
             "merge_base_sha": evidence["merge_base_sha"],
             "reviewer": reviewer.pin(),

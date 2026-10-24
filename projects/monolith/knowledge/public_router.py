@@ -36,7 +36,7 @@ from sqlmodel import Session, select
 from knowledge.api import search_public_chunks
 from knowledge.freshness import current_predicate
 from knowledge.gardener import _slugify
-from core.clock import as_utc
+from core.clock import as_utc, iso_z
 from knowledge.http_cache import _GRAPH_CACHE_CONTROL, public_cache_control
 from knowledge.notes import resolve_note_body
 from knowledge.public_fact_counts import fact_summary
@@ -595,11 +595,7 @@ def get_public_search_index(
 
     latest = max((as_utc(note.indexed_at) for note in rows), default=None)
     payload = {
-        "generated_at": (
-            latest.isoformat().replace("+00:00", "Z")
-            if latest is not None
-            else "1970-01-01T00:00:00Z"
-        ),
+        "generated_at": iso_z(latest) or "1970-01-01T00:00:00Z",
         "states": list(_SEARCH_INDEX_STATES),
         "entities": entities,
         "notes": notes,

@@ -8,16 +8,8 @@ from typing import Any
 
 from sqlmodel import Session, func, select
 
+from core.jsonio import loads_or
 from factory.execution.models import AgentSession, AgentTurn, PendingMessage
-
-
-def _decode(value: str | None, default: Any):
-    if not value:
-        return default
-    try:
-        return json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return default
 
 
 def _compact_input(value: Any) -> str:
@@ -113,7 +105,7 @@ def swarm_session_views(
             if claimed
             else (pending[0] if pending else None)
         )
-        activities = _decode(current.partial_activities, []) if current else []
+        activities = loads_or(current.partial_activities, []) if current else []
         activity = (
             activities[-1] if isinstance(activities, list) and activities else None
         )
