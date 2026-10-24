@@ -2887,3 +2887,114 @@ def test_held_refinement_replay_does_not_repeat_external_observation(
 
     monkeypatch.setattr(factory_validation, "_refinement_observation", forbidden)
     assert held_apply(owner, proposal) == expected
+
+
+def test_backlog_preparation_preserves_bounds_holds_and_requires_enable(
+    database, validation_ready
+):
+    validation = validation_ready
+    proposal = validation.preview_backlog("resume useful backlog")
+    before, after = proposal["policy_before"], proposal["policy_after"]
+    assert after["issue_numbers"] == before["issue_numbers"]
+    assert after["intake"]["enabled"]
+    assert not after["auto_merge"]
+    assert not after["intake"]["refine_enabled"]
+    assert not after["intake"]["close_enabled"]
+    assert not after["problem_issues"]["enabled"]
+    assert after["repos"]["org/other"]["paused"]
+    for key in before.keys() - {
+        "auto_merge",
+        "issue_numbers",
+        "intake",
+        "problem_issues",
+        "repos",
+    }:
+        assert before[key] == after[key]
+    for key in before["intake"].keys() - {"enabled", "refine_enabled", "close_enabled"}:
+        assert before["intake"][key] == after["intake"][key]
+    with Session(database) as db:
+        receipt_before = db.get(FactoryReceipt, 838).model_dump()
+    args = dict(
+        actor="operator",
+        request_key="backlog",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    result = validation.apply_backlog("resume useful backlog", **args)
+    assert result["state"] == "paused" and not result["execution_authorized"]
+    assert validation.apply_backlog("resume useful backlog", **args) == result
+    with pytest.raises(ValueError, match="conflicting_validation_request"):
+        validation.apply_backlog("changed", **args)
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump() == receipt_before
+        assert json.loads(db.get(FactoryControl, "factory").policy_json) == after
+        events = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == validation.BACKLOG_ACTION)
+        ).all()
+        assert len(events) == 1
+
+
+@pytest.mark.parametrize("state", ["admitted", "uncertain", "queued", "landing"])
+def test_backlog_rejects_existing_work(database, validation_ready, state):
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).state = state
+    with pytest.raises(ValueError, match="validation_other_work_present"):
+        validation_ready.preview_backlog("resume")
+
+
+def test_backlog_rejects_receipt_race_and_keeps_policy(database, validation_ready):
+    validation = validation_ready
+    proposal = validation.preview_backlog("resume")
+    with Session(database) as db, db.begin():
+        db.get(
+            FactoryReceipt, 838
+        ).direction_json = '{"landing_hold":{"reason":"new hold"}}'
+    with pytest.raises(ValueError, match="validation_preview_changed"):
+        validation.apply_backlog(
+            "resume",
+            actor="operator",
+            request_key="race",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        assert (
+            controls.validate_policy(
+                json.loads(db.get(FactoryControl, "factory").policy_json)
+            )
+            == proposal["policy_before"]
+        )
+
+
+@pytest.mark.parametrize(
+    "change", ["version", "policy", "enabled", "unknown_start", "active", "labels"]
+)
+def test_backlog_rechecks_authority_snapshot(database, validation_ready, change):
+    validation = validation_ready
+    proposal = validation.preview_backlog("resume")
+    with Session(database) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        if change == "version":
+            control.version += 1
+        elif change == "enabled":
+            control.state = "enabled"
+        elif change == "unknown_start":
+            db.exec(select(FactoryStart)).one().status = "uncertain"
+        elif change == "active":
+            db.get(FactoryReceipt, 838).state = "admitted"
+        else:
+            policy = json.loads(control.policy_json)
+            if change == "labels":
+                policy["intake"]["labels"] = ["bug"]
+            else:
+                policy["task_budget_usd"] = 60
+            control.policy_json = json.dumps(policy)
+    with pytest.raises(ValueError):
+        validation.apply_backlog(
+            "resume",
+            actor="operator",
+            request_key="race",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == validation.BACKLOG_ACTION)
+        ).all()
