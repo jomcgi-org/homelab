@@ -4919,7 +4919,9 @@ py_test(
     srcs = ["factory/orchestration/mcp_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_agent_sessions",
         ":pkg_auth",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//fastapi",
         "@pip//fastmcp",
