@@ -1,0 +1,225 @@
+"""Run full-layout comparisons inside the existing Linux preview job.
+
+This is test orchestration, not a fixture endpoint. Only public source history
+and a pinned test dependency are downloaded. Rendered pages remain offline.
+"""
+
+import hashlib
+import importlib.util
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+
+def baseline_updates_os_theme(source):
+    """Recognize only the reviewed historical OS-owned updates implementation."""
+    # Original migration base 48589107: exact file bytes, not a permissive
+    # heuristic that could excuse a newly broken preference implementation.
+    if hashlib.sha256(source).hexdigest() == (
+        "7abee92f1df0272cadbd960875230118d50df00f26702eeb839f88077fc81c4d"
+    ):
+        return True
+    text = source.decode()
+    if (
+        'import SchemePreference from "$lib/public/components/SchemePreference.svelte";'
+        in text
+        and "<SchemePreference />" in text
+        and "matchMedia" not in text
+    ):
+        return False
+    raise AssertionError("unknown archived updates theme contract")
+
+
+def run(output, expected_sha, *, capture_only=False):
+    frontend = Path(__file__).resolve().parent.parent
+    repo = frontend.parents[2]
+    assert re.fullmatch(r"[0-9a-f]{40}", expected_sha), expected_sha
+
+    def command(args, *, cwd=frontend, env=None):
+        print("sheet QA:", " ".join(map(str, args)), flush=True)
+        subprocess.run(args, cwd=cwd, env=env, check=True)
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
+
+    assert git("rev-parse", "HEAD") == expected_sha, (
+        "Preview checkout is not the PR head"
+    )
+    assert not git("status", "--porcelain", "--untracked-files=no"), (
+        "dirty checkout cannot claim exact SHA evidence"
+    )
+    assert not git(
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "--",
+        "projects/monolith/frontend/src",
+        "projects/monolith/frontend/factory-preview",
+        "projects/monolith/frontend/preview",
+        "projects/design-system",
+    ), "untracked source inputs cannot claim exact SHA evidence"
+    event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    target = event["pull_request"]["base"]["sha"]
+    assert re.fullmatch(r"[0-9a-f]{40}", target), target
+    # The existing job checks out one shallow head. Fetch only the two exact
+    # public histories needed to find their common source, never another PR.
+    if git("rev-parse", "--is-shallow-repository") == "true":
+        command(
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--unshallow",
+                "origin",
+                expected_sha,
+                target,
+            ],
+            cwd=repo,
+        )
+    else:
+        command(["git", "fetch", "--no-tags", "origin", target], cwd=repo)
+    base = git("merge-base", expected_sha, target)
+    if importlib.util.find_spec("PIL") is None:
+        command([sys.executable, "-m", "pip", "install", "Pillow==13.0.0"])
+    command(
+        [
+            "pnpm",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "factory-preview/sheet-vitest.config.js",
+        ]
+    )
+    command(
+        [
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "factory-preview",
+            "-p",
+            "sheet_check_test.py",
+        ],
+        env={**os.environ, "SHEET_REAL_BROWSER": "1"},
+    )
+    env = {**os.environ, "FACTORY_PREVIEW_SHA": expected_sha}
+    command(
+        [
+            "pnpm",
+            "exec",
+            "vite",
+            "build",
+            "--config",
+            "factory-preview/sheet-vite.config.js",
+        ],
+        env=env,
+    )
+    command(
+        [
+            sys.executable,
+            "factory-preview/sheet_check.py",
+            "--artifact",
+            "sheet-fixture-preview",
+            "--output",
+            str(output / "after"),
+            "--label",
+            expected_sha,
+            *([] if capture_only else ["--acceptance"]),
+        ]
+    )
+    with tempfile.TemporaryDirectory(
+        prefix="sheet-baseline-", dir=os.environ.get("RUNNER_TEMP")
+    ) as temporary:
+        baseline = Path(temporary)
+        archive = subprocess.check_output(
+            ["git", "archive", base, "projects/monolith/frontend/src"], cwd=repo
+        )
+        with tarfile.open(fileobj=io.BytesIO(archive)) as source:
+            source.extractall(baseline, filter="data")
+        baseline_frontend = baseline / "projects/monolith/frontend"
+        (baseline_frontend / "node_modules").symlink_to(
+            frontend / "node_modules", target_is_directory=True
+        )
+        updates_source = (
+            baseline_frontend / "src/routes/private/updates/+page.svelte"
+        ).read_bytes()
+        legacy_updates = baseline_updates_os_theme(updates_source)
+        artifact = baseline / "artifact"
+        command(
+            [
+                "pnpm",
+                "exec",
+                "vite",
+                "build",
+                "--config",
+                "factory-preview/sheet-vite.config.js",
+            ],
+            env={
+                **env,
+                "SHEET_SOURCE_ROOT": str(baseline_frontend / "src"),
+                "SHEET_SOURCE_REVISION": base,
+                "SHEET_OUT_DIR": str(artifact),
+            },
+        )
+        command(
+            [
+                sys.executable,
+                "factory-preview/sheet_check.py",
+                "--artifact",
+                str(artifact),
+                "--output",
+                str(output / "before"),
+                "--label",
+                base,
+                *(["--baseline-updates-os-theme"] if legacy_updates else []),
+            ]
+        )
+    (output / "provenance.json").write_text(
+        json.dumps(
+            {
+                "base_sha": base,
+                "target_sha": target,
+                "head_sha": expected_sha,
+                "harness_sha": expected_sha,
+                "base_updates_source_sha256": hashlib.sha256(
+                    updates_source
+                ).hexdigest(),
+                "base_updates_theme_contract": (
+                    "historical-updates-os"
+                    if legacy_updates
+                    else "persisted-preference"
+                ),
+                "role": "capture-only" if capture_only else "comparison",
+                "visual_acceptance": "independent review required",
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    if capture_only:
+        return
+    command(
+        [
+            sys.executable,
+            "factory-preview/sheet_check.py",
+            "--expected-base-sha",
+            base,
+            "--expected-head-sha",
+            expected_sha,
+            "--before",
+            str(output / "before"),
+            "--after",
+            str(output / "after"),
+            "--output",
+            str(output / "comparison"),
+            "--acceptance",
+        ]
+    )
