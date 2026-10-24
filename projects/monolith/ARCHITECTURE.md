@@ -2538,7 +2538,7 @@ mismatch without silently rewriting the decision record.
 | `services/011` | Grimoire Hot-Tier Schema on Postgres | Accepted, shipped (see: /projects/monolith/grimoire/models.py) | deleted |
 | `services/012` | Grimoire Postgres-First, Loom-Shaped | Accepted, shipped (see: /projects/monolith/grimoire/ingest.py) | deleted |
 | `services/013` | Grimoire Knowledge Audiences: Corpus-Derived Character Knowledge as Compiled Grants | Accepted, shipped (see: /projects/monolith/grimoire/visibility.py) | deleted |
-| `services/014` | Grimoire post-extraction quality passes (stat verifier, alias merge) | Accepted, not shipped (#3912, #3913) | deleted |
+| `services/014` | Grimoire post-extraction quality passes (stat verifier, alias merge) | Verifier implemented with a suspended manual workflow (#7022); alias review and merge API implemented (#3913) | deleted |
 
 ### Chat
 

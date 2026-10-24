@@ -258,3 +258,73 @@ def test_grimoire_workflows_reference_existing_s3_secret(values):
                 "name": "monolith-r2-s3",
                 "key": key,
             }
+
+
+def test_grimoire_verifier_is_omitted_without_private_module():
+    assert "grimoire-verify-entities" not in _render()
+
+
+@pytest.mark.parametrize("values", [(DEPLOY,), (DEPLOY, GKE)])
+def test_grimoire_verifier_is_bounded_suspended_and_manually_addressable(values):
+    documents = _render_documents(*values)
+    jobs = _cronworkflows(documents)
+    job = jobs["grimoire-verify-entities"]
+    assert job["metadata"]["namespace"] == "monolith-workflows"
+    assert job["metadata"]["annotations"][REPLACES_ANNOTATION] == (
+        "grimoire.verify_entities"
+    )
+    assert "grimoire.verify_entities" in _backend_env(documents)["ARGO_JOBS"].split(",")
+    assert job["spec"]["suspend"] is True
+    assert job["spec"]["schedules"] == ["0 0 1 1 *"]
+    assert job["spec"]["concurrencyPolicy"] == "Forbid"
+    workflow = job["spec"]["workflowSpec"]
+    assert workflow["activeDeadlineSeconds"] == 1500
+    assert workflow["synchronization"] == {
+        "mutexes": [{"name": "grimoire-verify-entities"}]
+    }
+    container = workflow["templates"][0]["container"]
+    assert container["args"] == ["grimoire-verify-entities"]
+    assert container["resources"] == {
+        "requests": {"cpu": "250m", "memory": "512Mi"},
+        "limits": {"memory": "512Mi"},
+    }
+    env = {entry["name"]: entry for entry in container["env"]}
+    assert len(env) == len(container["env"])
+    assert env["GRIMOIRE_VERIFY_MODEL"]["value"] == "deepseek-v4-flash"
+    assert env["GRIMOIRE_VERIFY_BASE_URL"]["value"] == (
+        "https://api.deepseek.com/chat/completions"
+    )
+    assert env["GRIMOIRE_VERIFY_API_KEY"]["valueFrom"]["secretKeyRef"] == {
+        "name": "goosecracker",
+        "key": "DEEPSEEK_API_KEY",
+        "optional": True,
+    }
+    assert env["GRIMOIRE_VERIFY_LIMIT"]["value"] == "25"
+    assert env["GRIMOIRE_VERIFY_EVIDENCE_LIMIT"]["value"] == "6"
+    assert env["GRIMOIRE_VERIFIER_VERSION"]["value"] == "v1"
+    assert env["DATABASE_URL"]["valueFrom"]["secretKeyRef"]["name"]
+    assert jobs["grimoire-extract-entities"]["spec"]["suspend"] is True
+
+
+def test_grimoire_verifier_tracks_configured_extraction_model_and_endpoint(tmp_path):
+    override = tmp_path / "verifier-provider.yaml"
+    override.write_text(
+        yaml.safe_dump(
+            {
+                "grimoire": {
+                    "enabled": True,
+                    "extractModel": "test-model",
+                    "extractBaseUrl": "https://inference.invalid/chat/completions",
+                }
+            }
+        )
+    )
+    job = _render(override)["grimoire-verify-entities"]
+    container = job["workflowSpec"]["templates"][0]["container"]
+    env = {entry["name"]: entry.get("value") for entry in container["env"]}
+    assert env["GRIMOIRE_VERIFY_MODEL"] == env["GRIMOIRE_EXTRACT_MODEL"] == "test-model"
+    assert (
+        env["GRIMOIRE_VERIFY_BASE_URL"]
+        == env["GRIMOIRE_EXTRACT_BASE_URL"]
+        == ("https://inference.invalid/chat/completions")
+    )
