@@ -1649,6 +1649,7 @@ py_library(
     visibility = ["//:__subpackages__"],
     deps = [
         ":pkg_platform_auth",
+        "//projects/monolith/factory/execution/workspace_handoff",
         "@pip//dbos",
         "@pip//astral",
         "@pip//beautifulsoup4",
