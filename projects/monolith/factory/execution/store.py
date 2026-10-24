@@ -2816,7 +2816,9 @@ def persist_turn_from_pending_sync(
             and (sess_row.node_key or "").startswith("implement_browser_capture_")
         ):
             if not sess_row.ember_session_id or not sess_row.ember_lineage_id:
-                raise PendingClaimLost("capture completion has no authenticated guest binding")
+                raise PendingClaimLost(
+                    "capture completion has no authenticated guest binding"
+                )
             usage["browser_capture_producer"] = {
                 "agent_session_id": session_id,
                 "session_id": sess_row.ember_session_id,

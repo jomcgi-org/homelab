@@ -521,19 +521,26 @@ def start_session_for_swarm(
             f"unknown effort {effort!r}; valid: {', '.join(EFFORT_LEVELS)}"
         )
     if capture_evidence_ttl_seconds is not None:
-        if (type(capture_evidence_ttl_seconds) is not int
+        if (
+            type(capture_evidence_ttl_seconds) is not int
             or not 3600 <= capture_evidence_ttl_seconds <= 604800
             or model != "luna"
             or not (node_key or "").startswith("implement_browser_capture_")
-            or workspace_handoff is not None):
+            or workspace_handoff is not None
+        ):
             raise ValueError("invalid explicit browser capture retention context")
-    handoff_json = workspace_handoff.to_json() if workspace_handoff is not None else None
+    handoff_json = (
+        workspace_handoff.to_json() if workspace_handoff is not None else None
+    )
     with Session(get_engine()) as session:
         existing = store.get_session_by_local_id(session, local_session_id)
     if existing is not None and existing.id is not None:
         if getattr(existing, "workspace_handoff_json", None) != handoff_json:
             raise ValueError("session idempotency key has different workspace handoff")
-        if getattr(existing, "capture_evidence_ttl_seconds", None) != capture_evidence_ttl_seconds:
+        if (
+            getattr(existing, "capture_evidence_ttl_seconds", None)
+            != capture_evidence_ttl_seconds
+        ):
             raise ValueError("session idempotency key has different capture retention")
         return existing.id
     # Factory keys carry task identity without changing durable step bodies.
@@ -559,8 +566,14 @@ def start_session_for_swarm(
         admission_tier=admission_tier,
         task_id=task_id,
         first_message=first_message,
-        **({"workspace_handoff_json": handoff_json} if handoff_json is not None else {}),
-        **({"capture_evidence_ttl_seconds": capture_evidence_ttl_seconds} if capture_evidence_ttl_seconds is not None else {}),
+        **(
+            {"workspace_handoff_json": handoff_json} if handoff_json is not None else {}
+        ),
+        **(
+            {"capture_evidence_ttl_seconds": capture_evidence_ttl_seconds}
+            if capture_evidence_ttl_seconds is not None
+            else {}
+        ),
     )
     assert row.id is not None
     try:

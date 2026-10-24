@@ -2300,25 +2300,58 @@ def test_dependency_read_only_pin_reaches_guest_prompt():
         nodes._validate_pin(pin(read_only="true"))
 
 
-def test_review_artifact_cannot_pass_without_authoritative_workspace_preflight(tmp_path, monkeypatch):
-    engine = create_engine(f"sqlite:///{tmp_path / 'browser-review.db'}").execution_options(
+def test_review_artifact_cannot_pass_without_authoritative_workspace_preflight(
+    tmp_path, monkeypatch
+):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'browser-review.db'}"
+    ).execution_options(
         schema_translate_map={"agent_sessions": None},
     )
-    SQLModel.metadata.create_all(engine, tables=[AgentSession.__table__, AgentTurn.__table__])
+    SQLModel.metadata.create_all(
+        engine, tables=[AgentSession.__table__, AgentTurn.__table__]
+    )
     monkeypatch.setattr(core.db, "get_engine", lambda: engine)
-    monkeypatch.setattr("factory.orchestration.browser_review_dispatch.get_engine", lambda: engine)
+    monkeypatch.setattr(
+        "factory.orchestration.browser_review_dispatch.get_engine", lambda: engine
+    )
     schema = {
-        "type": "object", "required": ["verdict", "browser_evidence_handoff_sha256"],
-        "properties": {"verdict": {"enum": ["approve"]}, "browser_evidence_handoff_sha256": {"enum": ["a" * 64]}},
+        "type": "object",
+        "required": ["verdict", "browser_evidence_handoff_sha256"],
+        "properties": {
+            "verdict": {"enum": ["approve"]},
+            "browser_evidence_handoff_sha256": {"enum": ["a" * 64]},
+        },
     }
     with Session(engine) as db:
-        db.add(AgentSession(id=7, local_session_id="factory:t:review_browser:1", node_key="review_browser", node_attempt=1, workspace="guest", branch="main"))
-        db.add(AgentTurn(session_id=7, seq=1, prompt="review", result_text="approved",
-                        artifact_path=".factory/t/review_browser-1.json", artifact_outcome="ok",
-                        artifact_blob=json.dumps({"verdict": "approve", "browser_evidence_handoff_sha256": "a" * 64}).encode(),
-                        usage_json=json.dumps({"verdict": "approve"})))
+        db.add(
+            AgentSession(
+                id=7,
+                local_session_id="factory:t:review_browser:1",
+                node_key="review_browser",
+                node_attempt=1,
+                workspace="guest",
+                branch="main",
+            )
+        )
+        db.add(
+            AgentTurn(
+                session_id=7,
+                seq=1,
+                prompt="review",
+                result_text="approved",
+                artifact_path=".factory/t/review_browser-1.json",
+                artifact_outcome="ok",
+                artifact_blob=json.dumps(
+                    {"verdict": "approve", "browser_evidence_handoff_sha256": "a" * 64}
+                ).encode(),
+                usage_json=json.dumps({"verdict": "approve"}),
+            )
+        )
         db.commit()
-    result = nodes._read_turn_artifact.__wrapped__(7, 1, ".factory/t/review_browser-1.json", schema)
+    result = nodes._read_turn_artifact.__wrapped__(
+        7, 1, ".factory/t/review_browser-1.json", schema
+    )
     assert result["status"] == "invalid"
     assert "trusted workspace handoff" in result["errors"][0]
     engine.dispose()
@@ -2326,11 +2359,17 @@ def test_review_artifact_cannot_pass_without_authoritative_workspace_preflight(t
 
 def test_reconciliation_cannot_bypass_browser_preflight(reconciliation_db, monkeypatch):
     state = reconciliation_db
-    monkeypatch.setattr("factory.orchestration.browser_review_dispatch.get_engine", lambda: state.engine)
+    monkeypatch.setattr(
+        "factory.orchestration.browser_review_dispatch.get_engine", lambda: state.engine
+    )
     state.pin["node_key"] = "review_browser"
     state.pin["artifact_path"] = ".factory/t-11/review_browser-1.json"
     state.pin["artifact_schema"] = {
-        **SCHEMA, "properties": {**SCHEMA["properties"], "browser_evidence_handoff_sha256": {"enum": ["a" * 64]}}
+        **SCHEMA,
+        "properties": {
+            **SCHEMA["properties"],
+            "browser_evidence_handoff_sha256": {"enum": ["a" * 64]},
+        },
     }
     with Session(state.engine) as db:
         owner = db.get(AgentSession, 7)

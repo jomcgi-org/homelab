@@ -47,8 +47,14 @@ def test_workspace_handoff_enqueue_failure_rolls_back(swarm_start_db):
     try:
         with pytest.raises(RuntimeError, match="enqueue failed"):
             api.start_session_for_swarm(
-                "review-rollback", "inspect", "luna", "jomcgi-org/homelab", "main",
-                workspace_handoff=WorkspaceHandoff("lineage", "a" * 64, "producer", "b" * 64),
+                "review-rollback",
+                "inspect",
+                "luna",
+                "jomcgi-org/homelab",
+                "main",
+                workspace_handoff=WorkspaceHandoff(
+                    "lineage", "a" * 64, "producer", "b" * 64
+                ),
             )
     finally:
         event.remove(swarm_start_db, "before_cursor_execute", fail_enqueue)
@@ -66,12 +72,26 @@ def test_workspace_handoff_requires_new_reviewer_guest_and_first_turn():
     assert first_turn_handoff(row, 2, SimpleNamespace(session_id="reviewer")) is None
 
 
-@pytest.mark.parametrize("field,value", [("lineage_id", ""), ("expected_fingerprint", "bad"), ("producer_ember_session_id", "x\ny"), ("handoff_sha256", "A" * 64)])
-def test_workspace_handoff_rejects_invalid_context_before_session_creation(field, value):
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("lineage_id", ""),
+        ("expected_fingerprint", "bad"),
+        ("producer_ember_session_id", "x\ny"),
+        ("handoff_sha256", "A" * 64),
+    ],
+)
+def test_workspace_handoff_rejects_invalid_context_before_session_creation(
+    field, value
+):
     handoff = WorkspaceHandoff("lineage", "a" * 64, "producer", "b" * 64)
     with pytest.raises(ValueError, match="workspace handoff"):
         api.start_session_for_swarm(
-            "invalid-review", "inspect", "luna", "jomcgi-org/homelab", "main",
+            "invalid-review",
+            "inspect",
+            "luna",
+            "jomcgi-org/homelab",
+            "main",
             workspace_handoff=replace(handoff, **{field: value}),
         )
 
@@ -1495,23 +1515,39 @@ def test_start_session_for_swarm_refuses_an_unknown_effort():
 def test_capture_retention_is_atomic_and_idempotent(swarm_start_db):
     engine = swarm_start_db
     args = ("capture-retention", "capture only", "luna", "jomcgi-org/homelab", "main")
-    kwargs = {"node_key": "implement_browser_capture_mobile", "capture_evidence_ttl_seconds": 259200}
+    kwargs = {
+        "node_key": "implement_browser_capture_mobile",
+        "capture_evidence_ttl_seconds": 259200,
+    }
     sid = api.start_session_for_swarm(*args, **kwargs)
     assert api.start_session_for_swarm(*args, **kwargs) == sid
     with Session(engine) as session:
         row = session.get(AgentSession, sid)
         assert row.capture_evidence_ttl_seconds == 259200
     with pytest.raises(ValueError, match="different capture retention"):
-        api.start_session_for_swarm(*args, **{**kwargs, "capture_evidence_ttl_seconds": 3600})
+        api.start_session_for_swarm(
+            *args, **{**kwargs, "capture_evidence_ttl_seconds": 3600}
+        )
 
 
-@pytest.mark.parametrize("model,node,ttl", [
-    ("luna", "implement_browser_capture_mobile", True),
-    ("luna", "implement_browser_capture_mobile", 3599),
-    ("luna", "implement_browser_capture_mobile", 604801),
-    ("sol", "implement_browser_capture_mobile", 259200),
-    ("luna", "implement_other", 259200),
-])
+@pytest.mark.parametrize(
+    "model,node,ttl",
+    [
+        ("luna", "implement_browser_capture_mobile", True),
+        ("luna", "implement_browser_capture_mobile", 3599),
+        ("luna", "implement_browser_capture_mobile", 604801),
+        ("sol", "implement_browser_capture_mobile", 259200),
+        ("luna", "implement_other", 259200),
+    ],
+)
 def test_capture_retention_rejects_unscoped_or_unbounded_context(model, node, ttl):
     with pytest.raises(ValueError, match="capture retention"):
-        api.start_session_for_swarm("invalid", "capture", model, "jomcgi-org/homelab", "main", node_key=node, capture_evidence_ttl_seconds=ttl)
+        api.start_session_for_swarm(
+            "invalid",
+            "capture",
+            model,
+            "jomcgi-org/homelab",
+            "main",
+            node_key=node,
+            capture_evidence_ttl_seconds=ttl,
+        )
