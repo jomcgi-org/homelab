@@ -111,7 +111,13 @@ behavior or pixel/geometry comparison.
 
 Visible pixel changes, changed document height, changed scroll ownership and
 changed settled keyboard-focus treatment fail
-that comparison. Mobile journals also retain eight fresh-context renders: the
+that comparison. Both revisions use `--disable-lcd-text` so text is rendered in
+grayscale: fresh contexts can otherwise vary at a single LCD color fringe even
+for unchanged source. This changes the common rendering environment, not the
+pixel assertion. Browser arguments and Chromium/Playwright versions are recorded
+and must match across the pair; missing or different values fail comparison.
+The bundled sans font and runner system monospace fonts are shared by both sides.
+Mobile journals also retain eight fresh-context renders: the
 unchanged base's fractional sticky/backdrop layer can rasterize text a pixel apart.
 The check requires identical geometry in all probes and an exact whole-image
 base/head match, with no masked pixels, blur removal or tolerance. The comparison

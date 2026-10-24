@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from PIL import Image
 from sheet_check import (
+    CHROMIUM_ARGS,
     QuietHandler,
     capture,
     check_schemes,
@@ -57,6 +58,9 @@ class ComparisonTest(unittest.TestCase):
                 {
                     "revision": path.name,
                     "build": {"harness_sha": "same-harness"},
+                    "chromium_args": CHROMIUM_ARGS,
+                    "chromium_version": "test-browser",
+                    "playwright_version": "test-playwright",
                     "captures": [
                         {
                             "key": "journal",
@@ -76,6 +80,24 @@ class ComparisonTest(unittest.TestCase):
 
     def test_identical_pixels_pass(self):
         self.assertEqual(self.compare()["regressions"], [])
+
+    def test_identical_pixels_require_matching_capture_environment(self):
+        original = json.loads((self.after / "results.json").read_text())
+        for field in ("chromium_args", "chromium_version", "playwright_version"):
+            for missing in (False, True):
+                with self.subTest(field=field, missing=missing):
+                    changed = dict(original)
+                    if missing:
+                        changed.pop(field)
+                    else:
+                        changed[field] = (
+                            ["--disable-gpu"]
+                            if field == "chromium_args"
+                            else "other-version"
+                        )
+                    (self.after / "results.json").write_text(json.dumps(changed))
+                    with self.assertRaisesRegex(AssertionError, "capture environment"):
+                        self.compare()
 
     def test_empty_image_manifest_cannot_claim_coverage(self):
         path = self.output / "missing.png"

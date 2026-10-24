@@ -13,6 +13,10 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# LCD subpixel text can vary by one color channel across fresh contexts, even
+# for unchanged source. Render both sides with grayscale text; keep exact pixels.
+CHROMIUM_ARGS = ["--disable-gpu", "--disable-lcd-text"]
+
 VIEWS = [
     "blog",
     "blog-empty",
@@ -299,7 +303,7 @@ def capture(
             # Pin the raster path identically for both source revisions.
             # Repeatability probes below retain compositor variance without
             # masking pixels or modifying the production stylesheet.
-            browser = pw.chromium.launch(args=["--disable-gpu"])
+            browser = pw.chromium.launch(args=CHROMIUM_ARGS)
             browser_version = browser.version
             cases = [
                 (view, banner)
@@ -330,8 +334,8 @@ def capture(
                             lambda error, errors=errors: errors.append(str(error)),
                         )
 
-                        # Deny even layout font hints. The local font is the only
-                        # font used and both revisions have identical bytes.
+                        # Deny external font hints. Both sides share the bundled
+                        # sans font and the same runner's system monospace fonts.
                         def route(request_route, external=external):
                             if request_route.request.url.startswith(
                                 f"http://127.0.0.1:{server.server_port}/"
@@ -594,7 +598,7 @@ def capture(
         "build": build,
         "fixture_only": True,
         "viewport_height": 900,
-        "chromium_args": ["--disable-gpu"],
+        "chromium_args": CHROMIUM_ARGS,
         "chromium_version": browser_version,
         "playwright_version": importlib.metadata.version("playwright"),
         "captures": records,
@@ -802,6 +806,11 @@ def compare(
     assert base["build"]["harness_sha"] == head["build"]["harness_sha"], (
         "Both source revisions must use the same harness"
     )
+    for field in ("chromium_args", "chromium_version", "playwright_version"):
+        assert base.get(field) and head.get(field), (
+            f"missing capture environment: {field}"
+        )
+        assert base[field] == head[field], f"capture environment differs: {field}"
     differences = []
     regressions = []
     for old, new in zip(base["captures"], head["captures"], strict=True):
