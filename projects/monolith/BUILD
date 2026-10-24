@@ -1393,6 +1393,7 @@ py_library(
         ":pkg_core",
         ":pkg_shared",
         ":swarm_factory_controls",
+        "//projects/monolith/factory/execution/workspace_handoff",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
