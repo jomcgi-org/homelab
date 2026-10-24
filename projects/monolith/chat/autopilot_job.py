@@ -84,14 +84,6 @@ def _length_ok(current: str, proposed: str) -> bool:
 # --- shared session-scoped reads ---------------------------------------------
 
 
-def _active_channel_row(session: Session, channel_id: str) -> ChannelDirective | None:
-    return session.exec(
-        select(ChannelDirective)
-        .where(ChannelDirective.channel_id == channel_id)
-        .where(ChannelDirective.active == True)  # noqa: E712 - SQL boolean
-    ).first()
-
-
 def _active_pref_row(session: Session, user_id: str) -> UserStylePref | None:
     return session.exec(
         select(UserStylePref)
@@ -108,7 +100,7 @@ def _current_detail(
     if scope_kind == "user":
         row = _active_pref_row(session, scope_id)
         return (row.pref if row is not None else "", None)
-    row = _active_channel_row(session, scope_id)
+    row = directives.active_row(session, scope_id)
     return (row.directive if row is not None else "", row.version if row else 0)
 
 
@@ -116,7 +108,7 @@ def _active_source(session: Session, scope_kind: str, scope_id: str) -> str:
     row = (
         _active_pref_row(session, scope_id)
         if scope_kind == "user"
-        else _active_channel_row(session, scope_id)
+        else directives.active_row(session, scope_id)
     )
     return row.source if row is not None else ""
 
@@ -129,7 +121,7 @@ def _manual_block(
     row = (
         _active_pref_row(session, scope_id)
         if scope_kind == "user"
-        else _active_channel_row(session, scope_id)
+        else directives.active_row(session, scope_id)
     )
     if row is None or row.source != "manual":
         return False
@@ -327,7 +319,7 @@ def _apply_or_log(
             # autopilot stays silent; a human applies it via the MCP set-directive
             # tool. The synthetic proposal id is unguessable, so a stray reaction
             # can never confirm it.
-            current = _active_channel_row(session, scope_id)
+            current = directives.active_row(session, scope_id)
             session.add(
                 ChannelDirective(
                     channel_id=scope_id,
