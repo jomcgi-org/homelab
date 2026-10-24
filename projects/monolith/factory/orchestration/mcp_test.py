@@ -997,9 +997,10 @@ def test_submit_reports_ineligible_issue_without_claiming_acceptance(monkeypatch
     }
 
 
-def test_submit_refuses_issue_outside_policy_allowlist(db, monkeypatch):
+@pytest.mark.parametrize("issue_numbers", [[7], []])
+def test_submit_refuses_issue_outside_policy_allowlist(db, monkeypatch, issue_numbers):
     """#6483: an MCP submission admit_next can never admit creates no receipt."""
-    seed_policy(db, [7])
+    seed_policy(db, issue_numbers)
     monkeypatch.setattr("goosecracker.api.REPO_CATALOG", {"owner/repo": {}})
     monkeypatch.setattr(
         "factory.orchestration.factory_intake.get_issue_receipt", lambda *args: None

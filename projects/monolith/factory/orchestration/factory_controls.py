@@ -643,7 +643,11 @@ def validate_policy(policy: dict) -> dict:
         result["reviewer_model"] = policy["conductor_model"]
     result["repo"] = normalize_repo(policy["repo"])
     issues = policy["issue_numbers"]
-    if not isinstance(issues, list) or not 1 <= len(issues) <= 100:
+    if (
+        not isinstance(issues, list)
+        or len(issues) > 100
+        or (not issues and not intake_policy(policy)["enabled"])
+    ):
         raise ValueError("invalid issue_numbers")
     result["issue_numbers"] = sorted(
         {_integer(i, "issue_number", 1, 2**31 - 1) for i in issues}

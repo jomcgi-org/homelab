@@ -273,8 +273,11 @@ uncertain starts. Apply locks and rechecks that snapshot, including receipt
 history and the policy version, and records the before/after policy in audit.
 
 The change enables existing intake while preserving its label/exclusion,
-dependency, cooldown and daily-limit settings, manual issue allowlist, generation
-and task bounds. It requires the existing `agent-ready` label filter. Automatic
+dependency, cooldown and daily-limit settings, generation and task bounds. It
+clears the manual issue allowlist so it cannot bypass backlog eligibility. An
+empty manual list is valid only with intake enabled. The effective primary
+repository filter must be exactly `agent-ready` and retain the needs-human,
+security-finding and wontfix exclusions. Automatic
 landing, refinement, closure and issue production remain off; other repositories
 are paused. No receipt or hold is changed. Apply leaves admissions paused. A
 separate explicit enable permits normal live eligibility and ownership checks;
