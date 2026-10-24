@@ -48,7 +48,10 @@ describe("same-commit factory server-load fixtures", () => {
           },
         });
         expect(unexpected).toEqual([]);
-        if (
+        if (view === "overview" && scenario !== "live") {
+          expect(headers["cache-control"]).toBe("no-store");
+          expect(headers["cloudflare-cdn-cache-control"]).toBe("no-store");
+        } else if (
           ["context", "chapter", "search"].includes(view) &&
           scenario !== "error"
         ) {
