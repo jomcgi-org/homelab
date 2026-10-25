@@ -324,30 +324,48 @@ def test_stop_summary_requires_exact_proof_for_every_owned_workflow():
     assert summary["cessation_confirmed_workflows"] == ["factory-node:t:one:1"]
 
 
-def test_status_payload_trims_the_board_and_stamps_coverage(monkeypatch):
-    board = {
-        "ok": True,
-        "state": "enabled",
-        "generated_at": "2026-09-12T10:00:00+00:00",
-        "version": 3,
-        "actor": "joe",
-        "admitted_count": 11,
-        "policy": {"task_budget_usd": 4.0},
-        "intake": {"admitted_today": 2, "max_per_day": 3},
-        "lanes": {"delivery": 1},
-        "review_routing": {"model": "opus"},
-        "active": [{"issue_number": 1, "title": "a", "limits": {}}],
-        "queued": [
-            {"issue_number": 2, "title": "b", "state": "queued", "generation": 0}
+def seed_operator_rows(db, specs):
+    from datetime import datetime, timezone
+
+    # Equal timestamps exercise the identity tie-breaker in both SQL dialects.
+    when = datetime(2026, 9, 12, 10, tzinfo=timezone.utc)
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                FactoryReceipt(
+                    repo="owner/repo",
+                    title="card",
+                    body="body",
+                    url="https://example.test",
+                    actor="operator",
+                    created_at=when,
+                    updated_at=when,
+                    **spec,
+                )
+                for spec in specs
+            ]
+        )
+
+
+def test_status_payload_trims_the_board_and_stamps_coverage(db, monkeypatch):
+    monkeypatch.setattr(mcp, "_now", lambda: "2026-09-12T10:00:00+00:00")
+    seed_operator_rows(
+        db,
+        [
+            {"issue_number": 1, "state": "admitted"},
+            {"issue_number": 2},
+            {"issue_number": 3, "state": "succeeded"},
+            {
+                "issue_number": 4,
+                "state": "succeeded",
+                "escalation_json": '{"question":"which?"}',
+            },
+            {
+                "issue_number": 5,
+                "state": "cancelled",
+                "escalation_json": '{"question":"gone?","resolved":{}}',
+            },
         ],
-        "recent": [{"issue_number": 3, "title": "c"}],
-        "escalations": [
-            {"issue_number": 4, "title": "d", "question": "which?", "open": True},
-            {"issue_number": 5, "title": "e", "question": "gone?", "open": False},
-        ],
-    }
-    monkeypatch.setattr(
-        "factory.private_view.build_factory_view", lambda session=None: board
     )
 
     payload = mcp._status_payload(include_recent=False)
@@ -362,37 +380,20 @@ def test_status_payload_trims_the_board_and_stamps_coverage(monkeypatch):
     assert payload["coverage"]["cloud_sessions"] == "not_indexed"
 
 
-def test_status_payload_includes_recent_on_request(monkeypatch):
-    board = {
-        "ok": True,
-        "state": "enabled",
-        "active": [],
-        "queued": [],
-        "recent": [{"issue_number": 3, "title": "c"}],
-        "escalations": [],
-    }
-    monkeypatch.setattr(
-        "factory.private_view.build_factory_view", lambda session=None: board
-    )
+def test_status_payload_includes_recent_on_request(db):
+    seed_operator_rows(db, [{"issue_number": 3, "state": "succeeded"}])
 
     payload = mcp._status_payload(include_recent=True)
     assert [task["issue_number"] for task in payload["recent"]] == [3]
 
 
-def test_status_payload_pages_each_bucket_and_keeps_queue_positions(monkeypatch):
-    board = {
-        "ok": True,
-        "state": "enabled",
-        "active": [{"issue_number": number} for number in range(1, 7)],
-        "queued": [
-            {"issue_number": number, "state": "queued", "generation": 0}
-            for number in range(11, 18)
+def test_status_payload_pages_each_bucket_and_keeps_queue_positions(db):
+    seed_operator_rows(
+        db,
+        [
+            *({"issue_number": n, "state": "admitted"} for n in range(1, 7)),
+            *({"issue_number": n} for n in range(11, 18)),
         ],
-        "recent": [],
-        "escalations": [],
-    }
-    monkeypatch.setattr(
-        "factory.private_view.build_factory_view", lambda session=None: board
     )
 
     payload = mcp._status_payload(False, offset=2, limit=3)
@@ -414,40 +415,16 @@ def test_status_payload_pages_each_bucket_and_keeps_queue_positions(monkeypatch)
     )
 
 
-def test_status_queue_positions_exclude_stale_generations(monkeypatch):
-    board = {
-        "ok": True,
-        "state": "enabled",
-        "policy": {"generation": 2},
-        "active": [],
-        "queued": [
-            {
-                "id": 1,
-                "repo": "old/repo",
-                "generation": 1,
-                "issue_number": 1,
-                "state": "queued",
-            },
-            {
-                "id": 2,
-                "repo": "one/repo",
-                "generation": 2,
-                "issue_number": 2,
-                "state": "queued",
-            },
-            {
-                "id": 3,
-                "repo": "two/repo",
-                "generation": 2,
-                "issue_number": 3,
-                "state": "queued",
-            },
+def test_status_queue_positions_exclude_stale_generations(db):
+    with Session(db) as session, session.begin():
+        session.get(FactoryControl, "factory").policy_json = '{"generation":2}'
+    seed_operator_rows(
+        db,
+        [
+            {"issue_number": 1, "generation": 1},
+            {"issue_number": 2, "generation": 2},
+            {"issue_number": 3, "generation": 2},
         ],
-        "recent": [],
-        "escalations": [],
-    }
-    monkeypatch.setattr(
-        "factory.private_view.build_factory_view", lambda session=None: board
     )
 
     payload = mcp._status_payload(False)
@@ -457,15 +434,9 @@ def test_status_queue_positions_exclude_stale_generations(monkeypatch):
     assert payload["pagination"]["queued"]["total"] == 2
 
 
-def test_status_payload_passes_through_an_uninitialised_factory(monkeypatch):
-    monkeypatch.setattr(
-        "factory.private_view.build_factory_view",
-        lambda session=None: {
-            "ok": False,
-            "reason": "not_initialized",
-            "state": "disabled",
-        },
-    )
+def test_status_payload_passes_through_an_uninitialised_factory(db):
+    with Session(db) as session, session.begin():
+        session.delete(session.get(FactoryControl, "factory"))
 
     payload = mcp._status_payload(include_recent=False)
     assert payload["ok"] is False
@@ -473,17 +444,16 @@ def test_status_payload_passes_through_an_uninitialised_factory(monkeypatch):
     assert payload["coverage"]["cloud_sessions"] == "not_indexed"
 
 
-def test_escalations_payload_hides_resolved_cards_by_default(monkeypatch):
-    cards = [
-        {"issue_number": 9, "open": True},
-        {"issue_number": 8, "open": False},
-    ]
-    monkeypatch.setattr(
-        "factory.orchestration.factory_controls.status",
-        lambda session=None: {"ok": True, "receipts": ["r"]},
-    )
-    monkeypatch.setattr(
-        "factory.orchestration.factory_controls.escalations", lambda receipts: cards
+def test_escalations_payload_hides_resolved_cards_by_default(db):
+    seed_operator_rows(
+        db,
+        [
+            {"issue_number": 9, "escalation_json": '{"question":"which?"}'},
+            {
+                "issue_number": 8,
+                "escalation_json": '{"question":"gone?","resolved":{}}',
+            },
+        ],
     )
 
     default = mcp._escalations_payload(include_resolved=False)
@@ -506,11 +476,9 @@ def test_escalations_payload_hides_resolved_cards_by_default(monkeypatch):
     }
 
 
-def test_escalations_payload_passes_through_an_uninitialised_factory(monkeypatch):
-    monkeypatch.setattr(
-        "factory.orchestration.factory_controls.status",
-        lambda session=None: {"ok": False, "reason": "not_initialized"},
-    )
+def test_escalations_payload_passes_through_an_uninitialised_factory(db):
+    with Session(db) as session, session.begin():
+        session.delete(session.get(FactoryControl, "factory"))
 
     payload = mcp._escalations_payload(include_resolved=False)
     assert payload["ok"] is False
