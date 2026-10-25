@@ -25,6 +25,7 @@ go_library(
 go_test(
     name = "store_test",
     srcs = [
+        "refresh_bench_test.go",
         "store_test.go",
         "walks_test.go",
     ],
