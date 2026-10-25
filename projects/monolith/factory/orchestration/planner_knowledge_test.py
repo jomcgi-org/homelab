@@ -1127,3 +1127,153 @@ def test_followup_invalidated_or_disputed_is_distinct_from_review_due(
     assert note["stale"] is True
     assert note["freshness"] == expected
     assert note["review_after"] == (now + timedelta(hours=1)).isoformat()
+
+
+def _approved_refinement(engine):
+    with Session(engine) as db:
+        current = db.get(FactoryReceipt, 1)
+        current.direction_json = json.dumps(
+            {"landing_hold": {"reason": "exact-head release required"}}
+        )
+        brief = {
+            "kind": "advisory",
+            "question": "Nowcast or multi-day forecast?",
+            "issue_body_sha256": controls.issue_body_hash(current.body),
+            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
+            "options": [
+                {
+                    "key": "nowcast",
+                    "label": "Near-term",
+                    "effect": "agent-ready",
+                    "detail": {"scope": "near-term only"},
+                }
+            ],
+            "chat": [
+                {"actor": "other-operator", "text": "PRIVATE CHAT MUST NOT PROPAGATE"}
+            ],
+        }
+        prior = FactoryReceipt(
+            id=0,
+            repo=current.repo,
+            issue_number=current.issue_number,
+            generation=current.generation,
+            title=current.title,
+            body=current.body,
+            url=current.url,
+            actor="factory:intake",
+            task_class="refine",
+            state="succeeded",
+        )
+        identity = controls.decision_identity(
+            {
+                "id": prior.id,
+                "repo": prior.repo,
+                "generation": prior.generation,
+                "escalation": brief,
+            }
+        )
+        brief["resolved"] = {
+            "option_key": "nowcast",
+            "label": "Near-term",
+            "effect": "agent-ready",
+            "actor": "operator",
+            "note": "Use actual source validity. Public release approved after review.",
+            "decided_at": "2026-09-22T22:00:00+00:00",
+            "decision_id": identity,
+        }
+        prior.escalation_json = json.dumps(brief)
+        db.add_all([current, prior])
+        db.commit()
+    return identity
+
+
+def test_delivery_planner_receives_bound_refinement_answer_without_private_chat(
+    planner_db,
+):
+    engine, task_id, _policy = planner_db
+    identity = _approved_refinement(engine)
+    current = conductor_context._planner_factory_context(task_id)
+    direction = current["operator_direction"]
+    assert (
+        direction["note"]
+        == "Use actual source validity. Public release approved after review."
+    )
+    assert direction["detail"]["refinement_decision_id"] == identity
+    assert direction["detail"]["refinement_receipt_id"] == 0
+    assert direction["landing_hold"] == {"reason": "exact-head release required"}
+    assert "PRIVATE CHAT" not in json.dumps(current)
+    assert controls.operator_direction(task_id) == direction
+    operator = conductor_context._factory_context(1, actor="operator")
+    assert operator["direction"] == direction
+    assert "PRIVATE CHAT" not in json.dumps(operator)
+    with Session(engine) as db:
+        assert json.loads(db.get(FactoryReceipt, 1).direction_json) == {
+            "landing_hold": {"reason": "exact-head release required"}
+        }
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "body",
+        "decision",
+        "effect",
+        "cancelled",
+        "generation",
+        "issue",
+        "repo",
+        "later",
+        "pending",
+        "future_answer",
+    ],
+)
+def test_refinement_answer_does_not_cross_stale_or_uncertain_scope(
+    planner_db, monkeypatch, change
+):
+    engine, task_id, _policy = planner_db
+    _approved_refinement(engine)
+    with Session(engine) as db:
+        prior = db.get(FactoryReceipt, 0)
+        brief = json.loads(prior.escalation_json)
+        if change == "body":
+            brief["issue_body_sha256"] = controls.issue_body_hash("Changed acceptance")
+        elif change == "decision":
+            brief["resolved"]["decision_id"] = "decision:wrong"
+        elif change == "effect":
+            brief["resolved"]["effect"] = "defer"
+        elif change == "cancelled":
+            prior.state = "cancelled"
+        elif change == "generation":
+            prior.generation = 2
+        elif change == "issue":
+            prior.issue_number = 8
+        elif change == "repo":
+            prior.repo = "another/repo"
+        elif change == "later":
+            prior.id = 2
+        elif change == "future_answer":
+            brief["resolved"]["decided_at"] = "2099-01-01T00:00:00+00:00"
+        elif change == "pending":
+            monkeypatch.setattr(controls, "_pending_request", lambda _db, _id: True)
+        prior.escalation_json = json.dumps(brief)
+        db.add(prior)
+        db.commit()
+    direction = conductor_context._planner_factory_context(task_id)[
+        "operator_direction"
+    ]
+    assert direction == {"landing_hold": {"reason": "exact-head release required"}}
+
+
+def test_current_delivery_direction_wins_over_prior_refinement(planner_db):
+    engine, task_id, _policy = planner_db
+    _approved_refinement(engine)
+    with Session(engine) as db:
+        row = db.get(FactoryReceipt, 1)
+        row.direction_json = json.dumps(
+            {"note": "Newer explicit delivery scope", "landing_hold": {}}
+        )
+        db.add(row)
+        db.commit()
+    assert conductor_context._planner_factory_context(task_id)[
+        "operator_direction"
+    ] == {"note": "Newer explicit delivery scope", "landing_hold": {}}
