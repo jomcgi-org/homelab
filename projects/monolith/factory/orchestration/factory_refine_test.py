@@ -483,16 +483,17 @@ def test_needs_human_notifies_once(db, monkeypatch):
 
 
 @pytest.mark.parametrize("digest", ["true", "false"])
+@pytest.mark.parametrize(
+    "scope", [{"refinement_batch": [7]}, {"refine_brief_only": True}]
+)
 def test_bounded_brief_keeps_decision_without_external_notification(
-    db, monkeypatch, digest
+    db, monkeypatch, digest, scope
 ):
     from agent import api as notify_module
     from factory.orchestration import factory_notify_policy
 
     monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", digest)
-    task, policy = make_task(
-        intake={"enabled": True, "refine_enabled": True, "refinement_batch": [7]}
-    )
+    task, policy = make_task(intake={"enabled": True, "refine_enabled": True, **scope})
     add_refine_node(task, policy)
     comment = verified_github(monkeypatch, task, "needs-human")
     sent = []

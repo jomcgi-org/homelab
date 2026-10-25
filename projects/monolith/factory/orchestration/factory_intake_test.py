@@ -124,6 +124,99 @@ def enable(policy):
 
 
 @pytest.mark.parametrize("held", [False, True])
+def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_others(
+    db, policy, held
+):
+    policy.update(issue_numbers=[], intake={"enabled": True})
+    enable(policy)
+    first = receive_issue(
+        "owner/repo",
+        1,
+        "first",
+        "body",
+        "https://github.com/owner/repo/issues/1",
+        INTAKE_ACTOR,
+    )
+    with Session(db) as session, session.begin():
+        historical = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=1,
+            generation=99,
+            task_class="refine",
+            title="earlier",
+            body="body",
+            url="https://github.com/owner/repo/issues/1",
+            actor="operator",
+            state="succeeded" if held else "cancelled",
+            direction_json=json.dumps({"landing_hold": {"reason": "operator hold"}})
+            if held
+            else None,
+        )
+        session.add(historical)
+        session.flush()
+        historical_id = historical.id
+    with Session(db) as session:
+        before = session.get(FactoryReceipt, historical_id).model_dump(mode="json")
+    with pytest.raises(ValueError, match="natural_intake_"):
+        receive_issue(
+            "owner/repo",
+            1,
+            "different class",
+            "body",
+            "https://github.com/owner/repo/issues/1",
+            INTAKE_ACTOR,
+            task_class="docs",
+        )
+    second = receive_issue(
+        "owner/repo",
+        2,
+        "second",
+        "body",
+        "https://github.com/owner/repo/issues/2",
+        INTAKE_ACTOR,
+    )
+    admitted = admit_next("scheduler")
+    assert admitted["ok"] and admitted["receipt_id"] == second["receipt"]["id"]
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, first["receipt"]["id"]).state == "cancelled"
+        assert (
+            session.get(FactoryReceipt, historical_id).model_dump(mode="json") == before
+        )
+        assert session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "natural_intake_history_fenced"
+            )
+        ).one()
+
+
+def test_explicit_delivery_keeps_refinement_landing_hold(db, policy):
+    enable(policy)
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=1,
+                generation=99,
+                task_class="refine",
+                title="earlier",
+                body="body",
+                url="https://github.com/owner/repo/issues/1",
+                actor="operator",
+                state="succeeded",
+                direction_json=json.dumps(
+                    {"landing_hold": {"reason": "leave unmerged"}}
+                ),
+            )
+        )
+    issue(1)
+    admitted = admit_next("scheduler")
+    assert admitted["ok"]
+    assert controls.task_snapshot(admitted["task_id"])["direction"]["landing_hold"] == {
+        "reason": "leave unmerged"
+    }
+
+
+@pytest.mark.parametrize("held", [False, True])
 def test_waiting_receipt_retains_issue_and_branch_but_releases_repo_capacity(
     db, policy, monkeypatch, held
 ):

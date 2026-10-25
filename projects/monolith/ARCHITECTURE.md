@@ -2803,6 +2803,25 @@ Recovery eligibility and execution remain separate existing gates.
 `factory_find_receipts` supplies an exact, read-only identity lookup across
 receipt history, with intersecting selectors and explicit ambiguity.
 
+The backlog preview/apply pair accepts an explicit `include_refinement` opt-in.
+It requires the same paused, safe posture, no queued work, and no uncertain or
+orphan execution. It enables normal eligible discovery and refinement, clears
+the batch allowlist and pins `intake.refine_brief_only` for new advisory tasks.
+It preserves all selections, generations, models, budgets, filters and existing
+receipts, even when idle. Preparation stays paused until a separate enable.
+The legacy default and its replay request shape remain unchanged.
+
+**Why broad readiness still needs fences.** Useful replenishment needs refined
+issues to enter normal implementation eligibility. Brief-only limits belong on
+the advisory receipt, not a batch-wide ban on delivery. These refinements retain
+private decisions and proposed gates, with only brief comments and verdict labels
+as external effects. Natural selection, receipt creation and final claim refuse
+cancelled or landing-held issue history across classes and generations. A stale
+queued natural receipt is cancelled and audited so it cannot block unrelated
+work. Explicit operator re-admission remains separate, and a delivery inherits
+its prior refinement's landing hold as well as its conductor gates. Readiness
+does not release cancellation, landing, source, ownership or provider authority.
+
 `factory_preview_refinement_batch` and `factory_apply_refinement_batch` prepare
 one to ten fresh primary-repository issues for advisory work while existing
 admitted work retains its pinned policy. Preparation requires paused admissions,

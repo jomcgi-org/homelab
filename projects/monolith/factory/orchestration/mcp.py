@@ -1807,6 +1807,7 @@ async def factory_apply_refinement_batch(
 @mcp.tool
 async def factory_preview_backlog_intake(
     reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    include_refinement: bool = False,
 ) -> dict:
     """Preview returning the primary repository to existing agent-ready intake.
 
@@ -1817,6 +1818,10 @@ async def factory_preview_backlog_intake(
     disables landing, refinement, closure and issue production, and pauses
     other repositories. Eligibility filters, generation and bounds remain.
     No work is submitted or enabled.
+    With include_refinement, requires safe posture and no queued work, preserves
+    all selections and limits, and prepares broad brief-only refinement plus
+    normal ready-issue implementation. Refinement notifications and typed gate
+    actions remain disabled. Cancellation and landing histories stay fenced.
     Review the full policy diff before applying its exact digest.
     """
     principal = current_principal()
@@ -1828,7 +1833,9 @@ async def factory_preview_backlog_intake(
         from factory.orchestration import factory_validation
 
         try:
-            return factory_validation.preview_backlog(reason)
+            return factory_validation.preview_backlog(
+                reason, include_refinement=include_refinement
+            )
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
 
@@ -1840,6 +1847,7 @@ async def factory_apply_backlog_intake(
     reason: Annotated[str, Field(min_length=1, max_length=4000)],
     expected_preview_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
     request_key: Annotated[str, Field(min_length=1, max_length=256)],
+    include_refinement: bool = False,
 ) -> dict:
     """Apply an exact reviewed backlog-intake preview as a standing operator.
 
@@ -1848,6 +1856,9 @@ async def factory_apply_backlog_intake(
     separate explicit enable permits the existing intake eligibility checks.
     No task is submitted, resumed or recovered. Replay identical arguments
     after a lost response, then read current state before further actions.
+    Pass the same include_refinement choice as the preview. It enables broad
+    brief-only advisory eligibility and normal ready-issue implementation only
+    after separate enable, preserving cancellation, landing and execution holds.
     """
     principal = current_principal()
     refusal = _refuse(principal)
@@ -1860,6 +1871,7 @@ async def factory_apply_backlog_intake(
         try:
             return factory_validation.apply_backlog(
                 reason,
+                include_refinement=include_refinement,
                 actor=principal.subject,
                 request_key=request_key,
                 expected_preview_sha256=expected_preview_sha256,

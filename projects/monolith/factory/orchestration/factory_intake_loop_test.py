@@ -900,6 +900,55 @@ def test_a_refined_issue_is_delivered_in_the_same_generation(db, monkeypatch):
     assert delivered[0]["receipt"]["id"] != refined[0]["receipt"]["id"]
 
 
+def test_broad_refinement_replenishes_three_ready_delivery_cycles(db, monkeypatch):
+    configured = policy(
+        labels=["agent-ready"], refine_enabled=True, refine_brief_only=True
+    )
+    for number in (9, 10, 11):
+        fake_pages(monkeypatch, [issue(number)])
+        refined = intake_loop.intake_tick(configured, generation=0)
+        assert refined[0]["receipt"]["task_class"] == "refine"
+        with Session(db) as session, session.begin():
+            session.get(FactoryReceipt, refined[0]["receipt"]["id"]).state = "succeeded"
+        fake_pages(monkeypatch, [issue(number, ["agent-ready"])])
+        delivered = intake_loop.intake_tick(configured, generation=0)
+        assert delivered[0]["receipt"]["task_class"] == "bug-fix"
+        with Session(db) as session, session.begin():
+            session.get(
+                FactoryReceipt, delivered[0]["receipt"]["id"]
+            ).state = "succeeded"
+    assert len(audits(db, "intake_admitted")) == 6
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_natural_intake_preserves_history_across_class_and_generation(
+    db, monkeypatch, held
+):
+    with Session(db) as session, session.begin():
+        intake_receipt(
+            session,
+            9,
+            task_class="refine",
+            generation=4,
+            state="succeeded" if held else "cancelled",
+            updated_at=NOW - timedelta(days=3),
+            direction_json=json.dumps({"landing_hold": {"reason": "explicit hold"}})
+            if held
+            else None,
+        )
+    fake_pages(monkeypatch, [issue(9, ["agent-ready"])])
+    assert (
+        intake_loop.intake_tick(
+            policy(labels=["agent-ready"], refine_enabled=True), generation=5
+        )
+        == []
+    )
+    reason = "landing_held" if held else "cancelled_issue"
+    assert (
+        json.loads(audits(db, "intake_idle")[-1].detail_json)["excluded"][reason] == 1
+    )
+
+
 def test_the_same_class_twice_in_one_generation_is_refused(db, monkeypatch):
     fake_pages(monkeypatch, [issue(9, ["agent-ready"])])
     first = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
@@ -2157,11 +2206,11 @@ def test_a_lane_full_skip_in_the_per_candidate_recheck_writes_a_throttled_idle(
 def test_a_cancelled_ineligible_receipt_frees_its_lane_but_not_its_issue(
     db, monkeypatch
 ):
-    """#6483: cancelling clears the slot; recurrence still needs a new generation.
+    """Cancelling clears the slot but never permits automatic recurrence.
 
     A cancelled receipt holds no lane slot, so other issues admit. The same
-    issue at the same generation stays excluded (cooling down, then
-    already_received): cancel is lane hygiene, not a retry.
+    issue stays excluded across generations and classes until explicit operator
+    re-admission: cancel is lane hygiene, not a retry.
     """
     with Session(db) as session:
         session.add(
@@ -2200,7 +2249,7 @@ def test_a_cancelled_ineligible_receipt_frees_its_lane_but_not_its_issue(
     fake_pages(monkeypatch, [issue(77, ["agent-ready"])])
     assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[-1].detail_json)
-    assert detail["excluded"] == {"cooldown": 1}
+    assert detail["excluded"] == {"cancelled_issue": 1}
 
 
 def multi_repo_policy(**overrides):

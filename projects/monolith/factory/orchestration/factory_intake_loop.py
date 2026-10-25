@@ -83,6 +83,8 @@ _EXCLUSION_REASONS = (
     "delivery_check_deferred",
     "escalated",
     "cooldown",
+    "cancelled_issue",
+    "landing_held",
     "already_received",
     "active_issue",
     "blocked",
@@ -169,6 +171,11 @@ def _receipt_exclusion(
         return "active_issue"
     if any(row.state == "escalated" for row in rows):
         return "escalated"
+    from factory.orchestration.factory_controls import natural_history_exclusion
+
+    protected = natural_history_exclusion(rows)
+    if protected is not None:
+        return protected
     latest = rows[0] if rows else None
     if (
         latest is not None

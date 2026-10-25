@@ -34,6 +34,7 @@ from factory.orchestration.factory_controls import (
     lane_limits,
     lane_max_tasks,
     normalize_repo,
+    natural_history_exclusion,
     receipt_task_class,
     repo_effective_policy,
     repo_lane_limits,
@@ -176,6 +177,12 @@ def receive_issue(
         ).first()
         if existing is not None:
             return {"ok": True, "created": False, "receipt": _snapshot(db, existing)}
+        if actor == INTAKE_ACTOR:
+            protected = natural_history_exclusion(
+                receipts_for_work(db, repo, issue_number)
+            )
+            if protected:
+                raise ValueError(f"natural_intake_{protected}")
         if delivery_target is not None:
             owner = delivery_branch_owner(db, repo, branch)
             if owner is not None:
@@ -622,6 +629,25 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # only a tier with room in `available` admits anything.
         row = None
         for candidate in candidates:
+            if candidate.actor == INTAKE_ACTOR:
+                protected = natural_history_exclusion(
+                    receipts_for_work(db, candidate.repo, candidate.issue_number)
+                )
+                if protected:
+                    from factory.orchestration.factory_controls import (
+                        _cancel_queued_receipt,
+                    )
+
+                    _cancel_queued_receipt(db, candidate.id, actor)
+                    _audit(
+                        db,
+                        actor,
+                        "natural_intake_history_fenced",
+                        receipt_id=candidate.id,
+                        issue_number=candidate.issue_number,
+                        reason=protected,
+                    )
+                    continue
             item = (
                 db.get(WorkItem, candidate.work_item_id)
                 if candidate.work_item_id
@@ -680,7 +706,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
 
         route = routes[receipt_task_class(row)]
         direction = json.loads(row.direction_json) if row.direction_json else {}
-        if route["tier"] == "delivery" and not direction.get("conductor_gates"):
+        if route["tier"] == "delivery":
             refined = db.exec(
                 select(FactoryReceipt)
                 .where(
@@ -692,9 +718,15 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                 .order_by(FactoryReceipt.id.desc())
             ).first()
             if refined and refined.direction_json:
-                gates = json.loads(refined.direction_json).get("conductor_gates", [])
-                if gates:
+                refined_direction = json.loads(refined.direction_json)
+                gates = refined_direction.get("conductor_gates", [])
+                if gates and not direction.get("conductor_gates"):
                     direction["conductor_gates"] = gates
+                if "landing_hold" in refined_direction:
+                    direction.setdefault(
+                        "landing_hold", refined_direction["landing_hold"]
+                    )
+                if direction:
                     row.direction_json = _json(direction)
         try:
             granted_branch, _granted_pr = granted_delivery_surface(direction)

@@ -3116,6 +3116,79 @@ def active_backlog(database, validation_ready):
     return validation_ready
 
 
+@pytest.mark.parametrize("active", [True, False])
+def test_broad_refinement_preserves_policy_and_pinned_work(
+    database, active_backlog, active
+):
+    with Session(database) as db, db.begin():
+        if not active:
+            db.get(FactoryReceipt, 838).state = "succeeded"
+        before = db.get(FactoryReceipt, 838).model_dump(mode="json")
+    proposal = active_backlog.preview_backlog(
+        "continuous eligible work", include_refinement=True
+    )
+    expected = json.loads(json.dumps(proposal["policy_before"]))
+    expected["intake"].update(
+        enabled=True, refine_enabled=True, refine_brief_only=True, refinement_batch=[]
+    )
+    assert proposal["policy_after"] == expected
+    assert proposal["mode"] == "broad_brief_refinement"
+    assert not proposal["execution_authorized"]
+    assert controls.admission_eligible(
+        expected, 9999, "factory:intake", task_class="refine", repo=expected["repo"]
+    )
+    assert controls.admission_eligible(
+        expected, 9999, "factory:intake", task_class="bug-fix", repo=expected["repo"]
+    )
+    args = dict(
+        actor="operator",
+        request_key="continuous",
+        expected_preview_sha256=proposal["preview_sha256"],
+        include_refinement=True,
+    )
+    result = active_backlog.apply_backlog("continuous eligible work", **args)
+    assert result["ok"] and result["state"] == "paused"
+    assert active_backlog.apply_backlog("continuous eligible work", **args) == result
+    with pytest.raises(ValueError):
+        active_backlog.apply_backlog(
+            "continuous eligible work", **{**args, "include_refinement": False}
+        )
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump(mode="json") == before
+        assert json.loads(db.get(FactoryControl, "factory").policy_json) == expected
+
+
+@pytest.mark.parametrize("state", ["queued", "uncertain", "landing"])
+def test_broad_refinement_refuses_queued_or_unresolved_work(
+    database, active_backlog, state
+):
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).state = state
+    with pytest.raises(ValueError):
+        active_backlog.preview_backlog("continuous", include_refinement=True)
+
+
+def test_legacy_backlog_replay_keeps_original_request_shape(database, validation_ready):
+    proposal = validation_ready.preview_backlog("legacy")
+    args = dict(
+        actor="operator",
+        request_key="legacy",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    result = validation_ready.apply_backlog("legacy", **args)
+    assert (
+        validation_ready.apply_backlog("legacy", **args, include_refinement=False)
+        == result
+    )
+    with Session(database) as db:
+        audit = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == validation_ready.BACKLOG_ACTION
+            )
+        ).one()
+        assert "include_refinement" not in json.loads(audit.detail_json)["request"]
+
+
 @pytest.mark.parametrize(
     "change",
     ["auto_merge", "refine_enabled", "close_enabled", "production", "other_repo"],
