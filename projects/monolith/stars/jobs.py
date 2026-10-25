@@ -141,6 +141,13 @@ def _run_prune() -> int:
     """Prune elapsed hours in a fresh session (runs off the event loop)."""
     from core.db import get_engine
 
+    enabled = os.environ.get("STARS_ARCHIVE_BEFORE_PRUNE", "false").lower()
+    if enabled not in {"true", "false"}:
+        raise ValueError("STARS_ARCHIVE_BEFORE_PRUNE must be true or false")
+    if enabled == "true":
+        from stars.archive import run_configured_archive
+
+        return run_configured_archive(get_engine())
     with Session(get_engine()) as session:
         deleted = _prune_elapsed(session)
         session.commit()

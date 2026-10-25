@@ -7359,6 +7359,29 @@ py_test(
 )
 
 py_test(
+    name = "stars_archive_test",
+    srcs = ["stars/archive_test.py"],
+    data = [
+        "//projects/monolith/chart:docfix_review_test_data",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_shared",
+        ":pkg_stars",
+        "@pip//boto3",
+        "@pip//pytest",
+        "@pip//pyyaml",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//typer",
+    ],
+)
+
+py_test(
     name = "stars_jobs_test",
     srcs = ["stars/jobs_test.py"],
     imports = ["."],
