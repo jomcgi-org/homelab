@@ -232,6 +232,10 @@ def unavailable_causes(session: Session, window) -> dict:
                 (
                     "source collection budget exhausted",
                     "source collection deadline exhausted",
+                    "batch source deadline exhausted",
+                    "batch source request budget exhausted",
+                    "batch source byte budget exhausted",
+                    "batch source transport byte budget exhausted",
                 )
             ),
             "collection_bound",
@@ -259,14 +263,20 @@ def unavailable_causes(session: Session, window) -> dict:
             ),
             "invalid_source_response",
         ),
-        (reason.in_(("GitHub returned 401", "GitHub returned 403")), "source_access"),
+        # A bare 403 cannot distinguish permission refusal from rate limiting.
+        (reason == "GitHub returned 401", "source_http_401"),
+        (reason == "GitHub returned 403", "source_http_403"),
+        (reason == "GitHub returned 404", "source_http_404"),
+        (reason == "batch source transport unavailable", "source_transport"),
+        (reason == "batch evidence is stale", "stale_batch_evidence"),
         (reason == "GitHub returned 429", "source_rate_limit"),
         (reason.startswith("GitHub returned 5"), "source_server_error"),
         (
             summary == "Source review: unavailable (invalid reviewer output)",
             "invalid_reviewer_output",
         ),
-        else_="other_or_unrecorded",
+        (reason.is_(None) | (reason == ""), "unrecorded"),
+        else_="other",
     )
     rows = session.exec(
         select(category, func.count(), func.count(func.distinct(FactReviewRun.note_id)))
