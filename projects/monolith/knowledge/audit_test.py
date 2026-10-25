@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from jsonschema import Draft202012Validator
 from shared.invocation_outcomes import UNKNOWN_INVOCATION
 from sqlalchemy import text
 from sqlalchemy.dialects import postgresql, sqlite
@@ -1053,7 +1054,7 @@ def test_generation_contract_requires_correctness_and_preserves_prepared_prompt(
     assert "correctness" in contract["$defs"]["AuditVerdict"]["required"]
     assert contract["$defs"]["AuditVerdict"]["additionalProperties"] is False
     assert "omit the entire verdict" in prompt
-    assert run.prompt_version == "kg-audit/luna@v2"
+    assert run.prompt_version == "kg-audit/luna@v3"
     monkeypatch.setattr(
         audit.AuditOutput,
         "model_json_schema",
@@ -1097,3 +1098,75 @@ def test_session_21462_missing_correctness_rejects_entire_output_without_mutatio
             rejected_result.removeprefix("```json\n").removesuffix("\n```")
         )["verdicts"][5]
     )
+
+
+@pytest.mark.parametrize(
+    "correctness", ["holds", "confirmed", "narrowed", "superseded", "invalidated"]
+)
+@pytest.mark.parametrize("clarity", ["clear", "unclear"])
+@pytest.mark.parametrize("placement", ["ok", "misplaced"])
+@pytest.mark.parametrize("cause", [None, "other"])
+def test_generated_cause_contract_matches_runtime_validator(
+    correctness, clarity, placement, cause
+):
+    output = {
+        "verdicts": [
+            _verdict(
+                "fact",
+                correctness=correctness,
+                clarity=clarity,
+                placement=placement,
+                cause=cause,
+            )
+        ]
+    }
+    schema = audit.AuditOutput.model_json_schema()
+    Draft202012Validator.check_schema(schema)
+    valid = cause is not None or (
+        correctness == "holds" and clarity == "clear" and placement == "ok"
+    )
+    assert Draft202012Validator(schema).is_valid(output) is valid
+    if valid:
+        assert audit.parse_audit_output(_output(output["verdicts"]))
+    else:
+        with pytest.raises(ValueError, match="audit defect requires a cause"):
+            audit.parse_audit_output(_output(output["verdicts"]))
+
+
+def test_session_21949_null_causes_reject_entire_output_without_mutation(session):
+    # Preserve the observed three-error shape without production note contents.
+    for index in range(12):
+        _note(session, f"fact-{index}")
+    prompt, run, findings = _prepare(session)
+    before = [finding.model_dump() for finding in findings]
+    metrics_before = dict(run.metrics)
+    verdicts = [_verdict(f"fact-{index}") for index in range(12)]
+    for index in (0, 4, 6):
+        verdicts[index]["correctness"] = "confirmed"
+    verdicts[4]["clarity"] = "unclear"
+    contract = json.loads(
+        prompt.split("Output contract (validate every verdict before returning):\n", 1)[
+            1
+        ].split("\n", 1)[0]
+    )
+    errors = list(Draft202012Validator(contract).iter_errors({"verdicts": verdicts}))
+    assert {tuple(error.path) for error in errors} == {
+        ("verdicts", index, "cause") for index in (0, 4, 6)
+    }
+    rejected_result = _output(verdicts)
+    with pytest.raises(ValueError, match="audit defect requires a cause") as error:
+        audit.apply_audit(session, "kg-audit", PAYLOAD, rejected_result)
+    assert {tuple(item["loc"]) for item in error.value.errors()} == {
+        ("verdicts", index) for index in (0, 4, 6)
+    }
+    session.expire_all()
+    assert [
+        finding.model_dump()
+        for finding in session.exec(
+            select(AuditFinding).where(AuditFinding.run_id == run.id)
+        ).all()
+    ] == before
+    assert session.get(AuditRun, run.id).metrics == metrics_before
+    assert session.get(AuditRun, run.id).status == "prepared"
+    assert not session.exec(select(Dispute)).all()
+    assert all(verdicts[index]["cause"] is None for index in (0, 4, 6))

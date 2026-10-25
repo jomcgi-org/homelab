@@ -37,7 +37,7 @@ from knowledge.models import (
 )
 from knowledge.recall import _get_repo_scope
 
-AUDIT_PROMPT_VERSION = "kg-audit/luna@v2"
+AUDIT_PROMPT_VERSION = "kg-audit/luna@v3"
 AUDIT_JOB_NAME = "kg-audit"
 WEIGHTED_POOL_SIZE = 512
 _TRACER = trace.get_tracer("monolith.knowledge.audit")
@@ -697,7 +697,10 @@ def build_audit_prompt(
         + "\nEvery verdict must contain all required fields, including correctness. "
         "Do not substitute clarity or placement for correctness. If correctness cannot "
         "be established, omit the entire verdict rather than omitting a field or "
-        "inventing a healthy value. Check the complete output against this contract "
+        "inventing a healthy value. Any correctness other than holds (including confirmed), "
+        "unclear clarity, or misplaced placement requires a non-null cause. Do not invent "
+        "a cause to satisfy the schema; omit the verdict if it cannot be established. "
+        "Check the complete output against this contract "
         "before returning the single fenced JSON block.\n\n" + "\n\n".join(blocks)
     )
     run.metrics = {**run.metrics, "prompt": prompt}
@@ -706,7 +709,22 @@ def build_audit_prompt(
 
 
 class AuditVerdict(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    # Pydantic's custom validator is not represented in generated JSON Schema.
+    # Publish its conditional cause rule for the generator without weakening it.
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            "if": {
+                "anyOf": [
+                    {"properties": {"correctness": {"not": {"const": "holds"}}}},
+                    {"properties": {"clarity": {"const": "unclear"}}},
+                    {"properties": {"placement": {"const": "misplaced"}}},
+                ]
+            },
+            "then": {"properties": {"cause": {"not": {"type": "null"}}}},
+        },
+    )
     note_id: str = Field(min_length=1, max_length=500)
     correctness: Literal["holds", "confirmed", "narrowed", "superseded", "invalidated"]
     clarity: Literal["clear", "unclear"]
