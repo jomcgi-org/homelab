@@ -1040,3 +1040,71 @@ def test_batch_failure_categories_do_not_guess_or_export_reasons(db, reason, cat
     assert review.throughput(db, now=NOW)["unavailable_by_cause"] == {
         category: {"attempts": 1, "distinct_facts": 1, "repeat_attempts": 0}
     }
+
+
+def test_single_and_batch_prompt_preserve_decoded_source_text(db):
+    from knowledge import fact_review_batch
+
+    note(db)
+    raw = (
+        '**Guard** refuses empty inputs.\r\n// Keep\t"quotes", \\paths and café.\n'
+        + "padding\n" * 5000
+    )
+    prompt = prepare(db, sources=[SOURCE | {"text": raw}])
+    run = db.get(FactReviewRun, "invocation")
+    for rendered in (prompt, fact_review_batch._prompt([run])):
+        assert "Literal citation contract:" in rendered
+        assert "not rendered Markdown or reformatted code" in rendered
+        payload = json.loads(
+            rendered.split("BEGIN UNTRUSTED REVIEW DATA\n")[1].split(
+                "\nEND UNTRUSTED REVIEW DATA"
+            )[0]
+        )
+        assert payload["sources"][0]["text"] == run.sources[0]["text"] == raw
+        assert payload["sources"][0]["id"] == "s1"
+    assert run.status == "prepared"
+
+
+@pytest.mark.parametrize(
+    "raw,rendered",
+    [
+        (
+            "**Guard** refuses empty inputs before dispatch.",
+            "Guard refuses empty inputs before dispatch.",
+        ),
+        (
+            "// Empty inputs are refused\n// before dispatch.",
+            "Empty inputs are refused before dispatch.",
+        ),
+        (
+            '\tthrow Error("café\\path");\r\n\treturn;',
+            'throw Error("café\\path"); return;',
+        ),
+    ],
+)
+@pytest.mark.parametrize("literal", [True, False])
+def test_citations_preserve_markup_comments_and_escaping_without_repair(
+    db, raw, rendered, literal
+):
+    row = note(db)
+    prepare(db, sources=[SOURCE | {"text": raw}])
+    run = db.get(FactReviewRun, "invocation")
+    sources = list(run.sources)
+    answer = output(
+        db, citations=[{"source_id": "s1", "quote": raw if literal else rendered}]
+    )
+    if literal:
+        assert review.apply(db, "invocation", answer, now=NOW)["outcome"] == "renewed"
+    else:
+        with pytest.raises(ExtractionOutputInvalid, match="citation is not a quote"):
+            review.apply(db, "invocation", answer, now=NOW)
+        saved = dict(run.result)
+        assert saved["outcome"] == "unavailable"
+        assert row.last_reviewed_at is None
+        # Even a later valid citation cannot replace this rejected receipt.
+        corrected = output(db, citations=[{"source_id": "s1", "quote": raw}])
+        replay = review.apply(db, "invocation", corrected, now=NOW)
+        assert replay == {**saved, "replayed": True}
+        assert run.result == saved
+    assert run.sources == sources
+    assert len(db.exec(select(ReviewOutcome)).all()) == 1
