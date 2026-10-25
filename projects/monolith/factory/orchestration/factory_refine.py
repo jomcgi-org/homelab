@@ -160,7 +160,12 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         "does not execute them. Do not send external notifications or messages. "
         "Only the brief comment and its verdict label on this issue are authorized "
         "external writes. Keep decisions needing authority as needs-human with "
-        "options. Do not implement, rescope issue or PR text, or operate services.\n\n"
+        "options. A proposed gate still requires outcome and label needs-human "
+        "when its classification is spending, prod_deletion or external_account, "
+        "or any effect is true: spends_money, deletes_data, touches_external_account, "
+        "uses_credentials. Reusing existing credentials still counts as uses_credentials. "
+        "Do not apply agent-ready to such a gate. Do not implement, rescope issue "
+        "or PR text, or operate services.\n\n"
         if brief_only
         else factory_gates.GATE_PROMPT
     )

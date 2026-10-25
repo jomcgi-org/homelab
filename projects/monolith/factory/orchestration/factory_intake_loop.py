@@ -85,6 +85,7 @@ _EXCLUSION_REASONS = (
     "cooldown",
     "cancelled_issue",
     "landing_held",
+    "refinement_failed",
     "already_received",
     "active_issue",
     "blocked",

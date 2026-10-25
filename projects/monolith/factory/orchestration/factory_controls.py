@@ -2139,11 +2139,18 @@ def landing_held(row) -> bool:
 
 
 def natural_history_exclusion(rows) -> str | None:
-    """Automatic rediscovery cannot release cancellation or landing authority."""
+    """Readiness cannot release authority holds or a failed refinement."""
     if any(row.state == "cancelled" for row in rows):
         return "cancelled_issue"
     if any(landing_held(row) for row in rows):
         return "landing_held"
+    if any(
+        row.state == "failed" and receipt_task_class(row) == "refine" for row in rows
+    ):
+        # The guest can label an issue before the server rejects its brief.
+        # A timer or a new generation cannot verify those external effects.
+        # Keep explicit operator re-admission as the recovery authority.
+        return "refinement_failed"
     return None
 
 

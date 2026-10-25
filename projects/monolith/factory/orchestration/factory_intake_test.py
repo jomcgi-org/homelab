@@ -124,9 +124,9 @@ def enable(policy):
 
 
 @pytest.mark.parametrize("identity", ["canonical", "alias", "legacy"])
-@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("history", ["cancelled", "held", "failed_refinement"])
 def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_others(
-    db, policy, held, identity
+    db, policy, history, identity
 ):
     policy.update(issue_numbers=[], intake={"enabled": True})
     enable(policy)
@@ -163,9 +163,13 @@ def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_oth
             body="body",
             url="https://github.com/owner/repo/issues/1",
             actor="operator",
-            state="succeeded" if held else "cancelled",
+            state={
+                "held": "succeeded",
+                "cancelled": "cancelled",
+                "failed_refinement": "failed",
+            }[history],
             direction_json=json.dumps({"landing_hold": {"reason": "operator hold"}})
-            if held
+            if history == "held"
             else None,
         )
         session.add(historical)
