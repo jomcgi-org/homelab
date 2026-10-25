@@ -671,7 +671,7 @@ awk '
     $0 == "          commit_format_drift() {" { capture = 1 }
     capture && $0 == "          if [ \"$ON_MAIN\" = false ]; then" { exit }
     capture { sub(/^          /, ""); print }
-' "$BUILD_BUDDY" > "$format_body"
+' "$BUILD_BUDDY" >"$format_body"
 format_call_ln=$(grep -nF '            prepare_go_build_graph' "$BUILD_BUDDY" | head -1 | cut -d: -f1 || true)
 reachability_ln=$(grep -nF 'python3 ./bazel/tools/ci/test_source_reachability.py' "$BUILD_BUDDY" | head -1 | cut -d: -f1 || true)
 if [[ -s "$format_body" && -n "$format_call_ln" && "$format_call_ln" -lt "$reachability_ln" ]]; then
@@ -702,7 +702,7 @@ if [[ -s "$format_body" ]]; then
 		done
 		if [[ "$scenario" == existing-untracked ]]; then
 			mkdir -p "$graph_root/work/unrelated"
-			printf 'unrelated\n' > "$graph_root/work/unrelated/BUILD"
+			printf 'unrelated\n' >"$graph_root/work/unrelated/BUILD"
 		fi
 		graph_rc=0
 		set +e
