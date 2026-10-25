@@ -1745,7 +1745,10 @@ py3_image(
     },
     main = "app/jobs_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/jobs",
-    tars = [":repo_docs_manifest_layer"],
+    tars = [
+        ":repo_docs_manifest_layer",
+        "//projects/scotland-connector/image:aurora_tar_amd64",
+    ],
 )
 
 # The job's root filesystem is apko-built and package-locked. The application
@@ -9637,5 +9640,15 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "stars_aurora_job_test",
+    srcs = ["stars/aurora_job_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_stars",
+        "@pip//pytest",
     ],
 )

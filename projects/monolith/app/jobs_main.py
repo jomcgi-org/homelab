@@ -1028,6 +1028,12 @@ def stars_load_grid() -> None:
     _run_job("stars-load-grid", "stars.grid", "load_grid_handler")
 
 
+@app.command("stars-aurora")
+def stars_aurora() -> None:
+    """Refresh the bounded aurora snapshot with independent provider caches."""
+    _run_job("stars-aurora", "stars.aurora_job", "aurora_handler")
+
+
 @app.command("stars-refresh")
 def stars_refresh() -> None:
     """Refresh stars forecasts and materialize the public read snapshot."""

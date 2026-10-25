@@ -478,3 +478,20 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+py_test(
+    name = "stars_aurora_job_test",
+    srcs = ["stars_aurora_job_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = ["@pip//pyyaml"],
+)
