@@ -476,6 +476,13 @@ def test_throughput_counts_attempts_and_distinct_facts_separately(db):
             "unavailable": {"attempts": 2, "distinct_facts": 1},
             "renewed": {"attempts": 2, "distinct_facts": 1},
         },
+        "unavailable_by_cause": {
+            "other_or_unrecorded": {
+                "attempts": 2,
+                "distinct_facts": 1,
+                "repeat_attempts": 1,
+            }
+        },
     }
 
 
@@ -899,3 +906,99 @@ def test_registration_scales_only_unlocked_scheduled_jobs(db, monkeypatch, state
     )
     assert after == expected
     assert not review.ensure_job(db)
+
+
+def test_unavailable_cause_counts_are_redacted_and_distinguish_repeats(db):
+    inputs = [
+        ("one", "unsupported file representation", "file_representation"),
+        ("one", "unsupported file representation", "file_representation"),
+        ("two", "source collection budget exhausted", "collection_bound"),
+        ("three", "GitHub returned 403", "source_access"),
+        ("four", "GitHub returned 429", "source_rate_limit"),
+        ("five", "GitHub returned 503", "source_server_error"),
+        ("six", "PRIVATE_URL_TOKEN_ERROR", "other_or_unrecorded"),
+        ("seven", None, "other_or_unrecorded"),
+        ("eight", "incomplete check runs", "incomplete_checks"),
+        ("nine", "invalid source file", "invalid_source_response"),
+    ]
+    rows = [
+        FactReviewRun(
+            invocation_key=f"cause-{i}",
+            note_id=note,
+            created_at=NOW,
+            status="complete",
+            result={"outcome": "unavailable", "reason": reason},
+        )
+        for i, (note, reason, _) in enumerate(inputs)
+    ]
+    rows.append(
+        FactReviewRun(
+            invocation_key="model",
+            note_id="ten",
+            created_at=NOW,
+            status="complete",
+            result={
+                "outcome": "unavailable",
+                "summary": "Source review: unavailable (invalid reviewer output)",
+            },
+        )
+    )
+    db.add_all(rows)
+    db.commit()
+    counts = review.throughput(db, now=NOW)["unavailable_by_cause"]
+    assert counts["file_representation"] == {
+        "attempts": 2,
+        "distinct_facts": 1,
+        "repeat_attempts": 1,
+    }
+    assert counts["other_or_unrecorded"] == {
+        "attempts": 2,
+        "distinct_facts": 2,
+        "repeat_attempts": 0,
+    }
+    assert counts["invalid_reviewer_output"]["attempts"] == 1
+    for _, _, cause in inputs[2:6] + inputs[8:]:
+        assert counts[cause]["attempts"] == 1
+    assert sum(v["attempts"] for v in counts.values()) == 11
+    assert "PRIVATE_" not in json.dumps(counts)
+
+
+def test_eligible_count_uses_worker_scope_pending_and_backoff_rules(db):
+    note(db, "eligible")
+    note(db, "private-scope", scope="repo:other/repo")
+    note(db, "not-due", observed_at=NOW, review_after=NOW + timedelta(days=1))
+    waiting = note(db, "waiting")
+    unsupported = note(db, "unsupported")
+    pending = note(db, "pending")
+    record_outcome(
+        db,
+        note_id=waiting.note_id,
+        revision=waiting.revision,
+        status="unavailable",
+        reason=review.PREFIX + "source collection budget exhausted",
+        now=NOW,
+    )
+    record_outcome(
+        db,
+        note_id=unsupported.note_id,
+        revision=unsupported.revision,
+        status="unsupported",
+        reason=review.PREFIX + "unsupported claim",
+        now=NOW,
+    )
+    db.add(
+        FactReviewRun(
+            invocation_key="pending-count",
+            note_id=pending.note_id,
+            revision=pending.revision,
+            created_at=NOW,
+            status="prepared",
+        )
+    )
+    db.commit()
+    assert review.eligible_count(db, now=NOW) == 1
+    assert review.eligible_count(db, now=NOW) == len(
+        review._candidates(db, NOW, limit=100)
+    )
+    assert review.eligible_count(db, now=NOW + timedelta(minutes=6)) == 2
+    assert db.get(FactReviewRun, "pending-count").status == "prepared"

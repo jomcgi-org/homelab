@@ -81,6 +81,7 @@ def status() -> dict:
             "interval_seconds": interval,
             "public_facts": fact_summary(session, now=now),
             "coverage": coverage(session, now=now),
+            "eligible_unique_facts": eligible_count(session, now=now),
             "throughput": throughput(session, now=now),
             "batches": batch_status(session, now=now),
             "recent": [
@@ -212,10 +213,81 @@ def throughput(session: Session, *, now: datetime) -> dict:
             name: {"attempts": count, "distinct_facts": unique}
             for name, count, unique in rows
         },
+        "unavailable_by_cause": unavailable_causes(session, window),
     }
 
 
-def _candidates(session: Session, now: datetime, *, limit: int = 1):
+def unavailable_causes(session: Session, window) -> dict:
+    """Aggregate fixed categories in SQL, never export stored reason text.
+
+    Older/single-review rows may have no reason. Keep those unknown instead of
+    inferring a provider failure or attributing retry churn to oversized files.
+    """
+    reason = FactReviewRun.result["reason"].as_string()
+    summary = FactReviewRun.result["summary"].as_string()
+    category = case(
+        (reason == "unsupported file representation", "file_representation"),
+        (
+            reason.in_(
+                (
+                    "source collection budget exhausted",
+                    "source collection deadline exhausted",
+                )
+            ),
+            "collection_bound",
+        ),
+        (
+            reason.in_(
+                (
+                    "checks exceed one complete page",
+                    "incomplete check runs",
+                    "incomplete commit statuses",
+                )
+            ),
+            "incomplete_checks",
+        ),
+        (
+            reason.in_(
+                (
+                    "invalid source file",
+                    "source file size mismatch",
+                    "malformed GitHub response",
+                    "malformed issue identity or state",
+                    "malformed pull request identity or head",
+                    "missing main commit",
+                )
+            ),
+            "invalid_source_response",
+        ),
+        (reason.in_(("GitHub returned 401", "GitHub returned 403")), "source_access"),
+        (reason == "GitHub returned 429", "source_rate_limit"),
+        (reason.startswith("GitHub returned 5"), "source_server_error"),
+        (
+            summary == "Source review: unavailable (invalid reviewer output)",
+            "invalid_reviewer_output",
+        ),
+        else_="other_or_unrecorded",
+    )
+    rows = session.exec(
+        select(category, func.count(), func.count(func.distinct(FactReviewRun.note_id)))
+        .where(
+            *window,
+            FactReviewRun.status == "complete",
+            FactReviewRun.result["outcome"].as_string() == "unavailable",
+        )
+        .group_by(category)
+    ).all()
+    return {
+        name: {
+            "attempts": count,
+            "distinct_facts": unique,
+            "repeat_attempts": count - unique,
+        }
+        for name, count, unique in rows
+    }
+
+
+def _candidate_query(now: datetime):
     from knowledge import review_coverage as coverage
 
     newer = aliased(ReviewOutcome)
@@ -291,7 +363,7 @@ def _candidates(session: Session, now: datetime, *, limit: int = 1):
         .correlate(Note)
         .exists()
     )
-    return session.exec(
+    return (
         select(Note)
         .where(
             *_review_pool(now),
@@ -307,8 +379,21 @@ def _candidates(session: Session, now: datetime, *, limit: int = 1):
             Note.review_after.asc().nulls_first(),
             Note.id,
         )
-        .limit(limit)
-    ).all()
+    )
+
+
+def _candidates(session: Session, now: datetime, *, limit: int = 1):
+    return session.exec(_candidate_query(now).limit(limit)).all()
+
+
+def eligible_count(session: Session, *, now: datetime) -> int:
+    """Current unique eligible claims, with the exact worker eligibility filters.
+
+    Excludes pending claims, cooldowns and unchanged unsupported revisions. This
+    is not the broader overdue inventory and does not reserve or schedule work.
+    """
+    query = _candidate_query(now).order_by(None).subquery()
+    return session.exec(select(func.count()).select_from(query)).one()
 
 
 def _candidate(session: Session, now: datetime):
