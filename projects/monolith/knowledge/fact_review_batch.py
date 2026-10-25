@@ -131,6 +131,27 @@ def _failure(session, key, status, reason, now, *, commit=True, identity=None):
         session.commit()
 
 
+def _defer(session, key, reason, now):
+    """Close only an untouched reservation, without inventing a source outcome."""
+    run = session.exec(
+        select(FactReviewRun)
+        .where(FactReviewRun.invocation_key == key)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    if run.status == "abandoned":
+        raise ExtractionOutputInvalid("review member abandoned by operator recovery")
+    if run.status != "complete" and not run.sources:
+        run.status, run.completed_at = "complete", now
+        run.result = {
+            "note_id": run.note_id,
+            "outcome": "deferred",
+            "summary": "Source review: untouched reservation deferred",
+            "reason": reason[:300],
+        }
+    session.commit()
+
+
 def _prompt(runs):
     # Sources are stored with content-derived IDs. The model may cite only the
     # source IDs explicitly attached to each claim, even when text is shared.
@@ -192,8 +213,10 @@ def _finish(session, key, now, *, transaction_guard=None, commit=True):
     batch.result = {
         "summary": f"Source review: {len(runs)} facts, {counts}",
         "facts": len(runs),
+        "attempted_facts": len(runs) - counts.get("deferred", 0),
+        "deferred_facts": counts.get("deferred", 0),
         "outcomes": counts,
-        "retry_required": bool(counts) and set(counts) <= {"unavailable"},
+        "retry_required": bool(counts) and set(counts) <= {"unavailable", "deferred"},
     }
     result = dict(batch.result)
     if commit:
@@ -238,7 +261,7 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
             session.commit()
         except EvidenceUnavailable as exc:
             for member in keys:
-                _failure(session, member, "unavailable", str(exc), now)
+                _defer(session, member, str(exc), now)
             batch = _batch(session, key, lock=True)
             batch.metrics = {
                 k: batch.metrics.get(k, 0) + v for k, v in collector.metrics().items()
@@ -253,6 +276,10 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
                 continue
             claim = dict(run.claim)
             session.commit()
+            if collector.stopped:
+                _defer(session, member, collector.stopped, now)
+                continue
+            before_reads = (collector.requests, collector.cache_hits)
             try:
                 if observed is None or now - observed > review.MAX_EVIDENCE_AGE:
                     raise EvidenceUnavailable("batch evidence is stale")
@@ -273,6 +300,12 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
                     for source in sources
                 ]
             except EvidenceUnavailable as exc:
+                if collector.stopped and before_reads == (
+                    collector.requests,
+                    collector.cache_hits,
+                ):
+                    _defer(session, member, str(exc), now)
+                    continue
                 _failure(
                     session,
                     member,
@@ -454,6 +487,7 @@ def status(session: Session, *, now: datetime) -> dict:
         FactReviewRun.completed_at >= now - timedelta(hours=1),
         FactReviewRun.completed_at <= now,
         FactReviewRun.note_id.is_not(None),
+        review.attempted_receipt(),
     )
     completed = session.exec(
         select(func.count(func.distinct(FactReviewRun.note_id))).where(*hour)
