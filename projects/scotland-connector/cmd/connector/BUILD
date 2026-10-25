@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/scotland-connector/cmd/connector",
     visibility = ["//visibility:private"],
     deps = [
+        "//projects/scotland-connector/internal/analytics",
         "//projects/scotland-connector/internal/connector",
         "//projects/scotland-connector/internal/httpapi",
         "//projects/scotland-connector/internal/mcp",
@@ -28,5 +29,12 @@ go_test(
     name = "connector_test",
     srcs = ["main_test.go"],
     embed = [":connector_lib"],
-    deps = ["//projects/scotland-connector/internal/fixture"],
+    deps = [
+        "//projects/scotland-connector/internal/fixture",
+        "//projects/scotland-connector/internal/mcp",
+        "//projects/scotland-connector/internal/meter",
+        "@io_opentelemetry_go_proto_otlp//collector/metrics/v1:metrics",
+        "@io_opentelemetry_go_proto_otlp//metrics/v1:metrics",
+        "@org_golang_google_protobuf//proto",
+    ],
 )

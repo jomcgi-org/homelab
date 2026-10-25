@@ -444,8 +444,9 @@ the most recent five-minute boundary. The fixed group limit is 16; reaching
 it is unknown, with no pagination or automatic retry.
 
 The query uses `httpRequestsAdaptiveGroups`, `count` and `cacheStatus`, scoped
-by exact hostname AND exact connector plan path AND GET AND
-`requestSource=eyeball`, over `[datetime_geq, datetime_lt)`. The application
+by exact hostname AND exact connector plan path AND
+`clientRequestHTTPMethodName=GET` AND `requestSource=eyeball`, over
+`[datetime_geq, datetime_lt)`. The application
 checks that hostname and path match `PUBLIC_BASE_URL`. The configured hub
 population is `jomcgi.dev/scotland/v1/plan`. POST check and MCP are outside
 this cacheable population. No whole-zone or origin-count fallback exists.
@@ -473,10 +474,13 @@ observations emit no ratio or count, including between polls.
 [filter grammar](https://developers.cloudflare.com/analytics/graphql-api/features/filtering/),
 [sampling contract](https://developers.cloudflare.com/analytics/graphql-api/sampling/)
 and [cache status semantics](https://developers.cloudflare.com/cache/concepts/cache-responses/)
-support the staged reader shape. Dataset/filter availability and the exact
-zone schema still need authorized introspection and real-response validation.
-Fixture success establishes local parsing only. Cache Analytics can require a
-paid plan; this delivery makes no account or plan change.
+describe the population, filtering and interpretation. Cloudflare's
+[exporter RequestMethodMetrics query](https://github.com/cloudflare/cloudflare-prometheus-exporter/blob/7fc9e888/src/cloudflare/gql/queries.ts#L721-L743)
+uses `clientRequestHTTPMethodName` for the method dimension on
+`httpRequestsAdaptiveGroups`. Dataset/filter availability and the exact zone
+schema still need authorized introspection and real-response validation.
+Fixture success establishes local parsing only. Cache Analytics can require
+a paid plan; this delivery makes no account or plan change.
 
 Repository delivery for #7245 is staged with live acceptance pending. The issue
 retains rollout authorization, Honeycomb per-tool/client-class queries,

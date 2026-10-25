@@ -41,7 +41,7 @@ func TestHTTPSFiltersAndUnknownAfterFailure(t *testing.T) {
 			t.Error("request JSON")
 		}
 		f := req.Variables.Filter
-		if len(f) != 6 || f["clientRequestHTTPHost"] != "example.test" || f["clientRequestPath"] != "/scotland/v1/plan" || f["clientRequestHTTPMethod"] != "GET" || f["requestSource"] != "eyeball" || !strings.Contains(req.Query, "limit: 16") || !strings.Contains(req.Query, "cacheStatus") {
+		if len(f) != 6 || f["clientRequestHTTPHost"] != "example.test" || f["clientRequestPath"] != "/scotland/v1/plan" || f["clientRequestHTTPMethodName"] != "GET" || f["requestSource"] != "eyeball" || !strings.Contains(req.Query, "limit: 16") || !strings.Contains(req.Query, "cacheStatus") {
 			t.Errorf("population: %+v %s", f, req.Query)
 		}
 		start, _ := time.Parse(time.RFC3339, f["datetime_geq"])

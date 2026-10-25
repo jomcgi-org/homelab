@@ -124,7 +124,7 @@ func (r *Reader) Poll(ctx context.Context, now time.Time) error {
 	r.mu.Unlock()
 	end := now.UTC().Truncate(PollInterval).Add(-Lag)
 	start := end.Add(-Window)
-	filter := map[string]any{"datetime_geq": start.Format(time.RFC3339), "datetime_lt": end.Format(time.RFC3339), "clientRequestHTTPHost": r.cfg.Hostname, "clientRequestPath": r.cfg.PlanPath, "clientRequestHTTPMethod": "GET", "requestSource": "eyeball"}
+	filter := map[string]any{"datetime_geq": start.Format(time.RFC3339), "datetime_lt": end.Format(time.RFC3339), "clientRequestHTTPHost": r.cfg.Hostname, "clientRequestPath": r.cfg.PlanPath, "clientRequestHTTPMethodName": "GET", "requestSource": "eyeball"}
 	// No time/path grouping: the only dimension is the finite cache status set.
 	// Reaching limit is treated as truncation, with no pagination or retry.
 	query := `query ConnectorCache($zoneTag: string, $filter: ZoneHttpRequestsAdaptiveGroupsFilter_InputObject) { viewer { zones(filter: {zoneTag: $zoneTag}) { httpRequestsAdaptiveGroups(limit: 16, filter: $filter) { count dimensions { cacheStatus } } } } }`
