@@ -486,6 +486,14 @@ callers and repositories after an observed rate limit, or a successful response
 that consumes the last request. It respects the response's reset and retry
 headers, and backs off when those headers are absent or stale. Calls during the
 cooldown fail before network I/O and do not supply cached ownership evidence.
+The same reader emits bounded minute-window counters for completed network
+attempts, response status families and reads deferred without network I/O.
+Endpoint families are fixed labels, never repository names, object IDs, query
+strings or credentials. Observed quota consumption includes every caller
+sharing that provider quota and is reported separately from local requests.
+Concurrent response order and quota resets cannot manufacture consumption.
+These process-local diagnostics add no requests and grant no authority.
+
 A later natural tick reads GitHub again after the deadline. This is process
 pacing, not a distributed quota ledger: after a leader replacement, its first
 response establishes the new process's wait. Requests already in flight are not

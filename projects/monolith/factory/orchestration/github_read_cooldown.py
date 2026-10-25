@@ -61,3 +61,74 @@ class GitHubReadCooldown:
                 "retry_after_seconds": math.ceil(delay + 1),
                 "retry_at_epoch": math.ceil(wall + delay + 1),
             }
+
+
+class GitHubReadTelemetry:
+    """Bounded process-local counters, never request contents or authority."""
+
+    INTERVAL_SECONDS = 60
+    _ROUTES = {"issues", "pulls", "commits", "check-runs"}
+
+    def __init__(self, *, monotonic=None):
+        self._monotonic = monotonic or time.monotonic
+        self._lock = threading.Lock()
+        self._started = self._monotonic()
+        self._counts = {}
+        self._quota = None
+        self._provider_consumption = 0
+        self._quota_samples = 0
+
+    def observe(self, suffix=None, metadata=None, *, deferred=False):
+        # Only fixed endpoint families enter the counters, not repositories,
+        # object identifiers, queries, tokens, request IDs or response bodies.
+        family = str(suffix or "").split("?", 1)[0].split("/", 1)[0]
+        family = family if family in self._ROUTES else "other"
+        metadata = metadata or {}
+        with self._lock:
+            key = "deferred" if deferred else f"requests_{family}"
+            self._counts[key] = self._counts.get(key, 0) + 1
+            if not deferred:
+                status = metadata.get("status")
+                category = (
+                    f"responses_{status // 100}xx"
+                    if isinstance(status, int) and 100 <= status < 600
+                    else "without_response"
+                )
+                self._counts[category] = self._counts.get(category, 0) + 1
+                remaining, reset = metadata.get("remaining"), metadata.get("reset")
+                if (
+                    isinstance(remaining, str)
+                    and remaining.isascii()
+                    and remaining.isdecimal()
+                    and isinstance(reset, str)
+                    and reset.isascii()
+                    and reset.isdecimal()
+                    and len(remaining) <= 12
+                    and len(reset) <= 12
+                ):
+                    current = (int(reset), int(remaining))
+                    if self._quota is not None and self._quota[0] == current[0]:
+                        self._provider_consumption += max(
+                            0, self._quota[1] - current[1]
+                        )
+                        current = (current[0], min(current[1], self._quota[1]))
+                    if self._quota is None or current[0] >= self._quota[0]:
+                        self._quota = current
+                    self._quota_samples += 1
+            now = self._monotonic()
+            if now - self._started < self.INTERVAL_SECONDS:
+                return None
+            result = {
+                "window_seconds": round(now - self._started, 3),
+                "counts": self._counts,
+                "quota_samples": self._quota_samples,
+                # This includes every consumer sharing the provider quota.
+                # It is not an attribution of that usage to the factory.
+                "observed_shared_consumption": self._provider_consumption,
+                "observed_remaining": self._quota[1] if self._quota_samples else None,
+                "observed_reset_epoch": self._quota[0] if self._quota_samples else None,
+            }
+            self._counts = {}
+            self._provider_consumption = self._quota_samples = 0
+            self._started = now
+            return result

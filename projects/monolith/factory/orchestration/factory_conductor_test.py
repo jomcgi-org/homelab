@@ -24175,3 +24175,112 @@ def test_capture_dispatch_pins_readonly_and_default_ttl(monkeypatch):
             fan_out=True,
             parallel=4,
         )
+
+
+def test_github_read_telemetry_counts_only_network_requests_and_safe_families(
+    monkeypatch, caplog
+):
+    import httpx
+    from factory.orchestration.github_read_cooldown import (
+        GitHubReadTelemetry,
+        GitHubReadDeferred,
+    )
+
+    clock = [0.0]
+    telemetry = GitHubReadTelemetry(monotonic=lambda: clock[0])
+    monkeypatch.setattr(conductor, "_github_read_telemetry", telemetry)
+    now = int(conductor.time.time())
+    responses = iter(
+        [
+            httpx.Response(
+                200,
+                headers={
+                    "x-ratelimit-remaining": "5",
+                    "x-ratelimit-reset": str(now + 600),
+                },
+                json={},
+            ),
+            httpx.Response(
+                403,
+                headers={
+                    "x-ratelimit-remaining": "0",
+                    "x-ratelimit-reset": str(now + 600),
+                },
+                json={"message": "API rate limit exceeded"},
+            ),
+        ]
+    )
+    requests = []
+    client_type = httpx.Client
+
+    def handle(request):
+        requests.append(request)
+        return next(responses)
+
+    monkeypatch.setattr(
+        conductor.httpx,
+        "Client",
+        lambda **kwargs: client_type(transport=httpx.MockTransport(handle)),
+    )
+    with caplog.at_level("INFO"):
+        conductor.github_get("private/repo", "issues/123?secret=never-log")
+        with pytest.raises(httpx.HTTPStatusError):
+            conductor.github_get("private/repo", "pulls/456")
+        clock[0] = 60
+        with pytest.raises(GitHubReadDeferred):
+            conductor.github_get("private/repo", "commits/private-sha/status")
+    assert len(requests) == 2
+    record = next(
+        r.message
+        for r in caplog.records
+        if r.message.startswith("factory GitHub read window:")
+    )
+    sample = json.loads(record.split(": ", 1)[1])
+    assert sample["counts"] == {
+        "requests_issues": 1,
+        "responses_2xx": 1,
+        "requests_pulls": 1,
+        "responses_4xx": 1,
+        "deferred": 1,
+    }
+    assert sample["observed_shared_consumption"] == 5
+    assert sample["observed_remaining"] == 0
+    assert all(
+        secret not in record
+        for secret in ("private", "secret", "never-log", "issues/123", "pulls/456")
+    )
+    clock[0] = 120
+    sample = telemetry.observe(deferred=True)
+    assert sample["counts"] == {"deferred": 1}
+    assert sample["quota_samples"] == 0 and sample["observed_remaining"] is None
+
+
+def test_github_read_telemetry_handles_quota_resets_out_of_order_and_missing_headers():
+    from factory.orchestration.github_read_cooldown import GitHubReadTelemetry
+
+    clock = [0.0]
+    telemetry = GitHubReadTelemetry(monotonic=lambda: clock[0])
+    for remaining, reset in (
+        ("10", "100"),
+        ("5", "100"),
+        ("8", "100"),
+        ("4", "100"),
+        ("5000", "200"),
+        ("0", "100"),
+        ("4999", "200"),
+    ):
+        telemetry.observe(
+            "issues/1", {"status": 200, "remaining": remaining, "reset": reset}
+        )
+    telemetry.observe("unknown-private-path?secret=value")
+    clock[0] = 60
+    sample = telemetry.observe(
+        "commits/private/status",
+        {"status": 200, "remaining": "secret", "reset": "secret"},
+    )
+    assert sample["observed_shared_consumption"] == 7
+    assert sample["observed_remaining"] == 4999
+    assert sample["observed_reset_epoch"] == 200
+    assert sample["counts"]["requests_other"] == 1
+    assert sample["counts"]["without_response"] == 1
+    assert len(sample["counts"]) == 5
