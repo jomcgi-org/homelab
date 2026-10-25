@@ -10,8 +10,10 @@ import (
 	"time"
 )
 
-const NOAAURL = "https://services.swpc.noaa.gov/json/ovation_aurora_latest.json"
-const METURL = "https://api.met.no/weatherapi/locationforecast/2.0/complete"
+const (
+	NOAAURL = "https://services.swpc.noaa.gov/json/ovation_aurora_latest.json"
+	METURL  = "https://api.met.no/weatherapi/locationforecast/2.0/complete"
+)
 
 // WeatherInput carries the unfiltered provider body. The existing stars
 // sites.json hours are intentionally not an input: daylight and capped rows

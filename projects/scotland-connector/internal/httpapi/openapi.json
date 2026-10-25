@@ -17,13 +17,49 @@
         "summary": "Check near-term aurora conditions at a supported Scottish site",
         "description": "Snapshot-only heuristic, default-off pending operational acceptance. NOAA support is its exact forecast instant; unsupported past/future instants return unknown. A site must be within 1 km with timestamped MET cloud and complete sampled northern terrain. Stale, missing or insufficient evidence returns unknown. This is not calibrated local sighting probability. Responses use no-store on browser and shared caches, with no stale fallback or ETag validation.",
         "parameters": [
-          {"name":"lat","in":"query","required":true,"schema":{"type":"number","minimum":54.5,"maximum":61},"description":"Latitude in decimal degrees, not rounded for terrain identity."},
-          {"name":"lon","in":"query","required":true,"schema":{"type":"number","minimum":-9,"maximum":-0.5}},
-          {"name":"at","in":"query","required":true,"schema":{"type":"string","format":"date-time","maxLength":40},"description":"Requested instant with timezone. Only NOAA's forecast_at instant is supported; there is no fixed 90-minute validity interval."}
+          {
+            "name": "lat",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "number", "minimum": 54.5, "maximum": 61 },
+            "description": "Latitude in decimal degrees, not rounded for terrain identity."
+          },
+          {
+            "name": "lon",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "number", "minimum": -9, "maximum": -0.5 }
+          },
+          {
+            "name": "at",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 40
+            },
+            "description": "Requested instant with timezone. Only NOAA's forecast_at instant is supported; there is no fixed 90-minute validity interval."
+          }
         ],
         "responses": {
-          "200":{"description":"Explained assessment, including unknown when disabled or unsupported","headers":{"Cache-Control":{"schema":{"type":"string","const":"no-store"}},"Cloudflare-CDN-Cache-Control":{"schema":{"type":"string","const":"no-store"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AuroraResponse"}}}},
-          "400":{"$ref":"#/components/responses/BadRequest"}
+          "200": {
+            "description": "Explained assessment, including unknown when disabled or unsupported",
+            "headers": {
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              },
+              "Cloudflare-CDN-Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuroraResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
         }
       }
     },
@@ -230,19 +266,121 @@
     },
     "schemas": {
       "AuroraResponse": {
-        "type":"object","required":["data","meta"],
-        "properties":{"data":{"$ref":"#/components/schemas/AuroraAssessment"},"meta":{"$ref":"#/components/schemas/Meta"}}
+        "type": "object",
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/AuroraAssessment" },
+          "meta": { "$ref": "#/components/schemas/Meta" }
+        }
       },
       "AuroraAssessment": {
-        "type":"object","required":["verdict","why","at","policy","evidence"],
-        "properties":{
-          "verdict":{"$ref":"#/components/schemas/Verdict"},"why":{"type":"string"},"at":{"type":"string","format":"date-time"},"policy":{"type":"string","const":"aurora-point-v1"},
-          "site_id":{"type":"string"},"site_lat":{"type":"number"},"site_lon":{"type":"number"},"distance_km":{"type":"number","maximum":1},
-          "evidence":{"type":"object","required":["noaa","weather","terrain","darkness"],"additionalProperties":{"type":"object","required":["status","why"],"properties":{"status":{"type":"string","enum":["supported","unknown"]},"why":{"type":"string"}}}},
-          "noaa":{"type":"object","required":["observed_at","forecast_at","collected_at","policy_expires_at","support","no_lead"],"properties":{"observed_at":{"type":"string","format":"date-time"},"forecast_at":{"type":"string","format":"date-time"},"collected_at":{"type":"string","format":"date-time"},"policy_expires_at":{"type":"string","format":"date-time","description":"Application collection freshness only; does not extend support."},"support":{"type":"string"},"no_lead":{"type":"boolean","description":"Forecast and observation timestamps coincide. The payload does not identify the upstream forcing mode."}}},
-          "weather":{"type":"object","required":["issued_at","collected_at","hours"],"properties":{"issued_at":{"type":"string","format":"date-time"},"collected_at":{"type":"string","format":"date-time"},"hours":{"type":"array","maxItems":96,"items":{"type":"object","required":["time","cloud_pct"],"properties":{"time":{"type":"string","format":"date-time"},"cloud_pct":{"type":["number","null"],"minimum":0,"maximum":100}}}}}},
-          "terrain":{"type":["object","null"],"properties":{"source":{"type":"string"},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"algorithm":{"type":"string"},"north_deg":{"type":"array","minItems":19,"maxItems":19,"items":{"type":["number","null"],"minimum":0,"maximum":90}}}},
-          "noaa_cell_intensity":{"type":"number","minimum":0,"maximum":100},"noaa_cell_lon_lat":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"number"}},"cloud_pct":{"type":"number","minimum":0,"maximum":100},"sun_elevation_deg":{"type":"number"}
+        "type": "object",
+        "required": ["verdict", "why", "at", "policy", "evidence"],
+        "properties": {
+          "verdict": { "$ref": "#/components/schemas/Verdict" },
+          "why": { "type": "string" },
+          "at": { "type": "string", "format": "date-time" },
+          "policy": { "type": "string", "const": "aurora-point-v1" },
+          "site_id": { "type": "string" },
+          "site_lat": { "type": "number" },
+          "site_lon": { "type": "number" },
+          "distance_km": { "type": "number", "maximum": 1 },
+          "evidence": {
+            "type": "object",
+            "required": ["noaa", "weather", "terrain", "darkness"],
+            "additionalProperties": {
+              "type": "object",
+              "required": ["status", "why"],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": ["supported", "unknown"]
+                },
+                "why": { "type": "string" }
+              }
+            }
+          },
+          "noaa": {
+            "type": "object",
+            "required": [
+              "observed_at",
+              "forecast_at",
+              "collected_at",
+              "policy_expires_at",
+              "support",
+              "no_lead"
+            ],
+            "properties": {
+              "observed_at": { "type": "string", "format": "date-time" },
+              "forecast_at": { "type": "string", "format": "date-time" },
+              "collected_at": { "type": "string", "format": "date-time" },
+              "policy_expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Application collection freshness only; does not extend support."
+              },
+              "support": { "type": "string" },
+              "no_lead": {
+                "type": "boolean",
+                "description": "Forecast and observation timestamps coincide. The payload does not identify the upstream forcing mode."
+              }
+            }
+          },
+          "weather": {
+            "type": "object",
+            "required": ["issued_at", "collected_at", "hours"],
+            "properties": {
+              "issued_at": { "type": "string", "format": "date-time" },
+              "collected_at": { "type": "string", "format": "date-time" },
+              "hours": {
+                "type": "array",
+                "maxItems": 96,
+                "items": {
+                  "type": "object",
+                  "required": ["time", "cloud_pct"],
+                  "properties": {
+                    "time": { "type": "string", "format": "date-time" },
+                    "cloud_pct": {
+                      "type": ["number", "null"],
+                      "minimum": 0,
+                      "maximum": 100
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "terrain": {
+            "type": ["object", "null"],
+            "properties": {
+              "source": { "type": "string" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "algorithm": { "type": "string" },
+              "north_deg": {
+                "type": "array",
+                "minItems": 19,
+                "maxItems": 19,
+                "items": {
+                  "type": ["number", "null"],
+                  "minimum": 0,
+                  "maximum": 90
+                }
+              }
+            }
+          },
+          "noaa_cell_intensity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "noaa_cell_lon_lat": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "number" }
+          },
+          "cloud_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+          "sun_elevation_deg": { "type": "number" }
         }
       },
       "Source": {
