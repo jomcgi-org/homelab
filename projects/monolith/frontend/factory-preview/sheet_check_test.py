@@ -6,6 +6,7 @@ import os
 import tempfile
 import threading
 import unittest
+import zipfile
 from contextlib import redirect_stdout
 from functools import partial
 from http.server import ThreadingHTTPServer
@@ -19,6 +20,7 @@ from sheet_check import (
     capture,
     check_schemes,
     compare,
+    validate_bundle,
     validate_capture,
     viewport_page_capture,
 )
@@ -160,6 +162,68 @@ class ComparisonTest(unittest.TestCase):
 
 
 class BaselineContractTest(unittest.TestCase):
+    def test_all_trace_categories_require_recorded_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            keys = [
+                f"overview-{width}-{scheme}"
+                for width in (390, 1440)
+                for scheme in ("light", "dark")
+            ]
+            traces = (
+                [f"{key}-trace.zip" for key in keys]
+                + [
+                    f"scheme-{view}-{scheme}-trace.zip"
+                    for view in ("post", "overview", "updates")
+                    for scheme in ("light", "dark")
+                ]
+                + [f"behavior-{view}-trace.zip" for view in ("activity", "overview")]
+            )
+            result = {
+                "revision": "exact-head",
+                "build": {"production_sha": "exact-head"},
+                "captures": [
+                    {
+                        "key": key,
+                        "repeatability_images": [f"{key}.png"],
+                        "checks": {},
+                        "opening": {"geometry": {"document": {"scrollHeight": 1}}},
+                    }
+                    for key in keys
+                ],
+                "scheme_checks": [{}] * 6,
+                "behavior_checks": [{}] * 2,
+            }
+
+            def write_trace(name, member="trace.trace", data=b'{"type":"before"}\n'):
+                with zipfile.ZipFile(root / name, "w") as archive:
+                    if member is not None:
+                        archive.writestr(member, data)
+
+            for name in traces:
+                write_trace(name)
+            with (
+                patch("sheet_check.VIEWS", ["overview"]),
+                patch(
+                    "sheet_check.validate_capture",
+                    return_value={"document": {"height": 1}},
+                ),
+            ):
+                validate_bundle(root, result)
+                for name in traces:
+                    for member, data in (
+                        (None, b""),
+                        ("trace.trace", b""),
+                        ("other.json", b"{}"),
+                    ):
+                        with self.subTest(trace=name, member=member, data=data):
+                            write_trace(name, member, data)
+                            with self.assertRaisesRegex(
+                                AssertionError, "missing or corrupt browser trace"
+                            ):
+                                validate_bundle(root, result)
+                    write_trace(name)
+
     def test_unknown_or_mixed_source_contract_fails_closed(self):
         for source in (b"", b"window.matchMedia('dark')", b"<SchemePreference />"):
             with self.assertRaisesRegex(AssertionError, "unknown archived"):

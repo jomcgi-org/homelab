@@ -221,6 +221,18 @@ def validate_capture(path):
     return manifest
 
 
+def validate_trace(path):
+    """Every checklist archive must contain a nonempty Playwright trace."""
+    import zipfile
+
+    with zipfile.ZipFile(path) as trace:
+        if trace.testzip() is not None or not any(
+            entry.filename.endswith(".trace") and entry.file_size > 0
+            for entry in trace.infolist()
+        ):
+            raise AssertionError(f"missing or corrupt browser trace: {path}")
+
+
 def validate_bundle(root, result):
     """Validate the complete checklist before an independent consumer reads it."""
     expected = {
@@ -235,8 +247,6 @@ def validate_bundle(root, result):
         raise AssertionError("missing or duplicate checklist cases")
     if result["build"]["production_sha"] != result["revision"]:
         raise AssertionError("stale source provenance")
-    import zipfile
-
     for record in records:
         key = record["key"]
         names = list(record["repeatability_images"])
@@ -254,26 +264,18 @@ def validate_bundle(root, result):
                 != record["opening"]["geometry"]["document"]["scrollHeight"]
             ):
                 raise AssertionError("stale opening geometry")
-        with zipfile.ZipFile(root / f"{key}-trace.zip") as trace:
-            if trace.testzip() is not None or not any(
-                n.endswith(".trace") for n in trace.namelist()
-            ):
-                raise AssertionError("missing or corrupt browser trace")
+        validate_trace(root / f"{key}-trace.zip")
     if len(result["scheme_checks"]) != 6 or len(result["behavior_checks"]) != 2:
         raise AssertionError("incomplete theme or behavior checklist")
     for view in ("post", "overview", "updates"):
         for scheme in ("light", "dark"):
             for state in ("persisted", "reload"):
                 validate_capture(root / f"scheme-{view}-{scheme}-{state}.png")
-            with zipfile.ZipFile(root / f"scheme-{view}-{scheme}-trace.zip") as trace:
-                if trace.testzip() is not None:
-                    raise AssertionError("corrupt theme trace")
+            validate_trace(root / f"scheme-{view}-{scheme}-trace.zip")
     validate_capture(root / "behavior-activity-filtered.png")
     for view in ("activity", "overview"):
         validate_capture(root / f"behavior-{view}-polled.png")
-        with zipfile.ZipFile(root / f"behavior-{view}-trace.zip") as trace:
-            if trace.testzip() is not None:
-                raise AssertionError("corrupt behavior trace")
+        validate_trace(root / f"behavior-{view}-trace.zip")
 
 
 def capture(
