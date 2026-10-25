@@ -477,7 +477,7 @@ def test_throughput_counts_attempts_and_distinct_facts_separately(db):
             "renewed": {"attempts": 2, "distinct_facts": 1},
         },
         "unavailable_by_cause": {
-            "other_or_unrecorded": {
+            "unrecorded": {
                 "attempts": 2,
                 "distinct_facts": 1,
                 "repeat_attempts": 1,
@@ -913,11 +913,11 @@ def test_unavailable_cause_counts_are_redacted_and_distinguish_repeats(db):
         ("one", "unsupported file representation", "file_representation"),
         ("one", "unsupported file representation", "file_representation"),
         ("two", "source collection budget exhausted", "collection_bound"),
-        ("three", "GitHub returned 403", "source_access"),
+        ("three", "GitHub returned 403", "source_http_403"),
         ("four", "GitHub returned 429", "source_rate_limit"),
         ("five", "GitHub returned 503", "source_server_error"),
-        ("six", "PRIVATE_URL_TOKEN_ERROR", "other_or_unrecorded"),
-        ("seven", None, "other_or_unrecorded"),
+        ("six", "PRIVATE_URL_TOKEN_ERROR", "other"),
+        ("seven", None, "unrecorded"),
         ("eight", "incomplete check runs", "incomplete_checks"),
         ("nine", "invalid source file", "invalid_source_response"),
     ]
@@ -951,9 +951,9 @@ def test_unavailable_cause_counts_are_redacted_and_distinguish_repeats(db):
         "distinct_facts": 1,
         "repeat_attempts": 1,
     }
-    assert counts["other_or_unrecorded"] == {
-        "attempts": 2,
-        "distinct_facts": 2,
+    assert counts["unrecorded"] == {
+        "attempts": 1,
+        "distinct_facts": 1,
         "repeat_attempts": 0,
     }
     assert counts["invalid_reviewer_output"]["attempts"] == 1
@@ -1002,3 +1002,36 @@ def test_eligible_count_uses_worker_scope_pending_and_backoff_rules(db):
     )
     assert review.eligible_count(db, now=NOW + timedelta(minutes=6)) == 2
     assert db.get(FactReviewRun, "pending-count").status == "prepared"
+
+
+@pytest.mark.parametrize(
+    "reason,category",
+    [
+        ("batch source deadline exhausted", "collection_bound"),
+        ("batch source request budget exhausted", "collection_bound"),
+        ("batch source byte budget exhausted", "collection_bound"),
+        ("batch source transport byte budget exhausted", "collection_bound"),
+        ("batch source transport unavailable", "source_transport"),
+        ("batch evidence is stale", "stale_batch_evidence"),
+        ("GitHub returned 401", "source_http_401"),
+        ("GitHub returned 403", "source_http_403"),
+        ("GitHub returned 404", "source_http_404"),
+        ("unrecognized PRIVATE_ERROR", "other"),
+        ("", "unrecorded"),
+        (None, "unrecorded"),
+    ],
+)
+def test_batch_failure_categories_do_not_guess_or_export_reasons(db, reason, category):
+    db.add(
+        FactReviewRun(
+            invocation_key="batch-cause",
+            note_id="one",
+            created_at=NOW,
+            status="complete",
+            result={"outcome": "unavailable", "reason": reason},
+        )
+    )
+    db.commit()
+    assert review.throughput(db, now=NOW)["unavailable_by_cause"] == {
+        category: {"attempts": 1, "distinct_facts": 1, "repeat_attempts": 0}
+    }
