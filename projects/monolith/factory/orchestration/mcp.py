@@ -1746,7 +1746,9 @@ async def factory_preview_refinement_batch(
     Requires paused admissions, selected-only intake or an inactive prior batch,
     and no queued/uncertain work. Other admitted work retains its policy. Reads
     current ownership, PR references and receipt history. After separate enable,
-    refinement may write brief comments/labels and notify human decisions.
+    refinement may write brief comments and necessary verdict labels only.
+    Decisions remain private; external notifications and typed gate actions
+    are disabled for these receipts, including after the batch is replaced.
     No implementation, closure or landing is authorized by the batch.
     """
     principal = current_principal()
