@@ -32,7 +32,11 @@ from sqlmodel import Session, select
 from core.clock import aware
 from core.db import get_engine
 from core.github import GITHUB_API
-from factory.orchestration.github_read_cooldown import GitHubReadCooldown
+from factory.orchestration.github_read_cooldown import (
+    GitHubReadCooldown,
+    GitHubReadDeferred,
+    GitHubReadTelemetry,
+)
 from factory.execution import EFFORT_LEVELS
 from factory.orchestration import config as swarm_config
 from factory.orchestration import deviations, graph, runtime, factory_gates
@@ -333,6 +337,15 @@ DECISION_SCHEMA = {
 
 
 _github_read_cooldown = GitHubReadCooldown()
+_github_read_telemetry = GitHubReadTelemetry()
+
+
+def _record_github_read(suffix=None, metadata=None, *, deferred=False):
+    sample = _github_read_telemetry.observe(suffix, metadata, deferred=deferred)
+    if sample is not None:
+        logger.info(
+            "factory GitHub read window: %s", json.dumps(sample, sort_keys=True)
+        )
 
 
 def _github_rate_headers(response: httpx.Response) -> dict:
@@ -388,42 +401,51 @@ def _github_failure_metadata(response: httpx.Response) -> dict:
 def _github_read(repo: str, suffix: str) -> object:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("invalid repository")
-    _github_read_cooldown.check()
+    try:
+        _github_read_cooldown.check()
+    except GitHubReadDeferred:
+        _record_github_read(deferred=True)
+        raise
     headers = {"Accept": "application/vnd.github+json"}
     token = os.environ.get("GITHUB_API_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    with httpx.Client(timeout=10) as client:
-        with client.stream(
-            "GET", f"{GITHUB_API}/repos/{repo}/{suffix}", headers=headers
-        ) as response:
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError:
-                metadata = _github_failure_metadata(response)
+    metadata = None
+    try:
+        with httpx.Client(timeout=10) as client:
+            with client.stream(
+                "GET", f"{GITHUB_API}/repos/{repo}/{suffix}", headers=headers
+            ) as response:
+                metadata = _github_rate_headers(response)
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError:
+                    metadata = _github_failure_metadata(response)
+                    cooldown = _github_read_cooldown.observe(metadata)
+                    logger.warning(
+                        "factory GitHub read refused: %s",
+                        json.dumps(metadata, sort_keys=True),
+                    )
+                    if cooldown:
+                        logger.warning(
+                            "factory GitHub read cooldown: %s",
+                            json.dumps(cooldown, sort_keys=True),
+                        )
+                    raise
                 cooldown = _github_read_cooldown.observe(metadata)
-                logger.warning(
-                    "factory GitHub read refused: %s",
-                    json.dumps(metadata, sort_keys=True),
-                )
                 if cooldown:
                     logger.warning(
                         "factory GitHub read cooldown: %s",
                         json.dumps(cooldown, sort_keys=True),
                     )
-                raise
-            cooldown = _github_read_cooldown.observe(_github_rate_headers(response))
-            if cooldown:
-                logger.warning(
-                    "factory GitHub read cooldown: %s",
-                    json.dumps(cooldown, sort_keys=True),
-                )
-            data = bytearray()
-            for chunk in response.iter_bytes():
-                data.extend(chunk)
-                if len(data) > 1_000_000:
-                    raise ValueError("GitHub response exceeds factory limit")
-    return json.loads(data)
+                data = bytearray()
+                for chunk in response.iter_bytes():
+                    data.extend(chunk)
+                    if len(data) > 1_000_000:
+                        raise ValueError("GitHub response exceeds factory limit")
+        return json.loads(data)
+    finally:
+        _record_github_read(suffix, metadata)
 
 
 def github_get(repo: str, suffix: str) -> dict:
