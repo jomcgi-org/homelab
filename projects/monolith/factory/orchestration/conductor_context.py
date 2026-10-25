@@ -312,6 +312,7 @@ def _current_records(
 ) -> tuple[dict, dict, dict | None]:
     """Read current control, queue, task and decision records together."""
     snapshot = controls._snapshot(db, row)
+    snapshot["direction"] = controls.receipt_operator_direction(db, row)
     control = db.get(FactoryControl, "factory")
     queue = db.exec(
         select(FactoryReceipt)
@@ -736,6 +737,7 @@ def _planner_factory_context(task_id: str) -> dict:
         ):
             return {"ok": False, "reason": "invalid_receipt_authorization"}
         snapshot = controls._snapshot(db, row, body=True)
+        snapshot["direction"] = controls.receipt_operator_direction(db, row)
         decision = controls.escalation_view(snapshot)
         if decision is not None:
             # Operator chat is actor-private continuity input. The Planner gets

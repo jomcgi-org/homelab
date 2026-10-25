@@ -3168,6 +3168,97 @@ def status(*, session: Session | None = None) -> dict:
         }
 
 
+def receipt_operator_direction(db: Session, row: FactoryReceipt) -> dict | None:
+    """Read settled refinement scope without changing admission or landing grants.
+
+    Refinement and delivery have distinct receipts. A successful answer on the
+    former still explains the latter, but private conversation and historical
+    grants do not transfer. Existing delivery direction always takes precedence.
+    """
+    direction = json.loads(row.direction_json) if row.direction_json else None
+    if (
+        row.id is None
+        or is_advisory(receipt_task_class(row))
+        or any(key in (direction or {}) for key in ("option_key", "note", "effect"))
+    ):
+        return direction
+    prior = db.exec(
+        select(FactoryReceipt)
+        .where(
+            FactoryReceipt.repo == row.repo,
+            FactoryReceipt.issue_number == row.issue_number,
+            FactoryReceipt.generation == row.generation,
+            FactoryReceipt.id < row.id,
+        )
+        .order_by(FactoryReceipt.id.desc())
+        .limit(1)
+    ).first()
+    if (
+        prior is None
+        or prior.task_class != "refine"
+        or prior.state != "succeeded"
+        or prior.cancellation_requested
+        or not prior.escalation_json
+    ):
+        return direction
+    brief = json.loads(prior.escalation_json)
+    answer = brief.get("resolved")
+    if not isinstance(answer, dict):
+        return direction
+    identity = decision_identity(
+        {
+            "id": prior.id,
+            "repo": prior.repo,
+            "generation": prior.generation,
+            "escalation": brief,
+        }
+    )
+    option = next(
+        (
+            item
+            for item in brief.get("options", [])
+            if item.get("key") == answer.get("option_key")
+        ),
+        None,
+    )
+    if (
+        answer.get("effect") != "agent-ready"
+        or answer.get("decision_id") != identity
+        or not answer.get("actor")
+        or option is None
+        or option.get("effect") != "agent-ready"
+        or brief.get("issue_body_sha256") != issue_body_hash(row.body)
+        or _pending_request(db, prior.id)
+        or _pending_request(db, row.id)
+    ):
+        return direction
+    try:
+        decided = datetime.fromisoformat(answer["decided_at"])
+        created = row.created_at
+        if decided.tzinfo is None:
+            return direction
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if decided > created:
+            return direction
+    except (KeyError, TypeError, ValueError):
+        return direction
+    return {
+        **{
+            key: answer.get(key)
+            for key in ("option_key", "label", "effect", "actor", "note", "decided_at")
+        },
+        "question": brief.get("question"),
+        "detail": {
+            "scope": (option.get("detail") or {}).get("scope"),
+            "refinement_receipt_id": prior.id,
+            "refinement_decision_id": identity,
+            "refinement_comment_url": brief.get("comment_url"),
+        },
+        **(direction or {}),
+    }
+
+
 def operator_direction(task_id: str, *, session: Session | None = None) -> dict | None:
     """The operator's answer that re-admitted this task, or None.
 
@@ -3179,9 +3270,7 @@ def operator_direction(task_id: str, *, session: Session | None = None) -> dict 
     """
     with _read_session(session) as db:
         row = _receipt(db, task_id)
-        if row is None or not row.direction_json:
-            return None
-        return json.loads(row.direction_json)
+        return None if row is None else receipt_operator_direction(db, row)
 
 
 def task_snapshot(task_id: str, *, session: Session | None = None) -> dict:
