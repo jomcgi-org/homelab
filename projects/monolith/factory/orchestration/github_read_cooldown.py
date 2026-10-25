@@ -132,3 +132,44 @@ class GitHubReadTelemetry:
             self._provider_consumption = self._quota_samples = 0
             self._started = now
             return result
+
+
+def process_memory_snapshot():
+    """Bounded Linux counters, with absent evidence kept explicitly unknown."""
+
+    def read(path):
+        try:
+            with open(path, encoding="ascii") as handle:
+                return handle.read(4096)
+        except (OSError, UnicodeError):
+            return ""
+
+    def integer(text):
+        text = text.strip()
+        if not text.isascii() or not text.isdecimal() or len(text) > 19:
+            return None
+        value = int(text)
+        return value if value <= 2**63 - 1 else None
+
+    status = {}
+    for line in read("/proc/self/status").splitlines():
+        fields = line.split()
+        if len(fields) == 3 and fields[0] in {"VmRSS:", "VmHWM:"} and fields[2] == "kB":
+            value = integer(fields[1])
+            status[fields[0]] = (
+                value * 1024 if value is not None and value < 2**53 else None
+            )
+    current = integer(read("/sys/fs/cgroup/memory.current"))
+    limit = integer(read("/sys/fs/cgroup/memory.max"))
+    killed = None
+    for line in read("/sys/fs/cgroup/memory.events").splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "oom_kill":
+            killed = integer(fields[1])
+    return {
+        "rss_bytes": status.get("VmRSS:"),
+        "peak_rss_bytes": status.get("VmHWM:"),
+        "cgroup_memory_bytes": current,
+        "cgroup_memory_limit_bytes": limit,
+        "cgroup_oom_kills": killed,
+    }

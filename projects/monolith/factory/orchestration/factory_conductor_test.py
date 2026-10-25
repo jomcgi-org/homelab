@@ -24304,3 +24304,84 @@ def test_github_read_telemetry_distinguishes_immutable_read_families_without_pat
     }
     assert "private-object" not in json.dumps(sample)
     assert "secret" not in json.dumps(sample)
+
+
+def test_factory_memory_snapshot_is_bounded_numeric_and_missing_safe(monkeypatch):
+    import builtins
+    import io
+    from factory.orchestration import github_read_cooldown as reader
+
+    files = {
+        "/proc/self/status": "Name:\tprivate-name\nVmRSS:\t123 kB\nVmHWM:\t456 kB\n",
+        "/sys/fs/cgroup/memory.current": "789\n",
+        "/sys/fs/cgroup/memory.max": "1073741824\n",
+        "/sys/fs/cgroup/memory.events": "oom 2\noom_kill 1\nsecret private-value\n",
+    }
+    reads = []
+
+    class Bounded(io.StringIO):
+        def read(self, size=-1):
+            assert 0 < size <= 4096
+            return super().read(size)
+
+    def opened(path, **kwargs):
+        reads.append(path)
+        if path not in files:
+            raise OSError("private path unavailable")
+        return Bounded(files[path])
+
+    monkeypatch.setattr(builtins, "open", opened)
+    snapshot = reader.process_memory_snapshot()
+    assert snapshot == {
+        "rss_bytes": 123 * 1024,
+        "peak_rss_bytes": 456 * 1024,
+        "cgroup_memory_bytes": 789,
+        "cgroup_memory_limit_bytes": 1073741824,
+        "cgroup_oom_kills": 1,
+    }
+    assert len(reads) == 4
+    assert "private" not in json.dumps(snapshot)
+    files.clear()
+    assert all(value is None for value in reader.process_memory_snapshot().values())
+    files.update(
+        {
+            "/proc/self/status": "VmRSS: -1 kB\nVmHWM: secret kB\n",
+            "/sys/fs/cgroup/memory.current": "9" * 5000,
+            "/sys/fs/cgroup/memory.max": "max",
+            "/sys/fs/cgroup/memory.events": "oom_kill -1\n",
+        }
+    )
+    assert all(value is None for value in reader.process_memory_snapshot().values())
+
+
+def test_memory_sampling_only_occurs_when_read_window_is_emitted(monkeypatch, caplog):
+    from factory.orchestration.github_read_cooldown import GitHubReadTelemetry
+
+    clock = [0.0]
+    samples = []
+    monkeypatch.setattr(
+        conductor,
+        "_github_read_telemetry",
+        GitHubReadTelemetry(monotonic=lambda: clock[0]),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "process_memory_snapshot",
+        lambda: samples.append(True) or {"rss_bytes": 123},
+    )
+    for _ in range(100):
+        conductor._record_github_read("issues/1", {"status": 200})
+    assert not samples
+    clock[0] = 60
+    with caplog.at_level("INFO"):
+        conductor._record_github_read("issues/1", {"status": 200})
+    assert samples == [True]
+    record = next(
+        r.message
+        for r in caplog.records
+        if r.message.startswith("factory GitHub read window:")
+    )
+    sample = json.loads(record.split(": ", 1)[1])
+    assert sample["memory"]["rss_bytes"] == 123
+    assert set(sample["rollout_cache_entries"]) == {"ancestry", "files", "recent"}
+    assert all(type(value) is int for value in sample["rollout_cache_entries"].values())
