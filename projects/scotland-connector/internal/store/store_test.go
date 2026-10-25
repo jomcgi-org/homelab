@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -57,7 +58,13 @@ func snapshotStore(body []byte) (*Store, *fakeR2) {
 }
 
 func TestProducerBytesThroughStoreAndSevenDayPlanCheck(t *testing.T) {
-	s, f := snapshotStore(producerSnapshot)
+	// Match the producer's compact bytes after CI formats the shared fixture.
+	// Python compares this canonical form byte-for-byte with materialization.
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, producerSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	s, f := snapshotStore(compact.Bytes())
 	if err := s.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
