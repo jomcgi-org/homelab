@@ -14,7 +14,7 @@ from sqlmodel import select
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_improvement_fence as fence
 from factory.orchestration import factory_improvements as improvements
-from factory.orchestration.factory_improvement_preview import preview
+from factory.orchestration.factory_improvement_preview import digest, preview
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
 ACTOR = "factory:improvement-scout"
@@ -269,8 +269,7 @@ def dispatch_allowed(task_id: str) -> dict:
     if (
         receipt["generation"] != current["policy"].get("generation")
         or receipt["issue_number"] != _block(current["policy"]).get("issue_number")
-        or receipt["claim"].get("policy_digest")
-        != improvements._digest(current["policy"])
+        or receipt["claim"].get("policy_digest") != digest(current["policy"])
     ):
         return {"ok": False, "reason": "scout_policy_changed"}
     return eligibility(current)
@@ -333,7 +332,7 @@ def tick(policy: dict) -> dict:
             ACTOR,
             CLAIM,
             receipt_id=receipt_id,
-            policy_digest=improvements._digest(live["policy"]),
+            policy_digest=digest(live["policy"]),
             review_digest=current["review_digest"],
             quota_decisions=allowed["quota_decisions"],
         )
@@ -412,9 +411,7 @@ def _prompt(current, *, collection=None):
             "Observe current rules, open PRs/issues and ownership; do not duplicate active work.\n"
         )
     else:
-        evidence.update(
-            collection=collection, collection_digest=improvements._digest(collection)
-        )
+        evidence.update(collection=collection, collection_digest=digest(collection))
         text = (
             "Independently review the collected findings against current source, rules, active goals "
             "and complete open-work inventory. Reproduce or verify each evidence claim. Reject "
@@ -487,7 +484,7 @@ def reconcile(task, policy, nodes, runs, expected_version):
                 collected is None
                 or not isinstance(reviewed, dict)
                 or reviewed.get("approved") is not True
-                or reviewed.get("collection_digest") != improvements._digest(collected)
+                or reviewed.get("collection_digest") != digest(collected)
                 or reviewed.get("review_digest") != current["review_digest"]
                 or set(reviewed)
                 != {"approved", "review_digest", "collection_digest", "evidence"}
@@ -518,7 +515,7 @@ def reconcile(task, policy, nodes, runs, expected_version):
                     task_id=task_id,
                     receipt_id=receipt["id"],
                     review_digest=current["review_digest"],
-                    findings_digest=improvements._digest(batch["findings"]),
+                    findings_digest=digest(batch["findings"]),
                     approved=True,
                     evidence=reviewed["evidence"],
                     run_id=review_run["id"],

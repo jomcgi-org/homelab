@@ -187,6 +187,12 @@ def quota_decisions(
     return decisions
 
 
+def digest(value) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
 def fingerprint(repo: str, key: str) -> str:
     """Stable problem identity, independent of grant, reset, title and evidence age."""
     return hashlib.sha256(f"{repo}\n{key}".encode()).hexdigest()

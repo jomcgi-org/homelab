@@ -734,9 +734,9 @@ def problem_issues_tick(policy: dict) -> None:
 
     with _locked_session() as (db, _control):
         if source == "quota_improvement":
+            from factory.orchestration.factory_improvement_preview import digest
             from factory.orchestration.factory_improvements import (
                 _database_context,
-                _digest,
                 candidate_matches,
             )
 
@@ -752,7 +752,7 @@ def problem_issues_tick(policy: dict) -> None:
                 or not live_block["sources"][source]
                 or _control.version != source_detail.get("control_version")
                 or not live["intake_complete"]
-                or _digest(live) != source_detail.get("database_digest")
+                or digest(live) != source_detail.get("database_digest")
                 or not candidate_matches(source_detail, {**validated_context, **live})
             ):
                 _audit(

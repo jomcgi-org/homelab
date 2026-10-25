@@ -13,6 +13,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import factory.orchestration.factory_controls as controls
 import factory.orchestration.factory_problem_issues as producer
+from factory.orchestration.factory_improvement_preview import digest
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
@@ -1219,7 +1220,7 @@ def test_scout_review_requires_successful_independent_sessions(improvements):
             receipt_id=receipt_id,
             approved=True,
             review_digest=batch["review_digest"],
-            findings_digest=service._digest(batch["findings"]),
+            findings_digest=digest(batch["findings"]),
             run_id=review_id,
         )
     with Session(engine) as session:

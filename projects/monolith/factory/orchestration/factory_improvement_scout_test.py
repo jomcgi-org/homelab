@@ -11,6 +11,7 @@ from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_improvement_fence as fence
 from factory.orchestration import factory_improvement_scout as scout
 from factory.orchestration import factory_improvements as service
+from factory.orchestration.factory_improvement_preview import digest
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryClassTier,
@@ -438,7 +439,7 @@ def test_rejected_or_nonindependent_review_never_submits(
     review = {
         "approved": approved,
         "review_digest": context["review_digest"] if digest_matches else "b" * 64,
-        "collection_digest": service._digest(collection),
+        "collection_digest": digest(collection),
         "evidence": "Checked exact source",
     }
     runs = [
@@ -492,7 +493,7 @@ def test_approved_review_uses_existing_submit_once(db, monkeypatch):
     review = {
         "approved": True,
         "review_digest": context["review_digest"],
-        "collection_digest": service._digest(collection),
+        "collection_digest": digest(collection),
         "evidence": "Checked exact source",
     }
     runs = [
@@ -619,7 +620,7 @@ def test_approved_scout_persists_candidate_through_real_service(db, monkeypatch)
     review = {
         "approved": True,
         "review_digest": context["review_digest"],
-        "collection_digest": service._digest(collection),
+        "collection_digest": digest(collection),
         "evidence": "Verified exact source and dedup inventory",
     }
     runs = [
