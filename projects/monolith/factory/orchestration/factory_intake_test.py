@@ -208,18 +208,24 @@ def test_admission_eligibility_sql_matches_python(
         (9, "operator", "refine", False),
     ],
 )
-def test_refinement_batch_sql_matches_python(db, number, actor, task_class, expected):
+@pytest.mark.parametrize("repo", ["owner/repo", "owner/other"])
+def test_refinement_batch_sql_matches_python(
+    db, number, actor, task_class, expected, repo
+):
     configured = {
+        "repo": "owner/repo",
         "issue_numbers": [7],
         "intake": {"enabled": True, "refine_enabled": True, "refinement_batch": [9]},
     }
+    expected = expected and (number == 7 or repo == "owner/repo")
     assert (
-        admission_eligible(configured, number, actor, task_class=task_class) is expected
+        admission_eligible(configured, number, actor, task_class=task_class, repo=repo)
+        is expected
     )
     with Session(db) as session, session.begin():
         session.add(
             FactoryReceipt(
-                repo="owner/repo",
+                repo=repo,
                 issue_number=number,
                 generation=0,
                 title="candidate",

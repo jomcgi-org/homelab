@@ -2302,6 +2302,26 @@ def test_sweep_evidence_distinguishes_partial_read_and_recovery(db, monkeypatch)
     assert len(audits(db, "intake_evaluated")) == 2
 
 
+def test_refinement_batch_does_not_follow_other_repository_resume(db, monkeypatch):
+    calls = []
+
+    def read(repo, suffix):
+        calls.append(repo)
+        return [] if suffix.startswith("pulls?") else [issue(9)]
+
+    monkeypatch.setattr(intake_loop, "github_list", read)
+    configured = multi_repo_policy(
+        intake={"enabled": True, "refine_enabled": True, "refinement_batch": [9]},
+        repos={"owner/repo": {}, "owner/other": {"enabled": True, "paused": False}},
+    )
+    received = intake_loop.intake_tick(configured, generation=0)
+    assert set(calls) == {"owner/repo"}
+    assert [
+        (r["receipt"]["repo"], r["receipt"]["issue_number"], r["receipt"]["task_class"])
+        for r in received
+    ] == [("owner/repo", 9, "refine")]
+
+
 def test_sweep_ignores_a_disabled_repo_without_reading_it(db, monkeypatch):
     calls = fake_repo_pages(
         monkeypatch,

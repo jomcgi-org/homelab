@@ -348,6 +348,7 @@ def _eligible_clause(policy: dict):
                 automatic
                 & FactoryReceipt.issue_number.in_(intake["refinement_batch"])
                 & (FactoryReceipt.task_class == "refine")
+                & (FactoryReceipt.repo == policy["repo"])
                 & intake["refine_enabled"]
             )
         eligible = or_(eligible, automatic)
