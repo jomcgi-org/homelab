@@ -1,6 +1,6 @@
 {
-  "head": "bb66007de4537b459249019e40c4352fd462fcf8",
-  "baseline": "48589107e887be6f804e3b15f06771c7ad5df99a",
+  "head": "c1e770727decbf47cf2f32a0209aac226946a5a4",
+  "baseline": "0b8d4dff815b257f0a5a999317892af9c57527fe",
   "baseline_kind": "git merge-base",
   "rows": [
     {
@@ -1195,8 +1195,8 @@
       "before": "bbc5a3113ec31bbc635e4f7cd1e3d8e52fcae76215e00deaa44f9c90bb9ebf77"
     },
     "factory": {
-      "head": "12773dfe724ce580cf956656a7ea276a1b5b40f3929bd69687f2ba0aafb95b0d",
-      "before": "3c3776b1a121e9aef42ef32d2ebf6cd272572885ce0f11ed0b3f0ed9b9924f6a"
+      "head": "6b678f34b1a393f6e69bd7f3779db54aa7d46dfaaf1fe07b7f85ba00048e6b1e",
+      "before": "fb30942dab5d78e9d84605022a51e3385c83dd43779b4c4084df470f09d599ae"
     },
     "review": {
       "head": "59a516e59167c0f3596b6eb529c97db5bd6a3696ae72c8a2a29325fa576b0ed0",
