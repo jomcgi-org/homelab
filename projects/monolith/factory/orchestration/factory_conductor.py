@@ -36,6 +36,7 @@ from factory.orchestration.github_read_cooldown import (
     GitHubReadCooldown,
     GitHubReadDeferred,
     GitHubReadTelemetry,
+    process_memory_snapshot,
 )
 from factory.execution import EFFORT_LEVELS
 from factory.orchestration import config as swarm_config
@@ -343,6 +344,16 @@ _github_read_telemetry = GitHubReadTelemetry()
 def _record_github_read(suffix=None, metadata=None, *, deferred=False):
     sample = _github_read_telemetry.observe(suffix, metadata, deferred=deferred)
     if sample is not None:
+        from factory.orchestration import factory_rollout
+
+        # Once per emitted window, not per request. Fixed numeric local evidence
+        # helps explain restarts without new network reads or retaining bodies.
+        sample["memory"] = process_memory_snapshot()
+        sample["rollout_cache_entries"] = {
+            "ancestry": factory_rollout._ancestry_status.cache_info().currsize,
+            "files": factory_rollout._immutable_get.cache_info().currsize,
+            "recent": len(factory_rollout._recent),
+        }
         logger.info(
             "factory GitHub read window: %s", json.dumps(sample, sort_keys=True)
         )
