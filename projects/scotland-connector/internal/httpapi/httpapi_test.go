@@ -290,7 +290,7 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 	for path, methods := range spec.Paths {
 		for method := range methods {
 			ops = append(ops, strings.ToUpper(method)+" "+path)
-			req := httptest.NewRequest(strings.ToUpper(method), path+"?lat=57.19&lon=-3.83", strings.NewReader(checkBody))
+			req := httptest.NewRequest(strings.ToUpper(method), path+"?lat=57.19&lon=-3.83&at=2026-10-20T23:00:00Z", strings.NewReader(checkBody))
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
@@ -299,7 +299,7 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 		}
 	}
 	sort.Strings(ops)
-	if got := strings.Join(ops, ","); got != "GET /v1/method,GET /v1/openapi.json,GET /v1/plan,POST /v1/check" {
+	if got := strings.Join(ops, ","); got != "GET /v1/aurora,GET /v1/method,GET /v1/openapi.json,GET /v1/plan,POST /v1/check" {
 		t.Errorf("spec operations = %s", got)
 	}
 

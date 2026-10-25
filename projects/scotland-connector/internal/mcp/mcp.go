@@ -75,6 +75,7 @@ type Handler struct {
 const Instructions = "Read-only answers to Scottish outdoor trip questions from forecast and climatology data. " +
 	"Use plan for open questions (where and when to walk or stargaze near a place over the next few days) " +
 	"and check for a specific plan (a named walk on a date, stargazing at a place on a night). " +
+	"Use aurora for a snapshot-only, near-term aurora heuristic; unsupported times or missing inputs return unknown. " +
 	"Lead with each answer's verdict and why. Every result carries meta.sources: credit them when you present the data."
 
 // New builds the handler. allowedOrigins lists the browser origins accepted;

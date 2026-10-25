@@ -33,6 +33,12 @@ func readOnly(title string) Annotations {
 // Tools is the fixed tool list, in a deterministic order.
 var Tools = []Tool{
 	{
+		Name: "aurora", Title: "Check near-term Scottish aurora conditions",
+		Description: "Read-only, snapshot-only aurora heuristic at one RFC3339 instant near a supported site. Returns go, marginal, no or unknown with NOAA, MET cloud, solar darkness and northern terrain evidence. NOAA supports only its exact published forecast instant, never a multi-day forecast or calibrated sighting probability. Missing, stale or unsupported inputs remain unknown. Staged/default-off until operational acceptance.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"lat":{"type":"number","minimum":54.5,"maximum":61},"lon":{"type":"number","minimum":-9,"maximum":-0.5},"at":{"type":"string","format":"date-time","maxLength":40}},"required":["lat","lon","at"],"additionalProperties":false}`),
+		Annotations: readOnly("Check near-term Scottish aurora conditions"),
+	},
+	{
 		Name:  "plan",
 		Title: "Plan a Scottish outdoor trip",
 		Description: "Find what to do near a place in Scotland over the next few days: walks that fit the weather and where the night sky will be dark and clear. " +
@@ -116,6 +122,12 @@ func call(svc *connector.Service, name string, args json.RawMessage) (*connector
 		args = json.RawMessage(`{}`)
 	}
 	switch name {
+	case "aurora":
+		var p connector.AuroraParams
+		if err := strictDecode(args, &p); err != nil {
+			return nil, err
+		}
+		return svc.Aurora(p)
 	case "plan":
 		var p connector.PlanParams
 		if err := strictDecode(args, &p); err != nil {

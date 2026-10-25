@@ -84,7 +84,7 @@ func TestToolListAndAnnotations(t *testing.T) {
 			t.Errorf("%s: inputSchema %v", tool["name"], schema)
 		}
 	}
-	if strings.Join(names, ",") != "plan,check" {
+	if strings.Join(names, ",") != "aurora,plan,check" {
 		t.Fatalf("tools = %v", names)
 	}
 }

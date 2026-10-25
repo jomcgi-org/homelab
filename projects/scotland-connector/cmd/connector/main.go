@@ -35,6 +35,8 @@ type config struct {
 	r2Creds                        r2.Credentials
 	bucket, sitesKey, historyKey   string
 	walksKey                       string
+	auroraEnabled                  bool
+	auroraKey                      string
 	refreshInterval, shutdownGrace time.Duration
 	publicBaseURL, version         string
 	allowedOrigins                 []string
@@ -58,11 +60,19 @@ func loadConfig() (config, error) {
 		sitesKey:       env("STARS_SITES_KEY", "sites.json"),
 		historyKey:     env("STARS_HISTORY_KEY", "history-map.json"),
 		walksKey:       env("STARS_WALKS_KEY", "walks.json"),
+		auroraKey:      env("STARS_AURORA_KEY", "aurora.json"),
 		publicBaseURL:  strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
 		version:        env("SERVICE_VERSION", "dev"),
 		allowedOrigins: strings.Split(env("MCP_ALLOWED_ORIGINS", "https://claude.ai,https://claude.com,https://chatgpt.com"), ","),
 	}
 	var err error
+	switch env("AURORA_ENABLED", "false") {
+	case "false":
+	case "true":
+		c.auroraEnabled = true
+	default:
+		return c, errors.New("AURORA_ENABLED must be true or false")
+	}
 	if c.refreshInterval, err = time.ParseDuration(env("REFRESH_INTERVAL", "60s")); err != nil || c.refreshInterval < 5*time.Second {
 		return c, fmt.Errorf("REFRESH_INTERVAL must be a duration of at least 5s")
 	}
@@ -89,6 +99,7 @@ type app struct {
 	public, admin http.Handler
 	store         *store.Store
 	walks         *store.WalkStore
+	aurora        *store.AuroraStore
 	draining      *atomic.Bool
 }
 
@@ -123,6 +134,11 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		return -1
 	}))
 	svc := &connector.Service{Data: st, Walks: ws, MethodURL: cfg.publicBaseURL + "/v1/method", Now: time.Now}
+	var as *store.AuroraStore
+	if cfg.auroraEnabled {
+		as = store.NewAurora(cfg.bucket, cfg.auroraKey, cfg.refreshInterval, client, log)
+		svc.AuroraData = as
+	}
 	info := mcp.ServerInfo{Name: "scotland-connector", Title: "Scotland outdoors", Version: cfg.version}
 
 	api, err := httpapi.New(svc, m, log, cfg.publicBaseURL)
@@ -166,7 +182,7 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		_ = json.NewEncoder(w).Encode(body)
 	})
 	admin.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	return &app{public: public, admin: admin, store: st, walks: ws, draining: draining}, nil
+	return &app{public: public, admin: admin, store: st, walks: ws, aurora: as, draining: draining}, nil
 }
 
 // loadUntilReady retries the first load with backoff, then polls forever.
@@ -222,6 +238,9 @@ func run(log *slog.Logger) error {
 
 	go a.loadUntilReady(ctx, log)
 	go a.walks.Run(ctx)
+	if a.aurora != nil {
+		go a.aurora.Run(ctx)
+	}
 	log.Info("connector listening", "public", cfg.listenAddr, "admin", cfg.adminAddr, "version", cfg.version)
 
 	select {
