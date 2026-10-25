@@ -151,8 +151,10 @@ func (s *Snapshot) Validate() error {
 			return bad()
 		}
 		seen[site.ID] = true
+		// MET updated_at may follow the first hourly row. It is an issue clock,
+		// not a lower bound on the times covered by the forecast.
 		for i, h := range w.Hours {
-			if h.Time.IsZero() || h.Time.Before(w.IssuedAt) || (i > 0 && !h.Time.After(w.Hours[i-1].Time)) || (h.Cloud != nil && (!finite(*h.Cloud) || *h.Cloud < 0 || *h.Cloud > 100)) {
+			if h.Time.IsZero() || (i > 0 && !h.Time.After(w.Hours[i-1].Time)) || (h.Cloud != nil && (!finite(*h.Cloud) || *h.Cloud < 0 || *h.Cloud > 100)) {
 				return bad()
 			}
 		}
