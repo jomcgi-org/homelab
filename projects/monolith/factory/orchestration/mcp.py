@@ -1742,10 +1742,13 @@ async def factory_preview_backlog_intake(
 ) -> dict:
     """Preview returning the primary repository to existing agent-ready intake.
 
-    Standing operators only. Requires paused, idle admissions with no unknown
-    starts. Clears manual issue selection and preserves eligibility filters,
-    generation and bounds, disables landing, refinement, closure and issue
-    production, and pauses other repositories. No work is submitted or enabled.
+    Standing operators only. Requires paused admissions. With existing work,
+    only enables discovery under an already-safe posture, retaining manual
+    selections, pinned task policies, reservations and holds. Unknown outcomes
+    and landing refuse the change. When idle, clears manual issue selection,
+    disables landing, refinement, closure and issue production, and pauses
+    other repositories. Eligibility filters, generation and bounds remain.
+    No work is submitted or enabled.
     Review the full policy diff before applying its exact digest.
     """
     principal = current_principal()
@@ -1772,8 +1775,8 @@ async def factory_apply_backlog_intake(
 ) -> dict:
     """Apply an exact reviewed backlog-intake preview as a standing operator.
 
-    Rechecks idle state, policy version and receipt history under the control
-    lock. Preserves all task bounds and holds. Leaves admissions paused: a
+    Rechecks state, policy version, receipt and reservation history under the
+    control lock. Preserves all task bounds and holds. Leaves admissions paused: a
     separate explicit enable permits the existing intake eligibility checks.
     No task is submitted, resumed or recovered. Replay identical arguments
     after a lost response, then read current state before further actions.

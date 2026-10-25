@@ -3180,6 +3180,61 @@ def reconcile_generation_stale_receipts(
     return counts
 
 
+def active_intake_restoration_policy(db: Session, control) -> dict:
+    """Only reopen discovery; retain selections and every execution policy.
+
+    This is not generic configuration. Existing receipts and reservations keep
+    their policies, ownership and capacity charges. Unknown outcomes remain
+    fenced, and admission still needs a separate explicit enable.
+    """
+    if control.state != "paused":
+        raise ValueError("validation_requires_paused_admissions")
+    if (
+        db.exec(
+            select(FactoryReceipt.id).where(
+                FactoryReceipt.state.in_(("uncertain", "landing"))
+            )
+        ).first()
+        is not None
+    ):
+        raise ValueError("validation_other_work_present")
+    if (
+        db.exec(
+            select(FactoryStart.id).where(FactoryStart.status == "uncertain")
+        ).first()
+        is not None
+    ):
+        raise ValueError("validation_unresolved_execution")
+    active_task_ids = set(
+        db.exec(
+            select(FactoryReceipt.task_id).where(FactoryReceipt.state == "admitted")
+        ).all()
+    )
+    if any(
+        task_id not in active_task_ids
+        for task_id in db.exec(
+            select(FactoryStart.task_id).where(FactoryStart.status == "reserved")
+        ).all()
+    ):
+        raise ValueError("validation_unresolved_execution")
+    policy = validate_policy(json.loads(control.policy_json))
+    intake = intake_policy(policy)
+    primary = repo_entry(policy, policy["repo"])
+    if (
+        auto_merge_enabled(policy)
+        or intake["refine_enabled"]
+        or intake["close_enabled"]
+        or problem_issues_policy(policy)["enabled"]
+        or enabled_repos(policy) != [policy["repo"]]
+        or primary["labels"] != ["agent-ready"]
+        or not {"needs-human", "security-finding", "wontfix"}
+        <= set(primary["exclude_labels"])
+    ):
+        raise ValueError("backlog_active_requires_safe_posture")
+    policy["intake"]["enabled"] = True
+    return validate_policy(policy)
+
+
 def set_control(
     action: str,
     actor: str,
@@ -3193,6 +3248,7 @@ def set_control(
     actor = _text(actor, "actor")
     if action not in (
         "configure",
+        "restore_active_intake",
         "enable",
         "pause_admissions",
         "pause_task",
@@ -3293,6 +3349,11 @@ def set_control(
                     # Configuration does not change execution authority: enabled
                     # work continues, paused admissions stay paused, and initial
                     # configuration remains disabled until an explicit enable.
+        elif action == "restore_active_intake":
+            # Dedicated, deterministic admission-only transition. Never relax
+            # configure's generation rule or accept caller-supplied policy.
+            configured = active_intake_restoration_policy(db, control)
+            control.policy_json = _json(configured)
         elif action == "enable":
             if not json.loads(control.policy_json):
                 reason = "not_configured"
