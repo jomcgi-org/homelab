@@ -3092,6 +3092,34 @@ def review_routing_view(policy: dict, *, session: Session | None = None) -> dict
     }
 
 
+def conductor_status(*, session: Session | None = None) -> dict:
+    """Fresh control and complete active-task evidence without historical views.
+
+    Reconciliation consumes these three fields. Every active receipt keeps the
+    same snapshot, including old generations, pauses, cancellations, unresolved
+    starts, accounting and operator direction. Landing and historical reporting
+    retain their own existing readers.
+    """
+    with _read_session(session) as db:
+        control = db.exec(
+            select(FactoryControl)
+            .where(FactoryControl.id == "factory")
+            .execution_options(populate_existing=True)
+        ).first()
+        if control is None:
+            return {"state": "disabled", "policy": {}, "active_tasks": []}
+        rows = db.exec(
+            select(FactoryReceipt)
+            .where(FactoryReceipt.state.in_(_ACTIVE))
+            .order_by(FactoryReceipt.id)
+        ).all()
+        return {
+            "state": control.state,
+            "policy": json.loads(control.policy_json),
+            "active_tasks": [_snapshot(db, row) for row in rows],
+        }
+
+
 def status(*, session: Session | None = None) -> dict:
     from factory.orchestration.factory_landing import rollout_waits
 

@@ -8630,7 +8630,7 @@ def tick() -> None:
     from factory.orchestration.factory_controls import (
         execution_slot_holders,
         retry_capacity_releases,
-        status,
+        conductor_status,
     )
     from factory.orchestration.factory_intake import admit_next
 
@@ -8639,13 +8639,13 @@ def tick() -> None:
     # trigger on its age column sees a continuous signal. It never raises.
     uncertain_tasks.emit_uncertain_task_snapshot()
 
-    snapshot = status()
+    snapshot = conductor_status()
     if any(
         (row.get("direction") or {}).get("pending_capacity_release")
         for row in snapshot.get("active_tasks", [])
     ):
         retry_capacity_releases()
-        snapshot = status()
+        snapshot = conductor_status()
     # Check publication is independent of admission, guest runtime and landing.
     try:
         from factory import dependency_gate

@@ -5386,3 +5386,92 @@ def test_scout_admission_sql_and_python_match(db, policy):
             assert controls.admission_eligible(
                 configured, row.issue_number, row.actor
             ) == (row.issue_number == 900)
+
+
+def test_conductor_snapshot_preserves_active_evidence_without_expanding_history(
+    db, policy, monkeypatch
+):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    first = admitted(policy)
+    assert grant(first)["ok"]
+    receive_issue(
+        "owner/repo",
+        2,
+        "second",
+        "body",
+        "https://github.com/owner/repo/issues/2",
+        "operator",
+    )
+    second = admit_next("scheduler")["task_id"]
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, first)
+        row.state = "uncertain"
+        row.generation = 99
+        row.task_paused = True
+        row.cancellation_requested = True
+        row.direction_json = json.dumps(
+            {
+                "landing_hold": {"reason": "held"},
+                "pending_capacity_release": {"reason": "pending"},
+            }
+        )
+        session.add_all(
+            [
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=1000 + i,
+                    generation=0,
+                    task_class="bug-fix",
+                    title="history",
+                    body="body",
+                    url=f"https://github.com/owner/repo/issues/{1000 + i}",
+                    actor="test",
+                    state=(
+                        "succeeded",
+                        "failed",
+                        "cancelled",
+                        "escalated",
+                        "queued",
+                        "landing",
+                    )[i % 6],
+                )
+                for i in range(240)
+            ]
+        )
+    full = controls.status()
+    expanded = []
+    snapshot = controls._snapshot
+
+    def track(session, row, **kwargs):
+        expanded.append(row.task_id)
+        assert row.state in ("admitted", "uncertain")
+        return snapshot(session, row, **kwargs)
+
+    monkeypatch.setattr(controls, "_snapshot", track)
+
+    def no_history(*args, **kwargs):
+        pytest.fail("conductor expanded an operator/history view")
+
+    monkeypatch.setattr(controls, "intake_state", no_history)
+    monkeypatch.setattr(controls, "problem_issues_state", no_history)
+    import factory.orchestration.factory_landing as landing
+
+    monkeypatch.setattr(landing, "rollout_waits", no_history)
+    current = controls.conductor_status()
+    assert current == {key: full[key] for key in ("state", "policy", "active_tasks")}
+    assert expanded == [first, second]
+    assert current["active_tasks"][0]["unresolved_starts"] == 1
+    assert current["active_tasks"][0]["cancellation_requested"] is True
+    assert current["active_tasks"][0]["direction"]["landing_hold"] == {"reason": "held"}
+    controls.set_control("pause_admissions", "operator")
+    assert controls.conductor_status()["state"] == "paused"
+
+
+def test_conductor_snapshot_without_control_is_disabled(db):
+    with Session(db) as session, session.begin():
+        session.delete(session.get(FactoryControl, "factory"))
+    assert controls.conductor_status() == {
+        "state": "disabled",
+        "policy": {},
+        "active_tasks": [],
+    }
