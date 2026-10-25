@@ -1187,6 +1187,23 @@ def _probe_renders(tmp_path):
     )
 
 
+def test_connector_snapshot_setting_reaches_real_stars_refresh(tmp_path):
+    for key in ("", "connector-sites.json"):
+        overlay = _write_values(
+            tmp_path, "connector.yaml", {"stars": {"connectorSitesKey": key}}
+        )
+        docs = _cron_docs(_render("production", [overlay]))
+        job = docs["stars-refresh"]
+        container = job["spec"]["workflowSpec"]["templates"][0]["container"]
+        assert container["args"] == ["stars-refresh"]
+        env = _env_by_name(container["env"])
+        if key:
+            assert env["STARS_CONNECTOR_SITES_S3_KEY"]["value"] == key
+        else:
+            assert "STARS_CONNECTOR_SITES_S3_KEY" not in env
+        assert env["STARS_SITES_S3_KEY"]["value"] == "sites.json"
+
+
 def test_shared_s3_probe_jobs_positive_then_omission(tmp_path):
     true_docs, false_docs = _probe_renders(tmp_path)
     assert set(true_docs) == {

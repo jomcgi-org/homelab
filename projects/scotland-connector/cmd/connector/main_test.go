@@ -76,7 +76,7 @@ func TestAppServesFromR2Snapshots(t *testing.T) {
 			return
 		}
 		switch r.URL.Path {
-		case "/stars/sites.json":
+		case "/stars/connector-sites.json":
 			w.Header().Set("ETag", `"s1"`)
 			_, _ = io.WriteString(w, fixture.Sites)
 		case "/stars/history-map.json":
@@ -89,6 +89,7 @@ func TestAppServesFromR2Snapshots(t *testing.T) {
 	defer r2srv.Close()
 
 	t.Setenv("R2_ENDPOINT", r2srv.URL)
+	t.Setenv("STARS_SITES_KEY", "connector-sites.json")
 	t.Setenv("S3_ACCESS_KEY_ID", "key")
 	t.Setenv("S3_SECRET_ACCESS_KEY", "secret")
 	t.Setenv("PUBLIC_BASE_URL", "https://example.test/")
@@ -176,5 +177,22 @@ func TestLoadConfigRequiresEndpoint(t *testing.T) {
 	t.Setenv("REFRESH_INTERVAL", "1s")
 	if _, err := loadConfig(); err == nil {
 		t.Fatal("accepted a 1s refresh")
+	}
+}
+
+func TestSitesKeyDefaultAndSelection(t *testing.T) {
+	t.Setenv("R2_ENDPOINT", "https://r2.example")
+	t.Setenv("STARS_SITES_KEY", "")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.sitesKey != "sites.json" {
+		t.Fatalf("default: %+v", cfg)
+	}
+	t.Setenv("STARS_SITES_KEY", "connector-sites.json")
+	cfg, err = loadConfig()
+	if err != nil || cfg.sitesKey != "connector-sites.json" {
+		t.Fatalf("selected: %+v, %v", cfg, err)
 	}
 }

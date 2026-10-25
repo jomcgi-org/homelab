@@ -31,6 +31,161 @@ from stars.router import _HISTORY_CACHE_CONTROL, _SITES_CACHE_CONTROL, router
 CUTOFF = top_of_hour(datetime.now(timezone.utc))
 FETCHED = CUTOFF - timedelta(minutes=10)
 
+
+def test_uncapped_materialization_preserves_public_bytes_and_two_queries(monkeypatch):
+    from stars.snapshot_fixture import run
+
+    public, enabled = {}, {}
+    run(sites=3, edge_cases=True, sink=lambda kw: public.update({kw["Key"]: kw}))
+    run(
+        sites=3,
+        enabled=True,
+        edge_cases=True,
+        sink=lambda kw: enabled.update({kw["Key"]: kw}),
+    )
+    for key, value in public.items():
+        assert value == enabled[key]
+    payload = json.loads(enabled["connector-sites.json"]["Body"])
+    for site in payload["sites"]:
+        if site["id"].startswith("site-"):
+            hours = site["best_hours"]
+            assert len(hours) == site["clear_twilight_hours"] > 25
+            assert [h["time"] for h in hours] == sorted(h["time"] for h in hours)
+            assert all(h["time"] >= "2026-10-19T00:00:00+00:00" for h in hours)
+            assert any(h["dark"] for h in hours)
+            assert any(not h["dark"] for h in hours)
+        else:
+            assert site["best_hours"] == []
+    assert len(json.loads(public["sites.json"]["Body"])["sites"][0]["best_hours"]) == 25
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "sites.json",
+        "map.json",
+        "history-map.json",
+        "grid.json",
+        "climatology.json",
+        "walks.json",
+        "custom-public",
+    ],
+)
+def test_connector_key_collision_fails_before_io(monkeypatch, key):
+    from stars import materialize
+
+    monkeypatch.setenv(
+        "STARS_SITES_S3_KEY",
+        "custom-public" if key == "custom-public" else "sites.json",
+    )
+    monkeypatch.setenv("STARS_CONNECTOR_SITES_S3_KEY", " " + key + " ")
+    monkeypatch.setattr(
+        materialize, "get_engine", lambda: pytest.fail("opened database")
+    )
+    monkeypatch.setattr(
+        materialize, "_s3_client", lambda: pytest.fail("opened storage")
+    )
+    with pytest.raises(ValueError, match="separate object"):
+        materialize._materialize_sync()
+
+
+def test_connector_fixture_is_actual_producer_bytes():
+    import os
+    from pathlib import Path
+    from stars.snapshot_fixture import run
+
+    fixture = Path(
+        os.environ.get(
+            "CONNECTOR_SNAPSHOT_FIXTURE",
+            Path(__file__).resolve().parents[2]
+            / "scotland-connector/internal/store/testdata/connector-sites.json",
+        )
+    )
+    writes = {}
+    run(
+        enabled=True,
+        edge_cases=True,
+        sink=lambda kw: writes.update({kw["Key"]: kw["Body"]}),
+    )
+    assert fixture.read_bytes().rstrip(b"\n") == writes["connector-sites.json"]
+
+
+@pytest.mark.parametrize("setting", [None, "", "   "])
+def test_disabled_producer_never_builds_uncapped_or_writes_connector(
+    monkeypatch, setting
+):
+    from unittest.mock import MagicMock, Mock
+    from stars import materialize
+
+    if setting is None:
+        monkeypatch.delenv("STARS_CONNECTOR_SITES_S3_KEY", raising=False)
+    else:
+        monkeypatch.setenv("STARS_CONNECTOR_SITES_S3_KEY", setting)
+    builder = Mock(return_value={"sites": [], "count": 0})
+    storage = Mock()
+    monkeypatch.setattr(materialize, "Session", MagicMock())
+    monkeypatch.setattr(materialize, "get_engine", lambda: None)
+    monkeypatch.setattr(materialize, "_build_sites_from_db", builder)
+    monkeypatch.setattr(materialize, "get_history", lambda *args: {"sites": []})
+    monkeypatch.setattr(materialize, "_s3_client", lambda: storage)
+    materialize._materialize_sync()
+    assert builder.call_count == 1
+    assert builder.call_args.kwargs == {"hour_limit": 25}
+    assert {call.kwargs["Key"] for call in storage.put_object.call_args_list} == {
+        "sites.json",
+        "map.json",
+        "history-map.json",
+    }
+
+
+def test_uncapped_real_database_load_has_same_metadata_and_query_count(
+    session, monkeypatch
+):
+    from sqlalchemy import event
+    from stars.snapshot_fixture import Clock, NOW, hours, metadata
+
+    monkeypatch.setattr(stars_router, "datetime", Clock)
+    session.add_all([Site(**vars(metadata())), Site(**vars(metadata("zero", None)))])
+    session.add_all(
+        [
+            SiteHour(
+                site_id=r[0],
+                hour_time=r[1],
+                cloud_area_fraction=r[2],
+                sun_elevation_deg=r[3],
+                fetched_at=r[4],
+                air_temperature=5,
+                dew_spread=2,
+            )
+            for r in hours("covered")
+        ]
+    )
+    session.commit()
+    queries = []
+
+    def record(*args):
+        queries.append(args[2])
+
+    event.listen(session.get_bind(), "before_cursor_execute", record)
+    try:
+        full = stars_router._build_sites_from_db(
+            SimpleNamespace(headers={}), Response(), session, hour_limit=None
+        )
+        assert len(queries) == 2
+        assert "site_hours.hour_time >=" in queries[1]
+        capped = stars_router._build_sites_from_db(
+            SimpleNamespace(headers={}), Response(), session
+        )
+        assert len(queries) == 4
+    finally:
+        event.remove(session.get_bind(), "before_cursor_execute", record)
+    assert len(full["sites"][0]["best_hours"]) > 25
+    for site in full["sites"]:
+        del site["best_hours"][25:]
+    assert full == capped
+    assert full["fetched_at"] == NOW.isoformat()
+
+
 # Site metadata the router joins in from stars.sites, keyed by id.
 _SITE_META = {
     "galloway-forest": ("Galloway Forest Park", 55.083, -4.500, 110, "1a"),

@@ -67,6 +67,14 @@ def _one(docs: list[dict[str, Any]], kind: str) -> dict[str, Any]:
     return found[0]
 
 
+@pytest.mark.parametrize("key", [None, "connector-sites.json"])
+def test_sites_key_selection_preserves_default(key):
+    docs = _render([f"config.sitesKey={key}"] if key else [])
+    container = _one(docs, "Deployment")["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    assert env["STARS_SITES_KEY"] == (key or "sites.json")
+
+
 def _rules(route: dict[str, Any]) -> list[tuple[str, str, dict[str, Any] | None]]:
     """(match type, match value, rewrite path or None) per rule."""
     out = []

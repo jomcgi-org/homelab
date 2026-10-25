@@ -7329,6 +7329,8 @@ py_test(
 py_test(
     name = "stars_router_test",
     srcs = ["stars/router_test.py"],
+    data = ["//projects/scotland-connector/internal/store:snapshot_fixture"],
+    env = {"CONNECTOR_SNAPSHOT_FIXTURE": "$(rootpath //projects/scotland-connector/internal/store:snapshot_fixture)"},
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7337,6 +7339,7 @@ py_test(
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
+        "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
 )
