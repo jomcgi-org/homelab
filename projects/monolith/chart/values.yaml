@@ -694,6 +694,23 @@ jobs:
           memory: 1Gi
         limits:
           memory: 1Gi
+    # Separate from three-hour weather refresh: preserve cached MET bodies
+    # while NOAA updates. No live job until the bounded activation is reviewed.
+    - name: stars-aurora
+      replaces: stars.aurora
+      args: ["stars-aurora"]
+      schedule: "*/10 * * * *"
+      concurrencyPolicy: Forbid
+      s3: true
+      activeDeadlineSeconds: 240
+      suspend: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
     - name: stars-refresh
       replaces: stars.refresh
       args: ["stars-refresh"]
