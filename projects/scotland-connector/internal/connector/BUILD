@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "connector",
     srcs = [
+        "aurora.go",
         "check.go",
         "connector.go",
         "plan.go",
@@ -12,6 +13,7 @@ go_library(
     visibility = ["//projects/scotland-connector:__subpackages__"],
     deps = [
         "//projects/scotland-connector/internal/astro",
+        "//projects/scotland-connector/internal/aurora",
         "//projects/scotland-connector/internal/stars",
         "//projects/scotland-connector/internal/verdict",
         "//projects/scotland-connector/internal/walks",
