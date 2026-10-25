@@ -2933,7 +2933,7 @@ def test_backlog_preparation_preserves_bounds_holds_and_requires_enable(
         assert len(events) == 1
 
 
-@pytest.mark.parametrize("state", ["admitted", "uncertain", "queued", "landing"])
+@pytest.mark.parametrize("state", ["uncertain", "landing"])
 def test_backlog_rejects_existing_work(database, validation_ready, state):
     with Session(database) as db, db.begin():
         db.get(FactoryReceipt, 838).state = state
@@ -3060,3 +3060,166 @@ def test_backlog_concurrent_apply_has_one_winner(database, validation_ready):
         next(result for result in results if not result["ok"])["reason"]
         == "validation_preview_changed"
     )
+
+
+@pytest.mark.parametrize(
+    "state,reserved", [("admitted", False), ("admitted", True), ("queued", False)]
+)
+def test_backlog_active_restore_only_enables_intake(
+    database, validation_ready, state, reserved
+):
+    validation = validation_ready
+    safe = validation.preview_backlog("initial safe posture")["policy_after"]
+    safe["issue_numbers"] = [7001]
+    safe["intake"]["enabled"] = False
+    with Session(database) as db, db.begin():
+        db.get(FactoryControl, "factory").policy_json = json.dumps(safe)
+        db.get(FactoryReceipt, 838).state = state
+        if reserved:
+            start = db.exec(select(FactoryStart)).one()
+            start.status, start.cost_usd = "reserved", None
+        before_receipt = db.get(FactoryReceipt, 838).model_dump(mode="json")
+        before_start = db.exec(select(FactoryStart)).one().model_dump(mode="json")
+    proposal = validation.preview_backlog("restore discovery alongside existing work")
+    expected = json.loads(json.dumps(safe))
+    expected["intake"]["enabled"] = True
+    assert proposal["policy_after"] == expected
+    assert controls.admission_eligible(expected, 7001, "operator")
+    assert not controls.admission_eligible(expected, 9999, "operator")
+    if state == "admitted":
+        # No generic configure exemption is introduced.
+        refused = controls.set_control("configure", "operator", policy=expected)
+        assert not refused["ok"] and refused["reason"] == "generation_not_advanced"
+    result = validation.apply_backlog(
+        "restore discovery alongside existing work",
+        actor="operator",
+        request_key="restore-active",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    assert result["ok"] and result["state"] == "paused"
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump(mode="json") == before_receipt
+        assert (
+            db.exec(select(FactoryStart)).one().model_dump(mode="json") == before_start
+        )
+        assert json.loads(db.get(FactoryControl, "factory").policy_json) == expected
+
+
+@pytest.fixture
+def active_backlog(database, validation_ready):
+    safe = validation_ready.preview_backlog("safe")["policy_after"]
+    safe["issue_numbers"] = [7001]
+    safe["intake"]["enabled"] = False
+    with Session(database) as db, db.begin():
+        db.get(FactoryControl, "factory").policy_json = json.dumps(safe)
+        db.get(FactoryReceipt, 838).state = "admitted"
+    return validation_ready
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["auto_merge", "refine_enabled", "close_enabled", "production", "other_repo"],
+)
+def test_active_backlog_rejects_unsafe_posture(database, active_backlog, change):
+    with Session(database) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        if change == "auto_merge":
+            policy[change] = True
+        elif change in ("refine_enabled", "close_enabled"):
+            policy["intake"][change] = True
+        elif change == "production":
+            policy["problem_issues"]["enabled"] = True
+        else:
+            policy["repos"]["org/other"]["paused"] = False
+        control.policy_json = json.dumps(policy)
+    with pytest.raises(ValueError, match="backlog_active_requires_safe_posture"):
+        active_backlog.preview_backlog("restore")
+
+
+@pytest.mark.parametrize("change", ["start", "unknown", "hold", "policy", "version"])
+def test_active_backlog_rejects_stale_preview(database, active_backlog, change):
+    proposal = active_backlog.preview_backlog("restore")
+    with Session(database) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        if change in ("start", "unknown"):
+            db.exec(select(FactoryStart)).one().status = (
+                "uncertain" if change == "unknown" else "reserved"
+            )
+        elif change == "hold":
+            db.get(
+                FactoryReceipt, 838
+            ).direction_json = '{"landing_hold":{"reason":"changed"}}'
+        elif change == "version":
+            control.version += 1
+        else:
+            policy = json.loads(control.policy_json)
+            policy["task_budget_usd"] = 60
+            control.policy_json = json.dumps(policy)
+    with pytest.raises(ValueError):
+        active_backlog.apply_backlog(
+            "restore",
+            actor="operator",
+            request_key="stale",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        assert not json.loads(db.get(FactoryControl, "factory").policy_json)["intake"][
+            "enabled"
+        ]
+
+
+def test_active_backlog_replay_and_conflicting_key(database, active_backlog):
+    proposal = active_backlog.preview_backlog("restore")
+    args = dict(
+        actor="operator",
+        request_key="active-replay",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    result = active_backlog.apply_backlog("restore", **args)
+    assert active_backlog.apply_backlog("restore", **args) == result
+    with pytest.raises(ValueError, match="conflicting_validation_request"):
+        active_backlog.apply_backlog("different", **args)
+
+
+@pytest.mark.parametrize("state", ["queued", "cancelled", "missing"])
+@pytest.mark.parametrize("other_state", ["queued", "admitted"])
+@pytest.mark.parametrize("internal", [False, True])
+def test_active_backlog_refuses_orphan_reservation(
+    database, active_backlog, state, other_state, internal
+):
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        # Unrelated work must not legitimize this reservation.
+        other = row.model_dump(exclude={"id", "task_id"})
+        if state == "missing":
+            db.delete(row)
+        else:
+            row.state = state
+        other.update(issue_number=7002, state=other_state)
+        db.add(FactoryReceipt(id=839, task_id=None, **other))
+        db.exec(select(FactoryStart)).one().status = "reserved"
+    with pytest.raises(ValueError, match="validation_unresolved_execution"):
+        if internal:
+            controls.set_control("restore_active_intake", "operator")
+        else:
+            active_backlog.preview_backlog("restore")
+
+
+def test_active_backlog_concurrent_apply_has_one_winner(database, active_backlog):
+    proposal = active_backlog.preview_backlog("restore")
+
+    def apply(key):
+        try:
+            return active_backlog.apply_backlog(
+                "restore",
+                actor="operator",
+                request_key=key,
+                expected_preview_sha256=proposal["preview_sha256"],
+            )["ok"]
+        except ValueError as exc:
+            assert str(exc) == "validation_preview_changed"
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(apply, ["active-a", "active-b"])) == [False, True]

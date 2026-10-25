@@ -477,15 +477,16 @@ def _backlog_preview(db, control, reason):
     if control.state != "paused":
         raise ValueError("validation_requires_paused_admissions")
     rows = db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
-    if any(row.state in (*controls._ACTIVE, "queued", "landing") for row in rows):
+    if any(row.state in ("uncertain", "landing") for row in rows):
         raise ValueError("validation_other_work_present")
-    if (
-        db.exec(
-            select(FactoryStart.id).where(
-                FactoryStart.status.in_(("reserved", "uncertain"))
-            )
-        ).first()
-        is not None
+    active = any(row.state in (*controls._ACTIVE, "queued") for row in rows)
+    starts = db.exec(
+        select(FactoryStart)
+        .where(FactoryStart.status.in_(("reserved", "uncertain")))
+        .order_by(FactoryStart.id)
+    ).all()
+    if any(start.status == "uncertain" for start in starts) or (
+        not active and any(start.status == "reserved" for start in starts)
     ):
         raise ValueError("validation_unresolved_execution")
     before = controls.validate_policy(json.loads(control.policy_json))
@@ -520,6 +521,10 @@ def _backlog_preview(db, control, reason):
         if entry_repo != repo:
             entry["paused"] = True
     after = controls.validate_policy(after)
+    if active:
+        # Do not strand queued operator receipts by clearing their allowlist,
+        # or alter the policy/landing authority of already admitted work.
+        after = controls.active_intake_restoration_policy(db, control)
     result = {
         "repo": repo,
         "reason": reason,
@@ -528,9 +533,13 @@ def _backlog_preview(db, control, reason):
         "policy_after": after,
         "state_after": "paused",
         "execution_authorized": False,
+        "mode": "active_discovery_only" if active else "idle_backlog_restore",
         "eligibility": "Existing intake ownership, dependencies, linked PR, receipt history and readiness checks apply after explicit enable.",
         "receipt_fingerprint": hashlib.sha256(
             controls._json([row.model_dump(mode="json") for row in rows]).encode()
+        ).hexdigest(),
+        "start_fingerprint": hashlib.sha256(
+            controls._json([start.model_dump(mode="json") for start in starts]).encode()
         ).hexdigest(),
     }
     result["preview_sha256"] = hashlib.sha256(
@@ -558,9 +567,12 @@ def apply_backlog(reason, *, actor, request_key, expected_preview_sha256):
         proposal = _backlog_preview(db, control, reason)
         if proposal["preview_sha256"] != expected_preview_sha256:
             raise ValueError("validation_preview_changed")
-        result = controls.set_control(
-            "configure", actor, policy=proposal["policy_after"], session=db
-        )
+        if proposal["mode"] == "active_discovery_only":
+            result = controls.set_control("restore_active_intake", actor, session=db)
+        else:
+            result = controls.set_control(
+                "configure", actor, policy=proposal["policy_after"], session=db
+            )
         if not result["ok"]:
             raise ValueError(result["reason"])
         result = {
