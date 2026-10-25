@@ -33,7 +33,7 @@ FETCHED = CUTOFF - timedelta(minutes=10)
 
 
 def test_uncapped_materialization_preserves_public_bytes_and_two_queries(monkeypatch):
-    from stars.snapshot_fixture import run
+    from stars.tests.snapshot_fixture import run
 
     public, enabled = {}, {}
     run(sites=3, edge_cases=True, sink=lambda kw: public.update({kw["Key"]: kw}))
@@ -62,7 +62,7 @@ def test_uncapped_materialization_preserves_public_bytes_and_two_queries(monkeyp
 def test_connector_upload_failure_still_publishes_public_snapshots(caplog):
     import weakref
 
-    from stars.snapshot_fixture import run
+    from stars.tests.snapshot_fixture import run
 
     expected, published, attempts = {}, {}, []
     failed_frames = []
@@ -132,7 +132,7 @@ def test_connector_key_collision_fails_before_io(monkeypatch, key):
 def test_connector_fixture_is_actual_producer_bytes():
     import os
     from pathlib import Path
-    from stars.snapshot_fixture import run
+    from stars.tests.snapshot_fixture import run
 
     fixture = Path(
         os.environ.get(
@@ -187,7 +187,7 @@ def test_uncapped_real_database_load_has_same_metadata_and_query_count(
     session, monkeypatch
 ):
     from sqlalchemy import event
-    from stars.snapshot_fixture import Clock, NOW, hours, metadata
+    from stars.tests.snapshot_fixture import Clock, NOW, hours, metadata
 
     monkeypatch.setattr(stars_router, "datetime", Clock)
     session.add_all([Site(**vars(metadata())), Site(**vars(metadata("zero", None)))])
