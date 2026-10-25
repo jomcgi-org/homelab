@@ -37,7 +37,7 @@ from knowledge.models import (
 )
 from knowledge.recall import _get_repo_scope
 
-AUDIT_PROMPT_VERSION = "kg-audit/luna@v1"
+AUDIT_PROMPT_VERSION = "kg-audit/luna@v2"
 AUDIT_JOB_NAME = "kg-audit"
 WEIGHTED_POOL_SIZE = 512
 _TRACER = trace.get_tracer("monolith.knowledge.audit")
@@ -692,7 +692,13 @@ def build_audit_prompt(
         '[{"note_id":"id","correctness":"holds","clarity":"clear",'
         '"clarity_score":1.0,"placement":"ok","cause":null,'
         '"rationale":"evidence explanation","evidence":["file:line"]}]}.\n\n'
-        + "\n\n".join(blocks)
+        + "Output contract (validate every verdict before returning):\n"
+        + json.dumps(AuditOutput.model_json_schema(), sort_keys=True)
+        + "\nEvery verdict must contain all required fields, including correctness. "
+        "Do not substitute clarity or placement for correctness. If correctness cannot "
+        "be established, omit the entire verdict rather than omitting a field or "
+        "inventing a healthy value. Check the complete output against this contract "
+        "before returning the single fenced JSON block.\n\n" + "\n\n".join(blocks)
     )
     run.metrics = {**run.metrics, "prompt": prompt}
     session.commit()

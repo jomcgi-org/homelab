@@ -1037,3 +1037,63 @@ def test_audit_is_not_a_preferred_repo_freshness_job(session):
         ).scalar_one()
         == 0
     )
+
+
+def test_generation_contract_requires_correctness_and_preserves_prepared_prompt(
+    session, monkeypatch
+):
+    _note(session)
+    prompt, run, _ = _prepare(session)
+    contract = json.loads(
+        prompt.split("Output contract (validate every verdict before returning):\n", 1)[
+            1
+        ].split("\n", 1)[0]
+    )
+    assert contract == audit.AuditOutput.model_json_schema()
+    assert "correctness" in contract["$defs"]["AuditVerdict"]["required"]
+    assert contract["$defs"]["AuditVerdict"]["additionalProperties"] is False
+    assert "omit the entire verdict" in prompt
+    assert run.prompt_version == "kg-audit/luna@v2"
+    monkeypatch.setattr(
+        audit.AuditOutput,
+        "model_json_schema",
+        lambda: pytest.fail("replay regenerated historical prompt"),
+    )
+    assert (
+        audit.build_audit_prompt(
+            session, "kg-audit", PAYLOAD, PAYLOAD["_audit_invocation_key"]
+        )
+        == prompt
+    )
+
+
+def test_session_21462_missing_correctness_rejects_entire_output_without_mutation(
+    session,
+):
+    # Reproduce the sixth verdict omission without copying production claim text.
+    for index in range(6):
+        _note(session, f"fact-{index}")
+    _, run, findings = _prepare(session)
+    before = [finding.model_dump() for finding in findings]
+    metrics_before = dict(run.metrics)
+    verdicts = [_verdict(f"fact-{index}") for index in range(6)]
+    del verdicts[5]["correctness"]
+    rejected_result = _output(verdicts)
+    with pytest.raises(ValueError, match="correctness"):
+        audit.apply_audit(session, "kg-audit", PAYLOAD, rejected_result)
+    session.expire_all()
+    assert [
+        finding.model_dump()
+        for finding in session.exec(
+            select(AuditFinding).where(AuditFinding.run_id == run.id)
+        ).all()
+    ] == before
+    assert session.get(AuditRun, run.id).metrics == metrics_before
+    assert session.get(AuditRun, run.id).status == "prepared"
+    assert not session.exec(select(Dispute)).all()
+    assert (
+        "correctness"
+        not in json.loads(
+            rejected_result.removeprefix("```json\n").removesuffix("\n```")
+        )["verdicts"][5]
+    )
