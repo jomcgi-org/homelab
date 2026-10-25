@@ -657,12 +657,13 @@ def test_loom_is_default_off_in_every_overlay(values_name):
         ),
         (
             "values-gke",
-            "e52f89f65f14a99b445b2c14437d474c3392755a6cbbccd215943d4ef7561258",
+            "ce53b5a96af890158fc79f257891eff0ec697d17161349c5c81c44ef635f574b",
         ),
     ],
 )
 def test_loom_default_off_preserves_collector_config(values_name, expected_sha256):
-    # Literal fingerprints from main before Loom monitoring was added.
+    # Literal fingerprints before Loom monitoring, with the authorized #7245
+    # scotland-connector trace admission included in the hub overlay.
     docs = _render_overlay(values_name)
     config = next(
         d["data"]["collector.yaml"]

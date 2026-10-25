@@ -11,13 +11,16 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/analytics"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/httpapi"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/mcp"
@@ -30,6 +33,7 @@ import (
 )
 
 type config struct {
+	now                            func() time.Time
 	listenAddr, adminAddr          string
 	r2Endpoint, r2Region           string
 	r2Creds                        r2.Credentials
@@ -38,6 +42,9 @@ type config struct {
 	refreshInterval, shutdownGrace time.Duration
 	publicBaseURL, version         string
 	allowedOrigins                 []string
+	export                         meter.ExportConfig
+	analytics                      analytics.Config
+	policy                         *meter.Policy
 }
 
 func env(key, def string) string {
@@ -63,6 +70,29 @@ func loadConfig() (config, error) {
 		allowedOrigins: strings.Split(env("MCP_ALLOWED_ORIGINS", "https://claude.ai,https://claude.com,https://chatgpt.com"), ","),
 	}
 	var err error
+	if c.export.Enabled, err = strconv.ParseBool(env("METER_EXPORT_ENABLED", "false")); err != nil {
+		return c, errors.New("invalid METER_EXPORT_ENABLED")
+	}
+	c.export.Endpoint, c.export.Instance = env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", ""), env("POD_UID", "")
+	if err := c.export.Validate(); err != nil {
+		return c, err
+	}
+	if c.policy, err = meter.ParsePolicy(env("TOOL_UNIT_PRICES", meter.DefaultPrices)); err != nil {
+		return c, err
+	}
+	if c.analytics.Enabled, err = strconv.ParseBool(env("CACHE_ANALYTICS_ENABLED", "false")); err != nil {
+		return c, errors.New("invalid CACHE_ANALYTICS_ENABLED")
+	}
+	if c.analytics.Enabled {
+		c.analytics.Zone, c.analytics.Hostname, c.analytics.PlanPath, c.analytics.Token = env("CACHE_ANALYTICS_ZONE", ""), env("CACHE_ANALYTICS_HOSTNAME", ""), env("CACHE_ANALYTICS_PLAN_PATH", ""), env("CACHE_ANALYTICS_TOKEN", "")
+		if err := c.analytics.Validate(); err != nil {
+			return c, err
+		}
+		base, err := url.Parse(c.publicBaseURL)
+		if err != nil || base.Hostname() != c.analytics.Hostname || base.Path+"/v1/plan" != c.analytics.PlanPath {
+			return c, errors.New("analytics population must match PUBLIC_BASE_URL")
+		}
+	}
 	if c.refreshInterval, err = time.ParseDuration(env("REFRESH_INTERVAL", "60s")); err != nil || c.refreshInterval < 5*time.Second {
 		return c, fmt.Errorf("REFRESH_INTERVAL must be a duration of at least 5s")
 	}
@@ -90,6 +120,8 @@ type app struct {
 	store         *store.Store
 	walks         *store.WalkStore
 	draining      *atomic.Bool
+	meter         *meter.Meter
+	analytics     *analytics.Reader
 }
 
 func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error) {
@@ -99,7 +131,17 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 	}
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-	m := meter.New(reg)
+	policy := cfg.policy
+	if policy == nil {
+		policy, _ = meter.ParsePolicy(meter.DefaultPrices)
+	}
+	m := meter.NewWithPolicy(reg, policy)
+	cache, err := analytics.New(cfg.analytics, nil)
+	if err != nil {
+		return nil, err
+	}
+	reg.MustRegister(cache)
+	m.Cache = cache
 
 	st := store.New(store.Config{Bucket: cfg.bucket, SitesKey: cfg.sitesKey, HistoryKey: cfg.historyKey, Interval: cfg.refreshInterval}, client, log)
 	reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
@@ -122,7 +164,11 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		}
 		return -1
 	}))
-	svc := &connector.Service{Data: st, Walks: ws, MethodURL: cfg.publicBaseURL + "/v1/method", Now: time.Now}
+	now := cfg.now
+	if now == nil {
+		now = time.Now
+	}
+	svc := &connector.Service{Data: st, Walks: ws, MethodURL: cfg.publicBaseURL + "/v1/method", Now: now}
 	info := mcp.ServerInfo{Name: "scotland-connector", Title: "Scotland outdoors", Version: cfg.version}
 
 	api, err := httpapi.New(svc, m, log, cfg.publicBaseURL)
@@ -166,7 +212,7 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		_ = json.NewEncoder(w).Encode(body)
 	})
 	admin.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	return &app{public: public, admin: admin, store: st, walks: ws, draining: draining}, nil
+	return &app{public: public, admin: admin, store: st, walks: ws, draining: draining, meter: m, analytics: cache}, nil
 }
 
 // loadUntilReady retries the first load with backoff, then polls forever.
@@ -200,6 +246,11 @@ func run(log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	shutdownExport, err := a.meter.StartExport(ctx, cfg.export)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdownExport(context.Background()) }()
 
 	publicSrv := &http.Server{
 		Addr:              cfg.listenAddr,
@@ -222,6 +273,7 @@ func run(log *slog.Logger) error {
 
 	go a.loadUntilReady(ctx, log)
 	go a.walks.Run(ctx)
+	go a.analytics.Run(ctx)
 	log.Info("connector listening", "public", cfg.listenAddr, "admin", cfg.adminAddr, "version", cfg.version)
 
 	select {

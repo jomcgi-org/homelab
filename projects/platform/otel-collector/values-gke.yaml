@@ -19,6 +19,7 @@ allowedServices:
   - monolith-backend
   - monolith-jobs
   - monolith-public
+  - scotland-connector
 
 httpcheck:
   # Live public probes plus the live in-cluster Argo CD target. The two string

@@ -3,15 +3,17 @@
 // bill from, so it counts at the origin for every request that reaches it.
 // Edge cache hits never reach the origin; the hit ratio comes from
 // Cloudflare's analytics, and here everything is by definition a miss. Export
-// to Honeycomb and the unit price table are #7245.
+// to Honeycomb is staged default-off; the unit price table remains exact zero.
 package meter
 
 import (
+	"context"
 	"net/http"
 	"net/netip"
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/analytics"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -64,11 +66,23 @@ type Meter struct {
 	calls   *prometheus.CounterVec
 	results *prometheus.CounterVec
 	latency *prometheus.HistogramVec
+	units   *prometheus.CounterVec
+	policy  *Policy
+	otel    *otelSignals
+	Cache   *analytics.Reader
+	flush   func(context.Context) error
 }
 
 // New registers the meter's collectors on reg.
 func New(reg prometheus.Registerer) *Meter {
+	p, _ := ParsePolicy(DefaultPrices)
+	return NewWithPolicy(reg, p)
+}
+
+func NewWithPolicy(reg prometheus.Registerer, policy *Policy) *Meter {
 	m := &Meter{
+		policy: policy,
+		units:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "scotland_connector_invocation_units_total", Help: "Zero-priced origin invocation units."}, []string{"tool", "surface", "client_class", "unit"}),
 		calls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "scotland_connector_calls_total",
 			Help: "Calls by tool, surface (api, mcp), client class and outcome.",
@@ -83,15 +97,24 @@ func New(reg prometheus.Registerer) *Meter {
 			Buckets: []float64{0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.05},
 		}, []string{"tool", "surface"}),
 	}
-	reg.MustRegister(m.calls, m.results, m.latency)
+	reg.MustRegister(m.calls, m.results, m.latency, m.units)
 	return m
 }
 
 // Record counts one call.
 func (m *Meter) Record(tool, surface, class, outcome string, results int, d time.Duration) {
+	// Collapse unregistered names before either backend sees them.
+	price, units := m.policy.Quote(tool)
+	if units == 0 {
+		tool = "unknown"
+	}
+	if units > 0 {
+		m.units.WithLabelValues(tool, surface, class, price.Unit).Add(float64(units))
+	}
 	m.calls.WithLabelValues(tool, surface, class, outcome).Inc()
 	if results > 0 {
 		m.results.WithLabelValues(tool, surface, class).Add(float64(results))
 	}
 	m.latency.WithLabelValues(tool, surface).Observe(d.Seconds())
+	m.otel.record(tool, surface, class, outcome, price.Unit, units, results, d)
 }

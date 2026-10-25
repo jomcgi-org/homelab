@@ -1,6 +1,23 @@
 {{- if not .Values.config.r2Endpoint }}
 {{- fail "config.r2Endpoint is required" }}
 {{- end }}
+{{- if and .Values.meterExport.enabled (empty .Values.meterExport.endpoint) }}
+{{- fail "meterExport.endpoint is required when enabled" }}
+{{- end }}
+{{- if .Values.cacheAnalytics.enabled }}
+{{- if or .Values.autoscaling.enabled (ne (int .Values.replicas) 1) (ne .Values.strategy.type "Recreate") }}
+{{- fail "cacheAnalytics requires replicas=1, autoscaling disabled and strategy.type=Recreate" }}
+{{- end }}
+{{- if or (empty .Values.cacheAnalytics.zone) (empty .Values.cacheAnalytics.hostname) (empty .Values.cacheAnalytics.planPath) (empty .Values.cacheAnalytics.credentials.secretName) (empty .Values.cacheAnalytics.credentials.onepassword.itemPath) }}
+{{- fail "cacheAnalytics requires zone, hostname, planPath and independent 1Password credentials" }}
+{{- end }}
+{{- if eq .Values.cacheAnalytics.credentials.secretName .Values.r2Credentials.secretName }}
+{{- fail "cacheAnalytics must not reuse R2 credentials" }}
+{{- end }}
+{{- if eq .Values.cacheAnalytics.credentials.onepassword.itemPath .Values.r2Credentials.onepassword.itemPath }}
+{{- fail "cacheAnalytics must not reuse R2 itemPath" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,7 +30,11 @@ spec:
   revisionHistoryLimit: 3
   minReadySeconds: {{ .Values.minReadySeconds }}
   strategy:
+    {{- if eq .Values.strategy.type "Recreate" }}
+    type: Recreate
+    {{- else }}
     {{- toYaml .Values.strategy | nindent 4 }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "scotland-connector.selectorLabels" . | nindent 6 }}
@@ -85,6 +106,33 @@ spec:
               value: {{ join "," .Values.config.mcpAllowedOrigins | quote }}
             - name: SERVICE_VERSION
               value: {{ .Chart.Version | quote }}
+            - name: TOOL_UNIT_PRICES
+              value: {{ toJson .Values.toolUnitPrices | quote }}
+            - name: METER_EXPORT_ENABLED
+              value: {{ .Values.meterExport.enabled | quote }}
+            {{- if .Values.meterExport.enabled }}
+            - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+              value: {{ .Values.meterExport.endpoint | quote }}
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            {{- end }}
+            - name: CACHE_ANALYTICS_ENABLED
+              value: {{ .Values.cacheAnalytics.enabled | quote }}
+            {{- if .Values.cacheAnalytics.enabled }}
+            - name: CACHE_ANALYTICS_ZONE
+              value: {{ .Values.cacheAnalytics.zone | quote }}
+            - name: CACHE_ANALYTICS_HOSTNAME
+              value: {{ .Values.cacheAnalytics.hostname | quote }}
+            - name: CACHE_ANALYTICS_PLAN_PATH
+              value: {{ .Values.cacheAnalytics.planPath | quote }}
+            - name: CACHE_ANALYTICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.cacheAnalytics.credentials.secretName | quote }}
+                  key: {{ required "cacheAnalytics tokenKey is required" .Values.cacheAnalytics.credentials.tokenKey | quote }}
+            {{- end }}
             - name: GOMEMLIMIT
               value: {{ .Values.goMemLimit | quote }}
             - name: SHUTDOWN_GRACE

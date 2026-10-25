@@ -118,8 +118,8 @@ Readiness means a dataset has loaded. Failing readiness on staleness would
 take every pod out at once during an R2 outage and turn stale answers into
 no answers. Freshness is reported instead, in
 `meta.forecast_fetched_at` and the `scotland_connector_forecast_age_seconds`
-gauge. Nothing collects that gauge yet (the hub runs no scraper for pod
-metrics); the Honeycomb export in #7245 is what turns it into an alert.
+gauge. The hub runs no scraper for pod metrics. The staged usage export in
+#7245 creates no alert and does not export forecast-age gauges.
 
 Night bucketing (Europe/London, noon to noon) is computed per hour at parse
 time. "Tonight" is the night in progress until 09:00 local, after the last
@@ -356,10 +356,138 @@ little and flapping costs cache warmth at the edge.
 class and outcome. Client class comes from `CF-Connecting-IP` against
 Anthropic's published MCP egress ranges, then User-Agent for OpenAI, else
 `direct`; a malformed identity is `unknown`. The class is a label, never an
-authorization input. Edge cache hits never reach the origin, so the hit
-ratio is Cloudflare's to report. The counters are exposed on the admin port
-only and nothing collects them yet: export to Honeycomb and the zero-priced
-unit table are #7245.
+authorization input or a payment principal. Edge cache hits never reach the
+origin. The admin-only Prometheus endpoint remains available with both new
+features disabled. No public endpoint or response/cache policy changes.
+
+### Staged usage export
+
+`meterExport.enabled` defaults false in the chart and deployment overlay.
+When enabled, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` must explicitly name the
+collector's OTLP HTTP metrics URL (including `/v1/metrics`). The deployment
+overlay carries the existing hub collector Service URL. The pod receives no
+Honeycomb key. The collector retains its existing 1Password ingest secret and
+metrics pipeline. `scotland-connector` is added only to the hub overlay's
+`allowedServices`; that filter governs traces. Metrics already share the
+OTLP receiver whenever the receiver is enabled.
+
+A private OTel metric SDK provider records the existing calls, results and
+latency signals from the same dispatch recording boundary as Prometheus,
+plus `scotland_connector_invocation_units_total`. Calls retain tool, surface,
+client_class and outcome; results retain tool, surface and client_class;
+latency retains tool and surface. Units add the configured unit name. No raw
+address, User-Agent or request parameter is exported. The resource always has
+`service.name=scotland-connector`. `service.instance.id` combines the pod UID
+with a fresh UUID for every process/provider start.
+
+All counters and histograms use cumulative temporality. Counter values and
+histogram buckets reset on restart. Difference or rate each process series
+using its start timestamp before summing replicas; summing cumulative
+observations across export times double-counts usage. Histograms aggregate
+by bucket/count/sum deltas, never by averaging replica percentiles. This is
+telemetry rather than a durable billing ledger: an unflushed process crash
+loses observations since its last successful export. Failed exports leave
+cumulative values available for a later observation of the same process.
+
+Recording performs no network I/O. The periodic reader exports every 30
+seconds, with a three-second export timeout and no in-export retry loop.
+Public calls continue during exporter failure. After public HTTP draining,
+shutdown requests a final cumulative export, bounded by four seconds and any
+shorter parent deadline. Private Prometheus metrics remain independent of
+export success. `networkPolicy.egress.enabled` stays false under #7248; its
+prepared collector arm admits only the configured namespace plus pod labels
+on TCP 4318 when export is enabled. No private-address CIDR is added.
+
+**Why.** The pinned OTel Go metric SDK and HTTP exporter provide bounded
+periodic export without a second request recorder or a Prometheus scraper.
+Cumulative temporality retains counts through transient collector failures;
+process identity makes resets and replica aggregation explicit.
+
+### Zero-priced invocation units
+
+`toolUnitPrices` becomes `TOOL_UNIT_PRICES`, consumed by the meter's policy
+hook. Both registered tools must have exactly one entry. `plan_invocation`
+and `check_invocation` are independent configurable unit names. Prices are
+decimal strings representing integer currency millionths. Only the canonical
+string `"0"` is supported. Missing, duplicate or unknown tools, invalid unit
+names, malformed prices, negative/non-finite prices and every nonzero value
+fail startup. Changing a price cannot activate payment processing.
+
+One invocation of a recognized tool at the origin consumes one unit on REST
+or MCP, independently of outcome. Invalid tool arguments, loading data and
+conditional REST 304s still consume one invocation. A malformed body sent to
+the registered REST check route is a failed check invocation. Malformed MCP
+protocol traffic, discovery, static documents, unmatched REST routes and
+unknown MCP tools consume no units. Unknown MCP names collapse to `unknown`
+in calls and latency, never an arbitrary priced tool. Results remain a
+separate item count. Cache hits consume no origin units. The policy hook
+returns a local zero quote only: no Stripe integration, charges or active
+402 behavior exists.
+
+### Cloudflare cache observations
+
+`cacheAnalytics.enabled` is separately false in chart defaults and committed
+deployment values. While off, no analytics token is read, no secret reference
+is rendered, no OnePasswordItem is created and no request is made. Enabling
+requires a separately authorized zone-scoped read token from its own
+1Password item, never the R2 item. The item path and zone ID remain empty.
+The chart requires autoscaling off, one replica and Recreate strategy to
+avoid multiple pollers during scaling or rollout. This restriction is a
+staged enablement prerequisite, not authorization to change production
+availability or credentials.
+
+The reader POSTs only to Cloudflare's fixed HTTPS GraphQL endpoint, disables
+redirects and never logs token or response/error bodies. It serializes polls
+at five-minute intervals, with a ten-second request deadline and a 64 KiB
+response cap. It queries one five-minute window ending two minutes before
+the most recent five-minute boundary. The fixed group limit is 16; reaching
+it is unknown, with no pagination or automatic retry.
+
+The query uses `httpRequestsAdaptiveGroups`, `count` and `cacheStatus`, scoped
+by exact hostname AND exact connector plan path AND
+`clientRequestHTTPMethodName=GET` AND `requestSource=eyeball`, over
+`[datetime_geq, datetime_lt)`. The application
+checks that hostname and path match `PUBLIC_BASE_URL`. The configured hub
+population is `jomcgi.dev/scotland/v1/plan`. POST check and MCP are outside
+this cacheable population. No whole-zone or origin-count fallback exists.
+
+Hits are `hit`, `stale` and `updating`. Eligible requests are those hits plus
+`miss`, `expired` and `revalidated`. Revalidation contacts the origin and
+stays outside hits. `dynamic`, `bypass`, `none` and `unknown` are excluded.
+The ratio is hits divided by eligible requests. These are Cloudflare's
+adaptive-sampling estimates, already extrapolated; the reader never
+multiplies by a sample rate. The actual sampling rate and late-arrival
+completeness are unknown. This intentionally differs from an all-requests
+cache hit ratio.
+
+Private Prometheus and enabled OTLP export expose cache hits, eligible totals,
+ratio, window start/end, observation time and a sampled-estimate marker as
+gauges. Treat each window as one observation; use max or select one instance,
+never sum time windows or replicas. Missing, denied, malformed, partial,
+truncated, oversized, empty and zero-denominator responses remove the previous
+success. Freshness is checked at collection time: observations expire after
+eight minutes, or when the window end is more than ten minutes old. Unknown
+observations emit no ratio or count, including between polls.
+
+**Why.** Origin counts cannot measure edge hits. Cloudflare's official
+[HTTP hostname/path examples](https://developers.cloudflare.com/analytics/graphql-api/tutorials/end-customer-analytics/),
+[filter grammar](https://developers.cloudflare.com/analytics/graphql-api/features/filtering/),
+[sampling contract](https://developers.cloudflare.com/analytics/graphql-api/sampling/)
+and [cache status semantics](https://developers.cloudflare.com/cache/concepts/cache-responses/)
+describe the population, filtering and interpretation. Cloudflare's
+[exporter RequestMethodMetrics query](https://github.com/cloudflare/cloudflare-prometheus-exporter/blob/7fc9e888/src/cloudflare/gql/queries.ts#L721-L743)
+uses `clientRequestHTTPMethodName` for the method dimension on
+`httpRequestsAdaptiveGroups`. Dataset/filter availability and the exact zone
+schema still need authorized introspection and real-response validation.
+Fixture success establishes local parsing only. Cache Analytics can require
+a paid plan; this delivery makes no account or plan change.
+
+Repository delivery for #7245 is staged with live acceptance pending. The issue
+retains rollout authorization, Honeycomb per-tool/client-class queries,
+replica/reset/failure behavior, effective scoped egress and public admin
+isolation, separate least-privilege Analytics access and connector-scoped
+miss/hit freshness/sampling checks. All prices remain zero, and #7248 retains
+its separate activation hold. No new alert is created.
 
 ## Listings
 
@@ -390,7 +518,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction                                         | Tracks | State       |
 | ------------------------------------------------- | ------ | ----------- |
-| Meter export to Honeycomb, unit price table       | #7245  | not started |
+| Meter export, zero-priced units, cache analytics  | #7245  | staged, live acceptance pending |
 | Uncapped connector snapshot from the materializer | #7246  | not started |
 | Egress NetworkPolicy enabled                      | #7248  | staged off  |
 | Per-walk and per-site forecast fetch times        | #7274  | staged, live acceptance pending |

@@ -77,6 +77,38 @@ service:
 
 adminPort: 9090
 
+# Staged for #7245. No Honeycomb ingest credential belongs in this pod.
+meterExport:
+  enabled: false
+  endpoint: ""
+  collectorNamespace: otel-collector
+  collectorPodLabels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/instance: otel-collector
+
+# One unit per recognized origin invocation, including invalid arguments and
+# unavailable data. Price is integer currency millionths, exact zero only.
+toolUnitPrices:
+  - tool: plan
+    unit: plan_invocation
+    price_micros: "0"
+  - tool: check
+    unit: check_invocation
+    price_micros: "0"
+
+# Independently gated, never reuse the R2 secret. Enabling requires singleton
+# Recreate deployment (autoscaling off) and separate operational authorization.
+cacheAnalytics:
+  enabled: false
+  zone: ""
+  hostname: ""
+  planPath: ""
+  credentials:
+    secretName: ""
+    tokenKey: token
+    onepassword:
+      itemPath: ""
+
 # Pod Security Admission level for the namespace. The pod needs nothing beyond
 # "restricted".
 podSecurity: restricted
