@@ -171,7 +171,6 @@ def _refinement_state(db, row, rows, *, inherit_landing_hold=False):
 
 def _refinement_observation(receipt_id, *, inherit_landing_hold=False):
     """Bounded GitHub reads outside the control lock, repeated before apply."""
-    from factory.orchestration import factory_conductor as conductor
 
     with controls._locked_session() as (db, control):
         row = db.get(FactoryReceipt, receipt_id) if receipt_id is not None else None
@@ -182,6 +181,18 @@ def _refinement_observation(receipt_id, *, inherit_landing_hold=False):
         rows = db.exec(select(FactoryReceipt)).all()
         _refinement_state(db, row, rows, inherit_landing_hold=inherit_landing_hold)
         repo, number = _available_repo(row.repo), row.issue_number
+    return {
+        "receipt_id": receipt_id,
+        "repo": repo,
+        "issue_number": number,
+        "issue": issue_without_pr_references(repo, number),
+    }
+
+
+def issue_without_pr_references(repo, number):
+    """Read one issue and fail closed on incomplete or competing PR evidence."""
+    from factory.orchestration import factory_conductor as conductor
+
     issue = conductor.github_get(repo, f"issues/{number}")
     # Timeline catches linked closed/merged PRs too. Open PR text catches work
     # that mentions this issue without an explicit closing relationship.
@@ -224,12 +235,7 @@ def _refinement_observation(receipt_id, *, inherit_landing_hold=False):
                 break
         else:
             raise ValueError("validation_refinement_pr_lookup_incomplete")
-    return {
-        "receipt_id": receipt_id,
-        "repo": repo,
-        "issue_number": number,
-        "issue": issue,
-    }
+    return issue
 
 
 def _refinement_eligible(row, policy, observation):
@@ -337,6 +343,7 @@ def _preview(
         "enabled": False,
         "refine_enabled": False,
         "close_enabled": False,
+        "refinement_batch": [],
     }
     proposed["problem_issues"] = {
         **controls.problem_issues_policy(policy),
@@ -511,6 +518,7 @@ def _backlog_preview(db, control, reason):
         "enabled": True,
         "refine_enabled": False,
         "close_enabled": False,
+        "refinement_batch": [],
     }
     after["problem_issues"] = {
         **controls.problem_issues_policy(before),

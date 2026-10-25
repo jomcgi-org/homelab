@@ -2803,6 +2803,27 @@ Recovery eligibility and execution remain separate existing gates.
 `factory_find_receipts` supplies an exact, read-only identity lookup across
 receipt history, with intersecting selectors and explicit ambiguity.
 
+`factory_preview_refinement_batch` and `factory_apply_refinement_batch` prepare
+one to ten fresh primary-repository issues for advisory work while existing
+admitted work retains its pinned policy. Preparation requires paused admissions,
+selected-only intake, no queued work, no unknown starts and the same safe posture
+as active discovery restoration. Preview binds fresh issue ownership and PR
+references, receipt and work-item history, reservations and the policy version.
+Apply repeats those checks, records the exact digest and request key, and leaves
+admissions paused. It changes only intake enablement, refinement enablement and
+the exact `intake.refinement_batch` allowlist. No task budget, generation, model,
+existing selection or hold changes.
+
+**Why a separate batch.** Enabling global refinement can turn every unready issue
+into work. A nonempty batch restricts both natural candidate selection and queued
+admission to the named refinement issues, including the SQL admission predicate
+and capacity/health projections. After separate enable, native refinement may
+write brief comments and labels or notify a human decision. Becoming agent-ready
+does not grant implementation authority. Closure and landing remain off, and a
+subsequent delivery requires its own reviewed admission. This control is inert
+until explicitly applied and enabled; it does not authorize restoring broad
+discovery or releasing an existing landing hold.
+
 **Why preparation is separate from execution.** Pausing admissions alone does
 not disable automatic landing, and existing recovery may require admission to
 be enabled. A previewable configuration step lets an operator inspect the

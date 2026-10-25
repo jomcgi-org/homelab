@@ -88,6 +88,7 @@ _EXCLUSION_REASONS = (
     "blocked",
     "deferred",
     "refine_disabled",
+    "outside_refinement_batch",
     "lane_full",
     "local_malformed",
     "local_unnumbered",
@@ -385,6 +386,11 @@ def _local_candidates(
             excluded["blocked"] += 1
             continue
         delivery = work_item.state == "ready"
+        if intake["refinement_batch"] and (
+            delivery or number not in intake["refinement_batch"]
+        ):
+            excluded["outside_refinement_batch"] += 1
+            continue
         refine = not delivery
         task_class, class_reason = derive_task_class(labels, refine=refine)
         rows = [row for row in local_receipts if row.work_item_id == work_item.id]
@@ -677,7 +683,11 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             }
             from factory.orchestration import dependency_prs
 
-            if room.get("delivery") and policy.get("base_branch"):
+            if (
+                room.get("delivery")
+                and policy.get("base_branch")
+                and not intake["refinement_batch"]
+            ):
                 for pull in pulls:
                     if not dependency_prs.eligible(pull, slug, policy):
                         continue
@@ -841,6 +851,11 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 # the policy issue_numbers allowlist under a new generation, which
                 # writes its receipt directly and never consults this sweep.
                 delivery = bool(labels & include_labels)
+                if intake["refinement_batch"] and (
+                    delivery or number not in intake["refinement_batch"]
+                ):
+                    exclude("outside_refinement_batch")
+                    continue
                 refine = not delivery
                 task_class, class_reason = derive_task_class(labels, refine=refine)
                 if refine and "needs-thought" in labels:

@@ -1737,6 +1737,72 @@ async def factory_quota_probe_status(
 
 
 @mcp.tool
+async def factory_preview_refinement_batch(
+    issue_numbers: Annotated[list[int], Field(min_length=1, max_length=10)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+) -> dict:
+    """Preview an exact fresh advisory batch as a standing human operator.
+
+    Requires paused admissions, selected-only intake and no queued/uncertain
+    work. Admitted work may continue with its pinned policy and holds. Reads
+    current ownership, PR references and receipt history. After separate enable,
+    refinement may write brief comments/labels and notify human decisions.
+    No implementation, closure or landing is authorized by the batch.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+
+    def preview():
+        from factory.orchestration import factory_refinement_batch
+
+        try:
+            return factory_refinement_batch.preview(issue_numbers, reason)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    return await asyncio.to_thread(preview)
+
+
+@mcp.tool
+async def factory_apply_refinement_batch(
+    issue_numbers: Annotated[list[int], Field(min_length=1, max_length=10)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    expected_preview_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
+    request_key: Annotated[str, Field(min_length=1, max_length=256)],
+) -> dict:
+    """Apply the exact reviewed advisory batch, leaving admissions paused.
+
+    Rechecks fresh GitHub evidence, policy version, receipts and reservations.
+    Preserves existing selected work, generation, budgets, models and holds.
+    A separate explicit enable authorizes the stated refinement side effects.
+    Natural intake only admits named advisory issues, never their delivery.
+    Replay identical arguments after a lost response, then read current state.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+
+    def apply():
+        from factory.orchestration import factory_refinement_batch
+
+        try:
+            return factory_refinement_batch.apply(
+                issue_numbers,
+                reason,
+                actor=principal.subject,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    return await asyncio.to_thread(apply)
+
+
+@mcp.tool
 async def factory_preview_backlog_intake(
     reason: Annotated[str, Field(min_length=1, max_length=4000)],
 ) -> dict:
