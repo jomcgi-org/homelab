@@ -651,7 +651,9 @@ def test_new_work_is_discovered_four_minutes_after_a_completed_empty_scan(
     assert result[0]["receipt"]["issue_number"] == 1
 
 
-@pytest.mark.parametrize("evaluation", [None, "failed", "partial", "malformed"])
+@pytest.mark.parametrize(
+    "evaluation", [None, "failed", "partial", "completed", "malformed"]
+)
 def test_unsuccessful_discovery_keeps_hourly_backoff(db, monkeypatch, evaluation):
     with Session(db) as session:
         session.add(
@@ -910,6 +912,9 @@ def test_a_truncated_sweep_says_so(db, monkeypatch):
         is True
     )
     assert reconcile_truncation == [True]
+    swept_at = intake_loop.aware(audits(db, "intake_swept")[-1].created_at)
+    assert not intake_loop._listing_due(swept_at + timedelta(seconds=240))
+    assert intake_loop._listing_due(swept_at + timedelta(hours=1))
 
 
 def test_pull_listing_uses_fifty_item_pages_and_reads_after_a_full_page(
