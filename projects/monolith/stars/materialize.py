@@ -64,13 +64,14 @@ def _materialize_sync() -> int:
                 CacheControl="public, max-age=0, s-maxage=1800, stale-if-error=86400",
             )
             logger.info("stars connector materialized: %d bytes", len(connector_body))
-        except Exception as exc:  # noqa: BLE001 - re-raised after public writes
+        except Exception as exc:  # noqa: BLE001 - reported after public writes
+            # SDK exceptions can retain the request body in attributes or
+            # chained exceptions. Keep only text, including in log records.
+            connector_error = f"{type(exc).__name__}: {exc}"
             logger.error(
-                "stars connector publication failed; continuing public writes: %s", exc
+                "stars connector publication failed; continuing public writes: %s",
+                connector_error,
             )
-            # The upload's traceback can retain the large Body argument. Avoid
-            # retaining it in log records or while serializing public bodies.
-            connector_error = exc.with_traceback(None)
         finally:
             del connector_body
         for site in payload["sites"]:
@@ -142,7 +143,7 @@ def _materialize_sync() -> int:
     )
     logger.info("stars history map materialized: %d bytes", len(history_map_body))
     if connector_error is not None:
-        raise connector_error
+        raise RuntimeError(f"stars connector publication failed: {connector_error}")
     return len(body)
 
 

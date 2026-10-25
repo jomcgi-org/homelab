@@ -7337,6 +7337,7 @@ py_test(
         ":pkg_shared",
         ":pkg_stars",
         "//projects/monolith/stars/tests:snapshot_fixture",
+        "@pip//botocore",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
