@@ -15768,7 +15768,7 @@ def test_operator_settles_attempt_lost_before_session_end_to_end(
     )
     assert settled["ok"] and settled["session_id"] is None
     assert set(settled["outcome"]) == {
-        "conductor_status",
+        "status",
         "session_id",
         "attempt",
         "cost_usd",
