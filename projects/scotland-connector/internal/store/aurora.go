@@ -49,6 +49,7 @@ func (s *AuroraStore) Refresh(ctx context.Context) error {
 	s.log.Info("aurora snapshot loaded", "sites", len(d.Sites), "digest", fmt.Sprintf("%x", sha256.Sum256(o.Body)))
 	return nil
 }
+
 func (s *AuroraStore) Run(ctx context.Context) {
 	refresh := func() {
 		c, cancel := context.WithTimeout(ctx, 30*time.Second)

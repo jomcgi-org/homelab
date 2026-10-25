@@ -9,8 +9,10 @@ import (
 	"strconv"
 )
 
-const TerrainAlgorithm = "north-rays-v1-20km-100m-5deg-no-refraction"
-const MaxTerrainBytes = 128 << 20
+const (
+	TerrainAlgorithm = "north-rays-v1-20km-100m-5deg-no-refraction"
+	MaxTerrainBytes  = 128 << 20
+)
 
 // Grid is a north-to-south ESRI ASCII raster in WGS84 geographic degrees,
 // heights in metres in the input source datum. GMTED2010's vertical reference

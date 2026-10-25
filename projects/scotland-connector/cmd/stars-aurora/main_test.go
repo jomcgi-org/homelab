@@ -21,7 +21,7 @@ func TestOfflineProducer(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := filepath.Join(t.TempDir(), "input.json")
-	if err = os.WriteFile(p, b, 0600); err != nil {
+	if err = os.WriteFile(p, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
