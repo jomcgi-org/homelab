@@ -201,6 +201,7 @@ DEFAULT_INTAKE = {
     # A nonempty batch restricts ALL automatic intake to these advisory issues.
     # Readiness produced by refinement is not authority to implement them.
     "refinement_batch": [],
+    "refine_brief_only": False,
     # Author authority permits inspection, never approval or merge.
     "dependency_pr_authors": [],
     # Numeric IDs force security evidence; they grant no intake authority.
@@ -805,7 +806,7 @@ def _validate_intake(value: object) -> dict:
     result["refinement_batch"] = validate_refinement_batch(
         value.get("refinement_batch", []), allow_empty=True
     )
-    for key in ("enabled", "refine_enabled", "close_enabled"):
+    for key in ("enabled", "refine_enabled", "close_enabled", "refine_brief_only"):
         setting = value.get(key, DEFAULT_INTAKE[key])
         if type(setting) is not bool:
             raise ValueError(f"invalid {key}")
@@ -1407,6 +1408,7 @@ def brief_only_refinement(row) -> bool:
         policy = json.loads(row.policy_json or "{}")
     return task_class == "refine" and bool(
         (policy.get("intake") or {}).get("refinement_batch")
+        or (policy.get("intake") or {}).get("refine_brief_only")
     )
 
 
@@ -2134,6 +2136,15 @@ def landing_held(row) -> bool:
     else:
         direction = json.loads(getattr(row, "direction_json", None) or "{}")
     return "landing_hold" in direction
+
+
+def natural_history_exclusion(rows) -> str | None:
+    """Automatic rediscovery cannot release cancellation or landing authority."""
+    if any(row.state == "cancelled" for row in rows):
+        return "cancelled_issue"
+    if any(landing_held(row) for row in rows):
+        return "landing_held"
+    return None
 
 
 def nonrenewable_recovery(row) -> bool:
@@ -3378,6 +3389,22 @@ def refinement_batch_policy(db: Session, control, issue_numbers) -> dict:
     return validate_policy(policy)
 
 
+def broad_refinement_policy(db: Session, control) -> dict:
+    """Enable ordinary eligibility with private, brief-only advisory effects."""
+    policy = _active_admission_policy(db, control)
+    if (
+        db.exec(
+            select(FactoryReceipt.id).where(FactoryReceipt.state == "queued")
+        ).first()
+        is not None
+    ):
+        raise ValueError("broad_refinement_queued_work_present")
+    policy["intake"].update(
+        enabled=True, refine_enabled=True, refine_brief_only=True, refinement_batch=[]
+    )
+    return validate_policy(policy)
+
+
 def set_control(
     action: str,
     actor: str,
@@ -3394,6 +3421,7 @@ def set_control(
         "configure",
         "restore_active_intake",
         "prepare_refinement_batch",
+        "prepare_broad_refinement",
         "enable",
         "pause_admissions",
         "pause_task",
@@ -3503,6 +3531,9 @@ def set_control(
             control.policy_json = _json(configured)
         elif action == "prepare_refinement_batch":
             configured = refinement_batch_policy(db, control, refinement_issue_numbers)
+            control.policy_json = _json(configured)
+        elif action == "prepare_broad_refinement":
+            configured = broad_refinement_policy(db, control)
             control.policy_json = _json(configured)
         elif action == "enable":
             if not json.loads(control.policy_json):

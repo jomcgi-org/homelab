@@ -478,9 +478,11 @@ def apply(
 BACKLOG_ACTION = "backlog_intake_prepared"
 
 
-def _backlog_preview(db, control, reason):
+def _backlog_preview(db, control, reason, *, include_refinement=False):
     """Return to reviewed intake explicitly, never as a task-completion effect."""
     reason = controls._text(reason, "reason", 4000)
+    if type(include_refinement) is not bool:
+        raise ValueError("invalid include_refinement")
     if control.state != "paused":
         raise ValueError("validation_requires_paused_admissions")
     rows = db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
@@ -519,6 +521,7 @@ def _backlog_preview(db, control, reason):
         "refine_enabled": False,
         "close_enabled": False,
         "refinement_batch": [],
+        "refine_brief_only": False,
     }
     after["problem_issues"] = {
         **controls.problem_issues_policy(before),
@@ -529,7 +532,9 @@ def _backlog_preview(db, control, reason):
         if entry_repo != repo:
             entry["paused"] = True
     after = controls.validate_policy(after)
-    if active:
+    if include_refinement:
+        after = controls.broad_refinement_policy(db, control)
+    elif active:
         # Do not strand queued operator receipts by clearing their allowlist,
         # or alter the policy/landing authority of already admitted work.
         after = controls.active_intake_restoration_policy(db, control)
@@ -541,7 +546,11 @@ def _backlog_preview(db, control, reason):
         "policy_after": after,
         "state_after": "paused",
         "execution_authorized": False,
-        "mode": "active_discovery_only" if active else "idle_backlog_restore",
+        "mode": "broad_brief_refinement"
+        if include_refinement
+        else "active_discovery_only"
+        if active
+        else "idle_backlog_restore",
         "eligibility": "Existing intake ownership, dependencies, linked PR, receipt history and readiness checks apply after explicit enable.",
         "receipt_fingerprint": hashlib.sha256(
             controls._json([row.model_dump(mode="json") for row in rows]).encode()
@@ -550,32 +559,51 @@ def _backlog_preview(db, control, reason):
             controls._json([start.model_dump(mode="json") for start in starts]).encode()
         ).hexdigest(),
     }
+    if include_refinement:
+        result["effects_after_enable"] = [
+            "Natural intake may admit eligible unready issues for brief-only refinement and agent-ready issues for normal implementation.",
+            "Refinement may write GitHub brief comments and necessary verdict labels. Decisions remain private and typed gate actions are disabled.",
+            "Cancelled and held issue histories require explicit operator re-admission. Existing ownership, dependency, linked PR, provider and budget gates still apply.",
+            "Closure, automatic landing and issue production remain off. Existing admitted work retains its pinned policy and holds.",
+        ]
     result["preview_sha256"] = hashlib.sha256(
         controls._json(result).encode()
     ).hexdigest()
     return result
 
 
-def preview_backlog(reason):
+def preview_backlog(reason, *, include_refinement=False):
     with controls._locked_session() as (db, control):
-        return _backlog_preview(db, control, reason)
+        return _backlog_preview(
+            db, control, reason, include_refinement=include_refinement
+        )
 
 
-def apply_backlog(reason, *, actor, request_key, expected_preview_sha256):
+def apply_backlog(
+    reason, *, actor, request_key, expected_preview_sha256, include_refinement=False
+):
     actor = controls._text(actor, "actor")
     request = {
         "reason": reason,
         "request_key": controls._text(request_key, "request_key"),
         "expected_preview_sha256": expected_preview_sha256,
     }
+    if type(include_refinement) is not bool:
+        raise ValueError("invalid include_refinement")
+    if include_refinement:
+        request["include_refinement"] = True
     with controls._locked_session() as (db, control):
         replay = _replay(db, actor, request, action=BACKLOG_ACTION)
         if replay is not None:
             return replay
-        proposal = _backlog_preview(db, control, reason)
+        proposal = _backlog_preview(
+            db, control, reason, include_refinement=include_refinement
+        )
         if proposal["preview_sha256"] != expected_preview_sha256:
             raise ValueError("validation_preview_changed")
-        if proposal["mode"] == "active_discovery_only":
+        if proposal["mode"] == "broad_brief_refinement":
+            result = controls.set_control("prepare_broad_refinement", actor, session=db)
+        elif proposal["mode"] == "active_discovery_only":
             result = controls.set_control("restore_active_intake", actor, session=db)
         else:
             result = controls.set_control(

@@ -2410,7 +2410,7 @@ def test_backlog_preparation_requires_standing_operator_before_any_read(monkeypa
         _principal(),
         lambda: mcp.factory_apply_backlog_intake("resume", "a" * 64, "key"),
     )["ok"]
-    assert calls[0] == (("resume",), {})
+    assert calls[0] == (("resume",), {"include_refinement": False})
     assert calls[1][1]["expected_preview_sha256"] == "a" * 64
     assert calls[1][1]["request_key"] == "key"
 
