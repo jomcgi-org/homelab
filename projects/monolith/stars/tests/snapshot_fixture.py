@@ -1,6 +1,6 @@
 """Deterministic scalar-load fixture and offline materialization benchmark.
 
-Run from the repository root with PYTHONPATH=projects/monolith. No storage or
+Run as stars.tests.snapshot_fixture with PYTHONPATH=projects/monolith. No storage or
 weather calls are made. The sink retains lengths/digests, never response bodies.
 """
 

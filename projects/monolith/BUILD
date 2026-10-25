@@ -145,7 +145,6 @@ _BACKEND_SRCS = glob(
         "shared/testing/**/*.py",
         # Offline grid generator: run by hand, not part of the runtime image.
         "stars/grid_gen/**",
-        "stars/snapshot_fixture.py",
         # Run-by-hand S3->Postgres backfill, not part of the runtime image.
         "trips/backfill/**",
     ],
@@ -1113,7 +1112,6 @@ py_library(
             "**/test_*.py",
             "*/tests/**/*.py",
             "stars/grid_gen/**",
-            "stars/snapshot_fixture.py",
         ],
     ),
     imports = ["."],
@@ -1635,7 +1633,6 @@ py_library(
             "shared/testing/**/*.py",
             # Offline grid generator: run by hand, not part of the runtime image.
             "stars/grid_gen/**",
-            "stars/snapshot_fixture.py",
             # Run-by-hand S3->Postgres backfill (boto3/typer/httpx orchestration)
             # stays out of the runtime image; the pure exif.py/transform.py
             # modules live at trips/ level and DO ship for the live ingest +
@@ -1820,7 +1817,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "*/tests/**/*.py",
     "shared/testing/**/*.py",
     "stars/grid_gen/**",
-    "stars/snapshot_fixture.py",
     "trips/backfill/**",
     # Whole private domains.
     "agent/**",
@@ -7340,21 +7336,13 @@ py_test(
         ":pkg_core",
         ":pkg_shared",
         ":pkg_stars",
-        ":stars_snapshot_fixture",
+        "//projects/monolith/stars/tests:snapshot_fixture",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
-)
-
-py_library(
-    name = "stars_snapshot_fixture",
-    testonly = True,
-    srcs = ["stars/snapshot_fixture.py"],
-    imports = ["."],
-    deps = [":pkg_stars"],
 )
 
 py_test(
