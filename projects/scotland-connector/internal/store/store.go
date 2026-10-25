@@ -15,8 +15,9 @@ import (
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 )
 
-// maxSnapshotBytes bounds each object read. sites.json for the full grid is a
-// few MB; anything far larger is a broken upload, not data.
+// maxSnapshotBytes bounds each object read. An uncapped full-grid snapshot can
+// approach this limit even when valid. Verify size and refresh-memory headroom
+// before selecting it; an oversized object leaves the last-good dataset in use.
 const maxSnapshotBytes = 64 << 20
 
 // Getter is the subset of the R2 client the store uses.

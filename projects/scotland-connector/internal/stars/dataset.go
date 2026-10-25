@@ -39,8 +39,9 @@ type Site struct {
 	AltitudeM         int
 	LPZone            string
 	// ClearDark and ClearTwilight are the snapshot's counts over the whole
-	// forecast horizon. Hours is capped by the materializer, so when
-	// ClearTwilight exceeds len(Hours) the list is truncated (#7246).
+	// forecast horizon. The public snapshot caps Hours; the opt-in connector
+	// snapshot retains all qualifying hours. ClearTwilight > len(Hours)
+	// detects a truncated list in either selected object (#7246).
 	ClearDark     int
 	ClearTwilight int
 	Hours         []Hour

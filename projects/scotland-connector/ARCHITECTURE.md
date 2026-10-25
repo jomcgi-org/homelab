@@ -269,9 +269,10 @@ verdict alone and builds the full answer only for the ones it returns.
 
 **Why.** Reading Postgres would put a database credential and an egress path
 to CNPG in the namespace that takes public traffic, and make the database's
-load a function of the replica count. The snapshots already exist, are a few
-MB, and change every three hours, so loading them into memory costs nothing to keep in
-sync. The cost is that the snapshot caps each site's hour list at 25, so
+load a function of the replica count. The existing snapshots change every three
+hours and can be refreshed independently of the database. Their full-grid size
+and refresh-memory cost need the capacity checks below. The public snapshot
+caps each site's hour list at 25, so
 later nights can be undercounted. A night past a capped site's last listed
 hour is `unknown` unless it is already a go. The separate connector snapshot
 below removes that display cap when explicitly enabled.
@@ -286,6 +287,10 @@ Counts, ordering, entity fetch timestamps and zero-hour sites are shared.
 The public `sites.json`, `map.json` and `history-map.json` bytes and cache
 contracts are unchanged. The materializer still returns the public body length.
 Disabled runs build capped lists and write only the original three objects.
+If the connector upload fails, the materializer logs the error, releases the
+connector body and trims the tree, then writes all three public objects before
+raising the upload error. Public freshness survives that failure while the run
+still reports failure; the connector continues serving its last-good snapshot.
 An enabled key matching a public, map, history, grid, climatology or walks key
 is rejected before database or storage I/O.
 
@@ -298,7 +303,9 @@ hourly horizon or a site's own successful-fetch coverage. Sparse later rows
 remain unknown in a seven-day plan/check request. This is the repository-only
 2026-10-24 scope of #7246; production acceptance is outstanding.
 
-After separate authorization, activation needs these two GitOps changes:
+Before activation, resolve the object-size and consumer-memory shortfall below
+under #7246. Keep both settings at their defaults until that precondition has
+evidence. After separate authorization, activation needs these two GitOps changes:
 
 - Set `stars.connectorSitesKey: connector-sites.json` in
   `projects/monolith/deploy/values.yaml`. The shared S3 block in
@@ -313,35 +320,87 @@ After separate authorization, activation needs these two GitOps changes:
   plumbing sets `STARS_SITES_KEY`; runtime and store select that object.
   The connector's chart/runtime default remains `sites.json`.
 
-Do not enable either setting as part of this staged delivery. Keep its PR
-draft, unmerged, outside the queue and without auto-merge. Operational checks
-remain on #7246: chart publication/write-back and deployed revisions; normal
-scheduled publication with compatible public objects; real plan/check
-truncation and per-entity coverage; actual object size and peak memory with
+Operational checks remain on #7246: chart publication/write-back and deployed
+revisions; normal scheduled publication with compatible public objects; real
+plan/check truncation and per-entity coverage; actual object size, materializer
+peak memory and connector pod memory after switching `config.sitesKey`, with
 site/hour counts and the observation method. No manual job trigger is needed.
+
+### Grid-scale capacity is a pre-activation condition
+
+The offline fixture defaults to 14,000 sites, matching the documented grid in
+`projects/monolith/stars/jobs.py` (`REFRESH_BATCH_SIZE` and `refresh_handler`).
+Each site has 89 input rows (1,246,000 total), 88 upcoming rows (1,232,000 total),
+and 55 qualifying clear-twilight hours. Public output retains 25 hours/site
+(350,000 total); connector output retains 55 (770,000 total). The profile uses
+72 hourly steps from 2026-10-19 08:00 UTC and a sparse six-hourly tail at offsets
+78 through 168. Three 16-hour winter nights include twilight boundaries and one
+cloudy hour; the tail adds eight qualifying rows. Uniform clear weather across
+the grid stresses the output volume. This is a synthetic winter-clear-spell
+scenario with daylight/cloudy exclusions. Longer nights, additional qualifying
+rows and larger site metadata can increase it; it is not an upper bound.
+
+Measurements on Linux amd64, CPython 3.12.15, from the correction to #7323:
+
+| Run | sites.json B | map.json B | history-map.json B | connector-sites.json B | Python allocation peak B | Process max RSS MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline materialize.py at 925d9cd18, current router.py | 29,162,112 | 1,428,092 | 12 | absent | 362,842,546 | 416.69 |
+| Staged path disabled | 29,162,112 | 1,428,092 | 12 | absent | 362,844,236 | 416.29 |
+| Staged path enabled | 29,162,112 | 1,428,092 | 12 | 60,704,112 | 471,428,706 | 529.55 |
+
+The original three objects have identical SHA-256 digests in all runs. Each
+allocation peak comes from a fresh traced process; RSS comes from a separate
+untraced process via Linux `getrusage().ru_maxrss`. Tracing raises RSS and must
+be disabled for the deployment comparison. The producer's 529.55 MiB max RSS
+is below the 1 GiB `stars-refresh` job limit, but excludes real database/storage
+drivers, populated climatology and the preceding forecast-refresh work.
+
+The consumer benchmark uses the actual `Store.Refresh`, an initial resident
+snapshot, a fresh replacement body and a reader retaining the old dataset.
+Its local-file getter uses the same bounded `io.ReadAll` as `r2.Client.Get`.
+It samples `HeapInuse` and `Sys - HeapReleased` every millisecond; process RSS
+comes from `/usr/bin/time -v` around the compiled test binary. Fresh processes,
+Go 1.26.9, `GOMEMLIMIT=220MiB`, one replacement each:
+
+| Selected object | Peak HeapInuse MiB | Peak Go-managed memory MiB | Process max RSS MiB |
+| --- | ---: | ---: | ---: |
+| Capped sites.json | 166.88 | 173.95 | 175.11 |
+| Uncapped connector-sites.json | 224.20 | 231.22 | 232.45 |
+
+**Activation is blocked on capacity evidence.** The 57.89 MiB connector object
+uses 90.46% of the 64 MiB bound, leaving 6.11 MiB (roughly six more hours/site at
+this encoding). A larger valid snapshot can be rejected, leaving last-good data
+to become stale. The consumer exceeds the 220 MiB Go memory target and has only
+23.55 MiB RSS margin below the 256 MiB container limit even without HTTP/TLS,
+walks, populated history or query-serving load. These synthetic results do not
+establish safe production headroom. Before enabling either setting, demonstrate
+representative worst-case size and replacement-memory headroom, or deliver and
+validate a separately scoped capacity/representation change. Keep the 64 MiB,
+220 MiB and 256 MiB limits unchanged in this staged change. After authorized
+activation, record production object size and both producer and connector pod
+memory separately from these measurements.
 
 For reproducible offline measurements, run each command in a fresh Linux
 Python process from the repository root, with the monolith dependencies:
 
 ```sh
 git rev-parse HEAD
-PYTHONPATH=projects/monolith python -m stars.snapshot_fixture --sites 3000 --baseline-revision 925d9cd18
-PYTHONPATH=projects/monolith python -m stars.snapshot_fixture --sites 3000
-PYTHONPATH=projects/monolith python -m stars.snapshot_fixture --sites 3000 --enabled
+PYTHONPATH=projects/monolith python -m stars.snapshot_fixture --baseline-revision 925d9cd18
+PYTHONPATH=projects/monolith python -m stars.snapshot_fixture
+PYTHONPATH=projects/monolith python -m stars.snapshot_fixture --enabled
+# Repeat each with --no-tracemalloc for process RSS. Save local consumer input:
+PYTHONPATH=projects/monolith python -m stars.snapshot_fixture --enabled --no-tracemalloc --output-dir /tmp/stars-grid-fixture
+go test -c -o /tmp/stars-store.test ./projects/scotland-connector/internal/store
+GOMEMLIMIT=220MiB STARS_BENCH_SNAPSHOT=/tmp/stars-grid-fixture/sites.json /usr/bin/time -v /tmp/stars-store.test -test.run='^$' -test.bench='^BenchmarkSnapshotRefresh$' -test.benchtime=1x
+GOMEMLIMIT=220MiB STARS_BENCH_SNAPSHOT=/tmp/stars-grid-fixture/connector-sites.json /usr/bin/time -v /tmp/stars-store.test -test.run='^$' -test.bench='^BenchmarkSnapshotRefresh$' -test.benchtime=1x
 ```
 
-The helper exercises materialization and JSON serialization with mocked
-scalar selects and object writes. It traces Python allocations from before
-the load until after serialization, using `tracemalloc.get_traced_memory()`.
-This excludes native driver/storage allocations and is not whole-process RSS.
-The sink retains only byte lengths and SHA-256 digests. Each of 3,000 synthetic
-sites has 89 input rows (267,000 total), with one past row discarded, 72 hourly
-steps from 2026-10-19 08:00 UTC, and a sparse six-hourly tail at offsets
-78 through 168 hours. Each site retains 55 clear-twilight hours, with dark,
-twilight-only, daylight and cloudy cases; public output emits 25 hours/site
-(75,000 total), connector output 55 (165,000 total). Climatology is empty in
-this forecast-focused fixture. Report bytes and peak allocated bytes with the
-tested revision in the PR; synthetic measurements are not live observations.
+The helper exercises materialization and JSON serialization with mocked scalar
+selects and object writes, tracing from before the load until after serialization.
+The sink retains only lengths/digests; `--output-dir` also writes local files.
+Climatology is empty. The baseline loads only the old `materialize.py`, with
+the current `router.py` and its unchanged default hour limit. Record the exact
+tested head in the PR. No weather requests or live storage calls are made.
 The small checked-in consumer fixture is regenerated by
 `python -m stars.snapshot_fixture --fixture` with the same `PYTHONPATH`.
 `stars/router_test.py` checks it against actual producer bytes.
