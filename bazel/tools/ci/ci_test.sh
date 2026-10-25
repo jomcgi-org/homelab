@@ -201,8 +201,8 @@ else
 fi
 
 main_drift_branch="$(awk '
-	$0 == "              elif [ \"$ON_MAIN\" = true ]; then" { in_branch = 1 }
-	in_branch && $0 == "              else" { exit }
+	$0 == "                elif [ \"$ON_MAIN\" = true ]; then" { in_branch = 1 }
+	in_branch && $0 == "                else" { exit }
 	in_branch { print }
 ' <<<"$pr_checks_shape")"
 if grep -Fq 'exit 1' <<<"$main_drift_branch" &&
@@ -662,6 +662,109 @@ if [[ "$duplicate_range_status" -eq 1 ]] &&
 	pass "duplicate_range_apk_download_diagnosed"
 else
 	fail "duplicate_range_apk_download_diagnosed" "expected duplicate Range diagnosis before missing summary, got exit $duplicate_range_status: $(tr '\n' ' ' <"$duplicate_range_output")"
+fi
+
+
+# Execute the production formatter body against a local Git remote. A new
+# package must be written back even when every tracked file is already clean.
+format_body="$TMP/format-body.sh"
+awk '
+    $0 == "          format_and_check_drift() {" { capture = 1; next }
+    capture && $0 == "          }" { exit }
+    capture { sub(/^            /, ""); print }
+' "$BUILD_BUDDY" > "$format_body"
+format_call_ln=$(grep -nF '            format_and_check_drift' "$BUILD_BUDDY" | head -1 | cut -d: -f1 || true)
+reachability_ln=$(grep -nF 'python3 ./bazel/tools/ci/test_source_reachability.py' "$BUILD_BUDDY" | head -1 | cut -d: -f1 || true)
+if [[ -s "$format_body" && -n "$format_call_ln" && "$format_call_ln" -lt "$reachability_ln" ]]; then
+    pass "format_before_graph_analysis"
+else
+    fail "format_before_graph_analysis" "CI generation must precede reachability and affected tests"
+fi
+
+if [[ -s "$format_body" ]]; then
+    real_git=$(command -v git)
+    for scenario in new-package tracked-change clean queue main bot; do
+        graph_root="$TMP/graph-$scenario"
+        mkdir -p "$graph_root/work"
+        "$real_git" init -q --bare "$graph_root/remote.git"
+        "$real_git" -C "$graph_root/work" init -q -b feature
+        "$real_git" -C "$graph_root/work" config user.name author
+        "$real_git" -C "$graph_root/work" config user.email author@example.invalid
+        printf 'initial\n' > "$graph_root/work/BUILD"
+        "$real_git" -C "$graph_root/work" add BUILD
+        if [[ "$scenario" == bot ]]; then
+            "$real_git" -C "$graph_root/work" -c user.name=ci-format-bot commit -qm initial
+        else
+            "$real_git" -C "$graph_root/work" commit -qm initial
+        fi
+        "$real_git" -C "$graph_root/work" remote add origin "$graph_root/remote.git"
+        "$real_git" -C "$graph_root/work" push -q origin feature
+        before_graph=$($real_git -C "$graph_root/work" rev-parse HEAD)
+        for guard in bazel/images/validate-generate-scripts.sh bazel/tools/format/check-migration-ordering.sh bazel/tools/git/check-commit-msg-ascii.sh bazel/tools/hooks/validate-hooks-executable.sh; do
+            mkdir -p "$graph_root/work/${guard%/*}"
+            printf '#!/usr/bin/env bash\nexit 0\n' > "$graph_root/work/$guard"
+            chmod +x "$graph_root/work/$guard"
+        done
+        graph_rc=0
+        (
+            cd "$graph_root/work"
+            set -eu
+            ON_MAIN=false
+            SKIP_MAIN_PUBLISH=false
+            GIT_BRANCH=feature
+            GHCR_TOKEN=unused-test-value
+            [[ "$scenario" != main ]] || ON_MAIN=true
+            [[ "$scenario" != queue ]] || GIT_BRANCH=gh-readonly-queue/main/pr-1
+            git() {
+                # No credentials or external network in this regression.
+                if [[ "$1 $2" == 'remote set-url' ]]; then return 0; fi
+                "$real_git" "$@"
+            }
+            python3() { :; }
+            bazel() {
+                if [[ "$*" == 'run //bazel/tools/format:format --config=ci' ]]; then
+                    printf 'ran\n' > "$graph_root/formatted"
+                    if [[ "$scenario" != clean ]]; then
+                        mkdir -p generated
+                        printf 'generated\n' > generated/BUILD.bazel
+                        printf 'not generated source\n' > runner-private.tmp
+                    fi
+                    if [[ "$scenario" == tracked-change ]]; then
+                        printf 'updated\n' > BUILD
+                    fi
+                fi
+            }
+            source "$format_body"
+        ) > "$graph_root/output" 2>&1 || graph_rc=$?
+        after_graph=$($real_git -C "$graph_root/work" rev-parse HEAD)
+        remote_graph=$($real_git --git-dir="$graph_root/remote.git" rev-parse refs/heads/feature)
+        case "$scenario" in
+            new-package|tracked-change)
+                if [[ "$graph_rc" -eq 1 && "$before_graph" != "$after_graph" && "$remote_graph" == "$after_graph" ]] &&
+                    "$real_git" -C "$graph_root/work" cat-file -e HEAD:generated/BUILD.bazel &&
+                    ! "$real_git" -C "$graph_root/work" cat-file -e HEAD:runner-private.tmp 2>/dev/null; then
+                    pass "generated_graph_$scenario"
+                else
+                    fail "generated_graph_$scenario" "write-back must include new BUILD files, exclude other untracked files and fail the superseded head: $(cat "$graph_root/output")"
+                fi
+                ;;
+            main|queue)
+                if [[ "$graph_rc" -eq 1 && "$before_graph" == "$after_graph" && "$remote_graph" == "$before_graph" ]]; then
+                    pass "generated_graph_${scenario}_read_only"
+                else
+                    fail "generated_graph_${scenario}_read_only" "drift must fail without committing or pushing"
+                fi
+                ;;
+            clean|bot)
+                if [[ "$graph_rc" -eq 0 && "$before_graph" == "$after_graph" && "$remote_graph" == "$before_graph" ]] &&
+                    { [[ "$scenario" != bot ]] || [[ ! -f "$graph_root/formatted" ]]; }; then
+                    pass "generated_graph_$scenario"
+                else
+                    fail "generated_graph_$scenario" "clean and format-bot heads must reach the following test stage without another write-back"
+                fi
+                ;;
+        esac
+    done
 fi
 
 echo "--- $PASS passed, $FAIL failed ---"
