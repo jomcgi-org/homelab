@@ -59,8 +59,15 @@ def test_uncapped_materialization_preserves_public_bytes_and_two_queries(monkeyp
     assert len(json.loads(public["sites.json"]["Body"])["sites"][0]["best_hours"]) == 25
 
 
-def test_connector_upload_failure_still_publishes_public_snapshots(caplog):
+@pytest.mark.parametrize("failure_kind", ["plain", "chained", "request_state"])
+def test_connector_upload_failure_still_publishes_public_snapshots(
+    caplog, failure_kind
+):
+    import gc
     import weakref
+
+    from botocore.awsrequest import AWSPreparedRequest
+    from botocore.exceptions import ConnectionClosedError
 
     from stars.tests.snapshot_fixture import run
 
@@ -71,7 +78,6 @@ def test_connector_upload_failure_still_publishes_public_snapshots(caplog):
         pass
 
     run(sites=3, edge_cases=True, sink=lambda kw: expected.update({kw["Key"]: kw}))
-    failure = TimeoutError("connector upload timed out")
 
     def upload(kw):
         attempts.append(kw["Key"])
@@ -79,16 +85,35 @@ def test_connector_upload_failure_still_publishes_public_snapshots(caplog):
             frame = UploadFrame()
             frame.body = kw["Body"]
             failed_frames.append(weakref.ref(frame))
-            raise failure
-        # A saved traceback (including one retained by caplog) would keep this
-        # frame and its uncapped Body alive during the public uploads.
-        assert failed_frames[0]() is None
+            if failure_kind == "request_state":
+                request = AWSPreparedRequest(
+                    method="PUT",
+                    url="https://offline.invalid",
+                    headers={},
+                    body=kw["Body"],
+                    stream_output=False,
+                )
+                failed_frames.append(weakref.ref(request))
+                raise ConnectionClosedError(request=request, endpoint_url=request.url)
+            if failure_kind == "chained":
+                try:
+                    raise TimeoutError("transport timed out")
+                except TimeoutError as cause:
+                    raise RuntimeError("connector upload timed out") from cause
+            raise TimeoutError("connector upload timed out")
+        # Original exceptions can retain the body through chains, SDK request
+        # attributes or log records even after their direct traceback is cleared.
+        gc.collect()
+        assert all(ref() is None for ref in failed_frames)
         published[kw["Key"]] = kw
 
-    with pytest.raises(TimeoutError, match="connector upload timed out") as caught:
+    with pytest.raises(
+        RuntimeError, match="stars connector publication failed"
+    ) as caught:
         run(sites=3, enabled=True, edge_cases=True, sink=upload)
 
-    assert caught.value is failure
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
     assert published == expected
     assert attempts == [
         "connector-sites.json",
