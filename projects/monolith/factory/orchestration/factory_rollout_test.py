@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from aiohttp import ClientConnectorError
 
 from factory.orchestration import factory_rollout as rollout
 
@@ -423,7 +424,7 @@ def test_short_cache_expires_and_shares_failures_without_turning_them_into_succe
     }
 
 
-@pytest.mark.parametrize("kind", ["pending", "http", "cooldown"])
+@pytest.mark.parametrize("kind", ["pending", "http", "cooldown", "connector"])
 def test_cached_failures_release_reader_and_caller_frames(monkeypatch, kind):
     from factory.orchestration.github_read_cooldown import GitHubReadDeferred
 
@@ -440,13 +441,16 @@ def test_cached_failures_release_reader_and_caller_frames(monkeypatch, kind):
 
     request = httpx.Request("GET", "https://example.invalid/snapshot")
     response = httpx.Response(503, request=request)
+    connection = SimpleNamespace(host="example.invalid", port=443, ssl=True)
 
     def failed():
         _reader_state = payload()
         reads.append(True)
         try:
+            if kind == "connector":
+                raise ConnectionRefusedError(111, "unavailable")
             raise ValueError("inner read failure")
-        except ValueError as cause:
+        except Exception as cause:
             if kind == "pending":
                 raise rollout.Pending(
                     "unavailable", application="demo", resource="Deployment/demo"
@@ -455,6 +459,8 @@ def test_cached_failures_release_reader_and_caller_frames(monkeypatch, kind):
                 raise httpx.HTTPStatusError(
                     "unavailable", request=request, response=response
                 ) from cause
+            if kind == "connector":
+                raise ClientConnectorError(connection, cause) from cause
             raise GitHubReadDeferred("unavailable") from cause
 
     def call():
@@ -462,7 +468,7 @@ def test_cached_failures_release_reader_and_caller_frames(monkeypatch, kind):
         try:
             rollout._cached(("snapshot",), failed)
         except Exception as failure:
-            assert str(failure) == "unavailable"
+            assert "unavailable" in str(failure)
             if kind == "pending":
                 assert isinstance(failure, rollout.Pending)
                 assert failure.application == "demo"
@@ -471,8 +477,14 @@ def test_cached_failures_release_reader_and_caller_frames(monkeypatch, kind):
                 assert isinstance(failure, httpx.HTTPStatusError)
                 assert failure.request is request
                 assert failure.response is response
-            else:
+            elif kind == "cooldown":
                 assert isinstance(failure, GitHubReadDeferred)
+            else:
+                assert isinstance(failure, ClientConnectorError)
+                assert failure.os_error.errno == 111
+                assert failure.os_error.strerror == "unavailable"
+                assert failure.args[1] is failure.os_error
+                assert failure.host == "example.invalid"
         else:
             pytest.fail("an unavailable read must remain a failure")
 
@@ -507,6 +519,28 @@ def test_uncopyable_failure_remains_an_uncached_failure(monkeypatch, copy_behavi
             rollout._cached(("snapshot",), failed)
         assert ("snapshot",) not in rollout._recent
     assert len(reads) == 2
+
+
+@pytest.mark.parametrize("shape", ["wide", "deep", "cycle"])
+def test_unbounded_failure_metadata_is_not_cached(monkeypatch, shape):
+    monkeypatch.setattr(rollout, "_recent", {})
+    metadata = list(range(300))
+    if shape == "deep":
+        metadata = []
+        for _ in range(12):
+            metadata = [metadata]
+    elif shape == "cycle":
+        metadata = []
+        metadata.append(metadata)
+
+    def failed():
+        exc = ValueError("unavailable")
+        exc.detail = metadata
+        raise exc
+
+    with pytest.raises(ValueError, match="unavailable"):
+        rollout._cached(("snapshot",), failed)
+    assert ("snapshot",) not in rollout._recent
 
 
 def test_repeated_large_publication_history_keeps_ancestry_after_content_reads(

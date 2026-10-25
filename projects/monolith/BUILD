@@ -5267,6 +5267,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_swarm",
+        "@pip//aiohttp",
         "@pip//pytest",
         "@pip//pyyaml",
     ],
