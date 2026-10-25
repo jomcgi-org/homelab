@@ -518,6 +518,10 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
         # with only the legacy repo reads as that one entry, so today's
         # single-repo behaviour is unchanged.
         repos = enabled_repos(policy)
+        if intake["refinement_batch"]:
+            # The grant names primary-repository issues. Resuming another repo
+            # must not repurpose the same numeric IDs there.
+            repos = [repo for repo in repos if repo == policy["repo"]]
         if not repos:
             return []
         entries = repos_map(policy)

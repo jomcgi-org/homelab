@@ -2820,7 +2820,7 @@ admitted work continues, so replenishment does not require a factory-wide drain.
 
 **Why a separate batch.** Enabling global refinement can turn every unready issue
 into work. A nonempty batch restricts both natural candidate selection and queued
-admission to the named refinement issues, including the SQL admission predicate
+admission to the named primary-repository refinement issues, including the SQL admission predicate
 and capacity/health projections. After separate enable, native refinement may
 write brief comments and labels or notify a human decision. Becoming agent-ready
 does not grant implementation authority. Closure and landing remain off, and a

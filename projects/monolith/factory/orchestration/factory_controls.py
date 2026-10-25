@@ -1461,7 +1461,12 @@ def lane_limits(policy: dict) -> dict:
 
 
 def admission_eligible(
-    policy: dict, issue_number: int, actor: str, *, task_class: str = DEFAULT_TASK_CLASS
+    policy: dict,
+    issue_number: int,
+    actor: str,
+    *,
+    task_class: str = DEFAULT_TASK_CLASS,
+    repo: str | None = None,
 ) -> bool:
     """Whether admit_next could ever admit a queued receipt for this issue.
 
@@ -1493,6 +1498,8 @@ def admission_eligible(
                 intake["refine_enabled"]
                 and issue_number in batch
                 and task_class == "refine"
+                and (repo if repo is not None else policy.get("repo"))
+                == policy.get("repo")
             )
         )
     )
@@ -1539,7 +1546,11 @@ def execution_slot_holders(
             include_queued
             and is_current_generation_queue(policy, row)
             and admission_eligible(
-                policy, get("issue_number"), get("actor"), task_class=get("task_class")
+                policy,
+                get("issue_number"),
+                get("actor"),
+                task_class=get("task_class"),
+                repo=get("repo"),
             )
         )
 
