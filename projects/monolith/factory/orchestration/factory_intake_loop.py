@@ -291,7 +291,11 @@ def _listing_due(now: datetime) -> bool:
                 detail = json.loads(evaluated.detail_json)
             except (TypeError, ValueError):
                 detail = None
-            if isinstance(detail, dict) and detail.get("github") == "completed":
+            if (
+                isinstance(detail, dict)
+                and detail.get("github") == "completed"
+                and detail.get("truncated") is False
+            ):
                 interval = DISCOVERY_REFRESH_SECONDS
         if marked <= now - timedelta(seconds=interval):
             return True
