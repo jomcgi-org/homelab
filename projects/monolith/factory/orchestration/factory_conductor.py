@@ -585,6 +585,7 @@ def ingest_eligible(policy: dict) -> None:
             if str(exc) not in (
                 "natural_intake_cancelled_issue",
                 "natural_intake_landing_held",
+                "natural_intake_refinement_failed",
             ):
                 raise
 
