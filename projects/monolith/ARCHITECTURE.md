@@ -481,6 +481,23 @@ neither starts nor ends one.
 (see: /projects/monolith/factory/orchestration/deviations.py)
 (see: /projects/monolith/factory/orchestration/FACTORY.md)
 
+The factory GitHub reader shares a monotonic cooldown across its process's
+callers and repositories after an observed rate limit, or a successful response
+that consumes the last request. It respects the response's reset and retry
+headers, and backs off when those headers are absent or stale. Calls during the
+cooldown fail before network I/O and do not supply cached ownership evidence.
+A later natural tick reads GitHub again after the deadline. This is process
+pacing, not a distributed quota ledger: after a leader replacement, its first
+response establishes the new process's wait. Requests already in flight are not
+cancelled, and other clients consuming the same provider quota are unchanged.
+
+**Why.** Logging a primary-rate reset without sharing it across reads sends every
+ownership check back to a provider that has already refused it. Deferring those
+reads avoids repeated refused requests while retaining the ownership gate. It
+does not move reconciliation ahead of ownership or turn unknown ownership into
+permission to dispatch. Safe diagnostic logs contain only validated rate fields
+and the next eligible read time, never tokens, error bodies or query strings.
+
 **Why.** Autonomous intake lets the bounded lane discover delivery-ready work
 without making the operator continually copy issue numbers into policy, while
 keeping that authority inert by default and capped by labels, cooldown, and a

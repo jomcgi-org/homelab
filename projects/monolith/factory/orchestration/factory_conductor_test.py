@@ -8,6 +8,15 @@ from factory.orchestration import factory_conductor as conductor
 from factory.orchestration.factory_models import FactoryReceipt, WorkItem
 from factory.orchestration.turn_artifact import schema_errors
 
+_REAL_OBSERVE_HUMAN_OWNERSHIP = conductor._observe_human_ownership
+
+
+@pytest.fixture(autouse=True)
+def isolated_github_read_cooldown(monkeypatch):
+    monkeypatch.setattr(
+        conductor, "_github_read_cooldown", conductor.GitHubReadCooldown()
+    )
+
 
 @pytest.fixture
 def paused_settlement(feedback_db, monkeypatch, request):
@@ -23861,6 +23870,153 @@ def test_github_failure_diagnostics_bound_body_and_preserve_original_error(
         "classification": "unknown",
     }
     assert "secret" not in record.message
+
+
+def test_github_primary_exhaustion_defers_other_reads_without_network(monkeypatch):
+    import httpx
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    now = int(conductor.time.time())
+    requests = []
+    client_type = httpx.Client
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(
+            403,
+            headers={
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": str(now + 600),
+            },
+            json={"message": "API rate limit exceeded"},
+        )
+
+    monkeypatch.setattr(
+        conductor.httpx,
+        "Client",
+        lambda **kwargs: client_type(transport=httpx.MockTransport(handle)),
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        conductor.github_get("owner/repo", "issues/1")
+    with pytest.raises(GitHubReadDeferred):
+        conductor.github_get("owner/other", "issues/1")
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize(
+    "metadata,delay",
+    [
+        ({"status": 403, "remaining": "0", "reset": "1600"}, 601),
+        ({"status": 429, "classification": "rate_limited", "retry_after": "120"}, 121),
+        ({"status": 403, "classification": "secondary_rate_limit"}, 61),
+        ({"status": 403, "remaining": "0", "reset": "900"}, 61),
+        ({"status": 200, "remaining": "0", "reset": "1600"}, 601),
+    ],
+)
+def test_github_cooldown_obeys_headers_and_monotonic_deadline(metadata, delay):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    clock, wall = [10.0], [1000.0]
+    cooldown = conductor.GitHubReadCooldown(
+        monotonic=lambda: clock[0], wall_time=lambda: wall[0]
+    )
+    observed = cooldown.observe(metadata)
+    assert observed["retry_after_seconds"] == delay
+    wall[0] = 1.0  # A wall-clock correction must not erase a known deadline.
+    clock[0] += delay - 1
+    with pytest.raises(GitHubReadDeferred, match="ownership remains unobserved"):
+        cooldown.check()
+    clock[0] += 1
+    cooldown.check()
+
+
+def test_github_cooldown_never_shortens_from_concurrent_response():
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    clock = [10.0]
+    cooldown = conductor.GitHubReadCooldown(
+        monotonic=lambda: clock[0], wall_time=lambda: 1000
+    )
+    cooldown.observe({"status": 403, "remaining": "0", "reset": "1600"})
+    assert cooldown.observe({"status": 200}) is None
+    assert cooldown.observe({"status": 403, "remaining": "0", "reset": "1100"}) is None
+    clock[0] += 200
+    with pytest.raises(GitHubReadDeferred):
+        cooldown.check()
+
+
+def test_github_secondary_limit_backoff_increases_without_internal_retries():
+    clock = [0.0]
+    cooldown = conductor.GitHubReadCooldown(
+        monotonic=lambda: clock[0], wall_time=lambda: 1000
+    )
+    metadata = {"status": 429, "classification": "rate_limited"}
+    assert cooldown.observe(metadata)["retry_after_seconds"] == 61
+    clock[0] += 61
+    cooldown.check()
+    assert cooldown.observe(metadata)["retry_after_seconds"] == 121
+    clock[0] += 121
+    cooldown.observe({"status": 200})
+    assert cooldown.observe(metadata)["retry_after_seconds"] == 61
+
+
+def test_github_cooldown_returns_fresh_data_after_reset(monkeypatch):
+    import httpx
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    clock = [0.0]
+    monkeypatch.setattr(
+        conductor,
+        "_github_read_cooldown",
+        conductor.GitHubReadCooldown(
+            monotonic=lambda: clock[0], wall_time=lambda: 1000
+        ),
+    )
+    requests = []
+    client_type = httpx.Client
+
+    def handle(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1060"},
+                json={"labels": []},
+            )
+        return httpx.Response(200, json={"labels": [{"name": "human"}]})
+
+    monkeypatch.setattr(
+        conductor.httpx,
+        "Client",
+        lambda **kwargs: client_type(transport=httpx.MockTransport(handle)),
+    )
+    assert conductor.github_get("owner/repo", "issues/1") == {"labels": []}
+    with pytest.raises(GitHubReadDeferred):
+        conductor.github_get("owner/repo", "issues/1")
+    assert len(requests) == 1
+    clock[0] = 61
+    assert conductor.github_get("owner/repo", "issues/1") == {
+        "labels": [{"name": "human"}]
+    }
+    assert len(requests) == 2
+
+
+def test_github_cooldown_does_not_claim_ownership_was_observed(monkeypatch):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    calls = []
+    monkeypatch.setattr(
+        controls, "human_handoff", lambda *a, **kw: calls.append(kw) or False
+    )
+    conductor._github_read_cooldown.observe(
+        {"status": 429, "classification": "rate_limited"}
+    )
+    with pytest.raises(GitHubReadDeferred):
+        _REAL_OBSERVE_HUMAN_OWNERSHIP(
+            {"task_id": "task", "repo": "owner/repo", "issue_number": 1}
+        )
+    assert calls == [{}]  # Only the already-persisted fence was checked.
 
 
 def test_successful_github_read_does_not_emit_failure_diagnostics(monkeypatch, caplog):
