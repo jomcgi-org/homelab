@@ -885,7 +885,7 @@ def test_conductor_runs_gate_before_disabled_lane_return(monkeypatch):
 
     monkeypatch.setattr(uncertain_tasks, "emit_uncertain_task_snapshot", lambda: None)
     monkeypatch.setattr(
-        controls, "status", lambda: {"state": "disabled", "policy": POLICY}
+        controls, "conductor_status", lambda: {"state": "disabled", "policy": POLICY}
     )
     observed = []
     monkeypatch.setattr(gate, "tick", lambda policy: observed.append(policy))
