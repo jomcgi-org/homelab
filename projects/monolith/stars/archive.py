@@ -11,10 +11,11 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
+from time import monotonic
 from uuid import uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
-from core.clock import iso
+from core.clock import as_utc, iso
 from shared.forecast_freshness import top_of_hour
 from sqlalchemy import func
 from sqlmodel import Session, delete, select, update
@@ -22,6 +23,8 @@ from sqlmodel import Session, delete, select, update
 from stars.models import HourArchiveCheckpoint, Site, SiteHour
 
 MAX_ROWS = 1024
+# Stop starting batches with 60s left in the unchanged 300s workflow deadline.
+DRAIN_SECONDS = 240
 CHUNK_ROWS = 128
 CHUNK_BYTES = 131072
 MAX_CHUNKS = 8
@@ -88,6 +91,7 @@ def checkpoint(engine, bucket: str, prefix: str, now: datetime) -> dict | None:
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
     insert = sqlite_insert if engine.dialect.name == "sqlite" else pg_insert
+    cutoff = top_of_hour(as_utc(now))
     with Session(engine) as session:
         session.execute(
             insert(HourArchiveCheckpoint).values(id=1).on_conflict_do_nothing()
@@ -103,7 +107,7 @@ def checkpoint(engine, bucket: str, prefix: str, now: datetime) -> dict | None:
             "version": 1,
             "batch_id": uuid4().hex,
             "archived_at": iso(now),
-            "cutoff": iso(top_of_hour(now)),
+            "cutoff": iso(cutoff),
             "bucket": bucket,
             "prefix": prefix,
             "chunks": [],
@@ -115,12 +119,13 @@ def checkpoint(engine, bucket: str, prefix: str, now: datetime) -> dict | None:
                 *_bounded_columns(Site, SITE_FIELDS),
             )
             .outerjoin(Site, Site.id == SiteHour.site_id)
-            .where(SiteHour.hour_time < top_of_hour(now))
+            .where(SiteHour.hour_time < cutoff)
             .order_by(SiteHour.hour_time, SiteHour.site_id)
             .limit(MAX_ROWS)
             .execution_options(yield_per=CHUNK_ROWS)
         )
         current = []
+        chunk_bytes = 2  # JSON array brackets; each later row adds one comma.
         row_bytes = 0
         for values in rows:
             hour = dict(zip(FIELDS, values[: len(FIELDS)]))
@@ -139,12 +144,16 @@ def checkpoint(engine, bucket: str, prefix: str, now: datetime) -> dict | None:
             if row_bytes + size > STATE_BYTES - 16384:
                 break
             row_bytes += size
-            trial = current + [row]
-            if len(current) == CHUNK_ROWS or len(encoded(trial)) > CHUNK_BYTES:
+            if (
+                len(current) == CHUNK_ROWS
+                or chunk_bytes + bool(current) + size > CHUNK_BYTES
+            ):
                 envelope["chunks"].append(current)
                 current = []
+                chunk_bytes = 2
                 if len(envelope["chunks"]) == MAX_CHUNKS:
                     break
+            chunk_bytes += bool(current) + size
             current.append(row)
         if current:
             envelope["chunks"].append(current)
@@ -266,6 +275,31 @@ def run_archive(engine, client, bucket: str, prefix: str, now=None) -> dict:
     }
 
 
+def drain_archive(engine, client, bucket: str, prefix: str, now=None) -> int:
+    """Complete bounded batches at a fixed cutoff until empty or visibly fail.
+
+    The budget is checked between batches. A slow in-flight operation remains
+    subject to the workflow deadline; its durable checkpoint is replayable.
+    """
+    deadline = monotonic() + DRAIN_SECONDS
+    now = now or datetime.now(UTC)
+    deleted = 0
+    batches = 0
+    while monotonic() < deadline:
+        result = run_archive(engine, client, bucket, prefix, now)
+        deleted += result["deleted"]
+        # A replay can report no backlog below an older cutoff. Probe the fixed
+        # invocation cutoff with another selection before declaring it drained.
+        if result["rows"] == 0:
+            return deleted
+        batches += 1
+        logging.getLogger(__name__).info("stars archive bounded batch: %s", result)
+    raise RuntimeError(
+        f"stars archive drain budget exhausted after {batches} batches and "
+        f"{deleted} deletions; elapsed backlog has not been confirmed empty"
+    )
+
+
 def run_configured_archive(engine) -> int:
     from stars.grid import _s3_client
 
@@ -278,6 +312,4 @@ def run_configured_archive(engine) -> int:
         ).input_shape.members
     ):
         raise RuntimeError("installed S3 client lacks atomic conditional PutObject")
-    result = run_archive(engine, client, bucket, prefix)
-    logging.getLogger(__name__).info("stars archive bounded batch: %s", result)
-    return result["deleted"]
+    return drain_archive(engine, client, bucket, prefix)

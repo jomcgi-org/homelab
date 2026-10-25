@@ -7,10 +7,13 @@ import subprocess
 import threading
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
+from sqlalchemy import event
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.sql.dml import Update
 from sqlmodel import Session, create_engine, select, update
 
 from stars import archive
@@ -94,6 +97,27 @@ def count(engine):
 
 def run(engine, storage, now=NOW):
     return archive.run_archive(engine, storage, "fake", "hours", now)
+
+
+def configured_storage(monkeypatch, storage):
+    from stars import grid
+
+    storage.meta = SimpleNamespace(
+        service_model=SimpleNamespace(
+            operation_model=lambda name: SimpleNamespace(
+                input_shape=SimpleNamespace(members={"IfNoneMatch": None})
+            )
+        )
+    )
+    monkeypatch.setattr(grid, "_s3_client", lambda: storage)
+    monkeypatch.setattr(archive, "configured_destination", lambda: ("fake", "hours"))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    monkeypatch.setattr(archive, "datetime", Clock)
 
 
 def fail(*args):
@@ -280,6 +304,77 @@ def test_late_thread_cannot_clear_new_checkpoint_or_delete_replacements(engine):
         assert json.loads(session.get(HourArchiveCheckpoint, 1).payload) == pending
 
 
+def test_concurrent_claimant_loser_never_exports_its_selection(engine):
+    seed(engine)
+    with Session(engine) as session:
+        session.add(HourArchiveCheckpoint(id=1))
+        session.commit()
+    storage = Storage()
+    both_selected = threading.Barrier(2)
+    winner_claimed = threading.Event()
+    loser_finished = threading.Event()
+    candidates = {}
+    results = {}
+    errors = {}
+
+    def before_claim(conn, cursor, statement, parameters, context, executemany):
+        compiled = context.compiled
+        if (
+            compiled is None
+            or not isinstance(compiled.statement, Update)
+            or compiled.statement.table.name != "hour_archive_checkpoint"
+        ):
+            return
+        payload = context.compiled_parameters[0].get("payload")
+        if payload is None:
+            return
+        name = threading.current_thread().name
+        candidates[name] = json.loads(payload)
+        both_selected.wait(10)
+        if name == "claim-loser":
+            assert winner_claimed.wait(10)
+
+    def before_put(key):
+        assert threading.current_thread().name == "claim-winner"
+        winner_claimed.set()
+        assert loser_finished.wait(10)
+
+    def worker():
+        name = threading.current_thread().name
+        try:
+            results[name] = run(engine, storage)
+        except Exception as error:  # noqa: BLE001 (transfer thread failures to assertions)
+            errors[name] = error
+        finally:
+            if name == "claim-loser":
+                loser_finished.set()
+
+    storage.before_put = before_put
+    event.listen(engine, "before_cursor_execute", before_claim)
+    threads = [
+        threading.Thread(target=worker, name=name)
+        for name in ("claim-winner", "claim-loser")
+    ]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(15)
+    finally:
+        event.remove(engine, "before_cursor_execute", before_claim)
+    assert all(not thread.is_alive() for thread in threads)
+    assert set(errors) == {"claim-loser"}
+    assert isinstance(errors["claim-loser"], RuntimeError)
+    assert "claimed concurrently" in str(errors["claim-loser"])
+    winner = candidates["claim-winner"]["batch_id"]
+    loser = candidates["claim-loser"]["batch_id"]
+    assert winner != loser
+    assert results["claim-winner"]["deleted"] == 3
+    assert storage.objects and all(winner in key for key in storage.objects)
+    assert all(loser not in key for key in storage.objects)
+    assert count(engine) == 0
+
+
 def test_earlier_refresh_replaces_rows_at_marker_commit(engine):
     from stars.jobs import _write_sites
 
@@ -380,8 +475,110 @@ def test_cutoff_empty_non_utc_and_backlog(engine):
     local_now = NOW.astimezone(timezone(timedelta(hours=5, minutes=30)))
     result = run(engine, storage, local_now)
     assert result["rows"] == archive.MAX_ROWS and result["backlog"]
-    assert run(engine, storage)["deleted"] == 6
+    markers = [
+        json.loads(body)
+        for key, body in storage.objects.items()
+        if key.endswith("complete.json")
+    ]
+    assert markers[0]["cutoff"] == NOW.replace(minute=0).isoformat()
+    assert run(engine, storage, local_now)["deleted"] == 6
+    assert run(engine, storage, local_now)["rows"] == 0
     assert count(engine) == 1
+
+
+def test_configured_invocation_drains_multiple_bounded_batches(engine, monkeypatch):
+    seed(engine, 2 * archive.MAX_ROWS + 6)
+    storage = Storage()
+    configured_storage(monkeypatch, storage)
+    assert archive.run_configured_archive(engine) == 2 * archive.MAX_ROWS + 6
+    markers = [
+        json.loads(body)
+        for key, body in storage.objects.items()
+        if key.endswith("complete.json")
+    ]
+    assert [marker["rows"] for marker in markers] == [1024, 1024, 6]
+    assert {marker["cutoff"] for marker in markers} == {
+        NOW.replace(minute=0).isoformat()
+    }
+    assert count(engine) == 0
+
+
+def test_drain_replays_old_cutoff_then_selects_current_elapsed_rows(
+    engine, monkeypatch
+):
+    seed(engine, 3)
+    old = archive.checkpoint(engine, "fake", "hours", NOW - timedelta(hours=2))
+    assert sum(map(len, old["chunks"])) == 1
+    storage = Storage()
+    configured_storage(monkeypatch, storage)
+    assert archive.run_configured_archive(engine) == 3
+    markers = [
+        json.loads(body)
+        for key, body in storage.objects.items()
+        if key.endswith("complete.json")
+    ]
+    assert markers[0]["batch_id"] == old["batch_id"]
+    assert [marker["rows"] for marker in markers] == [1, 2]
+    assert count(engine) == 0
+
+
+def test_drain_budget_exhaustion_is_failure_with_remaining_rows(engine, monkeypatch):
+    seed(engine, archive.MAX_ROWS + 6)
+    storage = Storage()
+    configured_storage(monkeypatch, storage)
+    clock = iter([0, 0, 240])
+    monkeypatch.setattr(archive, "monotonic", lambda: next(clock))
+    assert archive.DRAIN_SECONDS == 240
+    with pytest.raises(RuntimeError, match="drain budget exhausted"):
+        archive.run_configured_archive(engine)
+    assert count(engine) == 6
+    assert sum(key.endswith("complete.json") for key in storage.objects) == 1
+    monkeypatch.setattr(archive, "monotonic", lambda: 0)
+    assert archive.run_configured_archive(engine) == 6
+    assert count(engine) == 0
+
+
+def test_drain_capacity_exceeds_grid_daily_inflow(monkeypatch):
+    storage = Storage()
+    configured_storage(monkeypatch, storage)
+    # Conservative synthetic 100 rows/s, below the measured single-batch rate.
+    # 14k sites * 15 eligible hours/day = 210k rows/day, 8750 per hourly run.
+    elapsed = 0.0
+    calls = 0
+    rows_per_second = 100
+
+    def batch(engine, client, bucket, prefix, now):
+        nonlocal elapsed, calls
+        elapsed += archive.MAX_ROWS / rows_per_second
+        calls += 1
+        return {"deleted": archive.MAX_ROWS, "rows": archive.MAX_ROWS, "backlog": True}
+
+    monkeypatch.setattr(archive, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(archive, "run_archive", batch)
+    with pytest.raises(RuntimeError, match="drain budget exhausted"):
+        archive.run_configured_archive(None)
+    assert calls > 1
+    assert 240 <= elapsed < 300
+    assert calls * archive.MAX_ROWS * 24 > 14000 * 15
+
+
+def test_chunk_byte_count_matches_encoding_without_growing_array_reencoding(
+    engine, monkeypatch
+):
+    seed(engine, 8, symbol="\u2601" * 20)
+    monkeypatch.setattr(archive, "CHUNK_BYTES", 1200)
+    real_encoded = archive.encoded
+
+    def no_array_reencoding(value):
+        assert not isinstance(value, list)
+        return real_encoded(value)
+
+    monkeypatch.setattr(archive, "encoded", no_array_reencoding)
+    batch = archive.checkpoint(engine, "fake", "hours", NOW)
+    assert len(batch["chunks"]) > 1
+    assert sum(map(len, batch["chunks"])) == 8
+    for chunk in batch["chunks"]:
+        assert len(real_encoded(chunk)) <= archive.CHUNK_BYTES
 
 
 def test_byte_bounds_and_oversized_row(engine):
@@ -612,8 +809,9 @@ def test_public_materialized_bytes_cache_freshness_coverage_unchanged(
     assert count(engine) == 3
 
 
-def test_default_off_shared_storage_gate_and_invalid_boolean():
-    result = render("--set", "sharedS3.enabled=false")
+@pytest.mark.parametrize("shared_storage", ["true", "false"])
+def test_default_off_shared_storage_gate_and_invalid_boolean(shared_storage):
+    result = render("--set", f"sharedS3.enabled={shared_storage}")
     assert result.returncode == 0
     doc = next(
         d
@@ -624,6 +822,13 @@ def test_default_off_shared_storage_gate_and_invalid_boolean():
         item["name"]
         for item in doc["spec"]["workflowSpec"]["templates"][0]["container"]["env"]
     }
-    assert "S3_ACCESS_KEY_ID" not in names and "SEAWEEDFS_S3_ENDPOINT" not in names
+    assert not names.intersection(
+        {
+            "S3_ACCESS_KEY_ID",
+            "S3_SECRET_ACCESS_KEY",
+            "SEAWEEDFS_S3_ENDPOINT",
+            "AWS_REGION",
+        }
+    )
     bad = render("--set-string", "stars.archiveBeforePrune.enabled=false")
     assert bad.returncode != 0 and "must be a boolean" in bad.stderr

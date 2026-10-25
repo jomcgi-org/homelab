@@ -1989,6 +1989,54 @@ by trust in the guest.
 
 ## 8. Public apps
 
+- `/app/hikes`: walk catalogue and forecasts, served as cacheable public data. (see: /projects/monolith/hikes/router.py)
+- `/app/trips`: geotagged trip and photo feed with a private ingest path and public cached reads. (see: /projects/monolith/trips/read_router.py)
+- `/app/stars`: astronomy forecasts and historical climatology heatmaps. (see: /projects/monolith/stars/router.py)
+- `/app/ships`: current and historical maritime tracks and heat cells. (see: /projects/monolith/ships/router.py)
+- `/app/wc2026`: cached dynamic tournament summary and odds data. (see: /projects/monolith/worldcup/router.py)
+- `/app/campsites`: cached recreation-area search with weather-enriched snapshots. (see: /projects/monolith/campsites/router.py)
+- `/app/grimoire`: public knowledge graph, entity explorer, adventure index, and open-book reader with extracted illustrations. (see: /projects/monolith/grimoire/router_public.py)
+- `/app/notes`: public knowledge graph browsing, including note links from the factory context viewer. Notes chat is retired.
+- `/app/grimoire/chat`: Turnstile-gated Grimoire RAG chat. (see: /projects/monolith/grimoire_chat/router.py)
+- `/app/dr-jobs`: NHS job search over the scraped listings feed. (see: /projects/monolith/dr_jobs/router.py)
+- `/app/llm-leaderboard`: model-bench results scatter. (see: /projects/monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte)
+- `/ember/firecracker`: recorded restore timings and a local replay. The retired Bazel and Postgres exhibit URLs redirect to this replay; `/ember/agents` remains an explainer.
+- `/artifact/{id}`: agent-built HTML served from object storage in a sandboxed opaque origin. (see: /projects/monolith/artifact/router.py)
+- `/blog`, `/docs`, `/engineering`: the posts, the published repository documents (this file among them), and the engineering index. (see: /projects/monolith/frontend/src/routes/public/docs)
+- `/agents` (private hostname): the agent console of section 4. (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
+
+Public application responses follow the anonymous cache pattern established by
+the platform CDN decisions, with route handlers declaring cache and ETag
+semantics where their data permits it.
+(see: /projects/platform/ARCHITECTURE.md)
+(see: /projects/monolith/hikes/router.py)
+
+**Why.** These data products share the monolith's typed data, composition,
+frontend, and operational controls, so splitting each into a service would add
+deployment boundaries without removing their shared storage dependency (ADR
+services/010). Anonymous reads use explicit origin cache semantics and a
+hostname-scoped CDN rule; per-path rules were rejected once the public hostname
+became the stronger routing boundary (ADR platform/002, ADR platform/003).
+Authenticated or writable features stay on private routes or use narrowly scoped
+public writers, accepting the public route composition as a load-bearing review
+and test boundary (ADR security/004).
+
+**Why (visual language).** On 2026-10-17 Joe decided that every surface
+converges on the technical-drawing language the blog and the slop factory
+already use, after the cohesive-theme exploration in #6822: one bright sheet,
+a spine beside a text measure, records in outlined panels, one mono label
+style, meaningful colour only, light and dark from one toggle. The shared
+vocabulary lives in `src/lib/public/styles/technical-drawing.css` (the tokens,
+the `.sheet` page classes, and the `--ds-*` roles that let the
+`@homelab/design-system` primitives render on a sheet), with the trail, the
+site index and the scheme chrome under `src/lib/public/components/`. Four
+separate systems were kept apart on purpose until then; `.impeccable.md`
+records each one's vetoes. The cost was four sets of chrome, three duplicated
+page vocabularies and a public baseline no other page could share. The
+engineering index, the docs and the root error page moved first; #7016 tracks
+the rest, surface by surface, and the three legacy stylesheets leave the tree
+with their last consumer.
+
 ### Stars elapsed archive
 
 `stars.archiveBeforePrune.enabled` defaults to false. The prune job then runs
@@ -2021,7 +2069,15 @@ All timestamps use core.clock UTC normalization, including SQLite naive values.
 The completion record repeats batch metadata and lists ordered chunk keys,
 SHA-256, actual byte lengths and row counts, plus total rows.
 
-One invocation handles one bounded batch: at most 1,024 rows, eight chunks,
+One invocation drains successive bounded batches at a fixed UTC cutoff until
+selection is empty. It stops starting batches after 240 seconds, leaving 60
+seconds before the existing workflow deadline. An in-flight batch can exceed
+that reserve; the workflow deadline then stops it and the checkpoint survives
+for replay. Budget exhaustion raises a job failure with completed batch and
+deletion counts; it never reports an unfinished drain as success. A replay's
+older cutoff does not skip selection at the invocation's cutoff.
+
+Each batch handles at most 1,024 rows, eight chunks,
 128 rows per chunk, 131,072 bytes of row-array JSON per chunk, and 8,192 bytes
 of chunk-envelope allowance (139,264 total). A row is at most 8,192 bytes and
 each text field at most 1,024 UTF-8 bytes. SQL substr bounds retrieved text
@@ -2031,9 +2087,10 @@ structure before adding rows. Completion records are at most 8,192 bytes.
 Readback reads at most expected length plus one byte. SQL selection streams at
 128 rows with LIMIT 1,024 in `(hour_time, site_id)` order. No OFFSET, grid ORM
 list or growing manifest is used. Delete statements bind ten fields per row;
-each transaction handles at most one chunk. An oversized backlog remains for
-later scheduled batches, and `backlog` reports remaining rows under the fixed
-cutoff separately from completion of the bounded batch. A single over-limit row
+each transaction handles at most one chunk. Array byte accounting includes
+brackets and commas without re-encoding the growing array for every row.
+`backlog` reports remaining rows under the batch's fixed cutoff separately from
+completion of that batch. A single over-limit row
 blocks its batch with an error, preserving evidence for separately scoped repair.
 
 `stars.hour_archive_checkpoint` is one lazily created row. A conditional SQL
@@ -2082,8 +2139,14 @@ measurement is `PYTHONPATH=projects/monolith python
 projects/monolith/stars/tests/archive_benchmark.py --sites 14000 --hours 48`.
 It seeds bounded fixture inserts before tracemalloc starts and measures one
 archive batch including fake-storage bytes. Compare a separate run with 1,000
-sites. Python allocation peaks exclude native database/SDK allocations and do
-not establish production RSS, storage cost or 300s/256Mi acceptance.
+sites. Add `--drain --hours 1` to measure draining one elapsed hour across the
+14,000-site grid; the fake storage retains only the current batch. The drain
+capacity test models 100 rows/second against 210,000 elapsed rows/day (14,000
+sites times 15 eligible hours). It checks that successive batches within the
+budget exceed the 8,750 rows/hour daily-average inflow. These synthetic checks
+exclude real database and storage latency. Python allocation peaks exclude
+native database/SDK allocations and do not establish production RSS, storage
+cost or 300s/256Mi acceptance. Live capacity remains an activation check.
 
 Operational acceptance remains on open #7250: review volume, retention and costs
 before activation; after separate approval verify publication/write-back,
@@ -2091,54 +2154,6 @@ deployed revision and configured destination; observe scheduled success before
 deletion and safe failure only after separate authorization; verify readable
 archives and timestamp meanings before issue closure. The delivery PR remains
 draft, unmerged and outside the merge queue with auto-merge disabled.
-
-- `/app/hikes`: walk catalogue and forecasts, served as cacheable public data. (see: /projects/monolith/hikes/router.py)
-- `/app/trips`: geotagged trip and photo feed with a private ingest path and public cached reads. (see: /projects/monolith/trips/read_router.py)
-- `/app/stars`: astronomy forecasts and historical climatology heatmaps. (see: /projects/monolith/stars/router.py)
-- `/app/ships`: current and historical maritime tracks and heat cells. (see: /projects/monolith/ships/router.py)
-- `/app/wc2026`: cached dynamic tournament summary and odds data. (see: /projects/monolith/worldcup/router.py)
-- `/app/campsites`: cached recreation-area search with weather-enriched snapshots. (see: /projects/monolith/campsites/router.py)
-- `/app/grimoire`: public knowledge graph, entity explorer, adventure index, and open-book reader with extracted illustrations. (see: /projects/monolith/grimoire/router_public.py)
-- `/app/notes`: public knowledge graph browsing, including note links from the factory context viewer. Notes chat is retired.
-- `/app/grimoire/chat`: Turnstile-gated Grimoire RAG chat. (see: /projects/monolith/grimoire_chat/router.py)
-- `/app/dr-jobs`: NHS job search over the scraped listings feed. (see: /projects/monolith/dr_jobs/router.py)
-- `/app/llm-leaderboard`: model-bench results scatter. (see: /projects/monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte)
-- `/ember/firecracker`: recorded restore timings and a local replay. The retired Bazel and Postgres exhibit URLs redirect to this replay; `/ember/agents` remains an explainer.
-- `/artifact/{id}`: agent-built HTML served from object storage in a sandboxed opaque origin. (see: /projects/monolith/artifact/router.py)
-- `/blog`, `/docs`, `/engineering`: the posts, the published repository documents (this file among them), and the engineering index. (see: /projects/monolith/frontend/src/routes/public/docs)
-- `/agents` (private hostname): the agent console of section 4. (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
-
-Public application responses follow the anonymous cache pattern established by
-the platform CDN decisions, with route handlers declaring cache and ETag
-semantics where their data permits it.
-(see: /projects/platform/ARCHITECTURE.md)
-(see: /projects/monolith/hikes/router.py)
-
-**Why.** These data products share the monolith's typed data, composition,
-frontend, and operational controls, so splitting each into a service would add
-deployment boundaries without removing their shared storage dependency (ADR
-services/010). Anonymous reads use explicit origin cache semantics and a
-hostname-scoped CDN rule; per-path rules were rejected once the public hostname
-became the stronger routing boundary (ADR platform/002, ADR platform/003).
-Authenticated or writable features stay on private routes or use narrowly scoped
-public writers, accepting the public route composition as a load-bearing review
-and test boundary (ADR security/004).
-
-**Why (visual language).** On 2026-10-17 Joe decided that every surface
-converges on the technical-drawing language the blog and the slop factory
-already use, after the cohesive-theme exploration in #6822: one bright sheet,
-a spine beside a text measure, records in outlined panels, one mono label
-style, meaningful colour only, light and dark from one toggle. The shared
-vocabulary lives in `src/lib/public/styles/technical-drawing.css` (the tokens,
-the `.sheet` page classes, and the `--ds-*` roles that let the
-`@homelab/design-system` primitives render on a sheet), with the trail, the
-site index and the scheme chrome under `src/lib/public/components/`. Four
-separate systems were kept apart on purpose until then; `.impeccable.md`
-records each one's vetoes. The cost was four sets of chrome, three duplicated
-page vocabularies and a public baseline no other page could share. The
-engineering index, the docs and the root error page moved first; #7016 tracks
-the rest, surface by surface, and the three legacy stylesheets leave the tree
-with their last consumer.
 
 ## 9. Observability and health
 
