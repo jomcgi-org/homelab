@@ -31,19 +31,49 @@ _recent: dict[tuple, tuple[float, object]] = {}
 
 
 def _detached_failure(exc: Exception) -> Exception:
-    # HTTPStatusError needs keyword-only constructor evidence, so copy.copy
-    # cannot reconstruct it. Keep that evidence and the original error type.
-    if isinstance(exc, httpx.HTTPStatusError):
-        result = type(exc)(*exc.args, request=exc.request, response=exc.response)
-        result.__dict__.update(exc.__dict__)
-    else:
-        result = copy(exc)
-    if result is exc or type(result) is not type(exc):
-        raise TypeError("failure cannot be detached")
-    result.__traceback__ = None
-    result.__cause__ = None
-    result.__context__ = None
-    return result
+    memo = {}
+    remaining = 256
+
+    def detach(value, depth=0):
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 8:
+            raise TypeError("failure evidence exceeds copy bound")
+        if isinstance(value, BaseException):
+            if id(value) in memo:
+                return memo[id(value)]
+            # HTTPStatusError needs keyword-only constructor evidence. Keep
+            # request/response objects rather than copying their transports.
+            if isinstance(value, httpx.HTTPStatusError):
+                result = type(value)(
+                    *value.args, request=value.request, response=value.response
+                )
+                result.__dict__.update(value.__dict__)
+            else:
+                result = copy(value)
+            if result is value or type(result) is not type(value):
+                raise TypeError("failure cannot be detached")
+            memo[id(value)] = result
+            result.__traceback__ = None
+            result.__cause__ = None
+            result.__context__ = None
+            # aiohttp connector errors retain an OSError in both args and
+            # _os_error. Preserve that alias without retaining its traceback.
+            result.args = detach(value.args, depth + 1)
+            result.__dict__.update(detach(value.__dict__, depth + 1))
+            return result
+        if type(value) is tuple:
+            return tuple(detach(item, depth + 1) for item in value)
+        if type(value) is list:
+            return [detach(item, depth + 1) for item in value]
+        if type(value) is dict:
+            return {
+                detach(key, depth + 1): detach(item, depth + 1)
+                for key, item in value.items()
+            }
+        return value
+
+    return detach(exc)
 
 
 def _cached(key: tuple, read):
