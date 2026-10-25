@@ -107,7 +107,12 @@ def test_connector_fixture_is_actual_producer_bytes():
         edge_cases=True,
         sink=lambda kw: writes.update({kw["Key"]: kw["Body"]}),
     )
-    assert fixture.read_bytes().rstrip(b"\n") == writes["connector-sites.json"]
+    # CI formats JSON fixtures. Compare the canonical serialized bytes, which
+    # the Go contract test also compacts before passing them to the store.
+    canonical = json.dumps(
+        json.loads(fixture.read_bytes()), separators=(",", ":")
+    ).encode()
+    assert canonical == writes["connector-sites.json"]
 
 
 @pytest.mark.parametrize("setting", [None, "", "   "])
