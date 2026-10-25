@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "httpapi",
-    srcs = ["httpapi.go"],
+    srcs = [
+        "aurora.go",
+        "httpapi.go",
+    ],
     embedsrcs = [
         "method.md",
         "openapi.json",
