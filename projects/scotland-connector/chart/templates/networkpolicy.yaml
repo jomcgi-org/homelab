@@ -32,7 +32,7 @@ spec:
 ---
 # Egress allow-list: DNS, then HTTPS to public addresses only (R2). Private,
 # link-local (the metadata server) and shared ranges are excluded, so the pod
-# can reach nothing in-cluster beyond the resolver.
+# can reach only the resolver and the explicitly enabled collector in-cluster.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -69,4 +69,19 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+    {{- if .Values.meterExport.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ required "collector namespace required" .Values.meterExport.collectorNamespace }}
+          podSelector:
+            matchLabels:
+              {{- if empty .Values.meterExport.collectorPodLabels }}
+              {{- fail "collectorPodLabels required" }}
+              {{- end }}
+              {{- toYaml .Values.meterExport.collectorPodLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 4318
+    {{- end }}
 {{- end }}

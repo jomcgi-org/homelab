@@ -1,6 +1,15 @@
 # Hub production values for the public Scotland connector. There is one
 # cluster, so there is no values-gke.yaml overlay.
 
+meterExport:
+  enabled: false
+  endpoint: http://otel-collector.otel-collector.svc:4318/v1/metrics
+
+cacheAnalytics:
+  enabled: false
+  hostname: jomcgi.dev
+  planPath: /scotland/v1/plan
+
 config:
   # Cloudflare R2 account endpoint, the one the monolith's stars-refresh job
   # writes stars/sites.json and stars/history-map.json to.
