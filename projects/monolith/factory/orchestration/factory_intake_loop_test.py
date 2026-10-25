@@ -685,7 +685,7 @@ def test_a_prior_success_does_not_shorten_a_later_unfinished_attempt(db):
                 FactoryAudit(
                     actor=intake_loop.ACTOR,
                     action="intake_evaluated",
-                    detail_json='{"github":"completed"}',
+                    detail_json='{"github":"completed","truncated":false}',
                     created_at=NOW - timedelta(minutes=1),
                 ),
                 FactoryAudit(
