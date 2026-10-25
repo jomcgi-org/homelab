@@ -608,7 +608,7 @@ def test_intake_state_reports_policy_usage_and_latest_audits(db):
     assert state["last_idle"]["detail"] == {"listed": 0}
 
 
-def test_a_quiet_lane_sweeps_github_at_most_once_an_hour(db, monkeypatch):
+def test_a_quiet_lane_does_not_sweep_github_every_tick(db, monkeypatch):
     """The tick runs every 15 seconds; the sweep must not."""
     calls = fake_pages(monkeypatch, [])
     assert intake_loop.intake_tick(policy(), generation=0) == []
@@ -621,6 +621,83 @@ def test_a_quiet_lane_sweeps_github_at_most_once_an_hour(db, monkeypatch):
     assert len(audits(db, "intake_evaluated")) == 1
 
 
+def test_new_work_is_discovered_four_minutes_after_a_completed_empty_scan(
+    db, monkeypatch
+):
+    with Session(db) as session:
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor=intake_loop.ACTOR,
+                    action="intake_swept",
+                    created_at=NOW,
+                ),
+                FactoryAudit(
+                    actor=intake_loop.ACTOR,
+                    action="intake_evaluated",
+                    detail_json=json.dumps({"github": "completed", "truncated": False}),
+                    created_at=NOW + timedelta(seconds=1),
+                ),
+            ]
+        )
+        session.commit()
+    calls = fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    monkeypatch.setattr(intake_loop, "_now", lambda: NOW + timedelta(seconds=239))
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    assert calls == []
+    monkeypatch.setattr(intake_loop, "_now", lambda: NOW + timedelta(seconds=240))
+    result = intake_loop.intake_tick(policy(), generation=0)
+    assert len(result) == 1
+    assert result[0]["receipt"]["issue_number"] == 1
+
+
+@pytest.mark.parametrize("evaluation", [None, "failed", "partial", "malformed"])
+def test_unsuccessful_discovery_keeps_hourly_backoff(db, monkeypatch, evaluation):
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(actor=intake_loop.ACTOR, action="intake_swept", created_at=NOW)
+        )
+        session.commit()
+        if evaluation is not None:
+            session.add(
+                FactoryAudit(
+                    actor=intake_loop.ACTOR,
+                    action="intake_evaluated",
+                    detail_json=(
+                        "not json"
+                        if evaluation == "malformed"
+                        else json.dumps({"github": evaluation})
+                    ),
+                    created_at=NOW + timedelta(seconds=1),
+                )
+            )
+            session.commit()
+    assert not intake_loop._listing_due(NOW + timedelta(minutes=5))
+    assert intake_loop._listing_due(NOW + timedelta(hours=1, seconds=1))
+
+
+def test_a_prior_success_does_not_shorten_a_later_unfinished_attempt(db):
+    with Session(db) as session:
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor=intake_loop.ACTOR,
+                    action="intake_evaluated",
+                    detail_json='{"github":"completed"}',
+                    created_at=NOW - timedelta(minutes=1),
+                ),
+                FactoryAudit(
+                    actor=intake_loop.ACTOR,
+                    action="intake_swept",
+                    created_at=NOW,
+                ),
+            ]
+        )
+        session.commit()
+    assert not intake_loop._listing_due(NOW + timedelta(minutes=5))
+    assert intake_loop._listing_due(NOW + timedelta(hours=1))
+
+
 def test_not_due_ticks_cannot_hide_actual_sweep_exclusions(db, monkeypatch):
     # The idle clock is ahead of the sweep clock in production. A real
     # sweep can therefore finish inside its throttle, before a not_due tick
@@ -631,7 +708,7 @@ def test_not_due_ticks_cannot_hide_actual_sweep_exclusions(db, monkeypatch):
                 actor=intake_loop.ACTOR,
                 action="intake_idle",
                 detail_json='{"github":"not_due","listed":0,"excluded":{}}',
-                created_at=NOW - timedelta(minutes=50),
+                created_at=NOW - timedelta(minutes=59),
             )
         )
         intake_receipt(session, 4)
@@ -669,7 +746,7 @@ def test_not_due_ticks_cannot_hide_actual_sweep_exclusions(db, monkeypatch):
     assert first["last_idle"]["detail"]["github"] == "not_due"
     read_count = len(calls)
 
-    later = NOW + timedelta(minutes=11)
+    later = NOW + timedelta(minutes=2)
     monkeypatch.setattr(intake_loop, "_now", lambda: later)
     monkeypatch.setattr(controls, "_now", lambda: later)
     assert intake_loop.intake_tick(intake_policy, generation=0) == []
@@ -1308,7 +1385,7 @@ def test_open_lanes_fill_over_consecutive_ticks_not_one_an_hour(db, monkeypatch)
     assert len(calls) >= 16
 
 
-def test_a_sweep_that_admits_nothing_waits_out_the_hour(db, monkeypatch):
+def test_a_sweep_that_admits_nothing_waits_for_refresh(db, monkeypatch):
     """The admission clause re-opens the sweep at most once per admission."""
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "12")
     calls = fake_pages(monkeypatch, [issue(1, ["blocked"])])
@@ -1328,7 +1405,7 @@ def test_one_admission_buys_exactly_one_extra_sweep(db, monkeypatch):
     assert intake_loop.intake_tick(wide_policy(), generation=0)
     first = len(calls)
     # The admission re-opens the sweep once. That sweep finds only the issue it
-    # already received, admits nothing, and the hourly clock governs again.
+    # already received, admits nothing, and the refresh clock governs again.
     intake_loop.intake_tick(wide_policy(), generation=0)
     second = len(calls)
     assert second > first

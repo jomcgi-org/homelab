@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -53,11 +54,14 @@ PAGE_SIZE = 100
 PULL_PAGE_SIZE = 50
 MAX_PAGES = 5
 CANDIDATE_EVIDENCE_LIMIT = 20
-# Both the idle audit and the listing that precedes it run on this clock. A
-# quiet lane ticks every 15 seconds and the repository does not change that
-# fast, so listing every tick would spend roughly 2400 of the shared 5000
-# requests an hour to learn nothing.
+# Keep repeated idle messages hourly, independently of successful discovery.
+# With room in a lane, a completed sweep can refresh after four minutes.
+# That bounds preventable feed delay without reading on every 15-second tick.
+# At the existing page caps, listing costs at most 150 requests/hour/repo
+# before admission-triggered sweeps. Failed/incomplete reads remain hourly;
+# the shared GitHub cooldown still gates every actual request.
 IDLE_AUDIT_SECONDS = 3600
+DISCOVERY_REFRESH_SECONDS = 240
 RANK_LABELS = ("critical", "bug")
 # ADR agents/038 decision 5, read off the issue's own labels. A refine
 # candidate is advisory whatever else it carries, because it delivers a
@@ -252,19 +256,17 @@ def _slot_holders(rows, policy: dict, *, unresolved_task_ids=None) -> list:
 def _listing_due(now: datetime) -> bool:
     """Whether this tick may spend GitHub reads on a fresh sweep.
 
-    The sweep runs at most once an hour while the lane finds nothing, because
-    a repository does not gain eligible work faster than that and the request
-    budget is shared with everything else that reads GitHub. A settlement is
-    the exception: once a receipt reaches a terminal state the picture has
-    genuinely changed, so the next tick sweeps immediately rather than waiting
-    out the rest of the hour.
+    A completed sweep refreshes after four minutes while a lane has room.
+    Failed, partial or unfinished attempts retain the hourly retry bound.
+    An evaluation must follow the latest attempt before it can shorten that
+    bound: an earlier success cannot authorize faster retries of a later
+    failure. Settlements and admissions still reopen discovery immediately.
 
     The clock is its own audit rather than the idle one. An idle row records a
     refusal, which is not the same event as reading GitHub: the daily cap
     writes one for a delivery candidate it turned away, and tying the sweep to
     that would leave the lane blind for an hour after the cap had cleared. A
-    settlement recorded in the same second as the sweep re-opens it: one extra
-    sweep costs two requests, a missed one costs an hour.
+    settlement recorded in the same second as the sweep re-opens it.
 
     An admission re-opens it too, and that is what lets a lane fill. A sweep
     takes at most one candidate per lane, so at four delivery and eight
@@ -273,7 +275,7 @@ def _listing_due(now: datetime) -> bool:
     found work and there may be more, so the next tick sweeps again. It costs
     at most one extra sweep per admission: the sweep stamps its own clock
     before reading GitHub, so a sweep that admits nothing leaves the newest
-    admission behind the newest sweep and the hourly clock governs again. The
+    admission behind the newest sweep and the bounded refresh clock governs. The
     caller has already established that a lane has room; a tick with none
     returns before reaching this.
     """
@@ -282,7 +284,16 @@ def _listing_due(now: datetime) -> bool:
         if last is None:
             return True
         marked = aware(last.created_at)
-        if marked < now - timedelta(seconds=IDLE_AUDIT_SECONDS):
+        interval = IDLE_AUDIT_SECONDS
+        evaluated = _latest(db, "intake_evaluated")
+        if evaluated is not None and evaluated.id > last.id:
+            try:
+                detail = json.loads(evaluated.detail_json)
+            except (TypeError, ValueError):
+                detail = None
+            if isinstance(detail, dict) and detail.get("github") == "completed":
+                interval = DISCOVERY_REFRESH_SECONDS
+        if marked <= now - timedelta(seconds=interval):
             return True
         admitted = _latest(db, "intake_admitted")
         if admitted is not None and aware(admitted.created_at) >= marked:

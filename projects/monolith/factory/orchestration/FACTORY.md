@@ -778,26 +778,30 @@ All phrases are case-insensitive and accept both "#N" and "owner/repo#N"
 formats, where "owner/repo#N" is only recognized if the repository matches the
 current repo. Matches inside fenced code blocks are ignored, and a bare "#N"
 without a phrase is never treated as a link. The factory reconciles these
-derived edges on every sweep: hourly while idle, immediately after a receipt
+derived edges on every sweep: four minutes after a completed idle sweep, immediately after a receipt
 settles, and immediately after an admission. It adds edges for newly mentioned
 issues and removes edges for issues no longer mentioned in the body. Manual and
 decision-authored edges are never touched; only edges with source "github_body"
 are updated. Block cycles in body edges produce a throttled
 `work_item_edge_cycle` audit but do not prevent intake from proceeding.
 
-Intake sweeps GitHub at most once an hour while it is finding nothing, again
-immediately after any receipt settles, and again on the tick after it admits
-anything. That last clause is what lets a lane fill: a sweep takes at most one
-candidate per lane, so on the hourly clock alone four delivery and eight
-advisory slots filled at one slot an hour. It costs at most one extra sweep per
-admission, because the sweep stamps its own clock before reading GitHub, so a
-sweep that admits nothing leaves the newest admission behind the newest sweep
-and the hourly clock governs again. A tick with no room in any lane returns
-before it reaches the clock at all. A tick that cannot read GitHub audits
-`intake_error` rather than failing silently. The sweep reads open issues
-and open pull requests oldest first, up to five pages of one hundred each; a
-read that hits that cap records `truncated` on the audit, so a partial sweep
-reads as partial.
+While a lane has room, a completed GitHub sweep refreshes after four minutes.
+New or newly eligible work can therefore replenish an empty lane without an
+operator command or a full hour of idle time. Failed, partial and unfinished
+attempts retain the hourly retry bound. Only an evaluation recorded after the
+latest attempt can shorten that bound; an older successful evaluation cannot
+hide a newer failure. Shared GitHub quota cooldowns still gate every request.
+
+Settlements and admissions reopen discovery on the next tick. Each sweep takes
+at most one candidate per lane, and an admission buys one more sweep so lanes
+can fill. A tick with no room returns before it reaches the clock. A tick that
+cannot read GitHub audits `intake_error`. Listing reads oldest-first, at most
+five pages of 100 issues and five pages of 50 pull requests per repository.
+The four-minute refresh therefore adds at most 150 listing requests per hour
+per enabled repository, before admission-triggered sweeps and per-candidate
+checks. Hitting a page cap records `truncated`; it never implies complete
+repository coverage. Repeated idle messages keep their independent hourly
+audit throttle.
 
 The intake status exposes `last_swept` (the attempt clock), `last_evaluated`
 (the completed candidate evaluation), and `last_error` (sanitized listing
