@@ -59,6 +59,46 @@ def test_uncapped_materialization_preserves_public_bytes_and_two_queries(monkeyp
     assert len(json.loads(public["sites.json"]["Body"])["sites"][0]["best_hours"]) == 25
 
 
+def test_connector_upload_failure_still_publishes_public_snapshots(caplog):
+    import weakref
+
+    from stars.snapshot_fixture import run
+
+    expected, published, attempts = {}, {}, []
+    failed_frames = []
+
+    class UploadFrame:
+        pass
+
+    run(sites=3, edge_cases=True, sink=lambda kw: expected.update({kw["Key"]: kw}))
+    failure = TimeoutError("connector upload timed out")
+
+    def upload(kw):
+        attempts.append(kw["Key"])
+        if kw["Key"] == "connector-sites.json":
+            frame = UploadFrame()
+            frame.body = kw["Body"]
+            failed_frames.append(weakref.ref(frame))
+            raise failure
+        # A saved traceback (including one retained by caplog) would keep this
+        # frame and its uncapped Body alive during the public uploads.
+        assert failed_frames[0]() is None
+        published[kw["Key"]] = kw
+
+    with pytest.raises(TimeoutError, match="connector upload timed out") as caught:
+        run(sites=3, enabled=True, edge_cases=True, sink=upload)
+
+    assert caught.value is failure
+    assert published == expected
+    assert attempts == [
+        "connector-sites.json",
+        "sites.json",
+        "history-map.json",
+        "map.json",
+    ]
+    assert "stars connector publication failed" in caplog.text
+
+
 @pytest.mark.parametrize(
     "key",
     [

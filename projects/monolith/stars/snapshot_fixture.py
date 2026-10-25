@@ -10,9 +10,11 @@ import argparse
 import hashlib
 import json
 import os
+import resource
 import subprocess
 import tracemalloc
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
@@ -127,10 +129,21 @@ def run(producer=materialize, *, sites=1, enabled=False, edge_cases=False, sink=
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sites", type=int, default=3000)
+    parser.add_argument("--sites", type=int, default=14000)
     parser.add_argument("--enabled", action="store_true")
     parser.add_argument(
-        "--baseline-revision", help="Git revision of pre-change materialize.py"
+        "--no-tracemalloc",
+        action="store_true",
+        help="Measure Linux RSS without tracing overhead",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Also save local bodies for the offline Store.Refresh benchmark",
+    )
+    parser.add_argument(
+        "--baseline-revision",
+        help="Git revision of materialize.py; uses the current router.py",
     )
     parser.add_argument(
         "--fixture", action="store_true", help="Print the small cross-language fixture"
@@ -160,10 +173,17 @@ def main():
         producer = ModuleType("baseline")
         # Explicit local Git revision, used only by this offline comparison.
         exec(compile(source, "baseline-materialize.py", "exec"), producer.__dict__)  # noqa: S102
-    tracemalloc.start()
-    writes = run(producer, sites=args.sites, enabled=args.enabled)
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    sink = None
+    if args.output_dir:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        sink = lambda kw: (args.output_dir / kw["Key"]).write_bytes(kw["Body"])
+    if not args.no_tracemalloc:
+        tracemalloc.start()
+    writes = run(producer, sites=args.sites, enabled=args.enabled, sink=sink)
+    peak = None
+    if not args.no_tracemalloc:
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
     print(
         json.dumps(
             {
@@ -174,9 +194,15 @@ def main():
                     r[1] >= NOW and r[2] < 10 and r[3] < -10 for r in hours("x")
                 ),
                 "enabled": args.enabled,
+                "materializer_revision": args.baseline_revision or "working-tree",
+                "router_revision": "working-tree",
                 "objects": writes,
                 "total_bytes": sum(w["bytes"] for w in writes.values()),
                 "python_allocation_peak_bytes": peak,
+                "linux_process_max_rss_bytes": resource.getrusage(
+                    resource.RUSAGE_SELF
+                ).ru_maxrss
+                * 1024,
             },
             indent=2,
         )

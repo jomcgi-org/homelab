@@ -49,20 +49,30 @@ def _materialize_sync() -> int:
         history_payload = get_history(request, response, session)
     if not isinstance(payload, dict):
         raise RuntimeError("stars site builder returned a conditional response")
+    connector_error = None
     if connector_key:
         # Serialize and release the uncapped bytes before constructing public
         # bodies. Trim the same tree in place, with no second forecast query or
         # duplicate site/hour dictionaries. Disabled runs never build this tree.
         connector_body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        _s3_client().put_object(
-            Bucket=bucket,
-            Key=connector_key,
-            Body=connector_body,
-            ContentType="application/json",
-            CacheControl="public, max-age=0, s-maxage=1800, stale-if-error=86400",
-        )
-        logger.info("stars connector materialized: %d bytes", len(connector_body))
-        del connector_body
+        try:
+            _s3_client().put_object(
+                Bucket=bucket,
+                Key=connector_key,
+                Body=connector_body,
+                ContentType="application/json",
+                CacheControl="public, max-age=0, s-maxage=1800, stale-if-error=86400",
+            )
+            logger.info("stars connector materialized: %d bytes", len(connector_body))
+        except Exception as exc:  # noqa: BLE001 - re-raised after public writes
+            logger.error(
+                "stars connector publication failed; continuing public writes: %s", exc
+            )
+            # The upload's traceback can retain the large Body argument. Avoid
+            # retaining it in log records or while serializing public bodies.
+            connector_error = exc.with_traceback(None)
+        finally:
+            del connector_body
         for site in payload["sites"]:
             del site["best_hours"][_DISPLAY_HOURS:]
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -131,6 +141,8 @@ def _materialize_sync() -> int:
         "stars map materialized: %d bytes, s3://%s/%s", len(map_body), bucket, map_key
     )
     logger.info("stars history map materialized: %d bytes", len(history_map_body))
+    if connector_error is not None:
+        raise connector_error
     return len(body)
 
 
