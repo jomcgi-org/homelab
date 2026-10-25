@@ -32,6 +32,7 @@ from sqlmodel import Session, select
 from core.clock import aware
 from core.db import get_engine
 from core.github import GITHUB_API
+from factory.orchestration.github_read_cooldown import GitHubReadCooldown
 from factory.execution import EFFORT_LEVELS
 from factory.orchestration import config as swarm_config
 from factory.orchestration import deviations, graph, runtime, factory_gates
@@ -331,7 +332,10 @@ DECISION_SCHEMA = {
 }
 
 
-def _github_failure_metadata(response: httpx.Response) -> dict:
+_github_read_cooldown = GitHubReadCooldown()
+
+
+def _github_rate_headers(response: httpx.Response) -> dict:
     """Allowlisted diagnostics only, never headers, URLs or error text wholesale."""
     metadata = {"status": response.status_code}
     for name, key, pattern in (
@@ -342,6 +346,11 @@ def _github_failure_metadata(response: httpx.Response) -> dict:
     ):
         value = response.headers.get(name, "")
         metadata[key] = value if re.fullmatch(pattern, value) else None
+    return metadata
+
+
+def _github_failure_metadata(response: httpx.Response) -> dict:
+    metadata = _github_rate_headers(response)
     message = ""
     try:
         body = bytearray()
@@ -379,6 +388,7 @@ def _github_failure_metadata(response: httpx.Response) -> dict:
 def _github_read(repo: str, suffix: str) -> object:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("invalid repository")
+    _github_read_cooldown.check()
     headers = {"Accept": "application/vnd.github+json"}
     token = os.environ.get("GITHUB_API_TOKEN")
     if token:
@@ -390,11 +400,24 @@ def _github_read(repo: str, suffix: str) -> object:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError:
+                metadata = _github_failure_metadata(response)
+                cooldown = _github_read_cooldown.observe(metadata)
                 logger.warning(
                     "factory GitHub read refused: %s",
-                    json.dumps(_github_failure_metadata(response), sort_keys=True),
+                    json.dumps(metadata, sort_keys=True),
                 )
+                if cooldown:
+                    logger.warning(
+                        "factory GitHub read cooldown: %s",
+                        json.dumps(cooldown, sort_keys=True),
+                    )
                 raise
+            cooldown = _github_read_cooldown.observe(_github_rate_headers(response))
+            if cooldown:
+                logger.warning(
+                    "factory GitHub read cooldown: %s",
+                    json.dumps(cooldown, sort_keys=True),
+                )
             data = bytearray()
             for chunk in response.iter_bytes():
                 data.extend(chunk)
