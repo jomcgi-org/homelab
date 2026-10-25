@@ -30,8 +30,9 @@ go_test(
         "store_test.go",
         "walks_test.go",
     ],
-    embedsrcs = ["testdata/connector-sites.json"],
+    data = glob(["testdata/**"]),
     embed = [":store"],
+    embedsrcs = ["testdata/connector-sites.json"],
     deps = [
         "//projects/scotland-connector/internal/connector",
         "//projects/scotland-connector/internal/r2",
