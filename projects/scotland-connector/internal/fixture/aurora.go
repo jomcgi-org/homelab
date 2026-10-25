@@ -15,9 +15,10 @@ const NOAAObserved = `{"Observation Time":"2026-10-25T16:47:00Z","Forecast Time"
 
 // AuroraNOAA and AuroraMET are synthetic scenario fixtures using the provider
 // wire formats. Neither they nor the flat raster establish Scottish coverage.
+// MET can update mid-hour while retaining the first row at the hour boundary.
 const (
 	AuroraNOAA = `{"Observation Time":"2026-12-01T22:00:00Z","Forecast Time":"2026-12-01T23:00:00Z","Data Format":"[Longitude, Latitude, Aurora]","coordinates":[[356,58,50]]}`
-	AuroraMET  = `{"type":"Feature","geometry":{"type":"Point","coordinates":[-4,58,100]},"properties":{"meta":{"updated_at":"2026-12-01T22:00:00Z","units":{"cloud_area_fraction":"%"}},"timeseries":[{"time":"2026-12-01T22:00:00Z","data":{"instant":{"details":{"cloud_area_fraction":5}}}},{"time":"2026-12-01T23:00:00Z","data":{"instant":{"details":{"cloud_area_fraction":10}}}},{"time":"2026-12-02T00:00:00Z","data":{"instant":{"details":{"cloud_area_fraction":5}}}}]}}`
+	AuroraMET  = `{"type":"Feature","geometry":{"type":"Point","coordinates":[-4,58,100]},"properties":{"meta":{"updated_at":"2026-12-01T22:17:20Z","units":{"cloud_area_fraction":"%"}},"timeseries":[{"time":"2026-12-01T22:00:00Z","data":{"instant":{"details":{"cloud_area_fraction":5}}}},{"time":"2026-12-01T23:00:00Z","data":{"instant":{"details":{"cloud_area_fraction":10}}}},{"time":"2026-12-02T00:00:00Z","data":{"instant":{"details":{"cloud_area_fraction":5}}}}]}}`
 )
 
 var AuroraNow = time.Date(2026, 12, 1, 22, 50, 0, 0, time.UTC)

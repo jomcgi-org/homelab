@@ -29,6 +29,51 @@ func snapshot(t *testing.T) *aurora.Snapshot {
 }
 func ptr(v float64) *float64 { return &v }
 
+func TestMETMidHourUpdate(t *testing.T) {
+	for _, tc := range []struct {
+		name, forecast, met, verdict string
+		cloud                        *float64
+	}{
+		{"exact row", "2026-12-01T23:00:00Z", fixture.AuroraMET, "go", ptr(10)},
+		{"bracket includes pre-update row", "2026-12-01T22:55:00Z", fixture.AuroraMET, "go", ptr(10)},
+		{"missing exact cloud", "2026-12-01T23:00:00Z", strings.Replace(fixture.AuroraMET, `"cloud_area_fraction":10`, `"cloud_area_fraction":null`, 1), "unknown", nil},
+		{"missing bracketing cloud", "2026-12-01T22:55:00Z", strings.Replace(fixture.AuroraMET, `"cloud_area_fraction":5`, `"cloud_area_fraction":null`, 1), "unknown", nil},
+		{"gap between rows", "2026-12-01T22:55:00Z", strings.Replace(fixture.AuroraMET, "2026-12-01T23:00:00Z", "2026-12-01T23:30:00Z", 1), "unknown", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := fixture.AuroraInputs()
+			if err != nil {
+				t.Fatal(err)
+			}
+			in.NOAA = json.RawMessage(strings.Replace(fixture.AuroraNOAA, "2026-12-01T23:00:00Z", tc.forecast, 1))
+			in.Weather[0].MET = json.RawMessage(tc.met)
+			body, err := aurora.Materialize(in)
+			if err != nil {
+				t.Fatalf("materialize mid-hour MET update: %v", err)
+			}
+			s, err := aurora.Parse(body)
+			if err != nil {
+				t.Fatalf("parse mid-hour MET update: %v", err)
+			}
+			w := s.Sites[0].Weather
+			if w.IssuedAt.Format(time.RFC3339) != "2026-12-01T22:17:20Z" || len(w.Hours) != 3 || w.Hours[0].Time.Format(time.RFC3339) != "2026-12-01T22:00:00Z" {
+				t.Fatalf("provider update and pre-update row must be preserved: %+v", w)
+			}
+			a := aurora.Assess(s, 58, -4, s.NOAA.ForecastAt, fixture.AuroraNow)
+			if a.Verdict != tc.verdict {
+				t.Fatalf("want %s: %+v", tc.verdict, a)
+			}
+			if tc.cloud == nil {
+				if a.Cloud != nil || a.Evidence["weather"].Status != "unknown" {
+					t.Fatalf("unsupported cloud must remain unknown: %+v", a)
+				}
+			} else if a.Cloud == nil || *a.Cloud != *tc.cloud || a.Evidence["weather"].Status != "supported" {
+				t.Fatalf("want cloud %v from exact or bracketing rows: %+v", *tc.cloud, a)
+			}
+		})
+	}
+}
+
 func TestAssessment(t *testing.T) {
 	for _, tc := range []struct {
 		name, want string
@@ -140,7 +185,7 @@ func TestProducerRejectsMalformedContracts(t *testing.T) {
 			in.Weather[0].MET = json.RawMessage(strings.Replace(fixture.AuroraMET, `"%"`, `"fraction"`, 1))
 		}},
 		{"MET missing timestamp", func(in *aurora.Inputs) {
-			in.Weather[0].MET = json.RawMessage(strings.Replace(fixture.AuroraMET, `"updated_at":"2026-12-01T22:00:00Z",`, "", 1))
+			in.Weather[0].MET = json.RawMessage(strings.Replace(fixture.AuroraMET, `"updated_at":"2026-12-01T22:17:20Z",`, "", 1))
 		}},
 		{"out of order", func(in *aurora.Inputs) {
 			in.Weather[0].MET = json.RawMessage(strings.Replace(fixture.AuroraMET, "2026-12-02T00:00:00Z", "2026-12-01T22:00:00Z", 1))
@@ -188,7 +233,7 @@ func TestObservedNOAAFieldContract(t *testing.T) {
 		t.Fatal("future weather accepted")
 	}
 	in.Weather[0].CollectedAt = in.CollectedAt
-	in.Weather[0].MET = json.RawMessage(strings.NewReplacer("2026-12-01T22:00:00Z", "2026-10-25T16:00:00Z", "2026-12-01T23:00:00Z", "2026-10-25T17:00:00Z", "2026-12-02T00:00:00Z", "2026-10-25T18:00:00Z").Replace(fixture.AuroraMET))
+	in.Weather[0].MET = json.RawMessage(strings.NewReplacer("2026-12-01T22:17:20Z", "2026-10-25T16:17:20Z", "2026-12-01T22:00:00Z", "2026-10-25T16:00:00Z", "2026-12-01T23:00:00Z", "2026-10-25T17:00:00Z", "2026-12-02T00:00:00Z", "2026-10-25T18:00:00Z").Replace(fixture.AuroraMET))
 	b, err := aurora.Materialize(in)
 	if err != nil {
 		t.Fatal(err)
