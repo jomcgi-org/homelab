@@ -35,7 +35,9 @@ def test_concurrent_batches_reserve_distinct_claims_and_replay_once(pg, monkeypa
 
     class Sources:
         def __init__(self, **_):
-            pass
+            self.stopped = None
+            self.requests = 0
+            self.cache_hits = 0
 
         def __enter__(self):
             return self
@@ -44,10 +46,12 @@ def test_concurrent_batches_reserve_distinct_claims_and_replay_once(pg, monkeypa
             pass
 
         def pin(self):
+            self.requests += 1
             barrier.wait(timeout=10)
             return "a" * 40
 
         def collect(self, claim, revision):
+            self.requests += 1
             return [
                 {
                     "id": "s1",
@@ -58,7 +62,7 @@ def test_concurrent_batches_reserve_distinct_claims_and_replay_once(pg, monkeypa
             ]
 
         def metrics(self):
-            return {"source_requests": 2}
+            return {"source_requests": self.requests}
 
     monkeypatch.setattr(batch, "BatchSources", Sources)
     try:
