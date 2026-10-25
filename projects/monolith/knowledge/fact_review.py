@@ -186,12 +186,19 @@ def coverage(session: Session, *, now: datetime) -> dict:
     }
 
 
+def attempted_receipt():
+    """Deferred reservations still consume admission quota, but are not attempts."""
+    outcome = FactReviewRun.result["outcome"].as_string()
+    return or_(outcome.is_(None), outcome != "deferred")
+
+
 def throughput(session: Session, *, now: datetime) -> dict:
     """Rolling coverage distinguishes distinct facts from repeated selections."""
     window = (
         FactReviewRun.created_at >= now - timedelta(days=1),
         FactReviewRun.created_at <= now,
         FactReviewRun.note_id.is_not(None),
+        attempted_receipt(),
     )
     attempts, distinct = session.exec(
         select(func.count(), func.count(func.distinct(FactReviewRun.note_id)))
@@ -227,15 +234,19 @@ def unavailable_causes(session: Session, window) -> dict:
     summary = FactReviewRun.result["summary"].as_string()
     category = case(
         (reason == "unsupported file representation", "file_representation"),
+        (reason == "batch source deadline exhausted", "batch_deadline_bound"),
+        (reason == "batch source request budget exhausted", "batch_request_bound"),
+        (reason == "batch source byte budget exhausted", "batch_cache_byte_bound"),
+        (
+            reason == "batch source transport byte budget exhausted",
+            "batch_transport_byte_bound",
+        ),
+        (reason == "batch prompt byte budget exhausted", "batch_prompt_byte_bound"),
         (
             reason.in_(
                 (
                     "source collection budget exhausted",
                     "source collection deadline exhausted",
-                    "batch source deadline exhausted",
-                    "batch source request budget exhausted",
-                    "batch source byte budget exhausted",
-                    "batch source transport byte budget exhausted",
                 )
             ),
             "collection_bound",
@@ -359,6 +370,7 @@ def _candidate_query(now: datetime):
         .where(
             FactReviewRun.note_id == Note.note_id,
             FactReviewRun.revision == Note.revision,
+            attempted_receipt(),
         )
         .correlate(Note)
         .scalar_subquery()

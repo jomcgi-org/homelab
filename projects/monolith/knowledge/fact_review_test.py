@@ -852,13 +852,18 @@ def test_response_envelope_anomalies_remain_retryable(
     )
     prepare_review = batch.prepare if batched else review.prepare
     prepare_review(db, "outage", now=NOW)
-    outcome = db.exec(select(ReviewOutcome)).one()
-    assert outcome.status == "unavailable"
-    assert utc(outcome.next_attempt_at) > NOW
+    if batched and stage == "/git/ref/":
+        assert db.exec(select(ReviewOutcome)).all() == []
+        assert review._candidate(db, NOW) is not None
+        retry_at = NOW + timedelta(minutes=15)
+    else:
+        outcome = db.exec(select(ReviewOutcome)).one()
+        assert outcome.status == "unavailable"
+        assert utc(outcome.next_attempt_at) > NOW
+        assert review._candidate(db, NOW) is None
+        retry_at = utc(outcome.next_attempt_at) + timedelta(seconds=1)
     assert db.exec(select(FactReviewSourceBlock)).all() == []
-    assert review._candidate(db, NOW) is None
     assert len(calls) == {"/git/ref/": 1, "/git/trees/": 2, "/git/blobs/": 3}[stage]
-    retry_at = utc(outcome.next_attempt_at) + timedelta(seconds=1)
     assert review._candidate(db, retry_at) is not None
     failing = False
     prompt = prepare_review(db, "recovered", now=retry_at)
@@ -1007,10 +1012,10 @@ def test_eligible_count_uses_worker_scope_pending_and_backoff_rules(db):
 @pytest.mark.parametrize(
     "reason,category",
     [
-        ("batch source deadline exhausted", "collection_bound"),
-        ("batch source request budget exhausted", "collection_bound"),
-        ("batch source byte budget exhausted", "collection_bound"),
-        ("batch source transport byte budget exhausted", "collection_bound"),
+        ("batch source deadline exhausted", "batch_deadline_bound"),
+        ("batch source request budget exhausted", "batch_request_bound"),
+        ("batch source byte budget exhausted", "batch_cache_byte_bound"),
+        ("batch source transport byte budget exhausted", "batch_transport_byte_bound"),
         ("batch source transport unavailable", "source_transport"),
         ("batch evidence is stale", "stale_batch_evidence"),
         ("GitHub returned 401", "source_http_401"),

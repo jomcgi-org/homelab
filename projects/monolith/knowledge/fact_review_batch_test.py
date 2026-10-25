@@ -464,7 +464,8 @@ def test_transport_outage_makes_one_request_and_never_chains(db):
     assert prepare(db, fetch=unavailable) == batch.SOURCE_UNAVAILABLE
     assert len(calls) == 1
     assert db.get(FactReviewBatch, "batch").metrics["source_requests"] == 1
-    assert db.get(FactReviewBatch, "batch").result["outcomes"] == {"unavailable": 32}
+    assert db.get(FactReviewBatch, "batch").result["outcomes"] == {"deferred": 32}
+    assert db.exec(select(ReviewOutcome)).all() == []
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -495,7 +496,8 @@ def test_streamed_batch_stops_after_provider_failure(db, monkeypatch, enabled, f
     assert len(calls) == 2  # one pin and the first member, never the other 31
     parent = db.get(FactReviewBatch, "batch")
     assert parent.metrics["source_requests"] == 2
-    assert parent.result["outcomes"] == {"unavailable": 32}
+    assert parent.result["outcomes"] == {"unavailable": 1, "deferred": 31}
+    assert len(db.exec(select(ReviewOutcome)).all()) == 1
     assert all(
         utc(outcome.next_attempt_at) > NOW
         for outcome in db.exec(select(ReviewOutcome)).all()
@@ -856,3 +858,160 @@ def test_recovery_during_source_fetch_fences_late_single_writer(db):
     assert db.get(FactReviewRun, key).status == "abandoned"
     assert db.get(FactReviewRun, key).sources == []
     assert db.exec(select(ReviewOutcome)).first() is None
+
+
+@pytest.mark.parametrize("bound", ["request", "deadline", "byte"])
+def test_collection_bound_preserves_attempts_defers_suffix_and_makes_progress(
+    db, monkeypatch, bound
+):
+    from knowledge import review_batch_sources as sources
+
+    notes(db, 5, paths=[f"projects/member-{i}/app.py" for i in range(5)])
+    calls = []
+    clock = [0.0]
+    if bound == "request":
+        monkeypatch.setattr(sources, "MAX_REQUESTS", 3)  # pin plus two members
+    elif bound == "byte":
+        pin_size = len(json.dumps({"object": {"sha": SHA}}).encode())
+        response_size = len(
+            json.dumps(fetch("/contents/projects/member-0/app.py?ref=" + SHA)).encode()
+        )
+        monkeypatch.setattr(sources, "MAX_CACHE_BYTES", pin_size + 2 * response_size)
+    else:
+        monkeypatch.setattr(sources.time, "monotonic", lambda: clock[0])
+
+    def read(path):
+        calls.append(path)
+        result = fetch(path)
+        if bound == "deadline" and len(calls) == 3:
+            clock[0] = sources.DEADLINE_SECONDS + 1
+        return result
+
+    prompt = prepare(db, fetch=read)
+    assert "reviews" in prompt
+    parent = db.get(FactReviewBatch, "batch")
+    members = [db.get(FactReviewRun, key) for key in parent.member_keys]
+    assert [bool(r.sources) for r in members] == [True, True, False, False, False]
+    expected_failed = 1 if bound == "byte" else 0
+    assert len(db.exec(select(ReviewOutcome)).all()) == expected_failed
+    assert (
+        sum(r.result.get("outcome") == "deferred" for r in members)
+        == 3 - expected_failed
+    )
+    frozen = [
+        (r.invocation_key, dict(r.result))
+        for r in members
+        if r.result.get("outcome") == "deferred"
+    ]
+    first = apply(db)
+    assert first["outcomes"]["renewed"] == 2
+    assert first["deferred_facts"] == 3 - expected_failed
+    original_calls = len(calls)
+    assert prepare(db, fetch=read) == review.NO_MODEL
+    assert len(calls) == original_calls
+    assert apply(db)["replayed"] is True
+    batch.fail(db, "batch", "late failure", now=NOW)
+    assert [(key, db.get(FactReviewRun, key).result) for key, _ in frozen] == frozen
+    assert review.throughput(db, now=NOW)["attempts"] == 2 + expected_failed
+    assert (
+        batch.status(db, now=NOW + timedelta(minutes=1))["last_hour"][
+            "distinct_completed"
+        ]
+        == 2 + expected_failed
+    )
+    # Even after the failed prefix cooldown expires, unattempted suffix wins.
+    later = NOW + timedelta(minutes=16)
+    selected = review._candidates(db, later, limit=5)
+    assert selected[0].note_id == members[2 + expected_failed].note_id
+    clock[0] = 0.0
+    prepare(db, "next", fetch=fetch, now=later)
+    second = batch.apply(db, "next", json.dumps(output(db, "next")), now=later)
+    assert second["outcomes"]["renewed"] >= 2
+    assert sum(r.last_reviewed_at is not None for r in db.exec(select(Note)).all()) >= 4
+    assert len(db.get(FactReviewBatch, "batch").member_keys) == 5
+
+
+def test_deferred_reservations_still_charge_daily_cap(db, monkeypatch):
+    notes(db, 3)
+    monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "3")
+    assert (
+        prepare(
+            db, fetch=lambda _: (_ for _ in ()).throw(httpx.ConnectError("offline"))
+        )
+        == batch.SOURCE_UNAVAILABLE
+    )
+    assert review.throughput(db, now=NOW)["attempts"] == 0
+    assert prepare(db, "next") == review.NO_REVIEW
+    assert db.get(FactReviewBatch, "next").member_keys == []
+
+
+def test_streamed_transport_bound_preserves_attempt_and_defers_untouched(
+    db, monkeypatch
+):
+    from knowledge import review_batch_sources as source_batch
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    monkeypatch.setattr(source_batch, "MAX_CACHE_BYTES", 35_000)
+    files = {
+        f"projects/example/member-{i}.py": SOURCE.encode() + bytes([65 + i]) * 11_000
+        for i in range(5)
+    }
+    notes(db, 5, paths=list(files))
+    calls = []
+    streamed_coverage(monkeypatch, files, calls)
+    prompt = prepare(db, fetch=None)
+    assert "reviews" in prompt
+    runs = [
+        db.get(FactReviewRun, k) for k in db.get(FactReviewBatch, "batch").member_keys
+    ]
+    assert runs[0].sources
+    outcomes = db.exec(select(ReviewOutcome)).all()
+    assert len(outcomes) == 1
+    assert outcomes[0].status == "unavailable"
+    assert outcomes[0].reason.endswith("batch source transport byte budget exhausted")
+    failed_index = next(
+        i for i, r in enumerate(runs) if r.result.get("outcome") == "unavailable"
+    )
+    assert failed_index < len(runs) - 1
+    assert all(r.result.get("outcome") == "deferred" for r in runs[failed_index + 1 :])
+    assert len([p for p in calls if "/git/blobs/" in p]) == failed_index + 1
+    result = apply(db)
+    assert result["outcomes"]["renewed"] == failed_index
+    assert result["deferred_facts"] == len(runs) - failed_index - 1
+
+
+def test_crash_after_defer_commit_preserves_sources_and_terminal_suffix(
+    db, monkeypatch
+):
+    from knowledge import review_batch_sources as source_batch
+
+    notes(db, 4, paths=[f"projects/member-{i}.py" for i in range(4)])
+    monkeypatch.setattr(source_batch, "MAX_REQUESTS", 2)
+    original = batch._defer
+    interrupted = [False]
+
+    def interrupt(session, key, reason, now):
+        original(session, key, reason, now)
+        if not interrupted[0]:
+            interrupted[0] = True
+            raise RuntimeError("executor interrupted after durable deferral")
+
+    monkeypatch.setattr(batch, "_defer", interrupt)
+    with pytest.raises(RuntimeError, match="executor interrupted"):
+        prepare(db)
+    db.rollback()
+    first = db.get(FactReviewRun, "batch:fact:1")
+    saved = list(first.sources)
+    deferred = dict(db.get(FactReviewRun, "batch:fact:2").result)
+    calls = []
+    monkeypatch.setattr(batch, "_defer", original)
+    prepare(db, fetch=lambda path: (calls.append(path), fetch(path))[1])
+    assert db.get(FactReviewRun, "batch:fact:1").sources == saved
+    assert db.get(FactReviewRun, "batch:fact:2").result == deferred
+    assert not any("member-0" in p or "member-1" in p for p in calls)
+    assert db.get(FactReviewBatch, "batch").response is None
+    result = apply(db)
+    assert result["outcomes"] == {"renewed": 3, "deferred": 1}
+    assert len(db.exec(select(ReviewOutcome)).all()) == 3
+    assert apply(db)["replayed"] is True
+    assert len(db.exec(select(ReviewOutcome)).all()) == 3
