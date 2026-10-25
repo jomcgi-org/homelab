@@ -378,6 +378,10 @@ def _current_records(
         "position": position,
         "ahead": max(0, position - 1) if position is not None else None,
     }
+    # Hash the durable brief before shaping private chat for this viewer.
+    # Adding an empty chat list or omitting another operator's entries must
+    # not change the identity accepted by the decision owner.
+    decision_id = controls.decision_identity(snapshot)
     if snapshot.get("escalation"):
         chat = snapshot["escalation"].get("chat") or []
         snapshot["escalation"]["chat"] = [
@@ -385,6 +389,7 @@ def _current_records(
         ]
     escalation = controls.escalation_view(snapshot)
     if escalation:
+        escalation["decision_id"] = decision_id
         escalation["recommendation_status"] = "conductor_suggestion"
         escalation["resolution_status"] = (
             "operator_decision" if escalation.get("resolved") is not None else None
