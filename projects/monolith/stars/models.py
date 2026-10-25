@@ -10,7 +10,7 @@ drop hours once their clock hour ends.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import CheckConstraint, Column, DateTime, Text
 from sqlmodel import Field, SQLModel
 
 
@@ -72,3 +72,13 @@ class SiteMonthClimatology(
     month: int = Field(primary_key=True)
     dark_hours: int = Field(default=0)
     clear_dark_hours: int = Field(default=0)
+
+
+class HourArchiveCheckpoint(SQLModel, table=True):
+    """One bounded replay envelope, populated only by enabled archive pruning."""
+
+    __tablename__ = "hour_archive_checkpoint"
+    __table_args__ = (CheckConstraint("id = 1"), {"schema": "stars"})
+
+    id: int = Field(primary_key=True)
+    payload: str | None = Field(default=None, sa_column=Column(Text, nullable=True))

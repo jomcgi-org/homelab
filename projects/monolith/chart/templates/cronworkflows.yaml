@@ -21,6 +21,9 @@ image guard elsewhere.
 {{- if not (kindIs "bool" .Values.sharedS3.enabled) }}
 {{- fail "sharedS3.enabled must be a boolean" }}
 {{- end }}
+{{- if not (kindIs "bool" .Values.stars.archiveBeforePrune.enabled) }}
+{{- fail "stars.archiveBeforePrune.enabled must be a boolean" }}
+{{- end }}
 {{- if .Values.jobs.image }}
 {{- $cronWorkflows := append .Values.jobs.cronWorkflows .Values.jobs.snapshotMergedPrs }}
 {{- range $cronWorkflows }}
@@ -31,6 +34,13 @@ image guard elsewhere.
 {{- else if and .knowledgePublishFacts (not $.Values.knowledge.publishFacts.enabled) }}
 {{- /* The publication lane is opt-in because it changes public visibility. */ -}}
 {{- else }}
+{{- if and .starsArchive $.Values.stars.archiveBeforePrune.enabled }}
+{{- if not (and $.Values.sharedS3.enabled .s3) }}
+{{- fail "stars archive requires sharedS3.enabled and job.s3" }}
+{{- end }}
+{{- $_ := required "stars archive requires bucket" $.Values.stars.archiveBeforePrune.bucket }}
+{{- $_ := required "stars archive requires prefix" $.Values.stars.archiveBeforePrune.prefix }}
+{{- end }}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
@@ -174,7 +184,15 @@ spec:
                   {{- end }}
             {{- end }}
             {{- /* sharedS3.enabled false omits this whole S3 block. */ -}}
-            {{- if and $.Values.sharedS3.enabled .s3 }}
+            {{- if .starsArchive }}
+            - name: STARS_ARCHIVE_BEFORE_PRUNE
+              value: {{ $.Values.stars.archiveBeforePrune.enabled | quote }}
+            - name: STARS_ARCHIVE_BUCKET
+              value: {{ $.Values.stars.archiveBeforePrune.bucket | quote }}
+            - name: STARS_ARCHIVE_PREFIX
+              value: {{ $.Values.stars.archiveBeforePrune.prefix | quote }}
+            {{- end }}
+            {{- if and $.Values.sharedS3.enabled .s3 (or (not .starsArchive) $.Values.stars.archiveBeforePrune.enabled) }}
             # R2 S3 env for stars jobs. Endpoint/creds AND the bucket/key names
             # must all be set: the handlers' in-code defaults (e.g. STARS_GRID_S3_KEY
             # defaulting to "stars/grid.json") do NOT match the configured keys, so
