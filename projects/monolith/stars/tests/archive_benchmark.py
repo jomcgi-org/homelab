@@ -1,8 +1,9 @@
 """Local synthetic archive batch, no network. Run with monolith on PYTHONPATH.
 
 Usage: python stars/tests/archive_benchmark.py --sites 14000 --hours 48
-Fixture insertion precedes tracemalloc. Each process measures one bounded batch
-and leaves the remaining backlog alone. Temporary SQLite files are discarded.
+Fixture insertion precedes tracemalloc. By default measure one bounded batch;
+--drain measures an invocation until empty or budget failure. Fake storage keeps
+only the current batch. Temporary SQLite files are discarded.
 """
 
 import argparse
@@ -15,19 +16,36 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlmodel import create_engine
-from stars.archive import run_archive
+from stars.archive import drain_archive, run_archive
 from stars.models import HourArchiveCheckpoint, Site, SiteHour
 
 
 class Storage:
     def __init__(self):
         self.objects = {}
+        self.batch = None
+        self.batches = 0
+        self.serialized_bytes = 0
+        self.max_chunk_bytes = 0
+        self.max_chunk_rows = 0
 
     def put_object(self, *, Key, Body, IfNoneMatch, **kwargs):
         assert IfNoneMatch == "*"
+        batch = Key.rsplit("/", 1)[0]
+        if batch != self.batch:
+            self.objects.clear()
+            self.batch = batch
         if Key in self.objects:
             raise FileExistsError(Key)
         self.objects[Key] = Body
+        self.serialized_bytes += len(Body)
+        if Key.endswith("complete.json"):
+            self.batches += 1
+        else:
+            self.max_chunk_bytes = max(self.max_chunk_bytes, len(Body))
+            self.max_chunk_rows = max(
+                self.max_chunk_rows, len(json.loads(Body)["rows"])
+            )
 
     def get_object(self, *, Key, **kwargs):
         return {"Body": io.BytesIO(self.objects[Key])}
@@ -37,6 +55,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sites", type=int, default=14000)
     parser.add_argument("--hours", type=int, default=48)
+    parser.add_argument("--drain", action="store_true")
     args = parser.parse_args()
     now = datetime(2026, 10, 25, 12, tzinfo=UTC)
     with tempfile.TemporaryDirectory() as directory:
@@ -81,15 +100,14 @@ def main():
         storage = Storage()
         tracemalloc.start()
         start = time.perf_counter()
-        result = run_archive(engine, storage, "fake", "synthetic", now)
+        if args.drain:
+            deleted = drain_archive(engine, storage, "fake", "synthetic", now)
+            result = {"deleted": deleted, "rows": deleted, "backlog": False}
+        else:
+            result = run_archive(engine, storage, "fake", "synthetic", now)
         seconds = time.perf_counter() - start
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        chunks = [
-            json.loads(body)
-            for key, body in storage.objects.items()
-            if not key.endswith("complete.json")
-        ]
         print(
             json.dumps(
                 {
@@ -98,17 +116,15 @@ def main():
                     "input_rows": args.sites * args.hours,
                     "fixture_seconds": fixture_seconds,
                     "batch": result,
+                    "completed_batches": storage.batches,
+                    "drain": args.drain,
                     "archive_seconds": seconds,
                     "rows_per_second": result["rows"] / seconds,
-                    "serialized_bytes": sum(map(len, storage.objects.values())),
-                    "max_chunk_bytes": max(
-                        map(len, storage.objects.values()), default=0
-                    ),
-                    "max_chunk_rows": max(
-                        (len(chunk["rows"]) for chunk in chunks), default=0
-                    ),
+                    "serialized_bytes": storage.serialized_bytes,
+                    "max_chunk_bytes": storage.max_chunk_bytes,
+                    "max_chunk_rows": storage.max_chunk_rows,
                     "peak_tracemalloc_bytes": peak,
-                    "measurement": "one bounded batch; Python allocations including fake storage; excludes fixture and native/SDK allocations",
+                    "measurement": "Python allocations including current-batch fake storage; excludes fixture and native/SDK allocations",
                 },
                 sort_keys=True,
             )
