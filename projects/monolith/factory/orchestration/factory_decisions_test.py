@@ -1560,6 +1560,34 @@ def test_a_chat_the_lane_cannot_take_says_so(db, github):
     assert "neither in the policy allowlist" in view["chat"][0]["blocked_by"]
 
 
+def test_rebrief_of_previous_batch_cannot_poison_next_batch_queue(db, github):
+    configure(issues=(5,))
+    receipt_id = escalate(db)
+    with Session(db) as session:
+        control = session.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        policy["intake"].update(refine_enabled=True, refinement_batch=[9])
+        control.policy_json = json.dumps(policy)
+        session.add(control)
+        session.commit()
+        assert not controls.admission_eligible(
+            policy, ISSUE, "factory:intake", task_class="refine", repo=REPO
+        )
+    result = decisions.request_chat(
+        receipt_id, "Revisit the earlier brief", "joe@example.test"
+    )
+    assert result["requeued"] is False
+    assert "admission will not select it" in result["blocked_by"]
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, receipt_id).state == "succeeded"
+        assert (
+            session.exec(
+                select(FactoryReceipt).where(FactoryReceipt.state == "queued")
+            ).all()
+            == []
+        )
+
+
 def test_a_generation_the_policy_has_moved_past_blocks_the_re_brief(db, github):
     configure(generation=4)
     receipt_id = escalate(db)

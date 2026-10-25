@@ -2989,18 +2989,14 @@ def _notify_person_once(
     task_id: str, message: str, *, kind: str = "escalation"
 ) -> bool:
     """One successful Discord summary per task and kind; failed sends can retry."""
-    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
-    from factory.orchestration.factory_controls import brief_only_refinement
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.factory_controls import private_refinement_tasks
 
     from factory.orchestration import factory_notify_policy
 
     key = f"factory-person:{task_id}:{kind}"
     with Session(get_engine()) as db:
-        private = brief_only_refinement(
-            db.exec(
-                select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
-            ).first()
-        )
+        private = task_id in private_refinement_tasks(db, [task_id])
         previous = db.exec(
             select(FactoryAudit.detail_json).where(
                 FactoryAudit.task_id == task_id,

@@ -978,12 +978,12 @@ def _requeue_blocker(db, row: FactoryReceipt, ignore_request=None) -> str | None
             f"the receipt is generation {row.generation} and the policy is on "
             f"{policy.get('generation')}, so admission will not select it"
         )
-    # The same two clauses admit_next ORs together. An issue in the operator
-    # allowlist is admissible whatever intake is doing, so reading the intake
-    # flag alone would refuse a re-brief the lane would happily have run.
-    allowlisted = row.issue_number in (policy.get("issue_numbers") or [])
-    discovered = row.actor == INTAKE_ACTOR and intake_policy(policy)["enabled"]
-    if not (allowlisted or discovered):
+    from factory.orchestration.factory_controls import admission_eligible
+
+    # Keep rebriefs aligned with bounded natural and selected admission.
+    if not admission_eligible(
+        policy, row.issue_number, row.actor, task_class=row.task_class, repo=row.repo
+    ):
         return (
             "this issue is neither in the policy allowlist nor discoverable "
             "with intake on, so admission will not select it"

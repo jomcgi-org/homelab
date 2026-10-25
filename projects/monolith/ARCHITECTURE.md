@@ -2825,6 +2825,9 @@ and capacity/health projections. After separate enable, native refinement may
 write brief comments and verdict labels. The admitted receipt pins this brief-only
 scope: human decisions remain on the private board and audit, excluded from both
 immediate notifications and the daily digest even after another batch replaces it.
+Per-task admission audit evidence retains that restriction when a later authorized
+rebrief reuses the receipt. Rebrief eligibility uses the same admission predicate,
+so an earlier batch cannot leave an ineligible queued receipt blocking replenishment.
 Typed gates are recorded as proposals, without conductor decisions, issue/PR body
 edits, delivery adoption or operational handoffs. Becoming agent-ready
 does not grant implementation authority. Closure and landing remain off, and a
