@@ -5572,6 +5572,7 @@ py_test(
         ":pkg_cyclegroup",
         ":pkg_knowledge",
         ":pkg_shared",
+        "@pip//jsonschema",
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
