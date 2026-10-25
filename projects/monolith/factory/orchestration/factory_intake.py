@@ -31,6 +31,7 @@ from factory.orchestration.factory_controls import (
     LANES,
     intake_policy,
     lane_for,
+    landing_held,
     lane_limits,
     lane_max_tasks,
     normalize_repo,
@@ -56,6 +57,59 @@ from factory.orchestration.models import SwarmTask, mint_task_id
 
 
 logger = logging.getLogger(__name__)
+
+
+def protected_work_history(
+    db: Session, repo: str, issue_number: int, work_item_id: int | None = None
+) -> list[FactoryReceipt]:
+    """Include canonical, aliased and legacy receipts when preserving authority."""
+    mapped_ids = select(WorkItem.id).where(
+        WorkItem.github_repo == repo,
+        WorkItem.github_issue_number == issue_number,
+    )
+    identities = [
+        (FactoryReceipt.repo == repo) & (FactoryReceipt.issue_number == issue_number),
+        FactoryReceipt.work_item_id.in_(mapped_ids),
+    ]
+    if work_item_id is not None:
+        identities.append(FactoryReceipt.work_item_id == work_item_id)
+    return list(
+        db.exec(
+            select(FactoryReceipt)
+            .where(or_(*identities))
+            .order_by(FactoryReceipt.id.desc())
+        ).all()
+    )
+
+
+def operator_readmission_queued(db: Session, receipt_id: int) -> bool:
+    """A server-recorded operator continuation applies to one queue lifecycle."""
+    events = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action.in_(("operator_readmission_queued", "admit_next")))
+        .order_by(FactoryAudit.id.desc())
+    )
+    for event in events:
+        if json.loads(event.detail_json).get("receipt_id") == receipt_id:
+            return event.action == "operator_readmission_queued"
+    return False
+
+
+def automatic_history_exclusion(
+    db: Session,
+    repo: str,
+    issue_number: int,
+    actor: str,
+    generation: int,
+    work_item_id: int | None = None,
+) -> str | None:
+    if actor not in (INTAKE_ACTOR, "factory:reconciler"):
+        return None
+    history = protected_work_history(db, repo, issue_number, work_item_id)
+    if actor == "factory:reconciler":
+        # A selected recurrence requires a newer explicit policy generation.
+        history = [row for row in history if row.generation >= generation]
+    return natural_history_exclusion(history)
 
 
 def receipts_for_work(
@@ -177,12 +231,11 @@ def receive_issue(
         ).first()
         if existing is not None:
             return {"ok": True, "created": False, "receipt": _snapshot(db, existing)}
-        if actor == INTAKE_ACTOR:
-            protected = natural_history_exclusion(
-                receipts_for_work(db, repo, issue_number)
-            )
-            if protected:
-                raise ValueError(f"natural_intake_{protected}")
+        protected = automatic_history_exclusion(
+            db, repo, issue_number, actor, generation, work_item_id
+        )
+        if protected:
+            raise ValueError(f"natural_intake_{protected}")
         if delivery_target is not None:
             owner = delivery_branch_owner(db, repo, branch)
             if owner is not None:
@@ -629,9 +682,17 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # only a tier with room in `available` admits anything.
         row = None
         for candidate in candidates:
-            if candidate.actor == INTAKE_ACTOR:
-                protected = natural_history_exclusion(
-                    receipts_for_work(db, candidate.repo, candidate.issue_number)
+            if candidate.actor in (
+                INTAKE_ACTOR,
+                "factory:reconciler",
+            ) and not operator_readmission_queued(db, candidate.id):
+                protected = automatic_history_exclusion(
+                    db,
+                    candidate.repo,
+                    candidate.issue_number,
+                    candidate.actor,
+                    candidate.generation,
+                    candidate.work_item_id,
                 )
                 if protected:
                     from factory.orchestration.factory_controls import (
@@ -707,16 +768,24 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         route = routes[receipt_task_class(row)]
         direction = json.loads(row.direction_json) if row.direction_json else {}
         if route["tier"] == "delivery":
-            refined = db.exec(
-                select(FactoryReceipt)
-                .where(
-                    FactoryReceipt.repo == row.repo,
-                    FactoryReceipt.issue_number == row.issue_number,
-                    FactoryReceipt.task_class == "refine",
-                    FactoryReceipt.state == "succeeded",
+            history = protected_work_history(
+                db, row.repo, row.issue_number, row.work_item_id
+            )
+            held_prior = next((prior for prior in history if landing_held(prior)), None)
+            if held_prior is not None:
+                direction.setdefault(
+                    "landing_hold",
+                    json.loads(held_prior.direction_json)["landing_hold"],
                 )
-                .order_by(FactoryReceipt.id.desc())
-            ).first()
+                row.direction_json = _json(direction)
+            refined = next(
+                (
+                    prior
+                    for prior in history
+                    if prior.task_class == "refine" and prior.state == "succeeded"
+                ),
+                None,
+            )
             if refined and refined.direction_json:
                 refined_direction = json.loads(refined.direction_json)
                 gates = refined_direction.get("conductor_gates", [])

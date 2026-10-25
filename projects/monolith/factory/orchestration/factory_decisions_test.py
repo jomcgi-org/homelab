@@ -2839,3 +2839,44 @@ def test_the_issue_reference_must_be_this_issue():
     assert not handoff.references_issue("Refs #70", REPO, 7)
     assert not handoff.references_issue("Refs other/repo#7", REPO, 7)
     assert not handoff.references_issue("Refs ##7", REPO, 7)
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_explicit_held_readmission_consumes_current_queue_authority(
+    db, github, durable
+):
+    from factory.orchestration.factory_intake import (
+        admit_next,
+        operator_readmission_queued,
+    )
+
+    receipt_id = escalate(db, "deliver", state="escalated", task_class="bug-fix")
+    configure(issues=())
+    with Session(db) as session, session.begin():
+        row = session.get(FactoryReceipt, receipt_id)
+        row.direction_json = json.dumps({"landing_hold": {"reason": "leave unmerged"}})
+    if durable:
+        result = decisions.request_decision(
+            receipt_id,
+            current_decision_id(),
+            "chat",
+            "operator",
+            request_key="continue-held",
+            note="Continue under the existing hold",
+            action="chat",
+        )
+    else:
+        result = decisions.request_chat(
+            receipt_id, "Continue under the existing hold", "operator"
+        )
+    assert result["requeued"] is True
+    with Session(db) as session:
+        assert operator_readmission_queued(session, receipt_id)
+    admitted = admit_next("scheduler")
+    assert admitted["ok"] and admitted["receipt_id"] == receipt_id
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        assert json.loads(row.direction_json)["landing_hold"] == {
+            "reason": "leave unmerged"
+        }
+        assert not operator_readmission_queued(session, receipt_id)

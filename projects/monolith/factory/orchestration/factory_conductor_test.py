@@ -874,7 +874,7 @@ def request_task_cancellation(s):
 
 @pytest.mark.parametrize("paused_settlement", ["empty"], indirect=True)
 @pytest.mark.parametrize("paused", [False, True])
-def test_operator_cancel_paused_task_next_tick_releases_slot_and_keeps_cooldown(
+def test_operator_cancel_paused_task_next_tick_releases_slot_and_preserves_cancellation(
     paused_settlement, monkeypatch, paused
 ):
     from datetime import timedelta
@@ -928,7 +928,7 @@ def test_operator_cancel_paused_task_next_tick_releases_slot_and_keeps_cooldown(
                 task_class="bug-fix",
                 cooldown_cutoff=s.clock[0] - timedelta(hours=1),
             )
-            == "cooldown"
+            == "cancelled_issue"
         )
         assert (
             _receipt_exclusion(

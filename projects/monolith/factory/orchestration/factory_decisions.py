@@ -1145,6 +1145,7 @@ def _readmit(
     row.direction_json = json.dumps(direction)
     if not queued:
         _requeue(row)
+        _audit(db, actor, "operator_readmission_queued", receipt_id=row.id)
     return {"readmitted": True, "blocked_by": None}
 
 
@@ -1217,6 +1218,7 @@ def _requeue_refine(
                 )
             )
         _requeue(row)
+        _audit(db, actor, "operator_readmission_queued", receipt_id=row.id)
     db.add(row)
     return blocker
 
