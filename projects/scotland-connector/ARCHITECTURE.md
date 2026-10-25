@@ -379,9 +379,121 @@ changes ship by deploying the connector; a plugin release is needed only
 when the skill or the listing text changes. Serving the marketplace as a
 file keeps it in the monorepo without users cloning the monorepo to add it.
 
-## Not here yet
+## Aurora: staged repository delivery (#7256)
 
-Aurora is #7256.
+`internal/aurora` is a bounded near-term heuristic shared by MCP `aurora`
+and REST `GET /v1/aurora`. The independent `AuroraStore` reads the existing
+stars bucket's `aurora.json` only when `config.auroraEnabled` is true. The
+default is false. Failed parsing or replacement retains the last good object
+without changing its source clocks. Aurora never gates readiness or reads
+upstream providers during a caller request. No new destination or account is
+introduced. Collection, publication and activation remain staged.
+
+**Why.** The existing stars `sites.json` drops brighter hours and caps returned
+hours. Those omissions cannot establish weather or darkness for an aurora
+request, and site altitude cannot establish a northern horizon. An additive
+version-1 snapshot carries unfiltered MET instant rows, actual NOAA timing
+and precomputed terrain profiles. Existing stars consumers and snapshots stay
+unchanged. Shared `internal/astro` solar coordinates provide darkness at the
+requested instant using the stars -10/-12 degree policy.
+
+NOAA's provider JSON fields are `Observation Time`, `Forecast Time`,
+`Data Format` and `coordinates` in longitude, latitude, intensity order.
+The product documents a usual 30 to 90 minute lead and no lead under current-Kp
+fallback. It supplies no universal valid-until time. Version 1 supports only
+the exact published forecast instant. The response states that support and
+separates observation, forecast, collection and application expiry. Retention
+and HTTP revalidation cannot turn an expired observation into fresh evidence.
+MET issue time is `properties.meta.updated_at`, distinct from collection and
+the timestamps of the instant cloud rows. Missing numeric fields stay unknown.
+
+**Why.** An interval inferred from a typical forecast lead would outlive some
+inputs and falsely support future requests during fallback. Point-only
+support is narrow and explicit. Application freshness is less than 20 minutes
+since NOAA collection, two hours since its observation, four hours since MET
+collection and six hours since MET issue. Exactly at a limit is unknown.
+Future input clocks are unknown. These constants are reversible policy,
+separate from NOAA's published timestamps. Operational polling and fallback
+acceptance remain on #7256.
+
+The public [method](internal/httpapi/method.md#near-term-aurora-staged) gives
+the heuristic thresholds, spatial matching and coverage limits. Every input
+must be supported for a go, marginal or no assertion. No calibrated local
+sighting probability is returned. Aurora answers are `no-store` on both
+browser and shared caches. Its `as_of` is the request clock rather than the
+plan/check hour, and `data_version` is the snapshot byte digest. The existing
+meter records tool `aurora` on each transport. This adds no exporter or alert.
+
+### Reproducible local producer and terrain preprocessing
+
+`cmd/stars-aurora` adds a separate producer contract; it does not change the
+existing filtered stars materializer. Its default mode reads local JSON
+provider bytes. `--collect --sites sites.json` explicitly enables bounded
+collection with fixed NOAA/MET endpoints, identified requests, no redirects,
+15-second request deadlines and a three-minute overall deadline. MET requests
+are sequential, at most one per second, for at most 128 sites. No schedule or
+upload command is installed. Do not run collection or publication as part of
+this repository delivery. A separately authorized publisher can use the
+existing stars storage integration for one atomic `aurora.json` replacement.
+
+The snapshot is at most 16 MiB, 128 sites, 65,160 NOAA cells and 96 weather
+rows per site. The unfiltered input retains daylight and cloudy rows, with
+null cloud where absent. Provider bodies are bounded before decoding. The
+collector records NOAA completion separately from each site's MET completion.
+Malformed or out-of-order timestamps fail materialization. The consumer also
+rejects regressive NOAA observation/collection or snapshot replacement times.
+
+Terrain input is USGS GMTED2010 mean elevation at 7.5 arc-seconds, about
+232 m north-south and 116 to 135 m east-west in Scotland. The geographic
+reference is WGS84 and heights are metres in a source-dependent vertical
+datum, as the USGS metadata states. Retain each tile's source metadata and
+verify vertical consistency before operational use; do not assume EGM96
+across every input or source boundary. The USGS
+[metadata](https://topotools.cr.usgs.gov/gmted_viewer/gmted2010_fgdc_metadata.html)
+states unrestricted public availability and the USGS disclaimer. Credit
+USGS, Danielson and Gesch (2011), [report 2011-1073](https://doi.org/10.3133/ofr20111073).
+The [public download index](https://topotools.cr.usgs.gov/gmted_viewer/gmted2010_global_grids.php)
+links the mean 7.5-arc-second grid without an account. Do not acquire the bulk
+global archive in this attempt. Its nominal land coverage includes Scotland;
+metadata warns of poorer source coverage above 60 degrees north. Representative
+island and Shetland validation is still required. No Scottish profiles ship
+with this change.
+
+After separately acquiring the source, retain the archive URL, checksum,
+metadata, GDAL version and exact extraction command. Extract a site-local
+window padded at least 25 km north, east and west; do not resample. For a
+WGS84 source grid the local conversion is, for example:
+
+```sh
+gdal_translate -of AAIGrid -projwin -4.4 58.6 -3.6 57.8 source/mn75 terrain.asc
+go run ./projects/scotland-connector/cmd/stars-aurora --grid terrain.asc --sites sites.json
+go run ./projects/scotland-connector/cmd/stars-aurora --input provider-input.json
+```
+
+`sites.json` is an array of objects with required `id`, `lat` and `lon` from
+the supported stars site inventory. The grid mode adds `terrain` to each
+object. It accepts only square WGS84 ASCII corner grids at no coarser than
+7.5 arc-seconds, at most four million cells and 128 MiB. Preserve the source's
+nodata sentinel. It computes each site's observer elevation from that raster,
+then 19 great-circle rays from -45 to +45 degrees at five-degree spacing,
+sampled every 100 m through 20 km. Each ray takes the maximum elevation angle
+with earth curvature subtracted and no atmospheric refraction. An outside or
+nodata cell makes the whole ray null. Profiles include the raster's SHA-256
+and algorithm version. Terrain excludes trees, buildings and access, and coarse
+samples can miss narrow ridges.
+
+For offline materialization, `provider-input.json` contains `collected_at`
+(materialization time), `noaa_collected_at`, the raw `noaa` object, and a
+`weather` array with `id`, `lat`, `lon`, `collected_at`, raw `met` and the
+computed `terrain`. The output is one versioned snapshot on stdout. Local
+fixtures exercise collection, preprocessing, materialization, store replacement,
+both transports, provenance and metering. Synthetic flat/ridge fixtures are
+labelled synthetic and establish no real terrain coverage.
+
+Operational acceptance remains on #7256: actual NOAA timing/polling/fallback;
+representative terrain and nodata coverage; separately authorized producer and
+existing-storage publication with refresh/replacement/expiry checks; separately
+authorized rollout and public MCP/REST smoke tests, plan/check and accounting.
 
 ## Direction
 
@@ -396,3 +508,4 @@ this table when the work ships or the issue closes without it.
 | Per-walk and per-site forecast fetch times        | #7274  | staged, live acceptance pending |
 | Slot rule slides past a second gap                | #7275  | not started |
 | Directory listings                                | #7255  | staged      |
+| Near-term aurora, independent snapshot and terrain preprocessing | #7256 | staged off, live acceptance pending |

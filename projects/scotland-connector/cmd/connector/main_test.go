@@ -14,6 +14,59 @@ import (
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
 )
 
+func TestAuroraActivationIsIndependentOfReadiness(t *testing.T) {
+	r2srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"fixture"`)
+		switch r.URL.Path {
+		case "/stars/sites.json":
+			io.WriteString(w, fixture.Sites)
+		case "/stars/history-map.json":
+			io.WriteString(w, fixture.History)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer r2srv.Close()
+	t.Setenv("R2_ENDPOINT", r2srv.URL)
+	t.Setenv("S3_ACCESS_KEY_ID", "fixture-key")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "fixture-secret")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, enabled := range []string{"false", "true"} {
+		t.Setenv("AURORA_ENABLED", enabled)
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := newApp(cfg, log, r2srv.Client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (a.aurora != nil) != (enabled == "true") {
+			t.Fatal("activation flag")
+		}
+		if err = a.store.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if a.aurora != nil && a.aurora.Refresh(context.Background()) == nil {
+			t.Fatal("missing aurora snapshot accepted")
+		}
+		r := httptest.NewRecorder()
+		a.admin.ServeHTTP(r, httptest.NewRequest("GET", "/readyz", nil))
+		if r.Code != 200 {
+			t.Fatal("aurora broke readiness", r.Body)
+		}
+		r = httptest.NewRecorder()
+		a.public.ServeHTTP(r, httptest.NewRequest("GET", "/v1/aurora?lat=58&lon=-4&at=2026-12-01T23:00:00Z", nil))
+		if r.Code != 200 || !strings.Contains(r.Body.String(), `"verdict":"unknown"`) {
+			t.Fatal(r.Code, r.Body)
+		}
+	}
+	t.Setenv("AURORA_ENABLED", "maybe")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("invalid activation value")
+	}
+}
+
 // End to end through the real wiring: a fake R2 serves the fixture
 // snapshots, the store loads them, and both public surfaces answer.
 func TestAppServesFromR2Snapshots(t *testing.T) {

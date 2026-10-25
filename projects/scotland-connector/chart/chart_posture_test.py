@@ -31,6 +31,17 @@ _GATEWAY_VALUES = (
 _ROUTE_ON = ["route.enabled=true", "route.hostname=connector.example.test"]
 
 
+def test_aurora_activation_defaults_off_and_has_explicit_enabled_wiring() -> None:
+    for overrides, expected in (([], "false"), (["config.auroraEnabled=true"], "true")):
+        docs = _render(overrides)
+        deployment = _one(docs, "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        assert env["AURORA_ENABLED"] == expected
+        assert env["STARS_AURORA_KEY"] == "aurora.json"
+        assert env["STARS_BUCKET"] == "stars"
+
+
 def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),

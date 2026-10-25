@@ -87,6 +87,8 @@ func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL
 	h := &Handler{svc: svc, meter: m, log: log, mux: http.NewServeMux(), specURL: publicBaseURL + "/v1/openapi.json"}
 	h.mux.HandleFunc("GET /v1/plan", h.plan)
 	h.mux.HandleFunc("POST /v1/check", h.check)
+	h.mux.HandleFunc("GET /v1/aurora", h.aurora)
+	h.mux.HandleFunc("/v1/aurora", h.methodNotAllowed("GET"))
 	h.mux.HandleFunc("OPTIONS /v1/check", h.preflight)
 	// Without these the /v1/ catch-all would answer a wrong method with "no
 	// such endpoint".
@@ -246,7 +248,7 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, tool string, s
 		switch {
 		case errors.As(err, &pe):
 			body.Error.Code, body.Error.Param, body.Error.Message = "invalid_parameter", pe.Param, pe.Message
-			if r.Method == http.MethodPost {
+			if r.Method == http.MethodPost || tool == "aurora" {
 				noStore.set(w.Header())
 			} else {
 				cacheControlError.set(w.Header())
@@ -267,7 +269,7 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, tool string, s
 		return
 	}
 
-	if r.Method == http.MethodPost {
+	if r.Method == http.MethodPost || tool == "aurora" {
 		// A POST answer is not cacheable by URL, so it is not cached at all.
 		noStore.set(w.Header())
 		writeJSON(w, http.StatusOK, env)

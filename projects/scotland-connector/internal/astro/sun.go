@@ -9,6 +9,14 @@ import (
 // plus the disc's radius (about 16').
 const sunAltitude = -0.833
 
+// SunElevation uses the same solar coordinates as the stars moon calculation.
+func SunElevation(t time.Time, lat, lon float64) float64 {
+	c := sunCoords(days(t))
+	h := rad*(280.16+360.9856235*days(t)+lon) - c.ra
+	phi := rad * lat
+	return math.Asin(math.Sin(phi)*math.Sin(c.dec)+math.Cos(phi)*math.Cos(c.dec)*math.Cos(h)) / rad
+}
+
 // SunTimes is sunrise and sunset on the UTC calendar day of day at lat, lon,
 // by the NOAA sunrise equation, the same one the monolith's hikes job gates
 // daylight hours with (projects/monolith/hikes/forecast.py sun_times), so the

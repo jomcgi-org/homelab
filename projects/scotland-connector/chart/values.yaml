@@ -82,6 +82,9 @@ adminPort: 9090
 podSecurity: restricted
 
 config:
+  # Repository-only delivery, pending #7256 operational acceptance.
+  auroraEnabled: false
+  auroraKey: aurora.json
   # R2 account endpoint, HTTPS. Required.
   r2Endpoint: ""
   region: auto

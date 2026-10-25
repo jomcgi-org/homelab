@@ -167,3 +167,47 @@ refused. Distances are great-circle approximations, accurate to well under
 behind the answer; `meta.as_of` is the hour it is computed for. plan answers
 are cached at the edge for a few minutes and served stale if the origin is
 unavailable. check answers are POSTs and are not cached.
+## Near-term aurora (staged)
+
+`aurora` (MCP) and `GET /v1/aurora?lat=...&lon=...&at=...` share one
+snapshot-only engine. Supply coordinates and an RFC3339 timestamp with timezone.
+The assessment returns `go`, `marginal`, `no` or `unknown`, with per-input
+evidence and source times. Activation defaults off. Disabled and unloaded
+snapshots return `unknown`; plan, check and readiness keep their existing rules.
+
+NOAA OVATION supplies an observation time, a forecast time and a global
+longitude/latitude intensity grid. Its usual 30 to 90 minute lead varies with
+solar-wind travel time. The current-Kp fallback can have no lead. The JSON
+does not identify that forcing mode or supply a valid-until timestamp. This
+version supports the exact forecast instant only, with requests between now
+and two hours ahead. Callers can read `noaa.forecast_at` from an unknown answer
+and ask for that instant. An equal observation/forecast timestamp is reported
+as `no_lead`; this alone does not identify the fallback mode.
+
+Application freshness limits are separate: NOAA collection under 20 minutes,
+observation under two hours, MET collection under four hours and MET issue
+under six hours. Exactly at an expiry limit is unknown. Future input times
+are unknown. Refreshing or retaining a cached object never extends support.
+Both HTTP cache headers are `no-store`, including conditional requests.
+
+The nearest NOAA cell must be within 80 km. A supported site must be within
+1 km, with unrounded coordinates. Weather uses MET's unfiltered instant cloud
+rows: an exact row, or the larger cloud fraction from two bracketing rows no
+more than an hour apart. It never bridges a missing hour or extrapolates a
+capped row. Darkness uses shared solar-coordinate calculations at the requested
+site/time, with the stars policy's -10 and -12 degree thresholds.
+
+Every input must be supported before any assessment other than unknown.
+Sun at or above -10 degrees, cloud at least 75%, sampled northern terrain at
+least 10 degrees, or NOAA intensity below 10 gives `no`. Sun below -12,
+cloud at most 25%, terrain at most 3 degrees and intensity at least 30 gives
+`go`; intermediate conditions are `marginal`. These are conservative heuristic
+thresholds, not calibrated local sighting probabilities or travel advice.
+Terrain covers 19 sampled bearings from northwest to northeast, to 20 km.
+It excludes trees, buildings, distant terrain beyond that radius and access
+conditions. Coarse raster sampling can miss narrow ridges. Null cells and
+absent terrain remain unknown. Synthetic test terrain proves computation only.
+
+Sources: [NOAA product and fallback description](https://www.spaceweather.gov/products/aurora-30-minute-forecast),
+[MET instant-variable contract](https://api.met.no/doc/locationforecast/datamodel),
+[GMTED2010 metadata and terms](https://topotools.cr.usgs.gov/gmted_viewer/gmted2010_fgdc_metadata.html).

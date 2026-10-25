@@ -77,6 +77,10 @@ spec:
               value: {{ .Values.config.historyKey | quote }}
             - name: STARS_WALKS_KEY
               value: {{ .Values.config.walksKey | quote }}
+            - name: AURORA_ENABLED
+              value: {{ .Values.config.auroraEnabled | quote }}
+            - name: STARS_AURORA_KEY
+              value: {{ .Values.config.auroraKey | quote }}
             - name: REFRESH_INTERVAL
               value: {{ .Values.config.refreshInterval | quote }}
             - name: PUBLIC_BASE_URL
