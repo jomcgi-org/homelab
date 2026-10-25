@@ -2,6 +2,8 @@
 
 import asyncio
 import base64
+import gc
+import weakref
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -419,6 +421,92 @@ def test_short_cache_expires_and_shares_failures_without_turning_them_into_succe
     assert rollout._cached(("snapshot",), lambda: {"recovered": True}) == {
         "recovered": True
     }
+
+
+@pytest.mark.parametrize("kind", ["pending", "http", "cooldown"])
+def test_cached_failures_release_reader_and_caller_frames(monkeypatch, kind):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    monkeypatch.setattr(rollout, "_recent", {})
+    references, reads = [], []
+
+    class Payload:
+        pass
+
+    def payload():
+        value = Payload()
+        references.append(weakref.ref(value))
+        return value
+
+    request = httpx.Request("GET", "https://example.invalid/snapshot")
+    response = httpx.Response(503, request=request)
+
+    def failed():
+        _reader_state = payload()
+        reads.append(True)
+        try:
+            raise ValueError("inner read failure")
+        except ValueError as cause:
+            if kind == "pending":
+                raise rollout.Pending(
+                    "unavailable", application="demo", resource="Deployment/demo"
+                ) from cause
+            if kind == "http":
+                raise httpx.HTTPStatusError(
+                    "unavailable", request=request, response=response
+                ) from cause
+            raise GitHubReadDeferred("unavailable") from cause
+
+    def call():
+        _caller_state = payload()
+        try:
+            rollout._cached(("snapshot",), failed)
+        except Exception as failure:
+            assert str(failure) == "unavailable"
+            if kind == "pending":
+                assert isinstance(failure, rollout.Pending)
+                assert failure.application == "demo"
+                assert failure.resource == "Deployment/demo"
+            elif kind == "http":
+                assert isinstance(failure, httpx.HTTPStatusError)
+                assert failure.request is request
+                assert failure.response is response
+            else:
+                assert isinstance(failure, GitHubReadDeferred)
+        else:
+            pytest.fail("an unavailable read must remain a failure")
+
+    for _ in range(3):
+        call()
+        gc.collect()
+        assert all(reference() is None for reference in references)
+    assert len(reads) == 1
+    cached = rollout._recent[("snapshot",)][1]
+    assert cached.__traceback__ is None
+    assert cached.__cause__ is None
+    assert cached.__context__ is None
+
+
+@pytest.mark.parametrize("copy_behavior", ["raises", "same_object"])
+def test_uncopyable_failure_remains_an_uncached_failure(monkeypatch, copy_behavior):
+    monkeypatch.setattr(rollout, "_recent", {})
+    reads = []
+
+    class Uncopyable(ValueError):
+        def __copy__(self):
+            if copy_behavior == "raises":
+                raise TypeError("cannot copy")
+            return self
+
+    def failed():
+        reads.append(True)
+        raise Uncopyable("original failure")
+
+    for _ in range(2):
+        with pytest.raises(Uncopyable, match="original failure"):
+            rollout._cached(("snapshot",), failed)
+        assert ("snapshot",) not in rollout._recent
+    assert len(reads) == 2
 
 
 def test_repeated_large_publication_history_keeps_ancestry_after_content_reads(
