@@ -337,11 +337,20 @@ def open_lanes(policy: dict, rows, lanes=LANES, *, unresolved_task_ids=None) -> 
 def _eligible_clause(policy: dict):
     """The SQL twin of admission_eligible for the queued-receipt query."""
     eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
-    if intake_policy(policy)["enabled"]:
+    intake = intake_policy(policy)
+    if intake["enabled"]:
         # Intake receipts are not in the operator allowlist by construction.
         # They are admissible only while intake is on, so turning intake off
         # leaves the allowlist exactly as it was.
-        eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
+        automatic = FactoryReceipt.actor == INTAKE_ACTOR
+        if intake["refinement_batch"]:
+            automatic = (
+                automatic
+                & FactoryReceipt.issue_number.in_(intake["refinement_batch"])
+                & (FactoryReceipt.task_class == "refine")
+                & intake["refine_enabled"]
+            )
+        eligible = or_(eligible, automatic)
     from factory.orchestration.factory_controls import problem_issues_policy
 
     block = problem_issues_policy(policy)

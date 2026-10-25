@@ -443,6 +443,7 @@ def _factory_rows_sync() -> tuple[object | None, list, list]:
                     FactoryReceipt.actor,
                     FactoryReceipt.repo,
                     FactoryReceipt.generation,
+                    FactoryReceipt.task_class,
                 ).where(FactoryReceipt.state == "queued")
             ).all()
         )
@@ -551,13 +552,15 @@ def evaluate_factory(
             intake_on = bool(intake_policy(policy).get("enabled"))
         except Exception:  # noqa: BLE001 - malformed intake block reads as off
             intake_on = False
-        for rid, issue, actor, repo, generation in queued:
+        for rid, issue, actor, repo, generation, task_class in queued:
             if repo != policy.get("repo") or generation != policy.get("generation"):
                 continue
             if actor == INTAKE_ACTOR and not intake_on:
                 continue
             try:
-                eligible = admission_eligible(policy, issue, actor)
+                eligible = admission_eligible(
+                    policy, issue, actor, task_class=task_class
+                )
             except Exception:  # noqa: BLE001 - a policy it cannot read admits nothing
                 eligible = False
             if not eligible:

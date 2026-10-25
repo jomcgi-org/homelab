@@ -184,6 +184,53 @@ def test_derive_task_class_uses_label_precedence():
     )
 
 
+def test_refinement_batch_never_admits_implementation_or_other_issues(db, monkeypatch):
+    fake_pages(
+        monkeypatch,
+        [issue(1), issue(2, ["agent-ready"]), issue(3), issue(4, ["agent-ready"])],
+    )
+    configured = policy(refine_enabled=True, refinement_batch=[2, 3])
+    received = intake_loop.intake_tick(configured, generation=0)
+    assert [
+        (r["receipt"]["issue_number"], r["receipt"]["task_class"]) for r in received
+    ] == [(3, "refine")]
+    # Readiness changes cannot turn the exact batch grant into implementation.
+    with Session(db) as session, session.begin():
+        row = session.exec(select(FactoryReceipt)).one()
+        row.state = "succeeded"
+    release_sweep(db)
+    fake_pages(monkeypatch, [issue(2, ["agent-ready"]), issue(3, ["agent-ready"])])
+    assert intake_loop.intake_tick(configured, generation=0) == []
+    detail = json.loads(audits(db, "intake_evaluated")[-1].detail_json)
+    assert detail["excluded"]["outside_refinement_batch"] == 2
+    assert detail["candidates"] == {"advisory": 0, "delivery": 0}
+
+
+def test_refinement_batch_filters_local_candidates(db, monkeypatch):
+    fake_pages(monkeypatch, [])
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                WorkItem(
+                    title="local",
+                    state=state,
+                    source_kind="ui",
+                    trust="trusted",
+                    authority="local",
+                    github_repo="owner/repo",
+                    github_issue_number=number,
+                )
+                for number, state in ((1, "open"), (2, "ready"), (3, "open"))
+            ]
+        )
+    received = intake_loop.intake_tick(
+        policy(refine_enabled=True, refinement_batch=[2, 3]), generation=0
+    )
+    assert [
+        (r["receipt"]["issue_number"], r["receipt"]["task_class"]) for r in received
+    ] == [(3, "refine")]
+
+
 def test_disabled_intake_has_no_github_or_audit(db, monkeypatch):
     monkeypatch.setattr(
         intake_loop,

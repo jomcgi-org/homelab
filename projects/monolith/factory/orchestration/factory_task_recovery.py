@@ -41,7 +41,9 @@ def _capacity(db, control, row):
         control.state != "enabled"
         or row.generation != policy.get("generation", 0)
         or row.repo not in controls.enabled_repos(policy)
-        or not controls.admission_eligible(policy, row.issue_number, row.actor)
+        or not controls.admission_eligible(
+            policy, row.issue_number, row.actor, task_class=row.task_class
+        )
     ):
         raise ValueError("recovery_admission_disabled")
     owned = db.exec(

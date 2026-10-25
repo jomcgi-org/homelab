@@ -198,6 +198,45 @@ def test_admission_eligibility_sql_matches_python(
     assert [row.issue_number for row in found] == ([issue_number] if expected else [])
 
 
+@pytest.mark.parametrize(
+    "number,actor,task_class,expected",
+    [
+        (7, "operator", "bug-fix", True),
+        (9, INTAKE_ACTOR, "refine", True),
+        (9, INTAKE_ACTOR, "bug-fix", False),
+        (10, INTAKE_ACTOR, "refine", False),
+        (9, "operator", "refine", False),
+    ],
+)
+def test_refinement_batch_sql_matches_python(db, number, actor, task_class, expected):
+    configured = {
+        "issue_numbers": [7],
+        "intake": {"enabled": True, "refine_enabled": True, "refinement_batch": [9]},
+    }
+    assert (
+        admission_eligible(configured, number, actor, task_class=task_class) is expected
+    )
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=number,
+                generation=0,
+                title="candidate",
+                body="",
+                url=f"https://github.com/owner/repo/issues/{number}",
+                actor=actor,
+                state="queued",
+                task_class=task_class,
+            )
+        )
+    with Session(db) as session:
+        found = session.exec(
+            select(FactoryReceipt).where(_eligible_clause(configured))
+        ).all()
+        assert bool(found) is expected
+
+
 def test_duplicate_receipt_preserves_first_payload_and_link_across_restart(
     db, policy, monkeypatch
 ):

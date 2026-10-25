@@ -3223,3 +3223,224 @@ def test_active_backlog_concurrent_apply_has_one_winner(database, active_backlog
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         assert sorted(executor.map(apply, ["active-a", "active-b"])) == [False, True]
+
+
+@pytest.fixture
+def refinement_batch(database, active_backlog, monkeypatch):
+    from factory.orchestration import factory_refinement_batch as batch
+    from factory.orchestration.factory_models import WorkItem, WorkItemEdge
+
+    SQLModel.metadata.create_all(
+        database, tables=[WorkItem.__table__, WorkItemEdge.__table__]
+    )
+    issues = {
+        number: {
+            "number": number,
+            "state": "open",
+            "assignees": [],
+            "labels": [],
+            "html_url": f"https://github.com/org/repo/issues/{number}",
+            "title": "archive",
+            "body": "bounded brief",
+            "updated_at": "2026-10-25T11:00:00Z",
+        }
+        for number in (7249, 7251)
+    }
+    monkeypatch.setattr(
+        active_backlog,
+        "issue_without_pr_references",
+        lambda repo, number: dict(issues[number]),
+    )
+    return batch, issues
+
+
+def test_refinement_batch_preserves_active_work_and_requires_enable(
+    database, refinement_batch
+):
+    batch, _ = refinement_batch
+    with Session(database) as db:
+        receipt = db.get(FactoryReceipt, 838).model_dump(mode="json")
+        start = db.exec(select(FactoryStart)).one().model_dump(mode="json")
+    proposal = batch.preview([7251, 7249], "prepare exact briefs")
+    before, after = proposal["policy_before"], proposal["policy_after"]
+    expected = json.loads(json.dumps(before))
+    expected["intake"].update(
+        enabled=True, refine_enabled=True, refinement_batch=[7249, 7251]
+    )
+    assert after == expected
+    assert not proposal["execution_authorized"]
+    args = dict(
+        actor="operator",
+        request_key="batch",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    result = batch.apply([7249, 7251], "prepare exact briefs", **args)
+    assert (
+        result["ok"]
+        and result["state"] == "paused"
+        and not result["execution_authorized"]
+    )
+    assert batch.apply([7249, 7251], "prepare exact briefs", **args) == result
+    with pytest.raises(ValueError, match="conflicting_validation_request"):
+        batch.apply([7249], "prepare exact briefs", **args)
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump(mode="json") == receipt
+        assert db.exec(select(FactoryStart)).one().model_dump(mode="json") == start
+        assert len(db.exec(select(FactoryReceipt)).all()) == 1
+        control = db.get(FactoryControl, "factory")
+        assert control.state == "paused" and json.loads(control.policy_json) == expected
+
+
+@pytest.mark.parametrize(
+    "numbers", [[], [True], [0], [1, 1], list(range(1, 12)), "7249"]
+)
+def test_refinement_batch_rejects_invalid_scope(refinement_batch, numbers):
+    batch, _ = refinement_batch
+    with pytest.raises(ValueError, match="invalid refinement_batch"):
+        batch.preview(numbers, "briefs")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"state": "closed"},
+        {"assignees": [{"login": "owner"}]},
+        {"labels": [{"name": "human"}]},
+        {"labels": [{"name": "agent-ready"}]},
+        {"labels": [{"name": "needs-thought"}]},
+        {"labels": [{"name": "needs-human"}]},
+        {"labels": None},
+        {"number": 7250},
+        {"pull_request": {}},
+    ],
+)
+def test_refinement_batch_rechecks_issue_ownership(refinement_batch, change):
+    batch, issues = refinement_batch
+    proposal = batch.preview([7249, 7251], "briefs")
+    issues[7249].update(change)
+    with pytest.raises(ValueError, match="refinement_batch_issue_ineligible"):
+        batch.apply(
+            [7249, 7251],
+            "briefs",
+            actor="operator",
+            request_key="race",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+
+
+@pytest.mark.parametrize(
+    "change", ["body", "version", "hold", "history", "uncertain", "orphan", "queued"]
+)
+def test_refinement_batch_rejects_changed_evidence(database, refinement_batch, change):
+    batch, issues = refinement_batch
+    proposal = batch.preview([7249], "briefs")
+    with Session(database) as db, db.begin():
+        if change == "body":
+            issues[7249]["body"] = "changed scope"
+        elif change == "version":
+            db.get(FactoryControl, "factory").version += 1
+        elif change == "hold":
+            db.get(
+                FactoryReceipt, 838
+            ).direction_json = '{"landing_hold":{"reason":"changed"}}'
+        elif change in ("uncertain", "orphan"):
+            db.exec(select(FactoryStart)).one().status = (
+                "uncertain" if change == "uncertain" else "reserved"
+            )
+            if change == "orphan":
+                db.get(FactoryReceipt, 838).state = "escalated"
+        else:
+            row = db.get(FactoryReceipt, 838).model_dump(exclude={"id", "task_id"})
+            row.update(
+                issue_number=7249 if change == "history" else 9999,
+                state="cancelled" if change == "history" else "queued",
+            )
+            db.add(FactoryReceipt(**row))
+    with pytest.raises(ValueError):
+        batch.apply(
+            [7249],
+            "briefs",
+            actor="operator",
+            request_key="race",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        assert not json.loads(db.get(FactoryControl, "factory").policy_json)["intake"][
+            "enabled"
+        ]
+
+
+def test_refinement_batch_allows_owned_reservation(database, refinement_batch):
+    with Session(database) as db, db.begin():
+        db.exec(select(FactoryStart)).one().status = "reserved"
+    assert refinement_batch[0].preview([7249], "briefs")["policy_after"]["intake"][
+        "refinement_batch"
+    ] == [7249]
+
+
+@pytest.mark.parametrize("change", ["local", "human", "blocked", "alias_history"])
+def test_refinement_batch_checks_work_item_ownership_and_history(
+    database, refinement_batch, change
+):
+    from factory.orchestration.factory_models import WorkItem, WorkItemEdge
+
+    batch, _ = refinement_batch
+    proposal = batch.preview([7249], "briefs")
+    with Session(database) as db, db.begin():
+        target = WorkItem(
+            id=101,
+            title="archive",
+            state="open",
+            source_kind="github",
+            trust="trusted",
+            authority="local" if change == "local" else "github",
+            labels=["human"] if change == "human" else [],
+            github_repo="org/repo",
+            github_issue_number=7249,
+        )
+        db.add(target)
+        if change == "blocked":
+            db.add(
+                WorkItem(
+                    id=102,
+                    title="dependency",
+                    state="open",
+                    source_kind="github",
+                    trust="trusted",
+                )
+            )
+            db.flush()
+            db.add(WorkItemEdge(from_id=102, to_id=101, kind="blocks"))
+        if change == "alias_history":
+            db.get(FactoryReceipt, 838).work_item_id = 101
+    with pytest.raises(
+        ValueError,
+        match="refinement_batch_(work_unavailable|work_blocked|existing_history)",
+    ):
+        batch.apply(
+            [7249],
+            "briefs",
+            actor="operator",
+            request_key="work-race",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+
+
+def test_refinement_batch_concurrent_apply_has_one_winner(refinement_batch):
+    batch, _ = refinement_batch
+    proposal = batch.preview([7249], "briefs")
+
+    def apply(key):
+        try:
+            return batch.apply(
+                [7249],
+                "briefs",
+                actor="operator",
+                request_key=key,
+                expected_preview_sha256=proposal["preview_sha256"],
+            )["ok"]
+        except ValueError:
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(apply, ["batch-a", "batch-b"])) == [False, True]

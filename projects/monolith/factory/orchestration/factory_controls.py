@@ -198,6 +198,9 @@ DEFAULT_INTAKE = {
     "max_per_day": 5,
     "cooldown_hours": 24,
     "refine_enabled": False,
+    # A nonempty batch restricts ALL automatic intake to these advisory issues.
+    # Readiness produced by refinement is not authority to implement them.
+    "refinement_batch": [],
     # Author authority permits inspection, never approval or merge.
     "dependency_pr_authors": [],
     # Numeric IDs force security evidence; they grant no intake authority.
@@ -761,6 +764,20 @@ def _validate_role_effort(value: object) -> dict:
     return {role: value[role] for role in sorted(value)}
 
 
+def validate_refinement_batch(value: object, *, allow_empty=False) -> list[int]:
+    if (
+        not isinstance(value, list)
+        or len(value) > 10
+        or (not value and not allow_empty)
+        or any(
+            type(number) is not int or not 1 <= number <= 2**31 - 1 for number in value
+        )
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError("invalid refinement_batch")
+    return sorted(value)
+
+
 def _validate_intake(value: object) -> dict:
     if not isinstance(value, dict) or not set(value) <= set(DEFAULT_INTAKE):
         raise ValueError("invalid intake")
@@ -785,6 +802,9 @@ def _validate_intake(value: object) -> dict:
     ):
         raise ValueError("invalid dependency_pr_author_ids")
     result["dependency_pr_author_ids"] = sorted(set(author_ids))
+    result["refinement_batch"] = validate_refinement_batch(
+        value.get("refinement_batch", []), allow_empty=True
+    )
     for key in ("enabled", "refine_enabled", "close_enabled"):
         setting = value.get(key, DEFAULT_INTAKE[key])
         if type(setting) is not bool:
@@ -1437,7 +1457,9 @@ def lane_limits(policy: dict) -> dict:
     return {"delivery": delivery, "advisory": advisory}
 
 
-def admission_eligible(policy: dict, issue_number: int, actor: str) -> bool:
+def admission_eligible(
+    policy: dict, issue_number: int, actor: str, *, task_class: str = DEFAULT_TASK_CLASS
+) -> bool:
     """Whether admit_next could ever admit a queued receipt for this issue.
 
     One rule shared by the admission query, the intake lane-slot count and
@@ -1457,7 +1479,20 @@ def admission_eligible(policy: dict, issue_number: int, actor: str) -> bool:
             and scout["enabled"]
             and scout["issue_number"] == issue_number
         )
-    return actor == INTAKE_ACTOR and bool(intake_policy(policy).get("enabled"))
+    intake = intake_policy(policy)
+    batch = intake["refinement_batch"]
+    return bool(
+        actor == INTAKE_ACTOR
+        and intake["enabled"]
+        and (
+            not batch
+            or (
+                intake["refine_enabled"]
+                and issue_number in batch
+                and task_class == "refine"
+            )
+        )
+    )
 
 
 def unresolved_start_task_ids(db: Session) -> set[str]:
@@ -1500,7 +1535,9 @@ def execution_slot_holders(
         return (
             include_queued
             and is_current_generation_queue(policy, row)
-            and admission_eligible(policy, get("issue_number"), get("actor"))
+            and admission_eligible(
+                policy, get("issue_number"), get("actor"), task_class=get("task_class")
+            )
         )
 
     return [row for row in receipts if holds(row)]
@@ -3235,6 +3272,35 @@ def active_intake_restoration_policy(db: Session, control) -> dict:
     return validate_policy(policy)
 
 
+def refinement_batch_policy(db: Session, control, issue_numbers) -> dict:
+    """Prepare fresh advisory work without broad delivery or refinement intake."""
+    numbers = validate_refinement_batch(issue_numbers)
+    before = validate_policy(json.loads(control.policy_json))
+    if intake_policy(before)["enabled"] or set(numbers) & set(before["issue_numbers"]):
+        raise ValueError("refinement_batch_requires_selected_only")
+    if (
+        db.exec(
+            select(FactoryReceipt.id).where(FactoryReceipt.state == "queued")
+        ).first()
+        is not None
+    ):
+        raise ValueError("refinement_batch_queued_work_present")
+    if (
+        db.exec(
+            select(FactoryReceipt.id).where(
+                FactoryReceipt.repo == before["repo"],
+                FactoryReceipt.issue_number.in_(numbers),
+            )
+        ).first()
+        is not None
+    ):
+        raise ValueError("refinement_batch_existing_history")
+    policy = active_intake_restoration_policy(db, control)
+    policy["intake"]["refine_enabled"] = True
+    policy["intake"]["refinement_batch"] = numbers
+    return validate_policy(policy)
+
+
 def set_control(
     action: str,
     actor: str,
@@ -3243,12 +3309,14 @@ def set_control(
     task_id: str | None = None,
     cancellation_reason: str | None = None,
     repo: str | None = None,
+    refinement_issue_numbers: list[int] | None = None,
     session: Session | None = None,
 ) -> dict:
     actor = _text(actor, "actor")
     if action not in (
         "configure",
         "restore_active_intake",
+        "prepare_refinement_batch",
         "enable",
         "pause_admissions",
         "pause_task",
@@ -3259,6 +3327,8 @@ def set_control(
     ):
         raise ValueError("invalid control action")
     configured = validate_policy(policy) if action == "configure" else None
+    if action != "prepare_refinement_batch" and refinement_issue_numbers is not None:
+        raise ValueError("refinement_issue_numbers requires prepare_refinement_batch")
     if action != "configure" and policy is not None:
         raise ValueError("policy requires configure action")
     if (action in ("pause_task", "resume_task", "cancel_task")) != (
@@ -3353,6 +3423,9 @@ def set_control(
             # Dedicated, deterministic admission-only transition. Never relax
             # configure's generation rule or accept caller-supplied policy.
             configured = active_intake_restoration_policy(db, control)
+            control.policy_json = _json(configured)
+        elif action == "prepare_refinement_batch":
+            configured = refinement_batch_policy(db, control, refinement_issue_numbers)
             control.policy_json = _json(configured)
         elif action == "enable":
             if not json.loads(control.policy_json):

@@ -129,6 +129,8 @@ def test_factory_tools_are_registered():
         "factory_release_landing_hold",
         "factory_find_receipts",
         "factory_prepare_validation",
+        "factory_preview_refinement_batch",
+        "factory_apply_refinement_batch",
         "factory_request_brief",
         "factory_context",
     } <= registered, f"factory tools not registered; got: {sorted(registered)}"
@@ -2411,3 +2413,41 @@ def test_backlog_preparation_requires_standing_operator_before_any_read(monkeypa
     assert calls[0] == (("resume",), {})
     assert calls[1][1]["expected_preview_sha256"] == "a" * 64
     assert calls[1][1]["request_key"] == "key"
+
+
+def test_refinement_batch_requires_standing_operator_before_any_read(monkeypatch):
+    from factory.orchestration import factory_refinement_batch as batch
+
+    calls = []
+    monkeypatch.setattr(
+        batch, "preview", lambda *a, **kw: calls.append((a, kw)) or {"ok": True}
+    )
+    monkeypatch.setattr(
+        batch, "apply", lambda *a, **kw: calls.append((a, kw)) or {"ok": True}
+    )
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(authority=Authority.ANONYMOUS, groups=()),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(
+            principal, lambda: mcp.factory_preview_refinement_batch([7249], "briefs")
+        )["ok"]
+        assert not _as(
+            principal,
+            lambda: mcp.factory_apply_refinement_batch(
+                [7249], "briefs", "a" * 64, "key"
+            ),
+        )["ok"]
+    assert not calls
+    assert _as(
+        _principal(), lambda: mcp.factory_preview_refinement_batch([7249], "briefs")
+    )["ok"]
+    assert _as(
+        _principal(),
+        lambda: mcp.factory_apply_refinement_batch([7249], "briefs", "a" * 64, "key"),
+    )["ok"]
+    assert calls[0] == (([7249], "briefs"), {})
+    assert calls[1][1]["request_key"] == "key"
+    assert calls[1][1]["expected_preview_sha256"] == "a" * 64
