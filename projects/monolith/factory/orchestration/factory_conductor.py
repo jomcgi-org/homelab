@@ -2989,21 +2989,39 @@ def _notify_person_once(
     task_id: str, message: str, *, kind: str = "escalation"
 ) -> bool:
     """One successful Discord summary per task and kind; failed sends can retry."""
-    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+    from factory.orchestration.factory_controls import brief_only_refinement
 
     from factory.orchestration import factory_notify_policy
 
     key = f"factory-person:{task_id}:{kind}"
     with Session(get_engine()) as db:
+        private = brief_only_refinement(
+            db.exec(
+                select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
+            ).first()
+        )
         previous = db.exec(
             select(FactoryAudit.detail_json).where(
                 FactoryAudit.task_id == task_id,
                 FactoryAudit.action.in_(
-                    ("task_needs_person_notified", factory_notify_policy.DIGESTED)
+                    (
+                        "task_needs_person_notified",
+                        factory_notify_policy.DIGESTED,
+                        "task_notification_private",
+                    )
                 ),
             )
         ).all()
     if any(json.loads(raw).get("workflow_id") == key for raw in previous):
+        return True
+    if private:
+        _audit_once(
+            task_id,
+            key,
+            "task_notification_private",
+            {"kind": kind, "message": message[:1500]},
+        )
         return True
     if not factory_notify_policy.pages(kind):
         # Recorded for the daily digest instead of a page. The card, where

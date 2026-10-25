@@ -482,6 +482,104 @@ def test_needs_human_notifies_once(db, monkeypatch):
     assert controls.task_snapshot(task["id"])["state"] == "succeeded"
 
 
+@pytest.mark.parametrize("digest", ["true", "false"])
+def test_bounded_brief_keeps_decision_without_external_notification(
+    db, monkeypatch, digest
+):
+    from agent import api as notify_module
+    from factory.orchestration import factory_notify_policy
+
+    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", digest)
+    task, policy = make_task(
+        intake={"enabled": True, "refine_enabled": True, "refinement_batch": [7]}
+    )
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    sent = []
+
+    async def notify(*args, **kwargs):
+        sent.append((args, kwargs))
+
+    monkeypatch.setattr(notify_module, "notify", notify)
+    run = settle_attempt(task, "succeeded", human_artifact(comment["html_url"]))
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "succeeded"
+    assert snapshot["escalation"]["question"]
+    assert sent == []
+    assert "task_notification_private" in audit_actions(db)
+    assert "refine_needs_human_notified" not in audit_actions(db)
+    assert factory_notify_policy.DIGESTED not in audit_actions(db)
+    # Replacing the live batch cannot release the admitted task's pinned scope.
+    assert controls.set_control("pause_admissions", "operator")["ok"]
+    assert controls.set_control(
+        "configure", "operator", policy={**policy, "intake": {}}
+    )["ok"]
+    assert conductor._notify_person_once(
+        task["id"], "Watchdog decision", kind="watchdog:looping"
+    )
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action="watchdog_assessed",
+                task_id=task["id"],
+                detail_json='{"verdict":"resume"}',
+            )
+        )
+        session.add(
+            FactoryAudit(
+                actor="test", action="funding_granted", task_id=None, detail_json="{}"
+            )
+        )
+        session.commit()
+        visible = factory_notify_policy._items(session, 0)
+        assert [row.task_id for row in visible] == [None]
+    assert sent == []
+
+
+def test_bounded_brief_does_not_execute_typed_gate(db, monkeypatch):
+    task, policy = make_task(
+        intake={"enabled": True, "refine_enabled": True, "refinement_batch": [7]}
+    )
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task)
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "effects": {key: False for key in refine.factory_gates.GATE_EFFECTS},
+        "value": "N=3, dry-run only",
+        "reason": "Bounds the proposed implementation.",
+    }
+    called = []
+    monkeypatch.setattr(
+        landing,
+        "github_write",
+        lambda *args, **kwargs: pytest.fail("unexpected GitHub write"),
+    )
+    monkeypatch.setattr(
+        refine.factory_gates, "resolve", lambda *args: called.append(args) or True
+    )
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {"outcome": "agent-ready", "comment_url": comment["html_url"], "gate": gate},
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    assert (
+        controls.task_snapshot(task["id"])["evidence"]["state"] == "refine_agent_ready"
+    )
+    assert called == []
+    assert "refine_gate_proposed" in audit_actions(db)
+    assert conductor._task(task["id"])["conductor_gates"] == []
+    prompt = refine.refine_prompt(
+        task, controls.task_snapshot(task["id"]), closing=False
+    )
+    assert "Do not send external notifications" in prompt
+    assert "proposals only" in prompt
+    assert refine.factory_gates.GATE_PROMPT not in prompt
+
+
 def test_notify_failure_still_settles(db, monkeypatch):
     """#6208 uses the shared task notification audit, including failed sends."""
     from agent import api as notify_module

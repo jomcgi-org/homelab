@@ -1395,6 +1395,21 @@ def is_advisory(task_class: str) -> bool:
     return task_class in ADVISORY_CLASSES
 
 
+def brief_only_refinement(row) -> bool:
+    """The admitted receipt's batch scope survives later control changes."""
+    if row is None:
+        return False
+    if isinstance(row, dict):
+        task_class = row.get("task_class")
+        policy = row.get("policy") or {}
+    else:
+        task_class = receipt_task_class(row)
+        policy = json.loads(row.policy_json or "{}")
+    return task_class == "refine" and bool(
+        (policy.get("intake") or {}).get("refinement_batch")
+    )
+
+
 def lane_for(task_class: str) -> str:
     """The lane a class runs in. Lane follows class; it is not configurable.
 

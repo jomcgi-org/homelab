@@ -15,6 +15,7 @@ from sqlmodel import select
 from core.clock import aware
 from factory.orchestration.factory_controls import (
     DEFAULT_TASK_CLASS,
+    brief_only_refinement,
     ESCALATED,
     MAX_OPTIONS,
     MIN_OPTIONS,
@@ -153,6 +154,16 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
     is never asked to take an action the server would refuse.
     """
     body = _bounded_planner_text(receipt.get("body") or "", 12000)
+    brief_only = brief_only_refinement(receipt)
+    scope = (
+        "This is a brief-only batch. Typed gates are proposals only; the server "
+        "does not execute them. Do not send external notifications or messages. "
+        "Only the brief comment and its verdict label on this issue are authorized "
+        "external writes. Keep decisions needing authority as needs-human with "
+        "options. Do not implement, rescope issue or PR text, or operate services.\n\n"
+        if brief_only
+        else factory_gates.GATE_PROMPT
+    )
     triage = (
         "`reject` when the issue clearly should not be done: it contradicts a "
         "recorded decision in an ARCHITECTURE.md **Why.** paragraph, it "
@@ -191,7 +202,7 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         f"Title: {receipt['title']}\n\nIssue body:\n{body}\n\n"
         + _chat_prompt(receipt)
         + ADR_RETIREMENT_RULE
-        + factory_gates.GATE_PROMPT
+        + scope
         + "Research before reading toward a verdict, and cite what you find "
         "under `### Evidence`, in this order. First, call `search_knowledge` "
         "on the `agents` MCP server with the issue title, then once for every "
@@ -219,10 +230,14 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         f"whose first line is `{BRIEF_HEADING}`. Include `### Outcome`, "
         "`### Acceptance`, `### Files`, `### Evidence`, and `### Risks` in that "
         "order. State the proposed conductor default or repository rescope in "
-        "Acceptance and the outstanding live checklist in Risks. For a reversible "
-        "gate, apply agent-ready, omit Decision needed and human options, and "
-        "return outcome agent-ready with the typed gate for server settlement.\n\n"
-        "Reach exactly one of these verdicts and act on it.\n"
+        "Acceptance and the outstanding live checklist in Risks. "
+        + (
+            "Proposed defaults do not authorize their execution.\n\n"
+            if brief_only
+            else "For a reversible gate, apply agent-ready, omit Decision needed and human options, "
+            "and return outcome agent-ready with the typed gate for server settlement.\n\n"
+        )
+        + "Reach exactly one of these verdicts and act on it.\n"
         "`agent-ready` when the brief is actionable with no human decision "
         "left. Apply the `agent-ready` label.\n"
         "`defer` when the issue is worth doing but needs a decision, design, "
@@ -625,7 +640,13 @@ def _record_escalation(
 
 
 def _notify_once(
-    task_id: str, repo: str, number: int, question: str, recommendation: str
+    task_id: str,
+    repo: str,
+    number: int,
+    question: str,
+    recommendation: str,
+    *,
+    brief_only: bool = False,
 ) -> None:
     from factory.orchestration.factory_conductor import _notify_person_once
 
@@ -636,6 +657,9 @@ def _notify_once(
         f"Decide at {ESCALATIONS_URL}",
         kind="refine",
     ):
+        return
+    if brief_only:
+        # The shared helper recorded private handling, not a sent notification.
         return
     with _locked_session() as (db, _control):
         existing = db.exec(
@@ -983,6 +1007,7 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
     if (
         outcome == HUMAN_LABEL
         and downgrade is None
+        and not brief_only_refinement(receipt)
         and (artifact.get("gate") or {}).get("classification") == "reversible"
     ):
         # A prior settlement may have applied agent-ready and then lost its
@@ -1027,7 +1052,14 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
                 "recommendation": artifact.get("recommendation"),
             },
         )
-    if artifact.get("gate") and downgrade is None:
+    if artifact.get("gate") and brief_only_refinement(receipt):
+        _audit_once(
+            task["id"],
+            f"refine-gate-proposed:{task['id']}",
+            "refine_gate_proposed",
+            {"gate": artifact["gate"], "comment_url": match["html_url"]},
+        )
+    elif artifact.get("gate") and downgrade is None:
         if factory_gates.resolve(task, artifact, f"refine-gate:{task['id']}"):
             from factory.orchestration.factory_landing import github_write
 
@@ -1052,6 +1084,7 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
             number,
             escalation["question"],
             escalation["recommendation"],
+            brief_only=brief_only_refinement(receipt),
         )
     if effective in CLOSING_OUTCOMES:
         _audit_once(
