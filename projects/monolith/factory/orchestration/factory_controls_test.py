@@ -5554,10 +5554,10 @@ def operator_population(db, policy):
         )
     # Same issue numbers across generations retain id order for decision ties.
     rows[14].issue_number = rows[16].issue_number
-    rows[16].task_class = "feature"
+    rows[16].task_class = "docs"
     rows[6].actor = controls.INTAKE_ACTOR
     rows[7].issue_number = 1  # explicit allowlist qualifies an operator queue
-    rows[7].task_class = "feature"
+    rows[7].task_class = "docs"
     with Session(db) as session, session.begin():
         session.add_all(
             [
@@ -6031,3 +6031,150 @@ def test_operator_decision_postgresql_and_sqlite_extraction():
             assert "JSONB" in sql and "->>" in sql
         else:
             assert "json_extract" in sql and "CAST" not in sql
+        for ownership_query in mcp._decision_ownership_queries({1, 2}, name):
+            ownership_sql = str(
+                ownership_query.compile(
+                    dialect=dialect, compile_kwargs={"literal_binds": True}
+                )
+            )
+            assert "row_number() OVER" in ownership_sql
+            assert "detail_json AS" not in ownership_sql.split("FROM")[0]
+
+
+def test_operator_ownership_projection_matches_actor_key_and_claim_folds(db):
+    from factory.orchestration import mcp
+
+    def request(receipt_id, key, state):
+        return {
+            "request": {"receipt_id": receipt_id, "request_key": key},
+            "result": {"state": state},
+        }
+
+    events = [
+        ("a", "decision_request", request(1, "same", "accepted")),
+        ("b", "decision_request", request(1, "same", "completed")),
+        # The globally latest actor/key record can change its receipt. Applying
+        # a receipt filter before ranking would resurrect the old pending one.
+        ("a", "decision_request", request(2, "same", "completed")),
+        ("a", "decision_request", request(2, "unknown", "outcome_unknown")),
+        ("a", "decision_request", request(2, "unknown", "completed")),
+        ("a", "decision_claimed", {"receipt_id": 1, "option_key": "one"}),
+        ("b", "decision_claimed", {"receipt_id": 1, "option_key": "two"}),
+        ("a", "decision_failed", {"receipt_id": 1, "option_key": "one"}),
+        ("a", "decision_applied", {"receipt_id": 1, "option_key": "two"}),
+        (
+            "a",
+            "decision_claimed",
+            {"receipt_id": 2, "option_key": "one", "decision_id": "old"},
+        ),
+        ("a", "decision_failed", {"receipt_id": 1, "option_key": "one"}),
+        (
+            "a",
+            "decision_applied",
+            {"receipt_id": 2, "option_key": "one", "decision_id": "new"},
+        ),
+        ("a", "decision_request", request(3, "separate", "accepted")),
+    ]
+    for actor, action, detail in events:
+        with Session(db) as writer, writer.begin():
+            controls._audit(writer, actor, action, **detail)
+        with Session(db) as session:
+            expected = {
+                receipt_id
+                for receipt_id in (1, 2, 3)
+                if controls.decision_in_flight(session, receipt_id)
+            }
+            assert mcp._decisions_in_flight(session, {1, 2, 3}) == expected
+            for receipt_id in (1, 2, 3):
+                assert mcp._decisions_in_flight(session, {receipt_id}) == expected & {
+                    receipt_id
+                }
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "decision_request",
+        "decision_claimed",
+        "intake_idle",
+        "reviewer_fallback",
+        "quota_guard_unknown",
+    ],
+)
+def test_operator_audit_history_hydration_is_bounded(db, policy, monkeypatch, action):
+    from factory.orchestration import factory_pause, mcp
+
+    task_id = admitted(policy)
+    assert factory_pause.pause(task_id, "operator", "paused")
+    readers = [
+        lambda session: mcp._status_payload(
+            False, offset=100, limit=1, session=session
+        ),
+        lambda session: mcp._status_payload(False, limit=1, session=session),
+    ]
+    if action.startswith("decision_"):
+        readers.append(
+            lambda session: mcp._escalations_payload(
+                False, offset=100, limit=1, session=session
+            )
+        )
+        readers.append(
+            lambda session: mcp._escalations_payload(False, limit=1, session=session)
+        )
+
+    def add_history(start, stop):
+        with Session(db) as session, session.begin():
+            session.add_all(
+                [
+                    FactoryAudit(
+                        actor="operator",
+                        action=action,
+                        detail_json=json.dumps(
+                            {
+                                "receipt_id": 10000 + i,
+                                "option_key": "one",
+                                "request": {
+                                    "receipt_id": 10000 + i,
+                                    "request_key": f"unrelated-{i}",
+                                },
+                                "result": {"state": "completed"},
+                                "context": "x" * 8192,
+                            }
+                        ),
+                    )
+                    for i in range(start, stop)
+                ]
+            )
+
+    def measured(reader):
+        statements, audits = [], []
+
+        def count(_connection, _cursor, statement, *_rest):
+            statements.append(statement)
+
+        def load(row, _context):
+            audits.append(row.id)
+
+        event.listen(db, "before_cursor_execute", count)
+        event.listen(FactoryAudit, "load", load)
+        try:
+            with Session(db) as session:
+                result = reader(session)
+            return len(statements), len(audits), result
+        finally:
+            event.remove(db, "before_cursor_execute", count)
+            event.remove(FactoryAudit, "load", load)
+
+    add_history(0, 1)
+    before = [measured(reader) for reader in readers]
+    add_history(1, 951)
+    after = [measured(reader) for reader in readers]
+    print(
+        "operator audit SQL/hydration",
+        action,
+        [(a[:2], b[:2]) for a, b in zip(before, after)],
+    )
+    for small, large in zip(before, after):
+        assert large[:2] == small[:2]
+        if action.startswith("decision_"):
+            assert large[2]["pagination"] == small[2]["pagination"]

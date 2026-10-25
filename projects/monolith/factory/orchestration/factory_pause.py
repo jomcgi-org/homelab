@@ -84,10 +84,14 @@ def _watchdog_owns_pause(db, row, document):
     return latest is not None and latest.actor == "factory:watchdog"
 
 
-def actionable(db, row, document):
+def actionable(db, row, document, *, in_flight: bool | None = None):
+    # Paged readers supply the equivalent batched ownership projection. Every
+    # mutation and existing caller retains the authoritative default lookup.
     if not eligible(db, row) or not document or document.get("resolved") is not None:
         return False
-    if controls.decision_in_flight(db, row.id):
+    if in_flight is None:
+        in_flight = controls.decision_in_flight(db, row.id)
+    if in_flight:
         return False
     control = db.get(FactoryControl, "factory")
     generation = json.loads(control.policy_json or "{}").get("generation")

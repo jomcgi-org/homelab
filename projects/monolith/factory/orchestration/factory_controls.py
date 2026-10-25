@@ -2478,7 +2478,13 @@ def decision_in_flight(db, receipt_id: int) -> bool:
     )
 
 
-def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
+def _snapshot(
+    db: Session,
+    row: FactoryReceipt,
+    *,
+    body: bool = False,
+    pause_in_flight: bool | None = None,
+) -> dict:
     starts = _starts(db, row.task_id) if row.task_id else []
     result = {
         key: getattr(row, key)
@@ -2513,7 +2519,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
     from factory.orchestration import factory_pause
 
     result["paused_card_actionable"] = factory_pause.actionable(
-        db, row, result["escalation"]
+        db, row, result["escalation"], in_flight=pause_in_flight
     )
     result["pause_warning"] = (
         "active_paused_without_actionable_question"
@@ -2912,6 +2918,7 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
                 select(FactoryAudit)
                 .where(FactoryAudit.action == action)
                 .order_by(FactoryAudit.id.desc())
+                .limit(1)
             ).first()
             if row is None:
                 return None
@@ -3013,6 +3020,7 @@ def latest_verdict(session: Session | None = None):
             select(FactoryAudit)
             .where(FactoryAudit.action.in_(_VERDICT_ACTIONS))
             .order_by(FactoryAudit.id.desc())
+            .limit(1)
         ).first()
 
 
@@ -3054,6 +3062,7 @@ def review_routing_view(policy: dict, *, session: Session | None = None) -> dict
             select(FactoryAudit)
             .where(FactoryAudit.action.in_(REVIEWER_ROUTING_ACTIONS))
             .order_by(FactoryAudit.id.desc())
+            .limit(1)
         ).first()
     try:
         detail = json.loads(verdict.detail_json) if verdict is not None else {}

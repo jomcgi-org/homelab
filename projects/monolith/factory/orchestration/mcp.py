@@ -394,6 +394,105 @@ def _decision_expressions(dialect: str):
     return present, kind, resolved
 
 
+def _audit_text(keys: tuple[str, ...], dialect: str):
+    from sqlalchemy import Text, cast, func
+    from sqlalchemy.dialects.postgresql import JSONB
+    from factory.orchestration.factory_models import FactoryAudit
+
+    if dialect == "sqlite":
+        return cast(
+            func.json_extract(FactoryAudit.detail_json, "$." + ".".join(keys)), Text
+        )
+    value = cast(FactoryAudit.detail_json, JSONB)
+    for key in keys:
+        value = value[key]
+    return value.astext
+
+
+def _decision_ownership_queries(receipt_ids: set[int], dialect: str):
+    """The decision_in_flight folds as SQL, returning only relevant identities.
+
+    Durable requests are last-write-wins per (actor, request_key), globally.
+    Filter receipts AFTER ranking, so key reuse for a different receipt cannot
+    resurrect an older request. Legacy claims fold separately per receipt and
+    option: the latest claimed/failed/applied action owns that option's state.
+    Neither query transfers historical audit documents to Python.
+    """
+    from sqlalchemy import func
+    from sqlmodel import select
+    from factory.orchestration.factory_models import FactoryAudit as A
+
+    ids = [str(receipt_id) for receipt_id in receipt_ids]
+    receipt = _audit_text(("request", "receipt_id"), dialect)
+    key = _audit_text(("request", "request_key"), dialect)
+    state = _audit_text(("result", "state"), dialect)
+    requests = (
+        select(
+            receipt.label("receipt"),
+            state.label("state"),
+            func.row_number()
+            .over(partition_by=(A.actor, key), order_by=A.id.desc())
+            .label("rank"),
+        )
+        .where(A.action == "decision_request", receipt.is_not(None))
+        .subquery()
+    )
+    pending = select(requests.c.receipt).where(
+        requests.c.rank == 1,
+        requests.c.receipt.in_(ids),
+        requests.c.state.in_(("accepted", "outcome_unknown")),
+    )
+    receipt = _audit_text(("receipt_id",), dialect)
+    option = _audit_text(("option_key",), dialect)
+    claims = (
+        select(
+            receipt.label("receipt"),
+            A.action.label("action"),
+            func.row_number()
+            .over(partition_by=(receipt, option), order_by=A.id.desc())
+            .label("rank"),
+        )
+        .where(
+            A.action.in_(("decision_claimed", "decision_failed", "decision_applied")),
+            receipt.in_(ids),
+            option.is_not(None),
+            option != "",
+        )
+        .subquery()
+    )
+    claimed = select(claims.c.receipt).where(
+        claims.c.rank == 1, claims.c.action == "decision_claimed"
+    )
+    return pending, claimed
+
+
+def _decisions_in_flight(db, receipt_ids: set[int]) -> set[int]:
+    if not receipt_ids:
+        return set()
+    return {
+        int(receipt_id)
+        for query in _decision_ownership_queries(
+            receipt_ids, db.get_bind().dialect.name
+        )
+        for receipt_id in db.exec(query).all()
+    }
+
+
+def _pause_candidate_ids(rows) -> set[int]:
+    from factory.orchestration import factory_controls as controls
+
+    return {
+        row.id
+        for row in rows
+        if row.state in controls._ACTIVE
+        and row.task_id
+        and row.task_paused
+        and not row.cancellation_requested
+        and row.escalation_json
+        and (json.loads(row.escalation_json) or {}).get("resolved") is None
+    }
+
+
 def _decision_page(db, include_resolved: bool, offset: int, limit: int) -> dict:
     """Count all decisions, then shape only this page, without task snapshots.
 
@@ -434,13 +533,18 @@ def _decision_page(db, include_resolved: bool, offset: int, limit: int) -> dict:
             kind == factory_pause.KIND,
             resolved.is_(None),
             R.state.in_(controls._ACTIVE),
+            R.task_id.is_not(None),
             R.task_paused.is_(True),
             R.cancellation_requested.is_(False),
         )
         .execution_options(populate_existing=True)
     ).all()
+    candidate_ids = {row.id for row in candidates}
+    in_flight = _decisions_in_flight(db, candidate_ids)
     for row in candidates:
-        if factory_pause.actionable(db, row, json.loads(row.escalation_json)):
+        if factory_pause.actionable(
+            db, row, json.loads(row.escalation_json), in_flight=row.id in in_flight
+        ):
             actionable.add(row.id)
     is_open = resolved.is_(None) & (
         (func.coalesce(kind, "") != factory_pause.KIND) | R.id.in_(actionable)
@@ -463,13 +567,18 @@ def _decision_page(db, include_resolved: bool, offset: int, limit: int) -> dict:
         .limit(limit)
         .execution_options(populate_existing=True)
     ).all()
+    in_flight.update(
+        _decisions_in_flight(db, _pause_candidate_ids(rows) - candidate_ids)
+    )
     items = []
     for row in rows:
         document = json.loads(row.escalation_json)
         pause_actionable = (
             row.id in actionable
             if factory_pause.is_card(document)
-            else factory_pause.actionable(db, row, document)
+            else factory_pause.actionable(
+                db, row, document, in_flight=row.id in in_flight
+            )
         )
         receipt = {key: getattr(row, key) for key in fields if key != "escalation_json"}
         receipt.update(
@@ -539,9 +648,12 @@ def _operator_view(
                 .limit(max(0, min(limit, total - offset)))
                 .execution_options(populate_existing=True)
             ).all()
+            pause_in_flight = _decisions_in_flight(db, _pause_candidate_ids(rows))
             cards = []
             for row in rows:
-                receipt = controls._snapshot(db, row)
+                receipt = controls._snapshot(
+                    db, row, pause_in_flight=row.id in pause_in_flight
+                )
                 if name == "active" and row.task_id:
                     from factory.orchestration import graph
 
