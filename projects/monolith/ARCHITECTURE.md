@@ -460,6 +460,13 @@ source-writing work that may start, so a node outside it waits rather than
 becoming a second writer on the task branch. Fan-out is off entirely at a
 parallel limit of one, a planner-authored integrate node included: its members
 run serially on the task branch and it merges nothing.
+The reconciliation loop reads a fresh control row and expands only active
+receipts. It uses the same active-task snapshot as operator status, retaining
+old generations, paused work, cancellation flags, unresolved starts, accounting
+and direction. Landing keeps its separate existing reader, and operator status
+still exposes history. This prevents the cost of every completed receipt from
+being paid again before each dispatch without caching execution authority.
+
 The lane is two lanes. A task's lane follows its class: work that ends in a
 pull request is delivery, work that ends in a comment is advisory. The policy's
 `max_tasks` bounds each separately, the chart's `swarm.factoryMaxConcurrentTasks`

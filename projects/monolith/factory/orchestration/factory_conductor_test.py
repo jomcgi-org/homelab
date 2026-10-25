@@ -1169,7 +1169,7 @@ def test_operator_cancel_is_seen_after_stale_tick_snapshot(
     original_status = controls.status
     snapshot = original_status()
     request_task_cancellation(s)
-    monkeypatch.setattr(controls, "status", lambda: snapshot)
+    monkeypatch.setattr(controls, "conductor_status", lambda: snapshot)
     conductor.tick()
     assert (
         controls.task_snapshot(s.task["id"])["evidence"]["state"]
@@ -1746,7 +1746,7 @@ def test_tick_admits_up_to_the_concurrency_limit(
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
     monkeypatch.setattr(
         controls,
-        "status",
+        "conductor_status",
         lambda: {"state": "enabled", "policy": policy, "active_tasks": []},
     )
     monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
@@ -1900,7 +1900,7 @@ def test_tick_polls_once_and_keeps_blocked_queued_lane_out_of_admission(monkeypa
     policy = {"max_tasks": {"delivery": 1, "advisory": 1}}
     monkeypatch.setattr(
         controls,
-        "status",
+        "conductor_status",
         lambda: {"state": "enabled", "policy": policy, "active_tasks": []},
     )
     monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
@@ -1952,7 +1952,7 @@ def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(
     monkeypatch.delenv("FACTORY_MAX_CONCURRENT_TASKS", raising=False)
     monkeypatch.setattr(
         controls,
-        "status",
+        "conductor_status",
         lambda: {
             "state": "enabled",
             "policy": policy,
@@ -2011,7 +2011,7 @@ def test_tick_gates_only_the_automatic_sessionless_sweep(
         monkeypatch.setenv("FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED", configured)
     monkeypatch.setattr(
         controls,
-        "status",
+        "conductor_status",
         lambda: {"state": "paused", "policy": policy, "active_tasks": [task]},
     )
     monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
@@ -2062,7 +2062,7 @@ def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
     policy = {"repo": "owner/repo"}
     monkeypatch.setattr(
         controls,
-        "status",
+        "conductor_status",
         lambda: {"state": "paused", "policy": policy, "active_tasks": []},
     )
     monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
@@ -2105,7 +2105,7 @@ def test_tick_isolates_a_failing_task_and_a_failing_ingest(monkeypatch):
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "3")
     monkeypatch.setattr(
         controls,
-        "status",
+        "conductor_status",
         lambda: {
             "state": "enabled",
             "policy": policy,
@@ -2146,7 +2146,7 @@ def test_stopped_factory_never_polls_or_admits(monkeypatch):
     policy = {"repo": "owner/repo"}
     monkeypatch.setattr(
         controls,
-        "status",
+        "conductor_status",
         lambda: {
             "state": "stopped",
             "policy": policy,
@@ -15229,7 +15229,7 @@ def test_tick_ingests_the_operators_issues_before_it_discovers_one(monkeypatch):
     monkeypatch.delenv("FACTORY_MAX_CONCURRENT_TASKS", raising=False)
     monkeypatch.setattr(
         controls,
-        "status",
+        "conductor_status",
         lambda: {"state": "enabled", "policy": policy, "active_tasks": []},
     )
     monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
@@ -15362,7 +15362,7 @@ def test_the_window_is_observed_before_any_task_reconciles(monkeypatch):
     monkeypatch.delenv("FACTORY_MAX_CONCURRENT_TASKS", raising=False)
     monkeypatch.setattr(
         controls_module,
-        "status",
+        "conductor_status",
         lambda: {
             "state": "enabled",
             "policy": policy,
@@ -15768,7 +15768,7 @@ def test_operator_settles_attempt_lost_before_session_end_to_end(
     )
     assert settled["ok"] and settled["session_id"] is None
     assert set(settled["outcome"]) == {
-        "status",
+        "conductor_status",
         "session_id",
         "attempt",
         "cost_usd",
@@ -22921,7 +22921,7 @@ def test_human_handoff_tick_keeps_cessation_supervision_without_deadline_escalat
     task = {"task_id": "t-human", "state": "admitted", "policy": policy}
     monkeypatch.setattr(
         controls,
-        "status",
+        "conductor_status",
         lambda: {"state": "enabled", "policy": policy, "active_tasks": [task]},
     )
     monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
