@@ -2806,13 +2806,17 @@ receipt history, with intersecting selectors and explicit ambiguity.
 `factory_preview_refinement_batch` and `factory_apply_refinement_batch` prepare
 one to ten fresh primary-repository issues for advisory work while existing
 admitted work retains its pinned policy. Preparation requires paused admissions,
-selected-only intake, no queued work, no unknown starts and the same safe posture
+selected-only intake or a prior batch with no running refinements, no queued
+work, no unknown starts and the same safe posture
 as active discovery restoration. Preview binds fresh issue ownership and PR
 references, receipt and work-item history, reservations and the policy version.
 Apply repeats those checks, records the exact digest and request key, and leaves
 admissions paused. It changes only intake enablement, refinement enablement and
 the exact `intake.refinement_batch` allowlist. No task budget, generation, model,
 existing selection or hold changes.
+An exact replacement batch may supersede completed or unstarted selections under
+a fresh preview; it cannot revive an issue with receipt history. Unrelated
+admitted work continues, so replenishment does not require a factory-wide drain.
 
 **Why a separate batch.** Enabling global refinement can turn every unready issue
 into work. A nonempty batch restricts both natural candidate selection and queued

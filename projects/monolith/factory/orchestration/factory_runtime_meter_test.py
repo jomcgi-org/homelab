@@ -3444,3 +3444,64 @@ def test_refinement_batch_concurrent_apply_has_one_winner(refinement_batch):
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         assert sorted(executor.map(apply, ["batch-a", "batch-b"])) == [False, True]
+
+
+@pytest.mark.parametrize(
+    "previous_state", ["succeeded", "cancelled", "escalated", "unstarted"]
+)
+def test_refinement_batch_replenishes_without_draining_unrelated_work(
+    database, refinement_batch, previous_state
+):
+    batch, _ = refinement_batch
+    first = batch.preview([7249], "first batch")
+    batch.apply(
+        [7249],
+        "first batch",
+        actor="operator",
+        request_key="first",
+        expected_preview_sha256=first["preview_sha256"],
+    )
+    with Session(database) as db, db.begin():
+        active = db.get(FactoryReceipt, 838)
+        active_before = active.model_dump(mode="json")
+        if previous_state != "unstarted":
+            previous = active.model_dump(exclude={"id", "task_id"})
+            previous.update(
+                issue_number=7249, task_class="refine", state=previous_state
+            )
+            db.add(FactoryReceipt(**previous))
+    second = batch.preview([7251], "next batch")
+    result = batch.apply(
+        [7251],
+        "next batch",
+        actor="operator",
+        request_key="second",
+        expected_preview_sha256=second["preview_sha256"],
+    )
+    assert result["ok"] and result["state"] == "paused"
+    assert second["policy_before"]["intake"]["refinement_batch"] == [7249]
+    assert second["policy_after"]["intake"]["refinement_batch"] == [7251]
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump(mode="json") == active_before
+        assert db.get(FactoryReceipt, 838).state == "admitted"
+
+
+@pytest.mark.parametrize("previous_state", ["queued", "admitted", "uncertain"])
+def test_refinement_batch_cannot_replace_in_flight_batch(
+    database, refinement_batch, previous_state
+):
+    batch, _ = refinement_batch
+    first = batch.preview([7249], "first batch")
+    batch.apply(
+        [7249],
+        "first batch",
+        actor="operator",
+        request_key="first",
+        expected_preview_sha256=first["preview_sha256"],
+    )
+    with Session(database) as db, db.begin():
+        previous = db.get(FactoryReceipt, 838).model_dump(exclude={"id", "task_id"})
+        previous.update(issue_number=7249, task_class="refine", state=previous_state)
+        db.add(FactoryReceipt(**previous))
+    with pytest.raises(ValueError):
+        batch.preview([7251], "next batch")

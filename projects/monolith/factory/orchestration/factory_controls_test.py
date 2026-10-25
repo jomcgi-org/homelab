@@ -2888,6 +2888,23 @@ def test_active_reconfiguration_requires_a_new_generation(db, policy, generation
     assert controls.status()["version"] == 3
 
 
+@pytest.mark.parametrize("real_change", [False, True])
+def test_legacy_intake_defaults_do_not_advance_generation(db, policy, real_change):
+    admitted(policy)
+    with Session(db) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        legacy = json.loads(control.policy_json)
+        legacy["intake"].pop("refinement_batch")
+        control.policy_json = json.dumps(legacy)
+    proposed = json.loads(json.dumps(legacy))
+    if real_change:
+        proposed["intake"]["refinement_batch"] = [3]
+    result = controls.set_control("configure", "operator", policy=proposed)
+    assert result["ok"] is not real_change
+    if real_change:
+        assert result["reason"] == "generation_not_advanced"
+
+
 def test_identical_configure_retry_does_not_require_a_new_generation(db, policy):
     task = admitted(policy)
     assert controls.set_control("configure", "operator", policy=policy)["ok"]

@@ -1743,8 +1743,8 @@ async def factory_preview_refinement_batch(
 ) -> dict:
     """Preview an exact fresh advisory batch as a standing human operator.
 
-    Requires paused admissions, selected-only intake and no queued/uncertain
-    work. Admitted work may continue with its pinned policy and holds. Reads
+    Requires paused admissions, selected-only intake or an inactive prior batch,
+    and no queued/uncertain work. Other admitted work retains its policy. Reads
     current ownership, PR references and receipt history. After separate enable,
     refinement may write brief comments/labels and notify human decisions.
     No implementation, closure or landing is authorized by the batch.

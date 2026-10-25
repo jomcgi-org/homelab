@@ -1335,6 +1335,9 @@ def _policy_for_generation_comparison(policy: dict) -> dict:
     comparable = dict(policy)
     comparable["problem_issues"] = problem_issues_policy(comparable)
     comparable["progress_watchdog"] = progress_watchdog_policy(comparable)
+    # Newly defaulted intake fields must not turn a legacy no-op configure
+    # into a generation change while pinned receipts are running.
+    comparable["intake"] = intake_policy(comparable)
     # The stored map compares sparse with the primary present, so a policy
     # from before the map, one naming the primary as {} and a fresh post
     # without the map all compare equal and never demand a new generation.
@@ -3217,13 +3220,8 @@ def reconcile_generation_stale_receipts(
     return counts
 
 
-def active_intake_restoration_policy(db: Session, control) -> dict:
-    """Only reopen discovery; retain selections and every execution policy.
-
-    This is not generic configuration. Existing receipts and reservations keep
-    their policies, ownership and capacity charges. Unknown outcomes remain
-    fenced, and admission still needs a separate explicit enable.
-    """
+def _active_admission_policy(db: Session, control) -> dict:
+    """Shared fences for narrow admission changes with pinned work in flight."""
     if control.state != "paused":
         raise ValueError("validation_requires_paused_admissions")
     if (
@@ -3259,7 +3257,6 @@ def active_intake_restoration_policy(db: Session, control) -> dict:
     primary = repo_entry(policy, policy["repo"])
     if (
         auto_merge_enabled(policy)
-        or intake["refine_enabled"]
         or intake["close_enabled"]
         or problem_issues_policy(policy)["enabled"]
         or enabled_repos(policy) != [policy["repo"]]
@@ -3268,6 +3265,20 @@ def active_intake_restoration_policy(db: Session, control) -> dict:
         <= set(primary["exclude_labels"])
     ):
         raise ValueError("backlog_active_requires_safe_posture")
+    return policy
+
+
+def active_intake_restoration_policy(db: Session, control) -> dict:
+    """Only reopen discovery; retain selections and every execution policy.
+
+    This is not generic configuration. Existing receipts and reservations keep
+    their policies, ownership and capacity charges. Unknown outcomes remain
+    fenced, and admission still needs a separate explicit enable.
+    """
+    policy = _active_admission_policy(db, control)
+    intake = intake_policy(policy)
+    if intake["refine_enabled"] or intake["refinement_batch"]:
+        raise ValueError("backlog_active_requires_safe_posture")
     policy["intake"]["enabled"] = True
     return validate_policy(policy)
 
@@ -3275,9 +3286,32 @@ def active_intake_restoration_policy(db: Session, control) -> dict:
 def refinement_batch_policy(db: Session, control, issue_numbers) -> dict:
     """Prepare fresh advisory work without broad delivery or refinement intake."""
     numbers = validate_refinement_batch(issue_numbers)
-    before = validate_policy(json.loads(control.policy_json))
-    if intake_policy(before)["enabled"] or set(numbers) & set(before["issue_numbers"]):
+    before = _active_admission_policy(db, control)
+    intake = intake_policy(before)
+    previous_batch = intake["refinement_batch"]
+    selected_only = (
+        not intake["enabled"] and not intake["refine_enabled"] and not previous_batch
+    )
+    bounded_batch = (
+        intake["enabled"] and intake["refine_enabled"] and bool(previous_batch)
+    )
+    if not (selected_only or bounded_batch) or set(numbers) & set(
+        before["issue_numbers"]
+    ):
         raise ValueError("refinement_batch_requires_selected_only")
+    if (
+        previous_batch
+        and db.exec(
+            select(FactoryReceipt.id).where(
+                FactoryReceipt.repo == before["repo"],
+                FactoryReceipt.issue_number.in_(previous_batch),
+                FactoryReceipt.task_class == "refine",
+                FactoryReceipt.state.in_(_ACTIVE),
+            )
+        ).first()
+        is not None
+    ):
+        raise ValueError("refinement_batch_still_active")
     if (
         db.exec(
             select(FactoryReceipt.id).where(FactoryReceipt.state == "queued")
@@ -3295,7 +3329,8 @@ def refinement_batch_policy(db: Session, control, issue_numbers) -> dict:
         is not None
     ):
         raise ValueError("refinement_batch_existing_history")
-    policy = active_intake_restoration_policy(db, control)
+    policy = before
+    policy["intake"]["enabled"] = True
     policy["intake"]["refine_enabled"] = True
     policy["intake"]["refinement_batch"] = numbers
     return validate_policy(policy)
