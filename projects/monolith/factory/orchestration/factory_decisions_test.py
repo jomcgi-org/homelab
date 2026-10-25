@@ -1010,6 +1010,84 @@ def test_durable_chat_posts_and_requeues_once(db, github):
         assert session.get(FactoryReceipt, receipt_id).state == "queued"
 
 
+def test_chat_cooldown_before_comment_is_a_durable_refusal(db, github, monkeypatch):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    configure()
+    args = (receipt_id, identity, "chat", "operator")
+
+    def deferred(*_args):
+        raise GitHubReadDeferred("cooldown")
+
+    monkeypatch.setattr(conductor, "github_list", deferred)
+    result = decisions.request_decision(
+        *args, request_key="read-refused", note="Repository only?", action="chat"
+    )
+    assert result["state"] == "refused"
+    assert result["reason"] == "github_read_deferred_before_effects"
+    assert result["effects_started"] is False
+    assert not github.writes
+    assert not escalation(db, receipt_id).get("chat")
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, receipt_id).state == "succeeded"
+        assert not controls._pending_request(session, receipt_id)
+    # The refused key stays refused after the cooldown, even across readers.
+    monkeypatch.setattr(conductor, "github_list", github.list)
+    db.dispose()
+    assert (
+        decisions.request_decision(
+            *args, request_key="read-refused", note="Repository only?", action="chat"
+        )
+        == result
+    )
+    assert not github.writes
+    # A new explicit request can proceed; the refusal itself never retries.
+    next_result = decisions.request_decision(
+        *args, request_key="new-request", note="Repository only?", action="chat"
+    )
+    assert next_result["state"] == "completed"
+    assert len(github.comments) == 1
+
+
+def test_chat_write_exception_stays_unknown_even_if_named_read_deferred(
+    db, github, monkeypatch
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    write = github.write
+
+    def wrote_then_failed(*args, **kwargs):
+        write(*args, **kwargs)
+        raise GitHubReadDeferred("raised after write")
+
+    monkeypatch.setattr(landing, "github_write", wrote_then_failed)
+    args = (receipt_id, identity, "chat", "operator")
+    result = decisions.request_decision(
+        *args, request_key="unknown", note="Repository only?", action="chat"
+    )
+    assert result["state"] == "outcome_unknown"
+    assert len(github.comments) == 1
+    assert (
+        decisions.request_decision(
+            *args, request_key="unknown", note="Repository only?", action="chat"
+        )
+        == result
+    )
+    assert (
+        decisions.request_decision(
+            *args, request_key="new-request", note="Repository only?", action="chat"
+        )["state"]
+        == "refused"
+    )
+    with Session(db) as session:
+        assert controls._pending_request(session, receipt_id)
+    assert len(github.comments) == 1
+
+
 def test_durable_delivery_answer_does_not_block_its_own_readmission(db, github):
     receipt_id = escalate(db, "deliver", state="escalated", task_class="bug-fix")
     configure()
