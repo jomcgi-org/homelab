@@ -6,7 +6,6 @@ context. The existing producer is the sole GitHub writer.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import timedelta
 
@@ -14,7 +13,11 @@ from core.clock import aware
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls
-from factory.orchestration.factory_improvement_preview import PreviewPolicy, preview
+from factory.orchestration.factory_improvement_preview import (
+    PreviewPolicy,
+    digest,
+    preview,
+)
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
@@ -31,12 +34,6 @@ POLICY = PreviewPolicy(max_drafts=1)
 def generation_policy(policy):
     limits = controls.problem_issues_policy(policy)["improvement_limits"]
     return PreviewPolicy(max_drafts=1, **limits)
-
-
-def _digest(value):
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
-    ).hexdigest()
 
 
 def _goals(db):
@@ -174,7 +171,7 @@ def _database_context(db, control, *, scout_receipt_id=None):
 def _review_digest(db_context, inventory):
     # Quota ages change every read; ownership, rules, goals and GitHub content
     # are the review identity. Fresh quotas are independently rechecked.
-    return _digest({**db_context, "inventory": inventory})
+    return digest({**db_context, "inventory": inventory})
 
 
 def context(*, scout_receipt_id=None) -> dict:
@@ -370,7 +367,7 @@ def _verify_scout_review(db, receipt_id, reviewed):
         detail.get("receipt_id") != receipt_id
         or detail.get("approved") is not True
         or detail.get("review_digest") != reviewed.get("review_digest")
-        or detail.get("findings_digest") != _digest(reviewed.get("findings"))
+        or detail.get("findings_digest") != digest(reviewed.get("findings"))
         or run is None
         or run.task_id != receipt.task_id
         or run.node_key != "scout_review_1"
@@ -480,7 +477,7 @@ def submit(reviewed: dict, *, actor: str, scout_receipt_id=None) -> dict:
                 scout_receipt_id=scout_receipt_id,
                 draft=draft,
                 control_version=control.version,
-                database_digest=_digest(live),
+                database_digest=digest(live),
                 fingerprint=draft["fingerprint"],
                 review_digest=reviewed["review_digest"],
                 expires_at=(
