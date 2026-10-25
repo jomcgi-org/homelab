@@ -1127,6 +1127,16 @@ def test_fresh_context_keeps_operator_history_isolated_and_epistemic(
     first = asyncio.run(context.read_context(receipt_id, None, 5, actor="operator-a"))
     second = asyncio.run(context.read_context(receipt_id, None, 5, actor="operator-b"))
 
+    # Private chat views must still name the same actionable durable brief.
+    assert first["decision"]["decision_id"] == current_decision_id()
+    assert second["decision"]["decision_id"] == current_decision_id()
+    assert [entry["note"] for entry in first["decision"]["chat"]] == [
+        "Operator A constraint."
+    ]
+    assert [entry["note"] for entry in second["decision"]["chat"]] == [
+        "Operator B private constraint."
+    ]
+
     assert [item["actor"] for item in first["recent_exchanges"]] == [
         "factory:refine",
         "operator-a",
@@ -1149,6 +1159,28 @@ def test_fresh_context_keeps_operator_history_isolated_and_epistemic(
     assert first["decision"]["resolution_status"] is None
     assert first["summaries"][0]["evidence"] == ["factory-brief:test-task"]
     assert first["summaries"][1]["evidence"] == ["factory-request:operator-a:same-key"]
+
+
+def test_fresh_context_without_chat_has_an_actionable_decision_id(db, github):
+    from factory.orchestration import conductor_context as context
+
+    receipt_id = escalate(db, "close")
+    configure()
+    identity = current_decision_id()
+    fresh = context._factory_context(receipt_id, actor="operator")
+    assert fresh["decision"]["decision_id"] == identity
+    assert fresh["decision"]["chat"] == []
+    result = decisions.request_decision(
+        receipt_id,
+        fresh["decision"]["decision_id"],
+        "chat",
+        "operator",
+        request_key="from-fresh-context",
+        note="Keep implementation default-off.",
+        action="chat",
+    )
+    assert result["state"] == "completed"
+    assert len(github.comments) == 1
 
 
 def test_legacy_operator_paths_trigger_receipt_knowledge_maintenance(
