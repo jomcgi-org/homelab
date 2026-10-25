@@ -105,7 +105,8 @@ def _preview(db, control, numbers, reason, observations):
         "execution_authorized": False,
         "effects_after_enable": [
             "Natural intake may admit only the named advisory refinement issues.",
-            "Refinement may post GitHub brief comments, change labels and notify human decisions.",
+            "Refinement may post GitHub brief comments and necessary verdict labels only.",
+            "Human decisions stay on the private board; external notifications and typed gate actions are disabled for these receipts.",
             "Ready issues remain excluded from automatic implementation; closure and landing remain off.",
         ],
         "evidence_sha256": hashlib.sha256(

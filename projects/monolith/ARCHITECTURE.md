@@ -2822,7 +2822,11 @@ admitted work continues, so replenishment does not require a factory-wide drain.
 into work. A nonempty batch restricts both natural candidate selection and queued
 admission to the named primary-repository refinement issues, including the SQL admission predicate
 and capacity/health projections. After separate enable, native refinement may
-write brief comments and labels or notify a human decision. Becoming agent-ready
+write brief comments and verdict labels. The admitted receipt pins this brief-only
+scope: human decisions remain on the private board and audit, excluded from both
+immediate notifications and the daily digest even after another batch replaces it.
+Typed gates are recorded as proposals, without conductor decisions, issue/PR body
+edits, delivery adoption or operational handoffs. Becoming agent-ready
 does not grant implementation authority. Closure and landing remain off, and a
 subsequent delivery requires its own reviewed admission. This control is inert
 until explicitly applied and enabled; it does not authorize restoring broad
