@@ -1683,6 +1683,82 @@ def test_refinement_provenance_refusal_precedes_task_creation(db, policy):
         assert session.exec(select(SwarmTask)).all() == []
 
 
+def test_selected_refinement_failure_race_does_not_block_other_issues(
+    db, policy, monkeypatch
+):
+    from factory.orchestration import factory_conductor as conductor, factory_intake
+
+    monkeypatch.setattr(conductor, "get_engine", lambda: db)
+    policy.update(issue_numbers=[1, 2])
+    enable(policy)
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, path: github_issue(int(path.split("/")[-1])),
+    )
+    monkeypatch.setattr(
+        conductor.factory_gates, "receive_delivery_target", lambda *_: None
+    )
+    original = factory_intake.receive_issue
+
+    def receive(repo, number, *args, **kwargs):
+        if number == 1:
+            with Session(db) as session, session.begin():
+                session.add(
+                    FactoryReceipt(
+                        repo=repo,
+                        issue_number=number,
+                        generation=0,
+                        task_class="refine",
+                        title="failed brief",
+                        body="body",
+                        url="https://github.com/owner/repo/issues/1",
+                        actor=INTAKE_ACTOR,
+                        state="failed",
+                    )
+                )
+        return original(repo, number, *args, **kwargs)
+
+    monkeypatch.setattr(factory_intake, "receive_issue", receive)
+    conductor.ingest_eligible(policy)
+    with Session(db) as session:
+        rows = session.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
+        assert [(row.issue_number, row.state, row.task_class) for row in rows] == [
+            (1, "failed", "refine"),
+            (2, "queued", "bug-fix"),
+        ]
+
+
+def test_explicit_operator_delivery_after_failed_refinement_remains_available(
+    db, policy
+):
+    enable(policy)
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=1,
+                generation=0,
+                task_class="refine",
+                title="failed brief",
+                body="body",
+                url="https://github.com/owner/repo/issues/1",
+                actor=INTAKE_ACTOR,
+                state="failed",
+            )
+        )
+    receipt = receive_issue(
+        "owner/repo",
+        1,
+        "approved repository scope",
+        "body",
+        "https://github.com/owner/repo/issues/1",
+        "operator",
+    )
+    admitted = admit_next("scheduler")
+    assert admitted["ok"] and admitted["receipt_id"] == receipt["receipt"]["id"]
+
+
 @pytest.mark.parametrize("held", [False, True])
 def test_selected_class_drift_needs_new_generation_and_keeps_holds(
     db, policy, monkeypatch, held
