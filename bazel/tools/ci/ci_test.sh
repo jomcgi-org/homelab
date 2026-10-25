@@ -201,8 +201,8 @@ else
 fi
 
 main_drift_branch="$(awk '
-	$0 == "                elif [ \"$ON_MAIN\" = true ]; then" { in_branch = 1 }
-	in_branch && $0 == "                else" { exit }
+	$0 == "            elif [ \"$ON_MAIN\" = true ]; then" { in_branch = 1 }
+	in_branch && $0 == "            else" { exit }
 	in_branch { print }
 ' <<<"$pr_checks_shape")"
 if grep -Fq 'exit 1' <<<"$main_drift_branch" &&
@@ -668,11 +668,11 @@ fi
 # package must be written back even when every tracked file is already clean.
 format_body="$TMP/format-body.sh"
 awk '
-    $0 == "          format_and_check_drift() {" { capture = 1; next }
-    capture && $0 == "          }" { exit }
-    capture { sub(/^            /, ""); print }
-' "$BUILD_BUDDY" >"$format_body"
-format_call_ln=$(grep -nF '            format_and_check_drift' "$BUILD_BUDDY" | head -1 | cut -d: -f1 || true)
+    $0 == "          commit_format_drift() {" { capture = 1 }
+    capture && $0 == "          if [ \"$ON_MAIN\" = false ]; then" { exit }
+    capture { sub(/^          /, ""); print }
+' "$BUILD_BUDDY" > "$format_body"
+format_call_ln=$(grep -nF '            prepare_go_build_graph' "$BUILD_BUDDY" | head -1 | cut -d: -f1 || true)
 reachability_ln=$(grep -nF 'python3 ./bazel/tools/ci/test_source_reachability.py' "$BUILD_BUDDY" | head -1 | cut -d: -f1 || true)
 if [[ -s "$format_body" && -n "$format_call_ln" && "$format_call_ln" -lt "$reachability_ln" ]]; then
 	pass "format_before_graph_analysis"
@@ -682,7 +682,7 @@ fi
 
 if [[ -s "$format_body" ]]; then
 	real_git=$(command -v git)
-	for scenario in new-package tracked-change clean queue main bot; do
+	for scenario in new-package tracked-change clean queue main generator-failure existing-untracked; do
 		graph_root="$TMP/graph-$scenario"
 		mkdir -p "$graph_root/work"
 		"$real_git" init -q --bare "$graph_root/remote.git"
@@ -691,11 +691,7 @@ if [[ -s "$format_body" ]]; then
 		"$real_git" -C "$graph_root/work" config user.email author@example.invalid
 		printf 'initial\n' >"$graph_root/work/BUILD"
 		"$real_git" -C "$graph_root/work" add BUILD
-		if [[ "$scenario" == bot ]]; then
-			"$real_git" -C "$graph_root/work" -c user.name=ci-format-bot commit -qm initial
-		else
-			"$real_git" -C "$graph_root/work" commit -qm initial
-		fi
+		"$real_git" -C "$graph_root/work" commit -qm initial
 		"$real_git" -C "$graph_root/work" remote add origin "$graph_root/remote.git"
 		"$real_git" -C "$graph_root/work" push -q origin feature
 		before_graph=$($real_git -C "$graph_root/work" rev-parse HEAD)
@@ -704,7 +700,12 @@ if [[ -s "$format_body" ]]; then
 			printf '#!/usr/bin/env bash\nexit 0\n' >"$graph_root/work/$guard"
 			chmod +x "$graph_root/work/$guard"
 		done
+		if [[ "$scenario" == existing-untracked ]]; then
+			mkdir -p "$graph_root/work/unrelated"
+			printf 'unrelated\n' > "$graph_root/work/unrelated/BUILD"
+		fi
 		graph_rc=0
+		set +e
 		(
 			cd "$graph_root/work"
 			set -eu
@@ -721,7 +722,8 @@ if [[ -s "$format_body" ]]; then
 			}
 			python3() { :; }
 			bazel() {
-				if [[ "$*" == 'run //bazel/tools/format:format --config=ci' ]]; then
+				if [[ "$*" == 'run //:gazelle --config=ci -- -lang=go,proto' ]]; then
+					[[ "$scenario" != generator-failure ]] || return 7
 					printf 'ran\n' >"$graph_root/formatted"
 					if [[ "$scenario" != clean ]]; then
 						mkdir -p generated
@@ -734,7 +736,10 @@ if [[ -s "$format_body" ]]; then
 				fi
 			}
 			source "$format_body"
-		) >"$graph_root/output" 2>&1 || graph_rc=$?
+			prepare_go_build_graph
+		) >"$graph_root/output" 2>&1
+		graph_rc=$?
+		set -e
 		after_graph=$($real_git -C "$graph_root/work" rev-parse HEAD)
 		remote_graph=$($real_git --git-dir="$graph_root/remote.git" rev-parse refs/heads/feature)
 		case "$scenario" in
@@ -754,12 +759,25 @@ if [[ -s "$format_body" ]]; then
 				fail "generated_graph_${scenario}_read_only" "drift must fail without committing or pushing"
 			fi
 			;;
-		clean | bot)
-			if [[ "$graph_rc" -eq 0 && "$before_graph" == "$after_graph" && "$remote_graph" == "$before_graph" ]] &&
-				{ [[ "$scenario" != bot ]] || [[ ! -f "$graph_root/formatted" ]]; }; then
+		generator-failure)
+			if [[ "$graph_rc" -eq 7 && "$before_graph" == "$after_graph" && "$remote_graph" == "$before_graph" ]]; then
+				pass "generated_graph_failure_stops"
+			else
+				fail "generated_graph_failure_stops" "generator failure must stop before writeback and tests"
+			fi
+			;;
+		existing-untracked)
+			if [[ "$graph_rc" -eq 1 && "$before_graph" == "$after_graph" && "$remote_graph" == "$before_graph" && ! -f "$graph_root/formatted" ]]; then
+				pass "generated_graph_preexisting_build_refused"
+			else
+				fail "generated_graph_preexisting_build_refused" "pre-existing runner BUILD files cannot become trusted generated source"
+			fi
+			;;
+		clean)
+			if [[ "$graph_rc" -eq 0 && "$before_graph" == "$after_graph" && "$remote_graph" == "$before_graph" ]]; then
 				pass "generated_graph_$scenario"
 			else
-				fail "generated_graph_$scenario" "clean and format-bot heads must reach the following test stage without another write-back"
+				fail "generated_graph_$scenario" "clean heads must reach the following test stage without another write-back"
 			fi
 			;;
 		esac
