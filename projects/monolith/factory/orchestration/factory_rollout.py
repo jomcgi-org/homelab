@@ -12,9 +12,11 @@ import base64
 import posixpath
 import re
 import time
+from copy import copy
 from datetime import datetime, timezone
 from functools import lru_cache
 
+import httpx
 import yaml
 
 REGISTRY = "ghcr.io/jomcgi/homelab/charts"
@@ -28,6 +30,22 @@ MAX_PUBLICATION_CANDIDATES = 8
 _recent: dict[tuple, tuple[float, object]] = {}
 
 
+def _detached_failure(exc: Exception) -> Exception:
+    # HTTPStatusError needs keyword-only constructor evidence, so copy.copy
+    # cannot reconstruct it. Keep that evidence and the original error type.
+    if isinstance(exc, httpx.HTTPStatusError):
+        result = type(exc)(*exc.args, request=exc.request, response=exc.response)
+        result.__dict__.update(exc.__dict__)
+    else:
+        result = copy(exc)
+    if result is exc or type(result) is not type(exc):
+        raise TypeError("failure cannot be detached")
+    result.__traceback__ = None
+    result.__cause__ = None
+    result.__context__ = None
+    return result
+
+
 def _cached(key: tuple, read):
     """Share bounded observations across pending deliveries, for at most 30s."""
     now = time.monotonic()
@@ -38,14 +56,24 @@ def _cached(key: tuple, read):
         try:
             value = read()
         except Exception as exc:  # noqa: BLE001 - cache failures, never an empty inventory
-            value = exc.with_traceback(None)
+            try:
+                value = _detached_failure(exc)
+            except Exception:  # noqa: BLE001 - preserve an uncopyable read failure
+                _recent.pop(key, None)
+                raise exc
         if len(_recent) >= 64:
             _recent.pop(next(iter(_recent)))
         _recent[key] = (time.monotonic(), value)
     if isinstance(value, Exception):
         # A timed-out cluster must not cost another 30s for every pending task.
-        # Drop old traceback frames when sharing the same bounded failure.
-        raise value.with_traceback(None)
+        # Never raise the cached object: propagation attaches caller frames,
+        # including the current publication catalog and its local read cache.
+        try:
+            failure = _detached_failure(value)
+        except Exception:  # noqa: BLE001 - never replace the original failure
+            _recent.pop(key, None)
+            raise value
+        raise failure from None
     return value
 
 
