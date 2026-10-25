@@ -501,6 +501,16 @@ sharing that provider quota and is reported separately from local requests.
 Concurrent response order and quota resets cannot manufacture consumption.
 These process-local diagnostics add no requests and grant no authority.
 
+Rollout ancestry observations between two full commit SHAs use a separate
+4096-entry cache containing only the comparison status. File responses retain
+their existing 256-entry bound. **Why.** A bounded 200-commit publication scan
+can need more than 300 comparisons; sharing a 256-entry cache with file bodies
+evicted nearly every result before the next identical scan. Immutable ancestry
+does not become fresher by reading it again. Unknown statuses and read failures
+are not cached, while ownership, CI, publication listings and live deployment
+observations retain their existing freshness checks. Endpoint counters separate
+`compare`, `contents` and `git` reads so runtime improvement remains measurable.
+
 A later natural tick reads GitHub again after the deadline. This is process
 pacing, not a distributed quota ledger: after a leader replacement, its first
 response establishes the new process's wait. Requests already in flight are not

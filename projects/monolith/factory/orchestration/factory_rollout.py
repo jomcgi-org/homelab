@@ -19,6 +19,9 @@ import yaml
 
 REGISTRY = "ghcr.io/jomcgi/homelab/charts"
 SHA = re.compile(r"[0-9a-f]{40}")
+PINNED_COMPARISON = re.compile(
+    r"compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40}\?per_page=1&page=2"
+)
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 WORKLOADS = {"Deployment", "StatefulSet", "DaemonSet"}
 MAX_PUBLICATION_CANDIDATES = 8
@@ -53,9 +56,24 @@ def _immutable_get(repo: str, path: str):
     return github_get(repo, path)
 
 
+@lru_cache(maxsize=4096)
+def _ancestry_status(repo: str, path: str) -> str:
+    """Small immutable facts cannot be evicted by a fleet's file responses."""
+    from factory.orchestration.factory_landing import github_get
+
+    status = github_get(repo, path).get("status")
+    if status not in ("ahead", "behind", "identical", "diverged"):
+        raise Pending("comparison_status_unknown")
+    return status
+
+
 def _get(repo: str, path: str):
     from factory.orchestration.factory_landing import github_get
 
+    if PINNED_COMPARISON.fullmatch(path):
+        # Both full commit SHAs identify immutable ancestry. Store only its
+        # status, never commit bodies or patches. Failures are not cached.
+        return {"status": _ancestry_status(repo, path)}
     if path.startswith(("compare/", "contents/")):
         return _immutable_get(repo, path)
     return _cached(("get", repo, path), lambda: github_get(repo, path))

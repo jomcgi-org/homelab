@@ -421,6 +421,49 @@ def test_short_cache_expires_and_shares_failures_without_turning_them_into_succe
     }
 
 
+def test_repeated_large_publication_history_keeps_ancestry_after_content_reads(
+    monkeypatch,
+):
+    from factory.orchestration import factory_landing
+
+    reads = []
+
+    def read(_repo, path):
+        reads.append(path)
+        return (
+            {"status": "ahead"}
+            if path.startswith("compare/")
+            else {"content": "manifest"}
+        )
+
+    monkeypatch.setattr(factory_landing, "github_get", read)
+    rollout._immutable_get.cache_clear()
+    rollout._ancestry_status.cache_clear()
+    paths = [f"compare/{i:040x}...{'f' * 40}?per_page=1&page=2" for i in range(330)]
+    for path in paths:
+        assert rollout._get("history/repo", path)["status"] == "ahead"
+    for i in range(330):
+        rollout._get("history/repo", f"contents/path{i}?ref={'a' * 40}")
+    for path in paths:
+        assert rollout._get("history/repo", path)["status"] == "ahead"
+    assert len([path for path in reads if path.startswith("compare/")]) == 330
+    # A different immutable source pair is new evidence, never a cached verdict.
+    rollout._get("history/repo", f"compare/{'e' * 40}...{'f' * 40}?per_page=1&page=2")
+    assert len(reads) == 661
+
+
+def test_unknown_ancestry_is_not_cached_as_a_rollout_fact(monkeypatch):
+    from factory.orchestration import factory_landing
+
+    replies = iter([{}, {"status": "ahead"}])
+    monkeypatch.setattr(factory_landing, "github_get", lambda *_: next(replies))
+    rollout._ancestry_status.cache_clear()
+    path = f"compare/{'1' * 40}...{'2' * 40}?per_page=1&page=2"
+    with pytest.raises(rollout.Pending, match="comparison_status_unknown"):
+        rollout._get("unknown/repo", path)
+    assert rollout._get("unknown/repo", path) == {"status": "ahead"}
+
+
 def test_external_tagged_sidecar_does_not_require_our_publication_digest():
     state = snapshot()
     image = "docker.io/thirdparty/helper:1.0"

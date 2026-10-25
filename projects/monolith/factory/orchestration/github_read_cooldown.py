@@ -67,7 +67,7 @@ class GitHubReadTelemetry:
     """Bounded process-local counters, never request contents or authority."""
 
     INTERVAL_SECONDS = 60
-    _ROUTES = {"issues", "pulls", "commits", "check-runs"}
+    _ROUTES = {"issues", "pulls", "commits", "check-runs", "compare", "contents", "git"}
 
     def __init__(self, *, monotonic=None):
         self._monotonic = monotonic or time.monotonic

@@ -24284,3 +24284,23 @@ def test_github_read_telemetry_handles_quota_resets_out_of_order_and_missing_hea
     assert sample["counts"]["requests_other"] == 1
     assert sample["counts"]["without_response"] == 1
     assert len(sample["counts"]) == 5
+
+
+def test_github_read_telemetry_distinguishes_immutable_read_families_without_paths():
+    from factory.orchestration.github_read_cooldown import GitHubReadTelemetry
+
+    clock = [0.0]
+    telemetry = GitHubReadTelemetry(monotonic=lambda: clock[0])
+    for family in ("compare", "contents", "git"):
+        telemetry.observe(f"{family}/private-object?secret=value", {"status": 200})
+    clock[0] = 60
+    sample = telemetry.observe(deferred=True)
+    assert sample["counts"] == {
+        "requests_compare": 1,
+        "requests_contents": 1,
+        "requests_git": 1,
+        "responses_2xx": 3,
+        "deferred": 1,
+    }
+    assert "private-object" not in json.dumps(sample)
+    assert "secret" not in json.dumps(sample)
