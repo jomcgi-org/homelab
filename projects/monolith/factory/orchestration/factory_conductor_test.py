@@ -937,7 +937,7 @@ def test_operator_cancel_paused_task_next_tick_releases_slot_and_preserves_cance
                 task_class="bug-fix",
                 cooldown_cutoff=s.clock[0] + timedelta(hours=1),
             )
-            is None
+            == "cancelled_issue"
         )
 
 
