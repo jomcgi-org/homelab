@@ -920,9 +920,9 @@ def test_broad_refinement_replenishes_three_ready_delivery_cycles(db, monkeypatc
     assert len(audits(db, "intake_admitted")) == 6
 
 
-@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("history", ["cancelled", "held", "failed_refinement"])
 def test_natural_intake_preserves_history_across_class_and_generation(
-    db, monkeypatch, held
+    db, monkeypatch, history
 ):
     with Session(db) as session, session.begin():
         intake_receipt(
@@ -930,10 +930,14 @@ def test_natural_intake_preserves_history_across_class_and_generation(
             9,
             task_class="refine",
             generation=4,
-            state="succeeded" if held else "cancelled",
+            state={
+                "held": "succeeded",
+                "cancelled": "cancelled",
+                "failed_refinement": "failed",
+            }[history],
             updated_at=NOW - timedelta(days=3),
             direction_json=json.dumps({"landing_hold": {"reason": "explicit hold"}})
-            if held
+            if history == "held"
             else None,
         )
     fake_pages(monkeypatch, [issue(9, ["agent-ready"])])
@@ -943,7 +947,11 @@ def test_natural_intake_preserves_history_across_class_and_generation(
         )
         == []
     )
-    reason = "landing_held" if held else "cancelled_issue"
+    reason = {
+        "held": "landing_held",
+        "cancelled": "cancelled_issue",
+        "failed_refinement": "refinement_failed",
+    }[history]
     assert (
         json.loads(audits(db, "intake_idle")[-1].detail_json)["excluded"][reason] == 1
     )

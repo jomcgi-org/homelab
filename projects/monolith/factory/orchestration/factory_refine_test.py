@@ -603,6 +603,8 @@ def test_bounded_brief_does_not_execute_typed_gate(db, monkeypatch):
     )
     assert "Do not send external notifications" in prompt
     assert "proposals only" in prompt
+    assert "Do not apply agent-ready to such a gate" in prompt
+    assert "Reusing existing credentials still counts as uses_credentials" in prompt
     assert refine.factory_gates.GATE_PROMPT not in prompt
 
 

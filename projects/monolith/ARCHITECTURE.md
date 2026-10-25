@@ -2831,7 +2831,11 @@ issues to enter normal implementation eligibility. Brief-only limits belong on
 the advisory receipt, not a batch-wide ban on delivery. These refinements retain
 private decisions and proposed gates, with only brief comments and verdict labels
 as external effects. Natural selection, receipt creation and final claim refuse
-cancelled or landing-held issue history across classes and generations. A stale
+cancelled, landing-held or failed-refinement issue history across classes and
+generations. A refinement guest can apply `agent-ready` before server verification
+rejects its artifact. A cooldown expiring cannot verify that brief, so recovery
+requires explicit operator re-admission. Existing ready issues with no failed
+refinement history continue normally. A stale
 queued natural receipt is cancelled and audited so it cannot block unrelated
 work. Explicit operator re-admission remains separate, and a delivery inherits
 its prior refinement's landing hold as well as its conductor gates. Readiness
