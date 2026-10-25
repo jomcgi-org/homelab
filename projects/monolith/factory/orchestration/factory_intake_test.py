@@ -123,12 +123,26 @@ def enable(policy):
     assert controls.set_control("enable", "operator")["ok"]
 
 
+@pytest.mark.parametrize("identity", ["canonical", "alias", "legacy"])
 @pytest.mark.parametrize("held", [False, True])
 def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_others(
-    db, policy, held
+    db, policy, held, identity
 ):
     policy.update(issue_numbers=[], intake={"enabled": True})
     enable(policy)
+    if identity != "canonical":
+        with Session(db) as session, session.begin():
+            session.add(
+                WorkItem(
+                    id=100001,
+                    title="shared",
+                    state="open",
+                    source_kind="github",
+                    trust="trusted",
+                    github_repo="owner/repo",
+                    github_issue_number=7 if identity == "alias" else 1,
+                )
+            )
     first = receive_issue(
         "owner/repo",
         1,
@@ -136,11 +150,13 @@ def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_oth
         "body",
         "https://github.com/owner/repo/issues/1",
         INTAKE_ACTOR,
+        work_item_id=100001 if identity != "canonical" else None,
     )
     with Session(db) as session, session.begin():
         historical = FactoryReceipt(
             repo="owner/repo",
-            issue_number=1,
+            issue_number=7 if identity == "alias" else 1,
+            work_item_id=100001 if identity == "alias" else None,
             generation=99,
             task_class="refine",
             title="earlier",
@@ -166,6 +182,7 @@ def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_oth
             "https://github.com/owner/repo/issues/1",
             INTAKE_ACTOR,
             task_class="docs",
+            work_item_id=100001 if identity != "canonical" else None,
         )
     second = receive_issue(
         "owner/repo",
@@ -189,13 +206,28 @@ def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_oth
         ).one()
 
 
-def test_explicit_delivery_keeps_refinement_landing_hold(db, policy):
+@pytest.mark.parametrize("alias", [False, True])
+def test_explicit_delivery_keeps_refinement_landing_hold(db, policy, alias):
     enable(policy)
+    if alias:
+        with Session(db) as session, session.begin():
+            session.add(
+                WorkItem(
+                    id=100001,
+                    title="shared",
+                    state="open",
+                    source_kind="github",
+                    trust="trusted",
+                    github_repo="owner/repo",
+                    github_issue_number=7,
+                )
+            )
     with Session(db) as session, session.begin():
         session.add(
             FactoryReceipt(
                 repo="owner/repo",
-                issue_number=1,
+                issue_number=7 if alias else 1,
+                work_item_id=100001 if alias else None,
                 generation=99,
                 task_class="refine",
                 title="earlier",
@@ -208,7 +240,15 @@ def test_explicit_delivery_keeps_refinement_landing_hold(db, policy):
                 ),
             )
         )
-    issue(1)
+    receive_issue(
+        "owner/repo",
+        1,
+        "delivery",
+        "body",
+        "https://github.com/owner/repo/issues/1",
+        "operator",
+        work_item_id=100001 if alias else None,
+    )
     admitted = admit_next("scheduler")
     assert admitted["ok"]
     assert controls.task_snapshot(admitted["task_id"])["direction"]["landing_hold"] == {
@@ -1637,3 +1677,59 @@ def test_refinement_provenance_refusal_precedes_task_creation(db, policy):
         row = session.get(FactoryReceipt, receipt["receipt"]["id"])
         assert row.state == "queued" and row.task_id is None
         assert session.exec(select(SwarmTask)).all() == []
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_selected_class_drift_needs_new_generation_and_keeps_holds(
+    db, policy, monkeypatch, held
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    monkeypatch.setattr(conductor, "get_engine", lambda: db)
+    policy.update(issue_numbers=[1])
+    enable(policy)
+    first = issue(1)
+    with Session(db) as session, session.begin():
+        row = session.get(FactoryReceipt, first["receipt"]["id"])
+        row.state = "succeeded" if held else "cancelled"
+        row.direction_json = (
+            json.dumps({"landing_hold": {"reason": "leave unmerged"}}) if held else None
+        )
+    live = github_issue(1)
+    live["labels"] = [{"name": "documentation"}]
+    monkeypatch.setattr(conductor, "github_get", lambda *_: live)
+    monkeypatch.setattr(
+        conductor.factory_gates,
+        "receive_delivery_target",
+        lambda *_: pytest.fail("protected work reached discovery"),
+    )
+    conductor.ingest_eligible(policy)
+    with Session(db) as session:
+        assert len(session.exec(select(FactoryReceipt)).all()) == 1
+    # A policy version change alone does not grant another generation.
+    controls.set_control("pause_admissions", "operator")
+    controls.set_control("enable", "operator")
+    conductor.ingest_eligible(policy)
+    with pytest.raises(ValueError, match="natural_intake_"):
+        receive_issue(
+            "owner/repo",
+            1,
+            "drift",
+            "body",
+            live["html_url"],
+            conductor.ACTOR,
+            task_class="docs",
+        )
+    # Explicitly newer selected generations keep existing holds.
+    policy["generation"] = 1
+    enable(policy)
+    monkeypatch.setattr(
+        conductor.factory_gates, "receive_delivery_target", lambda *_: None
+    )
+    conductor.ingest_eligible(policy)
+    admitted = admit_next("scheduler")
+    assert admitted["ok"]
+    if held:
+        assert controls.task_snapshot(admitted["task_id"])["direction"][
+            "landing_hold"
+        ] == {"reason": "leave unmerged"}
