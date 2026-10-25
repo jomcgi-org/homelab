@@ -1,5 +1,12 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# Shared producer-byte contract. The Python test regenerates these bytes.
+filegroup(
+    name = "snapshot_fixture",
+    srcs = ["testdata/connector-sites.json"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 go_library(
     name = "store",
     srcs = [

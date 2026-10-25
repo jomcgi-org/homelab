@@ -2092,6 +2092,8 @@ stars:
   gridKey: "grid.json"
   climatologyKey: "climatology.json"
   sitesKey: "sites.json"
+  # Empty keeps scheduled publication disabled until separately authorized.
+  connectorSitesKey: ""
   mapKey: "map.json"
   historyMapKey: "history-map.json"
   # Written by hikes-refresh-forecasts for the Scotland connector, which reads

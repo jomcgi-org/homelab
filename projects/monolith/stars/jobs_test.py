@@ -30,6 +30,7 @@ def test_entity_success_time_includes_empty_and_survives_prune(session, monkeypa
         ]
     )
     session.add(Site(id="never", lat=57, lon=-4))
+    _seed_hour(session, "failed", now + timedelta(hours=1), symbol="previous")
     session.commit()
     assert (
         jobs._write_sites(session, {"full": [_hour(now.isoformat())], "empty": []}, now)
@@ -41,13 +42,28 @@ def test_entity_success_time_includes_empty_and_survives_prune(session, monkeypa
         assert _utc(session.get(Site, key).forecast_fetched_at) == now
     assert _utc(session.get(Site, "failed").forecast_fetched_at) == old
     assert session.get(Site, "never").forecast_fetched_at is None
+    assert (
+        session.get(SiteHour, ("failed", now + timedelta(hours=1))).symbol == "previous"
+    )
     assert jobs._write_sites(session, {}, now + timedelta(hours=1)) == 0
+    # An all-empty successful refresh advances each successful entity while a
+    # failed fetch remains absent and keeps both its old rows and timestamp.
+    later = now + timedelta(minutes=30)
+    assert jobs._write_sites(session, {"full": [], "empty": []}, later) == 0
+    session.commit()
+    session.expire_all()
+    for key in ("full", "empty"):
+        assert _utc(session.get(Site, key).forecast_fetched_at) == later
+    assert _utc(session.get(Site, "failed").forecast_fetched_at) == old
+    assert (
+        session.get(SiteHour, ("failed", now + timedelta(hours=1))).symbol == "previous"
+    )
     monkeypatch.setattr(jobs, "top_of_hour", lambda: now + timedelta(hours=2))
     assert jobs._prune_elapsed(session) == 1
     session.commit()
     session.expire_all()
-    assert _utc(session.get(Site, "full").forecast_fetched_at) == now
-    assert _utc(session.get(Site, "empty").forecast_fetched_at) == now
+    assert _utc(session.get(Site, "full").forecast_fetched_at) == later
+    assert _utc(session.get(Site, "empty").forecast_fetched_at) == later
 
 
 @pytest.fixture(name="session")

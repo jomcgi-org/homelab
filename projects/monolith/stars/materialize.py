@@ -13,7 +13,7 @@ from sqlmodel import Session
 
 from core.db import get_engine
 from stars.grid import _s3_client
-from stars.router import _build_sites_from_db, get_history
+from stars.router import _DISPLAY_HOURS, _build_sites_from_db, get_history
 
 logger = logging.getLogger("monolith.stars.materialize")
 
@@ -23,13 +23,48 @@ def _materialize_sync() -> int:
     bucket = os.environ.get("STARS_GRID_S3_BUCKET", "stars")
     key = os.environ.get("STARS_SITES_S3_KEY", "sites.json")
     map_key = os.environ.get("STARS_MAP_S3_KEY", "map.json")
+    history_key = os.environ.get("STARS_HISTORY_MAP_S3_KEY", "history-map.json")
+    connector_key = os.environ.get("STARS_CONNECTOR_SITES_S3_KEY", "").strip()
+    # Fail before reading or writing anything if activation aliases an existing
+    # object, including the source grid/climatology and the walks snapshot.
+    reserved = {
+        key,
+        map_key,
+        history_key,
+        os.environ.get("STARS_GRID_S3_KEY", "grid.json"),
+        os.environ.get("STARS_CLIMATOLOGY_S3_KEY", "climatology.json"),
+        os.environ.get("HIKES_WALKS_S3_KEY", "walks.json"),
+    }
+    if connector_key and connector_key in reserved:
+        raise ValueError("STARS_CONNECTOR_SITES_S3_KEY must name a separate object")
     request = SimpleNamespace(headers={})
     response = Response()
     with Session(get_engine()) as session:
-        payload = _build_sites_from_db(request, response, session)
+        payload = _build_sites_from_db(
+            request,
+            response,
+            session,
+            hour_limit=None if connector_key else _DISPLAY_HOURS,
+        )
         history_payload = get_history(request, response, session)
     if not isinstance(payload, dict):
         raise RuntimeError("stars site builder returned a conditional response")
+    if connector_key:
+        # Serialize and release the uncapped bytes before constructing public
+        # bodies. Trim the same tree in place, with no second forecast query or
+        # duplicate site/hour dictionaries. Disabled runs never build this tree.
+        connector_body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        _s3_client().put_object(
+            Bucket=bucket,
+            Key=connector_key,
+            Body=connector_body,
+            ContentType="application/json",
+            CacheControl="public, max-age=0, s-maxage=1800, stale-if-error=86400",
+        )
+        logger.info("stars connector materialized: %d bytes", len(connector_body))
+        del connector_body
+        for site in payload["sites"]:
+            del site["best_hours"][_DISPLAY_HOURS:]
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     map_payload = {
         "count": payload.get("count", 0),
@@ -73,7 +108,7 @@ def _materialize_sync() -> int:
     )
     _s3_client().put_object(
         Bucket=bucket,
-        Key=os.environ.get("STARS_HISTORY_MAP_S3_KEY", "history-map.json"),
+        Key=history_key,
         Body=history_map_body,
         ContentType="application/json",
         CacheControl="public, max-age=0, s-maxage=31536000, stale-if-error=604800",
