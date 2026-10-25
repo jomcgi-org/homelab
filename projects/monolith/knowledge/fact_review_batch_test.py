@@ -1015,3 +1015,36 @@ def test_crash_after_defer_commit_preserves_sources_and_terminal_suffix(
     assert len(db.exec(select(ReviewOutcome)).all()) == 3
     assert apply(db)["replayed"] is True
     assert len(db.exec(select(ReviewOutcome)).all()) == 3
+
+
+def test_repeated_batch_does_not_let_one_expensive_member_starve_siblings(
+    db, monkeypatch
+):
+    from knowledge import review_batch_sources as source_batch
+
+    notes(db, 4, paths=[f"projects/member-{i}.py" for i in range(4)])
+    monkeypatch.setattr(source_batch, "MAX_CACHE_BYTES", 600)
+    seen = []
+
+    def expensive(path):
+        seen.append(path)
+        result = fetch(path)
+        if "member-0.py" in path:
+            result["envelope"] = "x" * 1000
+        return result
+
+    assert prepare(db, fetch=expensive) == batch.SOURCE_UNAVAILABLE
+    assert db.get(FactReviewBatch, "batch").result["outcomes"] == {
+        "unavailable": 1,
+        "deferred": 3,
+    }
+    assert len(seen) == 2  # pin and the actually attempted expensive member
+    seen.clear()
+    later = NOW + timedelta(minutes=16)  # the first member's cooldown has expired
+    assert review._candidates(db, later, limit=4)[0].note_id == "fact-1"
+    prepare(db, "later", fetch=expensive, now=later)
+    answer = output(db, "later")
+    result = batch.apply(db, "later", json.dumps(answer), now=later)
+    assert result["outcomes"]["renewed"] >= 2
+    assert "member-1.py" in seen[1]
+    assert db.get(FactReviewRun, "batch:fact:1").result["outcome"] == "unavailable"
