@@ -347,9 +347,13 @@ def _comment(repo: str, number: int, marker: str, body: str) -> bool:
     """Post one comment at most once. True when this call wrote it."""
     if _has_marker(repo, number, marker):
         return False
+    _post_comment(repo, number, marker, body)
+    return True
+
+
+def _post_comment(repo: str, number: int, marker: str, body: str) -> None:
     _get, _list, github_write = _github()
     github_write(repo, f"issues/{number}/comments", {"body": f"{marker}\n{body}"})
-    return True
 
 
 def _label(repo: str, number: int, add: list[str], remove: list[str]) -> None:
@@ -1523,6 +1527,7 @@ def _apply_chat_request(fields: dict, request: dict, actor: str) -> dict:
     # The durable request fence, rather than a check-then-post marker, keeps
     # concurrent retries from posting a second question.
     import hashlib
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
 
     marker = _effect_marker(
         fields,
@@ -1530,12 +1535,33 @@ def _apply_chat_request(fields: dict, request: dict, actor: str) -> dict:
         + hashlib.sha256((actor + ":" + request["request_key"]).encode()).hexdigest(),
     )
     note = request["note"].strip()
-    _comment(
-        fields["repo"],
-        fields["issue_number"],
-        marker,
-        f"{CHAT_PREFIX} {note}\n\nRequested another brief; the factory receipt records scheduling.",
-    )
+    try:
+        already_posted = _has_marker(fields["repo"], fields["issue_number"], marker)
+    except GitHubReadDeferred:
+        # This fresh request has not entered a write. Keep its refusal durable
+        # without fencing the receipt as an unknown external effect. Existing
+        # accepted/unknown keys never reach this path and remain fenced.
+        result = dict(
+            ok=False,
+            state="refused",
+            reason="github_read_deferred_before_effects",
+            effects_started=False,
+            error_type="GitHubReadDeferred",
+            request_key=request["request_key"],
+            receipt_id=request["receipt_id"],
+            decision_id=request["decision_id"],
+            acknowledged_at=iso(_now()),
+        )
+        with _locked_session() as (db, _control):
+            _request_event(db, actor, request, result)
+        return result
+    if not already_posted:
+        _post_comment(
+            fields["repo"],
+            fields["issue_number"],
+            marker,
+            f"{CHAT_PREFIX} {note}\n\nRequested another brief; the factory receipt records scheduling.",
+        )
     with _locked_session() as (db, _control):
         row = _receipt(db, request["receipt_id"])
         if _fields(row)["decision_id"] != request["decision_id"]:
