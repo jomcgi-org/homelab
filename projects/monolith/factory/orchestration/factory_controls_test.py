@@ -22,7 +22,12 @@ from factory.orchestration.factory_models import (
     WorkItemEdge,
     WorkItemEvent,
 )
-from factory.orchestration.models import SwarmNodeRun, SwarmTask
+from factory.orchestration.models import (
+    SwarmNodeRun,
+    SwarmPlanNode,
+    SwarmPlanVersion,
+    SwarmTask,
+)
 
 
 @pytest.fixture
@@ -44,6 +49,8 @@ def db(tmp_path, monkeypatch):
             for m in (
                 SwarmTask,
                 SwarmNodeRun,
+                SwarmPlanNode,
+                SwarmPlanVersion,
                 FactoryClassTier,
                 FactoryControl,
                 FactoryReceipt,
@@ -5475,3 +5482,552 @@ def test_conductor_snapshot_without_control_is_disabled(db):
         "policy": {},
         "active_tasks": [],
     }
+
+
+@pytest.fixture
+def operator_population(db, policy):
+    """Real tasks, ties, off-page capacity and old decisions in every state."""
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    when = datetime(2026, 9, 12, 10, tzinfo=timezone.utc)
+    rows = []
+    for index, state in enumerate(
+        [
+            "admitted",
+            "uncertain",
+            "landing",
+            "admitted",
+            "uncertain",
+            "admitted",
+            *(["queued"] * 8),
+            *(["succeeded", "failed", "cancelled"] * 6),
+        ]
+    ):
+        document = None
+        if index in (0, 1, 14, 15, 16, 17):
+            document = {
+                "question": f"question {index}",
+                "recommendation": "one",
+                "options": [
+                    {
+                        "key": "one",
+                        "label": "First",
+                        "effect": "hold",
+                        "detail": {"reason": "keep"},
+                    }
+                ],
+                "chat": [
+                    {
+                        "note": "more",
+                        "asked_at": "2026-09-01",
+                        "requeued": False,
+                        "blocked_by": "ownership",
+                    }
+                ],
+                "branch": "factory/old",
+                "pr_url": "https://github.com/owner/repo/pull/1",
+                "comment_url": "https://example.test/evidence",
+                "summary": "context",
+            }
+            if index in (15, 17):
+                document["resolved"] = {
+                    "effect": "escape-dismiss" if index == 15 else "hold"
+                }
+        rows.append(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=index + 1,
+                title=f"receipt {index}",
+                body="x" * 8192,
+                url="https://example.test/issue",
+                actor="operator",
+                state=state,
+                task_id=f"selected-{index}" if state != "queued" else None,
+                generation=99 if index in (1, 13, 14, 16) else 0,
+                task_paused=index in (1, 3, 4),
+                cancellation_requested=index in (1, 16),
+                direction_json='{"landing_hold":{}}' if index == 4 else None,
+                escalation_json=json.dumps(document) if document else None,
+                policy_json=json.dumps(policy) if state != "queued" else None,
+                created_at=when,
+                updated_at=when,
+            )
+        )
+    # Same issue numbers across generations retain id order for decision ties.
+    rows[14].issue_number = rows[16].issue_number
+    rows[16].task_class = "feature"
+    rows[6].actor = controls.INTAKE_ACTOR
+    rows[7].issue_number = 1  # explicit allowlist qualifies an operator queue
+    rows[7].task_class = "feature"
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                SwarmTask(
+                    id=row.task_id,
+                    task_text=row.body,
+                    conductor_model="opus",
+                    created_at=when,
+                )
+                for row in rows
+                if row.task_id
+            ]
+        )
+        session.flush()
+        session.add_all(rows)
+        session.flush()
+        session.add_all(
+            [
+                FactoryStart(
+                    task_id="selected-1",
+                    start_key="unknown",
+                    actor="scheduler",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain",
+                ),
+                FactoryStart(
+                    task_id="selected-4",
+                    start_key="reserved",
+                    actor="scheduler",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="reserved",
+                ),
+            ]
+        )
+    return db
+
+
+def test_operator_reader_excludes_terminal_history(
+    operator_population, policy, monkeypatch
+):
+    from factory.orchestration import mcp
+    from sqlalchemy import inspect
+
+    db = operator_population
+    snapshots = []
+    loaded = []
+    plans = []
+    original = controls._snapshot
+    from factory.orchestration import graph
+
+    load_graph = graph.load_graph
+
+    def plan(task_id, **kwargs):
+        plans.append(task_id)
+        return load_graph(task_id, **kwargs)
+
+    monkeypatch.setattr(graph, "load_graph", plan)
+
+    def snapshot(session, row, **kwargs):
+        snapshots.append(row.id)
+        return original(session, row, **kwargs)
+
+    monkeypatch.setattr(controls, "_snapshot", snapshot)
+
+    def measured(reader):
+        queries = []
+        snapshots.clear()
+        loaded.clear()
+        plans.clear()
+
+        def count(*args):
+            queries.append(args[2])
+
+        def load(row, context):
+            if "body" not in inspect(row).unloaded:
+                loaded.append(row.id)
+
+        event.listen(db, "before_cursor_execute", count)
+        event.listen(FactoryReceipt, "load", load)
+        try:
+            with Session(db) as session:
+                result = reader(session)
+            return len(queries), list(snapshots), list(loaded), list(plans), result
+        finally:
+            event.remove(db, "before_cursor_execute", count)
+            event.remove(FactoryReceipt, "load", load)
+
+    readers = [
+        lambda session: mcp._status_payload(False, limit=2, session=session),
+        lambda session: mcp._status_payload(False, offset=2, limit=2, session=session),
+        lambda session: mcp._status_payload(
+            False, offset=100, limit=2, session=session
+        ),
+        lambda session: mcp._escalations_payload(False, limit=2, session=session),
+        lambda session: mcp._escalations_payload(
+            True, offset=2, limit=2, session=session
+        ),
+        lambda session: mcp._status_payload(True, limit=2, session=session),
+    ]
+    before = [measured(reader) for reader in readers]
+    # Setup is outside the measured sessions and SQL listener.
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                SwarmTask(
+                    id=f"history-{i}", task_text="x" * 8192, conductor_model="opus"
+                )
+                for i in range(950)
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=1000 + i,
+                    title="history",
+                    body="x" * 8192,
+                    url="https://example.test/history",
+                    actor="test",
+                    state="succeeded",
+                    task_id=f"history-{i}",
+                    policy_json=json.dumps(policy),
+                )
+                for i in range(950)
+            ]
+        )
+    after = [measured(reader) for reader in readers]
+    print(
+        "operator history SQL/hydration:",
+        [((a[0], len(a[1])), (b[0], len(b[1]))) for a, b in zip(before, after)],
+    )
+    for small, large in zip(before[:-1], after[:-1]):
+        assert large[0] == small[0]
+        assert large[1:4] == small[1:4]
+        assert all(receipt_id <= 32 for receipt_id in large[2])
+    assert len(after[0][1]) == 4  # two selected active and two queued snapshots
+    assert len(after[0][3]) == 2
+    assert after[3][1:4] == ([], [], [])  # escalation pages load no bodies/graphs
+    # Newer history replaces the recent cards. Only the selected two hydrate,
+    # and the original 12-card window still bounds the reported total.
+    assert before[-1][0] == after[-1][0]
+    assert len(before[-1][1]) == len(after[-1][1]) == 6
+    assert len(before[-1][2]) == len(after[-1][2]) == 6
+    assert after[-1][1][-2:] == after[-1][2][-2:] == [982, 981]
+    assert after[-1][4]["pagination"]["recent"]["total"] == 12
+
+
+@pytest.mark.parametrize("offset", [0, 2, 6, 11, 12, 100])
+@pytest.mark.parametrize("include_recent", [False, True])
+def test_operator_pages_match_browser_contract(
+    operator_population, monkeypatch, offset, include_recent
+):
+    from factory.orchestration import graph, mcp
+    from factory.private_view import build_factory_view
+
+    db = operator_population
+    with Session(db) as session:
+        board = build_factory_view(session=session)
+    expected_active = [mcp._task_row(r) for r in board["active"]]
+    expected_queued = [
+        mcp._task_row(r, queue_position=i)
+        for i, r in enumerate(
+            sorted(
+                (
+                    r
+                    for r in board["queued"]
+                    if controls.is_current_generation_queue(board["policy"], r)
+                ),
+                key=lambda r: (mcp._iso(r["created_at"]), r["id"]),
+            ),
+            start=1,
+        )
+    ]
+    expected_needs = [
+        {key: card.get(key) for key in ("issue_number", "title", "kind", "question")}
+        for card in board["escalations"]
+        if card["open"]
+    ]
+    expanded, plans = [], []
+    original, load_graph = controls._snapshot, graph.load_graph
+
+    def snapshot(session, row, **kwargs):
+        expanded.append(row.id)
+        return original(session, row, **kwargs)
+
+    def plan(task_id, **kwargs):
+        plans.append(task_id)
+        return load_graph(task_id, **kwargs)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("operator MCP expanded full status/board")
+
+    monkeypatch.setattr(controls, "_snapshot", snapshot)
+    monkeypatch.setattr(graph, "load_graph", plan)
+    monkeypatch.setattr(controls, "status", forbidden)
+    monkeypatch.setattr("factory.private_view.build_factory_view", forbidden)
+    with Session(db) as session:
+        result = mcp._status_payload(
+            include_recent, offset=offset, limit=2, session=session
+        )
+    for name, expected in (
+        ("active", expected_active),
+        ("queued", expected_queued),
+        ("needs_operator", expected_needs),
+    ):
+        page, pagination = mcp._page(expected, offset, 2)
+        assert result[name] == page
+        assert result["pagination"][name] == pagination
+    for key in (
+        "state",
+        "version",
+        "actor",
+        "admitted_count",
+        "policy",
+        "intake",
+        "lanes",
+        "review_routing",
+    ):
+        assert result[key] == board[key]
+    assert (
+        result["source_timestamps"]["control_updated_at"] == board["control_updated_at"]
+    )
+    assert (
+        result["coverage"] == mcp.COVERAGE
+        and result["capabilities"] == mcp.CAPABILITIES
+    )
+    selected = (
+        board["active"][offset : offset + 2]
+        + sorted(
+            (
+                r
+                for r in board["queued"]
+                if controls.is_current_generation_queue(board["policy"], r)
+            ),
+            key=lambda r: (mcp._iso(r["created_at"]), r["id"]),
+        )[offset : offset + 2]
+    )
+    if include_recent:
+        page, pagination = mcp._page(
+            [mcp._task_row(r) for r in board["recent"]], offset, 2
+        )
+        assert result["recent"] == page
+        assert result["pagination"]["recent"] == pagination
+        selected += board["recent"][offset : offset + 2]
+    else:
+        assert "recent" not in result and "recent" not in result["pagination"]
+    assert expanded == [r["id"] for r in selected]
+    assert plans == [r["task_id"] for r in board["active"][offset : offset + 2]]
+    expanded.clear()
+    plans.clear()
+    monkeypatch.setattr(graph, "load_graph", forbidden)
+    for include_resolved in (False, True):
+        with Session(db) as session:
+            result = mcp._escalations_payload(
+                include_resolved, offset=offset, limit=2, session=session
+            )
+        expected = [r for r in board["escalations"] if include_resolved or r["open"]]
+        page, pagination = mcp._page(expected, offset, 2)
+        assert result["escalations"] == page
+        assert result["pagination"] == pagination
+        assert result["open_count"] == len(expected_needs)
+    assert expanded == plans == []
+
+
+def test_operator_capacity_and_control_are_fresh_off_page(operator_population):
+    from factory.orchestration import mcp
+
+    db = operator_population
+    with Session(db) as session:
+        before = mcp._status_payload(False, offset=100, limit=1, session=session)
+        assert before["active"] == before["queued"] == []
+        assert before["pagination"]["active"]["total"] == 6
+        assert before["pagination"]["queued"]["total"] == 7
+        assert before["pagination"]["needs_operator"]["total"] == 4
+        assert before["lanes"]["delivery"]["active"] == 4
+        assert before["lanes"]["delivery"]["queued"] == 1
+        # A second connection changes the ledger, beyond every requested page.
+        with Session(db) as writer, writer.begin():
+            control = writer.get(FactoryControl, "factory")
+            policy = json.loads(control.policy_json)
+            policy["generation"] = 99
+            control.policy_json = json.dumps(policy)
+            control.version += 1
+            control.actor = "another-operator"
+            control.state = "paused"
+            for start in writer.exec(select(FactoryStart)).all():
+                start.status = "cancelled"
+        after = mcp._status_payload(False, offset=100, limit=1, session=session)
+    assert after["state"] == "paused"
+    assert after["version"] == before["version"] + 1
+    assert after["actor"] == "another-operator"
+    assert after["lanes"]["delivery"]["active"] == 2
+    assert after["pagination"]["queued"]["total"] == 1
+    assert after["lanes"]["delivery"]["queued"] == 0
+
+
+@pytest.mark.parametrize("request_state", ["accepted", "outcome_unknown"])
+def test_operator_old_cancelled_decision_survives_pending_request(
+    operator_population, request_state
+):
+    from factory.orchestration import factory_decisions as decisions, mcp
+
+    db = operator_population
+    with Session(db) as session, session.begin():
+        row = session.get(FactoryReceipt, 17)
+        assert row.state == "cancelled" and row.generation == 99
+        expected = controls.escalation_view(controls._snapshot(session, row))
+        decisions._request_event(
+            session,
+            "operator",
+            {"receipt_id": row.id, "request_key": "old-pending"},
+            {"state": request_state},
+        )
+    with Session(db) as session:
+        result = mcp._escalations_payload(False, session=session)
+        status = mcp._status_payload(True, session=session)
+    assert expected in result["escalations"]
+    assert expected["receipt_id"] not in {row["receipt_id"] for row in status["recent"]}
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "open",
+        "resolved",
+        "cancelled",
+        "prior-generation",
+        "accepted",
+        "outcome_unknown",
+        "legacy_claim",
+        "human",
+        "watchdog",
+        "watchdog-replaced",
+    ],
+)
+def test_operator_decisions_reuse_pause_ownership(db, policy, monkeypatch, variant):
+    from factory.orchestration import factory_decisions as decisions, factory_pause, mcp
+
+    task_id = admitted(policy)
+    assert factory_pause.pause(
+        task_id,
+        "factory:watchdog" if variant.startswith("watchdog") else "operator",
+        "needs attention",
+    )
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, task_id)
+        document = json.loads(row.escalation_json)
+        if variant == "resolved":
+            document["resolved"] = {"effect": "hold"}
+        elif variant == "cancelled":
+            row.state = "cancelled"
+            row.cancellation_requested = True
+        elif variant == "prior-generation":
+            row.generation = 99
+        elif variant in ("accepted", "outcome_unknown"):
+            decisions._request_event(
+                session,
+                "operator",
+                {"receipt_id": row.id, "request_key": "pending"},
+                {"state": variant},
+            )
+        elif variant == "legacy_claim":
+            decisions._claim(row.id, "stop", "operator", session=session)
+        elif variant == "human":
+            item = WorkItem(
+                github_repo=row.repo,
+                github_issue_number=row.issue_number,
+                title=row.title,
+                state="active",
+                source_kind="github",
+                trust="untrusted",
+                labels=["human"],
+            )
+            session.add(item)
+            session.flush()
+            row.work_item_id = item.id
+        elif variant.startswith("watchdog"):
+            document["kind"] = "watchdog"
+            if variant == "watchdog-replaced":
+                controls._audit(
+                    session, "operator", "pause_task", task_id=task_id, ok=True
+                )
+        row.escalation_json = json.dumps(document)
+    # Compare the complete decision contract before forbidding expensive paths.
+    expected = controls.escalations(controls.status()["receipts"])
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("escalation reader expanded a snapshot, graph or full status")
+
+    monkeypatch.setattr(controls, "_snapshot", forbidden)
+    monkeypatch.setattr(controls, "status", forbidden)
+    monkeypatch.setattr("factory.private_view.build_factory_view", forbidden)
+    monkeypatch.setattr("factory.orchestration.graph.load_graph", forbidden)
+    for include_resolved in (False, True):
+        with Session(db) as session:
+            result = mcp._escalations_payload(include_resolved, session=session)
+        assert result["escalations"] == [
+            r for r in expected if include_resolved or r["open"]
+        ]
+        assert result["open_count"] == sum(r["open"] for r in expected)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        None,
+        "",
+        "null",
+        "{}",
+        " { } ",
+        "[]",
+        "false",
+        "0",
+        '""',
+        '{"question":"q"}',
+        '{"resolved":null}',
+        '{"resolved":false}',
+        '{"resolved":{}}',
+    ],
+)
+def test_operator_decision_json_null_semantics(db, document):
+    from factory.orchestration import mcp
+
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=1,
+                title="card",
+                body="body",
+                url="https://example.test",
+                actor="operator",
+                state="cancelled",
+                escalation_json=document,
+            )
+        )
+    expected = controls.escalations(controls.status()["receipts"])
+    for include_resolved in (False, True):
+        with Session(db) as session:
+            result = mcp._escalations_payload(include_resolved, session=session)
+        assert result["escalations"] == [
+            r for r in expected if include_resolved or r["open"]
+        ]
+
+
+def test_operator_decision_postgresql_and_sqlite_extraction():
+    from sqlalchemy.dialects import postgresql, sqlite
+    from factory.orchestration import mcp
+
+    for name, dialect in (
+        ("postgresql", postgresql.dialect()),
+        ("sqlite", sqlite.dialect()),
+    ):
+        present, kind, resolved = mcp._decision_expressions(name)
+        query = (
+            select(FactoryReceipt.id)
+            .where(present, resolved.is_(None), kind == "automatic_pause")
+            .order_by(FactoryReceipt.id)
+            .offset(2)
+            .limit(3)
+        )
+        sql = str(
+            query.compile(dialect=dialect, compile_kwargs={"literal_binds": True})
+        )
+        assert "LIMIT 3 OFFSET 2" in " ".join(sql.split())
+        assert "IS NULL" in sql and "nullif" in sql
+        if name == "postgresql":
+            assert "JSONB" in sql and "->>" in sql
+        else:
+            assert "json_extract" in sql and "CAST" not in sql

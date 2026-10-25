@@ -4880,9 +4880,12 @@ py_test(
     srcs = ["factory/orchestration/factory_controls_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_agent_sessions",
         ":pkg_auth",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//fastapi",
+        "@pip//fastmcp",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlalchemy",

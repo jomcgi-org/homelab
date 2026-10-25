@@ -299,16 +299,13 @@ def _task_row(receipt: dict, *, queue_position: int | None = None) -> dict:
 def _status_payload(
     include_recent: bool, offset: int = 0, limit: int = STATUS_LIMIT, session=None
 ) -> dict:
-    """Compose the board and trim it. Runs in a worker thread.
+    """Read the requested operator pages. Runs in a worker thread.
 
     ``session`` exists so a test fixture can drive the sync core
     directly. The tool never passes one: a session is not safe across
     the thread boundary, and the composer opens its own.
     """
-    from factory.orchestration.factory_controls import is_current_generation_queue
-    from factory.private_view import build_factory_view
-
-    view = build_factory_view(session=session)
+    view = _operator_view(include_recent, offset, limit, session=session)
     if not view.get("ok"):
         return {
             "ok": False,
@@ -321,23 +318,11 @@ def _status_payload(
         item for item in view.get("escalations") or [] if item.get("open")
     ]
     active = [_task_row(receipt) for receipt in view.get("active") or []]
-    queued_receipts = sorted(
-        (
-            receipt
-            for receipt in view.get("queued") or []
-            if is_current_generation_queue(view.get("policy") or {}, receipt)
-        ),
-        key=lambda receipt: (
-            _iso(receipt.get("created_at")) or "",
-            receipt.get("id") or 0,
-        ),
-    )
+    queued_receipts = view.get("queued") or []
     queued = [
         _task_row(receipt, queue_position=index)
-        for index, receipt in enumerate(queued_receipts, start=1)
+        for index, receipt in enumerate(queued_receipts, start=offset + 1)
     ]
-    active_page, active_pagination = _page(active, offset, limit)
-    queued_page, queued_pagination = _page(queued, offset, limit)
     needs_operator = [
         {
             "issue_number": item.get("issue_number"),
@@ -347,9 +332,6 @@ def _status_payload(
         }
         for item in open_escalations
     ]
-    needs_operator_page, needs_operator_pagination = _page(
-        needs_operator, offset, limit
-    )
     payload = {
         "ok": True,
         "state": view.get("state"),
@@ -367,22 +349,16 @@ def _status_payload(
         "intake": view.get("intake"),
         "lanes": view.get("lanes"),
         "review_routing": view.get("review_routing"),
-        "active": active_page,
-        "queued": queued_page,
-        "needs_operator": needs_operator_page,
+        "active": active,
+        "queued": queued,
+        "needs_operator": needs_operator,
         "coverage": COVERAGE,
         "capabilities": CAPABILITIES,
-        "pagination": {
-            "active": active_pagination,
-            "queued": queued_pagination,
-            "needs_operator": needs_operator_pagination,
-        },
+        "pagination": view["pagination"],
     }
     if include_recent:
         recent = [_task_row(receipt) for receipt in view.get("recent") or []]
-        payload["recent"], payload["pagination"]["recent"] = _page(
-            recent, offset, limit
-        )
+        payload["recent"] = recent
     return payload
 
 
@@ -394,9 +370,16 @@ def _escalations_payload(
     Deliberately not composed from the board: the board loads a plan for
     every in-flight task, and an escalation card needs none of it.
     """
-    from factory.orchestration.factory_controls import escalations, status
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryControl
 
-    state = status(session=session)
+    with controls._read_session(session) as db:
+        control = db.get(FactoryControl, "factory", populate_existing=True)
+        state = (
+            _decision_page(db, include_resolved, offset, limit)
+            if control is not None
+            else {"ok": False, "reason": "not_initialized"}
+        )
     if not state.get("ok"):
         return {
             "ok": False,
@@ -404,19 +387,273 @@ def _escalations_payload(
             "observed_at": _now(),
             "escalations": [],
         }
-    items = escalations(state["receipts"])
-    if not include_resolved:
-        items = [item for item in items if item.get("open")]
-    page, pagination = _page(items, offset, limit)
     return {
         "ok": True,
         "observed_at": _now(),
-        "open_count": sum(1 for item in items if item.get("open")),
-        "escalations": page,
-        "pagination": pagination,
+        "open_count": state["open_count"],
+        "escalations": state["items"],
+        "pagination": state["pagination"],
         "coverage": COVERAGE,
         "capabilities": CAPABILITIES,
     }
+
+
+def _pagination(total: int, offset: int, limit: int, returned: int) -> dict:
+    next_offset = offset + limit if offset + limit < total else None
+    return {
+        "offset": offset,
+        "limit": limit,
+        "returned": returned,
+        "total": total,
+        "next_offset": next_offset,
+        "truncated": next_offset is not None,
+    }
+
+
+def _decision_expressions(dialect: str):
+    """JSON text columns need extraction, not lexicographic JSON matching.
+
+    PostgreSQL ->> and SQLite json_extract both map absent/JSON-null resolved
+    values to SQL NULL. Do not CAST AS JSON on SQLite: it applies numeric
+    affinity rather than parsing the document.
+    """
+    from sqlalchemy import Text, cast, func, literal
+    from sqlalchemy.dialects.postgresql import JSONB
+    from factory.orchestration.factory_models import FactoryReceipt as R
+
+    source = func.nullif(R.escalation_json, "")
+    if dialect == "sqlite":
+        document = func.json(source)
+        kind = func.json_extract(source, "$.kind")
+        resolved = func.json_extract(source, "$.resolved")
+    else:
+        document = cast(source, JSONB)
+        kind = document["kind"].astext
+        resolved = document["resolved"].astext
+    # Empty documents are false in escalation_view, including JSON null.
+    present = R.escalation_json.is_not(None) & R.escalation_json.not_in(("",))
+    if dialect == "sqlite":
+        present = present & document.not_in(("{}", "null", "[]", "false", "0", '""'))
+    else:
+        present = present & document.not_in(
+            [
+                cast(literal(value, Text), JSONB)
+                for value in ("{}", "null", "[]", "false", "0", '""')
+            ]
+        )
+    return present, kind, resolved
+
+
+def _decision_page(db, include_resolved: bool, offset: int, limit: int) -> dict:
+    """Count all decisions, then shape only this page, without task snapshots.
+
+    Automatic pause cards use the existing ownership predicate. Only live
+    paused candidates need that check; terminal history never does. Ordinary
+    decisions deliberately have no generation, cancellation or recent filter.
+    """
+    from sqlalchemy import case, func
+    from sqlalchemy.orm import load_only
+    from sqlmodel import select
+    from factory.orchestration import factory_controls as controls, factory_pause
+    from factory.orchestration.factory_models import FactoryReceipt as R
+
+    fields = (
+        "id",
+        "repo",
+        "issue_number",
+        "work_item_id",
+        "generation",
+        "title",
+        "url",
+        "state",
+        "task_id",
+        "task_class",
+        "routing_tier",
+        "task_paused",
+        "cancellation_requested",
+        "escalation_json",
+    )
+    projection = load_only(*(getattr(R, key) for key in fields), raiseload=True)
+    present, kind, resolved = _decision_expressions(db.get_bind().dialect.name)
+    actionable = set()
+    candidates = db.exec(
+        select(R)
+        .options(projection)
+        .where(
+            present,
+            kind == factory_pause.KIND,
+            resolved.is_(None),
+            R.state.in_(controls._ACTIVE),
+            R.task_paused.is_(True),
+            R.cancellation_requested.is_(False),
+        )
+        .execution_options(populate_existing=True)
+    ).all()
+    for row in candidates:
+        if factory_pause.actionable(db, row, json.loads(row.escalation_json)):
+            actionable.add(row.id)
+    is_open = resolved.is_(None) & (
+        (func.coalesce(kind, "") != factory_pause.KIND) | R.id.in_(actionable)
+    )
+    open_count = db.exec(
+        select(func.count()).select_from(R).where(present, is_open)
+    ).one()
+    predicate = present if include_resolved else present & is_open
+    total = (
+        db.exec(select(func.count()).select_from(R).where(predicate)).one()
+        if include_resolved
+        else open_count
+    )
+    rows = db.exec(
+        select(R)
+        .options(projection)
+        .where(predicate)
+        .order_by(case((is_open, 0), else_=1), R.issue_number.desc(), R.id)
+        .offset(offset)
+        .limit(limit)
+        .execution_options(populate_existing=True)
+    ).all()
+    items = []
+    for row in rows:
+        document = json.loads(row.escalation_json)
+        pause_actionable = (
+            row.id in actionable
+            if factory_pause.is_card(document)
+            else factory_pause.actionable(db, row, document)
+        )
+        receipt = {key: getattr(row, key) for key in fields if key != "escalation_json"}
+        receipt.update(
+            task_class=controls.receipt_task_class(row),
+            escalation=document,
+            paused_card_actionable=pause_actionable,
+            pause_warning=(
+                "active_paused_without_actionable_question"
+                if row.state in controls._ACTIVE
+                and row.task_paused
+                and not pause_actionable
+                else None
+            ),
+        )
+        items.append(controls.escalation_view(receipt))
+    return {
+        "ok": True,
+        "items": items,
+        "open_count": open_count,
+        "pagination": _pagination(total, offset, limit, len(items)),
+    }
+
+
+def _operator_view(
+    include_recent: bool, offset: int, limit: int, *, session=None
+) -> dict:
+    """MCP-only pages plus complete narrow capacity evidence.
+
+    Browser/publication and exact-task readers retain their existing paths.
+    No terminal receipt body or task is materialized until selected by a page.
+    """
+    from sqlalchemy import func
+    from sqlmodel import select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryControl, FactoryReceipt as R
+    from factory.private_view import (
+        ACTIVE_STATES,
+        QUEUED_STATES,
+        RECENT_LIMIT,
+        shape_policy,
+        shape_receipt,
+        _session_summaries,
+    )
+
+    with controls._read_session(session) as db:
+        control = db.get(FactoryControl, "factory", populate_existing=True)
+        if control is None:
+            return {"ok": False, "reason": "not_initialized", "state": "disabled"}
+        policy = json.loads(control.policy_json)
+        active = R.state.in_(ACTIVE_STATES)
+        queued = (R.state == "queued") & (R.generation == policy.get("generation", 0))
+        recent = R.state.not_in(ACTIVE_STATES + QUEUED_STATES)
+        buckets, pagination = {}, {}
+        for name, predicate, order in (
+            ("active", active, (R.id,)),
+            ("queued", queued, (R.created_at, R.id)),
+            *((("recent", recent, (R.id.desc(),)),) if include_recent else ()),
+        ):
+            total = db.exec(select(func.count()).select_from(R).where(predicate)).one()
+            if name == "recent":
+                total = min(total, RECENT_LIMIT)
+            rows = db.exec(
+                select(R)
+                .where(predicate)
+                .order_by(*order)
+                .offset(offset)
+                .limit(max(0, min(limit, total - offset)))
+                .execution_options(populate_existing=True)
+            ).all()
+            cards = []
+            for row in rows:
+                receipt = controls._snapshot(db, row)
+                if name == "active" and row.task_id:
+                    from factory.orchestration import graph
+
+                    nodes = graph.load_graph(row.task_id, session=db)
+                    runs = graph.node_runs(row.task_id, session=db)
+                    ids = {r["session_id"] for r in runs if r.get("session_id")}
+                    ids.update(
+                        s["session_id"]
+                        for s in receipt.get("starts") or []
+                        if s.get("session_id")
+                    )
+                    cards.append(
+                        shape_receipt(receipt, nodes, runs, _session_summaries(db, ids))
+                    )
+                else:
+                    cards.append(shape_receipt(receipt))
+            buckets[name] = cards
+            pagination[name] = _pagination(total, offset, limit, len(cards))
+        # Lane accounting needs all active/eligible queue identities, including
+        # off-page uncertain starts, but none of their bodies or snapshots.
+        columns = (
+            "state",
+            "generation",
+            "task_id",
+            "task_paused",
+            "direction_json",
+            "issue_number",
+            "actor",
+            "task_class",
+            "repo",
+            "routing_tier",
+        )
+        capacity = [
+            dict(zip(columns, row))
+            for row in db.exec(
+                select(*(getattr(R, key) for key in columns)).where(
+                    R.state.in_(controls._ACTIVE) | queued
+                )
+            ).all()
+        ]
+        decisions = _decision_page(db, False, offset, limit)
+        generated = _now()
+        return {
+            "ok": True,
+            "state": control.state,
+            "policy": shape_policy(policy),
+            "version": control.version,
+            "actor": control.actor,
+            "control_updated_at": _iso(control.updated_at),
+            "admitted_count": control.admitted_count,
+            "generated_at": generated,
+            "intake": controls.intake_state(policy, session=db),
+            "lanes": controls.lane_usage(
+                policy,
+                capacity,
+                unresolved_task_ids=controls.unresolved_start_task_ids(db),
+            ),
+            "review_routing": controls.review_routing_view(policy, session=db),
+            **buckets,
+            "escalations": decisions["items"],
+            "pagination": {**pagination, "needs_operator": decisions["pagination"]},
+        }
 
 
 @mcp.tool
