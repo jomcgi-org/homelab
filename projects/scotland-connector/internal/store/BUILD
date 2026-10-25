@@ -30,6 +30,11 @@ go_test(
         "store_test.go",
         "walks_test.go",
     ],
+    embedsrcs = ["testdata/connector-sites.json"],
     embed = [":store"],
-    deps = ["//projects/scotland-connector/internal/r2"],
+    deps = [
+        "//projects/scotland-connector/internal/connector",
+        "//projects/scotland-connector/internal/r2",
+        "//projects/scotland-connector/internal/verdict",
+    ],
 )

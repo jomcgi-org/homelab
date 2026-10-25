@@ -185,6 +185,44 @@ def test_uncapped_real_database_load_has_same_metadata_and_query_count(
     assert full == capped
     assert full["fetched_at"] == NOW.isoformat()
 
+    # Exercise materialization with real scalar queries and nonempty history,
+    # then compare every original object, including its cache metadata.
+    from stars import materialize
+
+    session.add(
+        SiteMonthClimatology(
+            site_id="covered", month=1, dark_hours=100, clear_dark_hours=30
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(materialize, "get_engine", session.get_bind)
+    writes = {}
+    monkeypatch.setattr(
+        materialize,
+        "_s3_client",
+        lambda: SimpleNamespace(put_object=lambda **kw: writes.update({kw["Key"]: kw})),
+    )
+    monkeypatch.setenv("STARS_CONNECTOR_SITES_S3_KEY", "")
+    baseline_len = materialize._materialize_sync()
+    public = writes.copy()
+    assert json.loads(public["history-map.json"]["Body"])["sites"][0]["clear"][0] == 30
+    queries.clear()
+    event.listen(session.get_bind(), "before_cursor_execute", record)
+    monkeypatch.setenv("STARS_CONNECTOR_SITES_S3_KEY", "connector-sites.json")
+    try:
+        assert materialize._materialize_sync() == baseline_len
+    finally:
+        event.remove(session.get_bind(), "before_cursor_execute", record)
+    assert sum("FROM site_hours" in query for query in queries) == 1
+    for key, value in public.items():
+        assert writes[key] == value
+    assert (
+        len(
+            json.loads(writes["connector-sites.json"]["Body"])["sites"][0]["best_hours"]
+        )
+        > 25
+    )
+
 
 # Site metadata the router joins in from stars.sites, keyed by id.
 _SITE_META = {
