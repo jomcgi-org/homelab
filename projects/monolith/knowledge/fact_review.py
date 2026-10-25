@@ -462,7 +462,17 @@ def _prompt(run: FactReviewRun, progress_signal: bool = False) -> str:
             if coverage.enabled()
             else ""
         )
-        + "Cite exact, nonempty quotations from supplied sources by id. For holds, cite at least "
+        + "Literal citation contract: quote is checked as an exact substring of the assigned "
+        "source's decoded text value, not rendered Markdown or reformatted code. Preserve "
+        "Markdown markers (such as **), comment prefixes (such as //), indentation, line "
+        "breaks, punctuation and spelling. Do not paraphrase, join separated passages, "
+        "unwrap comment lines or clean up formatting. Select a contiguous passage that "
+        "supports the claim; use separate citations for separate passages. Encode quotes, "
+        "backslashes and line breaks with JSON escaping so the decoded quote remains "
+        "identical to the decoded source text. Before returning, check every quote against "
+        "its assigned source_id and copied claim_hash. If no exact supporting passage is "
+        "available, return unsupported without inventing a citation.\n"
+        "Cite exact, nonempty quotations from supplied sources by id. For holds, cite at least "
         "one source for every source subject supplied, and explain coverage of every claim. "
         "Return exactly one JSON fence with no other text: "
         '{"claim_hash":"copied hash","verdict":"holds|changed|unsupported",'
