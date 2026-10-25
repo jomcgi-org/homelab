@@ -272,7 +272,9 @@ def test_rate_limit_rules_cannot_mix_units() -> None:
 def _env(docs: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         e["name"]: e
-        for e in _one(docs, "Deployment")["spec"]["template"]["spec"]["containers"][0]["env"]
+        for e in _one(docs, "Deployment")["spec"]["template"]["spec"]["containers"][0][
+            "env"
+        ]
     }
 
 
@@ -289,10 +291,12 @@ def test_meter_and_analytics_are_off_and_credentials_inert() -> None:
         {"tool": "check", "unit": "check_invocation", "price_micros": "0"},
     ]
     # Even prefilled optional analytics fields create no secret or reference.
-    docs = _render([
-        "cacheAnalytics.credentials.secretName=fixture-analytics",
-        "cacheAnalytics.credentials.onepassword.itemPath=vaults/fixture/items/analytics",
-    ])
+    docs = _render(
+        [
+            "cacheAnalytics.credentials.secretName=fixture-analytics",
+            "cacheAnalytics.credentials.onepassword.itemPath=vaults/fixture/items/analytics",
+        ]
+    )
     assert "CACHE_ANALYTICS_TOKEN" not in _env(docs)
     assert all(d["metadata"]["name"] != "fixture-analytics" for d in docs)
     defaults = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
@@ -304,49 +308,79 @@ def test_meter_and_analytics_are_off_and_credentials_inert() -> None:
 
 
 def test_export_endpoint_and_scoped_collector_egress() -> None:
-    docs = _render([
-        "meterExport.enabled=true",
-        "networkPolicy.egress.enabled=true",
-        "networkPolicy.egress.dnsServiceCidrs[0]=10.0.0.10/32",
-    ])
+    docs = _render(
+        [
+            "meterExport.enabled=true",
+            "networkPolicy.egress.enabled=true",
+            "networkPolicy.egress.dnsServiceCidrs[0]=10.0.0.10/32",
+        ]
+    )
     env = _env(docs)
     assert env["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]["value"] == (
         "http://otel-collector.otel-collector.svc:4318/v1/metrics"
     )
     assert env["POD_UID"]["valueFrom"]["fieldRef"]["fieldPath"] == "metadata.uid"
-    policy = next(d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-egress"))
+    policy = next(
+        d
+        for d in docs
+        if d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-egress")
+    )
     rule = policy["spec"]["egress"][2]
     assert rule["ports"] == [{"protocol": "TCP", "port": 4318}]
-    assert rule["to"] == [{
-        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "otel-collector"}},
-        "podSelector": {"matchLabels": {
-            "app.kubernetes.io/name": "otel-collector",
-            "app.kubernetes.io/instance": "otel-collector",
-        }},
-    }]
+    assert rule["to"] == [
+        {
+            "namespaceSelector": {
+                "matchLabels": {"kubernetes.io/metadata.name": "otel-collector"}
+            },
+            "podSelector": {
+                "matchLabels": {
+                    "app.kubernetes.io/name": "otel-collector",
+                    "app.kubernetes.io/instance": "otel-collector",
+                }
+            },
+        }
+    ]
     with pytest.raises(RuntimeError, match="meterExport.endpoint"):
         _render(["meterExport.enabled=true", "meterExport.endpoint="])
     # Export opt-in alone leaves the independent #7248 egress hold in place.
-    assert not any(d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-egress") for d in _render(["meterExport.enabled=true"]))
+    assert not any(
+        d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-egress")
+        for d in _render(["meterExport.enabled=true"])
+    )
 
 
 def test_analytics_requires_independent_credentials_and_singleton() -> None:
     with pytest.raises(RuntimeError, match="cacheAnalytics requires replicas"):
         _render(["cacheAnalytics.enabled=true"])
     flags = [
-        "cacheAnalytics.enabled=true", "replicas=1", "autoscaling.enabled=false",
-        "strategy.type=Recreate", "cacheAnalytics.zone=" + "a" * 32,
+        "cacheAnalytics.enabled=true",
+        "replicas=1",
+        "autoscaling.enabled=false",
+        "strategy.type=Recreate",
+        "cacheAnalytics.zone=" + "a" * 32,
         "cacheAnalytics.credentials.secretName=fixture-analytics",
         "cacheAnalytics.credentials.onepassword.itemPath=vaults/fixture/items/analytics",
     ]
     docs = _render(flags)
     env = _env(docs)
-    assert env["CACHE_ANALYTICS_TOKEN"]["valueFrom"]["secretKeyRef"] == {"name": "fixture-analytics", "key": "token"}
+    assert env["CACHE_ANALYTICS_TOKEN"]["valueFrom"]["secretKeyRef"] == {
+        "name": "fixture-analytics",
+        "key": "token",
+    }
     assert env["CACHE_ANALYTICS_HOSTNAME"]["value"] == "jomcgi.dev"
     assert env["CACHE_ANALYTICS_PLAN_PATH"]["value"] == "/scotland/v1/plan"
     assert _one(docs, "Deployment")["spec"]["strategy"] == {"type": "Recreate"}
-    item = next(d for d in docs if d["kind"] == "OnePasswordItem" and d["metadata"]["name"] == "fixture-analytics")
+    item = next(
+        d
+        for d in docs
+        if d["kind"] == "OnePasswordItem"
+        and d["metadata"]["name"] == "fixture-analytics"
+    )
     assert item["spec"]["itemPath"] == "vaults/fixture/items/analytics"
-    for flag in ["cacheAnalytics.zone=", "cacheAnalytics.credentials.onepassword.itemPath=", "cacheAnalytics.credentials.secretName=scotland-connector-r2"]:
+    for flag in [
+        "cacheAnalytics.zone=",
+        "cacheAnalytics.credentials.onepassword.itemPath=",
+        "cacheAnalytics.credentials.secretName=scotland-connector-r2",
+    ]:
         with pytest.raises(RuntimeError, match="cacheAnalytics"):
             _render(flags + [flag])

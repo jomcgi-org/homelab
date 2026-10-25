@@ -98,6 +98,7 @@ func (r *Reader) Describe(ch chan<- *prometheus.Desc) {
 		ch <- d
 	}
 }
+
 func (r *Reader) Collect(ch chan<- prometheus.Metric) {
 	o, ok := r.Current(time.Now())
 	if !ok {

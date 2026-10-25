@@ -17,9 +17,11 @@ import (
 func response(groups string) string {
 	return `{"errors":null,"data":{"viewer":{"zones":[{"httpRequestsAdaptiveGroups":[` + groups + `]}]}}}`
 }
+
 func group(status string, count string) string {
 	return fmt.Sprintf(`{"count":%s,"dimensions":{"cacheStatus":%q}}`, count, status)
 }
+
 func config() Config {
 	return Config{Enabled: true, Zone: strings.Repeat("a", 32), Hostname: "example.test", PlanPath: "/scotland/v1/plan", Token: "fixture-only"}
 }
