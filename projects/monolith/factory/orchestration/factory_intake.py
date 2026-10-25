@@ -778,6 +778,16 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             factory_funding.inherit_dispatch_grant(
                 db, row, task, dispatch_grant, policy
             )
+        from factory.orchestration.factory_controls import brief_only_refinement
+
+        if brief_only_refinement(row):
+            _audit(
+                db,
+                actor,
+                "brief_only_refinement_admitted",
+                task_id=task_id,
+                receipt_id=row.id,
+            )
         _audit(
             db,
             actor,

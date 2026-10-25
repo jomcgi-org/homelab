@@ -1410,6 +1410,22 @@ def brief_only_refinement(row) -> bool:
     )
 
 
+def private_refinement_tasks(db, task_ids) -> set[str]:
+    """Admission evidence outlives receipt reuse for an authorized rebrief."""
+    return (
+        set(
+            db.exec(
+                select(FactoryAudit.task_id).where(
+                    FactoryAudit.task_id.in_(task_ids),
+                    FactoryAudit.action == "brief_only_refinement_admitted",
+                )
+            ).all()
+        )
+        if task_ids
+        else set()
+    )
+
+
 def lane_for(task_class: str) -> str:
     """The lane a class runs in. Lane follows class; it is not configurable.
 

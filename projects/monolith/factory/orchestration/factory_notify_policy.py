@@ -89,8 +89,8 @@ def _latest(db, action):
 
 
 def _items(db, watermark: int) -> list:
-    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
-    from factory.orchestration.factory_controls import brief_only_refinement
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.factory_controls import private_refinement_tasks
 
     rows = db.exec(
         select(FactoryAudit)
@@ -109,17 +109,7 @@ def _items(db, watermark: int) -> list:
         .order_by(FactoryAudit.id)
     ).all()
     task_ids = {row.task_id for row in rows if row.task_id}
-    private = (
-        {
-            receipt.task_id
-            for receipt in db.exec(
-                select(FactoryReceipt).where(FactoryReceipt.task_id.in_(task_ids))
-            ).all()
-            if brief_only_refinement(receipt)
-        }
-        if task_ids
-        else set()
-    )
+    private = private_refinement_tasks(db, task_ids)
     return [row for row in rows if row.task_id not in private]
 
 

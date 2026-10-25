@@ -507,6 +507,7 @@ def test_bounded_brief_keeps_decision_without_external_notification(
     assert snapshot["state"] == "succeeded"
     assert snapshot["escalation"]["question"]
     assert sent == []
+
     assert "task_notification_private" in audit_actions(db)
     assert "refine_needs_human_notified" not in audit_actions(db)
     assert factory_notify_policy.DIGESTED not in audit_actions(db)
@@ -536,6 +537,30 @@ def test_bounded_brief_keeps_decision_without_external_notification(
         visible = factory_notify_policy._items(session, 0)
         assert [row.task_id for row in visible] == [None]
     assert sent == []
+
+    from factory.orchestration.factory_decisions import _requeue
+
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        _requeue(row)
+        session.add(row)
+        session.commit()
+        assert [row.task_id for row in factory_notify_policy._items(session, 0)] == [
+            None
+        ]
+    assert conductor._notify_person_once(
+        task["id"], "Historical decision", kind="intervention"
+    )
+    assert sent == []
+    assert controls.set_control("enable", "operator")["ok"]
+    admitted = admit_next("scheduler")
+    assert admitted["ok"] and admitted["task_id"] != task["id"]
+    assert conductor._notify_person_once(
+        admitted["task_id"], "New separately scoped decision"
+    )
+    assert len(sent) == 1
 
 
 def test_bounded_brief_does_not_execute_typed_gate(db, monkeypatch):
