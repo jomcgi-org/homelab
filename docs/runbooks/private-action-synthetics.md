@@ -22,7 +22,14 @@ not latency pass/fail thresholds. Unknown cgroup limits or less than 20 percent
 headroom refuse the run. An advisory transaction lock serializes runs across
 replicas. Calls are manual and not retried automatically.
 
-The second scenario uses the shipped `GitHubReadCooldown` with its own clock.
+Two cache scenarios call the real rollout `_cached` function with an explicit
+isolated store. Each makes one cold fixture read and three warm reads. Success
+and failure must each call their fixture reader once, retain one entry, and
+reuse it three times. Cached failures must retain no traceback. No live cache
+is cleared, evicted or replaced; no GitHub request is made. A run spanning the
+cache TTL is inconclusive rather than a false regression.
+
+The cooldown scenario uses the shipped `GitHubReadCooldown` with its own clock.
 Three reads must defer after a simulated 429, then recover at the deadline.
 It never changes the live provider cooldown or contacts GitHub.
 
@@ -37,6 +44,35 @@ samples establish a small baseline; they do not estimate a tail percentile.
 Compare the same fixture and application across independently healthy runs.
 Keep missing samples or export failures inconclusive, never green.
 
+In the `monolith-backend` dataset, use this query specification, replacing only
+`RUN_UUID`. A successful run has three measured samples in each of
+`historical-status`, `cache-success` and `cache-failure`. Null fields belong to
+other scenarios and do not mean zero. Inspect the `swarm.synthetic.run` and
+`swarm.synthetic.cooldown` trace spans for the overall verdict and recovery.
+
+```json
+{
+  "time_range": 3600,
+  "filters": [
+    { "column": "synthetic.run_id", "op": "=", "value": "RUN_UUID" },
+    { "column": "synthetic.warmup", "op": "=", "value": false }
+  ],
+  "breakdowns": ["synthetic.scenario", "synthetic.chart_version", "synthetic.image"],
+  "calculations": [
+    { "op": "COUNT" },
+    { "op": "AVG", "column": "synthetic.duration_ms" },
+    { "op": "MAX", "column": "synthetic.sql_reads" },
+    { "op": "MAX", "column": "synthetic.fixture_reads" },
+    { "op": "MAX", "column": "synthetic.cache_entries" }
+  ]
+}
+```
+
+For correctness, inspect `synthetic.correct`, `synthetic.work_within_baseline`
+and `synthetic.cache_hit` on those samples. Every measured cache sample must
+have `cache_hit=true`, `fixture_reads=0` and `cache_entries=1`. Historical reads
+must return `correct=true` and `work_within_baseline=true`.
+
 The server checks requested chart and image against its own deployment env.
 The source SHA and Kargo Promotion name are operator-supplied correlation
 fields, explicitly labelled as such. Resolve them from the existing chart
@@ -46,7 +82,8 @@ deployment ledger and performs no GitHub ancestry scans.
 The response and root span include process/cgroup memory and application cache
 counters before and after. Other requests may move those counters. They are
 observations, not attributed synthetic cache hits or retained-growth proof.
-This slice exercises repeat database reads, not the GitHub application cache.
+Per-sample cache hits above are attributable to the isolated application-cache
+fixtures. They do not measure real GitHub traffic or the immutable ancestry cache.
 It does not restart a pod or test recovery after OOM. A replacement pod or
 process instance starts a new comparison window. Keep the deployed memory
 diagnostics for longer observations; no resource limit changes are needed.
@@ -68,7 +105,7 @@ by a passing local test.
    are `run_id` (a fresh UUID), `chart_version`, `image` (repository plus digest),
    `source_commit` (full SHA) and `promotion` (Kargo object name). There are no
    user-controlled fixture sizes, SQL, URLs, sample counts or load levels.
-4. Stop after this request. Save its result and confirm all six spans arrived
+4. Stop after this request. Save its result and confirm all fourteen spans arrived
    in Honeycomb before calling the observation complete. A network timeout
    leaves the outcome uncertain; inspect traces and current health before any
    further action. Do not automatically replay the POST.
@@ -103,6 +140,7 @@ trigger, paid volume commitment or query client is introduced here.
 This repository does not configure it. The existing `kargo_promote` tool can
 promote an older eligible version with `rollback=True`; it refuses a concurrent
 queued/running Promotion and preserves the Stage's own steps and gates.
+The vendored 1.11.1 ProjectConfig CRD confirms `autoRollback` is ignored in OSS.
 
 For a manual recovery, identify the most recent independently verified good
 Freight for `kargo-monolith/prod` from Kargo history and retained synthetic
@@ -113,15 +151,39 @@ backend image. Check migration/data backward compatibility explicitly. A chart
 rollback does not reverse database migrations, shared data, jobs already run,
 or external effects. Unknown compatibility or missing good evidence blocks it.
 
-Request at most one rollback through that existing tool, then observe its
-Promotion and call `verify_deployment` for the exact target revision until
-terminal. Confirm backend image, service response and synthetic evidence.
-If the create result was lost, find the Promotion before retrying; if the
-target is already deployed, verify it rather than creating another Promotion.
-Stop on a competing deployment, failed recovery or uncertain outcome.
+The fast operator path needs no new credential or paid feature:
 
-Automatic rollback is deliberately unarmed: the current tool has no atomic
-expected-current-Promotion condition, durable once-per-failure marker or
-automatic-promotion fence. Those controls, authenticated Kargo verdict access,
-and a verified good synthetic baseline are prerequisites for unattended
-recovery. Do not infer them from `rollback=True` or add a competing ledger.
+1. Call `verify_deployment(app="monolith", expected_revision=FAILED_VERSION)`
+   and inspect the current revision and Kargo state. If the desired good version
+   is already current, verify it and stop. If another version or an active
+   Promotion is present, stop and reassess.
+2. Call `kargo_promote(app="monolith", chart_version=GOOD_VERSION,
+   rollback=True, dry_run=True)`. This checks actual admission, including the
+   Kargo webhook, without creating a Promotion. Check the returned namespace,
+   Stage and Freight against the reviewed target. Re-read current state before
+   the next call; the tool has no atomic expected-current-Promotion condition.
+3. Submit the identical call with `dry_run=False` once. Record its returned
+   Promotion name. If the create result is lost, inspect Kargo history for the
+   result and stop on uncertainty; never blindly replay the call. Keep the
+   recovery scoped to this incident and do not recursively roll back a failure.
+4. Observe that Promotion and poll `verify_deployment` for at most ten minutes.
+   Its revision check accepts the requested version **or newer**, so also
+   require the returned/live chart to equal `GOOD_VERSION` exactly. Confirm
+   backend image, service response, no competing promotion, and synthetic
+   evidence before declaring recovery. Stop on failure or timeout.
+
+Kargo 1.11.1 also has a native per-origin auto-promotion hold. Its vendored Stage
+CRD and [Stage documentation](https://docs.kargo.io/user-guide/how-to-guides/working-with-stages)
+describe the hold created by a manual promotion of non-candidate Freight. Verify
+`status.autoPromotionHolds["Warehouse/monolith-chart"]` names the good Freight
+and recovery Promotion, and inspect `status.effectiveAutoPromotionHolds` while
+it is in flight. A successful rollback must not be immediately undone by
+auto-promotion. Observe the hold and exact revision across the Warehouse's next
+five-minute poll. Missing hold or competing intent blocks acceptance; do not
+patch Kargo or bypass GitOps to force it. Promoting the selected newest Freight
+later can lift the hold, so that is a separate forward-recovery action.
+
+Manual rollback remains available independently of Honeycomb query API access.
+Automatic rollback is unarmed; unattended use would additionally need an atomic
+current-Promotion condition and once-per-failure handling. No new deployment
+ledger, paid upgrade or credentials are needed for the bounded operator path.

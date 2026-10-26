@@ -28,6 +28,7 @@ VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 WORKLOADS = {"Deployment", "StatefulSet", "DaemonSet"}
 MAX_PUBLICATION_CANDIDATES = 8
 _recent: dict[tuple, tuple[float, object]] = {}
+READ_CACHE_TTL_SECONDS = 30
 
 
 def _detached_failure(exc: Exception) -> Exception:
@@ -76,11 +77,14 @@ def _detached_failure(exc: Exception) -> Exception:
     return detach(exc)
 
 
-def _cached(key: tuple, read):
+def _cached(key: tuple, read, *, cache=None):
     """Share bounded observations across pending deliveries, for at most 30s."""
+    # An explicit store lets bounded synthetics exercise this same code without
+    # clearing, evicting or replacing the live process cache.
+    cache = _recent if cache is None else cache
     now = time.monotonic()
-    prior = _recent.get(key)
-    if prior is not None and now - prior[0] < 30:
+    prior = cache.get(key)
+    if prior is not None and now - prior[0] < READ_CACHE_TTL_SECONDS:
         value = prior[1]
     else:
         try:
@@ -89,11 +93,11 @@ def _cached(key: tuple, read):
             try:
                 value = _detached_failure(exc)
             except Exception:  # noqa: BLE001 - preserve an uncopyable read failure
-                _recent.pop(key, None)
+                cache.pop(key, None)
                 raise exc
-        if len(_recent) >= 64:
-            _recent.pop(next(iter(_recent)))
-        _recent[key] = (time.monotonic(), value)
+        if len(cache) >= 64:
+            cache.pop(next(iter(cache)))
+        cache[key] = (time.monotonic(), value)
     if isinstance(value, Exception):
         # A timed-out cluster must not cost another 30s for every pending task.
         # Never raise the cached object: propagation attaches caller frames,
@@ -101,7 +105,7 @@ def _cached(key: tuple, read):
         try:
             failure = _detached_failure(value)
         except Exception:  # noqa: BLE001 - never replace the original failure
-            _recent.pop(key, None)
+            cache.pop(key, None)
             raise value
         raise failure from None
     return value

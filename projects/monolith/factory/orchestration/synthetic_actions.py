@@ -180,6 +180,71 @@ def cooldown():
     return {"correct": deferred == 3, "deferred": deferred, "external_api_reads": 0}
 
 
+def cached_reads(identity):
+    """Cold and warm reads use the production cache and an isolated fixture store."""
+    from factory.orchestration import factory_rollout
+
+    samples = []
+    for failing in (False, True):
+        cache = {}
+        reads = 0
+        started = time.monotonic()
+        key = ("synthetic", "failure" if failing else "success")
+
+        def read():
+            nonlocal reads
+            reads += 1
+            if failing:
+                raise ValueError("synthetic upstream unavailable")
+            return {"fixture": FIXTURE_VERSION, "receipts": RECEIPTS}
+
+        for index in range(WARMUP + SAMPLES):
+            before = reads
+            sample_start = time.monotonic()
+            with tracer.start_as_current_span(
+                "swarm.synthetic.cache",
+                attributes={
+                    **identity,
+                    "synthetic.scenario": "cache-failure"
+                    if failing
+                    else "cache-success",
+                },
+            ) as span:
+                try:
+                    result = factory_rollout._cached(key, read, cache=cache)
+                    correct = not failing and result == {
+                        "fixture": FIXTURE_VERSION,
+                        "receipts": RECEIPTS,
+                    }
+                except ValueError as exc:
+                    correct = failing and str(exc) == "synthetic upstream unavailable"
+                # A process pause spanning expiry is insufficient warm evidence,
+                # not a cache regression. Nothing sleeps or modifies its clock.
+                if time.monotonic() - started >= factory_rollout.READ_CACHE_TTL_SECONDS:
+                    raise Inconclusive("cache samples crossed the reuse window")
+                cached = cache.get(key, (None, None))[1]
+                if failing:
+                    correct = (
+                        correct
+                        and isinstance(cached, ValueError)
+                        and cached.__traceback__ is None
+                    )
+                sample = {
+                    "warmup": index < WARMUP,
+                    "correct": correct and reads == 1 and len(cache) == 1,
+                    "fixture_reads": reads - before,
+                    "cache_hit": reads == before,
+                    "cache_entries": len(cache),
+                    "external_api_reads": 0,
+                    "duration_ms": round((time.monotonic() - sample_start) * 1000, 3),
+                }
+                span.set_attributes({f"synthetic.{k}": v for k, v in sample.items()})
+                samples.append(sample)
+                if not sample["correct"]:
+                    return samples
+    return samples
+
+
 def measure(session, identity):
     from factory.orchestration.factory_controls import status
 
@@ -327,6 +392,7 @@ def verify(engine, *, run_id, chart_version, image, source_commit, promotion):
                     transaction.rollback()
         finally:
             isolated.dispose()
+        cache_samples = cached_reads(identity)
         with tracer.start_as_current_span(
             "swarm.synthetic.cooldown",
             attributes={**identity, "synthetic.scenario": "cooldown-recovery"},
@@ -340,6 +406,8 @@ def verify(engine, *, run_id, chart_version, image, source_commit, promotion):
             "pass"
             if len(measured) == SAMPLES
             and all(s["correct"] and s["work_within_baseline"] for s in samples)
+            and len(cache_samples) == 2 * (WARMUP + SAMPLES)
+            and all(s["correct"] for s in cache_samples)
             and pacing["correct"]
             else "fail"
         )
@@ -363,6 +431,7 @@ def verify(engine, *, run_id, chart_version, image, source_commit, promotion):
             "identity": identity,
             "samples": samples,
             "cooldown": pacing,
+            "cache_samples": cache_samples,
             "duration_ms": round((time.monotonic() - started) * 1000, 3),
             "memory_before": memory_before,
             "memory_after": memory_after,
@@ -370,7 +439,7 @@ def verify(engine, *, run_id, chart_version, image, source_commit, promotion):
             "cache_after": cache_after,
             "coverage": {
                 "status": "production reader, transaction-local PostgreSQL fixtures",
-                "cache": "database repeat reads; application cache not exercised",
+                "cache": "real rollout observation cache with isolated success/failure fixtures",
                 "memory": "process/cgroup observations, no retained-growth verdict",
                 "recovery": "isolated cooldown only; no process restart",
                 "latency": "baseline only; three samples cannot establish a tail percentile",

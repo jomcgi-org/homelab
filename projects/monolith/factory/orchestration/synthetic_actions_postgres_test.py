@@ -213,7 +213,7 @@ def test_traces_bind_samples_to_identity_and_exclude_warmup(
     monkeypatch.setattr(actions, "tracer", provider.get_tracer("synthetics-test"))
     result = actions.verify(engine, **run_request)
     spans = exporter.get_finished_spans()
-    assert len(spans) == actions.WARMUP + actions.SAMPLES + 2
+    assert len(spans) == 3 * (actions.WARMUP + actions.SAMPLES) + 2
     for span in spans:
         assert span.attributes["synthetic.run_id"] == run_request["run_id"]
         assert span.attributes["synthetic.image"] == run_request["image"]
@@ -227,3 +227,40 @@ def test_traces_bind_samples_to_identity_and_exclude_warmup(
     assert root.attributes["synthetic.verdict"] == result["verdict"]
     assert root.attributes["synthetic.memory.after.rss_bytes"] == 100
     provider.shutdown()
+
+
+def test_cache_fixture_reuses_reads_without_touching_live_cache():
+    from factory.orchestration import factory_rollout
+
+    live_before = dict(factory_rollout._recent)
+    samples = actions.cached_reads({})
+    assert len(samples) == 8
+    assert all(s["correct"] for s in samples)
+    assert [s["fixture_reads"] for s in samples] == [1, 0, 0, 0] * 2
+    assert [s["cache_hit"] for s in samples] == [False, True, True, True] * 2
+    assert factory_rollout._recent == live_before
+
+
+def test_cache_bypass_is_a_failed_outcome(monkeypatch):
+    from factory.orchestration import factory_rollout
+
+    monkeypatch.setattr(factory_rollout, "_cached", lambda key, read, **kwargs: read())
+    samples = actions.cached_reads({})
+    assert not samples[-1]["correct"]
+
+
+def test_cache_traceback_retention_is_a_failed_outcome(monkeypatch):
+    from factory.orchestration import factory_rollout
+
+    # Returning the original exception re-attaches caller frames on every raise.
+    monkeypatch.setattr(factory_rollout, "_detached_failure", lambda exc: exc)
+    samples = actions.cached_reads({})
+    assert not samples[-1]["correct"]
+
+
+def test_cache_expiry_during_samples_is_inconclusive(monkeypatch):
+    from factory.orchestration import factory_rollout
+
+    monkeypatch.setattr(factory_rollout, "READ_CACHE_TTL_SECONDS", 0)
+    with pytest.raises(actions.Inconclusive, match="reuse window"):
+        actions.cached_reads({})
