@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from core.clock import as_utc, aware, aware_iso, iso, iso_z
+from core.clock import as_utc, aware, aware_iso, iso, iso_or_str, iso_z
 
 _BST = timezone(timedelta(hours=1))
 
@@ -50,3 +50,10 @@ def test_iso_z_uses_a_z_suffix_and_passes_none():
         == "2026-01-02T02:04:05Z"
     )
     assert iso_z(None) is None
+
+
+def test_iso_or_str_stamps_datetimes_and_passes_strings_through():
+    assert iso_or_str(None) is None
+    assert iso_or_str("2026-01-02") == "2026-01-02"
+    assert iso_or_str(7) == "7"
+    assert iso_or_str(datetime(2026, 1, 2, 3, 4, 5)) == "2026-01-02T03:04:05+00:00"

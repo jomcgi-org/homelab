@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from core.clock import iso_or_str
 import factory.orchestration.factory_controls as controls
 from factory.orchestration.factory_intake import admit_next, receive_issue
 from factory.orchestration.factory_models import (
@@ -5747,7 +5748,7 @@ def test_operator_pages_match_browser_contract(
                     for r in board["queued"]
                     if controls.is_current_generation_queue(board["policy"], r)
                 ),
-                key=lambda r: (mcp._iso(r["created_at"]), r["id"]),
+                key=lambda r: (iso_or_str(r["created_at"]), r["id"]),
             ),
             start=1,
         )
@@ -5813,7 +5814,7 @@ def test_operator_pages_match_browser_contract(
                 for r in board["queued"]
                 if controls.is_current_generation_queue(board["policy"], r)
             ),
-            key=lambda r: (mcp._iso(r["created_at"]), r["id"]),
+            key=lambda r: (iso_or_str(r["created_at"]), r["id"]),
         )[offset : offset + 2]
     )
     if include_recent:
