@@ -1044,3 +1044,10 @@ class TestDependencyOnly:
         )
         client.get.assert_awaited_once()
         assert client.get.call_args.kwargs["timeout"] <= 5
+
+    def test_mise_indented_section_header_stays(self):
+        from chat.changelog import _dependency_only_file
+
+        file = dict(COLIN_PATCHES["d9efacb3104b477f60142e774f8915da993cc4ce"][0])
+        file["patch"] = file["patch"].replace(' python = "3.15.1"', "   [env]")
+        assert not _dependency_only_file(file)
