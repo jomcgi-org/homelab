@@ -3000,3 +3000,19 @@ origin traces. Targets, not measured claims: warm origin JSON TTFB p95 below
 100 ms, warm factory SSR TTFB p95 below 200 ms, and edge HIT TTFB below 200 ms
 from the same observation location. Network, parsing and canvas rendering are
 separate from origin TTFB. No live target is accepted from unit tests alone.
+
+### Manual factory read verification
+
+The default-off operator synthetic endpoint runs the production status reader
+against transaction-local PostgreSQL fixtures and returns correctness, SQL work
+and timing evidence. It uses the existing OTLP trace path and tags the observed
+chart/image plus operator-supplied source and Kargo Promotion correlation.
+Fixtures never enter intake or persistent business schemas. The
+[runbook](../../docs/runbooks/private-action-synthetics.md) records its fixed
+bounds, first-run scope and current rollout/rollback limitations.
+
+**Why.** Settled history can increase status work while ordinary readiness stays
+green. A repeatable fixture and work baseline expose that regression without a
+pre-release performance gate. Latency, cache occupancy and process memory remain
+observations until enough comparable production evidence exists. The existing
+Kargo history and guarded promotion tool remain the deployment authority.

@@ -78,6 +78,7 @@ def test_factory_controls_require_verified_standing_operator(authority, kind, gr
     client = TestClient(app)
     assert client.get("/api/swarm/factory/improvements/context").status_code == 403
     assert client.post("/api/swarm/factory/improvements", json={}).status_code == 403
+    assert client.post("/api/swarm/factory/synthetics", json={}).status_code == 403
     response = client.post(
         "/api/swarm/factory/control",
         json={"action": "enable"},
@@ -159,6 +160,64 @@ def operator_client(subject="operator:test"):
         authority=Authority.STANDING,
     )
     return TestClient(app)
+
+
+def test_synthetics_are_default_off_and_reject_unbounded_input(monkeypatch):
+    from factory.orchestration import synthetic_actions
+
+    client = operator_client()
+    body = {
+        "run_id": "00000000-0000-0000-0000-000000000001",
+        "chart_version": "1.2.3",
+        "image": "example@sha256:" + "b" * 64,
+        "source_commit": "a" * 40,
+        "promotion": "prod.synthetic",
+    }
+    monkeypatch.delenv("FACTORY_SYNTHETICS_ENABLED", raising=False)
+    monkeypatch.setattr(
+        synthetic_actions, "verify", lambda *a, **kw: pytest.fail("ran while disabled")
+    )
+    assert client.post("/api/swarm/factory/synthetics", json=body).status_code == 404
+    monkeypatch.setenv("FACTORY_SYNTHETICS_ENABLED", "true")
+    assert (
+        client.post(
+            "/api/swarm/factory/synthetics", json={**body, "samples": 10000}
+        ).status_code
+        == 422
+    )
+    seen = {}
+
+    def verify(_engine, **kwargs):
+        seen.update(kwargs)
+        return {"verdict": "pass"}
+
+    monkeypatch.setattr(synthetic_actions, "verify", verify)
+    assert client.post("/api/swarm/factory/synthetics", json=body).json() == {
+        "verdict": "pass"
+    }
+    assert seen == body
+
+
+def test_synthetic_database_errors_do_not_expose_sql_or_credentials(monkeypatch):
+    from sqlalchemy.exc import SQLAlchemyError
+    from factory.orchestration import synthetic_actions
+
+    def failed(*args, **kwargs):
+        raise SQLAlchemyError("connection secret and SQL parameters")
+
+    monkeypatch.setenv("FACTORY_SYNTHETICS_ENABLED", "true")
+    monkeypatch.setattr(synthetic_actions, "verify", failed)
+    response = operator_client().post(
+        "/api/swarm/factory/synthetics",
+        json={
+            "run_id": "00000000-0000-0000-0000-000000000001",
+            "chart_version": "1.2.3",
+            "image": "example",
+            "source_commit": "a" * 40,
+            "promotion": "prod.synthetic",
+        },
+    )
+    assert response.json() == {"verdict": "inconclusive", "reason": "SQLAlchemyError"}
 
 
 def test_http_controls_use_the_versioned_request_owner(monkeypatch):

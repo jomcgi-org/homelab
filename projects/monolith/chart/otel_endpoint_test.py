@@ -379,3 +379,15 @@ def test_allowlist_entry_is_pointless_without_an_endpoint(rendered_env):
         "sends nothing is dead config, and an endpoint for a service that is "
         "not allowlisted exports into a filter. Change both or neither."
     )
+
+
+def test_synthetics_default_off_and_report_the_actual_backend_image(rendered_env):
+    assert rendered_env["FACTORY_SYNTHETICS_ENABLED"] == "false"
+    for doc in yaml.safe_load_all(_render()):
+        if not doc or doc.get("kind") != "Deployment":
+            continue
+        for container in doc["spec"]["template"]["spec"].get("containers", []):
+            if container["name"] == "backend":
+                assert rendered_env["MONOLITH_IMAGE"] == container["image"]
+                return
+    pytest.fail("backend deployment absent")
