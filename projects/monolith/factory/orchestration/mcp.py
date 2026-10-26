@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Literal
 
 from auth.api import Principal, current_principal
-from core.clock import aware_iso
+from core.clock import iso_or_str
 from core.mcp_app import mcp
 from pydantic import BeforeValidator, Field
 
@@ -149,12 +149,6 @@ async def factory_verify_synthetics(
     return await asyncio.to_thread(_synthetics_payload, body, principal, dry_run)
 
 
-def _iso(value: object) -> str | None:
-    if isinstance(value, datetime):
-        return aware_iso(value)
-    return None if value is None else str(value)
-
-
 def _page(items: list[dict], offset: int, limit: int) -> tuple[list[dict], dict]:
     page = items[offset : offset + limit]
     next_offset = offset + limit if offset + limit < len(items) else None
@@ -277,8 +271,8 @@ def _task_row(receipt: dict, *, queue_position: int | None = None) -> dict:
         "task_paused": receipt.get("task_paused"),
         "cancellation_requested": receipt.get("cancellation_requested"),
         "admitted_at": receipt.get("admitted_at"),
-        "created_at": _iso(receipt.get("created_at")),
-        "updated_at": _iso(receipt.get("updated_at")),
+        "created_at": iso_or_str(receipt.get("created_at")),
+        "updated_at": iso_or_str(receipt.get("updated_at")),
         "deadline_at": receipt.get("deadline_at"),
         "turns_used": receipt.get("turns_used"),
         "allowance_turns": allowance.get("turns"),
@@ -752,7 +746,7 @@ def _operator_view(
             "policy": shape_policy(policy),
             "version": control.version,
             "actor": control.actor,
-            "control_updated_at": _iso(control.updated_at),
+            "control_updated_at": iso_or_str(control.updated_at),
             "admitted_count": control.admitted_count,
             "generated_at": generated,
             "intake": controls.intake_state(policy, session=db),
@@ -912,7 +906,7 @@ def _work_item_context(db, row, limit: int) -> dict:
             "direction": "out" if edge.from_id == item.id else "in",
             "item": reference(edge.to_id if edge.from_id == item.id else edge.from_id),
             "source": edge.source,
-            "created_at": _iso(edge.created_at),
+            "created_at": iso_or_str(edge.created_at),
         }
         for edge in visible_edges
     ]
@@ -953,7 +947,7 @@ def _work_item_context(db, row, limit: int) -> dict:
                 "cause_ref": (event.cause_ref or "")[:600] or None,
                 "reason": (event.stated_reason or "")[:600] or None,
                 "change": change,
-                "created_at": _iso(event.created_at),
+                "created_at": iso_or_str(event.created_at),
             }
         )
     return {
@@ -967,9 +961,9 @@ def _work_item_context(db, row, limit: int) -> dict:
         "authority": item.authority,
         "trust": item.trust,
         "source_ref": item.source_ref,
-        "created_at": _iso(item.created_at),
-        "updated_at": _iso(item.updated_at),
-        "source_updated_at": _iso(source.source_updated_at) if source else None,
+        "created_at": iso_or_str(item.created_at),
+        "updated_at": iso_or_str(item.updated_at),
+        "source_updated_at": iso_or_str(source.source_updated_at) if source else None,
         "source_state": source.source_state if source else None,
         "blocked": bool(blocker_rows),
         "blocked_by": blockers,
@@ -1117,7 +1111,7 @@ def _lifecycle_evidence(db, row, snapshot: dict) -> dict:
     return {
         "work_started": {
             "status": "observed" if starts else "not_observed",
-            "at": _iso(starts[0].get("created_at")) if starts else None,
+            "at": iso_or_str(starts[0].get("created_at")) if starts else None,
             "start_count": len(starts),
         },
         "artifact_produced": {
@@ -1132,7 +1126,7 @@ def _lifecycle_evidence(db, row, snapshot: dict) -> dict:
                     "verdict": review.verdict,
                     "summary": (review.summary or "")[:600] or None,
                     "head_sha": review.head_sha,
-                    "reviewed_at": _iso(review.reviewed_at),
+                    "reviewed_at": iso_or_str(review.reviewed_at),
                 }
                 if review
                 else None
@@ -1147,7 +1141,7 @@ def _lifecycle_evidence(db, row, snapshot: dict) -> dict:
             "action": (repository_complete or merged).action
             if repository_complete or merged
             else None,
-            "at": _iso((repository_complete or merged).created_at)
+            "at": iso_or_str((repository_complete or merged).created_at)
             if repository_complete or merged
             else None,
         },
@@ -1199,7 +1193,7 @@ def _detail_payload(
         return {
             "ok": True,
             "observed_at": _now(),
-            "updated_at": _iso(row.updated_at),
+            "updated_at": iso_or_str(row.updated_at),
             "receipt": _task_row({**snapshot, "nodes": shaped}),
             "nodes": page,
             "node_count": len(shaped),
@@ -1211,8 +1205,8 @@ def _detail_payload(
             "lifecycle": _lifecycle_evidence(db, row, snapshot),
             "watchdog": _watchdog_detail(db, row, snapshot),
             "source_timestamps": {
-                "receipt_created_at": _iso(getattr(row, "created_at", None)),
-                "receipt_updated_at": _iso(getattr(row, "updated_at", None)),
+                "receipt_created_at": iso_or_str(getattr(row, "created_at", None)),
+                "receipt_updated_at": iso_or_str(getattr(row, "updated_at", None)),
                 "work_item_updated_at": work_item.get("updated_at"),
                 "github_source_updated_at": work_item.get("source_updated_at"),
             },

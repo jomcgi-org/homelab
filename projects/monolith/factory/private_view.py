@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from core.clock import aware_iso
+from core.clock import iso_or_str
 
 RECENT_LIMIT = 12
 RESULT_HEAD = 240
@@ -35,12 +35,6 @@ _RUN_STATE = {
     "uncertain": "uncertain",
     "cancelled": "cancelled",
 }
-
-
-def _iso(value: object) -> str | None:
-    if isinstance(value, datetime):
-        return aware_iso(value)
-    return None if value is None else str(value)
 
 
 def first_line(text: str | None, limit: int = RESULT_HEAD) -> str:
@@ -86,8 +80,8 @@ def shape_node(node: dict, runs: list[dict], sessions: dict[int, dict]) -> dict:
                 "cost_usd": run.get("cost_usd"),
                 "accounted_cost_usd": run.get("accounted_cost_usd"),
                 "session_id": session_id,
-                "created_at": _iso(run.get("created_at")),
-                "finished_at": _iso(run.get("finished_at")),
+                "created_at": iso_or_str(run.get("created_at")),
+                "finished_at": iso_or_str(run.get("finished_at")),
                 "session": sessions.get(session_id) if session_id else None,
             }
         )
@@ -233,8 +227,8 @@ def _session_summaries(db: Session, ids: set[int]) -> dict[int, dict]:
             "status": row.status,
             "node_key": row.node_key,
             "guest_bound": bool(row.ember_session_id),
-            "created_at": _iso(row.created_at),
-            "last_turn_at": _iso(row.last_turn_at),
+            "created_at": iso_or_str(row.created_at),
+            "last_turn_at": iso_or_str(row.last_turn_at),
             "turns": turn.seq if turn else 0,
             "cost_usd": turn.cost_usd if turn else None,
             "terminal_reason": turn.terminal_reason if turn else None,
@@ -322,9 +316,9 @@ def build_factory_view(
             "review_routing": state.get("review_routing"),
             "version": state["version"],
             "actor": state["actor"],
-            "control_updated_at": _iso(state.get("control_updated_at")),
+            "control_updated_at": iso_or_str(state.get("control_updated_at")),
             "admitted_count": state["admitted_count"],
-            "generated_at": _iso(datetime.now(timezone.utc)),
+            "generated_at": iso_or_str(datetime.now(timezone.utc)),
             "active": [enrich(r) for r in active],
             "queued": [shape_receipt(r) for r in queued],
             "recent": [enrich(r) for r in recent],
