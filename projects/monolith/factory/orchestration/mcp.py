@@ -99,6 +99,56 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _synthetics_payload(body, principal, dry_run):
+    from core.db import get_engine
+    from factory.orchestration.factory_router import factory_synthetics
+    from factory.orchestration.synthetic_actions import preflight
+
+    if dry_run:
+        return preflight(
+            get_engine(), chart_version=body.chart_version, image=body.image
+        )
+    return factory_synthetics(body, principal)
+
+
+@mcp.tool
+async def factory_verify_synthetics(
+    run_id: Annotated[str, Field(pattern=r"^[0-9a-f-]{36}$")],
+    chart_version: Annotated[str, Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")],
+    image: Annotated[str, Field(min_length=1, max_length=256)],
+    source_commit: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")],
+    promotion: Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9.-]{0,252}$")],
+    dry_run: bool = True,
+) -> dict:
+    """Preflight or run one fixed private synthetic as a standing human operator.
+
+    Default dry_run reads deployed identity, cgroup memory and database TEMP
+    privilege without creating fixtures or executing synthetic actions. It can
+    inspect readiness while the GitOps feature flag is off. Check application
+    health and no competing Kargo promotion separately before running.
+
+    Explicit dry_run=False invokes the existing operator endpoint once, with
+    the same default-off flag and fixed bounds. Resolve exact chart/image and
+    source/Promotion from deployment evidence. Do not retry a lost response:
+    inspect health and run-tagged traces first. No model, provider or message
+    calls, promotion or rollback. Honeycomb arrival remains unverified.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration.factory_router import SyntheticRequest
+
+    body = SyntheticRequest(
+        run_id=run_id,
+        chart_version=chart_version,
+        image=image,
+        source_commit=source_commit,
+        promotion=promotion,
+    )
+    return await asyncio.to_thread(_synthetics_payload, body, principal, dry_run)
+
+
 def _iso(value: object) -> str | None:
     if isinstance(value, datetime):
         return aware_iso(value)
