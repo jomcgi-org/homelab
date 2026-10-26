@@ -1413,10 +1413,14 @@ class TestPublicNoteEndpoint:
         try:
             c = TestClient(app, raise_server_exceptions=False)
             res = c.get("/api/knowledge/public/notes/pub-A")
+            expanded = c.get(
+                "/api/knowledge/public/notes/pub-A?include_review_history=true&review_history_limit=25"
+            )
         finally:
             app.dependency_overrides.clear()
 
         assert res.status_code == 200
+        assert expanded.content == res.content
         body = res.json()
         assert set(body.keys()) == {
             "note_id",
@@ -1435,3 +1439,69 @@ class TestPublicNoteEndpoint:
             "body",
         }
         assert "extra" not in body
+
+
+@pytest.mark.parametrize("enabled,limit", [(False, 10), (True, 10), (True, 25)])
+def test_note_history_opt_in_matches_mcp(note_client, enabled, limit):
+    import asyncio
+
+    from knowledge.mcp import get_note
+
+    history = {"current_revision": 2, "entries": [], "has_more": False, "limit": limit}
+    note = {**SAMPLE_NOTE, "content": "A fact"}
+    if enabled:
+        note["review_history"] = history
+    with (
+        patch("knowledge.router.KnowledgeStore") as http_store,
+        patch("knowledge.mcp.KnowledgeStore") as mcp_store,
+        patch("knowledge.mcp.Session"),
+        patch("knowledge.mcp.get_engine"),
+    ):
+        for factory in (http_store, mcp_store):
+            factory.return_value.get_note_by_id.return_value = note
+            factory.return_value.get_note_links.return_value = []
+        response = note_client.get(
+            "/api/knowledge/notes/n1",
+            params={
+                "include_review_history": str(enabled).lower(),
+                "review_history_limit": limit,
+            },
+        )
+        mcp = asyncio.run(
+            get_note("n1", include_review_history=enabled, review_history_limit=limit)
+        )
+        assert response.status_code == 200
+        assert response.json() == mcp == {**note, "edges": []}
+        kwargs = (
+            {"include_review_history": True, "review_history_limit": limit}
+            if enabled
+            else {}
+        )
+        for factory in (http_store, mcp_store):
+            factory.return_value.get_note_by_id.assert_called_once_with("n1", **kwargs)
+
+
+@pytest.mark.parametrize("limit", [0, -1, 26, 1000])
+def test_note_history_limits_rejected_before_reads(note_client, limit):
+    import asyncio
+
+    from knowledge.mcp import get_note
+
+    with (
+        patch("knowledge.router.KnowledgeStore") as store,
+        patch("knowledge.mcp.Session") as session,
+    ):
+        response = note_client.get(
+            "/api/knowledge/notes/n1",
+            params={
+                "include_review_history": "true",
+                "review_history_limit": limit,
+            },
+        )
+        result = asyncio.run(
+            get_note("n1", include_review_history=True, review_history_limit=limit)
+        )
+        assert response.status_code == 422
+        assert "between 1 and 25" in result["error"]
+        store.assert_not_called()
+        session.assert_not_called()
