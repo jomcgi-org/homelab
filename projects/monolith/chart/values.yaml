@@ -72,6 +72,10 @@ backend:
 # This only emits the factory/review check. Token delivery, branch protection,
 # and merge activation are separate operator-controlled rollout steps.
 factory:
+  # Manual operator POST only. Requires reviewed run scope and PostgreSQL TEMP
+  # capability before activation. No schedule, Kargo gate or automatic rollback.
+  synthetics:
+    enabled: false
   reviewPublish:
     enabled: false
   dependencyGate:

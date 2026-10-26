@@ -98,6 +98,10 @@ spec:
             # mismatch.
             - name: MONOLITH_CHART_VERSION
               value: {{ .Chart.Version | quote }}
+            - name: MONOLITH_IMAGE
+              value: "{{ .Values.backend.image.repository }}@{{ .Values.backend.image.digest }}"
+            - name: FACTORY_SYNTHETICS_ENABLED
+              value: {{ .Values.factory.synthetics.enabled | quote }}
             {{- if .Values.marine.enabled }}
             - name: AISSTREAM_API_KEY
               valueFrom:

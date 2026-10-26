@@ -36,6 +36,39 @@ class ReceiptRequest(BaseModel):
     generation: int = Field(default=0, ge=0)
 
 
+class SyntheticRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    chart_version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
+    image: str = Field(min_length=1, max_length=256)
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    promotion: str = Field(pattern=r"^[a-z0-9][a-z0-9.-]{0,252}$")
+
+
+@router.post("/synthetics")
+def factory_synthetics(
+    body: SyntheticRequest, principal: Principal = Depends(operator)
+) -> dict:
+    """Manual, default-off fixture reads. Never admits work or rolls back."""
+    import os
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from core.db import get_engine
+    from factory.orchestration.synthetic_actions import Inconclusive, verify
+
+    if os.environ.get("FACTORY_SYNTHETICS_ENABLED") != "true":
+        raise HTTPException(404, "factory synthetics are disabled")
+    try:
+        return verify(get_engine(), **body.model_dump())
+    except (Inconclusive, SQLAlchemyError, ValueError) as exc:
+        # Never return SQL, parameters, fixture bodies or connection details.
+        return {
+            "verdict": "inconclusive",
+            "reason": str(exc) if isinstance(exc, Inconclusive) else type(exc).__name__,
+        }
+
+
 class DecisionRequest(BaseModel):
     """One operator answer to one escalation: pick an option, or ask for more."""
 

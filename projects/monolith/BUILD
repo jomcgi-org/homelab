@@ -5043,6 +5043,11 @@ bdd_test(
     srcs = ["factory/orchestration/factory_webhook_postgres_test.py"],
 )
 
+bdd_test(
+    name = "swarm_synthetic_actions_postgres_test",
+    srcs = ["factory/orchestration/synthetic_actions_postgres_test.py"],
+)
+
 # Hand-registered real-PostgreSQL coverage for the swarm_node_run.model
 # backfill, which casts the TEXT pin to jsonb and so cannot run on SQLite.
 bdd_test(
