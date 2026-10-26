@@ -33,6 +33,7 @@ class ChangelogConfig:
     interval_hours: int = 1
     commit_filter: re.Pattern | None = None
     roast_chance: float = 0.0
+    exclude_dependency_only: bool = False
 
 
 PROMPTS: dict[str, str] = {
@@ -88,6 +89,7 @@ def load_changelog_configs(raw: str) -> list[ChangelogConfig]:
                 interval_hours=entry.get("intervalHours", 1),
                 commit_filter=commit_filter,
                 roast_chance=entry.get("roastChance", 0.0),
+                exclude_dependency_only=entry.get("excludeDependencyOnly", False),
             )
         )
     return configs
@@ -121,6 +123,126 @@ def _filter_changelog_commits(commits: list[dict], pattern: re.Pattern) -> list[
         if pattern.match(msg):
             result.append(c)
     return result
+
+
+# Only normalize dependency pins in known file/field combinations. Unknown
+# changes stay visible, including added/removed files and changes of image source.
+_VERSION = r"v?\d+(?:\.\d+)*(?:[-+][a-zA-Z0-9.]+)?"
+_SECURITY_CHANGE = re.compile(
+    r"security|CVE-\d|GHSA-|vulnerab|distrust|revok|certificate|authenticat|authoriz",
+    re.IGNORECASE,
+)
+
+
+def _pin_line(filename: str, line: str) -> str | None:
+    if filename == "ci-runner/versions.env":
+        match = re.fullmatch(rf"([A-Z][A-Z0-9_]*_VERSION=){_VERSION}", line)
+        if match:
+            return match[1] + "<version>"
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*_SHA256=)[a-f0-9]{64}", line)
+        if match:
+            return match[1] + "<digest>"
+    if filename == "mise.toml":
+        match = re.fullmatch(
+            rf'(\s*(?:python|uv|shellcheck|actionlint|trivy) = "){_VERSION}("\s*)',
+            line,
+        )
+        if match:
+            return match[1] + "<version>" + match[2]
+    if filename.startswith("stacks/") and filename.endswith("/compose.yaml"):
+        match = re.fullmatch(
+            rf"(\s+image: [a-zA-Z0-9./_-]+:)({_VERSION}|latest)"
+            r"(@sha256:[a-f0-9]{64})?",
+            line,
+        )
+        if match:
+            # Keep whether a digest is present: removing a pin is substantive.
+            tag = "latest" if match[2] == "latest" else "<version>"
+            return match[1] + tag + ("@<digest>" if match[3] else "")
+    if filename.rsplit("/", 1)[-1] == "uv.lock":
+        match = re.fullmatch(rf'(version = "){_VERSION}("$)', line)
+        if match:
+            return match[1] + "<version>" + match[2]
+        # Keep URLs, package names, registry sources, markers and sizes literal.
+        # A changed source or dependency graph is not proven version-only.
+        if 'hash = "sha256:' in line:
+            return re.sub(r'(?<=hash = "sha256:)[a-f0-9]{64}', "<digest>", line)
+    return None
+
+
+def _dependency_only_file(file: dict) -> bool:
+    if file.get("status") != "modified" or not file.get("patch"):
+        return False
+    patch = file["patch"]
+    filename = file.get("filename", "")
+    # mise's same-named settings outside [tools] must remain visible. Require
+    # the complete tools section context from the start of the file.
+    if filename == "mise.toml" and not (
+        patch.startswith("@@ -1,")
+        and len(re.findall(r"^@@", patch, re.MULTILINE)) == 1
+        and "\n [tools]\n" in patch
+        and not re.search(r"^[ +]\[(?!tools\])", patch, re.MULTILINE)
+    ):
+        return False
+    removed = [line[1:] for line in patch.splitlines() if line.startswith("-")]
+    added = [line[1:] for line in patch.splitlines() if line.startswith("+")]
+    # GitHub omits/truncates patches for some commits. Never infer purity from
+    # only a subset of the changed lines.
+    if (
+        not removed
+        or len(removed) != file.get("deletions")
+        or len(added) != file.get("additions")
+    ):
+        return False
+    old = [_pin_line(filename, line) for line in removed]
+    new = [_pin_line(filename, line) for line in added]
+    return None not in old and None not in new and old == new
+
+
+async def _exclude_dependency_commits(
+    client: httpx.AsyncClient, commits: list[dict], config: ChangelogConfig, token: str
+) -> list[dict]:
+    if not config.exclude_dependency_only:
+        return commits
+    retained = []
+    # Leave room within the existing 600s job deadline for summary and enqueue.
+    deadline = asyncio.get_running_loop().time() + 30
+    for index, commit in enumerate(commits):
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return retained + commits[index:]
+        # Security-related updates stay visible even when the actual edit is a
+        # pin. Titles and bot identities never establish dependency-only status.
+        if _SECURITY_CHANGE.search(commit["commit"]["message"]):
+            retained.append(commit)
+            continue
+        try:
+            response = await client.get(
+                f"{GITHUB_API}/repos/{config.github_repo}/commits/{commit['sha']}",
+                params={"per_page": 100},
+                headers=_auth_headers(token),
+                timeout=min(5.0, remaining),
+            )
+            response.raise_for_status()
+            detail = response.json()
+            files = detail.get("files", [])
+            pure = (
+                detail.get("sha") == commit["sha"]
+                and len(detail.get("parents", [])) == 1
+                and not response.links.get("next")
+                and bool(files)
+                and all(_dependency_only_file(file) for file in files)
+            )
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            logger.warning(
+                "Changelog[%s]: unable to classify %s", config.name, commit.get("sha")
+            )
+            # Fail open for this and the remaining commits, without retrying
+            # a rate limit/outage once per commit.
+            return retained + commits[index:]
+        if not pure:
+            retained.append(commit)
+    return retained
 
 
 async def _summarize_with_llm(
@@ -191,6 +313,9 @@ async def run_changelog_iteration(
 
         if config.commit_filter is not None:
             commits = _filter_changelog_commits(commits, config.commit_filter)
+        commits = await _exclude_dependency_commits(
+            client, commits, config, github_token
+        )
 
     if not commits:
         logger.info("Changelog[%s]: commits found but none match filter", config.name)
@@ -294,6 +419,9 @@ async def run_changelog_for_config(
             return
         if config.commit_filter is not None:
             commits = _filter_changelog_commits(commits, config.commit_filter)
+        commits = await _exclude_dependency_commits(
+            client, commits, config, github_token
+        )
     if not commits:
         logger.info("Changelog[%s]: commits found but none match filter", config.name)
         return
