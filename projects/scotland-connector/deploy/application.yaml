@@ -12,7 +12,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: scotland-connector
-      targetRevision: 0.18.66
+      targetRevision: 0.19.0
       helm:
         releaseName: scotland-connector
         valueFiles:
