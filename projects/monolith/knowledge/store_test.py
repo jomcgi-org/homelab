@@ -1,7 +1,7 @@
 """Tests for KnowledgeStore."""
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import ANY
 
 import pytest
@@ -1517,3 +1517,123 @@ def test_get_graph_drops_notes_with_null_type(session):
 
     node_ids = {n["id"] for n in result["nodes"]}
     assert node_ids == {"typed", "typed-2"}, "untyped note must be dropped"
+
+
+class TestPrivateReviewHistory:
+    def test_empty_is_opt_in_and_missing_or_deleted_stays_missing(self, store, session):
+        _upsert(store, content="A fact")
+        plain = store.get_note_by_id("a-id")
+        assert "review_history" not in plain
+        expanded = store.get_note_by_id("a-id", include_review_history=True)
+        history = expanded.pop("review_history")
+        assert expanded == plain
+        assert history == {
+            "current_revision": 0,
+            "limit": 10,
+            "has_more": False,
+            "entries": [],
+        }
+        assert store.get_note_by_id("missing", include_review_history=True) is None
+        note = session.exec(select(Note).where(Note.note_id == "a-id")).one()
+        note.deleted_at = datetime.now(UTC)
+        session.commit()
+        assert store.get_note_by_id("a-id", include_review_history=True) is None
+
+    def test_bounded_projection_orders_dates_then_ids_without_changing_freshness(
+        self, store, session
+    ):
+        from knowledge.models import ReviewOutcome
+
+        _upsert(store, content="A fact")
+        note = session.exec(select(Note).where(Note.note_id == "a-id")).one()
+        note.observed_at = datetime(2026, 10, 19, tzinfo=UTC)
+        note.review_after = datetime(2026, 10, 20, tzinfo=UTC)
+        note.verification_state = "disputed"
+        stamp = datetime(2026, 10, 19, 12, tzinfo=UTC)
+        statuses = ["success", "failed", "unsupported", "unavailable"]
+        rows = [
+            ReviewOutcome(
+                note_id="a-id",
+                status=statuses[i % 4],
+                reason="r" * 1200,
+                note_revision=0 if i % 2 else 1,
+                attempted_at=stamp + timedelta(minutes=i // 2),
+                evidence_observed_at=stamp,
+                next_attempt_at=stamp + timedelta(days=1),
+                evidence=["private source bundle"],
+            )
+            for i in range(30)
+        ]
+        # Insertion order intentionally differs from attempted_at ordering.
+        rows.reverse()
+        session.add_all(
+            rows
+            + [
+                ReviewOutcome(
+                    note_id="another-note",
+                    status="success",
+                    reason="other note",
+                    note_revision=1,
+                    attempted_at=stamp + timedelta(days=1),
+                )
+            ]
+        )
+        session.commit()
+        expected = sorted(
+            rows, key=lambda row: (row.attempted_at, row.id), reverse=True
+        )
+        statements = []
+
+        def capture(conn, cursor, statement, parameters, context, executemany):
+            statements.append((statement, parameters))
+
+        event.listen(session.get_bind(), "before_cursor_execute", capture)
+        try:
+            plain = store.get_note_by_id("a-id")
+            plain_count = len(statements)
+            statements.clear()
+            expanded = store.get_note_by_id(
+                "a-id", include_review_history=True, review_history_limit=25
+            )
+            # Existing latest-outcome/current-state reads occur once, plus one
+            # bounded projection query. No query per history row or other note.
+            assert len(statements) == plain_count + 1
+            projected = [
+                (sql, params) for sql, params in statements if "substr(" in sql
+            ]
+            assert len(projected) == 1
+            sql, params = projected[0]
+            assert "review_outcomes.evidence," not in sql
+            assert "LIMIT" in sql and 26 in params
+        finally:
+            event.remove(session.get_bind(), "before_cursor_execute", capture)
+        history = expanded.pop("review_history")
+        assert expanded == plain
+        assert history["has_more"] is True
+        assert history["current_revision"] == 1
+        assert [entry["id"] for entry in history["entries"]] == [
+            row.id for row in expected[:25]
+        ]
+        assert len(history["entries"]) == 25
+        for entry, row in zip(history["entries"], expected):
+            assert entry["status"] == row.status
+            assert entry["is_current_revision"] == (row.note_revision == 1)
+            assert entry["reason"] == "r" * 1000
+            assert entry["reason_truncated"] is True
+            assert entry["reviewer_lane"] is None
+            assert entry["evidence_observed_at"] == stamp.isoformat()
+            assert entry["next_attempt_at"] == (stamp + timedelta(days=1)).isoformat()
+            assert entry["attempted_at"].endswith("+00:00")
+            assert "evidence" not in entry
+        default = store.get_note_by_id("a-id", include_review_history=True)[
+            "review_history"
+        ]
+        assert len(default["entries"]) == 10 and default["has_more"]
+        assert not session.dirty and not session.new
+
+    @pytest.mark.parametrize("limit", [0, -1, 26, 1000])
+    def test_rejects_unbounded_read(self, store, limit):
+        with pytest.raises(ValueError, match="between 1 and 25"):
+            store.get_note_by_id(
+                "missing", include_review_history=True, review_history_limit=limit
+            )

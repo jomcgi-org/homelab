@@ -4,6 +4,8 @@
   import { describeFreshness } from "./freshness.js";
 
   let {
+    detailQuery = "",
+    detailExtra,
     selectedId,
     nodes,
     edges,
@@ -100,13 +102,14 @@
     error = "";
     body = "";
     detail = null;
-    fetch(`${apiBase}/${encodeURIComponent(selectedId)}`, {
+    fetch(`${apiBase}/${encodeURIComponent(selectedId)}${detailQuery}`, {
       signal: controller.signal,
     })
       .then((r) =>
         r.ok ? r.json() : Promise.reject(new Error("fetch failed")),
       )
       .then((data) => {
+        if (controller.signal.aborted) return;
         // Private endpoint returns `content` (raw markdown incl. frontmatter,
         // trimmed client-side); public endpoint returns `body` (already
         // stripped + wikilink-sanitized server-side). Accept either.
@@ -170,6 +173,7 @@
         <p class="panel-error">{error}</p>
       {:else}
         {@html renderMarkdown(trimmedBody, titleMap)}
+        {@render detailExtra?.(detail)}
       {/if}
     </div>
 

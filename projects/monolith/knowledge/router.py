@@ -473,9 +473,19 @@ def get_notes_review_queue_endpoint(
 def get_knowledge_note(
     note_id: str,
     session: Session = Depends(get_session),
+    include_review_history: bool = False,
+    review_history_limit: int = Query(10, ge=1, le=25),
 ) -> dict:
     store = KnowledgeStore(session)
-    note = store.get_note_by_id(note_id)
+    note = (
+        store.get_note_by_id(
+            note_id,
+            include_review_history=True,
+            review_history_limit=review_history_limit,
+        )
+        if include_review_history
+        else store.get_note_by_id(note_id)
+    )
     if note is None:
         raise HTTPException(status_code=404, detail="note not found")
 

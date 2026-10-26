@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta, timezone
 from uuid import uuid4
 
+from core.clock import iso as utc_iso
 from sqlalchemy import and_, case, false, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, delete, select
@@ -26,6 +27,7 @@ from knowledge.models import (
     Note,
     NoteLink,
     RawInput,
+    ReviewOutcome,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,9 @@ logger = logging.getLogger(__name__)
 # chunk-length penalty that downranks ultra-short stubs whose embeddings
 # are too generic to be meaningful.
 MIN_SEARCH_SCORE = 0.4
+REVIEW_HISTORY_DEFAULT_LIMIT = 10
+REVIEW_HISTORY_MAX_LIMIT = 25
+_REVIEW_HISTORY_REASON_LIMIT = 1000
 _CHUNK_LEN_RAMP = 100  # chars at which the length penalty reaches 1.0
 
 # Terminal task statuses. A task in one of these is finished and should drop
@@ -840,7 +845,13 @@ class KnowledgeStore:
                 )
         return results
 
-    def get_note_by_id(self, note_id: str) -> dict | None:
+    def get_note_by_id(
+        self,
+        note_id: str,
+        *,
+        include_review_history: bool = False,
+        review_history_limit: int = REVIEW_HISTORY_DEFAULT_LIMIT,
+    ) -> dict | None:
         """Fetch note metadata plus its body by stable ``note_id``.
 
         Returns ``None`` if no note matches. Includes the authoritative
@@ -848,7 +859,10 @@ class KnowledgeStore:
         from Postgres; ``content`` is ``None`` for rows whose Phase 1
         backfill has not run yet, in which case callers fall back to the
         vault file. Used by the note-detail and MCP ``get_note`` paths.
+        Private readers may opt into a bounded projection of stored reviews.
         """
+        if not 1 <= review_history_limit <= REVIEW_HISTORY_MAX_LIMIT:
+            raise ValueError("review_history_limit must be between 1 and 25")
         row = self.session.execute(
             select(
                 Note.note_id,
@@ -867,6 +881,7 @@ class KnowledgeStore:
                 Note.review_after,
                 Note.review_policy,
                 Note.last_reviewed_at,
+                Note.revision,
             )
             .where(Note.note_id == note_id)
             .where(Note.deleted_at.is_(None))
@@ -877,7 +892,7 @@ class KnowledgeStore:
         disputed_note_ids = open_dispute_note_ids(self.session, [row.note_id])
         provenance_by_note = provenance_for_notes(self.session, [row.note_id])
         entities_by_note = _entities_for_note_ids(self.session, [row.note_id])
-        return {
+        result = {
             "note_id": row.note_id,
             "title": row.title,
             "path": row.path,
@@ -897,6 +912,53 @@ class KnowledgeStore:
             ),
             "provenance": provenance_by_note.get(row.note_id, []),
             "entities": entities_by_note.get(row.note_id, []),
+        }
+        if include_review_history:
+            result["review_history"] = self._review_history(
+                row.note_id, row.revision, review_history_limit
+            )
+        return result
+
+    def _review_history(self, note_id: str, revision: int, limit: int) -> dict:
+        # Select only the private display fields, never raw evidence bundles.
+        # The extra row establishes truncation without a total-history count.
+        rows = self.session.execute(
+            select(
+                ReviewOutcome.id,
+                ReviewOutcome.status,
+                func.substr(
+                    ReviewOutcome.reason, 1, _REVIEW_HISTORY_REASON_LIMIT + 1
+                ).label("reason"),
+                ReviewOutcome.note_revision,
+                ReviewOutcome.attempted_at,
+                ReviewOutcome.evidence_observed_at,
+                ReviewOutcome.next_attempt_at,
+            )
+            .where(ReviewOutcome.note_id == note_id)
+            .order_by(ReviewOutcome.attempted_at.desc(), ReviewOutcome.id.desc())
+            .limit(limit + 1)
+        ).all()
+
+        return {
+            "current_revision": revision,
+            "limit": limit,
+            "has_more": len(rows) > limit,
+            "entries": [
+                {
+                    "id": row.id,
+                    "status": row.status,
+                    "reason": row.reason[:_REVIEW_HISTORY_REASON_LIMIT],
+                    "reason_truncated": len(row.reason) > _REVIEW_HISTORY_REASON_LIMIT,
+                    "note_revision": row.note_revision,
+                    "is_current_revision": row.note_revision == revision,
+                    "attempted_at": utc_iso(row.attempted_at),
+                    "evidence_observed_at": utc_iso(row.evidence_observed_at),
+                    "next_attempt_at": utc_iso(row.next_attempt_at),
+                    # ReviewOutcome has no durable reviewer/lane linkage.
+                    "reviewer_lane": None,
+                }
+                for row in rows[:limit]
+            ],
         }
 
     def _last_review_outcome(self, note_id: str) -> dict | None:

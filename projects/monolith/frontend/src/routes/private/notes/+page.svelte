@@ -1,6 +1,7 @@
 <script>
   import KnowledgeGraph from "$lib/components/notes/KnowledgeGraph.svelte";
   import NotePanel from "$lib/components/notes/NotePanel.svelte";
+  import NoteReviewHistory from "$lib/components/notes/NoteReviewHistory.svelte";
   import GraphLegend from "$lib/components/notes/GraphLegend.svelte";
   import GraphSearch from "$lib/components/notes/GraphSearch.svelte";
   import StatusBar from "$lib/components/notes/StatusBar.svelte";
@@ -76,7 +77,12 @@
       onSelect={selectNode}
       onClose={() => (selectedId = null)}
       apiBase="/api/knowledge/notes"
-    />
+      detailQuery="?include_review_history=true"
+    >
+      {#snippet detailExtra(detail)}
+        <NoteReviewHistory history={detail?.review_history} />
+      {/snippet}
+    </NotePanel>
   </div>
 </div>
 
