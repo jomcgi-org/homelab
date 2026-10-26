@@ -41,6 +41,107 @@ def run_request(monkeypatch):
     )
 
 
+def test_preflight_is_read_only_and_requires_all_checks(
+    engine, run_request, monkeypatch
+):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("preflight executed a synthetic action")
+
+    for name in ("fixtures", "cached_reads", "cooldown", "verify"):
+        monkeypatch.setattr(actions, name, forbidden)
+    identity = {k: run_request[k] for k in ("chart_version", "image")}
+    monkeypatch.delenv("FACTORY_SYNTHETICS_ENABLED", raising=False)
+    result = actions.preflight(engine, **identity)
+    assert result["verdict"] == "inconclusive"
+    assert result["synthetic_actions_executed"] is False
+    assert result["checks"] == {
+        "deployment_identity": True,
+        "memory_headroom": True,
+        "temporary_tables": True,
+        "enabled": False,
+    }
+    monkeypatch.setenv("FACTORY_SYNTHETICS_ENABLED", "true")
+    assert actions.preflight(engine, **identity)["verdict"] == "ready"
+    assert (
+        actions.preflight(engine, **{**identity, "image": "stale"})["verdict"]
+        == "inconclusive"
+    )
+    snapshot = actions.process_memory_snapshot()
+    monkeypatch.setattr(
+        actions,
+        "process_memory_snapshot",
+        lambda: {**snapshot, "cgroup_memory_bytes": 900},
+    )
+    assert actions.preflight(engine, **identity)["verdict"] == "inconclusive"
+
+
+def test_preflight_database_error_is_inconclusive_and_sanitized(
+    engine, run_request, monkeypatch
+):
+    from sqlalchemy.exc import OperationalError
+
+    class Unavailable:
+        disposed = False
+
+        def connect(self):
+            raise OperationalError("private SQL", {"secret": "private"}, None)
+
+        def dispose(self):
+            self.disposed = True
+
+    unavailable = Unavailable()
+    monkeypatch.setattr(actions, "create_engine", lambda *a, **kw: unavailable)
+    monkeypatch.setenv("FACTORY_SYNTHETICS_ENABLED", "true")
+    result = actions.preflight(
+        engine, **{k: run_request[k] for k in ("chart_version", "image")}
+    )
+    assert result["verdict"] == "inconclusive"
+    assert result["checks"]["temporary_tables"] is False
+    assert result["reason"] == "OperationalError"
+    assert "private" not in str(result)
+    assert unavailable.disposed
+
+
+def test_preflight_transaction_exit_failure_never_returns_ready(
+    run_request, monkeypatch
+):
+    from types import SimpleNamespace
+    from sqlalchemy.exc import OperationalError
+
+    class ExitFailure:
+        disposed = False
+
+        @contextmanager
+        def connect(self):
+            yield self
+
+        @contextmanager
+        def begin(self):
+            yield
+            raise OperationalError("private commit failure", {}, None)
+
+        def execute(self, statement):
+            return self
+
+        def scalar(self):
+            return True
+
+        def dispose(self):
+            self.disposed = True
+
+    failure = ExitFailure()
+    monkeypatch.setattr(actions, "create_engine", lambda *a, **kw: failure)
+    monkeypatch.setenv("FACTORY_SYNTHETICS_ENABLED", "true")
+    result = actions.preflight(
+        SimpleNamespace(dialect=SimpleNamespace(name="postgresql"), url="unused"),
+        **{k: run_request[k] for k in ("chart_version", "image")},
+    )
+    assert all(result["checks"].values())
+    assert result["verdict"] == "inconclusive"
+    assert result["reason"] == "OperationalError"
+    assert failure.disposed
+
+
 def test_real_status_work_baseline_and_temp_cleanup(engine, run_request, monkeypatch):
     import httpx
 

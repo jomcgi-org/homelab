@@ -321,6 +321,63 @@ def cache_snapshot():
     return result
 
 
+def preflight(engine, *, chart_version, image):
+    """Read identity, memory and the current role's TEMP privilege, without fixtures."""
+    memory = process_memory_snapshot()
+    used, limit = memory["cgroup_memory_bytes"], memory["cgroup_memory_limit_bytes"]
+    identity = {
+        "chart_version": os.environ.get("MONOLITH_CHART_VERSION"),
+        "image": os.environ.get("MONOLITH_IMAGE"),
+        "pod": os.environ.get("HOSTNAME", "unknown"),
+        "process_instance": PROCESS_INSTANCE,
+    }
+    checks = {
+        "deployment_identity": bool(chart_version and image)
+        and chart_version == identity["chart_version"]
+        and image == identity["image"],
+        "memory_headroom": used is not None
+        and limit is not None
+        and limit > 0
+        and used < limit * 0.8,
+        "temporary_tables": False,
+        "enabled": os.environ.get("FACTORY_SYNTHETICS_ENABLED") == "true",
+    }
+    result = {
+        "verdict": "inconclusive",
+        "synthetic_actions_executed": False,
+        "identity": identity,
+        "checks": checks,
+        "memory": memory,
+    }
+    if engine.dialect.name != "postgresql":
+        result["reason"] = "production verification requires PostgreSQL"
+        return result
+    from sqlalchemy.exc import SQLAlchemyError
+
+    isolated = create_engine(
+        engine.url, connect_args={"connect_timeout": 2}, poolclass=NullPool
+    )
+    try:
+        with isolated.connect() as connection:
+            with connection.begin():
+                connection.execute(text("SET TRANSACTION READ ONLY"))
+                connection.execute(text("SET LOCAL statement_timeout = '1000ms'"))
+                checks["temporary_tables"] = bool(
+                    connection.execute(
+                        text(
+                            "SELECT has_database_privilege(current_user, current_database(), 'TEMP')"
+                        )
+                    ).scalar()
+                )
+    except SQLAlchemyError as exc:
+        result["reason"] = type(exc).__name__
+    finally:
+        isolated.dispose()
+    if "reason" not in result and all(checks.values()):
+        result["verdict"] = "ready"
+    return result
+
+
 def verify(engine, *, run_id, chart_version, image, source_commit, promotion):
     """One bounded run. Caller provenance is labelled, never a deployment fact."""
     UUID(run_id)

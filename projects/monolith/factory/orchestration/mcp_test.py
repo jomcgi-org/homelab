@@ -133,7 +133,97 @@ def test_factory_tools_are_registered():
         "factory_apply_refinement_batch",
         "factory_request_brief",
         "factory_context",
+        "factory_verify_synthetics",
     } <= registered, f"factory tools not registered; got: {sorted(registered)}"
+
+
+def _synthetic_request():
+    return {
+        "run_id": "3f58f64d-1eaa-47a5-b989-032061f6e399",
+        "chart_version": "1.2.3",
+        "image": "example@sha256:" + "b" * 64,
+        "source_commit": "a" * 40,
+        "promotion": "prod.synthetic",
+    }
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.ANONYMOUS, groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_synthetics_refuses_before_preflight_or_execution(
+    principal, dry_run, monkeypatch
+):
+    def forbidden(*args):
+        raise AssertionError("non-operator reached synthetic actions")
+
+    monkeypatch.setattr(mcp, "_synthetics_payload", forbidden)
+    result = _as(
+        principal,
+        lambda: mcp.factory_verify_synthetics(**_synthetic_request(), dry_run=dry_run),
+    )
+    assert result["error"] == mcp.OPERATOR_REQUIRED
+
+
+def test_synthetics_defaults_to_preflight_and_uses_existing_endpoint(monkeypatch):
+    from core import db
+    from factory.orchestration import factory_router, synthetic_actions
+    from fastapi import HTTPException
+
+    engine = object()
+    calls = []
+    monkeypatch.setattr(db, "get_engine", lambda: engine)
+
+    def preflight(received_engine, **identity):
+        assert received_engine is engine
+        assert identity == {
+            k: _synthetic_request()[k] for k in ("chart_version", "image")
+        }
+        calls.append("preflight")
+        return {"verdict": "ready", "synthetic_actions_executed": False}
+
+    def verify(received_engine, **request):
+        assert received_engine is engine
+        assert request == _synthetic_request()
+        calls.append("run")
+        return {"verdict": "pass"}
+
+    monkeypatch.setattr(synthetic_actions, "preflight", preflight)
+    monkeypatch.setattr(synthetic_actions, "verify", verify)
+    monkeypatch.delenv("FACTORY_SYNTHETICS_ENABLED", raising=False)
+    result = _as(
+        _principal(), lambda: mcp.factory_verify_synthetics(**_synthetic_request())
+    )
+    assert result["synthetic_actions_executed"] is False
+    assert calls == ["preflight"]
+    with pytest.raises(HTTPException) as refused:
+        _as(
+            _principal(),
+            lambda: mcp.factory_verify_synthetics(
+                **_synthetic_request(), dry_run=False
+            ),
+        )
+    assert refused.value.status_code == 404
+    assert calls == ["preflight"]
+    monkeypatch.setenv("FACTORY_SYNTHETICS_ENABLED", "true")
+    original = factory_router.factory_synthetics
+
+    def endpoint(body, principal):
+        assert principal == _principal()
+        return original(body, principal)
+
+    monkeypatch.setattr(factory_router, "factory_synthetics", endpoint)
+    assert _as(
+        _principal(),
+        lambda: mcp.factory_verify_synthetics(**_synthetic_request(), dry_run=False),
+    ) == {"verdict": "pass"}
+    assert calls == ["preflight", "run"]
 
 
 def test_planner_preview_adapter_does_not_register_a_tool_or_relax_operator_floor():
