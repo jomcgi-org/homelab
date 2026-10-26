@@ -47,6 +47,7 @@ class TestChangelogConfig:
         assert configs[0].interval_hours == 1
         assert configs[0].commit_filter is None
         assert configs[0].roast_chance == 0.0
+        assert not configs[0].exclude_dependency_only
 
     def test_load_configs_with_commit_filter(self):
         """commitFilter string is compiled to a regex pattern."""
@@ -759,3 +760,287 @@ class TestRunChangelogForConfig:
         ):
             await run_changelog_for_config("homelab", AsyncMock())
         enqueue.assert_not_called()
+
+
+# Real upstream patches, fetched read-only from ColinCee/homelab.
+COLIN_PATCHES = {
+    "2e9dfbcf0953605a99373bca70509d9f84a5fdd4": [
+        {
+            "filename": "ci-runner/versions.env",
+            "status": "modified",
+            "patch": "@@ -14,7 +14,7 @@ RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32\n NODE_VERSION=v24.22.0\n NODE_SHA256=cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008\n # renovate: datasource=github-releases depName=astral-sh/uv\n-UV_VERSION=0.13.1\n+UV_VERSION=0.13.5\n UV_SHA256=eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220\n PYTHON_VERSION=3.15\n ",
+            "additions": 1,
+            "deletions": 1,
+        }
+    ],
+    "30bb03404942cd5d7ee861808b2909bc5c041d81": [
+        {
+            "filename": "stacks/observability/compose.yaml",
+            "status": "modified",
+            "patch": "@@ -53,7 +53,7 @@ services:\n       - loki-data:/loki\n \n   alloy:\n-    image: grafana/alloy:v1.21.1@sha256:4039c971193053a84e53dd9ed3e7d4561c069256b024631cd3498a353ed7ece8\n+    image: grafana/alloy:v1.21.2@sha256:89a5a320168387336b9ac3c850609c3ba7757eadd4ae5f1d819deb35e9854b18\n     restart: unless-stopped\n     security_opt:\n       - no-new-privileges:true",
+            "additions": 1,
+            "deletions": 1,
+        }
+    ],
+    "d9efacb3104b477f60142e774f8915da993cc4ce": [
+        {
+            "filename": "mise.toml",
+            "status": "modified",
+            "patch": '@@ -1,6 +1,6 @@\n [tools]\n python = "3.15.1"\n-uv = "0.13.4"\n+uv = "0.13.5"\n shellcheck = "0.11.0"\n actionlint = "1.7.12"\n trivy = "0.76.1"',
+            "additions": 1,
+            "deletions": 1,
+        }
+    ],
+    "e32470c2f1f77fcea03725d0faa484740c528566": [
+        {
+            "filename": "scripts/server-health.sh",
+            "status": "modified",
+            "patch": '@@ -116,6 +116,9 @@ done\n \n upgrades="$(apt-get -s upgrade 2>/dev/null | grep -c \'^Inst \' || true)"\n row "Pending apt upgrades" "$upgrades"\n+# Log only: which packages are waiting, and whether Ubuntu is still phasing them in.\n+echo "Pending apt upgrades:"\n+apt-get -s upgrade 2>/dev/null | sed -n \'/^The following/,/^[0-9]* upgraded/p\' || true\n if [[ -f /var/run/reboot-required ]]; then\n   row "Reboot required" "yes (unattended-upgrades reboots at 04:00 UTC)"\n else',
+            "additions": 3,
+            "deletions": 0,
+        }
+    ],
+    "f394adc2c54b138edf3bd904f5a0823f5e3d2054": [
+        {
+            "filename": "stacks/flight-tracker/compose.yaml",
+            "status": "modified",
+            "patch": "@@ -14,7 +14,7 @@ services:\n       - HEATMAP_DB_PATH=/app/data/historical_heatmap.parquet\n \n   cloudflared:\n-    image: cloudflare/cloudflared:2026.10.1@sha256:a15a3b50b8dabd57ac2090e9484c0247dba9dfa1f0df4d298d4317f9d69eb2d5\n+    image: cloudflare/cloudflared:2026.10.2@sha256:0e56c13c7058fcef9c4f0e7d83372f82330548dbf8f8b366f3d8b506526d93b2\n     restart: unless-stopped\n     security_opt:\n       - no-new-privileges:true",
+            "additions": 1,
+            "deletions": 1,
+        }
+    ],
+}
+
+
+class TestDependencyOnly:
+    @pytest.mark.parametrize("sha", list(COLIN_PATCHES)[:3])
+    def test_real_pure_pin_edits(self, sha):
+        from chat.changelog import _dependency_only_file
+
+        assert all(_dependency_only_file(f) for f in COLIN_PATCHES[sha])
+
+    def test_real_server_health_code_is_retained(self):
+        from chat.changelog import _dependency_only_file
+
+        assert not all(
+            _dependency_only_file(f)
+            for f in COLIN_PATCHES["e32470c2f1f77fcea03725d0faa484740c528566"]
+        )
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"status": "added"},
+            {"status": "renamed"},
+            {"patch": ""},
+            {"additions": 9},
+            {"filename": "app.py"},
+            {"patch": "@@ -1 +1 @@\n-    privileged: false\n+    privileged: true"},
+            {
+                "patch": "@@ -1 +1 @@\n-    image: grafana/alloy:v1.0\n+    image: evil/alloy:v1.1"
+            },
+            {
+                "patch": "@@ -1 +1 @@\n-    image: grafana/alloy:v1.0@sha256:"
+                + "a" * 64
+                + "\n+    image: grafana/alloy:v1.1"
+            },
+        ],
+    )
+    def test_unknown_incomplete_and_security_config_changes_stay(self, change):
+        from chat.changelog import _dependency_only_file
+
+        file = dict(COLIN_PATCHES["30bb03404942cd5d7ee861808b2909bc5c041d81"][0])
+        file.update(change)
+        assert not _dependency_only_file(file)
+
+    def test_lock_version_only_but_not_source_change(self):
+        from chat.changelog import _dependency_only_file
+
+        file = {
+            "filename": "uv.lock",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 1,
+            "patch": '@@ -8 +8 @@\n-version = "1.2.3"\n+version = "1.2.4"',
+        }
+        assert _dependency_only_file(file)
+        file["patch"] = (
+            '@@ -8 +8 @@\n-source = { registry = "https://pypi.org/simple" }\n+source = { registry = "https://evil.test/simple" }'
+        )
+        assert not _dependency_only_file(file)
+
+    def test_mise_non_tools_section_stays(self):
+        from chat.changelog import _dependency_only_file
+
+        file = dict(COLIN_PATCHES["d9efacb3104b477f60142e774f8915da993cc4ce"][0])
+        file["patch"] = file["patch"].replace("[tools]", "[env]")
+        assert not _dependency_only_file(file)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "pure",
+            "mixed",
+            "same_file_mixed",
+            "security",
+            "unavailable",
+            "paginated",
+            "merge",
+            "missing_patch",
+        ],
+    )
+    @pytest.mark.parametrize("entrypoint", ["argo", "bot"])
+    async def test_real_pipeline_filters_before_summary_and_delivery(
+        self, mode, entrypoint
+    ):
+        import copy
+
+        import httpx
+
+        sha = "30bb03404942cd5d7ee861808b2909bc5c041d81"
+        commit = {
+            "sha": sha,
+            "commit": {
+                "message": "Update grafana/alloy Docker tag to v1.21.2 (#455)",
+                "author": {"name": "A human"},
+            },
+        }
+        detail = {
+            "sha": sha,
+            "parents": [{"sha": "parent"}],
+            "files": copy.deepcopy(COLIN_PATCHES[sha]),
+        }
+        commits = [commit]
+        if mode == "mixed":
+            # A dependency-titled commit containing substantive code stays whole.
+            detail["files"] += COLIN_PATCHES["e32470c2f1f77fcea03725d0faa484740c528566"]
+        if mode == "same_file_mixed":
+            detail["files"][0]["patch"] += (
+                "\n-    privileged: false\n+    privileged: true"
+            )
+            detail["files"][0]["additions"] += 1
+            detail["files"][0]["deletions"] += 1
+        if mode == "security":
+            commit["commit"]["message"] = (
+                "Update cloudflared to 2026.10.2 (eMudhra CA distrust) (#440)"
+            )
+            detail["files"] = COLIN_PATCHES["f394adc2c54b138edf3bd904f5a0823f5e3d2054"]
+        if mode == "merge":
+            detail["parents"].append({"sha": "second"})
+        if mode == "missing_patch":
+            detail["files"][0].pop("patch")
+
+        requests = []
+
+        def handle(request):
+            requests.append(request)
+            if request.url.path.endswith("/commits"):
+                return httpx.Response(200, json=commits)
+            if mode == "unavailable":
+                return httpx.Response(503)
+            headers = (
+                {"Link": '<https://api.github.com/next>; rel="next"'}
+                if mode == "paginated"
+                else {}
+            )
+            return httpx.Response(200, json=detail, headers=headers)
+
+        raw = json.loads(_configs_json(name="colin-homelab"))
+        raw[0]["excludeDependencyOnly"] = True
+        raw[0]["githubRepo"] = "ColinCee/homelab"
+        config = load_changelog_configs(json.dumps(raw))[0]
+        assert config.exclude_dependency_only
+        llm = AsyncMock(return_value="Summary")
+        bot = MagicMock(spec=discord.Client)
+        channel = AsyncMock()
+        bot.get_channel.return_value = channel
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            context = AsyncMock()
+            context.__aenter__.return_value = client
+            with (
+                patch.dict(
+                    os.environ,
+                    {"GITHUB_TOKEN": "test", "CHANGELOG_CONFIGS": json.dumps(raw)},
+                ),
+                patch("chat.changelog.httpx.AsyncClient", return_value=context),
+                patch("chat.changelog._enqueue_changelog") as enqueue,
+            ):
+                if entrypoint == "argo":
+                    await run_changelog_for_config(config.name, llm)
+                else:
+                    await run_changelog_iteration(bot, llm, config)
+        if mode == "pure":
+            llm.assert_not_called()
+            enqueue.assert_not_called()
+            channel.send.assert_not_called()
+        else:
+            llm.assert_awaited_once()
+            assert commit["commit"]["message"] in llm.call_args.args[0]
+            if entrypoint == "argo":
+                enqueue.assert_called_once()
+            else:
+                channel.send.assert_awaited_once()
+        assert len(requests) == (1 if mode == "security" else 2)
+        assert requests[0].url.params["sha"] == "main"
+
+    def test_image_switch_to_floating_tag_stays(self):
+        from chat.changelog import _dependency_only_file
+
+        file = dict(COLIN_PATCHES["30bb03404942cd5d7ee861808b2909bc5c041d81"][0])
+        file["patch"] = (
+            "@@ -1 +1 @@\n-    image: grafana/alloy:v1.0\n+    image: grafana/alloy:latest"
+        )
+        assert not _dependency_only_file(file)
+
+    def test_mise_discontinuous_section_context_stays(self):
+        from chat.changelog import _dependency_only_file
+
+        file = dict(COLIN_PATCHES["d9efacb3104b477f60142e774f8915da993cc4ce"][0])
+        file["patch"] += '\n@@ -40 +40 @@\n-python = "3.14"\n+python = "3.15"'
+        file["additions"] += 1
+        file["deletions"] += 1
+        assert not _dependency_only_file(file)
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_preserves_order_and_filters_only_proven_pins(self):
+        import httpx
+        from chat.changelog import _exclude_dependency_commits
+
+        pure_sha, code_sha = (
+            list(COLIN_PATCHES)[0],
+            "e32470c2f1f77fcea03725d0faa484740c528566",
+        )
+        commits = [
+            {"sha": sha, "commit": {"message": "A human change"}}
+            for sha in (pure_sha, code_sha)
+        ]
+
+        def handle(request):
+            sha = request.url.path.rsplit("/", 1)[-1]
+            return httpx.Response(
+                200, json={"sha": sha, "parents": [{}], "files": COLIN_PATCHES[sha]}
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            config = _make_config(exclude_dependency_only=True)
+            assert await _exclude_dependency_commits(
+                client, commits, config, "test"
+            ) == [commits[1]]
+
+    @pytest.mark.asyncio
+    async def test_timeout_retains_remaining_batch_without_retry(self):
+        import httpx
+        from chat.changelog import _exclude_dependency_commits
+
+        commits = [{"sha": str(i), "commit": {"message": "Change"}} for i in range(3)]
+        client = AsyncMock()
+        client.get.side_effect = httpx.ReadTimeout("detail lookup stalled")
+        assert (
+            await _exclude_dependency_commits(
+                client, commits, _make_config(exclude_dependency_only=True), "test"
+            )
+            == commits
+        )
+        client.get.assert_awaited_once()
+        assert client.get.call_args.kwargs["timeout"] <= 5

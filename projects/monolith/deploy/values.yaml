@@ -237,6 +237,7 @@ chat:
     - name: "colin-homelab"
       channelId: "1491186550472708117"
       githubRepo: "ColinCee/homelab"
+      excludeDependencyOnly: true
       prompt: "professional"
       embedTitle: "Colin - Homelab"
       embedColor: "0x2ECC71"
