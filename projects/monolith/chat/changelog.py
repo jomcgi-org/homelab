@@ -180,8 +180,8 @@ def _dependency_only_file(file: dict) -> bool:
     if filename == "mise.toml" and not (
         patch.startswith("@@ -1,")
         and len(re.findall(r"^@@", patch, re.MULTILINE)) == 1
-        and "\n [tools]\n" in patch
-        and not re.search(r"^[ +]\[(?!tools\])", patch, re.MULTILINE)
+        and patch.splitlines()[1] == " [tools]"
+        and not re.search(r"^[ +]\s*\[(?!tools\])", patch, re.MULTILINE)
     ):
         return False
     removed = [line[1:] for line in patch.splitlines() if line.startswith("-")]
