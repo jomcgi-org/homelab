@@ -289,13 +289,30 @@ func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) Che
 			if near[i].score != near[j].score {
 				return near[i].score > near[j].score
 			}
-			return near[i].o.FromPointKm < near[j].o.FromPointKm
+			if near[i].o.FromPointKm != near[j].o.FromPointKm {
+				return near[i].o.FromPointKm < near[j].o.FromPointKm
+			}
+			return near[i].o.SiteID < near[j].o.SiteID
 		})
-		for _, n := range near[:min(len(near), 2)] {
-			r.NearbyNights = append(r.NearbyNights, n.o)
-		}
+		r.NearbyNights = distinctNearbyNights(near)
 	}
 	return r
+}
+
+// Keep ranking intact while selecting at most two distinct destinations.
+// Match planNights: a nearby grid cell is not another destination.
+func distinctNearbyNights(ranked []rankedNight) []NightOption {
+	var out []NightOption
+	for _, n := range ranked {
+		if len(out) > 0 && stars.DistanceKm(out[0].Lat, out[0].Lon, n.o.Lat, n.o.Lon) < siteSpacingKm {
+			continue
+		}
+		out = append(out, n.o)
+		if len(out) == 2 {
+			break
+		}
+	}
+	return out
 }
 
 // Check answers "is my plan on": a verdict, its reason and timing for each

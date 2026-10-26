@@ -855,3 +855,61 @@ func TestRefinedAdviceMetadataAndSize(t *testing.T) {
 		t.Fatal(sky.Meta.Notes)
 	}
 }
+
+func TestCheckNightAlternativesAreDistinct(t *testing.T) {
+	// The checked point has one clear hour. Better sites are outside its
+	// inner 10 km search, with the first two less than 1 km apart.
+	site := func(id string, lat float64, count int, fetched string) string {
+		var hours []string
+		for h := 0; h < count; h++ {
+			stamp := time.Date(2026, 10, 19, 20+h, 0, 0, 0, time.UTC).Format(time.RFC3339)
+			hours = append(hours, fmt.Sprintf(`{"time":%q,"cloud_area_fraction":0,"dark":true}`, stamp))
+		}
+		return fmt.Sprintf(`{"id":%q,"lat":%f,"lon":-4,"lp_zone":"pristine","forecast_fetched_at":%q,"clear_dark_hours":%d,"clear_twilight_hours":%d,"best_hours":[%s]}`, id, lat, fetched, count, count, strings.Join(hours, ","))
+	}
+	fresh := "2026-10-19T14:05:00Z"
+	checked := site("checked", 57, 1, fresh)
+	a, b := site("a", 57.11, 8, fresh), site("b", 57.115, 8, fresh)
+	far := site("far", 57.19, 8, fresh)
+	for _, tc := range []struct {
+		name  string
+		sites []string
+		want  []string
+	}{
+		{"cluster", []string{a, b, far}, []string{"a", "far"}},
+		{"sparse", []string{a, b}, []string{"a"}},
+		{"quality before proximity", []string{site("closer", 57.11, 7, fresh), far}, []string{"far", "closer"}},
+		{"equal rank permutation", []string{site("z", 57.11, 8, fresh), a, far}, []string{"a", "far"}},
+		{"equal rank reversed", []string{far, a, site("z", 57.11, 8, fresh)}, []string{"a", "far"}},
+		{"no unsuitable filler", []string{a, b, site("cloudy", 57.19, 0, fresh), site("stale", 57.20, 8, "2026-10-16T14:05:00Z")}, []string{"a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"fetched_at":"2026-10-19T14:05:00Z","sites":[` + strings.Join(append([]string{checked}, tc.sites...), ",") + `]}`
+			ds, err := stars.Parse([]byte(body), []byte(`{"sites":[]}`), "spacing")
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc := fixture.Service(true)
+			svc.Data = fixture.Source{DS: ds}
+			env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-19", Lat: f(57), Lon: f(-4)}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := env.Data.(connector.CheckResult).Items[0]
+			if item.Verdict != verdict.Marginal || item.Night.SiteID != "checked" {
+				t.Fatalf("checked point changed: %+v", item)
+			}
+			if len(item.NearbyNights) != len(tc.want) {
+				t.Fatalf("alternatives: %+v, want IDs %v", item.NearbyNights, tc.want)
+			}
+			for i, id := range tc.want {
+				if item.NearbyNights[i].SiteID != id {
+					t.Fatalf("alternative %d = %s, want %s", i, item.NearbyNights[i].SiteID, id)
+				}
+				if item.NearbyNights[i].Verdict != verdict.Go {
+					t.Fatalf("unsuitable alternative: %+v", item.NearbyNights[i])
+				}
+			}
+		})
+	}
+}
