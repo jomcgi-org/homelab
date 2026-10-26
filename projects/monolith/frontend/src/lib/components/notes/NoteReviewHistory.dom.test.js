@@ -60,21 +60,29 @@ it("labels stored status and revision without inventing reviewer attribution", (
     },
   });
   expect(root.querySelectorAll("li")).toHaveLength(4);
-  expect(root.textContent).toContain("current claim");
-  expect(root.textContent).toContain("other claim revision");
-  expect(root.textContent).toContain("Reviewer/lane: unrecorded");
-  expect(root.textContent).toContain("2026-10-20 12:00:00 UTC");
-  expect(root.textContent).toContain(
+  expect(root.textContent.replace(/\s+/g, " ")).toContain("current claim");
+  expect(root.textContent.replace(/\s+/g, " ")).toContain(
+    "other claim revision",
+  );
+  expect(root.textContent.replace(/\s+/g, " ")).toContain(
+    "Reviewer/lane: unrecorded",
+  );
+  expect(root.textContent.replace(/\s+/g, " ")).toContain(
+    "2026-10-20 12:00:00 UTC",
+  );
+  expect(root.textContent.replace(/\s+/g, " ")).toContain(
     "Evidence observed: 2026-10-19 12:00:00 UTC",
   );
-  expect(root.textContent).toContain(
+  expect(root.textContent.replace(/\s+/g, " ")).toContain(
     "Next attempt recorded: 2026-10-21 12:00:00 UTC",
   );
-  expect(root.textContent).toContain(
+  expect(root.textContent.replace(/\s+/g, " ")).toContain(
     "Stored attempts. Current freshness is shown above.",
   );
-  expect(root.textContent).toContain("Showing the newest 4 attempts");
-  expect(root.textContent).toContain("(truncated)");
+  expect(root.textContent.replace(/\s+/g, " ")).toContain(
+    "Showing the newest 4 attempts",
+  );
+  expect(root.textContent.replace(/\s+/g, " ")).toContain("(truncated)");
   expect(root.querySelector("script")).toBeNull();
 });
 it("keeps the shared public panel request and rendering free of history", async () => {
@@ -95,9 +103,11 @@ it("keeps the shared public panel request and rendering free of history", async 
     apiBase: "/app/notes/body",
   });
   await tick();
-  await vi.waitFor(() => expect(root.textContent).toContain("Public body"));
+  await vi.waitFor(() =>
+    expect(root.textContent.replace(/\s+/g, " ")).toContain("Public body"),
+  );
   expect(fetcher.mock.calls[0][0]).toBe("/app/notes/body/public%2Fnote");
-  expect(root.textContent).not.toContain("Review history");
+  expect(root.textContent.replace(/\s+/g, " ")).not.toContain("Review history");
 });
 it("requests the private expansion only through the explicit seam", async () => {
   const fetcher = vi.fn(
@@ -122,7 +132,9 @@ it("requests the private expansion only through the explicit seam", async () => 
     detailExtra,
   });
   await tick();
-  await vi.waitFor(() => expect(root.textContent).toContain("Private body"));
+  await vi.waitFor(() =>
+    expect(root.textContent.replace(/\s+/g, " ")).toContain("Private body"),
+  );
   expect(fetcher.mock.calls[0][0]).toBe(
     "/api/knowledge/notes/private%2Fnote?include_review_history=true",
   );
