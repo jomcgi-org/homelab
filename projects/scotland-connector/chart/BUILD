@@ -80,6 +80,9 @@ py_test(
 
 filegroup(
     name = "observer_test_inputs",
-    srcs = ["Chart.yaml", "values.yaml"] + glob(["templates/**/*"]),
+    srcs = [
+        "Chart.yaml",
+        "values.yaml",
+    ] + glob(["templates/**/*"]),
     visibility = ["//projects/scotland-connector:__subpackages__"],
 )

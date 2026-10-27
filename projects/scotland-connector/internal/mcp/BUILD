@@ -25,6 +25,7 @@ go_test(
         "@envoy_mcp_test_bin//:binary",
         "@multitool//tools/helm",
     ],
+    embed = [":mcp"],
     env = {
         "ENVOY_MCP_BIN": "$(rootpath @envoy_mcp_test_bin//:binary)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
@@ -34,7 +35,6 @@ go_test(
         "@platforms//cpu:x86_64",
         "@platforms//os:linux",
     ],
-    embed = [":mcp"],
     deps = [
         "//projects/scotland-connector/internal/connector",
         "//projects/scotland-connector/internal/fixture",
