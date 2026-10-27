@@ -26,7 +26,7 @@ selection and grants before proposing any missing scope. Renovate's
 differs for App and fine-grained tokens. In particular, managed workflow-file
 updates need workflow-write capability and App enqueue operations need merge
 queue write capability. The independent evidence publisher needs its own
-verified App identity for repository/PR, dependency graph, open-alert and queue
+verified App identity for repository/PR, dependency graph, open-alert, commit-status and queue
 reads plus check publication. These are capability checks, not permission grants.
 Any new token, installation, scope, binding or renewal setup needs a concrete
 separately approved change. No Secret object or value is read in this task.
@@ -79,9 +79,22 @@ The factory's own landing function remains inspection-only for dependency
 PRs. Renovate and the weekly maintenance job request native platform auto-merge;
 the factory supplies independent evidence, and the required App-bound queue
 check must enforce it. A successful empty GitHub graph is a coverage limitation:
-reviewers must provide upstream advisory/artifact evidence. GitHub alerts alone
-do not refresh that supplemental evidence. That freshness boundary and the
-check-to-merge polling window must pass live acceptance before activation.
+reviewers must provide upstream advisory/artifact evidence. Both reviewers must now agree on structured `advisory_sources` covering every
+changed file, with exact package versions or Git commits and normalized OSV
+response hashes. Completion and each publication re-fetch these queries from
+OSV without credentials. Unknown package names returning empty results do not
+prove coverage; reviewers must verify ecosystem applicability and complete
+artifact/SBOM contents. Unsupported coverage, findings, pagination and read
+failures refuse that update. The current bound is 100 sources per assessment.
+
+Dependency checks wait for exact-head `pr-checks`, then re-read evidence and the
+durable approval immediately before each publication, within a 60-second
+collection budget. Slow reads revoke an existing success while the publisher
+can write. This bounds collection age, not the lifetime of a check at GitHub:
+GitHub's Checks API has no expiry field. A dead publisher or lost token cannot
+revoke a success, and an advisory may arrive after publication. Automated merges
+remain blocked until a platform-enforced freshness boundary exists or that
+specific residual is separately resolved under the security policy.
 
 #7168 owns retired-home cleanup and #7186 owns the hub suspension flip under
 #7001/#7068. Reuse those PRs; neither schedule is changed here. Keep those issues
@@ -125,7 +138,7 @@ A statement of approval cannot replace missing access, evidence or passing CI.
 | --- | --- | --- |
 | Verify existing identities | Manual/read-only capability | Joe or an authorized GitHub owner records the installed Renovate App/installation IDs, bot login and numeric user ID, selected `jomcgi-org/homelab` repository, actual grants and credential renewal arrangement; separately identify the trusted check publisher's numeric App ID. The organization-installation API returned HTTP 403 and is not retried through another route. No new grant is needed merely to report these facts. |
 | Verify the suspended hub | Manual/read-only capability | An authorized operator records the effective `renovate` and `renovate-apko-lock-maintenance` CronWorkflow states, available active-run/history evidence and its retention limits, plus OnePasswordItem synchronization/materialization attestation without retrieving Secret objects or values. Current tools cannot supply these resource reads. |
-| Close implementation/evidence gaps | Code and validation, not blanket approval | The #7005 owner proves same-repository PR credential isolation. The evidence owner establishes supplemental advisory revalidation for graph-unrepresented dependencies and merge-time freshness. Any required token renewal/wiring is designed only after the existing identity is known. Missing evidence still refuses an update. |
+| Close implementation/evidence gaps | Platform engineering and validation | #7005 still requires pre-execution isolation of same-repository PR and queue credentials and snapshots. Structured OSV revalidation and bounded late publication are implemented here, but an expired/dead publisher cannot make GitHub expire its last success. Prove platform enforcement for that remaining window. Unsupported advisory coverage still refuses the particular update. Any required token renewal/wiring is designed only after the existing identity is known. |
 | Authorize the verified canary setup | Exact settings approval | Only after identities and isolation are verified: supply the existing trusted publisher identity as `FACTORY_DEPENDENCY_GATE_TOKEN` and its matching `FACTORY_DEPENDENCY_GATE_APP_ID`, enable `FACTORY_DEPENDENCY_GATE_ENABLED`, and set `intake.dependency_pr_authors` / `dependency_pr_author_ids` to the verified dedicated bot, never `jomcgi`. Propose any missing grant/binding separately, scoped to this repository. Keep both scheduled writers suspended while testing PR and single-entry queue success, unapproved/unsafe/stale evidence, unavailable reads and late ownership holds. |
 | Authorize enforcement and release | Exact settings and PR approval | After canaries pass, require `factory/dependency-evidence` from the verified App integration in ruleset `9180009`, preserving `pr-checks`, the queue and all protections. Release the reviewed cleanup/policy work in the existing PRs, then rebase #7186 onto the integrated result and refresh its CI/review before approving its two suspension flips. The earlier #7168 enqueue denial requires exact release authorization; no enqueue is retried here. |
 
@@ -135,3 +148,29 @@ After authorized release, observe the hub Application and effective schedules,
 then successful scheduled scans, all maintenance modes, dedicated-bot PR authors,
 independent evidence and queue outcomes before closing #7001/#7068. Reuse #7186
 for activation; do not create another activation task or change live resources.
+
+## Credential isolation boundary (#7005)
+
+Read-only ownership check on 2026-10-27: #7005 is open, `needs-thought`, with no
+assignee, comments or factory receipt; PR search found no separate implementation.
+This work reuses that issue and does not claim the boundary is resolved.
+
+BuildBuddy [injects secrets into trusted workflows](https://www.buildbuddy.io/docs/secrets/).
+Its [workflow service](https://github.com/buildbuddy-io/buildbuddy/blob/master/enterprise/server/workflow/service/service.go)
+classifies same-repository events as trusted, reads their workflow configuration
+from the pushed commit, and supplies runner repository credentials. The
+[action schema](https://github.com/buildbuddy-io/buildbuddy/blob/master/enterprise/server/workflow/config/config.go)
+has no per-event secret exclusion. The hosted deployment/version and effective
+credential capabilities still require owner verification; these upstream facts
+are not a read of live credentials.
+
+A shell `unset`, an early assertion or splitting actions in PR-editable YAML
+cannot enforce this boundary. The current `pr-checks` also inherits main's
+snapshot namespace, so merely withholding new environment variables does not
+prove old Docker/git credentials are absent. #7005 needs a platform-enforced
+untrusted PR/queue execution boundary, isolated snapshots/cache authority and a
+separate main-only publication identity. Preserve the required check name and
+main publication, including generated-file handling, in that migration. Changing
+provider configuration, token capabilities, cache/snapshot state or publication
+wiring is outside this code-only pass and needs an exact verified proposal.
+No workflow split or credential change is presented as an implemented safeguard.

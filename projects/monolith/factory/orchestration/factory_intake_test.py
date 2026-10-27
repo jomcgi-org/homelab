@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import hashlib
 from threading import Barrier
 
 import pytest
@@ -1392,6 +1393,11 @@ def _dependency_reads(monkeypatch, pull=None):
 
     monkeypatch.setattr(deps, "github_list", read)
     monkeypatch.setattr(deps, "github_get", lambda repo, endpoint: pull)
+    monkeypatch.setattr(
+        deps,
+        "read_advisory",
+        lambda _query: hashlib.sha256(b'{"vulns":[]}').hexdigest(),
+    )
     return deps, pull, read
 
 
@@ -1401,6 +1407,17 @@ def _dependency_runs(evidence):
         "base_sha": evidence["base_sha"],
         "evidence_sha256": evidence["evidence_sha256"],
         "reviewed_files": [row["filename"] for row in evidence["files"]],
+        "advisory_sources": [
+            {
+                "subject": "pkg:pypi/example@2.0",
+                "files": [row["filename"] for row in evidence["files"]],
+                "query": {
+                    "package": {"name": "example", "ecosystem": "PyPI"},
+                    "version": "2.0",
+                },
+                "response_sha256": hashlib.sha256(b'{"vulns":[]}').hexdigest(),
+            }
+        ],
     }
     from factory.orchestration.dependency_prs import ASSESSMENTS
 

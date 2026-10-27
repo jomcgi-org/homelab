@@ -70,29 +70,43 @@ a new hold invalidates the old approval. Native Renovate stops updating PRs
 labelled `human`.
 There is no filename-based exemption. Old artifacts require fresh review.
 
-Fresh GitHub alerts cannot establish fresh upstream advisories for ecosystems
-GitHub does not represent. Live acceptance must establish revalidation of that
-supplemental evidence before enabling automated merges. Missing provenance or
-vulnerability evidence keeps the particular update blocked. The known polling
-window between check publication and merge also remains an activation check.
+Both reviewers must independently agree on `advisory_sources`, mapping every
+changed file to exact package/ecosystem/version or Git commit queries. The
+trusted server re-fetches the complete bounded OSV queries at completion and
+publication, compares normalized response hashes, and refuses findings,
+truncation, errors and unsupported coverage. It sends no GitHub credentials to
+OSV and accepts no caller-selected endpoint. At most 100 source entries fit one
+assessment. Reviewers must establish the query's applicability and the complete
+artifact/SBOM package closure; an unknown package with an empty result proves
+nothing. Arbitrary upstream advisory pages are not silently treated as covered.
 
-The following pins retain explicit boundaries; they are not claimed automated:
+Publication waits for exact-head CI and revalidates each head immediately before
+writing, with a 60-second collection bound and a final durable-approval read.
+GitHub check success itself has no expiry; publisher/token loss after success
+and advisory changes after publication remain a platform-enforcement blocker.
+These code changes narrow the window but do not establish atomic merge freshness.
 
-- Python standalone's release date, Python version and four checksums form one
-  override. `python.toolchain` and `pip.parse` select Python 3.13. A runtime
-  adapter must verify rules_python's version resolution and all four platforms;
-  independent version-only replacements cannot safely update this bundle.
-- Atlas/CNPG raw CRD snapshots must track the deployed operator version and
-  matching offline test schemas, rather than the latest raw file independently.
-- The demo distdir is a proven offline closure for a fixed Abseil/Bazel fixture.
-  Its parallel URL/checksum arrays and transitive versions need a regenerated
-  closure. The Erlang OTP pin must exactly match Wolfi's runtime; Hex tuples
-  encode a manually selected transitive closure and Hex's installer URL is
-  mutable. These require coordinated resolvers/fixture validation.
-- Meta Muse has a reachable public channel and checksum manifest, verified
-  read-only. Neither supplies a release timestamp. A channel adapter needs
-  durable first-seen age handling to preserve the three-day release-age policy.
-  The current `1.4.1-R4503.1` pin and recorded runtime fixtures remain intact.
+Remaining coverage is split below. An adapter gap is code work under the
+maintenance goal, not a request for Joe to approve each ordinary bump. A
+compatibility hold remains binding until its migration or evidence is ready.
+
+| Boundary | Classification | Work required |
+| --- | --- | --- |
+| Python standalone release/date/four-platform checksums | Adapter code gap; Python 3.13 selection is a separate compatibility constraint | Update the bundle atomically and test rules_python resolution on all four platforms. Patch/rebuild maintenance can preserve 3.13; a minor/major migration must also update `python.toolchain`, `pip.parse` and compatibility validation. |
+| Atlas/CNPG raw CRD snapshots | Adapter code gap, not an intentional version freeze | Derive CRD versions from the operator update and refresh corresponding checksums/offline schema tests together. |
+| Hex package tuples and mutable installer | Resolver/lock code gap | Regenerate and validate the complete transitive closure, including integrity, instead of changing independent tuple versions. |
+| Muse stable channel | Adapter/state code gap | Its public channel and checksum manifest are readable but lack release timestamps. Add durable first-seen aging and checksum-paired updates. Runtime fixtures must validate compatibility. |
+| Demo Abseil/Bazel distdir | Deliberate fixture compatibility hold | Regenerate its fixed offline closure and prove the zero-egress fixture before advancing the parallel URL/checksum arrays. |
+| OTP and Wolfi Erlang runtime | Deliberate exact-version compatibility hold, with a future paired adapter possible | Choose a version published by both sources, update both together and validate the release/runtime pair. |
+| Envoy family, Firecracker snapshots, Kata/k3s, Loom/schema fixtures and explicit API bounds | Existing compatibility holds listed above | Preserve the exact holds; only the corresponding regression fix, coordinated migration or fixture validation can remove them. Ordinary majors outside these explicit boundaries stay eligible. |
+
+Unsupported supplemental advisory sources, the post-publication freshness
+boundary, CI credential isolation and any missing identity renewal/wiring are
+activation engineering/evidence gaps, not compatibility holds. The structured
+OSV revalidation path is implemented, but does not prove live feed applicability
+or supply a GitHub check expiry. Existing owners must close the remaining gaps
+before the relevant automatic merge path is accepted. Updates requiring Python backend
+execution also need an isolated generation path; the writer refuses execution.
 
 Root Python automatic compilers pass `--no-build`; Renovate passes
 `UV_NO_BUILD=true` to native uv artifact commands. Packages requiring source

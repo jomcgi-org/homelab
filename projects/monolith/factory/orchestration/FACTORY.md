@@ -1985,8 +1985,23 @@ a successful empty dependency comparison records a coverage limitation. Both
 independent artifacts must enumerate every changed filename in `reviewed_files`
 and supply concrete supplemental provenance/advisory evidence in
 `evidence_coverage`. Unavailable, null, malformed or truncated reads still refuse.
-Fresh GitHub alerts do not refresh advisories for unrepresented ecosystems;
-supplemental freshness remains a live activation requirement. Combined queue prefixes
+Both independent artifacts also carry matching `advisory_sources` inventories:
+exact OSV package/ecosystem/version or Git commit queries, immutable subject
+identities, covered files and normalized response hashes. Every changed file
+must be represented. Reviewers establish complete dependency/SBOM coverage;
+empty results for unknown packages are not proof. The server re-fetches these
+queries at completion and each publication with no credentials, redirects or
+caller-selected endpoint. Findings invalidate approval; unavailable, oversized,
+malformed or paginated responses refuse without claiming positive change.
+At most 100 source entries are accepted. Other sources require an adapter or
+remain refused; prose cannot substitute for revalidation.
+
+Dependency success waits for exact-head `pr-checks`. Each head is evaluated
+immediately before publication, including a final durable-approval read, with
+at most 60 seconds from collection start to the publication request. A slow
+check-inventory read also expires that result, even if an earlier success
+exists. This is a collection bound, not a lease: GitHub's Checks API has no
+expiry field and publisher failure cannot retract a stored success. Combined queue prefixes
 containing dependency PRs fail closed instead of attributing aggregated changes
 to one receipt.
 
@@ -2006,7 +2021,7 @@ remaining acceptance requirements are enforced. The factory does not arm them.
 Live checks outstanding for #6799, outside this repository-only slice:
 
 1. Provision the dedicated App installation token to trusted monolith, with
-   repository, dependency graph and Dependabot alert reads plus checks write.
+   repository, dependency graph, Dependabot alert and commit-status reads plus checks write.
    Keep the token out of guests and untrusted same-repository CI.
 2. Enable the flag separately and canary `factory/dependency-evidence` on a
    real PR head and a merge-group commit. Verify the actual entry base and
@@ -2019,9 +2034,13 @@ Live checks outstanding for #6799, outside this repository-only slice:
    authorizing automated merges. Missing token/API failures also cannot revoke
    a check already held by GitHub; test that boundary before activation.
 5. Verify an unapproved Renovate PR with auto-merge already armed cannot merge.
-   This repository edit stops new requests; it does not disarm existing PRs.
-6. Resolve and verify BuildBuddy's same-repository secret boundary. A merge
-   check does not isolate PR-branch workflow execution or its injected secrets.
+   The staged Renovate policy requests auto-merge only after its separate activation; it does not disarm existing PRs.
+6. Resolve and verify #7005's same-repository secret boundary. BuildBuddy
+   trusts same-repository events before reading PR-controlled YAML; a shell
+   guard or action split cannot remove that authority. Isolate PR/queue
+   execution from publication credentials and main's saved snapshots through
+   platform controls, then prove main publication and required CI still work.
+   No such provider configuration or credential change is made here.
 7. Create and verify a dedicated Renovate author identity before allowlisting
    any author. Historical maintenance PRs use `jomcgi`; never allowlist the
    human account to activate this lane.
