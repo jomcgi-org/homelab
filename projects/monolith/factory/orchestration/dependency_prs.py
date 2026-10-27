@@ -12,6 +12,7 @@ import json
 import re
 from copy import deepcopy
 
+import httpx
 from sqlmodel import select
 
 from factory.orchestration.factory_controls import (
@@ -29,6 +30,81 @@ from factory.orchestration.factory_models import FactoryReceipt
 SHA = re.compile(r"[0-9a-f]{40}")
 MAX_ROWS = 500
 MAX_EVIDENCE_CHARS = 48000
+MAX_ADVISORY_SOURCES = 100
+ADVISORY_SCHEMA = {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": MAX_ADVISORY_SOURCES,
+    "uniqueItems": True,
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["subject", "files", "query", "response_sha256"],
+        "properties": {
+            "subject": {"type": "string", "minLength": 3, "maxLength": 500},
+            "files": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_ROWS,
+                "uniqueItems": True,
+                "items": {"type": "string", "minLength": 1},
+            },
+            "response_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "query": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["commit"],
+                        "properties": {
+                            "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["package", "version"],
+                        "properties": {
+                            "version": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200,
+                                "pattern": r"^[^\s*^~<>=|]+$",
+                                "not": {
+                                    "enum": [
+                                        "latest",
+                                        "stable",
+                                        "main",
+                                        "master",
+                                        "HEAD",
+                                        "head",
+                                    ]
+                                },
+                            },
+                            "package": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["name", "ecosystem"],
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 500,
+                                    },
+                                    "ecosystem": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 100,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+    },
+}
 ASSESSMENTS = (
     "provenance",
     "install_scripts",
@@ -42,8 +118,16 @@ ASSESSMENTS = (
 ASSESSMENT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["evidence_sha256", "base_sha", "safe", "reviewed_files", *ASSESSMENTS],
+    "required": [
+        "evidence_sha256",
+        "base_sha",
+        "safe",
+        "reviewed_files",
+        "advisory_sources",
+        *ASSESSMENTS,
+    ],
     "properties": {
+        "advisory_sources": ADVISORY_SCHEMA,
         "evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "safe": {"type": "boolean"},
@@ -144,6 +228,59 @@ def _pages(repo: str, endpoint: str, read=None) -> list:
 
 class EvidenceChanged(ValueError):
     """Positive evidence of an unsafe dependency or a changed PR identity."""
+
+
+def read_advisory(query: dict) -> str:
+    """Re-fetch one reviewed OSV query without credentials or caller URLs.
+
+    An empty OSV result does not establish ecosystem coverage. Both reviewers
+    must establish applicability and the complete artifact/SBOM package set.
+    Pagination, redirects, errors and oversized responses refuse this update.
+    """
+    with (
+        httpx.Client(timeout=10, follow_redirects=False, trust_env=False) as client,
+        client.stream("POST", "https://api.osv.dev/v1/query", json=query) as response,
+    ):
+        response.raise_for_status()
+        data = bytearray()
+        for chunk in response.iter_bytes():
+            data.extend(chunk)
+            if len(data) > 1024 * 1024:
+                raise ValueError("supplemental advisory response exceeds bound")
+    value = json.loads(data)
+    if (
+        not isinstance(value, dict)
+        or set(value) - {"vulns", "next_page_token"}
+        or ("next_page_token" in value and value["next_page_token"] != "")
+        or not isinstance(value.get("vulns", []), list)
+    ):
+        raise ValueError("supplemental advisory response malformed or incomplete")
+    if any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("id"), str)
+        or not row["id"]
+        or not isinstance(row.get("modified"), str)
+        or not row["modified"]
+        or not isinstance(row.get("affected"), list)
+        or not row["affected"]
+        for row in value.get("vulns", [])
+    ):
+        raise ValueError("supplemental advisory records malformed")
+    if value.get("vulns"):
+        raise EvidenceChanged("supplemental advisory query reports vulnerabilities")
+    # OSV represents no findings as {} or {"vulns": []}.
+    return hashlib.sha256(b'{"vulns":[]}').hexdigest()
+
+
+def revalidate_advisories(sources: list[dict]) -> None:
+    """Fresh server reads, never a reviewer's timestamp or a GitHub alert proxy."""
+    seen = {}
+    for source in sources:
+        key = json.dumps(source["query"], sort_keys=True, separators=(",", ":"))
+        if key not in seen:
+            seen[key] = read_advisory(source["query"])
+        if seen[key] != source["response_sha256"]:
+            raise EvidenceChanged("supplemental advisory evidence changed")
 
 
 def snapshot(
@@ -389,6 +526,18 @@ def guidance(task: dict) -> str:
         "never a clean bill of health. If the necessary independent vulnerability "
         "or provenance evidence cannot be obtained, set safe=false. A filename, "
         "major bump or passing CI is no exemption. "
+        "Both assessments must independently supply the same advisory_sources: "
+        "a complete bounded list of OSV /v1/query package/ecosystem/version or "
+        "immutable Git commit queries, each with an immutable subject identity, "
+        "covered files and response_sha256. Map every reviewed file to the "
+        "relevant dependency queries, including all packages in image/APK SBOMs "
+        "and chart/Bazel artifacts. Explain applicability and completeness in "
+        "evidence_coverage; an unknown package returning no findings is not "
+        "coverage. No arbitrary URL, credential or page token is accepted. "
+        "A complete response without vulnerabilities is normalized to the UTF-8 "
+        'bytes {"vulns":[]} for SHA256. Findings, pagination or unsupported '
+        "coverage require safe=false. The server re-fetches these queries at "
+        "completion and immediately before check publication. "
         "Escalate missing evidence, suspicious changes or failed validation. "
         "Finish requires passing required CI and independent adversarial approval "
         "on the pinned head, base and evidence digest. Do not use closing keywords. "
@@ -419,10 +568,10 @@ def verify(task: dict, pull: dict, runs: list[dict]) -> None:
         != evidence["evidence_sha256"]
     ):
         raise ValueError("dependency review evidence changed; fresh intake is required")
-    verify_assessments(evidence, runs)
+    revalidate_advisories(verify_assessments(evidence, runs))
 
 
-def verify_assessments(evidence: dict, runs: list[dict]) -> None:
+def verify_assessments(evidence: dict, runs: list[dict]) -> list[dict]:
     """Validate the durable review independently of the comparison commit IDs."""
     from factory.orchestration.factory_conductor import _artifact, _is_implementation
     from factory.orchestration.turn_artifact import schema_errors
@@ -446,6 +595,7 @@ def verify_assessments(evidence: dict, runs: list[dict]) -> None:
         raise ValueError(
             "dependency adversarial review is not independent and approved"
         )
+    source_sets = []
     for run in (worker, reviewer):
         artifact = _artifact(run)
         outcome = json.loads(run.get("outcome_json") or "{}")
@@ -469,3 +619,17 @@ def verify_assessments(evidence: dict, runs: list[dict]) -> None:
             raise ValueError(
                 "dependency security assessment is missing, unsafe or stale"
             )
+        sources = assessment["advisory_sources"]
+        if {name for source in sources for name in source["files"]} != {
+            row["filename"] for row in evidence["files"]
+        }:
+            raise ValueError("supplemental advisory coverage is incomplete")
+        source_sets.append(
+            sorted(
+                ({**source, "files": sorted(source["files"])} for source in sources),
+                key=lambda source: json.dumps(source, sort_keys=True),
+            )
+        )
+    if source_sets[0] != source_sets[1]:
+        raise ValueError("independent supplemental advisory inventories disagree")
+    return source_sets[0]

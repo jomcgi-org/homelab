@@ -2315,14 +2315,15 @@ inspection only. PR text, changed repository instructions and upstream package
 material remain untrusted even for an allowlisted author.
 
 `dependency_prs.py` fetches the full changed-file inventory, GitHub dependency
-comparison and open Dependabot alerts. Unavailable, empty, malformed or
-truncated comparison evidence holds the PR; added versions with known
+comparison and open Dependabot alerts. Unavailable, null, malformed or
+truncated comparison evidence holds the PR; a successful empty comparison
+requires supplemental coverage; added versions with known
 vulnerabilities are refused. The receipt adopts the original PR and pins its
 head, base, numeric author identity and evidence digest. The conductor uses a
 read-only `implement_*` investigation followed by a separate `review_*` session
 that challenges the investigation. Both structured assessments must cover
 provenance, install scripts, transitive changes, vulnerability remediation,
-compatibility and validation with concrete evidence. Dependency inspection
+compatibility, authorization scope, evidence coverage and validation with concrete evidence. Dependency inspection
 nodes have `side_effects=false`; source integration and automatic correction
 rounds are refused. The guest is instructed to inspect hostile scripts before
 execution and use isolated validation without production credentials; this
@@ -2336,8 +2337,9 @@ new authorized generation. Rejected or unsupported changes stay held for an
 operator; missing access to Dependabot alerts is never treated as no alerts.
 The GitHub read identity needs Dependabot alerts read permission in addition
 to access to the repository and dependency graph. This lane never dismisses
-alerts. Dependency auto-merge is unconditionally disabled, even with approved
-assessments and repository auto-merge enabled. The trusted
+alerts. The factory landing function never arms dependency auto-merge. The staged
+Renovate policy and weekly maintenance request native platform auto-merge only
+after the separate activation prerequisites; GitHub retains merge authority. The trusted
 `factory/dependency-evidence` publisher is staged off by default
 (`factory.dependencyGate.enabled: false`). It checks PR heads and GitHub
 merge-queue entry heads using each entry's actual base, through a dedicated
@@ -2360,21 +2362,32 @@ head, unsafe assessment or changed evidence invalidates that generation in the
 audit ledger; reverting the evidence does not restore its approval. The
 publisher never changes generation or starts a review itself.
 
-Renovate and apko lock maintenance no longer request auto-merge for any update
-type. Activation still requires the operator checklist in `FACTORY.md`, including
+Both assessment artifacts must agree on a structured OSV advisory inventory,
+cover every changed file, and establish the actual dependency/SBOM closure and
+feed applicability. The server re-fetches exact package/version or Git commit
+queries without credentials at completion and publication. Unknown-package
+empty responses are not proof of coverage. Findings, incomplete responses and
+unsupported sources keep the update blocked. Every dependency success waits
+for exact-head `pr-checks`; each target is revalidated immediately before its
+publication, including durable approval, with a 60-second collection budget.
+
+Activation still requires the operator checklist in `FACTORY.md`, including
 App-pinned ruleset enforcement on both PR and merge-group commits and resolving
-the BuildBuddy credential boundary (#6799). Tick-time checks and revocation
+the BuildBuddy credential boundary (#7005). Tick-time checks and revocation
 cannot guarantee atomic freshness when an advisory appears after a successful
-check and before merge. The live stale/advisory canary must establish the
-merge-time acceptance before any automated dependency merging is authorized.
+check and before merge. GitHub checks have no expiry field: a missing publisher/token cannot revoke
+a stored success. A platform-enforced boundary for that remaining window is
+still required before automated dependency merging can be accepted.
 For separately authorized merges, landing verifies publication and managed rollout
 before recording repository delivery complete. It never closes a PR through
 the issue-close API. Runtime activation is a live policy update after rollout;
 shipping this code alone enables no author accounts. BuildBuddy currently
 injects secrets into same-repository PR events and executes the PR branch
 workflow (`buildbuddy.yaml`). This merge gate does not isolate those earlier
-CI executions; activating automated intake must account for that credential
-boundary.
+CI executions. #7005 has no active owner or receipt as of the 2026-10-27
+read-only check. The provider must enforce credential and snapshot isolation
+before executing PR/queue code; PR-editable shell guards or action splits do
+not provide that boundary. No live provider controls are changed here.
 
 **Why.** A compromised bot account or malicious upstream release can produce
 a plausible version bump and green CI. Author reputation, semver and a clean
