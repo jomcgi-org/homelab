@@ -1,7 +1,8 @@
 # Dependency coverage
 
-`renovate.json` describes the proposed intake and merge policy. Activation is
-held by the prerequisites in [README.md](README.md). A configured extractor
+`renovate.json` stages intake with all native automerge switches false. The
+weekly helper's explicit automerge flag is also false. Activation is held by
+the prerequisites and #7186 handoff in [README.md](README.md). A configured extractor
 proves discovery; registry lookup, artifact regeneration, independent review
 and CI must also pass before an update can merge.
 
@@ -29,7 +30,7 @@ and CI must also pass before an update can merge.
 | GitHub binaries in `bazel/tools/tools.lock.json` | custom regex, `github-release-attachments` | Updates URL versions, versioned archive member paths and SHA256 together, for every platform. A missing checksum is not extracted. |
 | Multiarch GitHub binaries in `MODULE.bazel` | custom regex, `github-release-attachments` | Updates paired URL/checksum fields together. Codex's `rust-v` tag format is explicit. |
 | Non-GitHub Atlas, Helm, 1Password CLI and Claude binaries | weekly maintenance adapter | Separate PR per tool; updates every platform URL/SHA256 atomically. Stable releases age at least three days. Atlas/Helm verify published SHA256; Claude verifies npm SHA512 integrity. 1Password hashes its official HTTPS archive; this is not a signature verification. |
-| `apko.yaml` and `apko.lock.json` | existing weekly Argo job | Regenerates APK resolutions with pinned `rules_apko` and runs existing generators. The job now handles apko, root Python and each non-GitHub tool in separate branches and requests platform auto-merge. Both hub schedules remain suspended. |
+| `apko.yaml` and `apko.lock.json` | existing weekly Argo job | Regenerates APK resolutions with pinned `rules_apko` and runs existing generators. The job now handles apko, root Python and each non-GitHub tool in separate branches. Its platform auto-merge request is separately gated off; both hub schedules remain suspended. |
 
 ## Holds and exclusions
 

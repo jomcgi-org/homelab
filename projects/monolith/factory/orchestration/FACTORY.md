@@ -2031,9 +2031,11 @@ Success still requires a fresh positive match after the API recovers. This
 publisher neither changes policy nor starts work.
 Dependency landing still refuses `dependency_auto_merge_disabled`
 unconditionally, and `intake.dependency_pr_authors` remains empty by default.
-The proposed Renovate policy and weekly maintenance job request native platform
-auto-merge, held from activation until the trusted App-bound context and the
-remaining acceptance requirements are enforced. The factory does not arm them.
+The staged Renovate policy disables native automerge globally and in its rules;
+the weekly maintenance helper also requires an explicit default-off flag.
+#7186 owns those switches and schedule activation after the trusted App-bound
+context and remaining acceptance requirements are enforced. Inactive preparation
+can ship separately. The factory does not arm them.
 
 Live checks outstanding for #6799, outside this repository-only slice:
 

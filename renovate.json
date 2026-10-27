@@ -8,8 +8,8 @@
   "semanticCommitType": "chore",
   "semanticCommitScope": "deps",
   "dependencyDashboard": true,
-  "automerge": true,
-  "platformAutomerge": true,
+  "automerge": false,
+  "platformAutomerge": false,
   "dependencyDashboardTitle": "Dependency updates and lock maintenance",
   "labels": ["dependencies"],
   "timezone": "America/Vancouver",
@@ -198,7 +198,7 @@
       "enabled": false
     },
     {
-      "description": "All ordinary update types, including majors, use the protected merge queue after independent evidence and CI.",
+      "description": "Stage all ordinary update types, including majors; enable auto-merge only through #7186 after independent evidence enforcement and CI.",
       "matchUpdateTypes": [
         "major",
         "minor",
@@ -211,8 +211,8 @@
         "bump",
         "rollback"
       ],
-      "automerge": true,
-      "platformAutomerge": true,
+      "automerge": false,
+      "platformAutomerge": false,
       "automergeType": "pr"
     },
     {

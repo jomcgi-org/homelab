@@ -28,6 +28,8 @@ workspace:
   sizeLimit: 4Gi
 
 apkoLockMaintenance:
+  # #7186 may enable this only after the App-bound evidence gate is enforced.
+  automerge: false
   schedule: "0 1 * * 1"
   timezone: America/Vancouver
   suspend: false

@@ -42,10 +42,10 @@ def _cron_suspensions(docs: list[dict]) -> dict[str, bool]:
     }
 
 
-def test_ordinary_updates_include_majors_and_use_platform_pr_automerge():
+def test_ordinary_update_policy_is_staged_with_all_automerge_disabled():
     config = json.loads((ROOT / "renovate.json").read_text())
-    assert config["automerge"] is True
-    assert config["platformAutomerge"] is True
+    assert config["automerge"] is False
+    assert config["platformAutomerge"] is False
     assert config["automergeType"] == "pr"
     assert config["automergeStrategy"] == "auto"
     assert config["dependencyDashboardApproval"] is False
@@ -62,10 +62,27 @@ def test_ordinary_updates_include_majors_and_use_platform_pr_automerge():
         "bump",
         "rollback",
     }
-    rules = [rule for rule in config["packageRules"] if rule.get("automerge")]
+    rules = [
+        rule
+        for rule in config["packageRules"]
+        if "matchUpdateTypes" in rule and "automerge" in rule
+    ]
     assert len(rules) == 1
     assert set(rules[0]["matchUpdateTypes"]) == expected
-    assert rules[0]["platformAutomerge"] is True
+    assert rules[0]["automerge"] is False
+    assert rules[0]["platformAutomerge"] is False
+
+    def check_disabled(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key in ("automerge", "platformAutomerge", "autoApprove"):
+                    assert nested is False, key
+                check_disabled(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                check_disabled(nested)
+
+    check_disabled(config)
     assert config["minimumReleaseAge"] == "3 days"
     assert config["internalChecksFilter"] == "strict"
     assert config["lockFileMaintenance"]["enabled"] is True
@@ -652,6 +669,7 @@ def test_bot_pr_with_human_ownership_is_never_rewritten_or_armed():
         if (scenario === "human-author") pull.user = {type: "User"};
         if (scenario === "armed") pull.auto_merge = {};
         process.env.MAINTENANCE_MODE = "apko";
+        process.env.MAINTENANCE_AUTOMERGE_ENABLED = "true";
         process.env.RENOVATE_TOKEN = "mock-token";
         process.argv[2] = "publish";
         globalThis.fetch = async (url, options) => {
@@ -717,3 +735,93 @@ def test_native_uv_artifacts_cannot_execute_source_build_backends():
         row["value"] for row in env if row["name"] == "RENOVATE_CUSTOM_ENV_VARIABLES"
     )
     assert json.loads(custom) == {"UV_NO_BUILD": "true"}
+
+
+def test_maintenance_automerge_requires_an_explicit_activation_flag():
+    # Exercise the rendered publisher that existing/manual workflows can load.
+    # Missing, false and malformed flags must never even query merge state.
+    docs = _render("values.yaml", "values-gke.yaml")
+    source = next(
+        doc["data"]["pull-request.mjs"]
+        for doc in docs
+        if doc.get("kind") == "ConfigMap" and "pull-request.mjs" in doc.get("data", {})
+    )
+    runner = r"""
+      import assert from "node:assert/strict";
+      const source = process.argv[1];
+      let index = 0;
+      process.env.MAINTENANCE_MODE = "apko";
+      process.env.RENOVATE_TOKEN = "mock-token";
+      process.argv[2] = "publish";
+      for (const flag of [undefined, "false", "FALSE", "TRUE", "1", ""]) {
+        if (flag === undefined) delete process.env.MAINTENANCE_AUTOMERGE_ENABLED;
+        else process.env.MAINTENANCE_AUTOMERGE_ENABLED = flag;
+        for (const scenario of ["new", "existing", "armed", "queued"]) {
+          const calls = [];
+          const pull = {number: 1, node_id: "PR_example", draft: false,
+            assignees: [], labels: [], user: {type: "Bot"}, html_url: "https://example.test/pr",
+            auto_merge: scenario === "armed" ? {} : null};
+          globalThis.fetch = async (url, options) => {
+            calls.push(url);
+            let result;
+            if (url.includes("/pulls?")) result = scenario === "new" ? [] : [pull];
+            else if (url.endsWith("/pulls")) result = pull;
+            else if (url.endsWith("/labels")) result = [];
+            else throw Error("Unexpected merge request while disabled: " + url);
+            return {ok: true, status: 200, json: async () => result};
+          };
+          await import("data:text/javascript;base64," + Buffer.from(source).toString("base64") + "#" + index++);
+          assert.equal(calls.length, scenario === "new" ? 3 : 2);
+          assert.ok(!calls.some(url => /graphql|reviews|merge/.test(url)));
+        }
+      }
+    """
+    result = subprocess.run(
+        [
+            os.environ.get("NODE_BIN", "node"),
+            "--input-type=module",
+            "-e",
+            runner,
+            source,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_default_and_hub_workflows_cannot_enable_maintenance_automerge(tmp_path):
+    for values in (("values.yaml",), ("values.yaml", "values-gke.yaml")):
+        docs = _render(*values)
+        workflow = next(
+            doc
+            for doc in docs
+            if doc.get("kind") == "CronWorkflow"
+            and doc["metadata"]["name"] == "renovate-apko-lock-maintenance"
+        )
+        env = workflow["spec"]["workflowSpec"]["templates"][0]["container"]["env"]
+        assert [
+            row.get("value")
+            for row in env
+            if row["name"] == "MAINTENANCE_AUTOMERGE_ENABLED"
+        ] == ["false"]
+
+    # Prove the documented owner opt-in reaches the actual consumer, rather
+    # than introducing a flag that is permanently inert or shadowed by defaults.
+    activation = tmp_path / "activation.yaml"
+    activation.write_text("apkoLockMaintenance:\n  automerge: true\n")
+    docs = _render("values.yaml", "values-gke.yaml", str(activation))
+    workflow = next(
+        doc
+        for doc in docs
+        if doc.get("kind") == "CronWorkflow"
+        and doc["metadata"]["name"] == "renovate-apko-lock-maintenance"
+    )
+    env = workflow["spec"]["workflowSpec"]["templates"][0]["container"]["env"]
+    assert [
+        row.get("value")
+        for row in env
+        if row["name"] == "MAINTENANCE_AUTOMERGE_ENABLED"
+    ] == ["true"]
+    assert workflow["spec"]["suspend"] is True

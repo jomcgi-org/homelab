@@ -8,8 +8,9 @@ The base render is a build input, not another deployed writer.
 PR #7358 integrates #7168's existing cleanup commit and resolves its README and
 renamed policy-test conflicts. The retired home enrollment and cutover files
 stay removed; #7168's branch is not rewritten. #7186 remains the existing draft
-that owns the two suspension flips under #7001/#7068. No PR has been merged and
-no schedule, live flag or credential has been activated by this integration.
+that owns activation under #7001/#7068. The explicit handoff below adds the
+automerge switches to its existing two suspension flips without changing that
+owner's branch. This preparation enables no schedule, automerge or credential.
 
 ## GitHub credential
 
@@ -51,14 +52,22 @@ chart versions; main publication owns those versions. Renovate targets only
 `jomcgi-org/homelab`, requires the checked-in `renovate.json`, and does not perform
 repository autodiscovery or onboarding.
 
-The proposed repository policy enables platform PR auto-merge for ordinary
-major, minor, patch, digest, pin and lock updates. GitHub's existing merge queue
-owns merging; no approval review is manufactured. Ordinary PR creation remains
+Repository-wide and package-rule `automerge` / `platformAutomerge` stay false.
+The weekly helper also requires `MAINTENANCE_AUTOMERGE_ENABLED=true`; its base
+and hub chart values render that flag as false. Missing or malformed flags stay
+off, including in an older workflow loading the updated ConfigMap. Manual or
+hosted runners reading this repository therefore receive no automerge enablement
+from this preparation. These defaults do not cancel an already armed PR or queue
+entry created by another actor.
+
+The staged policy retains ordinary major, minor, patch, digest, pin and lock
+updates for the eventual protected-queue path; no approval review is manufactured. Ordinary PR creation remains
 before 06:00 Monday in America/Vancouver, with five concurrent PRs, two per hour
 and a three-day release age. Security alerts retain their immediate exception.
 See [coverage and holds](COVERAGE.md) for exact exclusions and generated files.
 
-**Activation is held.** Do not land this policy or enable a writer until
+**Activation is held.** The inactive preparation can ship separately. Do not
+enable any automerge switch or writer until
 `factory/dependency-evidence` is required in ruleset 9180009, pinned to its
 verified App integration, alongside `pr-checks`. Renovate's native auto-merge
 can enqueue before checks finish: the ruleset must enforce independent review.
@@ -76,9 +85,9 @@ update. Existing holds and compatibility pins remain binding. Old assessments
 without these dimensions cannot pass.
 
 The factory's own landing function remains inspection-only for dependency
-PRs. Renovate and the weekly maintenance job request native platform auto-merge;
-the factory supplies independent evidence, and the required App-bound queue
-check must enforce it. A successful empty GitHub graph is a coverage limitation:
+PRs. After separate activation, Renovate and the weekly maintenance job can
+request native platform auto-merge; the factory supplies independent evidence,
+and the required App-bound queue check must enforce it. A successful empty GitHub graph is a coverage limitation:
 reviewers must provide upstream advisory/artifact evidence. Both reviewers must
 agree on complete base/head `advisory_sources` inventories bound to the reviewed
 commits and covering every corresponding changed file. Each component records a
@@ -143,9 +152,11 @@ The shared compiler also refuses source builds, and Renovate passes
 required source build is a failed automatic update. Each tool adapter
 updates all platforms atomically, without executing downloaded code. Each mode
 fails independently, and existing held, assigned, draft or human-authored PRs
-are preserved. The job labels PRs `dependencies` and requests REBASE platform
-auto-merge; it never submits an approval or bypasses checks. These requests
-require the same App-bound evidence gate and CI as ordinary Renovate updates.
+are preserved. The job labels PRs `dependencies`; its REBASE platform auto-merge
+request is gated off by default. An explicit `apkoLockMaintenance.automerge: true`
+renders the exact helper opt-in, only after separate activation authorization.
+The helper never submits an approval or bypasses checks. Enabled requests require
+the same App-bound evidence gate and CI as ordinary Renovate updates.
 
 ## Smallest owner handoff
 
@@ -159,7 +170,7 @@ A statement of approval cannot replace missing access, evidence or passing CI.
 | Verify the suspended hub | Manual/read-only capability | An authorized operator records the effective `renovate` and `renovate-apko-lock-maintenance` CronWorkflow states, available active-run/history evidence and its retention limits, plus OnePasswordItem synchronization/materialization attestation without retrieving Secret objects or values. Current tools cannot supply these resource reads. |
 | Close implementation/evidence gaps | Platform engineering and validation | #7005 still requires pre-execution isolation of same-repository PR and queue credentials and snapshots. Verify the concrete provider target and budget/access implications before authorizing its implementation. Complete base/head OSV revalidation and bounded late publication are implemented here; verify live feed applicability and point-in-time queue behavior. Unsupported advisory coverage still refuses the particular update. Any required token renewal/wiring is designed only after the existing identity is known. |
 | Authorize the verified canary setup | Exact settings approval | Only after identities and isolation are verified: supply the existing trusted publisher identity as `FACTORY_DEPENDENCY_GATE_TOKEN` and its matching `FACTORY_DEPENDENCY_GATE_APP_ID`, enable `FACTORY_DEPENDENCY_GATE_ENABLED`, and set `intake.dependency_pr_authors` / `dependency_pr_author_ids` to the verified dedicated bot, never `jomcgi`. Propose any missing grant/binding separately, scoped to this repository. Keep both scheduled writers suspended while testing PR and single-entry queue success, unapproved/unsafe/stale evidence, unavailable reads and late ownership holds. Verify publisher/token loss and an advisory arriving after success, and explicitly accept the remaining post-publication race; GitHub does not expire that success. |
-| Authorize enforcement and release | Exact settings and PR approval | After canaries pass, require `factory/dependency-evidence` from the verified App integration in ruleset `9180009`, preserving `pr-checks`, the queue and all protections. Release the reviewed cleanup/policy work in the existing PRs, then rebase #7186 onto the integrated result and refresh its CI/review before approving its two suspension flips. The earlier #7168 enqueue denial requires exact release authorization; no enqueue is retried here. |
+| Authorize enforcement and release | Exact settings and PR approval | After canaries pass, require `factory/dependency-evidence` from the verified App integration in ruleset `9180009`, preserving `pr-checks`, the queue and all protections. Release the reviewed inactive preparation through #7358, which already incorporates #7168; do not enqueue #7168 separately. Rebase #7186 onto the integrated result and refresh its CI/review for the explicit activation edits below. Keep activation separate from code-release authority. |
 
 The observed App IDs and bot identity must appear in the concrete approval
 request; they are not guessed here. Verification alone does not enable anything.
@@ -167,6 +178,35 @@ After authorized release, observe the hub Application and effective schedules,
 then successful scheduled scans, all maintenance modes, dedicated-bot PR authors,
 independent evidence and queue outcomes before closing #7001/#7068. Reuse #7186
 for activation; do not create another activation task or change live resources.
+
+## Activation handoff to existing #7186
+
+These are instructions for that PR's owner, not changes to its branch or current
+release authority. First verify the identities, isolation, live advisory coverage,
+canaries and App-bound required check above. Then rebase #7186 onto the released
+preparation and include these exact edits in its reviewed activation diff:
+
+1. In `renovate.json`, set top-level `automerge` and `platformAutomerge` to true,
+   and do the same only in the ordinary-update rule identified by its
+   `matchUpdateTypes` list (major, minor, patch, pin, digest, pinDigest,
+   lockFileMaintenance, replacement, bump, rollback). Keep both explicit
+   compatibility-hold rules false and retain every existing exclusion.
+2. In `values-gke.yaml`, set `apkoLockMaintenance.automerge` to true. This renders
+   `MAINTENANCE_AUTOMERGE_ENABLED="true"` for that workflow. Keep the reusable
+   base chart default false. No credential or grant is implied by this flag.
+3. Apply #7186's existing `suspend: false` and
+   `apkoLockMaintenance.suspend: false` changes only after those activation
+   prerequisites are enforced. Both remain true in this preparation.
+4. Update the staging assertions in `dependency_policy_test.py` and
+   `hub_deployment_test.py` to the approved activated state, retaining tests for
+   missing/false helper flags, ownership holds, checks and compatibility holds.
+   Refresh exact-head CI, independent review, rollout and first-run evidence.
+
+The repository policy switch affects any runner consuming it, including a hosted
+App. CronWorkflow suspension alone is not an automerge control. The default-off
+helper makes no GraphQL merge-state or mutation call; it may still create/label a
+PR if an operator invokes the otherwise suspended maintenance workflow. No existing
+PR is disarmed or removed from the queue by this preparation.
 
 ## Credential isolation boundary (#7005)
 
