@@ -38,13 +38,24 @@ argocd_app(
     ],
 )
 
+# Policy fixtures include the rendered maintenance assets and real Node publisher.
 py_test(
     name = "dependency_policy_test",
     srcs = ["dependency_policy_test.py"],
     args = ["$(rootpath dependency_policy_test.py)"],
     data = [
-        "templates/apko-lock-script.yaml",
+        ":chart",
         "//:renovate.json",
+        "@multitool//tools/helm",
+        "@nodejs_linux_amd64//:node_bin",
+    ],
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "NODE_BIN": "$(rootpath @nodejs_linux_amd64//:node_bin)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
 
@@ -60,16 +71,11 @@ py_test(
         "//projects:hub_renovate_enrollment_manifests",
         "//projects/platform-gke/renovate:manifests",
         "@multitool//tools/helm",
-        "@nodejs_linux_amd64//:node_bin",
     ],
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-        "NODE_BIN": "$(rootpath @nodejs_linux_amd64//:node_bin)",
     },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
 
 # Markdown read by the monolith doc-manifest genrules (#6446). See

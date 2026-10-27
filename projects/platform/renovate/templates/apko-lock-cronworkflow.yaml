@@ -53,6 +53,8 @@ spec:
           args:
             - /opt/renovate-apko/maintain.sh
           env:
+            - name: MAINTENANCE_AUTOMERGE_ENABLED
+              value: {{ .Values.apkoLockMaintenance.automerge | default false | quote }}
             - name: RENOVATE_TOKEN
               valueFrom:
                 secretKeyRef:

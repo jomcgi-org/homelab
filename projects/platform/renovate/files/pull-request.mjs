@@ -1,5 +1,5 @@
-// Shared PR handling for bounded maintenance branches. This requests the same
-// platform auto-merge as Renovate; it never approves or bypasses required checks.
+// Shared PR handling for bounded maintenance branches. Platform auto-merge is
+// default-off until separately activated; this never approves or bypasses checks.
 const modes = new Set(["apko", "python", "atlas", "helm", "op", "claude"]);
 const mode = process.env.MAINTENANCE_MODE;
 if (!modes.has(mode)) throw new Error("Unknown maintenance mode");
@@ -56,7 +56,10 @@ pull ||= await request(`repos/${repo}/pulls`, {
 await request(`repos/${repo}/issues/${pull.number}/labels`, {
   labels: ["dependencies"],
 });
-if (!pull.auto_merge) {
+// Old/manual workflows without this explicit flag remain unable to arm a PR,
+// even if they load this script from the updated ConfigMap. A false flag does
+// not cancel auto-merge or queue membership that another actor already enabled.
+if (process.env.MAINTENANCE_AUTOMERGE_ENABLED === "true" && !pull.auto_merge) {
   // Queued PRs have autoMergeRequest:null. Reconcile an existing queue entry
   // before requesting a mutation, and accept immediate queueing as success.
   const observed = await request("graphql", {

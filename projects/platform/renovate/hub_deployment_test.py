@@ -87,10 +87,10 @@ def test_hub_application_orders_overlay_last_and_renders_suspended():
     }
 
 
-def test_hub_overlay_only_suspends_both_schedules():
+def test_hub_overlay_suspends_writers_and_disables_automerge():
     assert _load(HERE / "values-gke.yaml") == {
         "suspend": True,
-        "apkoLockMaintenance": {"suspend": True},
+        "apkoLockMaintenance": {"suspend": True, "automerge": False},
     }
     base = _render("values.yaml")
     expected = copy.deepcopy(base)
