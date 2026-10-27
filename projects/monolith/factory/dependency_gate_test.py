@@ -103,14 +103,18 @@ class FakeGitHub:
             }
         if endpoint.startswith("pulls/"):
             return deepcopy(self.pull)
-        assert endpoint == f"compare/{QUEUE_BASE}...{QUEUE_HEAD}"
+        assert endpoint in (
+            f"compare/{BASE}...{QUEUE_HEAD}",
+            f"compare/{QUEUE_BASE}...{QUEUE_HEAD}",
+        )
+        comparison_base = endpoint.removeprefix("compare/").split("...")[0]
         return deepcopy(
             self.comparison
             or {
                 "files": self.files,
                 "status": "ahead",
-                "base_commit": {"sha": QUEUE_BASE},
-                "merge_base_commit": {"sha": QUEUE_BASE},
+                "base_commit": {"sha": comparison_base},
+                "merge_base_commit": {"sha": comparison_base},
             }
         )
 
@@ -1290,6 +1294,9 @@ def bind_advisory_inventory(approved, inventory):
 
 def partial_remediation(setup, monkeypatch):
     github, approved, audits, publications = setup
+    # Residual findings require the same independently inspected baseline on
+    # both PR and queue heads; clean candidates may use equivalent newer bases.
+    github.entries[0]["baseCommit"]["oid"] = approved.evidence["base_sha"]
     inventory = advisory_inventory(approved.evidence)
     vulnerable = {"vulns": [advisory_record()]}
     inventory["base"][0]["response_sha256"] = deps.advisory_digest(vulnerable)
@@ -1514,3 +1521,33 @@ def test_osv_nonempty_response_retains_complete_sorted_records(monkeypatch):
     changed = deepcopy(response)
     changed["vulns"][0]["severity"][0]["score"] = "changed score"
     assert deps.advisory_digest(changed) != deps.advisory_digest(response)
+
+
+@pytest.mark.parametrize("target", ["pr", "queue"])
+@pytest.mark.parametrize("ci_state", ["success", "pending", "failure"])
+def test_residual_findings_cannot_use_an_obsolete_comparison_base(
+    setup, monkeypatch, target, ci_state
+):
+    github, approved, audits, publications = setup
+    github.changes = []
+    github.files[0].update(
+        filename="projects/example/values.yaml", patch="-image: A\n+image: C"
+    )
+    evidence = deps.snapshot(
+        REPO, github.pull, read_get=github.get, read_list=github.rows
+    )
+    approved.evidence.clear()
+    approved.evidence.update(evidence)
+    approved.runs[:] = runs(evidence)
+    partial_remediation(setup, monkeypatch)
+    # Main's image B already fixed the residual vulnerability. The candidate C
+    # and empty graph stay identical, so old A->C evidence cannot authorize B->C.
+    github.files[0]["patch"] = "-image: B\n+image: C"
+    github.ci_state = ci_state
+    entry = queue_entry() if target == "queue" else None
+    if target == "pr":
+        github.pull["base"]["sha"] = QUEUE_BASE
+    with pytest.raises(ValueError):
+        gate.evaluate(REPO, "main", github.pull, POLICY, github, entry)
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+    assert not any("/status?" in endpoint for endpoint in github.reads)

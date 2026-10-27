@@ -2004,7 +2004,11 @@ the existing non-regression policy, partial remediation can pass when unrelated
 findings remain only on exactly unchanged components: occurrence, artifact,
 exposure, query/version, file associations and advisory content must match.
 Added vulnerable versions, copies or new exposure invalidate approval even when
-another finding is removed. No waiver is granted. Unavailable, oversized,
+another finding is removed. Residual findings require the actual PR or queue
+base to equal the independently reviewed base. A moved base invalidates approval
+before waiting for CI or OSV; identical candidate blobs do not prove unchanged
+baseline exposure or findings. Clean candidates retain equivalent-content queue
+comparison. No waiver is granted. Unavailable, oversized,
 malformed, incomplete or paginated responses refuse without claiming positive
 change. Other sources require an adapter or remain refused; prose cannot
 substitute for revalidation.
