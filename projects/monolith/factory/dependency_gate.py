@@ -331,7 +331,6 @@ def evaluate(
     validate_pull(pull, repo, branch, pull["number"], head)
     if not dependency(pull, policy):
         return "non-dependency PR", None
-    require_ci(github, repo, entry["headCommit"]["oid"] if entry else head)
     try:
         approved = approval(repo, pull["number"])
     except SQLAlchemyError as exc:
@@ -358,6 +357,7 @@ def evaluate(
                 raise ValueError("queued PR head moved")
             comparison = (entry["baseCommit"]["oid"], entry["headCommit"]["oid"])
         reviewed = comparable(evidence)
+        require_ci(github, repo, entry["headCommit"]["oid"] if entry else head)
         try:
             current = deps.snapshot(
                 repo,

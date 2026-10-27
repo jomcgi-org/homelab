@@ -1200,3 +1200,33 @@ def test_revoked_durable_approval_during_advisory_reads_cannot_publish_success(
     monkeypatch.setattr(deps, "read_advisory", read)
     gate.tick(POLICY)
     assert {row[2]["conclusion"] for row in publications} == {"failure"}
+
+
+@pytest.mark.parametrize("ci", ["pending", "failure", "unavailable"])
+@pytest.mark.parametrize("change", ["hold", "head", "author", "queue_head"])
+def test_positive_identity_and_hold_changes_invalidate_even_before_ci_ready(
+    setup, monkeypatch, ci, change
+):
+    github, _, audits, publications = setup
+    if change == "hold":
+        github.pull["labels"] = [{"name": "human"}]
+    elif change == "head":
+        github.pull["head"]["sha"] = "f" * 40
+    elif change == "queue_head":
+        github.entries[0]["pullRequest"]["headRefOid"] = "f" * 40
+    else:
+        github.pull["user"]["id"] = 999
+    if ci == "unavailable":
+        original = github.get
+
+        def unavailable(repo, endpoint):
+            if "/status?" in endpoint:
+                raise httpx.ReadTimeout("CI unavailable")
+            return original(repo, endpoint)
+
+        monkeypatch.setattr(github, "get", unavailable)
+    else:
+        github.ci_state = ci
+    gate.tick(POLICY)
+    assert {row[2]["conclusion"] for row in publications} == {"failure"}
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
