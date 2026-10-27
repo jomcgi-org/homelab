@@ -70,26 +70,31 @@ a new hold invalidates the old approval. Native Renovate stops updating PRs
 labelled `human`.
 There is no filename-based exemption. Old artifacts require fresh review.
 
-Both reviewers must independently agree on `advisory_sources`, mapping every
-changed file to exact package/ecosystem/version or Git commit queries. The
-trusted server re-fetches the complete bounded OSV queries at completion and
-publication, compares normalized response hashes, and refuses findings,
-truncation, errors and unsupported coverage. It sends no GitHub credentials to
-OSV and accepts no caller-selected endpoint. At most 100 source entries fit one
-assessment. Reviewers must establish the query's applicability and the complete
-artifact/SBOM package closure; an unknown package with an empty result proves
-nothing. Arbitrary upstream advisory pages are not silently treated as covered.
-This adapter conservatively refuses any reported OSV finding, including an
-unchanged vulnerable SBOM component in an image/apko update that fixes another
-component. Such partial remediation is not currently eligible for this automatic
-path. Supporting reviewed residual findings needs a separately reviewed
-acceptance contract; a passing CI run does not override this limit.
+Both reviewers must independently agree on complete base/head `advisory_sources`
+inventories, bound to the reviewed commits and every corresponding changed file.
+Each entry binds its stable occurrence, immutable artifact bytes, exposure
+fingerprint, exact package/ecosystem/version or Git commit query, file associations
+and complete normalized OSV response. The trusted server re-fetches both sides at
+completion and publication. Unrelated baseline findings may remain only when all
+those component fields are unchanged. Partial remediation can therefore pass;
+added vulnerable versions, copies or exposure cannot, even if other findings are
+removed. Changed advisory content requires fresh independent review.
+
+Incomplete inventories, truncation, errors and unsupported coverage refuse. No
+GitHub credentials or caller-selected endpoint reach OSV. At most 100 components
+per side fit an assessment. Reviewers establish query applicability, complete
+artifact/SBOM closure and exposure derivation; agreement and hashes do not prove
+those facts. An unknown package with an empty result proves nothing. Arbitrary
+upstream advisory pages are not silently treated as covered. This implements the
+existing non-regression policy without a suppression or new risk exception.
 
 Publication waits for exact-head CI and revalidates each head immediately before
 writing, with a 60-second collection bound and a final durable-approval read.
-GitHub check success itself has no expiry; publisher/token loss after success
-and advisory changes after publication remain a platform-enforcement blocker.
-These code changes narrow the window but do not establish atomic merge freshness.
+This verifies the exact queue commit at a point in time. GitHub check success
+has no expiry: publisher/token loss after success or advisory changes before
+merge remain possible. Canary that behavior and obtain explicit acceptance of
+the residual race before activation. No atomic merge freshness or mandatory
+expiry service is claimed.
 
 Remaining coverage is split below. An adapter gap is code work under the
 maintenance goal, not a request for Joe to approve each ordinary bump. A
@@ -105,13 +110,15 @@ compatibility hold remains binding until its migration or evidence is ready.
 | OTP and Wolfi Erlang runtime | Deliberate exact-version compatibility hold, with a future paired adapter possible | Choose a version published by both sources, update both together and validate the release/runtime pair. |
 | Envoy family, Firecracker snapshots, Kata/k3s, Loom/schema fixtures and explicit API bounds | Existing compatibility holds listed above | Preserve the exact holds; only the corresponding regression fix, coordinated migration or fixture validation can remove them. Ordinary majors outside these explicit boundaries stay eligible. |
 
-Unsupported supplemental advisory sources, the post-publication freshness
-boundary, CI credential isolation and any missing identity renewal/wiring are
-activation engineering/evidence gaps, not compatibility holds. The structured
-OSV revalidation path is implemented, but does not prove live feed applicability
-or supply a GitHub check expiry. Existing owners must close the remaining gaps
-before the relevant automatic merge path is accepted. Updates requiring Python backend
-execution also need an isolated generation path; the writer refuses execution.
+Unsupported supplemental advisory sources, CI credential isolation and any
+missing identity renewal/wiring are engineering/evidence gaps, not compatibility
+holds. The structured OSV path is implemented; live feed applicability and the
+point-in-time queue canary remain unverified. The post-publication race requires
+explicit acceptance, not an invented expiry-service requirement. #7005's isolation
+design needs a verified concrete target and budget/access authorization before
+implementation. Existing owners must close those gaps before the relevant
+automatic merge path is accepted. Updates requiring Python backend execution
+also need an isolated generation path; the writer refuses execution.
 
 Root Python automatic compilers pass `--no-build`; Renovate passes
 `UV_NO_BUILD=true` to native uv artifact commands. Packages requiring source

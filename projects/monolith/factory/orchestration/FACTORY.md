@@ -1985,18 +1985,29 @@ a successful empty dependency comparison records a coverage limitation. Both
 independent artifacts must enumerate every changed filename in `reviewed_files`
 and supply concrete supplemental provenance/advisory evidence in
 `evidence_coverage`. Unavailable, null, malformed or truncated reads still refuse.
-Both independent artifacts also carry matching `advisory_sources` inventories:
-exact OSV package/ecosystem/version or Git commit queries, immutable subject
-identities, covered files and normalized response hashes. Every changed file
-must be represented. Reviewers establish complete dependency/SBOM coverage;
-empty results for unknown packages are not proof. The server re-fetches these
-queries at completion and each publication with no credentials, redirects or
-caller-selected endpoint. Findings invalidate approval; unavailable, oversized,
-malformed or paginated responses refuse without claiming positive change.
-At most 100 source entries are accepted. Even unchanged vulnerable SBOM
-components prevent this automatic path; partial remediation with residual
-findings is not covered by this conservative adapter. Other sources require an adapter or
-remain refused; prose cannot substitute for revalidation.
+Both independent artifacts carry the same complete base/head `advisory_sources`
+inventories, bound to the reviewed commits. Each side covers every corresponding
+changed file, using the previous filename for renames on the base and excluding
+added/removed files from the side where they do not exist. Each component binds
+a stable occurrence key, immutable artifact SHA256, exposure SHA256, exact OSV
+package/ecosystem/version or Git commit query, file associations and complete
+response hash. Reviewers establish the full dependency/SBOM closure, occurrence
+identity, exposure derivation and feed applicability; agreement and hashes alone
+do not prove completeness. Empty results for unknown packages are not proof.
+The bound is 100 components per side.
+
+The server freshly queries both sides at completion and each publication with
+no credentials, redirects or caller-selected endpoint. It retains all fields of
+every advisory, normalizes absent findings to an empty list and sorts records by
+ID before hashing canonical JSON. Changed content invalidates approval. Under
+the existing non-regression policy, partial remediation can pass when unrelated
+findings remain only on exactly unchanged components: occurrence, artifact,
+exposure, query/version, file associations and advisory content must match.
+Added vulnerable versions, copies or new exposure invalidate approval even when
+another finding is removed. No waiver is granted. Unavailable, oversized,
+malformed, incomplete or paginated responses refuse without claiming positive
+change. Other sources require an adapter or remain refused; prose cannot
+substitute for revalidation.
 
 Dependency success waits for exact-head `pr-checks`. Each head is evaluated
 immediately before publication, including a final durable-approval read, with
@@ -2032,9 +2043,11 @@ Live checks outstanding for #6799, outside this repository-only slice:
    ID, alongside Linux `pr-checks`. Audit bypass and any-App sources.
 4. Verify a stale or advisory-changed queued dependency PR is refused and needs
    a new authorized generation. Polling cannot guarantee freshness if an advisory
-   arrives between success and merge; establish merge-time acceptance before
-   authorizing automated merges. Missing token/API failures also cannot revoke
-   a check already held by GitHub; test that boundary before activation.
+   arrives between success and merge. This is point-in-time verification of
+   the exact queue commit. Missing token/API failures also cannot revoke a
+   check already held by GitHub. Canary the implemented boundary and obtain
+   Joe's explicit acceptance of that residual race before activation; an expiry
+   service is not an established repository requirement.
 5. Verify an unapproved Renovate PR with auto-merge already armed cannot merge.
    The staged Renovate policy requests auto-merge only after its separate activation; it does not disarm existing PRs.
 6. Resolve and verify #7005's same-repository secret boundary. BuildBuddy
