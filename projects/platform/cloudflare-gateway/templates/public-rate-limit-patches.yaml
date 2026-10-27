@@ -27,5 +27,31 @@ spec:
         jsonPath: {{ printf "..routes[?(@.name=~\"^httproute/%s/%s/\")]" .routeNamespace .routeName | quote }}
         path: typed_per_filter_config/envoy.filters.http.local_ratelimit/max_dynamic_descriptors
         value: {{ .maxDynamicDescriptors }}
+    # HeaderMatcher can match any duplicate entry while RequestHeaders uses
+    # the first. CEL sees the joined value, so only one identity can select a
+    # descriptor; all other requests retain the existing fallback bucket.
+    - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+      name: {{ $.Release.Namespace }}/{{ $.Values.gateway.name }}/http
+      operation:
+        op: add
+        jsonPath: {{ printf "..routes[?(@.name=~\"^httproute/%s/%s/\")].typed_per_filter_config['envoy.filters.http.local_ratelimit'].rate_limits[*]" .routeNamespace .routeName | quote }}
+        path: actions/-
+        value:
+          extension:
+            name: envoy.rate_limit_descriptors.expr
+            typed_config:
+              '@type': type.googleapis.com/envoy.extensions.rate_limit_descriptors.expr.v3.Descriptor
+              descriptor_key: single_cf_identity
+              text: '("cf-connecting-ip" in request.headers && !request.headers["cf-connecting-ip"].contains(",")) ? "true" : "false"'
+              skip_if_error: false
+    - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+      name: {{ $.Release.Namespace }}/{{ $.Values.gateway.name }}/http
+      operation:
+        op: add
+        jsonPath: {{ printf "..routes[?(@.name=~\"^httproute/%s/%s/\")].typed_per_filter_config['envoy.filters.http.local_ratelimit'].descriptors[*]" .routeNamespace .routeName | quote }}
+        path: entries/-
+        value:
+          key: single_cf_identity
+          value: "true"
 {{- end }}
 {{- end }}
