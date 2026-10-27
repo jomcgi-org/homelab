@@ -129,7 +129,7 @@ func TestNativeObserverInteroperability(t *testing.T) {
 		{"list", modernBody("tools/list", "", ""), modern("tools/list", "")},
 		{"plan", modernBody("tools/call", "plan", `{"lat":57.19,"lon":-3.83,"from":"2026-10-20","to":"2026-10-20"}`), modern("tools/call", "plan")},
 		{"check", modernBody("tools/call", "check", `{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"Cairn Gorm"}]}`), modern("tools/call", "check")},
-		{"aurora-off", modernBody("tools/call", "aurora", `{}`), modern("tools/call", "aurora")},
+		{"aurora-off", modernBody("tools/call", "aurora", `{"lat":57.3,"lon":-3.7,"at":"2026-10-19T20:00:00Z"}`), modern("tools/call", "aurora")},
 		{"isError", modernBody("tools/call", "plan", `{}`), modern("tools/call", "plan")},
 		{"unknown-tool", modernBody("tools/call", "private_secret_tool", `{}`), modern("tools/call", "private_secret_tool")},
 		{"method-spoof", modernBody("tools/list", "", ""), modern("tools/call", "private_secret_tool")},
@@ -203,6 +203,8 @@ func TestNativeObserverInteroperability(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("X-Test-Disconnect", "true")
+	req.Header.Set("X-Envoy-Retry-On", "reset,5xx")
+	req.Header.Set("X-Envoy-Max-Retries", "3")
 	before := count.Load()
 	res, err := client.Do(req)
 	if err != nil {
