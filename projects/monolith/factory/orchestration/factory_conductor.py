@@ -33,6 +33,7 @@ from core.clock import aware
 from core.db import get_engine
 from core.github import GITHUB_API
 from factory.orchestration.github_read_cooldown import (
+    FactoryPhaseDiagnostics,
     GitHubReadCooldown,
     GitHubReadDeferred,
     GitHubReadTelemetry,
@@ -83,6 +84,7 @@ ACTOR = "factory:reconciler"
 ADVISORY_CHECK_CONTEXTS = frozenset({"route-b/semgrep"})
 
 TICK_SECONDS = 15
+_phase_diagnostics = FactoryPhaseDiagnostics()
 # Independent kubelet liveness tolerates forty missed tick intervals before
 # replacing this process. Task duration and task policy do not affect it.
 WATCHDOG_STALL_SECONDS = 600
@@ -8660,6 +8662,14 @@ def _observe_human_ownership(task: dict) -> bool:
 
 
 def tick() -> None:
+    checkpoint = _phase_diagnostics.begin()
+    try:
+        _tick(checkpoint)
+    finally:
+        checkpoint("end")
+
+
+def _tick(checkpoint) -> None:
     from factory.orchestration import uncertain_tasks
     from factory.orchestration.factory_controls import (
         execution_slot_holders,
@@ -8680,6 +8690,7 @@ def tick() -> None:
     ):
         retry_capacity_releases()
         snapshot = conductor_status()
+    checkpoint("dependency_gate")
     # Check publication is independent of admission, guest runtime and landing.
     try:
         from factory import dependency_gate
@@ -8689,15 +8700,18 @@ def tick() -> None:
         logger.exception("factory dependency gate publication failed")
     if snapshot["state"] == "disabled":
         return
+    checkpoint("runtime")
     dbos = runtime.init_dbos()
     if not runtime.is_launched() or dbos is None:
         return
+    checkpoint("escalation_revalidation")
     try:
         revalidate_escalations()
     except Exception:  # noqa: BLE001 - card checks cannot stop task reconciliation
         logger.exception("factory escalation revalidation failed")
     active = list(snapshot["active_tasks"])
     if snapshot["state"] == "stopped":
+        checkpoint("stop_reconciliation")
         for task in active:
             # One task's cancellation failing must not leave the others running.
             try:
@@ -8707,7 +8721,9 @@ def tick() -> None:
         return
     # The window reading is refreshed before any task reconciles, because the
     # review nodes those tasks are about to start are what spends it.
+    checkpoint("reviewer_routing")
     observe_reviewer_routing(snapshot["policy"])
+    checkpoint("active_reconciliation")
     # Reconcile what is already in flight before admitting more, and isolate
     # each task: a task stuck on a refused outcome or a failed GitHub read
     # must not starve its neighbours of their tick, and a stale issue number
@@ -8758,6 +8774,7 @@ def tick() -> None:
             logger.exception(
                 "factory deadline backstop failed for task %s", task["task_id"]
             )
+    checkpoint("pr_lifecycle")
     try:
         from factory.orchestration.factory_pr_lifecycle import reconcile_tick
 
@@ -8768,24 +8785,29 @@ def tick() -> None:
     # delivery that is already approved and settled has nothing left to pause.
     from factory.orchestration.factory_landing import landing_tick
 
+    checkpoint("landing")
     landing_tick(snapshot["policy"])
     # Outcome tracking only: whether a factory merge was reverted inside its
     # window. Throttled and self-guarded, so it cannot stall reconciliation.
     from factory.orchestration.factory_reverts import revert_tick
 
+    checkpoint("reverts")
     revert_tick(snapshot["policy"])
+    checkpoint("problem_issues")
     try:
         from factory.orchestration.factory_problem_issues import problem_issues_tick
 
         problem_issues_tick(snapshot["policy"])
     except Exception:  # noqa: BLE001 - issue production cannot stop reconciliation
         logger.exception("factory problem issue reconciliation failed")
+    checkpoint("pointers")
     try:
         from factory.orchestration.work_item_pointer import sync_pointers
 
         sync_pointers(actor=ACTOR)
     except Exception:  # noqa: BLE001 - pointer failure must not stall reconciliation
         logger.exception("work item pointer sync failed")
+    checkpoint("digest")
     try:
         from factory.orchestration.factory_notify_policy import digest_tick
 
@@ -8810,6 +8832,7 @@ def tick() -> None:
     )
     if occupied >= limit:
         return
+    checkpoint("intake")
     try:
         from factory.orchestration.agent_board_poll import eligible_lanes
         from factory.orchestration.factory_intake_loop import intake_tick

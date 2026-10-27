@@ -4815,6 +4815,25 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_phase_diagnostics_test",
+    srcs = ["factory/orchestration/factory_phase_diagnostics_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_auth",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_uncertain_tasks_test",
     srcs = ["factory/orchestration/uncertain_tasks_test.py"],
     imports = ["."],

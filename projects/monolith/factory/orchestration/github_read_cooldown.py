@@ -5,6 +5,8 @@ across repositories. A replacement process learns the provider's limits from
 its first response; this is not a distributed quota ledger or execution grant.
 """
 
+import json
+import logging
 import math
 import threading
 import time
@@ -173,3 +175,89 @@ def process_memory_snapshot():
         "cgroup_memory_limit_bytes": limit,
         "cgroup_oom_kills": killed,
     }
+
+
+class FactoryPhaseDiagnostics:
+    """Sample one conductor tick per minute, without retaining task evidence.
+
+    These are process counters at phase boundaries, including concurrent work.
+    They narrow investigation; they do not attribute allocations to a phase.
+    Entry records survive a crash before a phase completes. All failures are
+    isolated so diagnostics cannot change dispatch, ordering or error handling.
+    """
+
+    PHASES = frozenset(
+        {
+            "snapshot",
+            "dependency_gate",
+            "runtime",
+            "escalation_revalidation",
+            "stop_reconciliation",
+            "active_reconciliation",
+            "reviewer_routing",
+            "pr_lifecycle",
+            "landing",
+            "reverts",
+            "problem_issues",
+            "pointers",
+            "digest",
+            "intake",
+            "end",
+        }
+    )
+    INTERVAL_SECONDS = 60
+
+    def __init__(self, *, monotonic=None, memory=None, emit=None):
+        self._clock = monotonic or time.monotonic
+        self._memory = memory or process_memory_snapshot
+        self._emit = emit or self._log
+        self._next = 0.0
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _log(sample):
+        # Fixed labels and bounded numeric evidence only. INFO stays in pod
+        # logs under the existing warning-and-above remote log export policy.
+        logging.getLogger(__name__).info(
+            "factory phase checkpoint: %s", json.dumps(sample, sort_keys=True)
+        )
+
+    def begin(self):
+        def noop(_phase):
+            return None
+
+        try:
+            started = self._clock()
+            with self._lock:
+                if started < self._next:
+                    return noop
+                self._next = started + self.INTERVAL_SECONDS
+        except Exception:  # noqa: BLE001 - diagnostics never fence useful work
+            return noop
+        previous = None
+        previous_at = started
+        seen = set()
+
+        def checkpoint(phase):
+            nonlocal previous, previous_at
+            # At most one record for each fixed phase in a sampled tick.
+            if phase not in self.PHASES or phase in seen:
+                return
+            seen.add(phase)
+            try:
+                now = self._clock()
+                self._emit(
+                    {
+                        "phase": phase,
+                        "previous_phase": previous,
+                        "previous_elapsed_seconds": round(max(0, now - previous_at), 3),
+                        "tick_elapsed_seconds": round(max(0, now - started), 3),
+                        "memory": self._memory(),
+                    }
+                )
+                previous, previous_at = phase, now
+            except Exception:  # noqa: BLE001 - preserve the operation's outcome
+                return
+
+        checkpoint("snapshot")
+        return checkpoint
