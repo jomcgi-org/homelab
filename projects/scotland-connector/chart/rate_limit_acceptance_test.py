@@ -167,7 +167,8 @@ def _static_config(translated: dict, port: int) -> dict:
                 assert guard["typedConfig"].get("skipIfError", False) is False
             for descriptor in local["descriptors"]:
                 assert descriptor["entries"][-1] == {
-                    "key": "single_cf_identity", "value": "true"
+                    "key": "single_cf_identity",
+                    "value": "true",
                 }
             route.pop("route", None)
             route["directResponse"] = {"status": 200}
