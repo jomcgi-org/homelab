@@ -62,9 +62,17 @@ jobs:
         run: |
           python3 projects/monolith/knowledge/tools/gen_docs_manifest.py
           pnpm --dir projects/monolith/frontend exec vite build
-          # Same pinned Helm archive and checksum as bazel/tools/tools.lock.json.
-          curl --fail --silent --show-error --location https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz -o /tmp/friends-helm.tar.gz
-          echo 'fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/friends-helm.tar.gz' | sha256sum --check
+          # Read the single maintained Helm pin, including its checksum.
+          python3 - <<'PYTHON'
+          import hashlib, json, pathlib, urllib.request
+          binaries = json.loads(pathlib.Path("bazel/tools/tools.lock.json").read_text())["helm"]["binaries"]
+          pin, = [b for b in binaries if b["os"] == "linux" and b["cpu"] == "x86_64"]
+          with urllib.request.urlopen(pin["url"], timeout=60) as response:
+              archive = response.read(128 * 1024 * 1024)
+          if hashlib.sha256(archive).hexdigest() != pin["sha256"]:
+              raise ValueError("Helm archive checksum mismatch")
+          pathlib.Path("/tmp/friends-helm.tar.gz").write_bytes(archive)
+          PYTHON
           mkdir -p /tmp/friends-helm
           tar -xzf /tmp/friends-helm.tar.gz -C /tmp/friends-helm
           export HELM_BIN=/tmp/friends-helm/linux-amd64/helm

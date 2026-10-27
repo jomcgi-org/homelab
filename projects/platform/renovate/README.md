@@ -45,7 +45,9 @@ more than 500 extracted dependencies, and a 2 GiB limit was repeatedly killed
 during registry metadata resolution.
 
 Package lifecycle scripts and plugins are disabled. The sole allowlisted
-maintenance command regenerates the root compiled Python requirement locks.
+post-upgrade command regenerates the root compiled Python requirement locks.
+The existing separate weekly job also refreshes apko/root Python locks and
+non-GitHub tool pins; it does not expand Renovate's command allowlist.
 Helm updates refresh lock files and vendored archives without advancing wrapper
 chart versions; main publication owns those versions. Renovate targets only
 `jomcgi-org/homelab`, requires the checked-in `renovate.json`, and does not perform
@@ -67,19 +69,21 @@ canaries, stale-evidence refusal and the CI credential boundary from #7005.
 No credential, App grant, ruleset or live intake setting is changed by this PR.
 Reusing an existing installation is preferred; a new grant needs exact approval.
 
-Both independent dependency assessments must record `authorization_scope`.
-Ordinary bumps, including majors, need no routine human approval. Credential,
-access, security-policy, budget or audience changes bundled with an update
-need exact existing authority or the review refuses that update. Existing holds
-and compatibility pins remain binding. Earlier assessments without this new
-dimension cannot pass the evidence gate.
+Both independent dependency assessments must record `authorization_scope` and
+`evidence_coverage`, and list the complete server-fetched changed-file inventory
+in `reviewed_files`. Ordinary bumps, including majors, need no routine human
+approval. Credential, access, security-policy, budget or audience changes
+bundled with an update need exact existing authority or review refuses that
+update. Existing holds and compatibility pins remain binding. Old assessments
+without these dimensions cannot pass.
 
-The factory's dependency landing function still refuses to arm auto-merge.
-Renovate would arm its own PRs once activated; the factory supplies independent
-evidence. The separate apko job still creates PRs without requesting auto-merge.
-Empty GitHub dependency-graph comparisons are refused by the current evidence
-gate, so unsupported ecosystems need an attested evidence path before they can
-merge automatically. These are outstanding activation gaps, not passing evidence.
+The factory's own landing function remains inspection-only for dependency
+PRs. Renovate and the weekly maintenance job request native platform auto-merge;
+the factory supplies independent evidence, and the required App-bound queue
+check must enforce it. A successful empty GitHub graph is a coverage limitation:
+reviewers must provide upstream advisory/artifact evidence. GitHub alerts alone
+do not refresh that supplemental evidence. That freshness boundary and the
+check-to-merge polling window must pass live acceptance before activation.
 
 #7168 owns retired-home cleanup and #7186 owns the hub suspension flip under
 #7001/#7068. Reuse those PRs; neither schedule is changed here. Keep those issues
@@ -129,12 +133,56 @@ scheduled apko maintenance PR, and the duplicate-writer audit plus durable home
 suspension. The home enrollment stays in place until that acceptance is complete
 and any later home-cluster retirement is separately authorized.
 
-## apko lock maintenance
+## Weekly dependency maintenance
 
-A second CronWorkflow runs at 01:00 America/Vancouver each Monday. It regenerates
-every committed `apko.lock.json` on Linux through the repository's pinned
-`rules_apko` toolchain, runs the committed-artifact generators, and maintains a
-single `renovate/apko-lock-maintenance` PR. The script opens or updates the PR
-and labels it `dependencies`; it never requests auto-merge. Updated Wolfi
-packages require the same adversarial approval and separately authorized merge
-as other dependency updates.
+The existing second CronWorkflow runs at 01:00 America/Vancouver each Monday.
+It keeps separate `renovate/<mode>-lock-maintenance` PRs for `apko`, `python`,
+`atlas`, `helm`, `op` and `claude`. Apko uses pinned `rules_apko` plus generators.
+Python runs both root requirement compilers with `--upgrade`. Each tool adapter
+updates all platforms atomically, without executing downloaded code. Each mode
+fails independently, and existing held, assigned, draft or human-authored PRs
+are preserved. The job labels PRs `dependencies` and requests REBASE platform
+auto-merge; it never submits an approval or bypasses checks. These requests
+require the same App-bound evidence gate and CI as ordinary Renovate updates.
+
+## Owner setup and activation handoff
+
+These are outstanding acceptance steps, not changes performed by this PR:
+
+1. **Verify existing identities, read-only.** An authorized owner should confirm
+   the Renovate installation on `jomcgi-org/homelab`, its numeric App/installation
+   IDs and bot login/user ID, plus the existing trusted dependency-check App's
+   numeric integration ID. The attempted organization-installation read returned
+   HTTP 403; it has not been retried through another route. Healthy Argo and a
+   synced OnePasswordItem do not prove token usability. Verify materialization
+   and expiry without disclosing Secret values. Prefer the existing installation.
+2. **Resolve #7005 first.** Prove untrusted same-repository PR execution cannot
+   obtain GHCR push or other production credentials, and the trusted publisher
+   token never enters guests or PR workloads. This PR does not alter that owner’s
+   CI settings or grants.
+3. **Configure only verified existing identities after exact authorization.**
+   The trusted monolith publisher needs repository/PR, dependency graph and
+   Dependabot-alert reads plus checks write on this repository, via
+   `FACTORY_DEPENDENCY_GATE_TOKEN` and the matching
+   `FACTORY_DEPENDENCY_GATE_APP_ID`. Its existing enable flag is default-off.
+   The Renovate writer needs contents/PR writes for its existing operations;
+   Actions-file changes additionally need the existing workflow-write permission.
+   Inspect actual grants first. Any missing scope, new identity, token creation
+   or Secret binding needs its own exact confirmation; none is inferred here.
+4. **Canary before requiring/enabling.** Test success/refusal on a real exact PR
+   head and single-entry merge-group head, stale and unsafe evidence, empty graph
+   with supplemental evidence, unavailable reads, combined groups and moved
+   blobs. Establish supplemental advisory freshness and merge-time acceptance.
+5. **Enforce, then activate.** With exact owner authorization, require
+   `factory/dependency-evidence` from the verified numeric App integration in
+   ruleset `9180009`, preserving `pr-checks`, the merge queue and protections.
+   Set the factory intake bot login and numeric user-ID allowlists to that
+   verified dedicated bot, never `jomcgi`. Enable the trusted publisher only
+   after canaries and CI isolation pass. These are access/security settings and
+   remain separate approval steps.
+6. **Reuse the existing writer handoff.** #7168 removes retired-home scaffolding;
+   #7186 owns the hub's two suspension flips. Reconcile those branches with this
+   PR, verify no old writer/in-flight run, then release #7186 with exact approval.
+   Observe scheduled scans and all maintenance modes, PR authors, artifact
+   updates, genuine independent review and queue results before closing #7001
+   or #7068. Do not create a second activation PR or live mutation.

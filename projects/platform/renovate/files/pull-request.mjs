@@ -1,0 +1,67 @@
+// Shared PR handling for bounded maintenance branches. This requests the same
+// platform auto-merge as Renovate; it never approves or bypasses required checks.
+const modes = new Set(["apko", "python", "atlas", "helm", "op", "claude"]);
+const mode = process.env.MAINTENANCE_MODE;
+if (!modes.has(mode)) throw new Error("Unknown maintenance mode");
+const repo = "jomcgi-org/homelab";
+const branch = `renovate/${mode}-lock-maintenance`;
+const headers = {
+  Accept: "application/vnd.github+json",
+  Authorization: `Bearer ${process.env.RENOVATE_TOKEN}`,
+  "Content-Type": "application/json",
+  "X-GitHub-Api-Version": "2022-11-28",
+};
+async function request(path, body) {
+  const response = await fetch(`https://api.github.com/${path}`, {
+    headers,
+    ...(body === undefined
+      ? {}
+      : { method: "POST", body: JSON.stringify(body) }),
+  });
+  const result = await response.json();
+  if (!response.ok || result.errors) {
+    // Do not print response bodies or headers that could contain credentials.
+    throw new Error(`GitHub request failed: ${response.status} ${path}`);
+  }
+  return result;
+}
+const pulls = await request(
+  `repos/${repo}/pulls?state=open&head=jomcgi-org:${encodeURIComponent(branch)}`,
+);
+if (!Array.isArray(pulls) || pulls.length > 1)
+  throw new Error("Ambiguous branch ownership");
+let pull = pulls[0];
+if (
+  pull &&
+  (pull.user.type !== "Bot" ||
+    pull.draft ||
+    pull.assignees.length ||
+    pull.labels.some(({ name }) =>
+      /hold|blocked|needs-human|do-not-merge|manual|agent-skip/i.test(name),
+    ))
+) {
+  console.log(`Preserving held or owned PR #${pull.number}`);
+  process.exit(3);
+}
+if (process.argv[2] === "preflight") process.exit(0);
+if (process.argv[2] !== "publish") throw new Error("Unknown operation");
+pull ||= await request(`repos/${repo}/pulls`, {
+  title: `chore(deps): refresh ${mode} locks`,
+  head: branch,
+  base: "main",
+  body: `Scheduled ${mode} dependency maintenance. Requires independent dependency evidence review, Linux pr-checks and the existing merge queue. Generated artifacts and consequential changes remain subject to review.`,
+});
+await request(`repos/${repo}/issues/${pull.number}/labels`, {
+  labels: ["dependencies"],
+});
+if (!pull.auto_merge) {
+  const result = await request("graphql", {
+    query:
+      "mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: REBASE}) { pullRequest { autoMergeRequest { enabledAt } } } }",
+    variables: { id: pull.node_id },
+  });
+  if (!result.data?.enablePullRequestAutoMerge?.pullRequest?.autoMergeRequest) {
+    throw new Error("Auto-merge request was not confirmed");
+  }
+}
+console.log(`Maintenance PR: ${pull.html_url}`);
