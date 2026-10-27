@@ -78,7 +78,11 @@ and complete normalized OSV response. The trusted server re-fetches both sides a
 completion and publication. Unrelated baseline findings may remain only when all
 those component fields are unchanged. Partial remediation can therefore pass;
 added vulnerable versions, copies or exposure cannot, even if other findings are
-removed. Changed advisory content requires fresh independent review.
+removed. Changed advisory content requires fresh independent review. Residual
+findings also require the current PR/queue base to equal the reviewed base;
+otherwise fresh review must establish the new baseline. Candidate blob equality
+alone cannot show that main has not already fixed a vulnerability or changed
+exposure. Clean candidates retain equivalent-content queue comparison.
 
 Incomplete inventories, truncation, errors and unsupported coverage refuse. No
 GitHub credentials or caller-selected endpoint reach OSV. At most 100 components

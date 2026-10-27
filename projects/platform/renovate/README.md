@@ -89,7 +89,11 @@ Partial remediation is eligible when unrelated findings remain only on exactly
 unchanged components. Added vulnerable versions, new vulnerable occurrences or
 exposure, and changed advisory records invalidate approval. A new version that
 still has findings refuses even if it removes others. This preserves the
-established non-regression policy; it creates no vulnerability waiver.
+established non-regression policy; it creates no vulnerability waiver. If any
+finding remains, the current PR or queue base must equal the independently
+reviewed base. A moved base invalidates approval and requires fresh review,
+since main may have fixed that finding or changed its exposure. Clean candidates
+retain the existing equivalent-content queue comparison.
 
 The server enforces inventory agreement, commit/file binding and response
 comparison. Both reviewers must establish the complete dependency/SBOM closure,

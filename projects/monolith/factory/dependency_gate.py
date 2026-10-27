@@ -40,7 +40,7 @@ ENABLED_ENV = "FACTORY_DEPENDENCY_GATE_ENABLED"
 TOKEN_ENV = "FACTORY_DEPENDENCY_GATE_TOKEN"
 APP_ID_ENV = "FACTORY_DEPENDENCY_GATE_APP_ID"
 # Bounds collection-to-publication only. GitHub does not expire a successful
-# check; an independent platform boundary is still required for publisher loss.
+# check. Activation must canary and explicitly accept the post-success race.
 MAX_EVALUATION_SECONDS = 60
 QUEUE_QUERY = """
 query DependencyQueue($owner: String!, $name: String!, $branch: String!) {
@@ -356,6 +356,16 @@ def evaluate(
             if entry["pullRequest"]["headRefOid"] != head:
                 raise ValueError("queued PR head moved")
             comparison = (entry["baseCommit"]["oid"], entry["headCommit"]["oid"])
+        actual_base = comparison[0] if comparison else pull["base"]["sha"]
+        if actual_base != evidence["base_sha"] and any(
+            row["response_sha256"] != deps.advisory_digest({"vulns": []})
+            for row in sources["head"]
+        ):
+            # Residual findings rely on the independently inspected baseline,
+            # including exposure outside changed files. A later base may have
+            # fixed them even when the candidate blob and graph diff are equal.
+            # Invalidate before CI/OSV availability can hide this known change.
+            raise ValueError("residual findings require review on the current base")
         reviewed = comparable(evidence)
         require_ci(github, repo, entry["headCommit"]["oid"] if entry else head)
         try:

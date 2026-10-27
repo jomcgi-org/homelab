@@ -2372,7 +2372,11 @@ packages with empty responses are not proof of coverage. Partial remediation
 preserves the established non-regression policy: unrelated findings may remain
 only on exactly unchanged components, including their exposure and artifacts.
 Added vulnerable versions or occurrences, new exposure and changed advisory
-content invalidate approval. Incomplete responses and unsupported sources refuse.
+content invalidate approval. If findings remain, a changed PR or queue base also
+invalidates approval before CI/OSV reads: main may already have fixed them or
+changed exposure despite identical candidate blobs. Fresh review must establish
+that baseline. Clean candidates retain equivalent-content queue comparison.
+Incomplete responses and unsupported sources refuse.
 Every dependency success waits for exact-head `pr-checks`; each target is
 revalidated immediately before publication, including durable approval, with a
 60-second collection budget.
