@@ -311,6 +311,11 @@
         "docker.io/cloudflare/cloudflared"
       ],
       "groupName": "cloudflared"
+    },
+    {
+      "description": "Preserve the pytest-asyncio major bound in the compiled requirement security floors.",
+      "matchPackageNames": ["pytest-asyncio"],
+      "allowedVersions": "<2"
     }
   ],
   "automergeType": "pr",
