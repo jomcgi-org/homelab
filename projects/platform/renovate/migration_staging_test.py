@@ -9,6 +9,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 HERE = Path(__file__).resolve().parent
@@ -665,7 +666,10 @@ def test_custom_atlas_and_op_preserve_binary_flavour_and_skip_downgrades():
     )
 
 
-def test_failed_or_held_maintenance_never_pushes_and_other_modes_continue(tmp_path):
+@pytest.mark.parametrize("generator_exit", [3, 17])
+def test_failed_or_held_maintenance_never_pushes_and_other_modes_continue(
+    tmp_path, generator_exit
+):
     docs = _render("values.yaml", "values-gke.yaml")
     data = next(
         d["data"]
@@ -682,7 +686,7 @@ def test_failed_or_held_maintenance_never_pushes_and_other_modes_continue(tmp_pa
     commands = {
         "git": 'case "$1 $2" in "diff --quiet"|"ls-remote --exit-code") exit 1;; esac',
         "node": 'if [ "$MAINTENANCE_MODE" = helm ]; then exit 3; fi',
-        "bazel": 'if [ "$MAINTENANCE_MODE" = apko ]; then exit 17; fi',
+        "bazel": f'if [ "$MAINTENANCE_MODE" = apko ]; then exit {generator_exit}; fi',
         "python3": "true",
     }
     for name, body in commands.items():
@@ -720,3 +724,69 @@ def test_failed_or_held_maintenance_never_pushes_and_other_modes_continue(tmp_pa
     for mode in ("python", "atlas", "op", "claude"):
         assert f"{mode} git push" in output
         assert f"{mode} node /opt/renovate-apko/pull-request.mjs publish" in output
+
+
+def test_bot_pr_with_human_ownership_is_never_rewritten_or_armed():
+    # Execute the real publisher with a fake GitHub transport, including the
+    # explicit human handoff label. No approval or network request is real.
+    runner = r"""
+      import { readFileSync } from "node:fs";
+      import assert from "node:assert/strict";
+      const source = readFileSync(process.argv[1], "utf8");
+      let index = 0;
+      const base = {number: 1, node_id: "PR_example", draft: false,
+        assignees: [], labels: [], user: {type: "Bot"}, html_url: "https://example.test/pr"};
+      for (const scenario of ["new", "existing", "armed", "draft", "assigned", "held", "human-label", "human-author", "refused"]) {
+        const calls = [];
+        const pull = {...base};
+        if (scenario === "draft") pull.draft = true;
+        if (scenario === "assigned") pull.assignees = [{}];
+        if (scenario === "held") pull.labels = [{name: "needs-human"}];
+        if (scenario === "human-label") pull.labels = [{name: "human"}];
+        if (scenario === "human-author") pull.user = {type: "User"};
+        if (scenario === "armed") pull.auto_merge = {};
+        process.env.MAINTENANCE_MODE = "apko";
+        process.env.RENOVATE_TOKEN = "mock-token";
+        process.argv[2] = "publish";
+        globalThis.fetch = async (url, options) => {
+          calls.push(url);
+          let result;
+          if (url.includes("/pulls?")) result = scenario === "new" ? [] : [pull];
+          else if (url.endsWith("/pulls")) result = pull;
+          else if (url.endsWith("/labels")) result = [];
+          else if (url.endsWith("/graphql")) result = scenario === "refused" ? {errors: [{message: "denied"}]} : {data: {enablePullRequestAutoMerge: {pullRequest: {autoMergeRequest: {enabledAt: "now"}}}}};
+          else throw Error("Unexpected network request");
+          return {ok: true, status: 200, json: async () => result};
+        };
+        const exit = process.exit;
+        process.exit = code => {throw Object.assign(new Error("exit"), {code})};
+        let failure;
+        try {await import("data:text/javascript;base64," + Buffer.from(source).toString("base64") + "#" + index++)}
+        catch (error) {failure = error}
+        finally {process.exit = exit}
+        if (["draft", "assigned", "held", "human-label", "human-author"].includes(scenario)) {
+          assert.equal(failure?.code, 3, scenario);
+          assert.equal(calls.length, 1, scenario);
+        } else if (scenario === "refused") {
+          assert.match(failure.message, /failed/);
+          assert.equal(calls.filter(url => url.endsWith("/graphql")).length, 1);
+        } else {
+          assert.equal(failure, undefined, scenario);
+          assert.equal(calls.some(url => url.endsWith("/graphql")), scenario !== "armed");
+        }
+        assert.ok(!calls.some(url => url.includes("/reviews") || url.includes("/merge")));
+      }
+    """
+    result = subprocess.run(
+        [
+            os.environ.get("NODE_BIN", "node"),
+            "--input-type=module",
+            "-e",
+            runner,
+            str(HERE / "files" / "pull-request.mjs"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

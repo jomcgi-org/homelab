@@ -14,6 +14,7 @@ on:
       - pnpm-workspace.yaml
       - package.json
       - bazel/patches/**
+      - bazel/tools/tools.lock.json
 
 # Untrusted PR code gets a fresh hosted runner, no secrets, deployment
 # credentials, remote cache, or repository write token.

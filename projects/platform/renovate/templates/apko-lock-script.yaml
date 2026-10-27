@@ -41,7 +41,13 @@ data:
       export MAINTENANCE_MODE="$1"
       branch="renovate/${MAINTENANCE_MODE}-lock-maintenance"
       # Inspect existing ownership/holds before rewriting any remote branch.
-      node /opt/renovate-apko/pull-request.mjs preflight || return $?
+      if node /opt/renovate-apko/pull-request.mjs preflight; then
+        :
+      else
+        status=$?
+        [[ "$status" -eq 3 ]] && return 0
+        return "$status"
+      fi
       git reset --hard origin/main
       git checkout -B "$branch" origin/main
       git clean -fd
@@ -74,7 +80,13 @@ data:
       git commit -m "chore(deps): refresh $MAINTENANCE_MODE locks"
       # Recheck holds after generation, before pushing. A later changed head
       # still requires fresh evidence and review at the trusted queue check.
-      node /opt/renovate-apko/pull-request.mjs preflight || return $?
+      if node /opt/renovate-apko/pull-request.mjs preflight; then
+        :
+      else
+        status=$?
+        [[ "$status" -eq 3 ]] && return 0
+        return "$status"
+      fi
       if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
         git fetch origin "$branch"
         lease="$(git rev-parse FETCH_HEAD)"
@@ -93,7 +105,7 @@ data:
       (set -e; maintain "$mode")
       status=$?
       set -e
-      if [[ "$status" -ne 0 && "$status" -ne 3 ]]; then
+      if [[ "$status" -ne 0 ]]; then
         echo "$mode maintenance failed (status $status)" >&2
         result=1
       fi
