@@ -246,6 +246,16 @@ def _static_envoy_config(translated: dict, port: int) -> dict:
     route_config.pop("@type")
     for virtual_host in route_config["virtualHosts"]:
         for route in virtual_host["routes"]:
+            local = route["typedPerFilterConfig"]["envoy.filters.http.local_ratelimit"]
+            for rule in local["rateLimits"]:
+                guard = rule["actions"][-1]["extension"]
+                assert guard["name"] == "envoy.rate_limit_descriptors.expr"
+                assert guard["typedConfig"]["descriptorKey"] == "single_cf_identity"
+                assert guard["typedConfig"].get("skipIfError", False) is False
+            for descriptor in local["descriptors"]:
+                assert descriptor["entries"][-1] == {
+                    "key": "single_cf_identity", "value": "true"
+                }
             route.pop("route", None)
             route["directResponse"] = {"status": 200}
 
@@ -488,7 +498,7 @@ def test_gateway_render_enforces_the_cloudflared_origin_boundary():
             "cloudflare-ingress-functions-rate-limit-capacity",
         )
         assert descriptor_patch["metadata"]["namespace"] == "envoy-gateway-system"
-        assert descriptor_patch["spec"] == {
+        assert {**descriptor_patch["spec"], "jsonPatches": descriptor_patch["spec"]["jsonPatches"][:1]} == {
             "targetRef": {
                 "group": "gateway.networking.k8s.io",
                 "kind": "Gateway",
@@ -515,6 +525,8 @@ def test_gateway_render_enforces_the_cloudflared_origin_boundary():
                 }
             ],
         }
+
+        assert len(descriptor_patch["spec"]["jsonPatches"]) == 3
 
         page_patch = _named(
             documents,
@@ -591,6 +603,15 @@ def test_envoy_processes_independent_fallback_and_worker_budgets():
             )
             == 429
         )
+        for first, second in (
+            ("arbitrary-1", "203.0.113.10"),
+            ("arbitrary-2", "203.0.113.10"),
+            ("203.0.113.32", "malformed"),
+            ("203.0.113.33", "203.0.113.33"),
+            ("", "203.0.113.34"),
+        ):
+            assert _request(port, first, duplicate_identity=second) == 429
+        assert _request(port, "203.0.113.32,198.51.100.32") == 429
         assert _request(port, "2001:db8::20") == 200
 
         assert _request(port, "192.0.2.40", worker="jomcgi.dev") == 403
@@ -624,7 +645,9 @@ def test_envoy_isolates_the_apex_page_budget_per_client():
 
         # A missing identity still has its own fail-safe bucket, separate from
         # any valid client, and the worker-rejection policy covers the route.
-        assert _request(port, path="/") == 200
+        assert [_request(port, path="/") for _ in range(100)] == [200] * 100
+        assert _request(port, "arbitrary", duplicate_identity="203.0.113.99", path="/") == 429
+        assert _request(port, "203.0.113.99", path="/") == 200
         assert _request(port, "192.0.2.70", worker="jomcgi.dev", path="/") == 403
         assert (
             _request(port, _CROSS_ZONE_WORKER_IP, worker="other.example", path="/")

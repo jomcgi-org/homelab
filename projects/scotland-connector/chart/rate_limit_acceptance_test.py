@@ -159,6 +159,16 @@ def _static_config(translated: dict, port: int) -> dict:
     route_config.pop("@type")
     for virtual_host in route_config["virtualHosts"]:
         for route in virtual_host["routes"]:
+            local = route["typedPerFilterConfig"]["envoy.filters.http.local_ratelimit"]
+            for rule in local["rateLimits"]:
+                guard = rule["actions"][-1]["extension"]
+                assert guard["name"] == "envoy.rate_limit_descriptors.expr"
+                assert guard["typedConfig"]["descriptorKey"] == "single_cf_identity"
+                assert guard["typedConfig"].get("skipIfError", False) is False
+            for descriptor in local["descriptors"]:
+                assert descriptor["entries"][-1] == {
+                    "key": "single_cf_identity", "value": "true"
+                }
             route.pop("route", None)
             route["directResponse"] = {"status": 200}
     manager = listener["defaultFilterChain"]["filters"][0]["typedConfig"]
@@ -236,12 +246,15 @@ def _get(
     *,
     path: str = _PATH,
     worker: str | None = None,
+    duplicate_identity: str | None = None,
 ) -> int:
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     connection.putrequest("GET", path, skip_host=True)
     connection.putheader("Host", _HOST)
     if identity is not None:
         connection.putheader("CF-Connecting-IP", identity)
+    if duplicate_identity is not None:
+        connection.putheader("CF-Connecting-IP", duplicate_identity)
     if worker is not None:
         connection.putheader("CF-Worker", worker)
     connection.endheaders()
@@ -301,6 +314,17 @@ def test_ordinary_clients_keep_their_own_buckets() -> None:
         # Missing and malformed identities share the fail-safe bucket.
         assert [_get(port) for _ in range(120)] == [200] * 120
         assert _get(port, "malformed") == 429
+        for first, second in (
+            ("arbitrary-1", "203.0.113.10"),
+            ("arbitrary-2", "160.79.104.1"),
+            ("160.79.104.1", "203.0.113.10"),
+            ("203.0.113.33", "203.0.113.33"),
+            ("160.79.104.1", "160.79.104.1"),
+            ("", "203.0.113.34"),
+        ):
+            assert _get(port, first, duplicate_identity=second) == 429
+        assert _get(port, "203.0.113.32,198.51.100.32") == 429
+        assert _get(port, "160.79.104.1") == 200
         # Workers cannot spoof an identity.
         assert _get(port, "192.0.2.40", worker="jomcgi.dev") == 403
         assert _get(port, _CROSS_ZONE_WORKER_IP, worker="other.example") == 403
