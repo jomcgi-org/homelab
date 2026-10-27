@@ -125,11 +125,69 @@ class FakeGitHub:
         return deepcopy(self.entries)
 
 
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "projects/platform/example/Chart.yaml",
+        "MODULE.bazel",
+        "projects/platform/example/values.yaml",
+        "projects/example/apko.lock.json",
+    ],
+)
+def test_unrepresented_dependencies_require_complete_independent_review(
+    setup, monkeypatch, filename
+):
+    github, _approved, audits, publications = setup
+    github.files[0]["filename"] = filename
+    github.changes = []
+    evidence = deps.snapshot(
+        REPO, github.pull, read_get=github.get, read_list=github.rows
+    )
+    approved = gate.Approval(7, "task-review", evidence, runs(evidence))
+    monkeypatch.setattr(gate, "approval", lambda *_: approved)
+    gate.check(REPO, "main", github.pull, POLICY, github, "token", [queue_entry()])
+    assert publications[-1][2]["conclusion"] == "success"
+    # A successful empty graph never exempts the blob from queue-time freshness.
+    github.files[0]["sha"] = "f" * 40
+    gate.check(REPO, "main", github.pull, POLICY, github, "token", [queue_entry()])
+    assert publications[-1][2]["conclusion"] == "failure"
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+@pytest.mark.parametrize(
+    "failure", ["omitted_file", "extra_file", "missing_coverage", "missing_files"]
+)
+def test_graphless_review_cannot_omit_evidence(setup, monkeypatch, failure):
+    github, _approved, _audits, publications = setup
+    github.changes = []
+    evidence = deps.snapshot(
+        REPO, github.pull, read_get=github.get, read_list=github.rows
+    )
+    reviewed = runs(evidence)
+    outcome = json.loads(reviewed[1]["outcome_json"])
+    assessment = outcome["value"]["dependency_assessment"]
+    if failure == "missing_coverage":
+        del assessment["evidence_coverage"]
+    elif failure == "missing_files":
+        del assessment["reviewed_files"]
+    else:
+        assessment["reviewed_files"] = (
+            [] if failure == "omitted_file" else ["requirements.txt", "other.yaml"]
+        )
+    reviewed[1]["outcome_json"] = json.dumps(outcome)
+    monkeypatch.setattr(
+        gate, "approval", lambda *_: gate.Approval(7, "task-review", evidence, reviewed)
+    )
+    gate.check(REPO, "main", github.pull, POLICY, github, "token", [queue_entry()])
+    assert publications[-1][2]["conclusion"] == "failure"
+
+
 def runs(evidence):
     assessment = {
         "safe": True,
         "base_sha": evidence["base_sha"],
         "evidence_sha256": evidence["evidence_sha256"],
+        "reviewed_files": [row["filename"] for row in evidence["files"]],
         **{
             dimension: "Inspected upstream source and validated on isolated Linux: pass."
             for dimension in deps.ASSESSMENTS
@@ -397,7 +455,7 @@ def test_approved_dependency_passes_pr_and_queue_with_matching_content(setup):
     "failure",
     [
         "malformed_graph",
-        "empty_graph",
+        "changed_to_empty_graph",
         "truncated_graph",
         "truncated_files",
         "malformed_files",
@@ -436,7 +494,7 @@ def test_dependency_failure_refuses_with_invalidation_only_on_positive_evidence(
     entry = queue_entry()
     if failure == "malformed_graph":
         github.changes = [{"name": "example"}]
-    elif failure == "empty_graph":
+    elif failure == "changed_to_empty_graph":
         github.changes = []
     elif failure == "truncated_graph":
         github.changes *= deps.MAX_ROWS
@@ -531,7 +589,6 @@ def test_dependency_failure_refuses_with_invalidation_only_on_positive_evidence(
     assert any(action == "dependency_gate_refused" for action, _ in audits)
     unavailable = failure in {
         "malformed_graph",
-        "empty_graph",
         "truncated_graph",
         "truncated_files",
         "malformed_files",

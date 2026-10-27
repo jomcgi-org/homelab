@@ -8,15 +8,17 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 data:
+  custom-pins.py: |
+{{ .Files.Get "files/custom-pins.py" | indent 4 }}
+  pull-request.mjs: |
+{{ .Files.Get "files/pull-request.mjs" | indent 4 }}
   maintain.sh: |
     #!/usr/bin/env bash
     set -euo pipefail
 
-    branch="renovate/apko-lock-maintenance"
     repo="https://github.com/jomcgi-org/homelab.git"
-    workspace="/tmp/apko-maintenance"
+    workspace="/tmp/dependency-maintenance"
     askpass="/tmp/renovate-git-askpass"
-
     cat >"$askpass" <<'ASKPASS'
     #!/bin/sh
     case "$1" in
@@ -31,83 +33,69 @@ data:
 
     git clone --depth=1 --branch main "$repo" "$workspace"
     cd "$workspace"
-    git checkout -B "$branch"
-
-    while IFS= read -r -d '' config; do
-      lock="${config%.yaml}.lock.json"
-      if [[ ! -f "$lock" ]]; then
-        echo "Skipping ${config}: no committed ${lock}"
-        continue
-      fi
-      echo "Refreshing ${config}"
-      # Force the local AMD64 execution platform first so rules_apko selects an
-      # executable that matches this workflow pod, whatever execution platforms
-      # the repository registers (an ARM64 one once picked an arm64 apko).
-      bazel run \
-        --extra_execution_platforms=//bazel/tools/platforms:linux_x86_64 \
-        @rules_apko//apko -- lock "$config"
-    done < <(
-      find projects -type f \( -name apko.yaml -o -name 'apko-*.yaml' \) -print0
-    )
-
-    ./bazel/tools/format/run-generators.sh
-
-    if git diff --quiet; then
-      echo "All apko locks are current"
-      exit 0
-    fi
-
     git config user.name "renovate[bot]"
     git config user.email "renovate[bot]@users.noreply.github.com"
-    git add -A
-    git commit -m "chore(deps): refresh apko locks"
 
-    if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-      git fetch origin "$branch"
-      lease="$(git rev-parse FETCH_HEAD)"
-      git push --force-with-lease="refs/heads/${branch}:${lease}" origin "HEAD:refs/heads/${branch}"
-    else
-      git push origin "HEAD:refs/heads/${branch}"
-    fi
+    maintain() (
+      set -euo pipefail
+      export MAINTENANCE_MODE="$1"
+      branch="renovate/${MAINTENANCE_MODE}-lock-maintenance"
+      # Inspect existing ownership/holds before rewriting any remote branch.
+      node /opt/renovate-apko/pull-request.mjs preflight || return $?
+      git reset --hard origin/main
+      git checkout -B "$branch" origin/main
+      git clean -fd
+      case "$MAINTENANCE_MODE" in
+        apko)
+          while IFS= read -r -d '' config; do
+            lock="${config%.yaml}.lock.json"
+            [[ -f "$lock" ]] || continue
+            bazel run --extra_execution_platforms=//bazel/tools/platforms:linux_x86_64 \
+              @rules_apko//apko -- lock "$config"
+          done < <(find projects -type f \( -name apko.yaml -o -name 'apko-*.yaml' \) -print0)
+          ./bazel/tools/format/run-generators.sh
+          ;;
+        python)
+          # The root uses compiled requirements, not uv.lock. Both targets must
+          # upgrade transitives while retaining pyproject and override bounds.
+          bazel run //bazel/requirements:runtime -- --upgrade
+          bazel run //bazel/requirements:requirements.all -- --upgrade
+          ;;
+        atlas|helm|op|claude)
+          python3 /opt/renovate-apko/custom-pins.py "$MAINTENANCE_MODE"
+          ;;
+        *) return 1 ;;
+      esac
+      if git diff --quiet; then
+        echo "$MAINTENANCE_MODE pins are current"
+        return 0
+      fi
+      git add -A
+      git commit -m "chore(deps): refresh $MAINTENANCE_MODE locks"
+      # Recheck holds after generation, before pushing. A later changed head
+      # still requires fresh evidence and review at the trusted queue check.
+      node /opt/renovate-apko/pull-request.mjs preflight || return $?
+      if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+        git fetch origin "$branch"
+        lease="$(git rev-parse FETCH_HEAD)"
+        git push --force-with-lease="refs/heads/${branch}:${lease}" origin "HEAD:refs/heads/${branch}"
+      else
+        git push origin "HEAD:refs/heads/${branch}"
+      fi
+      node /opt/renovate-apko/pull-request.mjs publish
+    )
 
-    node --input-type=module <<'NODE'
-    const token = process.env.RENOVATE_TOKEN;
-    const api = "https://api.github.com";
-    const owner = "jomcgi-org";
-    const repo = "homelab";
-    const branch = "renovate/apko-lock-maintenance";
-    const headers = {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    };
-
-    async function request(path, options = {}) {
-      const response = await fetch(`${api}${path}`, { headers, ...options });
-      const body = await response.json();
-      if (!response.ok) {
-        throw new Error(`${options.method || "GET"} ${path}: ${response.status} ${JSON.stringify(body)}`);
-      }
-      return body;
-    }
-
-    const pulls = await request(`/repos/${owner}/${repo}/pulls?state=open&head=${owner}:${encodeURIComponent(branch)}`);
-    const pull = pulls[0] || await request(`/repos/${owner}/${repo}/pulls`, {
-      method: "POST",
-      body: JSON.stringify({
-        title: "chore(deps): refresh apko locks",
-        head: branch,
-        base: "main",
-        body: "Weekly refresh of resolved Wolfi packages in every committed apko lock. Generated on Linux with the repository's rules_apko toolchain.",
-      }),
-    });
-
-    await request(`/repos/${owner}/${repo}/issues/${pull.number}/labels`, {
-      method: "POST",
-      body: JSON.stringify({ labels: ["dependencies"] }),
-    });
-
-    // Merge authorization is separate from lock generation and PR creation.
-    console.log(`apko lock PR ready: ${pull.html_url}`);
-    NODE
+    result=0
+    for mode in apko python atlas helm op claude; do
+      # Run each mode in its own shell: Bash suppresses errexit in an if-test
+      # function, so invoke the child without a conditional around the function.
+      set +e
+      (set -e; maintain "$mode")
+      status=$?
+      set -e
+      if [[ "$status" -ne 0 && "$status" -ne 3 ]]; then
+        echo "$mode maintenance failed (status $status)" >&2
+        result=1
+      fi
+    done
+    exit "$result"

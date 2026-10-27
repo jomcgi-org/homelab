@@ -1981,7 +1981,12 @@ the exact PR head. The approved digest is checked before comparing evidence.
 The queued base/head dependency comparison, file inventory with blob SHAs and
 all open alerts must equal the reviewed content. Only comparison commit IDs
 may differ. GitHub's compare file cap is a refusal, even at exactly the cap;
-an empty dependency comparison is also a refusal. Combined queue prefixes
+a successful empty dependency comparison records a coverage limitation. Both
+independent artifacts must enumerate every changed filename in `reviewed_files`
+and supply concrete supplemental provenance/advisory evidence in
+`evidence_coverage`. Unavailable, null, malformed or truncated reads still refuse.
+Fresh GitHub alerts do not refresh advisories for unrepresented ecosystems;
+supplemental freshness remains a live activation requirement. Combined queue prefixes
 containing dependency PRs fail closed instead of attributing aggregated changes
 to one receipt.
 
@@ -1994,7 +1999,9 @@ Success still requires a fresh positive match after the API recovers. This
 publisher neither changes policy nor starts work.
 Dependency landing still refuses `dependency_auto_merge_disabled`
 unconditionally, and `intake.dependency_pr_authors` remains empty by default.
-Renovate platform auto-merge and apko auto-merge requests are disabled.
+The proposed Renovate policy and weekly maintenance job request native platform
+auto-merge, held from activation until the trusted App-bound context and the
+remaining acceptance requirements are enforced. The factory does not arm them.
 
 Live checks outstanding for #6799, outside this repository-only slice:
 

@@ -12,7 +12,7 @@ and CI must also pass before an update can merge.
 | `MODULE.bazel` registry dependencies | `bazel-module` | Updates source module versions. `MODULE.bazel.lock` is ignored and untracked, so Bazel regenerates it; Renovate skips module-lock artifact maintenance when the file is absent. Patched `rules_apko` still has to pass CI. |
 | `MODULE.bazel` OCI pulls | `bazel-module` | Existing image digests stay pinned; native extraction covers the three OCI bases. |
 | Bazel `http_archive` / `http_file` declarations | `bazel` | Reads `MODULE.bazel` and `.bzl` files; updates supported GitHub release URLs and checksums. Variable-built URLs and raw GitHub file URLs are gaps below. |
-| `pyproject.toml` | `pep621` | Only this root manifest invokes the existing Bazel requirement compiler, updating `bazel/requirements/*.txt`. Generated locks are not independent version inputs. |
+| `pyproject.toml` and `bazel/requirements/overrides.txt` | `pep621` / `pip_requirements` | Root manifest and security-floor changes invoke the existing Bazel requirement compiler. Weekly maintenance also runs both targets with `--upgrade` to refresh transitives within these bounds. Generated locks are outputs. |
 | Both `projects/oom-inference/*/pyproject.toml` manifests | `pep621` | Native uv artifact support maintains their adjacent `uv.lock` files. The root Bazel post-upgrade command does not run for these projects. |
 | `projects/model-bench/requirements-venv.txt` | `pip_requirements` | Pins remain explicit and are updated by the requirements manager. |
 | `go.mod` | `gomod` | Updates `go.sum`; the Bazel Go SDK derives its version from this file. CI owns Gazelle BUILD regeneration. |
@@ -23,12 +23,13 @@ and CI must also pass before an update can merge.
 | Polylane cloudflared tag and separate digest | custom regex | The native values manager ignores the separate digest field, so only this custom extractor owns that dependency. Both cloudflared deployments group into one PR. |
 | Literal helper images such as `iptablesImage` | custom regex | Tracks image tags and SHA256 digests that the structured values extractor misses. |
 | Raw hub and deploy YAML | `kubernetes` | Explicit file patterns activate this otherwise inert manager. Templated Helm YAML is rendered and tested by CI, not treated as raw Kubernetes input. |
-| `.github/workflows/*` | `github-actions` | Actions and supported tool versions remain covered, including SHA-pinned actions. Inline download commands are a separate gap. |
+| `.github/workflows/*` | `github-actions` plus custom regex | SHA-pinned actions, supported tool versions and the browser workflow's pnpm, Playwright and PyYAML pins are extracted. Its Helm download reads the canonical tools lock. |
 | `.bazelversion` | two custom regex extractors | The BuildBuddy fork selector and the upstream Bazel version are separate dependencies. The native one-line manager is disabled. |
 | Bazel Node and pnpm toolchains | custom regex | pnpm changes group with `packageManager` in `package.json`. The documented pnpm 10 lock format stays below 11 pending migration. |
 | GitHub binaries in `bazel/tools/tools.lock.json` | custom regex, `github-release-attachments` | Updates URL versions, versioned archive member paths and SHA256 together, for every platform. A missing checksum is not extracted. |
 | Multiarch GitHub binaries in `MODULE.bazel` | custom regex, `github-release-attachments` | Updates paired URL/checksum fields together. Codex's `rust-v` tag format is explicit. |
-| `apko.yaml` and `apko.lock.json` | existing weekly Argo job | Regenerates APK resolutions with pinned `rules_apko` and runs existing generators. It remains suspended on the hub and does not arm auto-merge. |
+| Non-GitHub Atlas, Helm, 1Password CLI and Claude binaries | weekly maintenance adapter | Separate PR per tool; updates every platform URL/SHA256 atomically. Stable releases age at least three days. Atlas/Helm verify published SHA256; Claude verifies npm SHA512 integrity. 1Password hashes its official HTTPS archive; this is not a signature verification. |
+| `apko.yaml` and `apko.lock.json` | existing weekly Argo job | Regenerates APK resolutions with pinned `rules_apko` and runs existing generators. The job now handles apko, root Python and each non-GitHub tool in separate branches and requests platform auto-merge. Both hub schedules remain suspended. |
 
 ## Holds and exclusions
 
@@ -54,35 +55,49 @@ minor and patch updates. They stay separate and carry `major-upgrade`.
   or queued by this configuration change. The held MCP experiment #7355 remains
   outside dependency maintenance. Cloudflared #7357 has its own owner.
 
-## Remaining gaps
+## Review evidence and remaining boundaries
 
-These pins must not be reported as automated:
+A successful empty GitHub dependency-graph comparison is accepted as a coverage
+limitation, never as proof of safety. The gate still requires complete changed
+file identities/blob SHAs, fresh successful graph and alert reads, two distinct
+safe review sessions and an exact match at the queue head. Both artifacts must
+list every changed filename in `reviewed_files` and supply `evidence_coverage`
+with concrete dependency identities, immutable versions/digests, upstream
+advisories and artifact/SBOM/scan evidence for unrepresented ecosystems.
+Omissions, unavailable reads, changed blobs and unsafe assessments refuse.
+There is no filename-based exemption. Old artifacts require fresh review.
 
-- `tools.lock.json` downloads from `release.ariga.io` (Atlas), `get.helm.sh`
-  (Helm), `cache.agilebits.com` (1Password CLI) and npm's architecture-specific
-  Claude tarballs need a checksum-aware update adapter. GitHub release
-  attachment discovery covers the other 13 tool families.
-- The Python standalone interpreter override couples the release date, Python
-  version and four checksums in `MODULE.bazel`. Generic version-only replacement
-  would break this pin. Python minor/major migration also changes `pip.parse`.
-- Raw-file Atlas/CNPG CRD snapshots, Bazel demo distdir URL/checksum arrays,
-  variable-built Erlang/Hex dependencies, and the Meta Muse channel binary need
-  their own coordinated adapters. Their generated outputs stay intact.
-- The compiled root Python locks are regenerated after manifest updates, but
-  do not yet have a standalone periodic transitive refresh. Security floors in
-  `bazel/requirements/overrides.txt` require the same compiler after changes.
-- Inline workflow downloads (currently the checksum-pinned Helm download in
-  `factory-mobile-preview.yml`) are not GitHub Actions dependencies.
-- GitHub dependency-graph comparison does not represent every ecosystem. The
-  current evidence gate refuses an empty comparison, so a Helm, Bazel, image or
-  apko-only PR can remain blocked even when independently reviewed and green.
-  An attested alternative must preserve complete changed-file blobs, independent
-  assessments and fresh vulnerability evidence; disabling the refusal would
-  bypass an existing control.
-- apko PRs remain review-only because the job does not request auto-merge and
-  factory dependency landing is still disabled. Writer restoration reuses
-  #7186, stacked on #7168, under #7001/#7068.
+Fresh GitHub alerts cannot establish fresh upstream advisories for ecosystems
+GitHub does not represent. Live acceptance must establish revalidation of that
+supplemental evidence before enabling automated merges. Missing provenance or
+vulnerability evidence keeps the particular update blocked. The known polling
+window between check publication and merge also remains an activation check.
 
-Registry access and checksum discovery failures remain failed updates. No
-credentials, token scopes, installed Apps, rulesets, review publication flags or
-factory author allowlists are provisioned by this change.
+The following pins retain explicit boundaries; they are not claimed automated:
+
+- Python standalone's release date, Python version and four checksums form one
+  override. `python.toolchain` and `pip.parse` select Python 3.13. A runtime
+  adapter must verify rules_python's version resolution and all four platforms;
+  independent version-only replacements cannot safely update this bundle.
+- Atlas/CNPG raw CRD snapshots must track the deployed operator version and
+  matching offline test schemas, rather than the latest raw file independently.
+- The demo distdir is a proven offline closure for a fixed Abseil/Bazel fixture.
+  Its parallel URL/checksum arrays and transitive versions need a regenerated
+  closure. The Erlang OTP pin must exactly match Wolfi's runtime; Hex tuples
+  encode a manually selected transitive closure and Hex's installer URL is
+  mutable. These require coordinated resolvers/fixture validation.
+- Meta Muse has a reachable public channel and checksum manifest, verified
+  read-only. Neither supplies a release timestamp. A channel adapter needs
+  durable first-seen age handling to preserve the three-day release-age policy.
+  The current `1.4.1-R4503.1` pin and recorded runtime fixtures remain intact.
+
+Registry access, checksum discovery and integrity failures remain failed
+updates. Existing held/assigned/draft or human-authored maintenance PRs are
+left untouched. The workflow checks holds before generation and again before
+push. Each tool failure is isolated and leaves that tool's lock unchanged;
+other modes continue. CI validates generated output and remains required.
+
+No credentials, token scopes, installed Apps, rulesets, review publication flags
+or factory author allowlists are provisioned here. Writer restoration reuses
+#7186, stacked on #7168, under #7001/#7068; the CI credential boundary stays
+with #7005. See README for the exact owner handoff.

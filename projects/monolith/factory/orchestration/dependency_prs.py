@@ -36,16 +36,24 @@ ASSESSMENTS = (
     "vulnerability_remediation",
     "compatibility",
     "authorization_scope",
+    "evidence_coverage",
     "validation",
 )
 ASSESSMENT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["evidence_sha256", "base_sha", "safe", *ASSESSMENTS],
+    "required": ["evidence_sha256", "base_sha", "safe", "reviewed_files", *ASSESSMENTS],
     "properties": {
         "evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "safe": {"type": "boolean"},
+        "reviewed_files": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+            "maxItems": MAX_ROWS,
+            "uniqueItems": True,
+        },
         **{
             name: {"type": "string", "minLength": 20, "maxLength": 3000}
             for name in ASSESSMENTS
@@ -130,7 +138,7 @@ class EvidenceChanged(ValueError):
 def snapshot(
     repo: str, pull: dict, *, read_get=None, read_list=None, comparison=None
 ) -> dict:
-    """Unavailable or incomplete vulnerability evidence is a refusal, not clean."""
+    """Bind complete file and advisory reads, including graph coverage limits."""
     read_get, read_list = read_get or github_get, read_list or github_list
     head, base = pull["head"]["sha"], pull["base"]["sha"]
     if comparison is None:
@@ -162,8 +170,32 @@ def snapshot(
         )
     ):
         raise ValueError("dependency file evidence is incomplete")
+    if len({row["filename"] for row in files}) != len(files) or any(
+        not isinstance(row.get("sha"), str)
+        or not SHA.fullmatch(row["sha"])
+        or row.get("status")
+        not in (
+            "added",
+            "removed",
+            "modified",
+            "renamed",
+            "copied",
+            "changed",
+            "unchanged",
+        )
+        or any(
+            type(row.get(key)) is not int or row[key] < 0
+            for key in ("additions", "deletions")
+        )
+        for row in files
+    ):
+        raise ValueError("dependency file identity is malformed")
     changes = read_list(repo, f"dependency-graph/compare/{base}...{head}")
-    if not isinstance(changes, list) or not changes or len(changes) >= MAX_ROWS:
+    # A successful empty comparison is normal for Helm, Bazel, OCI and APK
+    # inputs. It grants no safety conclusion. Both independent assessments
+    # must cover every blob and supply the missing upstream/advisory evidence.
+    # Exceptions, null responses and truncated inventories still refuse.
+    if not isinstance(changes, list) or len(changes) >= MAX_ROWS:
         raise ValueError("dependency graph evidence is missing or truncated")
     for change in changes:
         if (
@@ -335,8 +367,17 @@ def guidance(task: dict) -> str:
         "only the consequential decision that needs approval. Preserve explicit "
         "PR holds and documented compatibility pins. Do not invent a human "
         "approval requirement for ordinary updates, including majors. "
-        "An empty dependency graph is not proof of safety; inspect unrepresented "
-        "dependencies too. A major bump or passing CI is no exemption. "
+        "In evidence_coverage, enumerate the ecosystems and changed dependency "
+        "identities represented by GitHub and those it does not represent. "
+        "Read every changed file at the pinned base/head, including generated "
+        "locks, chart archives and image digests; list every filename exactly "
+        "once in reviewed_files. For unrepresented dependencies, cite upstream "
+        "release/advisory evidence and concrete artifact inspection (for example "
+        "image SBOM/scan results, APK package versions, chart contents or Bazel "
+        "archive provenance). An empty comparison is a coverage limitation, "
+        "never a clean bill of health. If the necessary independent vulnerability "
+        "or provenance evidence cannot be obtained, set safe=false. A filename, "
+        "major bump or passing CI is no exemption. "
         "Escalate missing evidence, suspicious changes or failed validation. "
         "Finish requires passing required CI and independent adversarial approval "
         "on the pinned head, base and evidence digest. Do not use closing keywords. "
@@ -408,6 +449,8 @@ def verify_assessments(evidence: dict, runs: list[dict]) -> None:
             or artifact.get("head_sha") != evidence["head_sha"]
             or artifact.get("pr_number") != evidence["pr_number"]
             or schema_errors(assessment, ASSESSMENT_SCHEMA)
+            or sorted(assessment.get("reviewed_files", []))
+            != sorted(row["filename"] for row in evidence["files"])
             or assessment.get("safe") is not True
             or assessment.get("base_sha") != evidence["base_sha"]
             or assessment.get("evidence_sha256") != evidence["evidence_sha256"]

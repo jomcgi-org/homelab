@@ -1373,6 +1373,7 @@ def _dependency_reads(monkeypatch, pull=None):
                     "status": "modified",
                     "additions": 1,
                     "deletions": 1,
+                    "sha": "e" * 40,
                 }
             ]
         if endpoint.startswith("dependency-graph/compare/"):
@@ -1399,6 +1400,7 @@ def _dependency_runs(evidence):
         "safe": True,
         "base_sha": evidence["base_sha"],
         "evidence_sha256": evidence["evidence_sha256"],
+        "reviewed_files": [row["filename"] for row in evidence["files"]],
     }
     from factory.orchestration.dependency_prs import ASSESSMENTS
 
@@ -1525,7 +1527,7 @@ def test_dependency_receive_adopts_original_pr_without_trusting_its_text(
 
 @pytest.mark.parametrize(
     "failure",
-    ["unavailable", "empty_graph", "vulnerable", "missing_files", "truncated"],
+    ["unavailable", "null_graph", "vulnerable", "missing_files", "truncated"],
 )
 def test_dependency_evidence_fails_closed(monkeypatch, failure):
     deps, pull, read = _dependency_reads(monkeypatch)
@@ -1534,8 +1536,8 @@ def test_dependency_evidence_fails_closed(monkeypatch, failure):
         if endpoint.startswith("dependency-graph"):
             if failure == "unavailable":
                 raise ValueError("unavailable")
-            if failure == "empty_graph":
-                return []
+            if failure == "null_graph":
+                return None
             if failure == "vulnerable":
                 return [
                     {

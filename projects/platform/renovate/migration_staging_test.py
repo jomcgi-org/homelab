@@ -333,18 +333,29 @@ def test_active_managers_and_upstream_chart_updates_remain_available():
     ]
 
 
-def test_apko_lock_maintenance_does_not_request_auto_merge():
-    script = (HERE / "templates" / "apko-lock-script.yaml").read_text()
-    for forbidden in (
-        "enablePullRequestAutoMerge",
-        "mergeMethod",
-        "--auto",
-        "auto_merge",
-        "platformAutomerge",
-    ):
-        assert forbidden not in script
-    assert 'method: "POST"' in script
-    assert 'labels: ["dependencies"]' in script
+def test_all_lock_jobs_request_platform_merge_without_approving():
+    docs = _render("values.yaml", "values-gke.yaml")
+    data = next(
+        d["data"]
+        for d in docs
+        if d.get("kind") == "ConfigMap" and "maintain.sh" in d.get("data", {})
+    )
+    script = data["maintain.sh"]
+    publisher = data["pull-request.mjs"]
+    assert "for mode in apko python atlas helm op claude" in script
+    assert "//bazel/requirements:runtime -- --upgrade" in script
+    assert "//bazel/requirements:requirements.all -- --upgrade" in script
+    assert "enablePullRequestAutoMerge" in publisher
+    assert "mergeMethod: REBASE" in publisher
+    assert "approvePullRequest" not in publisher
+    assert "pull.draft" in publisher and "pull.assignees.length" in publisher
+    assert 'pull.user.type !== "Bot"' in publisher
+    assert "hold|blocked|needs-human|do-not-merge|manual|agent-skip" in publisher
+    assert 'labels: ["dependencies"]' in publisher
+    assert _cron_suspensions(docs) == {
+        "renovate": True,
+        "renovate-apko-lock-maintenance": True,
+    }
 
 
 def _custom_extract(config: dict, filename: str, content: str) -> list[dict]:
@@ -420,8 +431,11 @@ def test_overlays_are_scanned_and_python_regeneration_is_root_only():
     assert config["kubernetes"]["managerFilePatterns"]
     tasks = [r for r in config["packageRules"] if "postUpgradeTasks" in r]
     assert len(tasks) == 1
-    assert tasks[0]["matchManagers"] == ["pep621"]
-    assert tasks[0]["matchFileNames"] == ["pyproject.toml"]
+    assert tasks[0]["matchManagers"] == ["pep621", "pip_requirements"]
+    assert tasks[0]["matchFileNames"] == [
+        "pyproject.toml",
+        "bazel/requirements/overrides.txt",
+    ]
     assert tasks[0]["postUpgradeTasks"]["commands"] == [
         "bazel/tools/format/update-python-requirements.sh"
     ]
@@ -475,3 +489,234 @@ def test_polylane_cloudflared_keeps_the_separate_digest_in_the_update():
         "cloudflare/cloudflared",
         "docker.io/cloudflare/cloudflared",
     }
+
+
+def _pins_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "custom_pins", HERE / "files" / "custom-pins.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_custom_pin_updates_are_atomic_and_keep_every_platform():
+    import hashlib
+    from datetime import datetime, timezone
+
+    import pytest
+
+    pins = _pins_module()
+    original = {
+        "helm": {
+            "binaries": [
+                {
+                    "url": f"https://get.helm.sh/helm-v3.16.4-{platform}.tar.gz",
+                    "sha256": "a" * 64,
+                    "file": "helm",
+                }
+                for platform in (
+                    "linux-amd64",
+                    "linux-arm64",
+                    "darwin-arm64",
+                    "darwin-amd64",
+                )
+            ]
+        }
+    }
+    now = datetime(2026, 10, 27, tzinfo=timezone.utc)
+    downloads = []
+
+    def read(url, *args):
+        if "api.github.com" in url:
+            return json.dumps(
+                [
+                    {
+                        "tag_name": "v4.0.0",
+                        "published_at": "2026-10-20T00:00:00Z",
+                        "draft": False,
+                        "prerelease": False,
+                    },
+                    {
+                        "tag_name": "v5.0.0",
+                        "published_at": "2026-10-26T00:00:00Z",
+                        "draft": False,
+                        "prerelease": False,
+                    },
+                    {
+                        "tag_name": "v6.0.0",
+                        "published_at": "2026-10-20T00:00:00Z",
+                        "draft": True,
+                        "prerelease": False,
+                    },
+                ]
+            ).encode()
+        assert "v4.0.0" in url
+        if url.endswith(".sha256sum"):
+            return hashlib.sha256(b"archive").hexdigest().encode()
+        downloads.append(url)
+        return b"archive"
+
+    result = pins.update(original, "helm", now=now, read=read)
+    assert len(downloads) == 4
+    assert all(
+        "v4.0.0" in row["url"]
+        and row["sha256"] == hashlib.sha256(b"archive").hexdigest()
+        for row in result["helm"]["binaries"]
+    )
+    assert all("v3.16.4" in row["url"] for row in original["helm"]["binaries"])
+    before = json.dumps(original)
+
+    def corrupt(url, *args):
+        if "darwin-arm64" in url and not url.endswith(".sha256sum"):
+            return b"tampered"
+        return read(url, *args)
+
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        pins.update(original, "helm", now=now, read=corrupt)
+    assert json.dumps(original) == before
+
+
+def test_custom_pin_origins_and_npm_integrity_fail_closed():
+    import base64
+    import hashlib
+
+    import pytest
+
+    pins = _pins_module()
+    for url in (
+        "http://get.helm.sh/file",
+        "https://get.helm.sh.evil/file",
+        "https://user:password@get.helm.sh/file",
+        "https://get.helm.sh:123/file",
+        "file:///etc/passwd",
+    ):
+        with pytest.raises(ValueError):
+            pins.allowed(url)
+    package = "@anthropic-ai/claude-code-linux-arm64"
+    old = {
+        "url": f"https://registry.npmjs.org/{package}/-/claude-code-linux-arm64-2.1.222.tgz",
+        "sha256": "a" * 64,
+    }
+    new_url = old["url"].replace("2.1.222", "3.0.0")
+    metadata = {
+        "name": package,
+        "version": "3.0.0",
+        "dist": {
+            "tarball": new_url,
+            "integrity": "sha512-"
+            + base64.b64encode(hashlib.sha512(b"archive").digest()).decode(),
+        },
+    }
+
+    def read(url, *args):
+        return b"archive" if url == new_url else json.dumps(metadata).encode()
+
+    assert pins.replace_binary("claude", old, "3.0.0", read)["url"] == new_url
+    metadata["dist"]["integrity"] = "sha512-AAAA"
+    with pytest.raises(ValueError, match="integrity mismatch"):
+        pins.replace_binary("claude", old, "3.0.0", read)
+    metadata["dist"]["tarball"] = "https://evil.example/archive"
+    with pytest.raises(ValueError, match="identity mismatch"):
+        pins.replace_binary("claude", old, "3.0.0", read)
+
+
+def test_custom_atlas_and_op_preserve_binary_flavour_and_skip_downgrades():
+    import hashlib
+    from datetime import datetime, timezone
+
+    import pytest
+
+    pins = _pins_module()
+    archive = b"archive"
+    for tool, url in (
+        ("atlas", "https://release.ariga.io/atlas/atlas-community-linux-amd64-v1.1.0"),
+        (
+            "op",
+            "https://cache.agilebits.com/dist/1P/op2/pkg/v1.1.0/op_linux_amd64_v1.1.0.zip",
+        ),
+    ):
+        binary = {"url": url, "sha256": "a" * 64, "file": tool}
+
+        def read(target, *args):
+            return (
+                hashlib.sha256(archive).hexdigest().encode()
+                if target.endswith(".sha256")
+                else archive
+            )
+
+        result = pins.replace_binary(tool, binary, "2.0.0", read)
+        assert result["url"] == url.replace("1.1.0", "2.0.0")
+        assert result["sha256"] == hashlib.sha256(archive).hexdigest()
+        assert (
+            pins.replace_binary(
+                tool, binary, "1.0.0", lambda *_: pytest.fail("downloaded downgrade")
+            )
+            == binary
+        )
+    history = b'<h3>2.41.1 <span class="date">released 2026-10-21</span></h3><h3>2.42.0-beta.1 <span>released 2026-10-20</span></h3>'
+    assert (
+        pins.latest(
+            "op", datetime(2026, 10, 27, tzinfo=timezone.utc), lambda _: history
+        )
+        == "2.41.1"
+    )
+
+
+def test_failed_or_held_maintenance_never_pushes_and_other_modes_continue(tmp_path):
+    docs = _render("values.yaml", "values-gke.yaml")
+    data = next(
+        d["data"]
+        for d in docs
+        if d.get("kind") == "ConfigMap" and "maintain.sh" in d.get("data", {})
+    )
+    workspace = tmp_path / "checkout"
+    (workspace / "projects" / "example").mkdir(parents=True)
+    (workspace / "projects" / "example" / "apko.yaml").write_text("contents: {}")
+    (workspace / "projects" / "example" / "apko.lock.json").write_text("{}")
+    log = tmp_path / "commands.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    commands = {
+        "git": 'case "$1 $2" in "diff --quiet"|"ls-remote --exit-code") exit 1;; esac',
+        "node": 'if [ "$MAINTENANCE_MODE" = helm ]; then exit 3; fi',
+        "bazel": 'if [ "$MAINTENANCE_MODE" = apko ]; then exit 17; fi',
+        "python3": "true",
+    }
+    for name, body in commands.items():
+        stub = bin_dir / name
+        stub.write_text(
+            '#!/bin/bash\nprintf "%s %s %s\\n" "${MAINTENANCE_MODE:-setup}" "'
+            + name
+            + '" "$*" >> "$MAINTENANCE_LOG"\n'
+            + body
+            + "\n"
+        )
+        stub.chmod(0o755)
+    script = tmp_path / "maintain.sh"
+    script.write_text(
+        data["maintain.sh"]
+        .replace("/tmp/dependency-maintenance", str(workspace))
+        .replace("/tmp/renovate-git-askpass", str(tmp_path / "askpass"))
+    )
+    result = subprocess.run(
+        ["bash", str(script)],
+        env={
+            **os.environ,
+            "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+            "MAINTENANCE_LOG": str(log),
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 1, result.stderr
+    output = log.read_text()
+    assert "apko bazel run" in output
+    assert "apko git commit" not in output and "apko git push" not in output
+    assert "helm git commit" not in output and "helm git push" not in output
+    for mode in ("python", "atlas", "op", "claude"):
+        assert f"{mode} git push" in output
+        assert f"{mode} node /opt/renovate-apko/pull-request.mjs publish" in output
