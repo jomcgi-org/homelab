@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -138,40 +139,58 @@ def test_hub_enrollment_and_build_render_use_the_same_overlay_order():
     )
 
 
-def test_all_renovate_update_types_keep_both_auto_merge_paths_disabled():
+def test_ordinary_updates_include_majors_and_use_platform_pr_automerge():
     config = json.loads((ROOT / "renovate.json").read_text())
-    assert config["automerge"] is False
-    assert config["platformAutomerge"] is False
-
-    def visit(value):
-        if isinstance(value, dict):
-            for key, child in value.items():
-                if key in ("automerge", "platformAutomerge"):
-                    assert child is False
-                visit(child)
-        elif isinstance(value, list):
-            for child in value:
-                visit(child)
-
-    visit(config)
+    assert config["automerge"] is True
+    assert config["platformAutomerge"] is True
+    assert config["automergeType"] == "pr"
+    assert config["automergeStrategy"] == "auto"
+    assert config["dependencyDashboardApproval"] is False
+    expected = {
+        "major",
+        "minor",
+        "patch",
+        "pin",
+        "digest",
+        "pinDigest",
+        "lockFileMaintenance",
+        "replacement",
+        "bump",
+        "rollback",
+    }
+    rules = [rule for rule in config["packageRules"] if rule.get("automerge")]
+    assert len(rules) == 1
+    assert set(rules[0]["matchUpdateTypes"]) == expected
+    assert rules[0]["platformAutomerge"] is True
+    assert config["minimumReleaseAge"] == "3 days"
+    assert config["internalChecksFilter"] == "strict"
+    assert config["lockFileMaintenance"]["enabled"] is True
+    assert "ignoreTests" not in config
+    assert config.get("statusCheckNames", ["default"]) is not None
 
 
 def _dependency_is_disabled(
-    config: dict, dep_name: str, package_name: str | None = None
+    config: dict,
+    dep_name: str,
+    package_name: str | None = None,
+    datasource: str = "docker",
 ) -> bool:
     rules = [rule for rule in config["packageRules"] if rule.get("enabled") is False]
     disabled = False
     for rule in rules:
-        # No additional matcher may narrow these exclusions. For literal names,
-        # Renovate's matchRegexOrGlobList is a case-insensitive exact match.
-        matchers = set(rule) - {"description", "enabled"}
+        if "matchManagers" in rule or "matchFileNames" in rule:
+            continue  # These are extraction handoffs, tested separately below.
+        if "matchDatasources" in rule and datasource not in rule["matchDatasources"]:
+            continue
+        matchers = set(rule) - {"description", "enabled", "matchDatasources"}
         assert matchers in ({"matchDepNames"}, {"matchPackageNames"})
         matcher = next(iter(matchers))
-        # Renovate defaults packageName to depName when extraction omits it.
         identity = dep_name if matcher == "matchDepNames" else package_name or dep_name
         for name in rule[matcher]:
-            assert re.fullmatch(r"[a-zA-Z0-9:/._-]+", name), name
-            disabled |= identity.casefold() == name.casefold()
+            # This helper covers only the literal and prefix-glob exclusions in
+            # this config. Extraction is also checked with pinned Renovate.
+            assert re.fullmatch(r"[a-zA-Z0-9:/*._-]+", name), name
+            disabled |= fnmatch.fnmatchcase(identity.casefold(), name.casefold())
     return disabled
 
 
@@ -275,8 +294,8 @@ def test_active_managers_and_upstream_chart_updates_remain_available():
     assert "dockerfile" not in config["enabledManagers"]
     assert config["enabledManagers"] == [
         "argocd",
+        "bazel",
         "bazel-module",
-        "bazelisk",
         "custom.regex",
         "github-actions",
         "gomod",
@@ -285,6 +304,7 @@ def test_active_managers_and_upstream_chart_updates_remain_available():
         "kubernetes",
         "npm",
         "pep621",
+        "pip_requirements",
     ]
     description = "Identify upstream chart updates in the broader dependency stream."
     assert [
@@ -296,15 +316,20 @@ def test_active_managers_and_upstream_chart_updates_remain_available():
             "addLabels": ["upstream-chart"],
         }
     ]
-    # Keep disabling rules confined to our charts, mirror and self-source URLs.
+    # Exact holds and first-party publishers are the only disabled dependencies.
     assert [
         rule["description"]
         for rule in config["packageRules"]
         if rule.get("enabled") is False
     ] == [
         "First-party charts and the manual mcp-stack mirror are maintained outside Renovate.",
-        "Self-referential git sources (deploy values pulled from our own repo) "
-        "are not upgrade targets.",
+        (
+            "Self-referential git sources (deploy values pulled from our own repo) "
+            "are not upgrade targets."
+        ),
+        "First-party image versions are published and promoted by CI and Kargo.",
+        "Hold the Envoy Gateway and Proxy family while the header regression and paired guard are resolved.",
+        "The custom manager owns Polylane cloudflared tag and separate digest together.",
     ]
 
 
@@ -320,3 +345,133 @@ def test_apko_lock_maintenance_does_not_request_auto_merge():
         assert forbidden not in script
     assert 'method: "POST"' in script
     assert 'labels: ["dependencies"]' in script
+
+
+def _custom_extract(config: dict, filename: str, content: str) -> list[dict]:
+    extracted = []
+    for manager in config["customManagers"]:
+        if not any(
+            re.search(p[1:-1], filename) for p in manager["managerFilePatterns"]
+        ):
+            continue
+        for pattern in manager["matchStrings"]:
+            pattern = re.sub(r"\(\?<([a-zA-Z]+)>", r"(?P<\1>", pattern)
+            extracted.extend(
+                match.groupdict() for match in re.finditer(pattern, content)
+            )
+    return extracted
+
+
+def test_custom_download_patterns_keep_checksums_and_archive_members_in_scope():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    checksum = "a" * 64
+    for member in ("", '        "file": "gh_2.87.3_linux_arm64/bin/gh",\n'):
+        content = (
+            '"url": "https://github.com/cli/cli/releases/download/v2.87.3/'
+            'gh_2.87.3_linux_arm64.tar.gz",\n'
+            + member
+            + '        "sha256": "'
+            + checksum
+            + '"'
+        )
+        deps = _custom_extract(config, "bazel/tools/tools.lock.json", content)
+        assert len(deps) == 1
+        assert deps[0]["depName"] == "cli/cli"
+        assert deps[0]["currentValue"] == "v2.87.3"
+        assert deps[0]["currentDigest"] == checksum
+        assert not _custom_extract(
+            config, "bazel/tools/tools.lock.json", content.replace(checksum, "")
+        )
+    content = (
+        f'amd64_sha256 = "{checksum}",\n'
+        '    amd64_url = "https://github.com/block/goose/releases/download/v1.39.0/goose.tar.bz2"'
+    )
+    deps = _custom_extract(config, "MODULE.bazel", content)
+    assert deps[0]["depName"] == "block/goose"
+    assert deps[0]["currentDigest"] == checksum
+    # No regex may advance a URL without also selecting the checked digest.
+    assert not _custom_extract(config, "MODULE.bazel", content.replace(checksum, ""))
+
+
+def test_two_line_bazelversion_and_module_toolchains_are_extracted():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    values = _custom_extract(config, ".bazelversion", "buildbuddy-io/5.0.321\n9.1.0\n")
+    assert [dep["currentValue"] for dep in values] == ["5.0.321", "9.1.0"]
+    values = _custom_extract(
+        config,
+        "MODULE.bazel",
+        'node.toolchain(node_version = "22.22.0")\npnpm.pnpm(pnpm_version = "10.34.5")',
+    )
+    assert [dep["currentValue"] for dep in values] == ["22.22.0", "10.34.5"]
+
+
+def test_overlays_are_scanned_and_python_regeneration_is_root_only():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    for path in (
+        "projects/platform/cloudflare-gateway/values.yaml",
+        "projects/platform/polylane/values.yaml",
+        "projects/platform/renovate/values-gke.yaml",
+        "projects/monolith/deploy/values.yaml",
+    ):
+        assert any(
+            re.search(p[1:-1], path)
+            for p in config["helm-values"]["managerFilePatterns"]
+        )
+    assert config["kubernetes"]["managerFilePatterns"]
+    tasks = [r for r in config["packageRules"] if "postUpgradeTasks" in r]
+    assert len(tasks) == 1
+    assert tasks[0]["matchManagers"] == ["pep621"]
+    assert tasks[0]["matchFileNames"] == ["pyproject.toml"]
+    assert tasks[0]["postUpgradeTasks"]["commands"] == [
+        "bazel/tools/format/update-python-requirements.sh"
+    ]
+    helm = [r for r in config["packageRules"] if r.get("matchManagers") == ["helmv3"]]
+    assert helm[0]["postUpdateOptions"] == ["helmUpdateSubChartArchives"]
+    workflow = (HERE / "templates" / "cronworkflow.yaml").read_text()
+    assert "bump-renovated-chart" not in workflow
+    assert "value: jomcgi-org/homelab" in workflow
+
+
+def test_envoy_family_is_held_but_cloudflared_and_other_upstreams_are_eligible():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    for name in (
+        "envoyproxy/gateway-helm",
+        "docker.io/envoyproxy/gateway-helm",
+        "envoyproxy/gateway-crds-helm",
+        "docker.io/envoyproxy/gateway-crds-helm",
+        "envoyproxy/envoy",
+        "docker.io/envoyproxy/envoy",
+        "envoyproxy/gateway",
+    ):
+        assert _dependency_is_disabled(config, name)
+    for name in ("cloudflare/cloudflared", "docker.io/istio/proxyv2", "node", "pnpm"):
+        assert not _dependency_is_disabled(config, name)
+    assert _dependency_is_disabled(config, "ghcr.io/jomcgi/homelab/projects/monolith")
+    assert not _dependency_is_disabled(
+        config, "ghcr.io/upstream/homelab/projects/monolith"
+    )
+
+
+def test_polylane_cloudflared_keeps_the_separate_digest_in_the_update():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    content = (
+        "repository: docker.io/cloudflare/cloudflared\n"
+        '      tag: "2026.10.4"\n'
+        '      digest: "sha256:' + "a" * 64 + '"\n'
+    )
+    deps = _custom_extract(config, "projects/platform/polylane/values.yaml", content)
+    assert len(deps) == 1
+    assert deps[0]["currentValue"] == "2026.10.4"
+    assert deps[0]["currentDigest"] == "sha256:" + "a" * 64
+    handoff = [
+        r
+        for r in config["packageRules"]
+        if r.get("matchFileNames") == ["projects/platform/polylane/values.yaml"]
+    ]
+    assert len(handoff) == 1
+    assert handoff[0]["matchManagers"] == ["helm-values"]
+    assert handoff[0]["enabled"] is False
+    assert set(handoff[0]["matchPackageNames"]) == {
+        "cloudflare/cloudflared",
+        "docker.io/cloudflare/cloudflared",
+    }

@@ -13,7 +13,7 @@ data:
     set -euo pipefail
 
     branch="renovate/apko-lock-maintenance"
-    repo="https://github.com/jomcgi/homelab.git"
+    repo="https://github.com/jomcgi-org/homelab.git"
     workspace="/tmp/apko-maintenance"
     askpass="/tmp/renovate-git-askpass"
 
@@ -73,7 +73,7 @@ data:
     node --input-type=module <<'NODE'
     const token = process.env.RENOVATE_TOKEN;
     const api = "https://api.github.com";
-    const owner = "jomcgi";
+    const owner = "jomcgi-org";
     const repo = "homelab";
     const branch = "renovate/apko-lock-maintenance";
     const headers = {

@@ -8,8 +8,8 @@
   "semanticCommitType": "chore",
   "semanticCommitScope": "deps",
   "dependencyDashboard": true,
-  "automerge": false,
-  "platformAutomerge": false,
+  "automerge": true,
+  "platformAutomerge": true,
   "dependencyDashboardTitle": "Dependency updates and lock maintenance",
   "labels": ["dependencies"],
   "timezone": "America/Vancouver",
@@ -27,8 +27,8 @@
   },
   "enabledManagers": [
     "argocd",
+    "bazel",
     "bazel-module",
-    "bazelisk",
     "custom.regex",
     "github-actions",
     "gomod",
@@ -36,7 +36,8 @@
     "helmv3",
     "kubernetes",
     "npm",
-    "pep621"
+    "pep621",
+    "pip_requirements"
   ],
   "argocd": {
     "managerFilePatterns": ["/projects/.+/application\\.yaml$/"]
@@ -50,6 +51,84 @@
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+tag: \\\"?(?<currentValue>[^\\s\\\"]+)\\\"?"
       ],
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Keep Bazel Node and pnpm toolchains in the dependency stream.",
+      "managerFilePatterns": ["/^MODULE\\.bazel$/"],
+      "matchStrings": [
+        "node\\.toolchain\\(node_version = \"(?<currentValue>[^\"]+)\"\\)"
+      ],
+      "depNameTemplate": "node",
+      "datasourceTemplate": "node-version"
+    },
+    {
+      "customType": "regex",
+      "description": "Keep the Bazel pnpm toolchain aligned with packageManager.",
+      "managerFilePatterns": ["/^MODULE\\.bazel$/"],
+      "matchStrings": [
+        "pnpm\\.pnpm\\(pnpm_version = \"(?<currentValue>[^\"]+)\"\\)"
+      ],
+      "depNameTemplate": "pnpm",
+      "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "The first .bazelversion line selects the BuildBuddy fork.",
+      "managerFilePatterns": ["/^\\.bazelversion$/"],
+      "matchStrings": ["^buildbuddy-io/(?<currentValue>[^\\r\\n]+)"],
+      "depNameTemplate": "buildbuddy-io/bazel",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "The second .bazelversion line selects upstream Bazel.",
+      "managerFilePatterns": ["/^\\.bazelversion$/"],
+      "matchStrings": [
+        "^buildbuddy-io/[^\\r\\n]+\\r?\\n(?<currentValue>[^\\r\\n]+)"
+      ],
+      "depNameTemplate": "bazelbuild/bazel",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Update GitHub tool downloads and their checksums together.",
+      "managerFilePatterns": ["/^bazel/tools/tools\\.lock\\.json$/"],
+      "matchStrings": [
+        "\"url\": \"https://github\\.com/(?<depName>[^/]+/[^/]+)/releases/download/(?<currentValue>[^/]+)/[^\"\\n]+\",\\s+(?:\"file\": \"[^\"\\n]+\",\\s+)?\"sha256\": \"(?<currentDigest>[a-f0-9]{64})\""
+      ],
+      "datasourceTemplate": "github-release-attachments",
+      "autoReplaceStringTemplate": "{{{replace currentDigest newDigest (replace (replace \"[+]\" \"\\+\" (replace \"[.]\" \"\\.\" (replace \"^v\" \"\" currentValue))) (replace \"^v\" \"\" newValue) replaceString)}}}"
+    },
+    {
+      "customType": "regex",
+      "description": "Update multiarch GitHub binaries and their checksums together.",
+      "managerFilePatterns": ["/^MODULE\\.bazel$/"],
+      "matchStrings": [
+        "(?<digestKey>(?:amd64|arm64)(?:_[a-z]+)?_sha256) = \"(?<currentDigest>[a-f0-9]{64})\",(?<spacing>\\s+)(?<urlKey>(?:amd64|arm64)(?:_[a-z]+)?_url) = \"https://github\\.com/(?<depName>[^/]+/[^/]+)/releases/download/(?<currentValue>[^/]+)/(?<asset>[^\"]+)\""
+      ],
+      "datasourceTemplate": "github-release-attachments",
+      "autoReplaceStringTemplate": "{{{replace currentDigest newDigest (replace (replace \"[+]\" \"\\+\" (replace \"[.]\" \"\\.\" (replace \"^v\" \"\" currentValue))) (replace \"^v\" \"\" newValue) replaceString)}}}"
+    },
+    {
+      "customType": "regex",
+      "description": "Track literal helper images embedded in Helm values.",
+      "managerFilePatterns": ["/^projects/.+/values(?:-[^/]+)?\\.ya?ml$/"],
+      "matchStrings": [
+        "[a-zA-Z]+Image: \"(?<depName>[^\"\\s:]+(?:/[^\"\\s:]+)*):(?<currentValue>[^\"\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?\""
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Polylane consumes a separate digest field; update it with the cloudflared tag.",
+      "managerFilePatterns": ["/^projects/platform/polylane/values\\.yaml$/"],
+      "matchStrings": [
+        "repository: \"?(?<depName>(?:docker\\.io/)?cloudflare/cloudflared)\"?\\s+tag: \"?(?<currentValue>[^\"\\s]+)\"?\\s+digest: \"?(?<currentDigest>sha256:[a-f0-9]{64})\"?"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -61,19 +140,7 @@
     {
       "description": "Keep committed Helm lock files and subchart archives synchronized.",
       "matchManagers": ["helmv3"],
-      "postUpdateOptions": ["helmUpdateSubChartArchives"],
-      "postUpgradeTasks": {
-        "commands": [
-          "bash projects/platform/renovate/scripts/bump-renovated-chart.sh {{{packageFileDir}}}"
-        ],
-        "fileFilters": [
-          "**/Chart.yaml",
-          "**/Chart.lock",
-          "**/application.yaml",
-          "**/charts/*.tgz"
-        ],
-        "executionMode": "update"
-      }
+      "postUpdateOptions": ["helmUpdateSubChartArchives"]
     },
     {
       "description": "Regenerate Bazel's compiled Python requirement locks after pyproject updates.",
@@ -82,22 +149,8 @@
         "commands": ["bazel/tools/format/update-python-requirements.sh"],
         "fileFilters": ["pyproject.toml", "bazel/requirements/*.txt"],
         "executionMode": "branch"
-      }
-    },
-    {
-      "description": "Bump the Renovate wrapper chart when its runner image changes.",
-      "matchManagers": ["custom.regex"],
-      "matchPackageNames": ["ghcr.io/renovatebot/renovate"],
-      "postUpgradeTasks": {
-        "commands": [
-          "bash projects/platform/renovate/scripts/bump-renovated-chart.sh projects/platform/renovate"
-        ],
-        "fileFilters": [
-          "projects/platform/renovate/Chart.yaml",
-          "projects/platform/renovate/values.yaml"
-        ],
-        "executionMode": "update"
-      }
+      },
+      "matchFileNames": ["pyproject.toml"]
     },
     {
       "description": "First-party charts and the manual mcp-stack mirror are maintained outside Renovate.",
@@ -123,18 +176,140 @@
       "enabled": false
     },
     {
-      "description": "All dependency updates require adversarial approval before separately authorized merging.",
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "description": "All ordinary update types, including majors, use the protected merge queue after independent evidence and CI.",
+      "matchUpdateTypes": [
+        "major",
+        "minor",
+        "patch",
+        "pin",
+        "digest",
+        "pinDigest",
+        "lockFileMaintenance",
+        "replacement",
+        "bump",
+        "rollback"
+      ],
+      "automerge": true,
+      "platformAutomerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "description": "Keep major upgrades separate and visible without requiring a routine human approval.",
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major-upgrade"]
+    },
+    {
+      "description": "First-party image versions are published and promoted by CI and Kargo.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": [
+        "ghcr.io/jomcgi/homelab/projects/**",
+        "ghcr.io/jomcgi-org/homelab/projects/**",
+        "ghcr.io/jomcgi/homelab/bazel/**",
+        "ghcr.io/jomcgi-org/homelab/bazel/**"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Update pnpm declarations together; pnpm 11 requires an explicit lock-format migration.",
+      "matchPackageNames": ["pnpm"],
+      "groupName": "pnpm",
+      "allowedVersions": "<11"
+    },
+    {
+      "description": "Keep the documented Python API compatibility bounds until their separate migrations.",
+      "matchPackageNames": ["pydantic-ai-slim"],
+      "allowedVersions": "<2"
+    },
+    {
+      "description": "Keep the pricing API compatibility bound from pyproject.toml.",
+      "matchPackageNames": ["genai-prices"],
+      "allowedVersions": "<0.2"
+    },
+    {
+      "description": "Keep npm security override bounds; changing admission or compatibility policy needs a separate decision.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["pnpm.overrides"],
+      "rangeStrategy": "in-range-only"
+    },
+    {
+      "description": "Hold the Envoy Gateway and Proxy family while the header regression and paired guard are resolved.",
+      "matchPackageNames": [
+        "envoyproxy/gateway-helm",
+        "docker.io/envoyproxy/gateway-helm",
+        "envoyproxy/gateway-crds-helm",
+        "docker.io/envoyproxy/gateway-crds-helm",
+        "envoyproxy/gateway",
+        "docker.io/envoyproxy/gateway",
+        "envoyproxy/envoy",
+        "docker.io/envoyproxy/envoy",
+        "envoyproxy/envoy-distroless",
+        "docker.io/envoyproxy/envoy-distroless"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Snapshot and guest ABI pins need their documented coordinated migration before updating.",
+      "matchPackageNames": [
+        "firecracker-microvm/firecracker",
+        "kata-containers/kata-containers",
+        "k3s-io/k3s"
+      ],
+      "dependencyDashboardApproval": true,
       "automerge": false,
-      "automergeType": "pr",
       "platformAutomerge": false
     },
     {
-      "description": "Keep major upgrades as separate, clearly labelled PRs for human review.",
-      "matchUpdateTypes": ["major"],
-      "addLabels": ["major-upgrade"],
+      "description": "Pinned offline schema and Loom fixture revisions require coordinated fixture updates.",
+      "matchManagers": ["bazel"],
+      "matchPackageNames": ["weave-hand/loom", "yannh/kubernetes-json-schema"],
+      "dependencyDashboardApproval": true,
       "automerge": false,
       "platformAutomerge": false
+    },
+    {
+      "description": "Codex CLI release tags use the rust-v prefix.",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["openai/codex"],
+      "versioning": "regex:^rust-v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
+    },
+    {
+      "description": "The custom manager owns Polylane cloudflared tag and separate digest together.",
+      "matchManagers": ["helm-values"],
+      "matchFileNames": ["projects/platform/polylane/values.yaml"],
+      "matchPackageNames": [
+        "cloudflare/cloudflared",
+        "docker.io/cloudflare/cloudflared"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Keep both cloudflared deployments on the same release.",
+      "matchPackageNames": [
+        "cloudflare/cloudflared",
+        "docker.io/cloudflare/cloudflared"
+      ],
+      "groupName": "cloudflared"
     }
-  ]
+  ],
+  "automergeType": "pr",
+  "automergeStrategy": "auto",
+  "dependencyDashboardApproval": false,
+  "bazel": {
+    "managerFilePatterns": ["/(^|/)MODULE\\.bazel$/", "/\\.bzl$/"]
+  },
+  "helm-values": {
+    "managerFilePatterns": ["/(^|/)values(?:-[^/]+)?\\.ya?ml$/"]
+  },
+  "kubernetes": {
+    "managerFilePatterns": [
+      "/^projects/(?:platform-gke|gke-apps)/.+\\.ya?ml$/",
+      "/^projects/[^/]+/deploy/[^/]+\\.ya?ml$/"
+    ]
+  },
+  "pip_requirements": {
+    "managerFilePatterns": ["/^projects/model-bench/requirements-venv\\.txt$/"]
+  },
+  "lockFileMaintenance": {
+    "enabled": true
+  }
 }

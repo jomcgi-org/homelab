@@ -35,6 +35,7 @@ ASSESSMENTS = (
     "transitive_changes",
     "vulnerability_remediation",
     "compatibility",
+    "authorization_scope",
     "validation",
 )
 ASSESSMENT_SCHEMA = {
@@ -326,6 +327,14 @@ def guidance(task: dict) -> str:
         "ranges and remediation, API/runtime compatibility and targeted Linux "
         "validation results. Record concrete citations, commands and results in "
         "dependency_assessment; safe=true only when every dimension is supported. "
+        "In authorization_scope, confirm this is an ordinary dependency update "
+        "within the established maintenance goal. Inspect upstream defaults and "
+        "rendered changes for credential, access, security-policy, budget or "
+        "audience changes. Approval of dependency bumps does not authorize those "
+        "side effects: cite exact existing authority or set safe=false and name "
+        "only the consequential decision that needs approval. Preserve explicit "
+        "PR holds and documented compatibility pins. Do not invent a human "
+        "approval requirement for ordinary updates, including majors. "
         "An empty dependency graph is not proof of safety; inspect unrepresented "
         "dependencies too. A major bump or passing CI is no exemption. "
         "Escalate missing evidence, suspicious changes or failed validation. "

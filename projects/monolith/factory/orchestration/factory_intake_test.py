@@ -1568,6 +1568,7 @@ def test_dependency_evidence_fails_closed(monkeypatch, failure):
         "no_reviewer",
         "unsafe",
         "missing_dimension",
+        "missing_authorization_scope",
         "old_digest",
         "failed_worker",
         "unapproved",
@@ -1600,6 +1601,8 @@ def test_dependency_gate_rejects_bypasses(monkeypatch, failure):
         runs[1]["outcome"]["value"]["dependency_assessment"]["safe"] = False
     elif failure == "missing_dimension":
         del runs[1]["outcome"]["value"]["dependency_assessment"]["provenance"]
+    elif failure == "missing_authorization_scope":
+        del runs[1]["outcome"]["value"]["dependency_assessment"]["authorization_scope"]
     elif failure == "old_digest":
         runs[1]["outcome"]["value"]["dependency_assessment"]["evidence_sha256"] = (
             "d" * 64
@@ -1664,6 +1667,10 @@ def test_dependency_schemas_and_guidance_require_adversarial_evidence():
     assert "potential supply-chain attack" in text
     assert "independently challenge" in text
     assert "without production credentials" in text
+    assert "authorization_scope" in deps.ASSESSMENT_SCHEMA["required"]
+    assert "credential, access, security-policy, budget or audience changes" in text
+    assert "cite exact existing authority or set safe=false" in text
+    assert "including majors" in text
     assert deps.guidance({}) == ""
 
 
