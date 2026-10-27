@@ -80,7 +80,7 @@ func TestNativeObserverInteroperability(t *testing.T) {
 	config = strings.ReplaceAll(config, "port_value: 80\n", "port_value: "+backendPort+"\n")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "envoy.yaml")
-	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	logs, err := os.Create(filepath.Join(dir, "access.log"))

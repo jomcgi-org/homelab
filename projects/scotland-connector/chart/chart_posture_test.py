@@ -296,7 +296,9 @@ def test_observer_is_inert_by_default_and_switch_changes_only_mcp_backend() -> N
         _render(["mcpObserver.enabled=true", "networkPolicy.enabled=false"])
 
 
-def test_observer_has_no_credentials_or_admin_service_and_only_scotland_egress() -> None:
+def test_observer_has_no_credentials_or_admin_service_and_only_scotland_egress() -> (
+    None
+):
     docs = _render(["mcpObserver.enabled=true"])
     name = "scotland-connector-mcp-observer"
     by_name = {(d["kind"], d["metadata"]["name"]): d for d in docs}
@@ -321,16 +323,26 @@ def test_observer_has_no_credentials_or_admin_service_and_only_scotland_egress()
     assert egress["podSelector"]["matchLabels"] == selector
     upstream, dns = egress["egress"]
     assert upstream == {
-        "to": [{"podSelector": {"matchLabels": {
-            "app.kubernetes.io/name": "scotland-connector",
-            "app.kubernetes.io/instance": "scotland-connector",
-        }}}],
+        "to": [
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": "scotland-connector",
+                        "app.kubernetes.io/instance": "scotland-connector",
+                    }
+                }
+            }
+        ],
         "ports": [{"protocol": "TCP", "port": 8080}],
     }
-    assert dns["to"] == [{
-        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
-        "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
-    }]
+    assert dns["to"] == [
+        {
+            "namespaceSelector": {
+                "matchLabels": {"kubernetes.io/metadata.name": "kube-system"}
+            },
+            "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+        }
+    ]
     config = yaml.safe_load(by_name[("ConfigMap", name)]["data"]["envoy.yaml"])
     assert config["admin"]["address"]["socket_address"]["address"] == "127.0.0.1"
     listener = config["static_resources"]["listeners"][0]
@@ -340,8 +352,10 @@ def test_observer_has_no_credentials_or_admin_service_and_only_scotland_egress()
     mcp, router = hcm["http_filters"]
     assert mcp["typed_config"] == {
         "@type": "type.googleapis.com/envoy.extensions.filters.http.mcp.v3.Mcp",
-        "traffic_mode": "PASS_THROUGH", "attribute_source": "BODY",
-        "max_request_body_size": 65536, "clear_route_cache": False,
+        "traffic_mode": "PASS_THROUGH",
+        "attribute_source": "BODY",
+        "max_request_body_size": 65536,
+        "clear_route_cache": False,
         "early_terminate_when_routable": False,
     }
     routes = hcm["route_config"]["virtual_hosts"][0]["routes"]
@@ -351,8 +365,20 @@ def test_observer_has_no_credentials_or_admin_service_and_only_scotland_egress()
     ]
     assert len(config["static_resources"]["clusters"]) == 1
     # Optional connector HTTPS egress must never broaden the observer's egress.
-    enabled = _render(["mcpObserver.enabled=true", "networkPolicy.egress.enabled=true",
-                       "networkPolicy.egress.dnsServiceCidrs[0]=10.0.0.10/32"])
-    policy = next(d for d in enabled if d["kind"] == "NetworkPolicy"
-                  and d["metadata"]["name"] == "scotland-connector-egress")
-    assert policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] == "scotland-connector"
+    enabled = _render(
+        [
+            "mcpObserver.enabled=true",
+            "networkPolicy.egress.enabled=true",
+            "networkPolicy.egress.dnsServiceCidrs[0]=10.0.0.10/32",
+        ]
+    )
+    policy = next(
+        d
+        for d in enabled
+        if d["kind"] == "NetworkPolicy"
+        and d["metadata"]["name"] == "scotland-connector-egress"
+    )
+    assert (
+        policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"]
+        == "scotland-connector"
+    )
