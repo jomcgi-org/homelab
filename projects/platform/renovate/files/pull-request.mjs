@@ -37,7 +37,9 @@ if (
     pull.draft ||
     pull.assignees.length ||
     pull.labels.some(({ name }) =>
-      /hold|blocked|needs-human|do-not-merge|manual|agent-skip/i.test(name),
+      /hold|blocked|needs-human|do-not-merge|manual|agent-skip|^human$|^wontfix$|^security-finding$/i.test(
+        name,
+      ),
     ))
 ) {
   console.log(`Preserving held or owned PR #${pull.number}`);

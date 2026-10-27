@@ -51,11 +51,16 @@ py_test(
         "//projects:renovate_enrollment_manifests",
         "//projects/platform-gke/renovate:manifests",
         "@multitool//tools/helm",
+        "@nodejs_linux_amd64//:node_bin",
     ],
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "NODE_BIN": "$(rootpath @nodejs_linux_amd64//:node_bin)",
     },
-    deps = ["@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 # Markdown read by the monolith doc-manifest genrules (#6446). See
