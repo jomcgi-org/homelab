@@ -14,10 +14,10 @@ failure does not delay updates for a full week.
 
 ## GitHub credential
 
-Before merging this deployment, create a secure-note item named
-`renovate-github` in the `k8s-homelab` 1Password vault. Add a concealed field
-named `RENOVATE_TOKEN` containing a fine-grained token for the dedicated bot
-identity, scoped only to `jomcgi/homelab`.
+Prefer the existing `renovate-github` item in the `k8s-homelab` 1Password vault
+and its `RENOVATE_TOKEN` field. Verify the dedicated bot/App identity and access
+to `jomcgi-org/homelab` without exposing the token. A new token, installation or
+permission grant needs exact confirmation before provisioning.
 
 The token needs these repository permissions:
 
@@ -44,28 +44,46 @@ The main Renovate scan requests and limits memory at 4 GiB. The repository has
 more than 500 extracted dependencies, and a 2 GiB limit was repeatedly killed
 during registry metadata resolution.
 
-Package lifecycle scripts and plugins are disabled. Two repository-owned
-maintenance commands are explicitly allowlisted: wrapper chart version bumps
-and regeneration of compiled Python requirement locks. Renovate targets only
-`jomcgi/homelab`, requires the checked-in `renovate.json`, and does not perform
+Package lifecycle scripts and plugins are disabled. The sole allowlisted
+maintenance command regenerates the root compiled Python requirement locks.
+Helm updates refresh lock files and vendored archives without advancing wrapper
+chart versions; main publication owns those versions. Renovate targets only
+`jomcgi-org/homelab`, requires the checked-in `renovate.json`, and does not perform
 repository autodiscovery or onboarding.
 
-Auto-merge and platform auto-merge are disabled for every update type in
-`renovate.json`. Release-age checks and required Linux CI still apply. PR
-creation grants no merge authority; dependency updates require adversarial
-review and separately authorized merging.
+The proposed repository policy enables platform PR auto-merge for ordinary
+major, minor, patch, digest, pin and lock updates. GitHub's existing merge queue
+owns merging; no approval review is manufactured. Ordinary PR creation remains
+before 06:00 Monday in America/Vancouver, with five concurrent PRs, two per hour
+and a three-day release age. Security alerts retain their immediate exception.
+See [coverage and holds](COVERAGE.md) for exact exclusions and generated files.
 
-Monolith stages `factory/dependency-evidence` off by default. It compares
-independent assessments against server-fetched PR and queue-base evidence,
-including file blobs, dependency changes and open advisories. Bot identities
-and `renovate/` branches force evidence without granting approval. See the
-activation checklist in `projects/monolith/factory/orchestration/FACTORY.md`:
-dedicated App token delivery, explicit enablement, PR/merge-group canaries,
-App-pinned ruleset 9180009, stale/advisory refusal, unapproved auto-merge refusal,
-BuildBuddy same-repository credential isolation and a dedicated Renovate author.
-The author intake list stays empty and factory dependency landing stays refused.
-No credentials, account settings or deployed flags are changed here. Existing
-PRs with auto-merge armed need a separate operator audit.
+**Activation is held.** Do not land this policy or enable a writer until
+`factory/dependency-evidence` is required in ruleset 9180009, pinned to its
+verified App integration, alongside `pr-checks`. Renovate's native auto-merge
+can enqueue before checks finish: the ruleset must enforce independent review.
+The staged publisher must have a verified existing identity, fresh PR/queue
+canaries, stale-evidence refusal and the CI credential boundary from #7005.
+No credential, App grant, ruleset or live intake setting is changed by this PR.
+Reusing an existing installation is preferred; a new grant needs exact approval.
+
+Both independent dependency assessments must record `authorization_scope`.
+Ordinary bumps, including majors, need no routine human approval. Credential,
+access, security-policy, budget or audience changes bundled with an update
+need exact existing authority or the review refuses that update. Existing holds
+and compatibility pins remain binding. Earlier assessments without this new
+dimension cannot pass the evidence gate.
+
+The factory's dependency landing function still refuses to arm auto-merge.
+Renovate would arm its own PRs once activated; the factory supplies independent
+evidence. The separate apko job still creates PRs without requesting auto-merge.
+Empty GitHub dependency-graph comparisons are refused by the current evidence
+gate, so unsupported ecosystems need an attested evidence path before they can
+merge automatically. These are outstanding activation gaps, not passing evidence.
+
+#7168 owns retired-home cleanup and #7186 owns the hub suspension flip under
+#7001/#7068. Reuse those PRs; neither schedule is changed here. Keep those issues
+open until successful scheduled scans and dedicated-bot PRs are observed.
 
 ## GKE staged cutover
 
