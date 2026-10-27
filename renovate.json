@@ -11,17 +11,26 @@
   "automerge": true,
   "platformAutomerge": true,
   "dependencyDashboardTitle": "Dependency updates and lock maintenance",
-  "labels": ["dependencies"],
+  "labels": [
+    "dependencies"
+  ],
   "timezone": "America/Vancouver",
-  "schedule": ["before 6am on monday"],
+  "schedule": [
+    "before 6am on monday"
+  ],
   "prConcurrentLimit": 5,
   "prHourlyLimit": 2,
   "minimumReleaseAge": "3 days",
   "internalChecksFilter": "strict",
   "vulnerabilityAlerts": {
     "enabled": true,
-    "labels": ["dependencies", "security"],
-    "schedule": ["at any time"],
+    "labels": [
+      "dependencies",
+      "security"
+    ],
+    "schedule": [
+      "at any time"
+    ],
     "minimumReleaseAge": null,
     "prCreation": "immediate"
   },
@@ -40,13 +49,17 @@
     "pip_requirements"
   ],
   "argocd": {
-    "managerFilePatterns": ["/projects/.+/application\\.yaml$/"]
+    "managerFilePatterns": [
+      "/projects/.+/application\\.yaml$/"
+    ]
   },
   "customManagers": [
     {
       "customType": "regex",
       "description": "Update the self-hosted Renovate runner image.",
-      "managerFilePatterns": ["/projects/platform/renovate/values\\.yaml$/"],
+      "managerFilePatterns": [
+        "/projects/platform/renovate/values\\.yaml$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+tag: \\\"?(?<currentValue>[^\\s\\\"]+)\\\"?"
       ],
@@ -55,7 +68,9 @@
     {
       "customType": "regex",
       "description": "Keep Bazel Node and pnpm toolchains in the dependency stream.",
-      "managerFilePatterns": ["/^MODULE\\.bazel$/"],
+      "managerFilePatterns": [
+        "/^MODULE\\.bazel$/"
+      ],
       "matchStrings": [
         "node\\.toolchain\\(node_version = \"(?<currentValue>[^\"]+)\"\\)"
       ],
@@ -65,7 +80,9 @@
     {
       "customType": "regex",
       "description": "Keep the Bazel pnpm toolchain aligned with packageManager.",
-      "managerFilePatterns": ["/^MODULE\\.bazel$/"],
+      "managerFilePatterns": [
+        "/^MODULE\\.bazel$/"
+      ],
       "matchStrings": [
         "pnpm\\.pnpm\\(pnpm_version = \"(?<currentValue>[^\"]+)\"\\)"
       ],
@@ -75,15 +92,21 @@
     {
       "customType": "regex",
       "description": "The first .bazelversion line selects the BuildBuddy fork.",
-      "managerFilePatterns": ["/^\\.bazelversion$/"],
-      "matchStrings": ["^buildbuddy-io/(?<currentValue>[^\\r\\n]+)"],
+      "managerFilePatterns": [
+        "/^\\.bazelversion$/"
+      ],
+      "matchStrings": [
+        "^buildbuddy-io/(?<currentValue>[^\\r\\n]+)"
+      ],
       "depNameTemplate": "buildbuddy-io/bazel",
       "datasourceTemplate": "github-releases"
     },
     {
       "customType": "regex",
       "description": "The second .bazelversion line selects upstream Bazel.",
-      "managerFilePatterns": ["/^\\.bazelversion$/"],
+      "managerFilePatterns": [
+        "/^\\.bazelversion$/"
+      ],
       "matchStrings": [
         "^buildbuddy-io/[^\\r\\n]+\\r?\\n(?<currentValue>[^\\r\\n]+)"
       ],
@@ -93,7 +116,9 @@
     {
       "customType": "regex",
       "description": "Update GitHub tool downloads and their checksums together.",
-      "managerFilePatterns": ["/^bazel/tools/tools\\.lock\\.json$/"],
+      "managerFilePatterns": [
+        "/^bazel/tools/tools\\.lock\\.json$/"
+      ],
       "matchStrings": [
         "\"url\": \"https://github\\.com/(?<depName>[^/]+/[^/]+)/releases/download/(?<currentValue>[^/]+)/[^\"\\n]+\",\\s+(?:\"file\": \"[^\"\\n]+\",\\s+)?\"sha256\": \"(?<currentDigest>[a-f0-9]{64})\""
       ],
@@ -103,7 +128,9 @@
     {
       "customType": "regex",
       "description": "Update multiarch GitHub binaries and their checksums together.",
-      "managerFilePatterns": ["/^MODULE\\.bazel$/"],
+      "managerFilePatterns": [
+        "/^MODULE\\.bazel$/"
+      ],
       "matchStrings": [
         "(?<digestKey>(?:amd64|arm64)(?:_[a-z]+)?_sha256) = \"(?<currentDigest>[a-f0-9]{64})\",(?<spacing>\\s+)(?<urlKey>(?:amd64|arm64)(?:_[a-z]+)?_url) = \"https://github\\.com/(?<depName>[^/]+/[^/]+)/releases/download/(?<currentValue>[^/]+)/(?<asset>[^\"]+)\""
       ],
@@ -113,7 +140,9 @@
     {
       "customType": "regex",
       "description": "Track literal helper images embedded in Helm values.",
-      "managerFilePatterns": ["/^projects/.+/values(?:-[^/]+)?\\.ya?ml$/"],
+      "managerFilePatterns": [
+        "/^projects/.+/values(?:-[^/]+)?\\.ya?ml$/"
+      ],
       "matchStrings": [
         "[a-zA-Z]+Image: \"(?<depName>[^\"\\s:]+(?:/[^\"\\s:]+)*):(?<currentValue>[^\"\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?\""
       ],
@@ -123,7 +152,9 @@
     {
       "customType": "regex",
       "description": "Polylane consumes a separate digest field; update it with the cloudflared tag.",
-      "managerFilePatterns": ["/^projects/platform/polylane/values\\.yaml$/"],
+      "managerFilePatterns": [
+        "/^projects/platform/polylane/values\\.yaml$/"
+      ],
       "matchStrings": [
         "repository: \"?(?<depName>(?:docker\\.io/)?cloudflare/cloudflared)\"?\\s+tag: \"?(?<currentValue>[^\"\\s]+)\"?\\s+digest: \"?(?<currentDigest>sha256:[a-f0-9]{64})\"?"
       ],
@@ -156,23 +187,43 @@
   "packageRules": [
     {
       "description": "Identify upstream chart updates in the broader dependency stream.",
-      "matchManagers": ["argocd", "helmv3"],
-      "addLabels": ["upstream-chart"]
+      "matchManagers": [
+        "argocd",
+        "helmv3"
+      ],
+      "addLabels": [
+        "upstream-chart"
+      ]
     },
     {
       "description": "Keep committed Helm lock files and subchart archives synchronized.",
-      "matchManagers": ["helmv3"],
-      "postUpdateOptions": ["helmUpdateSubChartArchives"]
+      "matchManagers": [
+        "helmv3"
+      ],
+      "postUpdateOptions": [
+        "helmUpdateSubChartArchives"
+      ]
     },
     {
       "description": "Regenerate compiled Python locks after root manifest or security-floor updates.",
-      "matchManagers": ["pep621", "pip_requirements"],
+      "matchManagers": [
+        "pep621",
+        "pip_requirements"
+      ],
       "postUpgradeTasks": {
-        "commands": ["bazel/tools/format/update-python-requirements.sh"],
-        "fileFilters": ["pyproject.toml", "bazel/requirements/*.txt"],
+        "commands": [
+          "bazel/tools/format/update-python-requirements.sh"
+        ],
+        "fileFilters": [
+          "pyproject.toml",
+          "bazel/requirements/*.txt"
+        ],
         "executionMode": "branch"
       },
-      "matchFileNames": ["pyproject.toml", "bazel/requirements/overrides.txt"]
+      "matchFileNames": [
+        "pyproject.toml",
+        "bazel/requirements/overrides.txt"
+      ]
     },
     {
       "description": "First-party charts and the manual mcp-stack mirror are maintained outside Renovate.",
@@ -217,12 +268,18 @@
     },
     {
       "description": "Keep major upgrades separate and visible without requiring a routine human approval.",
-      "matchUpdateTypes": ["major"],
-      "addLabels": ["major-upgrade"]
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "addLabels": [
+        "major-upgrade"
+      ]
     },
     {
       "description": "First-party image versions are published and promoted by CI and Kargo.",
-      "matchDatasources": ["docker"],
+      "matchDatasources": [
+        "docker"
+      ],
       "matchPackageNames": [
         "ghcr.io/jomcgi/homelab/projects/**",
         "ghcr.io/jomcgi-org/homelab/projects/**",
@@ -233,24 +290,34 @@
     },
     {
       "description": "Update pnpm declarations together; pnpm 11 requires an explicit lock-format migration.",
-      "matchPackageNames": ["pnpm"],
+      "matchPackageNames": [
+        "pnpm"
+      ],
       "groupName": "pnpm",
       "allowedVersions": "<11"
     },
     {
       "description": "Keep the documented Python API compatibility bounds until their separate migrations.",
-      "matchPackageNames": ["pydantic-ai-slim"],
+      "matchPackageNames": [
+        "pydantic-ai-slim"
+      ],
       "allowedVersions": "<2"
     },
     {
       "description": "Keep the pricing API compatibility bound from pyproject.toml.",
-      "matchPackageNames": ["genai-prices"],
+      "matchPackageNames": [
+        "genai-prices"
+      ],
       "allowedVersions": "<0.2"
     },
     {
       "description": "Keep npm security override bounds; changing admission or compatibility policy needs a separate decision.",
-      "matchManagers": ["npm"],
-      "matchDepTypes": ["pnpm.overrides"],
+      "matchManagers": [
+        "npm"
+      ],
+      "matchDepTypes": [
+        "pnpm.overrides"
+      ],
       "rangeStrategy": "in-range-only"
     },
     {
@@ -282,22 +349,35 @@
     },
     {
       "description": "Pinned offline schema and Loom fixture revisions require coordinated fixture updates.",
-      "matchManagers": ["bazel"],
-      "matchPackageNames": ["weave-hand/loom", "yannh/kubernetes-json-schema"],
+      "matchManagers": [
+        "bazel"
+      ],
+      "matchPackageNames": [
+        "weave-hand/loom",
+        "yannh/kubernetes-json-schema"
+      ],
       "dependencyDashboardApproval": true,
       "automerge": false,
       "platformAutomerge": false
     },
     {
       "description": "Codex CLI release tags use the rust-v prefix.",
-      "matchManagers": ["custom.regex"],
-      "matchPackageNames": ["openai/codex"],
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchPackageNames": [
+        "openai/codex"
+      ],
       "versioning": "regex:^rust-v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
     },
     {
       "description": "The custom manager owns Polylane cloudflared tag and separate digest together.",
-      "matchManagers": ["helm-values"],
-      "matchFileNames": ["projects/platform/polylane/values.yaml"],
+      "matchManagers": [
+        "helm-values"
+      ],
+      "matchFileNames": [
+        "projects/platform/polylane/values.yaml"
+      ],
       "matchPackageNames": [
         "cloudflare/cloudflared",
         "docker.io/cloudflare/cloudflared"
@@ -314,7 +394,9 @@
     },
     {
       "description": "Preserve the pytest-asyncio major bound in the compiled requirement security floors.",
-      "matchPackageNames": ["pytest-asyncio"],
+      "matchPackageNames": [
+        "pytest-asyncio"
+      ],
       "allowedVersions": "<2"
     }
   ],
@@ -322,10 +404,15 @@
   "automergeStrategy": "auto",
   "dependencyDashboardApproval": false,
   "bazel": {
-    "managerFilePatterns": ["/(^|/)MODULE\\.bazel$/", "/\\.bzl$/"]
+    "managerFilePatterns": [
+      "/(^|/)MODULE\\.bazel$/",
+      "/\\.bzl$/"
+    ]
   },
   "helm-values": {
-    "managerFilePatterns": ["/(^|/)values(?:-[^/]+)?\\.ya?ml$/"]
+    "managerFilePatterns": [
+      "/(^|/)values(?:-[^/]+)?\\.ya?ml$/"
+    ]
   },
   "kubernetes": {
     "managerFilePatterns": [
@@ -341,5 +428,6 @@
   },
   "lockFileMaintenance": {
     "enabled": true
-  }
+  },
+  "stopUpdatingLabel": "human"
 }

@@ -147,6 +147,7 @@ def test_ordinary_updates_include_majors_and_use_platform_pr_automerge():
     assert config["automergeType"] == "pr"
     assert config["automergeStrategy"] == "auto"
     assert config["dependencyDashboardApproval"] is False
+    assert config["stopUpdatingLabel"] == "human"
     expected = {
         "major",
         "minor",

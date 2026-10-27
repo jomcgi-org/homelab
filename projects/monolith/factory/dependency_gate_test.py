@@ -953,3 +953,31 @@ def test_conductor_runs_gate_before_disabled_lane_return(monkeypatch):
     )
     factory_conductor.tick()
     assert observed == [POLICY]
+
+
+@pytest.mark.parametrize(
+    "hold", ["human", "needs-human", "hold", "do-not-merge", "assigned"]
+)
+@pytest.mark.parametrize("late", [False, True])
+def test_dependency_ownership_hold_revokes_previously_approved_evidence(
+    setup, hold, late
+):
+    github, approved, audits, publications = setup
+    original = deepcopy(github.pull)
+    if hold == "assigned":
+        github.pull["assignees"] = [{"login": "owner"}]
+    else:
+        github.pull["labels"] = [{"name": hold}]
+    assert deps.ownership_held(github.pull, REPO, POLICY)
+    # A hold appearing in the last PR read is as binding as one seen at intake.
+    gate.check(
+        REPO,
+        "main",
+        original if late else github.pull,
+        POLICY,
+        github,
+        "token",
+        [queue_entry()],
+    )
+    assert publications[-1][2]["conclusion"] == "failure"
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)

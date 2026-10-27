@@ -65,6 +65,9 @@ list every changed filename in `reviewed_files` and supply `evidence_coverage`
 with concrete dependency identities, immutable versions/digests, upstream
 advisories and artifact/SBOM/scan evidence for unrepresented ecosystems.
 Omissions, unavailable reads, changed blobs and unsafe assessments refuse.
+Ownership/approval holds are rechecked at intake and both publication reads;
+a new hold invalidates the old approval. Native Renovate stops updating PRs
+labelled `human`.
 There is no filename-based exemption. Old artifacts require fresh review.
 
 Fresh GitHub alerts cannot establish fresh upstream advisories for ecosystems

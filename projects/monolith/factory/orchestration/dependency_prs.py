@@ -74,14 +74,9 @@ def github_list(repo: str, suffix: str) -> list:
     return read(repo, suffix)
 
 
-def eligible(pull: object, repo: str, policy: dict) -> bool:
-    """Never infer author authority from a label, branch name or PR prose."""
-    if not isinstance(pull, dict):
-        return False
-    user = pull.get("user") or {}
-    head, base = pull.get("head") or {}, pull.get("base") or {}
+def ownership_held(pull: dict, repo: str, policy: dict) -> bool:
+    """Recheck ownership at intake and publication, including after approval."""
     intake = intake_policy(policy)
-    authors = intake.get("dependency_pr_authors", [])
     excluded = {
         label.lower()
         for label in (policy.get("repos") or {})
@@ -93,11 +88,27 @@ def eligible(pull: object, repo: str, policy: dict) -> bool:
         for label in pull.get("labels") or []
     }
     return (
+        bool(pull.get("assignees"))
+        or bool(labels & (excluded | {"human"}))
+        or any(
+            re.search(r"hold|blocked|needs-human|do-not-merge|manual|agent-skip", label)
+            for label in labels
+        )
+    )
+
+
+def eligible(pull: object, repo: str, policy: dict) -> bool:
+    """Never infer author authority from a label, branch name or PR prose."""
+    if not isinstance(pull, dict):
+        return False
+    user = pull.get("user") or {}
+    head, base = pull.get("head") or {}, pull.get("base") or {}
+    authors = intake_policy(policy).get("dependency_pr_authors", [])
+    return (
         bool(authors)
         and pull.get("state") == "open"
         and pull.get("draft") is False
-        and not pull.get("assignees")
-        and not labels & excluded
+        and not ownership_held(pull, repo, policy)
         and type(pull.get("number")) is int
         and pull["number"] > 0
         and isinstance(user.get("login"), str)
