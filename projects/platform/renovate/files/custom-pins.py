@@ -91,7 +91,7 @@ def latest(tool, now, read):
     if tool in ("atlas", "helm"):
         project = "ariga/atlas" if tool == "atlas" else "helm/helm"
         rows = json.loads(
-            read(f"https://api.github.com/repos/{project}/releases?per_page=100")
+            read(f"https://api.github.com/repos/{project}/releases?per_page=20")
         )
         return choose(
             [
