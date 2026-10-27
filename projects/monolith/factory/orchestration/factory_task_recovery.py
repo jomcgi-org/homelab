@@ -6,6 +6,7 @@ import json
 
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.execution.models import AgentSession, PendingMessage
 from factory.orchestration import factory_controls as controls, graph
 from factory.orchestration.factory_models import (
@@ -163,7 +164,7 @@ def _preview(db, control, receipt_id, deadline_at, max_work_turns, direction, is
         "expected_revision": graph.current_version(row.task_id, session=db),
         "receipt_updated_at": row.updated_at.isoformat(),
         "receipt_body_sha256": hashlib.sha256(row.body.encode()).hexdigest(),
-        "issue_sha256": hashlib.sha256(controls._json(issue).encode()).hexdigest(),
+        "issue_sha256": hashlib.sha256(dumps(issue).encode()).hexdigest(),
         "policy": policy,
         "prior_direction": stored_direction,
         "prior_escalation": json.loads(row.escalation_json or "{}"),
@@ -179,9 +180,7 @@ def _preview(db, control, receipt_id, deadline_at, max_work_turns, direction, is
         "direction": direction,
         "stays_paused": True,
     }
-    proposal["preview_sha256"] = hashlib.sha256(
-        controls._json(proposal).encode()
-    ).hexdigest()
+    proposal["preview_sha256"] = hashlib.sha256(dumps(proposal).encode()).hexdigest()
     return proposal
 
 
@@ -249,14 +248,14 @@ def apply(
         for hold in ("landing_hold", "nonrenewable_recovery"):
             stored_direction.setdefault(hold, authority)
         stored_direction["task_recovery"] = authority
-        row.direction_json = controls._json(stored_direction)
+        row.direction_json = dumps(stored_direction)
         escalation = proposal["prior_escalation"].copy()
         escalation["resolved"] = {
             **authority,
             "effect": ACTION,
             "at": controls._now().isoformat(),
         }
-        row.escalation_json = controls._json(escalation)
+        row.escalation_json = dumps(escalation)
         row.state, row.task_paused, row.updated_at = "admitted", True, controls._now()
         # This is a new operator-owned pause. Retaining only an older conductor
         # pause would let its legacy expiry cancel recovery before explicit resume.

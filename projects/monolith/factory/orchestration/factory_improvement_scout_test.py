@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_improvement_fence as fence
 from factory.orchestration import factory_improvement_scout as scout
@@ -258,7 +259,7 @@ def db(tmp_path, monkeypatch):
                 id="factory",
                 actor="test",
                 state="enabled",
-                policy_json=controls._json(data["policy"]),
+                policy_json=dumps(data["policy"]),
             )
         )
         session.commit()
@@ -276,7 +277,7 @@ def db(tmp_path, monkeypatch):
                 actor="test",
                 action="intake_evaluated",
                 created_at=NOW,
-                detail_json=controls._json(
+                detail_json=dumps(
                     {
                         "generation": 1,
                         "github": "completed",
@@ -338,7 +339,7 @@ def test_dispatch_rechecks_quota_and_policy(db):
     with Session(engine) as session:
         policy = deepcopy(data["policy"])
         policy["generation"] = 2
-        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.get(FactoryControl, "factory").policy_json = dumps(policy)
         session.commit()
     assert scout.dispatch_allowed("t-scout")["reason"] == "scout_policy_changed"
 
@@ -533,7 +534,7 @@ def test_submission_commit_before_finish_replays_without_resubmission(db, monkey
                 actor=scout.ACTOR,
                 task_id=task["id"],
                 action=service.ATTEMPT,
-                detail_json=controls._json({"reason": "candidates"}),
+                detail_json=dumps({"reason": "candidates"}),
             )
         )
         session.commit()
@@ -773,7 +774,7 @@ def seed_run(engine, node_key, *, model="sol", pin_model="sol", attempt=1):
                 attempt=attempt,
                 status="admitted",
                 model=model,
-                pin_json=controls._json(
+                pin_json=dumps(
                     {
                         "task_id": "t-scout",
                         "node_key": node_key,
@@ -818,9 +819,7 @@ def test_settlement_waiting_for_unresolved_starts_fences_all_transport(db, actio
                 actor=scout.ACTOR,
                 action=action,
                 task_id="t-scout",
-                detail_json=controls._json(
-                    {"reason": "scout_nonrenewable", "success": False}
-                ),
+                detail_json=dumps({"reason": "scout_nonrenewable", "success": False}),
             )
         )
         session.commit()
@@ -901,7 +900,7 @@ def test_real_admission_and_funding_reconcile_keep_scout_on_bounded_path(
     )
     data["policy"] = policy
     with Session(engine) as session:
-        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.get(FactoryControl, "factory").policy_json = dumps(policy)
         session.commit()
     assert scout.tick(policy)["ok"]
     admitted = admit_next("scheduler", lanes=("advisory",))
@@ -980,7 +979,7 @@ def test_leaf_transport_requires_current_database_and_quota_evidence(db, change)
                 if change == "stale_intake":
                     sweep.created_at = NOW - timedelta(seconds=901)
                 else:
-                    sweep.detail_json = controls._json(
+                    sweep.detail_json = dumps(
                         {
                             "github": "completed",
                             "truncated": False,
@@ -1012,7 +1011,7 @@ def test_broker_delay_cannot_carry_stale_transport_permission(db, monkeypatch, c
                 elif change == "policy":
                     updated = deepcopy(data["policy"])
                     updated["generation"] = 2
-                    control.policy_json = controls._json(updated)
+                    control.policy_json = dumps(updated)
                 else:
                     session.add(
                         FactoryReceipt(

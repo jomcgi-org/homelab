@@ -30,6 +30,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from core.db import get_engine
+from core.jsonio import dumps
 from factory.execution import EFFORT_LEVELS
 from factory.orchestration.factory_models import (
     MAX_CAPACITY_DENIED_ATTEMPTS,
@@ -93,10 +94,6 @@ def _session(session: Session | None = None) -> Iterator[Session]:
     with Session(get_engine()) as owned_session:
         yield owned_session
         owned_session.commit()
-
-
-def _json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _audit_value(value: Any) -> Any:
@@ -320,7 +317,7 @@ def _finish(
             task_id=task.id,
             conductor_model=task.conductor_model,
             tool=tool,
-            args_json=_json(_audit_value(args)),
+            args_json=dumps(_audit_value(args)),
             outcome="applied" if result.ok else "refused",
             refusal_code=result.refusal_code,
             version_before=version_before,
@@ -539,7 +536,7 @@ def _add_node_locked(
             op="add_node",
             author_kind=author_kind,
             author=author,
-            change_json=_json(node_fields),
+            change_json=dumps(node_fields),
             cause_kind=cause_kind,
             cause_ref=cause_ref,
             stated_reason=stated_reason,
@@ -553,7 +550,7 @@ def _add_node_locked(
             prompt=prompt,
             model=model,
             effort=node_fields.get("effort"),
-            deps_json=_json(deps),
+            deps_json=dumps(deps),
             max_cost_usd=max_cost_usd,
             side_effects=side_effects,
             max_attempts=max_attempts,
@@ -568,7 +565,7 @@ def _add_node_locked(
         existing.prompt = prompt
         existing.model = model
         existing.effort = node_fields.get("effort")
-        existing.deps_json = _json(deps)
+        existing.deps_json = dumps(deps)
         existing.max_cost_usd = max_cost_usd
         existing.side_effects = side_effects
         existing.max_attempts = max_attempts
@@ -777,7 +774,7 @@ def _discard_node_locked(
             op="discard_node",
             author_kind=author_kind,
             author=author,
-            change_json=_json(
+            change_json=dumps(
                 {
                     "node_key": node_key,
                     "snapshot": _ledger_snapshot(
@@ -1369,7 +1366,7 @@ def admit_dispatch(
         if not isinstance(context, dict) or set(context) - _CONTEXT_FIELDS:
             return refuse("invalid_execution_context")
         try:
-            context = json.loads(_json(context))
+            context = json.loads(dumps(context))
         except (TypeError, ValueError):
             return refuse("invalid_execution_context")
         all_runs = _runs(db, task_id)
@@ -1454,7 +1451,7 @@ def admit_dispatch(
                 node_key=node_key,
                 attempt=attempt,
                 dispatch_key=dispatch_key,
-                pin_json=_json(pin),
+                pin_json=dumps(pin),
                 model=pin["model"],
                 reserved_cost_usd=reservation,
                 status="admitted",

@@ -6,6 +6,7 @@ import re
 
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -335,7 +336,7 @@ def _preview(
         raise ValueError("validation_unresolved_execution")
     # This is configuration only. Recovery/resume still enforces live issue,
     # human ownership, decision, execution and immutable recovery-bound checks.
-    proposed = json.loads(controls._json(policy))
+    proposed = json.loads(dumps(policy))
     proposed["auto_merge"] = False
     proposed["issue_numbers"] = [issue_number]
     proposed["intake"] = {
@@ -368,17 +369,15 @@ def _preview(
         "state_after": "paused",
         "execution_authorized": False,
         "receipt_fingerprint": hashlib.sha256(
-            controls._json([item.model_dump(mode="json") for item in rows]).encode()
+            dumps([item.model_dump(mode="json") for item in rows]).encode()
         ).hexdigest(),
     }
     if refinement is not None:
         result["selection_kind"] = "refined_issue"
         result["refinement_fingerprint"] = hashlib.sha256(
-            controls._json({"state": refinement, "observation": observation}).encode()
+            dumps({"state": refinement, "observation": observation}).encode()
         ).hexdigest()
-    result["preview_sha256"] = hashlib.sha256(
-        controls._json(result).encode()
-    ).hexdigest()
+    result["preview_sha256"] = hashlib.sha256(dumps(result).encode()).hexdigest()
     return result
 
 
@@ -502,7 +501,7 @@ def _backlog_preview(db, control, reason, *, include_refinement=False):
     repo = _available_repo(before["repo"])
     if repo not in controls.enabled_repos(before):
         raise ValueError("validation_receipt_unavailable")
-    after = json.loads(controls._json(before))
+    after = json.loads(dumps(before))
     after["auto_merge"] = False
     after["issue_numbers"] = []
     intake = controls.intake_policy(before)
@@ -551,10 +550,10 @@ def _backlog_preview(db, control, reason, *, include_refinement=False):
         else "idle_backlog_restore",
         "eligibility": "Existing intake ownership, dependencies, linked PR, receipt history and readiness checks apply after explicit enable.",
         "receipt_fingerprint": hashlib.sha256(
-            controls._json([row.model_dump(mode="json") for row in rows]).encode()
+            dumps([row.model_dump(mode="json") for row in rows]).encode()
         ).hexdigest(),
         "start_fingerprint": hashlib.sha256(
-            controls._json([start.model_dump(mode="json") for start in starts]).encode()
+            dumps([start.model_dump(mode="json") for start in starts]).encode()
         ).hexdigest(),
     }
     if include_refinement:
@@ -564,9 +563,7 @@ def _backlog_preview(db, control, reason, *, include_refinement=False):
             "Cancelled and held issue histories require explicit operator re-admission. Existing ownership, dependency, linked PR, provider and budget gates still apply.",
             "Closure, automatic landing and issue production remain off. Existing admitted work retains its pinned policy and holds.",
         ]
-    result["preview_sha256"] = hashlib.sha256(
-        controls._json(result).encode()
-    ).hexdigest()
+    result["preview_sha256"] = hashlib.sha256(dumps(result).encode()).hexdigest()
     return result
 
 

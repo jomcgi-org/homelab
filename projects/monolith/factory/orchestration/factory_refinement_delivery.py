@@ -9,6 +9,7 @@ import json
 
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_validation as validation
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
@@ -18,7 +19,7 @@ MARKER = "refinement_delivery"
 
 
 def _digest(value):
-    return hashlib.sha256(controls._json(value).encode()).hexdigest()
+    return hashlib.sha256(dumps(value).encode()).hexdigest()
 
 
 def _inherited(row):
@@ -154,7 +155,7 @@ def apply(receipt_id, reason, *, actor, request_key, expected_preview_sha256):
                 "preview_sha256": expected_preview_sha256,
             },
         }
-        destination.direction_json = controls._json(direction)
+        destination.direction_json = dumps(direction)
         result = {
             "ok": True,
             "source_receipt_id": receipt_id,

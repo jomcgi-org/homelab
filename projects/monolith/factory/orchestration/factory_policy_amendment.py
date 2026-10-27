@@ -11,6 +11,7 @@ import json
 
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.execution.models import AgentSession, PendingMessage
 from factory.orchestration import factory_controls as controls, graph
 from factory.orchestration import factory_funding_limits as funding
@@ -121,9 +122,7 @@ def _preview(db, control, receipt_id, overlay, direction):
         or overlay.get("nonrenewable_recovery", False),
         "runtime_hard_ceiling_enforced": False,
     }
-    result["preview_sha256"] = hashlib.sha256(
-        controls._json(result).encode()
-    ).hexdigest()
+    result["preview_sha256"] = hashlib.sha256(dumps(result).encode()).hexdigest()
     return result
 
 
@@ -171,7 +170,7 @@ def apply(
                     "reason": direction,
                 },
             )
-            row.direction_json = controls._json(previous_direction)
+            row.direction_json = dumps(previous_direction)
         policy = {**proposal["previous_policy"], **proposal["policy_overlay"]}
         # Preserve any earlier funding overlay when writing its next revision.
         existing = funding.amendment(db, row.task_id)
