@@ -18,6 +18,7 @@ import re
 import httpx
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -98,7 +99,7 @@ class Reviewer:
         # UTF-8 bytes upper-bound text tokens; reserve an additional 4096 for
         # framing. Dedicated configured rates must cover uncached input and
         # every billed output token (including reasoning). Never use discounts.
-        incoming = len(controls._json(evidence).encode()) + len(SYSTEM.encode()) + 4096
+        incoming = len(dumps(evidence).encode()) + len(SYSTEM.encode()) + 4096
         amount = (
             self.input_rate * incoming + self.output_rate * MAX_OUTPUT_TOKENS
         ) / 1_000_000
@@ -111,7 +112,7 @@ class Reviewer:
             "model": self.model,
             "messages": [
                 {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": controls._json(evidence)},
+                {"role": "user", "content": dumps(evidence)},
             ],
             "max_completion_tokens": MAX_OUTPUT_TOKENS,
             "reasoning_effort": "high",
@@ -264,10 +265,10 @@ def _evidence(identity):
                 "source": raw.decode("utf-8"),
             }
         )
-        if len(controls._json(sources).encode()) > MAX_EVIDENCE_BYTES:
+        if len(dumps(sources).encode()) > MAX_EVIDENCE_BYTES:
             raise ValueError("recovery_evidence_exceeds_bound")
     evidence = {**identity, "merge_base_sha": merge_base, "files": sources}
-    if len(controls._json(evidence).encode()) > MAX_EVIDENCE_BYTES:
+    if len(dumps(evidence).encode()) > MAX_EVIDENCE_BYTES:
         raise ValueError("recovery_evidence_exceeds_bound")
     _pull(identity)
     return evidence

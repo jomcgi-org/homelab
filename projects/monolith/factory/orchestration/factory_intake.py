@@ -10,10 +10,10 @@ from datetime import timezone, timedelta
 from sqlalchemy import or_
 from sqlmodel import Session, select
 
+from core.jsonio import dumps
 from factory.orchestration.factory_controls import (
     _audit,
     _integer,
-    _json,
     _locked_session,
     _read_session,
     _now,
@@ -287,7 +287,7 @@ def receive_issue(
             url=url,
             actor=actor,
             task_class=task_class,
-            direction_json=_json(delivery_target) if delivery_target else None,
+            direction_json=dumps(delivery_target) if delivery_target else None,
         )
         db.add(row)
         db.flush()
@@ -777,7 +777,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     "landing_hold",
                     json.loads(held_prior.direction_json)["landing_hold"],
                 )
-                row.direction_json = _json(direction)
+                row.direction_json = dumps(direction)
             refined = next(
                 (
                     prior
@@ -796,7 +796,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                         "landing_hold", refined_direction["landing_hold"]
                     )
                 if direction:
-                    row.direction_json = _json(direction)
+                    row.direction_json = dumps(direction)
         try:
             granted_branch, _granted_pr = granted_delivery_surface(direction)
         except ValueError as exc:
@@ -866,7 +866,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         row.task_id, row.state, row.policy_json = (
             task_id,
             "admitted",
-            _json(pinned_policy),
+            dumps(pinned_policy),
         )
         row.routing_tier = route["tier"]
         store_class_route(receipt_task_class(row), route, session=db)

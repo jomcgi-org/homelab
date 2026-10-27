@@ -10,6 +10,7 @@ import os
 
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import FactoryAudit, FactoryControl, WorkItem
 
@@ -125,7 +126,7 @@ def _write_card(db, row, actor, reason, *, body, prior):
         "chat": (prior or {}).get("chat") or [],
         "conversation": (prior or {}).get("conversation") or [],
     }
-    row.escalation_json = controls._json(document)
+    row.escalation_json = dumps(document)
     row.updated_at = controls._now()
     controls._audit(
         db,

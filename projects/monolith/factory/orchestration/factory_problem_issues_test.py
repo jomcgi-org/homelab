@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from core.jsonio import dumps
 import factory.orchestration.factory_controls as controls
 import factory.orchestration.factory_problem_issues as producer
 from factory.orchestration.factory_improvement_preview import digest
@@ -876,7 +877,7 @@ def test_improvement_history_requires_merged_useful_delivery(improvements):
                     actor="test",
                     action="improvement_attempt",
                     created_at=START - timedelta(days=i),
-                    detail_json=controls._json(
+                    detail_json=dumps(
                         {
                             "fingerprint": key if i == 2 else str(i) * 64,
                             "reason": "candidates",
@@ -891,7 +892,7 @@ def test_improvement_history_requires_merged_useful_delivery(improvements):
                 actor="test",
                 action="problem_issue_created",
                 created_at=START - timedelta(days=1),
-                detail_json=controls._json({"fingerprint": key, "issue_number": 8000}),
+                detail_json=dumps({"fingerprint": key, "issue_number": 8000}),
             )
         )
         receipt = session.exec(select(FactoryReceipt)).first()
@@ -910,7 +911,7 @@ def test_improvement_history_requires_merged_useful_delivery(improvements):
                 action="owned_pr_merged",
                 task_id="t-1",
                 created_at=START,
-                detail_json=controls._json({"pr_number": 8001, "head_sha": "b" * 40}),
+                detail_json=dumps({"pr_number": 8001, "head_sha": "b" * 40}),
             )
         )
         session.commit()
@@ -927,7 +928,7 @@ def test_improvement_refinement_success_is_not_useful_delivery(improvements):
                     actor="test",
                     action="improvement_attempt",
                     created_at=START - timedelta(days=i),
-                    detail_json=controls._json({"fingerprint": key}),
+                    detail_json=dumps({"fingerprint": key}),
                 )
                 for i in (2, 3, 4)
             ]
@@ -937,17 +938,13 @@ def test_improvement_refinement_success_is_not_useful_delivery(improvements):
                 FactoryAudit(
                     actor="test",
                     action="problem_issue_created",
-                    detail_json=controls._json(
-                        {"fingerprint": key, "issue_number": 8000}
-                    ),
+                    detail_json=dumps({"fingerprint": key, "issue_number": 8000}),
                 ),
                 FactoryAudit(
                     actor="test",
                     action="owned_pr_merged",
                     task_id="t-1",
-                    detail_json=controls._json(
-                        {"pr_number": 8001, "head_sha": "b" * 40}
-                    ),
+                    detail_json=dumps({"pr_number": 8001, "head_sha": "b" * 40}),
                 ),
             ]
         )
@@ -1014,7 +1011,7 @@ def test_improvement_cooldown_is_configurable_without_changing_intake(improvemen
                 actor="test",
                 action="improvement_attempt",
                 created_at=START - timedelta(hours=2),
-                detail_json=controls._json({"reason": "no_actionable_findings"}),
+                detail_json=dumps({"reason": "no_actionable_findings"}),
             )
         )
         session.commit()
@@ -1024,7 +1021,7 @@ def test_improvement_cooldown_is_configurable_without_changing_intake(improvemen
         "max_findings": 1,
     }
     with Session(engine) as session:
-        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.get(FactoryControl, "factory").policy_json = dumps(policy)
         session.commit()
     batch["review_digest"] = service.context()["review_digest"]
     assert service.submit(batch, actor="operator:test")["reason"] == "candidates"
@@ -1060,9 +1057,7 @@ def test_improvement_operator_review_reopens_trial_without_forgetting_duplicates
                 actor="test",
                 action="improvement_attempt",
                 created_at=START - timedelta(days=i),
-                detail_json=controls._json(
-                    {"fingerprint": duplicate, "reason": "candidates"}
-                ),
+                detail_json=dumps({"fingerprint": duplicate, "reason": "candidates"}),
             )
             for i in (4, 3, 2)
         ]
@@ -1078,7 +1073,7 @@ def test_improvement_operator_review_reopens_trial_without_forgetting_duplicates
         "reason": "Reviewed failed attempts; new reproduction evidence is available",
     }
     with Session(engine) as session:
-        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.get(FactoryControl, "factory").policy_json = dumps(policy)
         session.commit()
     batch["review_digest"] = service.context()["review_digest"]
     result = service.submit(batch, actor="operator:test")
@@ -1097,7 +1092,7 @@ def test_improvement_review_requires_existing_attempt_and_reason(improvements):
         "reason": "reviewed",
     }
     with Session(engine) as session:
-        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.get(FactoryControl, "factory").policy_json = dumps(policy)
         session.commit()
     with pytest.raises(ValueError, match="exact_attempt_audit"):
         service.context()
@@ -1113,7 +1108,7 @@ def test_improvement_old_duplicate_survives_bounded_history(improvements):
                 actor="test",
                 action="improvement_attempt",
                 created_at=START - timedelta(days=1003 - i),
-                detail_json=controls._json(
+                detail_json=dumps(
                     {
                         "fingerprint": fingerprint(
                             service.REPO, batch["findings"][0]["problem_key"]
@@ -1131,7 +1126,7 @@ def test_improvement_old_duplicate_survives_bounded_history(improvements):
             "through_audit_id": row.id,
             "reason": "reviewed evidence",
         }
-        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.get(FactoryControl, "factory").policy_json = dumps(policy)
         session.commit()
     current = service.context()
     assert len(current["improvement_history"]) == 20

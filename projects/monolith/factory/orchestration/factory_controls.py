@@ -21,7 +21,7 @@ from sqlalchemy import or_, update
 from sqlmodel import Session, select
 
 from core.db import get_engine
-from core.jsonio import loads_or
+from core.jsonio import dumps, loads_or
 from factory.orchestration.factory_models import (
     DEFAULT_TASK_CLASS,
     FactoryAudit,
@@ -595,12 +595,8 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
 def digest(value: object) -> str:
-    return hashlib.sha256(_json(value).encode()).hexdigest()
+    return hashlib.sha256(dumps(value).encode()).hexdigest()
 
 
 def audit_detail(row) -> dict:
@@ -617,7 +613,7 @@ def _text(value: object, name: str, limit: int = 256) -> str:
 def _validate_cancellation_reason(value: object) -> str:
     reason = _text(value, "cancellation_reason", 1024)
     evidence = {"state": "operator_cancelled", "reason": reason}
-    if len(_json(evidence)) > MAX_TASK_EVIDENCE_LENGTH:
+    if len(dumps(evidence)) > MAX_TASK_EVIDENCE_LENGTH:
         raise ValueError("cancellation_reason produces task evidence too large")
     return reason
 
@@ -1724,7 +1720,7 @@ def _apply_capacity_release(
         }
     else:
         direction.pop("pending_capacity_release")
-    row.direction_json = _json(direction)
+    row.direction_json = dumps(direction)
     row.updated_at = _now()
     _audit(
         db,
@@ -1749,7 +1745,7 @@ def revoke_capacity_release(db, row, actor, reason):
     intent = direction.pop("pending_capacity_release", None)
     if intent is None:
         return
-    row.direction_json = _json(direction)
+    row.direction_json = dumps(direction)
     _audit(
         db,
         actor,
@@ -1782,7 +1778,7 @@ def request_capacity_release(
     if release_hold and "landing_hold" in direction:
         intent["landing_hold"] = direction["landing_hold"]
     direction["pending_capacity_release"] = intent
-    row.direction_json = _json(direction)
+    row.direction_json = dumps(direction)
     applied = _apply_capacity_release(db, control, row)
     return {
         "ok": True,
@@ -1890,7 +1886,7 @@ def _audit(
         task_id = None
     db.add(
         FactoryAudit(
-            actor=actor, action=action, task_id=task_id, detail_json=_json(detail)
+            actor=actor, action=action, task_id=task_id, detail_json=dumps(detail)
         )
     )
 
@@ -2241,7 +2237,7 @@ def record_allowance(
         grant = continuation_grant(task_id, session=db)
         ceiling = grant["work_turn_ceiling"] if grant else task_turn_ceiling(policy)
         allowance["turns"] = min(allowance["turns"], ceiling)
-        row.allowance_json = _json(allowance)
+        row.allowance_json = dumps(allowance)
         row.updated_at = _now()
         db.add(row)
         _audit(
@@ -3360,7 +3356,7 @@ def _retire_generation_candidate(
             "decided_at": _now().isoformat(),
             "decision_id": identity,
         }
-        row.escalation_json = _json(escalation)
+        row.escalation_json = dumps(escalation)
     if receipt_retired:
         row.state = "cancelled"
     row.updated_at = _now()
@@ -3662,7 +3658,7 @@ def set_control(
                             int(item["card_resolved"]) for item in retired
                         ),
                     )
-                    control.policy_json = _json(configured)
+                    control.policy_json = dumps(configured)
                     # Configuration does not change execution authority: enabled
                     # work continues, paused admissions stay paused, and initial
                     # configuration remains disabled until an explicit enable.
@@ -3670,13 +3666,13 @@ def set_control(
             # Dedicated, deterministic admission-only transition. Never relax
             # configure's generation rule or accept caller-supplied policy.
             configured = active_intake_restoration_policy(db, control)
-            control.policy_json = _json(configured)
+            control.policy_json = dumps(configured)
         elif action == "prepare_refinement_batch":
             configured = refinement_batch_policy(db, control, refinement_issue_numbers)
-            control.policy_json = _json(configured)
+            control.policy_json = dumps(configured)
         elif action == "prepare_broad_refinement":
             configured = broad_refinement_policy(db, control)
-            control.policy_json = _json(configured)
+            control.policy_json = dumps(configured)
         elif action == "enable":
             if not json.loads(control.policy_json):
                 reason = "not_configured"
@@ -3709,7 +3705,7 @@ def set_control(
                     else:
                         entry["enabled"] = False
                     repos[slug] = entry
-                    control.policy_json = _json(
+                    control.policy_json = dumps(
                         validate_policy({**validated, "repos": repos})
                     )
                     configure_detail["repo"] = slug
@@ -4516,7 +4512,7 @@ def finish_task(
                 _integer(value, key, 1, 2**31 - 1)
             else:
                 _text(value, key, 1024)
-        if len(_json(evidence)) > MAX_TASK_EVIDENCE_LENGTH:
+        if len(dumps(evidence)) > MAX_TASK_EVIDENCE_LENGTH:
             raise ValueError("task evidence too large")
     with _locked_session(session) as (db, _control):
         row = _receipt(db, task_id)
@@ -5046,7 +5042,7 @@ def reconcile_sessionless_start(
             "failed",
             0.0,
             run.head_sha,
-            _json(result),
+            dumps(result),
             session=db,
         )
         if not settled.ok:
@@ -5189,7 +5185,7 @@ def settle_lost_attempt(
             "failed",
             0.0,
             run.head_sha,
-            _json(result),
+            dumps(result),
             session=db,
         )
         if not settled.ok:

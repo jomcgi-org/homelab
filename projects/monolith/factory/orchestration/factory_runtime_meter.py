@@ -15,6 +15,7 @@ import os
 
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.execution import admission, result_receipts
 from factory.execution.runtime_meter_evidence import (
     BOUND,
@@ -115,7 +116,7 @@ def bind(db, receipt, agent, request_body):
         "model": PRICE_MODEL,
         "prices": FIXED_PRICES[PRICE_MODEL],
         "pricing_sha256": hashlib.sha256(
-            controls._json(FIXED_PRICES[PRICE_MODEL]).encode()
+            dumps(FIXED_PRICES[PRICE_MODEL]).encode()
         ).hexdigest(),
         "objective_receipt_id": owner.id,
         "bound_at": controls._now().isoformat(),

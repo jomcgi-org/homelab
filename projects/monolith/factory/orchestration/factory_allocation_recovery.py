@@ -7,6 +7,7 @@ renewal requested with the same work evidence as the last one.
 
 import json
 
+from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 
 
@@ -59,7 +60,7 @@ def pause(db, task_id, blocker):
     actor = "factory:allocation-recovery"
     if row is not None and row.state in controls._ACTIVE:
         controls.revoke_capacity_release(db, row, actor, "pause_task")
-    if factory_pause.pause_locked(db, row, actor, controls._json(blocker)):
+    if factory_pause.pause_locked(db, row, actor, dumps(blocker)):
         controls._audit(
             db, actor, "allocation_recovery_required", task_id=task_id, **blocker
         )

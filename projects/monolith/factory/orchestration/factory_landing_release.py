@@ -11,6 +11,7 @@ import re
 
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.execution.models import AgentSession, PendingMessage
 from factory.orchestration import factory_controls as controls, graph
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
@@ -148,9 +149,7 @@ def _preview(db, control, receipt_id, pr_number, head_sha, reason, pull):
         "reason": reason,
         "delivery_accepted": False,
     }
-    result["preview_sha256"] = hashlib.sha256(
-        controls._json(result).encode()
-    ).hexdigest()
+    result["preview_sha256"] = hashlib.sha256(dumps(result).encode()).hexdigest()
     return result
 
 
@@ -237,7 +236,7 @@ def apply(
             "reason": proposal["reason"],
             "authorized_at": controls._now().isoformat(),
         }
-        row.direction_json = controls._json(direction)
+        row.direction_json = dumps(direction)
         release = {"ok": True, "pending": False, "reason": None}
         if proposal["operation"] == "release":
             if row.state in controls._ACTIVE:
@@ -248,7 +247,7 @@ def apply(
                     raise ValueError(release["reason"])
             else:
                 direction.pop("landing_hold")
-                row.direction_json = controls._json(direction)
+                row.direction_json = dumps(direction)
         row.updated_at = controls._now()
         control.version += 1
         control.actor = actor

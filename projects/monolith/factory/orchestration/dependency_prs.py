@@ -15,10 +15,10 @@ from copy import deepcopy
 import httpx
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.orchestration.factory_controls import (
     INTAKE_ACTOR,
     _audit,
-    _json,
     _locked_session,
     intake_policy,
     normalize_repo,
@@ -519,7 +519,7 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
             url=f"https://github.com/{repo}/pull/{number}",
             actor=INTAKE_ACTOR,
             task_class="judgment-analysis",
-            direction_json=_json(direction),
+            direction_json=dumps(direction),
         )
         db.add(row)
         db.flush()

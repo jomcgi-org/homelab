@@ -10,6 +10,7 @@ from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from core.clock import iso_or_str
+from core.jsonio import dumps
 import factory.orchestration.factory_controls as controls
 from factory.orchestration.factory_intake import admit_next, receive_issue
 from factory.orchestration.factory_models import (
@@ -3883,7 +3884,7 @@ def test_cancel_task_accepted_reason_fits_settlement_evidence(
     assert getattr(controls, control)("cancel_task", "operator-subject", **kwargs)["ok"]
     evidence = controls.cancellation_evidence(task)
     assert evidence == {"state": "operator_cancelled", "reason": reason}
-    assert len(controls._json(evidence)) == encoded_length
+    assert len(dumps(evidence)) == encoded_length
     assert controls.finish_task(task, "cancelled", "reconciler", evidence=evidence)[
         "ok"
     ]
@@ -4383,7 +4384,7 @@ def test_single_repo_admission_pins_the_global_policy_json(db, policy, monkeypat
     # the repo-effective envelope inherits every value unchanged, so the
     # pinned JSON must equal what main pinned, built main's way.
     enable(policy, monkeypatch)
-    expected = controls._json(controls.validate_policy(controls.status()["policy"]))
+    expected = dumps(controls.validate_policy(controls.status()["policy"]))
     receive("owner/repo", 1)
     admission = admit_next("scheduler")
     assert admission["ok"]

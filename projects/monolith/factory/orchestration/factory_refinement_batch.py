@@ -5,6 +5,7 @@ import json
 
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_validation as validation
 from factory.orchestration.factory_models import (
@@ -110,7 +111,7 @@ def _preview(db, control, numbers, reason, observations):
             "Ready issues remain excluded from automatic implementation; closure and landing remain off.",
         ],
         "evidence_sha256": hashlib.sha256(
-            controls._json(
+            dumps(
                 {
                     "github": observations,
                     "receipts": [row.model_dump(mode="json") for row in rows],
@@ -120,9 +121,7 @@ def _preview(db, control, numbers, reason, observations):
             ).encode()
         ).hexdigest(),
     }
-    result["preview_sha256"] = hashlib.sha256(
-        controls._json(result).encode()
-    ).hexdigest()
+    result["preview_sha256"] = hashlib.sha256(dumps(result).encode()).hexdigest()
     return result
 
 
