@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 data:
   custom-pins.py: |
-{{ .Files.Get "files/custom-pins.py" | indent 4 }}
+{{ .Files.Get "files/custom-pins.py.tpl" | indent 4 }}
   pull-request.mjs: |
 {{ .Files.Get "files/pull-request.mjs" | indent 4 }}
   maintain.sh: |

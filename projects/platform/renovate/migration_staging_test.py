@@ -494,11 +494,14 @@ def test_polylane_cloudflared_keeps_the_separate_digest_in_the_update():
 
 
 def _pins_module():
+    import importlib.machinery
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location(
-        "custom_pins", HERE / "files" / "custom-pins.py"
+    # This is a Helm ConfigMap asset, not a standalone Bazel Python binary.
+    loader = importlib.machinery.SourceFileLoader(
+        "custom_pins", str(HERE / "files" / "custom-pins.py.tpl")
     )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
