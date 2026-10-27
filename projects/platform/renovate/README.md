@@ -138,7 +138,10 @@ and any later home-cluster retirement is separately authorized.
 The existing second CronWorkflow runs at 01:00 America/Vancouver each Monday.
 It keeps separate `renovate/<mode>-lock-maintenance` PRs for `apko`, `python`,
 `atlas`, `helm`, `op` and `claude`. Apko uses pinned `rules_apko` plus generators.
-Python runs both root requirement compilers with `--upgrade`. Each tool adapter
+Python runs both root requirement compilers with `--upgrade --no-build`.
+The shared compiler also refuses source builds, and Renovate passes
+`UV_NO_BUILD=true` to native uv artifact commands. Source-only packages need
+isolated generation; missing wheel/metadata is a failed update. Each tool adapter
 updates all platforms atomically, without executing downloaded code. Each mode
 fails independently, and existing held, assigned, draft or human-authored PRs
 are preserved. The job labels PRs `dependencies` and requests REBASE platform

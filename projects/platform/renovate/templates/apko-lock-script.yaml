@@ -64,8 +64,8 @@ data:
         python)
           # The root uses compiled requirements, not uv.lock. Both targets must
           # upgrade transitives while retaining pyproject and override bounds.
-          bazel run //bazel/requirements:runtime -- --upgrade
-          bazel run //bazel/requirements:requirements.all -- --upgrade
+          bazel run //bazel/requirements:runtime -- --upgrade --no-build
+          bazel run //bazel/requirements:requirements.all -- --upgrade --no-build
           ;;
         atlas|helm|op|claude)
           python3 /opt/renovate-apko/custom-pins.py "$MAINTENANCE_MODE"
