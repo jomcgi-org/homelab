@@ -314,6 +314,8 @@ def evaluate(
         # refuse this tick without invalidating the durable generation.
         raise EvidenceUnavailable("dependency approval unavailable") from exc
     try:
+        if deps.ownership_held(pull, repo, policy):
+            raise ValueError("dependency PR ownership or approval hold")
         evidence = approved.evidence
         encoded = json.dumps(
             {key: value for key, value in evidence.items() if key != "evidence_sha256"},
@@ -518,11 +520,16 @@ def check(
                 repo, branch, pull, policy, github, entries[0] if entries else None
             )
         latest: dict | None = None
+        observed_hold = False
         try:
             if entries and github.queue(repo, branch)[: len(entries)] != entries:
                 raise ValueError("queue base or merge-group head moved")
             latest = github.get(repo, f"pulls/{pull['number']}")
             validate_pull(latest, repo, branch, pull["number"], pull["head"]["sha"])
+            if approved is not None:
+                observed_hold = deps.ownership_held(latest, repo, policy)
+                if observed_hold:
+                    raise ValueError("dependency PR ownership or approval hold")
             if (
                 latest["user"] != pull["user"]
                 or latest["base"]["sha"] != pull["base"]["sha"]
@@ -534,7 +541,9 @@ def check(
             # or author change must still invalidate the approved receipt:
             # returning the old evidence must not restore approval without
             # fresh authorized-generation review.
-            if approved is not None and _approved_head_moved(latest, approved):
+            if approved is not None and (
+                observed_hold or _approved_head_moved(latest, approved)
+            ):
                 _safe_audit(
                     "dependency_approval_invalidated",
                     task_id=approved.task_id,
