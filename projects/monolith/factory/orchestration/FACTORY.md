@@ -1993,7 +1993,9 @@ empty results for unknown packages are not proof. The server re-fetches these
 queries at completion and each publication with no credentials, redirects or
 caller-selected endpoint. Findings invalidate approval; unavailable, oversized,
 malformed or paginated responses refuse without claiming positive change.
-At most 100 source entries are accepted. Other sources require an adapter or
+At most 100 source entries are accepted. Even unchanged vulnerable SBOM
+components prevent this automatic path; partial remediation with residual
+findings is not covered by this conservative adapter. Other sources require an adapter or
 remain refused; prose cannot substitute for revalidation.
 
 Dependency success waits for exact-head `pr-checks`. Each head is evaluated

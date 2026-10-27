@@ -79,6 +79,11 @@ OSV and accepts no caller-selected endpoint. At most 100 source entries fit one
 assessment. Reviewers must establish the query's applicability and the complete
 artifact/SBOM package closure; an unknown package with an empty result proves
 nothing. Arbitrary upstream advisory pages are not silently treated as covered.
+This adapter conservatively refuses any reported OSV finding, including an
+unchanged vulnerable SBOM component in an image/apko update that fixes another
+component. Such partial remediation is not currently eligible for this automatic
+path. Supporting reviewed residual findings needs a separately reviewed
+acceptance contract; a passing CI run does not override this limit.
 
 Publication waits for exact-head CI and revalidates each head immediately before
 writing, with a 60-second collection bound and a final durable-approval read.

@@ -85,7 +85,9 @@ response hashes. Completion and each publication re-fetch these queries from
 OSV without credentials. Unknown package names returning empty results do not
 prove coverage; reviewers must verify ecosystem applicability and complete
 artifact/SBOM contents. Unsupported coverage, findings, pagination and read
-failures refuse that update. The current bound is 100 sources per assessment.
+failures refuse that update. The current bound is 100 sources per assessment. Any OSV finding blocks this
+automatic path, including an unchanged vulnerable SBOM component in an update
+that fixes another component; partial remediation is not currently eligible.
 
 Dependency checks wait for exact-head `pr-checks`, then re-read evidence and the
 durable approval immediately before each publication, within a 60-second
