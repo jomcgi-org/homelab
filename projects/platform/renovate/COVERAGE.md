@@ -9,7 +9,7 @@ and CI must also pass before an update can merge.
 
 | Input | Extraction | Outputs and constraints |
 | --- | --- | --- |
-| `MODULE.bazel` registry dependencies | `bazel-module` | Module lock maintenance uses Renovate's Bazel support and the existing `bazelModDeps` execution grant. Patched `rules_apko` still has to pass CI. |
+| `MODULE.bazel` registry dependencies | `bazel-module` | Updates source module versions. `MODULE.bazel.lock` is ignored and untracked, so Bazel regenerates it; Renovate skips module-lock artifact maintenance when the file is absent. Patched `rules_apko` still has to pass CI. |
 | `MODULE.bazel` OCI pulls | `bazel-module` | Existing image digests stay pinned; native extraction covers the three OCI bases. |
 | Bazel `http_archive` / `http_file` declarations | `bazel` | Reads `MODULE.bazel` and `.bzl` files; updates supported GitHub release URLs and checksums. Variable-built URLs and raw GitHub file URLs are gaps below. |
 | `pyproject.toml` | `pep621` | Only this root manifest invokes the existing Bazel requirement compiler, updating `bazel/requirements/*.txt`. Generated locks are not independent version inputs. |
