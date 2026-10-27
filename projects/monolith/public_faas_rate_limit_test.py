@@ -254,7 +254,8 @@ def _static_envoy_config(translated: dict, port: int) -> dict:
                 assert guard["typedConfig"].get("skipIfError", False) is False
             for descriptor in local["descriptors"]:
                 assert descriptor["entries"][-1] == {
-                    "key": "single_cf_identity", "value": "true"
+                    "key": "single_cf_identity",
+                    "value": "true",
                 }
             route.pop("route", None)
             route["directResponse"] = {"status": 200}
@@ -498,7 +499,10 @@ def test_gateway_render_enforces_the_cloudflared_origin_boundary():
             "cloudflare-ingress-functions-rate-limit-capacity",
         )
         assert descriptor_patch["metadata"]["namespace"] == "envoy-gateway-system"
-        assert {**descriptor_patch["spec"], "jsonPatches": descriptor_patch["spec"]["jsonPatches"][:1]} == {
+        assert {
+            **descriptor_patch["spec"],
+            "jsonPatches": descriptor_patch["spec"]["jsonPatches"][:1],
+        } == {
             "targetRef": {
                 "group": "gateway.networking.k8s.io",
                 "kind": "Gateway",
@@ -646,7 +650,10 @@ def test_envoy_isolates_the_apex_page_budget_per_client():
         # A missing identity still has its own fail-safe bucket, separate from
         # any valid client, and the worker-rejection policy covers the route.
         assert [_request(port, path="/") for _ in range(100)] == [200] * 100
-        assert _request(port, "arbitrary", duplicate_identity="203.0.113.99", path="/") == 429
+        assert (
+            _request(port, "arbitrary", duplicate_identity="203.0.113.99", path="/")
+            == 429
+        )
         assert _request(port, "203.0.113.99", path="/") == 200
         assert _request(port, "192.0.2.70", worker="jomcgi.dev", path="/") == 403
         assert (
