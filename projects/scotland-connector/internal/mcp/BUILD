@@ -16,7 +16,24 @@ go_library(
 
 go_test(
     name = "mcp_test",
-    srcs = ["mcp_test.go"],
+    srcs = [
+        "mcp_test.go",
+        "observer_test.go",
+    ],
+    data = [
+        "//projects/scotland-connector/chart:observer_test_inputs",
+        "@envoy_mcp_test_bin//:binary",
+        "@multitool//tools/helm",
+    ],
+    env = {
+        "ENVOY_MCP_BIN": "$(rootpath @envoy_mcp_test_bin//:binary)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "OBSERVER_CHART": "projects/scotland-connector/chart",
+    },
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
     embed = [":mcp"],
     deps = [
         "//projects/scotland-connector/internal/connector",

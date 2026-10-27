@@ -41,7 +41,9 @@ metadata:
   labels:
     {{- include "scotland-connector.labels" . | nindent 4 }}
 spec:
-  podSelector: {}
+  podSelector:
+    matchLabels:
+      {{- include "scotland-connector.selectorLabels" . | nindent 6 }}
   policyTypes:
     - Egress
   egress:

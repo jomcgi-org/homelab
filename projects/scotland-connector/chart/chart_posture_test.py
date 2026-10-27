@@ -277,3 +277,82 @@ def test_rate_limit_rules_cannot_mix_units() -> None:
     # when its rules use different units; the template must refuse that.
     with pytest.raises(RuntimeError, match="must equal route.rateLimit.unit"):
         _render(["route.enabled=true", "route.assistantBucket.unit=Second"])
+
+
+def test_observer_is_inert_by_default_and_switch_changes_only_mcp_backend() -> None:
+    baseline = _render()
+    staged = _render(["mcpObserver.enabled=true"])
+    routed = _render(["mcpObserver.enabled=true", "mcpObserver.routeThrough=true"])
+    assert not any("mcp-observer" in d["metadata"]["name"] for d in baseline)
+    assert _one(baseline, "HTTPRoute") == _one(staged, "HTTPRoute")
+    expected = _one(baseline, "HTTPRoute")
+    expected["spec"]["rules"][1]["backendRefs"][0]["name"] += "-mcp-observer"
+    assert expected == _one(routed, "HTTPRoute")
+    for kind in ("BackendTrafficPolicy", "SecurityPolicy", "HorizontalPodAutoscaler"):
+        assert _one(baseline, kind) == _one(routed, kind)
+    with pytest.raises(RuntimeError, match="routeThrough requires"):
+        _render(["mcpObserver.routeThrough=true"])
+    with pytest.raises(RuntimeError, match="requires networkPolicy.enabled"):
+        _render(["mcpObserver.enabled=true", "networkPolicy.enabled=false"])
+
+
+def test_observer_has_no_credentials_or_admin_service_and_only_scotland_egress() -> None:
+    docs = _render(["mcpObserver.enabled=true"])
+    name = "scotland-connector-mcp-observer"
+    by_name = {(d["kind"], d["metadata"]["name"]): d for d in docs}
+    deployment = by_name[("Deployment", name)]
+    pod = deployment["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert len(pod["containers"]) == 1
+    c = pod["containers"][0]
+    assert not c.get("env") and not c.get("envFrom")
+    assert c["securityContext"]["readOnlyRootFilesystem"] is True
+    assert c["resources"]["limits"] == {"cpu": "500m", "memory": "128Mi"}
+    assert c["image"].startswith("envoyproxy/envoy:v1.40.0@sha256:")
+    assert pod["volumes"] == [{"name": "config", "configMap": {"name": name}}]
+    assert by_name[("Service", name)]["spec"]["ports"] == [
+        {"name": "http", "port": 80, "targetPort": "http"}
+    ]
+    # Distinct name avoids matching the connector's Service, HPA and PDB selectors.
+    selector = deployment["spec"]["selector"]["matchLabels"]
+    assert selector["app.kubernetes.io/name"] == "scotland-mcp-observer"
+    egress = by_name[("NetworkPolicy", name + "-egress")]["spec"]
+    assert egress["podSelector"]["matchLabels"] == selector
+    upstream, dns = egress["egress"]
+    assert upstream == {
+        "to": [{"podSelector": {"matchLabels": {
+            "app.kubernetes.io/name": "scotland-connector",
+            "app.kubernetes.io/instance": "scotland-connector",
+        }}}],
+        "ports": [{"protocol": "TCP", "port": 8080}],
+    }
+    assert dns["to"] == [{
+        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+        "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+    }]
+    config = yaml.safe_load(by_name[("ConfigMap", name)]["data"]["envoy.yaml"])
+    assert config["admin"]["address"]["socket_address"]["address"] == "127.0.0.1"
+    listener = config["static_resources"]["listeners"][0]
+    limit, manager = listener["filter_chains"][0]["filters"]
+    assert limit["typed_config"]["max_connections"] == 64
+    hcm = manager["typed_config"]
+    mcp, router = hcm["http_filters"]
+    assert mcp["typed_config"] == {
+        "@type": "type.googleapis.com/envoy.extensions.filters.http.mcp.v3.Mcp",
+        "traffic_mode": "PASS_THROUGH", "attribute_source": "BODY",
+        "max_request_body_size": 65536, "clear_route_cache": False,
+        "early_terminate_when_routable": False,
+    }
+    routes = hcm["route_config"]["virtual_hosts"][0]["routes"]
+    assert routes == [
+        {"match": {"path": "/mcp"}, "route": {"cluster": "scotland", "timeout": "9s"}},
+        {"match": {"prefix": "/"}, "direct_response": {"status": 404}},
+    ]
+    assert len(config["static_resources"]["clusters"]) == 1
+    # Optional connector HTTPS egress must never broaden the observer's egress.
+    enabled = _render(["mcpObserver.enabled=true", "networkPolicy.egress.enabled=true",
+                       "networkPolicy.egress.dnsServiceCidrs[0]=10.0.0.10/32"])
+    policy = next(d for d in enabled if d["kind"] == "NetworkPolicy"
+                  and d["metadata"]["name"] == "scotland-connector-egress")
+    assert policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] == "scotland-connector"

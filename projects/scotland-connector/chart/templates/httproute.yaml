@@ -63,7 +63,7 @@ spec:
       backendRefs:
         - group: ""
           kind: Service
-          name: {{ include "scotland-connector.fullname" . }}
+          name: {{ include "scotland-connector.fullname" . }}{{ if .Values.mcpObserver.routeThrough }}-mcp-observer{{ end }}
           port: {{ .Values.service.port }}
           weight: 1
       timeouts:

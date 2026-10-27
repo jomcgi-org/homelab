@@ -190,3 +190,17 @@ route:
     pattern: '^(?:160\.79\.10[45]\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|(?i:2607:6bc0:(?:0{1,4})?:[0-9a-f:]*))$'
     requests: 12000
     unit: Minute
+
+# Production experiment, inert until explicitly enabled after review. Rollback
+# routeThrough first; keep the proxy available until the gateway has converged.
+mcpObserver:
+  enabled: false
+  routeThrough: false
+  image: envoyproxy/envoy:v1.40.0@sha256:459f2a6404c340fe6afccd69d85527012d47f3c036765493e6f8f3113fa384de
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
