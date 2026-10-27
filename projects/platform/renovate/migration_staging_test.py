@@ -344,8 +344,8 @@ def test_all_lock_jobs_request_platform_merge_without_approving():
     script = data["maintain.sh"]
     publisher = data["pull-request.mjs"]
     assert "for mode in apko python atlas helm op claude" in script
-    assert "//bazel/requirements:runtime -- --upgrade" in script
-    assert "//bazel/requirements:requirements.all -- --upgrade" in script
+    assert "//bazel/requirements:runtime -- --upgrade --no-build" in script
+    assert "//bazel/requirements:requirements.all -- --upgrade --no-build" in script
     assert "enablePullRequestAutoMerge" in publisher
     assert "mergeMethod: REBASE" in publisher
     assert "approvePullRequest" not in publisher
@@ -797,3 +797,17 @@ def test_bot_pr_with_human_ownership_is_never_rewritten_or_armed():
         timeout=20,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_native_uv_artifacts_cannot_execute_source_build_backends():
+    docs = _render("values.yaml", "values-gke.yaml")
+    workflow = next(
+        d
+        for d in docs
+        if d.get("kind") == "CronWorkflow" and d["metadata"]["name"] == "renovate"
+    )
+    env = workflow["spec"]["workflowSpec"]["templates"][0]["container"]["env"]
+    custom = next(
+        row["value"] for row in env if row["name"] == "RENOVATE_CUSTOM_ENV_VARIABLES"
+    )
+    assert json.loads(custom) == {"UV_NO_BUILD": "true"}

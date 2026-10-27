@@ -66,6 +66,9 @@ spec:
               value: required
             - name: RENOVATE_ALLOW_SCRIPTS
               value: "false"
+            # uv lock can run build backends even with lifecycle scripts off.
+            - name: RENOVATE_CUSTOM_ENV_VARIABLES
+              value: '{"UV_NO_BUILD":"true"}'
             - name: RENOVATE_ALLOW_PLUGINS
               value: "false"
             - name: RENOVATE_ALLOWED_COMMANDS

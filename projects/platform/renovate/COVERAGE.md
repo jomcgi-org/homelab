@@ -91,6 +91,10 @@ The following pins retain explicit boundaries; they are not claimed automated:
   durable first-seen age handling to preserve the three-day release-age policy.
   The current `1.4.1-R4503.1` pin and recorded runtime fixtures remain intact.
 
+Root Python automatic compilers pass `--no-build`; Renovate passes
+`UV_NO_BUILD=true` to native uv artifact commands. Packages requiring source
+backend execution need an isolated generation path, not writer credentials.
+
 Registry access, checksum discovery and integrity failures remain failed
 updates. Existing held/assigned/draft or human-authored maintenance PRs are
 left untouched. The workflow checks holds before generation and again before

@@ -165,7 +165,7 @@
       "postUpdateOptions": ["helmUpdateSubChartArchives"]
     },
     {
-      "description": "Regenerate Bazel's compiled Python requirement locks after pyproject updates.",
+      "description": "Regenerate compiled Python locks after root manifest or security-floor updates.",
       "matchManagers": ["pep621", "pip_requirements"],
       "postUpgradeTasks": {
         "commands": ["bazel/tools/format/update-python-requirements.sh"],
