@@ -57,13 +57,31 @@ await request(`repos/${repo}/issues/${pull.number}/labels`, {
   labels: ["dependencies"],
 });
 if (!pull.auto_merge) {
-  const result = await request("graphql", {
+  // Queued PRs have autoMergeRequest:null. Reconcile an existing queue entry
+  // before requesting a mutation, and accept immediate queueing as success.
+  const observed = await request("graphql", {
     query:
-      "mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: REBASE}) { pullRequest { autoMergeRequest { enabledAt } } } }",
+      "query($id: ID!) { node(id: $id) { ... on PullRequest { autoMergeRequest { enabledAt } mergeQueueEntry { id } } } }",
     variables: { id: pull.node_id },
   });
-  if (!result.data?.enablePullRequestAutoMerge?.pullRequest?.autoMergeRequest) {
-    throw new Error("Auto-merge request was not confirmed");
+  const state = observed.data?.node;
+  if (
+    !state ||
+    !("autoMergeRequest" in state) ||
+    !("mergeQueueEntry" in state)
+  ) {
+    throw new Error("Current merge state was not confirmed");
+  }
+  if (!state.autoMergeRequest && !state.mergeQueueEntry) {
+    const result = await request("graphql", {
+      query:
+        "mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: REBASE}) { pullRequest { autoMergeRequest { enabledAt } mergeQueueEntry { id } } } }",
+      variables: { id: pull.node_id },
+    });
+    const armed = result.data?.enablePullRequestAutoMerge?.pullRequest;
+    if (!armed?.autoMergeRequest && !armed?.mergeQueueEntry) {
+      throw new Error("Auto-merge or queue membership was not confirmed");
+    }
   }
 }
 console.log(`Maintenance PR: ${pull.html_url}`);

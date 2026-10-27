@@ -44,7 +44,7 @@ minor and patch updates. They stay separate and carry `major-upgrade`.
   runtime/base-signature migration documented beside the pins.
 - The pinned Loom fixture and Kubernetes schema archives require coordinated
   fixture changes and do not auto-merge.
-- `pydantic-ai-slim <2`, `genai-prices <0.2`, pnpm `<11` and npm override ranges
+- `pydantic-ai-slim <2`, `genai-prices <0.2`, `pytest-asyncio <2`, pnpm `<11` and npm override ranges
   preserve explicit API or lock-format constraints. Removing a compatibility
   bound is separate work.
 - First-party chart identities, the manual `mcp-stack` mirror, the repository's

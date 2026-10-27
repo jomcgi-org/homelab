@@ -736,7 +736,7 @@ def test_bot_pr_with_human_ownership_is_never_rewritten_or_armed():
       let index = 0;
       const base = {number: 1, node_id: "PR_example", draft: false,
         assignees: [], labels: [], user: {type: "Bot"}, html_url: "https://example.test/pr"};
-      for (const scenario of ["new", "existing", "armed", "draft", "assigned", "held", "human-label", "human-author", "refused"]) {
+      for (const scenario of ["new", "existing", "armed", "queued", "immediate-queue", "draft", "assigned", "held", "human-label", "human-author", "refused"]) {
         const calls = [];
         const pull = {...base};
         if (scenario === "draft") pull.draft = true;
@@ -754,7 +754,14 @@ def test_bot_pr_with_human_ownership_is_never_rewritten_or_armed():
           if (url.includes("/pulls?")) result = scenario === "new" ? [] : [pull];
           else if (url.endsWith("/pulls")) result = pull;
           else if (url.endsWith("/labels")) result = [];
-          else if (url.endsWith("/graphql")) result = scenario === "refused" ? {errors: [{message: "denied"}]} : {data: {enablePullRequestAutoMerge: {pullRequest: {autoMergeRequest: {enabledAt: "now"}}}}};
+          else if (url.endsWith("/graphql")) {
+            const mutation = JSON.parse(options.body).query.startsWith("mutation");
+            if (!mutation) result = {data: {node: {autoMergeRequest: null, mergeQueueEntry: scenario === "queued" ? {id: "queue-entry"} : null}}};
+            else result = scenario === "refused" ? {errors: [{message: "denied"}]} : {data: {enablePullRequestAutoMerge: {pullRequest: {
+              autoMergeRequest: scenario === "immediate-queue" ? null : {enabledAt: "now"},
+              mergeQueueEntry: scenario === "immediate-queue" ? {id: "queue-entry"} : null,
+            }}}};
+          }
           else throw Error("Unexpected network request");
           return {ok: true, status: 200, json: async () => result};
         };
@@ -769,7 +776,7 @@ def test_bot_pr_with_human_ownership_is_never_rewritten_or_armed():
           assert.equal(calls.length, 1, scenario);
         } else if (scenario === "refused") {
           assert.match(failure.message, /failed/);
-          assert.equal(calls.filter(url => url.endsWith("/graphql")).length, 1);
+          assert.equal(calls.filter(url => url.endsWith("/graphql")).length, 2);
         } else {
           assert.equal(failure, undefined, scenario);
           assert.equal(calls.some(url => url.endsWith("/graphql")), scenario !== "armed");
