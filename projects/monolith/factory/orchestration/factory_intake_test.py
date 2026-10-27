@@ -1396,7 +1396,7 @@ def _dependency_reads(monkeypatch, pull=None):
     monkeypatch.setattr(
         deps,
         "read_advisory",
-        lambda _query: hashlib.sha256(b'{"vulns":[]}').hexdigest(),
+        lambda _query: {"vulns": []},
     )
     return deps, pull, read
 
@@ -1407,17 +1407,27 @@ def _dependency_runs(evidence):
         "base_sha": evidence["base_sha"],
         "evidence_sha256": evidence["evidence_sha256"],
         "reviewed_files": [row["filename"] for row in evidence["files"]],
-        "advisory_sources": [
-            {
-                "subject": "pkg:pypi/example@2.0",
-                "files": [row["filename"] for row in evidence["files"]],
-                "query": {
-                    "package": {"name": "example", "ecosystem": "PyPI"},
-                    "version": "2.0",
-                },
-                "response_sha256": hashlib.sha256(b'{"vulns":[]}').hexdigest(),
-            }
-        ],
+        "advisory_sources": {
+            "base_sha": evidence["base_sha"],
+            "head_sha": evidence["head_sha"],
+            "complete": True,
+            **{
+                side: [
+                    {
+                        "key": "requirements/example",
+                        "artifact_sha256": hashlib.sha256(version.encode()).hexdigest(),
+                        "exposure_sha256": "e" * 64,
+                        "files": [row["filename"] for row in evidence["files"]],
+                        "query": {
+                            "package": {"name": "example", "ecosystem": "PyPI"},
+                            "version": version,
+                        },
+                        "response_sha256": hashlib.sha256(b'{"vulns":[]}').hexdigest(),
+                    }
+                ]
+                for side, version in (("base", "1.0"), ("head", "2.0"))
+            },
+        },
     }
     from factory.orchestration.dependency_prs import ASSESSMENTS
 

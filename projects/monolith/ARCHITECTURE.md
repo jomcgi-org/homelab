@@ -2362,22 +2362,30 @@ head, unsafe assessment or changed evidence invalidates that generation in the
 audit ledger; reverting the evidence does not restore its approval. The
 publisher never changes generation or starts a review itself.
 
-Both assessment artifacts must agree on a structured OSV advisory inventory,
-cover every changed file, and establish the actual dependency/SBOM closure and
-feed applicability. The server re-fetches exact package/version or Git commit
-queries without credentials at completion and publication. Unknown-package
-empty responses are not proof of coverage. Findings, incomplete responses and
-unsupported sources keep the update blocked. Every dependency success waits
-for exact-head `pr-checks`; each target is revalidated immediately before its
-publication, including durable approval, with a 60-second collection budget.
+Both assessment artifacts must agree on complete base/head OSV inventories,
+bound to the reviewed commits and corresponding changed files. Reviewers
+establish the actual dependency/SBOM closure, occurrence and artifact identities,
+exposure fingerprints and feed applicability. The server re-fetches every exact
+package/version or Git commit query without credentials at completion and
+publication, and binds the complete response contents to that review. Unknown
+packages with empty responses are not proof of coverage. Partial remediation
+preserves the established non-regression policy: unrelated findings may remain
+only on exactly unchanged components, including their exposure and artifacts.
+Added vulnerable versions or occurrences, new exposure and changed advisory
+content invalidate approval. Incomplete responses and unsupported sources refuse.
+Every dependency success waits for exact-head `pr-checks`; each target is
+revalidated immediately before publication, including durable approval, with a
+60-second collection budget.
 
 Activation still requires the operator checklist in `FACTORY.md`, including
 App-pinned ruleset enforcement on both PR and merge-group commits and resolving
 the BuildBuddy credential boundary (#7005). Tick-time checks and revocation
 cannot guarantee atomic freshness when an advisory appears after a successful
-check and before merge. GitHub checks have no expiry field: a missing publisher/token cannot revoke
-a stored success. A platform-enforced boundary for that remaining window is
-still required before automated dependency merging can be accepted.
+check and before merge. GitHub checks have no expiry field: a missing publisher
+or token cannot revoke a stored success. This is point-in-time verification of
+the exact queue commit. Live canary evidence and Joe's explicit acceptance of
+the residual race are required before activation; this change does not introduce
+a mandatory expiry service.
 For separately authorized merges, landing verifies publication and managed rollout
 before recording repository delivery complete. It never closes a PR through
 the issue-close API. Runtime activation is a live policy update after rollout;

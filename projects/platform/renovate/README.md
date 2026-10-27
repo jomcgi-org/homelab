@@ -79,24 +79,37 @@ The factory's own landing function remains inspection-only for dependency
 PRs. Renovate and the weekly maintenance job request native platform auto-merge;
 the factory supplies independent evidence, and the required App-bound queue
 check must enforce it. A successful empty GitHub graph is a coverage limitation:
-reviewers must provide upstream advisory/artifact evidence. Both reviewers must now agree on structured `advisory_sources` covering every
-changed file, with exact package versions or Git commits and normalized OSV
-response hashes. Completion and each publication re-fetch these queries from
-OSV without credentials. Unknown package names returning empty results do not
-prove coverage; reviewers must verify ecosystem applicability and complete
-artifact/SBOM contents. Unsupported coverage, findings, pagination and read
-failures refuse that update. The current bound is 100 sources per assessment. Any OSV finding blocks this
-automatic path, including an unchanged vulnerable SBOM component in an update
-that fixes another component; partial remediation is not currently eligible.
+reviewers must provide upstream advisory/artifact evidence. Both reviewers must
+agree on complete base/head `advisory_sources` inventories bound to the reviewed
+commits and covering every corresponding changed file. Each component records a
+stable occurrence identity, immutable artifact hash, exposure fingerprint, exact
+package version or Git commit, file associations and full OSV response hash.
+Completion and each publication freshly query both inventories without credentials.
+Partial remediation is eligible when unrelated findings remain only on exactly
+unchanged components. Added vulnerable versions, new vulnerable occurrences or
+exposure, and changed advisory records invalidate approval. A new version that
+still has findings refuses even if it removes others. This preserves the
+established non-regression policy; it creates no vulnerability waiver.
+
+The server enforces inventory agreement, commit/file binding and response
+comparison. Both reviewers must establish the complete dependency/SBOM closure,
+exposure inputs and feed applicability; hashes or unknown package names returning
+empty results do not prove coverage. Unsupported coverage, incomplete inventories,
+pagination and read failures refuse the update. The bound is 100 components per
+side; larger inventories still need a supported adapter.
 
 Dependency checks wait for exact-head `pr-checks`, then re-read evidence and the
 durable approval immediately before each publication, within a 60-second
 collection budget. Slow reads revoke an existing success while the publisher
 can write. This bounds collection age, not the lifetime of a check at GitHub:
-GitHub's Checks API has no expiry field. A dead publisher or lost token cannot
-revoke a success, and an advisory may arrive after publication. Automated merges
-remain blocked until a platform-enforced freshness boundary exists or that
-specific residual is separately resolved under the security policy.
+[GitHub's Checks API](https://docs.github.com/en/rest/checks/runs?apiVersion=2022-11-28)
+has no expiry field. This is point-in-time verification of the exact PR or queue
+commit, not atomic merge-time freshness. A dead publisher or lost token cannot
+revoke a stored success, and an advisory may arrive between publication and merge.
+The activation canary must demonstrate the implemented checks and refusals, and
+Joe must explicitly accept this residual race before enabling automatic merges.
+An expiry service is not an existing repository requirement or a prerequisite
+introduced by this change.
 
 #7168 owns retired-home cleanup and #7186 owns the hub suspension flip under
 #7001/#7068. Reuse those PRs; neither schedule is changed here. Keep those issues
@@ -140,8 +153,8 @@ A statement of approval cannot replace missing access, evidence or passing CI.
 | --- | --- | --- |
 | Verify existing identities | Manual/read-only capability | Joe or an authorized GitHub owner records the installed Renovate App/installation IDs, bot login and numeric user ID, selected `jomcgi-org/homelab` repository, actual grants and credential renewal arrangement; separately identify the trusted check publisher's numeric App ID. The organization-installation API returned HTTP 403 and is not retried through another route. No new grant is needed merely to report these facts. |
 | Verify the suspended hub | Manual/read-only capability | An authorized operator records the effective `renovate` and `renovate-apko-lock-maintenance` CronWorkflow states, available active-run/history evidence and its retention limits, plus OnePasswordItem synchronization/materialization attestation without retrieving Secret objects or values. Current tools cannot supply these resource reads. |
-| Close implementation/evidence gaps | Platform engineering and validation | #7005 still requires pre-execution isolation of same-repository PR and queue credentials and snapshots. Structured OSV revalidation and bounded late publication are implemented here, but an expired/dead publisher cannot make GitHub expire its last success. Prove platform enforcement for that remaining window. Unsupported advisory coverage still refuses the particular update. Any required token renewal/wiring is designed only after the existing identity is known. |
-| Authorize the verified canary setup | Exact settings approval | Only after identities and isolation are verified: supply the existing trusted publisher identity as `FACTORY_DEPENDENCY_GATE_TOKEN` and its matching `FACTORY_DEPENDENCY_GATE_APP_ID`, enable `FACTORY_DEPENDENCY_GATE_ENABLED`, and set `intake.dependency_pr_authors` / `dependency_pr_author_ids` to the verified dedicated bot, never `jomcgi`. Propose any missing grant/binding separately, scoped to this repository. Keep both scheduled writers suspended while testing PR and single-entry queue success, unapproved/unsafe/stale evidence, unavailable reads and late ownership holds. |
+| Close implementation/evidence gaps | Platform engineering and validation | #7005 still requires pre-execution isolation of same-repository PR and queue credentials and snapshots. Verify the concrete provider target and budget/access implications before authorizing its implementation. Complete base/head OSV revalidation and bounded late publication are implemented here; verify live feed applicability and point-in-time queue behavior. Unsupported advisory coverage still refuses the particular update. Any required token renewal/wiring is designed only after the existing identity is known. |
+| Authorize the verified canary setup | Exact settings approval | Only after identities and isolation are verified: supply the existing trusted publisher identity as `FACTORY_DEPENDENCY_GATE_TOKEN` and its matching `FACTORY_DEPENDENCY_GATE_APP_ID`, enable `FACTORY_DEPENDENCY_GATE_ENABLED`, and set `intake.dependency_pr_authors` / `dependency_pr_author_ids` to the verified dedicated bot, never `jomcgi`. Propose any missing grant/binding separately, scoped to this repository. Keep both scheduled writers suspended while testing PR and single-entry queue success, unapproved/unsafe/stale evidence, unavailable reads and late ownership holds. Verify publisher/token loss and an advisory arriving after success, and explicitly accept the remaining post-publication race; GitHub does not expire that success. |
 | Authorize enforcement and release | Exact settings and PR approval | After canaries pass, require `factory/dependency-evidence` from the verified App integration in ruleset `9180009`, preserving `pr-checks`, the queue and all protections. Release the reviewed cleanup/policy work in the existing PRs, then rebase #7186 onto the integrated result and refresh its CI/review before approving its two suspension flips. The earlier #7168 enqueue denial requires exact release authorization; no enqueue is retried here. |
 
 The observed App IDs and bot identity must appear in the concrete approval
