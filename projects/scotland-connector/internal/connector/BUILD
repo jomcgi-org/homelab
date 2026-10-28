@@ -27,8 +27,8 @@ go_test(
         "bench_test.go",
         "connector_test.go",
         "diversity_test.go",
-        "light_test.go",
         "light_solver_test.go",
+        "light_test.go",
     ],
     embed = [":connector"],
     deps = [
