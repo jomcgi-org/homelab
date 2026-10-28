@@ -61,7 +61,7 @@ CANDIDATE_EVIDENCE_LIMIT = 20
 # Keep repeated idle messages hourly, independently of successful discovery.
 # With room in a lane, a completed sweep can refresh after four minutes.
 # That bounds preventable feed delay without reading on every 15-second tick.
-# At the existing page caps, listing costs at most 150 requests/hour/repo
+# At these page caps, listing costs at most 450 requests/hour/repo
 # before admission-triggered sweeps. Failed/incomplete reads remain hourly;
 # the shared GitHub cooldown still gates every actual request.
 IDLE_AUDIT_SECONDS = 3600

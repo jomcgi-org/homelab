@@ -796,12 +796,16 @@ Settlements and admissions reopen discovery on the next tick. Each sweep takes
 at most one candidate per lane, and an admission buys one more sweep so lanes
 can fill. A tick with no room returns before it reaches the clock. A tick that
 cannot read GitHub audits `intake_error`. Listing reads oldest-first, at most
-five pages of 100 issues and five pages of 50 pull requests per repository.
-The four-minute refresh therefore adds at most 150 listing requests per hour
+20 pages of 25 issues and 10 pages of 25 pull requests per repository. The
+500-issue and 250-PR coverage ceilings and the 1 MB response limit are unchanged.
+The four-minute refresh therefore adds at most 450 listing requests per hour
 per enabled repository, before admission-triggered sweeps and per-candidate
 checks. Hitting a page cap records `truncated`; it never implies complete
-repository coverage. Repeated idle messages keep their independent hourly
-audit throttle.
+repository coverage. Incomplete PR coverage excludes that repository's GitHub
+candidates because an unseen PR may already own an issue. Local-authority
+candidates remain independent. Delivery association likewise uses 25-row pages
+and rejects incomplete scans at its existing 500-PR ceiling. Repeated idle
+messages keep their independent hourly audit throttle.
 
 The intake status exposes `last_swept` (the attempt clock), `last_evaluated`
 (the completed candidate evaluation), and `last_error` (sanitized listing
