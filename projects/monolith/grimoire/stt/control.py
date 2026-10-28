@@ -99,4 +99,7 @@ def finish(session, attempt_id, *, success):
             provider.open_until = time.time() + RECOVERY_SECONDS
             provider.probe_until = 0
             provider.probe_id = None
-        attempt.state = "unknown"
+        # Membership/session deletion may cascade the receipt during I/O.
+        # Preserve the sanitized provider failure even when it no longer exists.
+        if attempt is not None:
+            attempt.state = "unknown"

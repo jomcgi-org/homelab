@@ -884,7 +884,7 @@ geopandas==1.1.2 \
     --hash=sha256:2bb0b1052cb47378addb4ba54c47f8d4642dcbda9b61375638274f49d9f0bb0d \
     --hash=sha256:33f7b33565c46a45b8459a2ab699ec943fdbb5716e58e251b3c413cf7783106c
     # via homelab (pyproject.toml)
-google-auth==2.62.0 \
+google-auth[requests]==2.62.0 \
     --hash=sha256:0bef0ce54bdf9ce226c5d66e4264413bd918141c31bbe49fb52eac882f513d69 \
     --hash=sha256:4ff4319aeb4ad128409759d397a9fcafad126d0031d241cc0dd6b9a00b43e3f3
     # via homelab (pyproject.toml)
@@ -1950,7 +1950,7 @@ protobuf==6.33.5 \
     # via
     #   googleapis-common-protos
     #   opentelemetry-proto
-psycopg==3.3.3 \
+psycopg[binary]==3.3.3 \
     --hash=sha256:5e9a47458b3c1583326513b2556a2a9473a1001a56c9efe9e587245b43148dd9 \
     --hash=sha256:f96525a72bcfade6584ab17e89de415ff360748c766f0106959144dcbb38c698
     # via
@@ -2013,7 +2013,7 @@ psycopg-binary==3.3.3 ; implementation_name != 'pypy' \
     --hash=sha256:f24e8e17035200a465c178e9ea945527ad0738118694184c450f1192a452ff25 \
     --hash=sha256:fab6b5e37715885c69f5d091f6ff229be71e235f272ebaa35158d5a46fd548a0
     # via psycopg
-py-key-value-aio==0.4.4 \
+py-key-value-aio[filetree, keyring, memory]==0.4.4 \
     --hash=sha256:18e17564ecae61b987f909fc2cd41ee2012c84b4b1dcb8c055cf8b4bc1bf3f5d \
     --hash=sha256:e3012e6243ed7cc09bb05457bd4d03b1ba5c2b1ca8700096b3927db79ffbbe55
     # via fastmcp
@@ -2029,7 +2029,7 @@ pycparser==3.0 ; implementation_name != 'PyPy' \
     --hash=sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29 \
     --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
     # via cffi
-pydantic==2.12.5 \
+pydantic[email]==2.12.5 \
     --hash=sha256:4d351024c75c0f085a9febbb665ce8c0c6ec5d30e903bdb6394b7ede26aebb49 \
     --hash=sha256:e561593fccf61e8a20fc46dfc2dfe075b8be7d0188df33f221ad1f0139180f9d
     # via
@@ -2044,7 +2044,7 @@ pydantic==2.12.5 \
     #   pydantic-graph
     #   pydantic-settings
     #   sqlmodel
-pydantic-ai-slim==1.107.6 \
+pydantic-ai-slim[openai]==1.107.6 \
     --hash=sha256:09e0d02c93245586d7728fde101ad2689a07e576003f77249db9f63abfec4c7b \
     --hash=sha256:33b7a84e28448aa5ae4190158f703fd3d7de948c7610252b993420d6bc84b9a5
     # via homelab (pyproject.toml)
@@ -2188,7 +2188,7 @@ pygments==2.20.0 \
     #   --override bazel/requirements/overrides.txt
     #   pytest
     #   rich
-pyjwt==2.15.0 \
+pyjwt[crypto]==2.15.0 \
     --hash=sha256:7a3742debf6b879e912dbb9819ceec1594be812452b78c5f2e2dfc56564954f8 \
     --hash=sha256:b11c5f9791d7bf51c2b39a81ed669f6b2dbbd669df2942f6c60167e9e3d1abe4
     # via
@@ -2833,7 +2833,7 @@ soupsieve==2.9 \
     # via
     #   --override bazel/requirements/overrides.txt
     #   beautifulsoup4
-sqlalchemy==2.0.48 \
+sqlalchemy[asyncio]==2.0.48 \
     --hash=sha256:01f6bbd4308b23240cf7d3ef117557c8fd097ec9549d5d8a52977544e35b40ad \
     --hash=sha256:07edba08061bc277bfdc772dd2a1a43978f5a45994dd3ede26391b405c15221e \
     --hash=sha256:10853a53a4a00417a00913d270dddda75815fcb80675874285f41051c094d7dd \
@@ -3051,7 +3051,7 @@ urllib3==2.8.0 \
     #   botocore
     #   kubernetes-asyncio
     #   requests
-uvicorn==0.41.0 \
+uvicorn[standard]==0.41.0 \
     --hash=sha256:09d11cf7008da33113824ee5a1c6422d89fbc2ff476540d69a34c87fab8b571a \
     --hash=sha256:29e35b1d2c36a04b9e180d4007ede3bcb32a85fbdfd6c6aeb3f26839de088187
     # via

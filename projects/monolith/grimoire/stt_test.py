@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 
 from grimoire.models import (
     SessionEvent,
+    SpeechAttempt,
     TranscriptConsent,
 )
 from grimoire.stt import FakeTranscriber, ProviderUnavailable, Segment, routes
@@ -459,3 +460,59 @@ def test_safe_telemetry_and_exception_no_persistence(
     for token in h.canaries:
         if token != h.rows["campaign_session"].id:
             assert token not in telemetry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [TimeoutError, asyncio.CancelledError])
+async def test_timeout_or_cancellation_retains_only_unknown_receipt(
+    capture, monkeypatch, tmp_path, caplog, failure
+):
+    h, _client, _calls = capture
+    audio = wav()
+
+    class Stream:
+        headers: ClassVar[dict] = {"content-type": "multipart/form-data; boundary=x"}
+
+        async def stream(self):
+            yield (
+                b'--x\r\nContent-Disposition: form-data; name="audio"\r\nContent-Type: audio/wav\r\n\r\n'
+                + audio
+                + b"\r\n--x--\r\n"
+            )
+
+    class Provider:
+        async def transcribe(self, *args):
+            raise failure()
+
+    context = routes.AudioContext(
+        h.session.get_bind(), h.emails["player_a"], None, h.rows["member_player_a"].id
+    )
+    monkeypatch.setattr(routes, "transcriber", Provider)
+    before = set(tmp_path.rglob("*"))
+    expected = (
+        asyncio.CancelledError if failure is asyncio.CancelledError else HTTPException
+    )
+    with pytest.raises(expected) as error:
+        await routes.audio_segment(
+            h.rows["campaign"].id,
+            h.rows["campaign_session"].id,
+            Stream(),
+            context,
+            uuid4(),
+        )
+    if failure is TimeoutError:
+        assert error.value.status_code == 503
+    assert set(tmp_path.rglob("*")) == before
+    with Session(h.session.get_bind()) as session:
+        assert session.exec(select(SpeechAttempt)).one().state == "unknown"
+    assert base64.b64encode(audio).decode() not in caplog.text + str(h.snapshot())
+
+
+def test_failure_after_cascaded_receipt_is_still_sanitized(capture):
+    h, _client, _calls = capture
+    from grimoire.stt.control import finish
+
+    with Session(h.session.get_bind()) as session:
+        # A membership deletion can already have removed the pending receipt.
+        finish(session, str(uuid4()), success=False)
+        session.commit()

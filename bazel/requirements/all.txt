@@ -677,6 +677,7 @@ colorama==0.4.6 ; sys_platform == 'win32' \
     #   click
     #   pytest
     #   tqdm
+    #   uvicorn
 cryptography==50.0.0 \
     --hash=sha256:031e2d5dd4bb9caa3ca9c82e5a197fd8ae680232cee62603d1a813f3f07e3d03 \
     --hash=sha256:06a32a980526a6ab9a4b9bf8f7385800791e2bb960903cb6b530e4817509a3b7 \
@@ -986,7 +987,7 @@ geopandas==1.1.2 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
-google-auth==2.62.0 \
+google-auth[requests]==2.62.0 \
     --hash=sha256:0bef0ce54bdf9ce226c5d66e4264413bd918141c31bbe49fb52eac882f513d69 \
     --hash=sha256:4ff4319aeb4ad128409759d397a9fcafad126d0031d241cc0dd6b9a00b43e3f3
     # via
@@ -1201,6 +1202,7 @@ httptools==0.7.1 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+    #   uvicorn
 httpx==0.28.1 \
     --hash=sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc \
     --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
@@ -1765,6 +1767,7 @@ openai==2.45.0 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+    #   pydantic-ai-slim
 openapi-pydantic==0.5.1 \
     --hash=sha256:a3a09ef4586f5bd760a8df7f43028b60cafb6d9f61de2acba9574766255ab146 \
     --hash=sha256:ff6835af6bde7a459fb93eb93bb92b8749b754fc6e51b2f1590a19dc3005ee0d
@@ -2204,7 +2207,7 @@ protobuf==6.33.5 \
     #   -r bazel/requirements/runtime.txt
     #   googleapis-common-protos
     #   opentelemetry-proto
-psycopg==3.3.3 \
+psycopg[binary]==3.3.3 \
     --hash=sha256:5e9a47458b3c1583326513b2556a2a9473a1001a56c9efe9e587245b43148dd9 \
     --hash=sha256:f96525a72bcfade6584ab17e89de415ff360748c766f0106959144dcbb38c698
     # via
@@ -2271,7 +2274,7 @@ psycopg-binary==3.3.3 ; implementation_name != 'pypy' \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   psycopg
-py-key-value-aio==0.4.4 \
+py-key-value-aio[filetree, keyring, memory]==0.4.4 \
     --hash=sha256:18e17564ecae61b987f909fc2cd41ee2012c84b4b1dcb8c055cf8b4bc1bf3f5d \
     --hash=sha256:e3012e6243ed7cc09bb05457bd4d03b1ba5c2b1ca8700096b3927db79ffbbe55
     # via
@@ -2299,7 +2302,7 @@ pycparser==3.0 ; implementation_name != 'PyPy' \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   cffi
-pydantic==2.12.5 \
+pydantic[email]==2.12.5 \
     --hash=sha256:4d351024c75c0f085a9febbb665ce8c0c6ec5d30e903bdb6394b7ede26aebb49 \
     --hash=sha256:e561593fccf61e8a20fc46dfc2dfe075b8be7d0188df33f221ad1f0139180f9d
     # via
@@ -2315,7 +2318,7 @@ pydantic==2.12.5 \
     #   pydantic-graph
     #   pydantic-settings
     #   sqlmodel
-pydantic-ai-slim==1.107.6 \
+pydantic-ai-slim[openai]==1.107.6 \
     --hash=sha256:09e0d02c93245586d7728fde101ad2689a07e576003f77249db9f63abfec4c7b \
     --hash=sha256:33b7a84e28448aa5ae4190158f703fd3d7de948c7610252b993420d6bc84b9a5
     # via
@@ -2471,7 +2474,7 @@ pygments==2.20.0 \
     #   -r bazel/requirements/runtime.txt
     #   pytest
     #   rich
-pyjwt==2.15.0 \
+pyjwt[crypto]==2.15.0 \
     --hash=sha256:7a3742debf6b879e912dbb9819ceec1594be812452b78c5f2e2dfc56564954f8 \
     --hash=sha256:b11c5f9791d7bf51c2b39a81ed669f6b2dbbd669df2942f6c60167e9e3d1abe4
     # via
@@ -2635,6 +2638,7 @@ python-dotenv==1.2.2 \
     #   -r bazel/requirements/runtime.txt
     #   fastmcp
     #   pydantic-settings
+    #   uvicorn
 python-multipart==0.0.32 \
     --hash=sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e \
     --hash=sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23
@@ -2756,6 +2760,7 @@ pyyaml==6.0.3 \
     #   fastmcp
     #   jsonschema-path
     #   kubernetes-asyncio
+    #   uvicorn
 rasterio==1.5.0 \
     --hash=sha256:015c1ab6e5453312c5e29692752e7ad73568fe4d13567cbd448d7893128cbd2d \
     --hash=sha256:08a7580cbb9b3bd320bdf827e10c9b2424d0df066d8eef6f2feb37e154ce0c17 \
@@ -2925,6 +2930,7 @@ requests==2.33.0 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+    #   google-auth
     #   opentelemetry-exporter-otlp-proto-http
     #   tiktoken
 rich==14.3.3 \
@@ -3172,7 +3178,7 @@ soupsieve==2.9 \
     #   --override bazel/requirements/overrides.txt
     #   -r bazel/requirements/runtime.txt
     #   beautifulsoup4
-sqlalchemy==2.0.48 \
+sqlalchemy[asyncio]==2.0.48 \
     --hash=sha256:01f6bbd4308b23240cf7d3ef117557c8fd097ec9549d5d8a52977544e35b40ad \
     --hash=sha256:07edba08061bc277bfdc772dd2a1a43978f5a45994dd3ede26391b405c15221e \
     --hash=sha256:10853a53a4a00417a00913d270dddda75815fcb80675874285f41051c094d7dd \
@@ -3324,6 +3330,7 @@ tiktoken==0.12.0 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+    #   pydantic-ai-slim
 timelength==1.1.7 \
     --hash=sha256:2a6b6e0960f97e75997b8e298dfbb501ff326d78a4179c62eebedc078cde6fc6
     # via
@@ -3419,7 +3426,7 @@ urllib3==2.8.0 \
     #   botocore
     #   kubernetes-asyncio
     #   requests
-uvicorn==0.41.0 \
+uvicorn[standard]==0.41.0 \
     --hash=sha256:09d11cf7008da33113824ee5a1c6422d89fbc2ff476540d69a34c87fab8b571a \
     --hash=sha256:29e35b1d2c36a04b9e180d4007ede3bcb32a85fbdfd6c6aeb3f26839de088187
     # via
@@ -3480,6 +3487,7 @@ uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'c
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+    #   uvicorn
 watchfiles==1.1.1 \
     --hash=sha256:00485f441d183717038ed2e887a7c868154f216877653121068107b227a2f64c \
     --hash=sha256:03fa0f5237118a0c5e496185cafa92878568b652a2e9a9382a5151b1a0380a43 \
@@ -3594,6 +3602,7 @@ watchfiles==1.1.1 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   fastmcp
+    #   uvicorn
 websockets==16.0 \
     --hash=sha256:0298d07ee155e2e9fda5be8a9042200dd2e3bb0b8a38482156576f863a9d457c \
     --hash=sha256:04cdd5d2d1dacbad0a7bf36ccbcd3ccd5a30ee188f2560b7a62a30d14107b31a \
@@ -3661,6 +3670,7 @@ websockets==16.0 \
     #   -r bazel/requirements/runtime.txt
     #   dbos
     #   fastmcp
+    #   uvicorn
 wrapt==1.17.3 \
     --hash=sha256:02b551d101f31694fc785e58e0720ef7d9a10c4e62c1c9358ce6f63f23e30a56 \
     --hash=sha256:042ec3bb8f319c147b1301f2393bc19dba6e176b7da446853406d041c36c7828 \
