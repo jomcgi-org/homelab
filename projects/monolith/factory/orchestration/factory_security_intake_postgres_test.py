@@ -10,8 +10,6 @@ from shared.testing.plugin import _find_migrations_dir
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from factory.orchestration.factory_models import FactoryReceipt
-
 MIGRATION = "20261028120000_factory_security_intake"
 ACTOR = f"migration:{MIGRATION}"
 LEGACY = ["needs-human", "wontfix", "security-finding"]
@@ -77,22 +75,21 @@ def test_legacy_global_lists_change_with_matching_atomic_audit(session, labels):
     policy = _policy()
     policy["intake"]["exclude_labels"] = labels
     _seed(session, policy)
-    session.add(
-        FactoryReceipt(
-            repo="jomcgi-org/homelab",
-            issue_number=7372,
-            generation=14,
-            title="Pinned authority",
-            body="Unchanged",
-            url="https://example.test/7372",
-            actor="operator",
-            state="escalated",
-            policy_json=json.dumps(policy),
-            allowance_json='{"turns":9,"budget_usd":50}',
-            escalation_json='{"reason":"held"}',
-        )
+    session.execute(
+        text(
+            "INSERT INTO swarm.factory_receipt "
+            "(repo, issue_number, generation, title, body, url, actor, state, "
+            "policy_json, allowance_json, escalation_json) VALUES "
+            "('jomcgi-org/homelab', 7372, 14, 'Pinned authority', 'Unchanged', "
+            "'https://example.test/7372', 'operator', 'escalated', "
+            ":policy, :allowance, :escalation)"
+        ),
+        {
+            "policy": json.dumps(policy),
+            "allowance": '{"turns":9,"budget_usd":50}',
+            "escalation": '{"reason":"held"}',
+        },
     )
-    session.flush()
     before = dict(_control(session))
     audits_before = _audits(session)
     # Pinned task/receipt rows are outside the migration's write set.
@@ -233,7 +230,7 @@ def test_audit_failure_rolls_back_policy_and_metadata(session):
     )
     with (
         pytest.raises(DBAPIError, match="test audit unavailable"),
-        session.begin_nested(),
+        session.connection().begin_nested(),
     ):
         _run(session)
     assert dict(_control(session)) == before
