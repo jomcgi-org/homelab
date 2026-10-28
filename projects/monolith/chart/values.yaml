@@ -766,6 +766,8 @@ jobs:
         limits:
           memory: 256Mi
     - name: stars-prune-hours
+      starsArchive: true
+      s3: true # Injected only when stars.archiveBeforePrune.enabled is true.
       replaces: stars.prune_hours
       args: ["stars-prune-hours"]
       schedule: "50 * * * *" # hourly (was 3600s)
@@ -2107,6 +2109,10 @@ sharedS3:
 # - access-key-id (the Account ID: xxx credential)
 # - secret-access-key (the secret key)
 stars:
+  archiveBeforePrune:
+    enabled: false
+    bucket: ""
+    prefix: ""
   s3Endpoint: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
   s3Region: "auto"
   gridBucket: "stars"

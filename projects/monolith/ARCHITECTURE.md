@@ -2079,6 +2079,124 @@ engineering index, the docs and the root error page moved first; #7016 tracks
 the rest, surface by surface, and the three legacy stylesheets leave the tree
 with their last consumer.
 
+### Stars elapsed archive
+
+`stars.archiveBeforePrune.enabled` defaults to false. The prune job then runs
+the existing strict `hour_time < top_of_hour()` deletion without archive client
+or checkpoint access. Public sites/map/history bytes, validators, score meanings,
+entity freshness and coverage remain unchanged. The staged path has no collector,
+backfill, upstream model-run timestamp or storage lifecycle policy.
+
+When separately authorized, configure `stars.archiveBeforePrune.bucket` and
+`prefix` using the existing R2 client in `stars.grid`. The actual prune container
+receives storage environment only when both `sharedS3.enabled` and its `s3` flag
+permit it and archive is enabled. Missing configuration fails closed. Schedule
+`50 * * * *`, Forbid concurrency, the 300-second deadline and 256Mi limit remain.
+No deploy overlay activates this setting.
+
+Version 1 uses compact sorted-key UTF-8 JSON, rejecting non-finite numbers.
+Keys are `<prefix>/v1/<batch_id>/<chunk_index:04d>-<sha256>.json` and
+`<prefix>/v1/<batch_id>/complete.json`. Each chunk carries `version`, `batch_id`,
+`archived_at`, `cutoff`, `index` and `rows`. Each row has `site` identity
+(`id`, `name`, `lat`, `lon`, `altitude_m`, `lp_zone`, `source`) and an `hour`
+containing every retained SiteHour field: `site_id`, `hour_time`,
+`cloud_area_fraction`, `air_temperature`, `dew_spread`, `sun_elevation_deg`,
+`relative_humidity`, `wind_speed`, `symbol`, `fetched_at`. If site metadata was
+removed, its fields are null; the hour's site_id remains authoritative.
+`hour_time` is UTC forecast validity. `fetched_at` is that row's recorded fetch,
+independent of `Site.forecast_fetched_at`. It is never labelled an upstream run
+time: the source supplies no authoritative run identity here. `archived_at` is
+the persisted batch preparation time, not a claim about successful upload time.
+All timestamps use core.clock UTC normalization, including SQLite naive values.
+The completion record repeats batch metadata and lists ordered chunk keys,
+SHA-256, actual byte lengths and row counts, plus total rows.
+
+One invocation drains successive bounded batches at a fixed UTC cutoff until
+selection is empty. It stops starting batches after 240 seconds, leaving 60
+seconds before the existing workflow deadline. An in-flight batch can exceed
+that reserve; the workflow deadline then stops it and the checkpoint survives
+for replay. Budget exhaustion raises a job failure with completed batch and
+deletion counts; it never reports an unfinished drain as success. A replay's
+older cutoff does not skip selection at the invocation's cutoff.
+
+Each batch handles at most 1,024 rows, eight chunks,
+128 rows per chunk, 131,072 bytes of row-array JSON per chunk, and 8,192 bytes
+of chunk-envelope allowance (139,264 total). A row is at most 8,192 bytes and
+each text field at most 1,024 UTF-8 bytes. SQL substr bounds retrieved text
+before allocation; a truncated/oversized field raises before export or deletion.
+The durable envelope is at most 1,048,576 bytes, reserving 16,384 bytes for
+structure before adding rows. Completion records are at most 8,192 bytes.
+Readback reads at most expected length plus one byte. SQL selection streams at
+128 rows with LIMIT 1,024 in `(hour_time, site_id)` order. No OFFSET, grid ORM
+list or growing manifest is used. Delete statements bind ten fields per row;
+each transaction handles at most one chunk. Array byte accounting includes
+brackets and commas without re-encoding the growing array for every row.
+`backlog` reports remaining rows under the batch's fixed cutoff separately from
+completion of that batch. A single over-limit row
+blocks its batch with an error, preserving evidence for separately scoped repair.
+
+`stars.hour_archive_checkpoint` is one lazily created row. A conditional SQL
+update from null saves the exact envelope, UUID batch identity, selected row
+versions, archive timestamp, fixed UTC cutoff and destination before any remote
+call. A competing claimant fails without exporting its losing selection; retry
+loads the winner. The Postgres update rechecks the predicate after lock waits.
+SQLite lock failures also fail closed and leave retry to the next invocation.
+The migration has no seed data; the disabled handler does not touch this table.
+The same checkpoint survives partial uploads, process restart and partially
+committed deletion. Destination changes during unfinished work fail closed.
+
+Object publication uses the pinned botocore PutObject `IfNoneMatch="*"` input.
+R2's [S3 compatibility contract](https://developers.cloudflare.com/r2/api/s3/api/)
+documents atomic evaluation against committed bucket state: concurrent absent-key
+creates allow one winner and return 412 for the others. Client support is checked
+before proceeding; there is no unconditional PUT fallback. Every attempted PUT,
+including an uncertain exception or a conflict, requires bounded GET readback
+of identical actual bytes and checksum. Missing, unreadable or different content
+raises. Existing conflicting objects and completion records are never replaced.
+This contract relies on the configured backend supporting that documented atomic
+create behavior. Fake storage and SDK model tests do not validate a live bucket.
+
+Only after every chunk and the completion record verify does deletion begin.
+Each DELETE atomically matches all ten exported SiteHour columns, including
+the row's fetched_at and retained weather fields. A refresh that started before
+the cutoff and commits replacements during export cannot cause newer values to
+be deleted under the old export. Identical values constitute the same recorded
+version. Concurrent workers may replay the same bytes and guarded deletions;
+checkpoint cleanup compares the whole old envelope so a late worker cannot clear
+a subsequent batch. Sessions close before remote calls. Failed uploads/readback
+or markers delete nothing; partially committed guarded deletion retries with the
+original partition and timestamp. Changed rows survive and can enter a later batch.
+
+**Why.** Reselecting live rows after a crash changes partitions and timestamps.
+A single bounded database envelope retains the exact export without a ledger
+that grows with the grid. Atomic object creation protects evidence from duplicate
+workers. Full-column predicates preserve a refresh committed during remote I/O.
+The completion record describes a bounded batch; it never proves an entire
+cutoff or backlog has been archived.
+
+Repository acceptance uses file-backed SQLite, fake atomic storage and pinned
+SDK input validation. PostgreSQL predicate compilation is covered; a live
+Postgres/R2 integration is not exercised by those tests. The reproducible local
+measurement is `PYTHONPATH=projects/monolith python
+projects/monolith/stars/tests/archive_benchmark.py --sites 14000 --hours 48`.
+It seeds bounded fixture inserts before tracemalloc starts and measures one
+archive batch including fake-storage bytes. Compare a separate run with 1,000
+sites. Add `--drain --hours 1` to measure draining one elapsed hour across the
+14,000-site grid; the fake storage retains only the current batch. The drain
+capacity test models 100 rows/second against 210,000 elapsed rows/day (14,000
+sites times 15 eligible hours). It checks that successive batches within the
+budget exceed the 8,750 rows/hour daily-average inflow. These synthetic checks
+exclude real database and storage latency. Python allocation peaks exclude
+native database/SDK allocations and do not establish production RSS, storage
+cost or 300s/256Mi acceptance. Live capacity remains an activation check.
+
+Operational acceptance remains on open #7250: review volume, retention and costs
+before activation; after separate approval verify publication/write-back,
+deployed revision and configured destination; observe scheduled success before
+deletion and safe failure only after separate authorization; verify readable
+archives and timestamp meanings before issue closure. The delivery PR remains
+draft, unmerged and outside the merge queue with auto-merge disabled.
+
 ## 9. Observability and health
 
 `/healthz` is process liveness. `/api/health` executes a database query and all
@@ -2227,6 +2345,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Preserve elapsed scored stars hours before pruning | section 8; conductor rescope | #7250 | default-off repository implementation; draft/unmerged hold and separately authorized operational acceptance remain |
 | Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
 | Release execution capacity for quiescent paused or landing-held tasks while retaining ownership and durable authorized resume intent | section 4; Joe's 2026-10-18 decision | #7163 | repository implementation staged; separately authorized rollout and live capacity, ownership and reacquisition checks remain |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
