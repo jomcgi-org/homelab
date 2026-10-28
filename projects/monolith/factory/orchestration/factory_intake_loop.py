@@ -50,9 +50,13 @@ logger = logging.getLogger(__name__)
 # One name for the identity admission also keys on, so the receipts this
 # module writes and the receipts admit_next will accept can never diverge.
 ACTOR = INTAKE_ACTOR
-PAGE_SIZE = 100
-PULL_PAGE_SIZE = 50
-MAX_PAGES = 5
+# PR bodies and embedded repository metadata can exceed the 1 MB reader cap
+# before a 50-row page fills. Preserve the existing 500 issue / 250 PR bounds
+# with smaller responses, rather than treating a shorter scan as complete.
+PAGE_SIZE = 25
+PULL_PAGE_SIZE = 25
+MAX_PAGES = 20
+MAX_PULL_PAGES = 10
 CANDIDATE_EVIDENCE_LIMIT = 20
 # Keep repeated idle messages hourly, independently of successful discovery.
 # With room in a lane, a completed sweep can refresh after four minutes.
@@ -119,15 +123,14 @@ def _pages(
 ) -> tuple[list, bool]:
     """Open rows oldest first, and whether the read hit the page cap.
 
-    GitHub defaults to newest first, so a repository with more open rows than
-    MAX_PAGES * page_size would truncate exactly the oldest ones, which is the
-    half ranking prefers. Asking for ascending order makes the truncation fall
-    on the newest instead, and the flag says it happened so an operator reads
-    a partial sweep as partial.
+    GitHub defaults to newest first. Asking for ascending order preserves the
+    oldest rows that ranking prefers. Hitting the endpoint's row ceiling marks
+    the sweep partial; it never establishes absence outside the scanned pages.
     """
     result = []
     truncated = False
-    for page in range(1, MAX_PAGES + 1):
+    max_pages = MAX_PULL_PAGES if endpoint == "pulls" else MAX_PAGES
+    for page in range(1, max_pages + 1):
         rows = github_list(
             repo,
             f"{endpoint}?state=open&sort=created&direction=asc"
@@ -136,7 +139,7 @@ def _pages(
         result.extend(rows)
         if len(rows) < page_size:
             break
-        truncated = page == MAX_PAGES
+        truncated = page == max_pages
     return result, truncated
 
 
@@ -615,6 +618,10 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 try:
                     issues, issues_cut = _pages(slug, "issues")
                     pulls, pulls_cut = _pages(slug, "pulls", page_size=PULL_PAGE_SIZE)
+                    if pulls_cut:
+                        # An unseen PR may already own any candidate issue.
+                        # Exclude GitHub candidates until coverage is complete.
+                        raise ValueError("open PR discovery incomplete")
                 except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
                     # A 403 from the shared rate limit, or any other read
                     # failure, would otherwise leave intake silently dead: the
@@ -635,6 +642,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     logger.warning("factory intake listing failed", exc_info=True)
                     issues = []
                     pulls = []
+                    truncated = truncated or pulls_cut
                     issues_cut = False
                     pulls_cut = False
                     read_failed.append(slug)
