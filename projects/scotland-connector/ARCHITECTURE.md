@@ -509,3 +509,118 @@ this table when the work ships or the issue closes without it.
 | Slot rule slides past a second gap                | #7275  | not started |
 | Directory listings                                | #7255  | staged      |
 | Near-term aurora, independent snapshot and terrain preprocessing | #7256 | staged off, live acceptance pending |
+
+## Bounded native MCP observation
+
+The chart contains an opt-in Envoy Proxy 1.40.0 experiment for the existing
+anonymous `/scotland/mcp` route. Both `mcpObserver.enabled` and
+`mcpObserver.routeThrough` default to false. The first creates a dedicated
+Deployment, ClusterIP Service, ConfigMap and two NetworkPolicies in the
+Scotland namespace. The second changes only the MCP rule's backend. The
+REST backend, path rewrites, hostname, worker rejection and edge buckets
+are unchanged. AgentRouter stateless support is not involved.
+
+**Why.** The shared Envoy Gateway release has its own tested Proxy version.
+An independent proxy lets this production experiment use 1.40 without
+changing that compatibility pair or the private MCP audience. The native
+filter is WIP with unknown security posture, documented for trusted peers.
+Passing anonymous traffic to its parser remains a security exception even
+with `PASS_THROUGH`; isolation reduces consequences, not parser risk.
+
+The proxy extracts body attributes with a 65,536-byte parsing limit and
+never routes on them. It adds no authentication, tool limits, retries,
+trace/baggage propagation or schema changes. The existing Go handler remains
+the authority for protocol/header matching, body limits, batch rejection and
+tool errors. The parser limit is not a request-body enforcement mechanism.
+The application still rejects oversized requests. Envoy 1.40 parses JSON
+POSTs only when Accept includes JSON plus SSE, or `*/*`. Other requests may
+lack MCP metadata. Metadata and logged names remain untrusted input.
+
+One replica requests 100m CPU and 128Mi memory, with limits of 500m and
+128Mi; a rolling update can temporarily double these resources. One worker
+admits at most 64 downstream connections, with 32 upstream connections,
+32 pending requests and 32 active requests. Requests time out after 9s
+(upstream) or 10s (stream), compared with the existing edge's 10s timeout.
+Header limits are 32KiB/100 headers; overload can cause 503s or closed
+connections. The singleton can interrupt MCP during failure or restart.
+There is no automatic bypass or retry on a parser failure. REST remains
+independent. This is a bounded experiment, not an availability improvement.
+
+The proxy runs non-root with a read-only filesystem, no capabilities,
+no mounted secrets and no service-account token. Its name label differs
+from the connector, so existing Services, HPA and PDB do not select it.
+Mandatory proxy egress allows only same-namespace connector pods on 8080
+and cluster DNS on 53. Connector HTTPS egress, if enabled later, selects
+connector pods only. DNS Service IP translation must be verified on the hub
+before traffic switching; `networkPolicy.egress.dnsServiceCidrs` can carry
+observed resolver /32s. No guessed CIDRs are required to render the proxy.
+Admin binds loopback 9901 and has no Service. The only upstream route is
+exact `/mcp`; other paths return 404. A compromised proxy could still reach
+the connector's other public handlers on 8080, which is the limit of L4
+network isolation. It cannot use this policy to reach private MCP or 9090.
+
+Access logs contain only bounded method/name strings, parser status,
+size-limit marker, duration, response code and flags. No arguments, bodies,
+identity headers or tokens are logged. Arbitrary caller names can still
+produce arbitrary log values, so do not turn them into metric labels.
+Use pod logs, existing connector Prometheus metrics and Kubernetes pod
+resource readings for the experiment. The existing collector does not
+establish delivery of these access logs or native MCP stats to Honeycomb.
+
+### Production rollout and rollback
+
+The initial PR is held as a draft with both switches off. No production
+writes, merge or Kargo promotion are authorized by that draft. After review
+of the rendered routing, network and resource changes:
+
+1. Record the live Scotland Application chart revision (Kargo owns it),
+   current Deployment image IDs, HTTPRoute backend, NetworkPolicies and
+   pod readiness/restarts. Record a 15-minute baseline of existing connector
+   request/error counters, memory and latency where available. If telemetry
+   is unavailable, say so; do not substitute the claim that the endpoint is
+   unused. Save anonymous initialize/discover/list/plan/check response
+   status, cache headers and tool schemas from the public URL. Aurora stays
+   disabled. Do not perform a public load test.
+2. Through GitOps, set `mcpObserver.enabled: true` in deploy/values.yaml,
+   leaving `routeThrough: false`. Wait for chart publication, Kargo promotion
+   and Synced/Healthy. Verify the digest-pinned proxy is ready, its DNS and
+   upstream connection work, and the mandatory egress policy is installed.
+   Inspect rendered policies for additive allows. Verify its Service does
+   not select connector pods and vice versa. A TCP readiness probe proves
+   only the listener, so run an in-cluster or authorized port-forward MCP
+   probe before switching. Never expose its admin listener publicly.
+3. Through GitOps, set only `mcpObserver.routeThrough: true`. Verify the
+   live HTTPRoute has the proxy backend on the MCP rule and the original
+   backend on REST. Confirm Application Synced/Healthy and proxy image ID.
+   Repeat the anonymous baseline checks, plus one spoofed header, one
+   malformed request and one oversized request; compare handler errors.
+   Check native logs show body-derived method/name for normal MCP clients.
+4. Observe for 30 minutes while an operator can revert. Compare the same
+   traffic mix against the baseline: errors, p95 latency, pod RSS and
+   restarts. Roll back immediately on schema/status/cache-policy changes,
+   lost isolation, OOM/restart, any unexplained 5xx or more than 50ms added
+   p95 latency. Treat over 96Mi sustained memory as a rollback trigger.
+   At the end, restore the prior route unless continuation is explicitly
+   accepted. Sparse traffic is insufficient evidence of load safety.
+
+The one-step route rollback is a GitOps change setting
+`mcpObserver.routeThrough: false` in deploy/values.yaml. Keep
+`mcpObserver.enabled: true` until the live HTTPRoute again references the
+original `scotland-connector` Service and public baseline checks pass.
+This avoids deleting the proxy while a gateway still uses it. GitOps and
+Kargo convergence mean this is not an instantaneous emergency switch; record
+that delay during acceptance. A later change can disable and remove the
+unused proxy. Never use `kubectl patch` to bypass GitOps.
+
+Tagged upstream evidence:
+[1.40 API and security caveat](https://www.envoyproxy.io/docs/envoy/v1.40.0/api-v3/extensions/filters/http/mcp/v3/mcp.proto),
+[1.40 filter source](https://github.com/envoyproxy/envoy/blob/v1.40.0/source/extensions/filters/http/mcp/mcp_filter.cc),
+[Gateway compatibility matrix](https://gateway.envoyproxy.io/news/releases/matrix/).
+The image is pinned by registry digest; the independent Linux test binary
+is checksum-pinned separately in MODULE.bazel. The interoperability test
+starts the rendered config against the real Go MCP handler and compares
+responses byte-for-byte, including tool schemas and cache hints. It also
+checks spoofed-header observation, private path rejection and no replay after
+an upstream accepts a POST then disconnects. Chart posture tests cover both
+switches and network/resource isolation. These checks do not establish
+production DNS, traffic volume, resource behavior or exporter delivery.

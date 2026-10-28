@@ -581,6 +581,14 @@ multiarch_http_file(
     extract_path = "bin/linux/amd64/egctl",
 )
 
+# Isolated Scotland experiment only; never replaces the Gateway compatibility binary.
+multiarch_http_file(
+    name = "envoy_mcp_test_bin",
+    amd64_sha256 = "8aa137a7d00994ce43f613556f5a120709229f63bedb86eedde5ccbc402c2b80",
+    amd64_url = "https://github.com/envoyproxy/envoy/releases/download/v1.40.0/envoy-1.40.0-linux-x86_64",
+    binary_name = "envoy",
+)
+
 multiarch_http_file(
     name = "envoy_proxy_test_bin",
     amd64_sha256 = "affffb8d08a14fdc375b1f7dd8d0f3004eacdf51ce07f5636d7e168a01c6b373",
