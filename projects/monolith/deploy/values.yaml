@@ -364,12 +364,12 @@ grimoire:
   # tuned for the local GPU's 8 decode slots, irrelevant for a hosted provider.)
   extractConcurrency: "64"
 
-# ADR 036 orchestrator brief compiler (Phase 3 live enable). The primary planner
+# ADR 036 chat-versus-session router (Phase 3 live enable). The primary provider
 # is NVIDIA Nemotron 3 Ultra (free, 256K context, orchestrator-tuned tool calling;
 # ORCHESTRATOR_API_KEY sourced from the NVIDIA_API_KEY field of the existing
 # "goosecracker" Secret). NVIDIA's free tier is ~40 RPM per key, so on a rate
-# limit or error the ordered chain degrades to DeepSeek on OpenRouter (the proven
-# forced-tool-call path), then to Meta Spark, before failing open to direct
+# limit or error the ordered chain degrades to DeepSeek on OpenRouter,
+# then to Meta Spark, before failing open to direct
 # submit. The Meta key comes from the dedicated meta-spark item. The
 # orchestrator only runs on channels with the ADR 029 "orchestrator" consent
 # grant; ungranted channels fail open to direct submit with no external traffic.
