@@ -1870,8 +1870,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "app/main_domain.py",
     # Batch-jobs entrypoint: runs as :jobs_image, never in the public binary.
     "app/jobs_main.py",
-    # Purge execution belongs only to the jobs image and its private DB role.
-    "grimoire_chat/retention.py",
     # Visibility write path must not ship in public or agents images.
     "knowledge/publish.py",
     # Private knowledge routers / write paths / heavy maintenance internals.
