@@ -5104,6 +5104,12 @@ bdd_test(
     ],
 )
 
+# Real PostgreSQL checks guarded security intake policy changes and atomic audit.
+bdd_test(
+    name = "swarm_factory_security_intake_postgres_test",
+    srcs = ["factory/orchestration/factory_security_intake_postgres_test.py"],
+)
+
 # The daily admission cap migration must preserve all other policy and accounting.
 bdd_test(
     name = "swarm_factory_daily_admission_limit_postgres_test",

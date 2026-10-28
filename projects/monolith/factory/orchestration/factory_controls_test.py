@@ -1996,9 +1996,27 @@ def test_policy_without_intake_gains_disabled_defaults(policy):
     normalized = controls.validate_policy(policy)
     assert normalized["intake"] == {
         **controls.DEFAULT_INTAKE,
-        "exclude_labels": ["needs-human", "security-finding", "wontfix"],
+        "exclude_labels": ["needs-human", "wontfix"],
     }
     assert normalized["intake"] is not controls.DEFAULT_INTAKE
+
+
+def test_security_exclusions_remain_explicit_global_and_repository_policy(policy):
+    legacy = ["needs-human", "security-finding", "wontfix"]
+    policy["intake"] = {"exclude_labels": legacy}
+    policy["repos"] = {policy["repo"]: {"exclude_labels": ["operator-only"]}}
+    normalized = controls.validate_policy(policy)
+    assert normalized["intake"]["exclude_labels"] == legacy
+    assert controls.repo_entry(normalized, policy["repo"])["exclude_labels"] == [
+        "operator-only"
+    ]
+    del policy["repos"][policy["repo"]]["exclude_labels"]
+    assert (
+        controls.repo_entry(controls.validate_policy(policy), policy["repo"])[
+            "exclude_labels"
+        ]
+        == legacy
+    )
 
 
 @pytest.mark.parametrize("task_class", controls.TASK_CLASSES)
@@ -2076,7 +2094,7 @@ def test_status_defaults_intake_for_empty_control_policy(db):
     assert controls.status()["intake"] == {
         "policy": {
             **controls.DEFAULT_INTAKE,
-            "exclude_labels": ["needs-human", "security-finding", "wontfix"],
+            "exclude_labels": ["needs-human", "wontfix"],
         },
         "admitted_today": 0,
         "max_per_day": 5,

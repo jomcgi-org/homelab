@@ -276,8 +276,9 @@ The change enables existing intake while preserving its label/exclusion,
 dependency, cooldown and daily-limit settings, generation and task bounds. It
 clears the manual issue allowlist so it cannot bypass backlog eligibility. An
 empty manual list is valid only with intake enabled. The effective primary
-repository filter must be exactly `agent-ready` and retain the needs-human,
-security-finding and wontfix exclusions. Automatic
+repository filter must be exactly `agent-ready` and retain the needs-human
+and wontfix exclusions. Explicit custom exclusions, including security-finding,
+remain unchanged. Automatic
 landing, refinement, closure and issue production remain off; other repositories
 are paused. No receipt or hold is changed. Apply leaves admissions paused. A
 separate explicit enable permits normal live eligibility and ownership checks;
