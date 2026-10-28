@@ -86,6 +86,8 @@ func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL
 	}
 	h := &Handler{svc: svc, meter: m, log: log, mux: http.NewServeMux(), specURL: publicBaseURL + "/v1/openapi.json"}
 	h.mux.HandleFunc("GET /v1/plan", h.plan)
+	h.mux.HandleFunc("GET /v1/light", h.light)
+	h.mux.HandleFunc("/v1/light", h.methodNotAllowed("GET"))
 	h.mux.HandleFunc("POST /v1/check", h.check)
 	h.mux.HandleFunc("GET /v1/aurora", h.aurora)
 	h.mux.HandleFunc("/v1/aurora", h.methodNotAllowed("GET"))
@@ -167,6 +169,30 @@ func (h *Handler) plan(w http.ResponseWriter, r *http.Request) {
 		env, err = h.svc.Plan(p)
 	}
 	h.respond(w, r, "plan", start, env, err)
+}
+
+func (h *Handler) light(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	q := r.URL.Query()
+	var p connector.LightParams
+	var err error
+	if len(r.URL.RawQuery) > 1024 {
+		err = &connector.ParamError{Param: "query", Message: "query too large"}
+	}
+	for k, v := range q {
+		if (k != "lat" && k != "lon" && k != "radius_km" && k != "from" && k != "to") || len(v) != 1 {
+			err = &connector.ParamError{Param: k, Message: "unknown or repeated parameter"}
+		}
+	}
+	p.Lat, err = floatParam(q.Get("lat"), "lat", err)
+	p.Lon, err = floatParam(q.Get("lon"), "lon", err)
+	p.RadiusKm, err = floatParam(q.Get("radius_km"), "radius_km", err)
+	p.From, p.To = strParam(q, "from"), strParam(q, "to")
+	var env *connector.Envelope
+	if err == nil {
+		env, err = h.svc.Light(p)
+	}
+	h.respond(w, r, "light", start, env, err)
 }
 
 // maxCheckBody bounds a check request: ten items are well under 4 KiB.

@@ -97,6 +97,73 @@ the walk is not a go, `nearby_walks` offers up to two that fit better the
 same day: of similar length (half to one and a half times its time),
 starting within 20 km, nearest first.
 
+## Light windows
+
+`light` (REST `GET /v1/light`) computes light at the supplied coordinates,
+even when no forecast snapshot is available. This is staged repository
+delivery; operational acceptance remains on #7367.
+
+`from` and `to` are inclusive Europe/London civil dates. Today through two
+days later is the default, with at most seven dates and nothing later than
+13 days ahead. Coordinates round to 0.01 degrees. `radius_km` has plan's
+1 to 100 km bounds and 30 km default; the effective forecast-site reach is
+at most 30 km. The nearest site wins, with ID breaking exact distance ties.
+Astronomy stays at the requested point; the returned `site` identifies where
+the weather samples came from, with its fetch time, horizon and truncation.
+
+All event times are UTC RFC3339 seconds. Each date owns local midnight to
+the next midnight, so DST dates can have 23 or 25 hours. Null means the
+crossing does not occur on that date. Absent windows are omitted, with an
+empty array when none exist. Intervals include `from` and exclude `until`,
+are clipped at midnight and sorted by start then kind. The same night can
+appear as two civil-date pieces. Each window carries the existing
+noon-to-noon night label at its midpoint.
+
+Sunrise/set use centre altitude -0.833 degrees. Civil, nautical and
+astronomical dawn/dusk cross -6, -12 and -18 degrees, with twilight windows
+between adjacent thresholds (civil ends at -0.833). Golden light is sun
+-4 to +6 degrees; blue light is -6 to -4. Moonrise/set use topocentric
+centre altitude -0.833 degrees as an approximate refraction and disc-radius
+allowance. Moon phase and lit fraction are sampled at local noon,
+`reference_at`: new 0, first quarter .25, full .5 and last quarter .75.
+Direction is waxing before the unrounded phase .5 and waning after it.
+
+Milky Way windows require fixed galactic-centre RA 17h45m, declination
+-29 degrees above the geometric horizon and sun below -12 degrees
+(nautical darkness, matching stars). July can retain astronomical twilight
+throughout the night. Twilight and moonlight still limit faint details;
+these are geometry windows with no guarantee of a useful view.
+Astronomical darkness below -18 degrees is returned separately. Computation
+uses the existing truncated solar/lunar series and linear sidereal time,
+without terrain or core refraction. Numerical events resolve to about a
+second; the simplified astronomical model has lower physical accuracy.
+
+Every window has `cloud`, scoped to hourly sample support at the nearby
+site. The stars snapshot retains only already-clear (cloud below 10%)
+twilight-dark (sun below -10 degrees) samples. Their one-hour buckets are
+intersected with the window and requested-point sun below -10.
+`supported_seconds` measures the union of those intersections. `samples`
+counts matching rows. `clear` requires the whole window to have sample
+support; otherwise `unknown` has `partial` or `none` coverage. These are
+sampled forecasts, with no claim of continuously clear conditions at the
+point. Golden/blue cloud is unknown because those observations are absent.
+No missing row proves cloud. No new forecast feed is queried.
+
+Missing, future-dated or expired site fetches are unknown. Hours before the
+as-of hour or the site's fetch hour are dropped; complete hourly buckets
+must end by the earlier site/dataset 48-hour horizon. Truncated lists retain
+their positive samples but cannot establish anything about omitted hours.
+`nights` separately reuses `AssessNight` for suitability, including moonlight
+and coverage. A whole-night verdict is never an interval cloud forecast.
+Moon advice text is omitted there because `days` already carries the geometry.
+
+Light has plan's cache policy: browsers revalidate after 60 seconds and the
+Cloudflare-only header gives the edge 600 seconds, with the same bounded
+stale directives. The ETag includes snapshot version, as-of hour, exact
+freshness state and canonical query. Forecast updates can change the cloud
+part. Headers and fixture tests establish the repository contract; actual
+edge hits, query isolation and published cloud coverage remain live checks.
+
 ## Stargazing
 
 A **clear-dark hour** is a forecast hour at a site where cloud cover is below
