@@ -21,6 +21,7 @@ from uuid import uuid4
 from sqlalchemy import delete, or_, text, update
 from sqlmodel import Session, select
 
+from core.env import flag
 from factory.execution import admission
 from factory.execution.constants import INTERRUPTED_TERMINAL_REASONS
 from factory.execution.models import (
@@ -47,7 +48,7 @@ class ReceiptRejected(ValueError):
 
 
 def enabled() -> bool:
-    return os.getenv("AGENT_RESULT_RECEIPTS_ENABLED", "false").lower() == "true"
+    return flag("AGENT_RESULT_RECEIPTS_ENABLED")
 
 
 def meter_enrolled(local_session_id: str, model: str) -> bool:
@@ -58,7 +59,7 @@ def meter_enrolled(local_session_id: str, model: str) -> bool:
         for value in os.getenv("FACTORY_RUNTIME_METER_TASK_IDS", "").split(",")
     }
     return (
-        os.getenv("FACTORY_RUNTIME_METER_ENABLED", "false").lower() == "true"
+        flag("FACTORY_RUNTIME_METER_ENABLED")
         and model == "astra"
         and all(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", task) for task in tasks)
         and len(parts) == 4

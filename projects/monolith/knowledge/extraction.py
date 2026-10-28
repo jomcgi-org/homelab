@@ -21,6 +21,7 @@ from sqlalchemy import bindparam, or_, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import Session, select
 
+from core.env import flag
 from core.github import GITHUB_REPO
 from knowledge import raw_store
 from knowledge.gardener import MAX_GARDENER_RETRIES
@@ -359,7 +360,7 @@ def ensure_repo_diff_job(session: Session) -> bool:
     """Reconcile the recurring repository scout job with its feature flag."""
     from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
-    enabled = os.environ.get("KG_REPO_DIFF_ENABLED", "false").lower() == "true"
+    enabled = flag("KG_REPO_DIFF_ENABLED")
     dialect = session.get_bind().dialect.name
     table = "routine_jobs" if dialect == "sqlite" else "claude_agent.routine_jobs"
     if not enabled:
@@ -929,7 +930,7 @@ _REPO_DIFF_URL_RE = re.compile(
 
 
 def _reconcile_enabled() -> bool:
-    return os.environ.get(KG_REPO_DIFF_RECONCILE_ENV, "false").lower() == "true"
+    return flag(KG_REPO_DIFF_RECONCILE_ENV)
 
 
 def _extra_as_dict(extra: object) -> dict:
@@ -1786,10 +1787,7 @@ def apply_extraction(
         raw.extra = extra
         session.add(raw)
 
-        if (
-            os.environ.get("DRAINER_DOCFIX_ENABLED", "false").lower() == "true"
-            and raw.source == "repo-diff"
-        ):
+        if flag("DRAINER_DOCFIX_ENABLED") and raw.source == "repo-diff":
             base_sha = extra.get("base_sha")
             head_sha = extra.get("head_sha")
             if isinstance(base_sha, str) and isinstance(head_sha, str):

@@ -46,6 +46,7 @@ import time
 import httpx
 from sqlmodel import select
 
+from core.env import flag
 from factory.orchestration.turn_artifact import run_artifact
 from factory.orchestration import graph
 from factory.orchestration.tracing import set_attributes, tracer
@@ -801,9 +802,7 @@ def check(task_id: str, policy: dict) -> str:
     """One tick of the watchdog for one active task. Returns what it did."""
     controls = _controls()
     watch_policy = controls.progress_watchdog_policy(policy)
-    shadow_enabled = (
-        os.getenv("FACTORY_PROGRESS_SHADOW_ENABLED", "false").lower() == "true"
-    )
+    shadow_enabled = flag("FACTORY_PROGRESS_SHADOW_ENABLED")
     if not watch_policy["enabled"] and not shadow_enabled:
         return "disabled"
     threshold = watch_policy["threshold_turns"]

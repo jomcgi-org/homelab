@@ -28,6 +28,7 @@ import httpx
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from core.env import flag
 from core.clock import aware
 from factory.orchestration.factory_controls import _audit, _locked_session
 from factory.orchestration.factory_models import FactoryAudit, WorkItem, WorkItemEvent
@@ -39,7 +40,7 @@ POINTER_ERROR_THROTTLE = timedelta(hours=1)
 
 
 def pointer_enabled() -> bool:
-    return os.getenv("FACTORY_WORK_ITEM_POINTER_ENABLED", "false").lower() == "true"
+    return flag("FACTORY_WORK_ITEM_POINTER_ENABLED")
 
 
 def pointer_base_url() -> str:

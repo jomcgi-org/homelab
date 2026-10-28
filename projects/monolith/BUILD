@@ -2589,6 +2589,16 @@ py_test(
 )
 
 py_test(
+    name = "env_test",
+    srcs = ["core/env_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "jsonio_test",
     srcs = ["core/jsonio_test.py"],
     imports = ["."],

@@ -26,11 +26,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 
 import httpx
 from sqlmodel import select
+
+from core.env import flag
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ OPERATIONAL_TITLE = re.compile(
 
 
 def enabled() -> bool:
-    return os.getenv(ENABLED_ENV, "false").lower() == "true"
+    return flag(ENABLED_ENV)
 
 
 class HandoffRefused(ValueError):

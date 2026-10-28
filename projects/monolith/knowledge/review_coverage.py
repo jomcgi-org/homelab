@@ -10,12 +10,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
 import time
 from pathlib import PurePosixPath
 from urllib.parse import quote
 
+from core.env import flag
 from core.github import GITHUB_API, _github_headers
 
 from knowledge.review_sources import EvidenceUnavailable, EvidenceUnsupported
@@ -35,7 +35,7 @@ _CLAUSE = re.compile(
 
 
 def enabled():
-    return os.environ.get("KG_FACT_REVIEW_COVERAGE_ENABLED", "false").lower() == "true"
+    return flag("KG_FACT_REVIEW_COVERAGE_ENABLED")
 
 
 def serialized_size(value):

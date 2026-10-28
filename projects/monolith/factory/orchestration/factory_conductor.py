@@ -8,6 +8,7 @@ are the recovery state, so losing this process cannot lose a task or its pin.
 
 from __future__ import annotations
 
+from core.env import flag
 from factory.orchestration.runtime import running_app_version
 from factory.orchestration import dependency_prs
 
@@ -689,12 +690,12 @@ def escalation_revalidation_enabled() -> bool:
 
 def planner_knowledge_enabled() -> bool:
     """Whether receipt-authorized KG evidence may enter planner inputs."""
-    return os.environ.get("CONDUCTOR_CONTINUITY_ENABLED", "false").lower() == "true"
+    return flag("CONDUCTOR_CONTINUITY_ENABLED")
 
 
 def planner_preview_enabled() -> bool:
     """Stage in-turn accounting without enabling a planner identity grant."""
-    return os.environ.get("FACTORY_PLANNER_PREVIEW_ENABLED", "false").lower() == "true"
+    return flag("FACTORY_PLANNER_PREVIEW_ENABLED")
 
 
 def _outcome(run: dict) -> dict:
@@ -8079,7 +8080,7 @@ def _expire_reconciler_pause(task_id: str, *, held_only: bool = False) -> bool:
 
 def _deadline_backstop_enabled() -> bool:
     return FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED and (
-        os.environ.get("FACTORY_DEADLINE_BACKSTOP_ENABLED", "false").lower() == "true"
+        flag("FACTORY_DEADLINE_BACKSTOP_ENABLED")
     )
 
 

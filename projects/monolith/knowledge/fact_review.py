@@ -20,6 +20,7 @@ from sqlalchemy import case, func, or_, text
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
+from core.env import flag
 from knowledge.disputes import create_dispute
 from knowledge.extraction import ExtractionOutputInvalid
 from knowledge.freshness import commit_successful_review, record_outcome, utc
@@ -47,7 +48,7 @@ MAX_PROMPT_BYTES = 96_000
 
 
 def enabled() -> bool:
-    return os.environ.get("KG_FACT_REVIEW_ENABLED", "false").lower() == "true"
+    return flag("KG_FACT_REVIEW_ENABLED")
 
 
 def settings() -> tuple[int, int]:

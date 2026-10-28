@@ -28,11 +28,11 @@ advisory work, not authority) and the self-releasing kinds above.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
+from core.env import flag
 from core.clock import aware
 from factory.orchestration import factory_controls as controls
 
@@ -52,7 +52,7 @@ SELF_RELEASING_KINDS = frozenset({"intervention", "deadline"})
 
 
 def enabled() -> bool:
-    return os.getenv(ENABLED_ENV, "false").lower() == "true"
+    return flag(ENABLED_ENV)
 
 
 def automatic_release() -> bool:

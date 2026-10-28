@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -23,6 +22,7 @@ from typing import Iterator
 from sqlalchemy import update
 from sqlmodel import Session, select
 
+from core.env import flag
 from core.clock import aware
 from auth.api import Authority, Principal, current_principal
 from core.db import get_engine
@@ -112,7 +112,7 @@ def resolve_trusted_binding(principal: Principal) -> TrustedAgentBinding | None:
 
 
 def board_enabled() -> bool:
-    return os.getenv(BOARD_ENABLED_ENV, "false").lower() == "true"
+    return flag(BOARD_ENABLED_ENV)
 
 
 def _now() -> datetime:

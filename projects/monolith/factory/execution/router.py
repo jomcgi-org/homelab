@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, func, select
 
+from core.env import flag
 from factory.execution import (
     SUPPORTED_MODELS,
     mcp,
@@ -75,9 +76,7 @@ _prewarm_timestamps: dict[int, float] = {}
 
 def session_stop_control_enabled() -> bool:
     """The repository-only rollout gate for interactive Stop."""
-    return (
-        os.environ.get("AGENT_SESSION_STOP_CONTROL_ENABLED", "false").lower() == "true"
-    )
+    return flag("AGENT_SESSION_STOP_CONTROL_ENABLED")
 
 
 def _aggregate_statement(status: str | None = None, session_id: int | None = None):

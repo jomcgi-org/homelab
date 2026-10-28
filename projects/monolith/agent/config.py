@@ -13,6 +13,7 @@ import os
 from dataclasses import dataclass
 from typing import Literal, cast
 
+from core.env import flag
 from core.github import GITHUB_REPO
 
 
@@ -39,7 +40,7 @@ _AGENT_SESSIONS_CHANNEL_NOTIFY_VALUES = {"needs-input", "all", "none"}
 
 
 def drainer_enabled() -> bool:
-    return os.environ.get("DRAINER_ENABLED", "false").lower() == "true"
+    return flag("DRAINER_ENABLED")
 
 
 def _bool_setting(name: str, default: bool) -> bool:
@@ -76,12 +77,8 @@ def load_drainer_settings() -> DrainerSettings:
         grimoire_kg_max_jobs_per_day=int(
             os.environ.get("DRAINER_GRIMOIRE_KG_MAX_JOBS_PER_DAY", "0")
         ),
-        docfix_auto_merge=(
-            os.environ.get("DRAINER_DOCFIX_AUTO_MERGE", "false").lower() == "true"
-        ),
-        docfix_review_enabled=(
-            os.environ.get("KG_DOCFIX_REVIEW_ENABLED", "false").lower() == "true"
-        ),
+        docfix_auto_merge=flag("DRAINER_DOCFIX_AUTO_MERGE"),
+        docfix_review_enabled=flag("KG_DOCFIX_REVIEW_ENABLED"),
         repo=os.environ.get("DRAINER_REPO", GITHUB_REPO),
         branch=os.environ.get("DRAINER_BRANCH", "main"),
         # Drain jobs are usually multi-step repo audits, so Luna uses high

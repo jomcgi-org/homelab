@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
+from core.env import flag
 from factory.execution.constants import (
     CLEAN_TERMINAL_REASONS,
     DRAINER_NODE_KEY,
@@ -660,12 +661,12 @@ def response_lost_recovery_enabled() -> bool:
     off is byte-for-byte the behaviour this repository had before response-loss
     recovery existed, whatever the receipt flags say.
     """
-    return os.getenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false").lower() == "true"
+    return flag("AGENT_RESPONSE_LOST_RECOVERY_ENABLED")
 
 
 def rollout_handoff_enabled() -> bool:
     """Keep rollout admission and early receipt handoff behind one control."""
-    return os.getenv("AGENT_ROLLOUT_HANDOFF_ENABLED", "false").lower() == "true"
+    return flag("AGENT_ROLLOUT_HANDOFF_ENABLED")
 
 
 RESPONSE_LOST_MESSAGE = (

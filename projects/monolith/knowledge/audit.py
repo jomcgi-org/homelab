@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
+from core.env import flag
 from core.clock import as_utc
 from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -79,7 +80,7 @@ def record_retrievals(session: Session, note_ids: list[str]) -> None:
 
 
 def audit_enabled() -> bool:
-    return os.environ.get("KG_AUDIT_ENABLED", "false").lower() == "true"
+    return flag("KG_AUDIT_ENABLED")
 
 
 @dataclass(frozen=True)
