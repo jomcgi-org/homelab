@@ -251,7 +251,7 @@ attrs==25.4.0 \
     #   jsonschema
     #   rasterio
     #   referencing
-audioop-lts==0.2.2 ; python_full_version >= '3.13' \
+audioop-lts==0.2.2 \
     --hash=sha256:0337d658f9b81f4cd0fdb1f47635070cc084871a3d4646d9de74fdf4e7c3d24a \
     --hash=sha256:03f061a1915538fd96272bac9551841859dbb2e3bf73ebe4a23ef043766f5449 \
     --hash=sha256:068aa17a38b4e0e7de771c62c60bbca2455924b67a8814f3b0dee92b5820c0b3 \
@@ -3363,14 +3363,9 @@ typing-extensions==4.15.0 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
-    #   aiohttp
-    #   aiosignal
-    #   anyio
     #   beautifulsoup4
-    #   exceptiongroup
     #   fastapi
     #   grpcio
-    #   httpx2
     #   mcp
     #   openai
     #   opentelemetry-api
@@ -3378,14 +3373,10 @@ typing-extensions==4.15.0 \
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-    #   psycopg
     #   py-key-value-aio
     #   pydantic
     #   pydantic-core
-    #   pytest-asyncio
-    #   referencing
     #   sqlalchemy
-    #   starlette
     #   typing-inspection
 typing-inspection==0.4.2 \
     --hash=sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7 \
