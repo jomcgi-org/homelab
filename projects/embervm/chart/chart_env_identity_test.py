@@ -3213,9 +3213,9 @@ def test_hub_bricks_admit_reserved_with_memory_requests_at_their_limits(
         entry["name"]: entry["resources"] for entry in defaults["bricks"]["classes"]
     }
     assert len(bricks) == len(classes)
-    assert {
-        _plain_env(noded)["EMBERVM_NODED_SIZE_CLASS"] for noded in bricks
-    } == set(classes)
+    assert {_plain_env(noded)["EMBERVM_NODED_SIZE_CLASS"] for noded in bricks} == set(
+        classes
+    )
     for noded in bricks:
         env = _plain_env(noded)
         assert env["EMBERVM_NODED_ADMISSION_MODEL"] == "reserved"
@@ -3361,9 +3361,7 @@ def test_conformance_jailer_gates_match_what_the_bricks_run(
         container for _, container in bricks if container["name"] == "egress-proxy"
     ]
     assert sidecars, "the probe needs the egress sidecar on every brick"
-    assert len(sidecars) == sum(
-        container["name"] == "noded" for _, container in bricks
-    )
+    assert len(sidecars) == sum(container["name"] == "noded" for _, container in bricks)
     for _, container in bricks:
         env = _plain_env(container)
         if container["name"] == "noded":
