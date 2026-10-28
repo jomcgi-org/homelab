@@ -1200,18 +1200,17 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        "@pip//av",
-        "@pip//google_auth",
-        "@pip//requests",
         ":pkg_auth",
         ":pkg_core",
         ":pkg_framework",
         ":pkg_knowledge",
         ":pkg_scheduler",
         ":pkg_shared",
+        "@pip//av",
         "@pip//boto3",
         "@pip//certifi",
         "@pip//fastapi",
+        "@pip//google_auth",
         "@pip//httpx",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation",
@@ -1224,6 +1223,7 @@ py_library(
         "@pip//pydantic",
         "@pip//python_multipart",
         "@pip//pyyaml",
+        "@pip//requests",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//tzdata",
@@ -6559,7 +6559,10 @@ py_test(
     ],
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
     imports = ["."],
-    deps = ["@pip//pytest", "@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 py_test(
