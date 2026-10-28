@@ -23,8 +23,9 @@ idna==3.18
 iniconfig==2.3.0
 markdown-it-py==4.0.0
 mdurl==0.1.2
-opentelemetry-sdk==1.40.0
-opentelemetry-semantic-conventions==0.61b0
+# Keep SDK, API and semantic conventions on the publisher-matched release set.
+opentelemetry-sdk==1.45.1
+opentelemetry-semantic-conventions==0.66b1
 packaging==26.2
 pluggy==1.6.0
 pydantic==2.13.4
