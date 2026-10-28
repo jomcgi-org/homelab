@@ -129,9 +129,10 @@ class ChatSnapshot(
     token (same posture as a session id) so the share url is unguessable. Once
     created a snapshot is immutable: there is no application UPDATE path.
 
-    ``source_session_id`` is forensics-only and is NOT a cascading FK: a snapshot
-    must outlive its session, so purging a session sets it NULL rather than
-    deleting the share (ON DELETE SET NULL in the migration). Mirrors
+    ``source_session_id`` is NOT a cascading FK (ON DELETE SET NULL). The purge
+    core explicitly deletes linked snapshots before messages and sessions;
+    retention keeps an idle session while an unexpired snapshot references it.
+    Takedown can therefore still resolve every linked snapshot. Mirrors
     chart/migrations/20260706200000_grimoire_chat.sql.
     """
 
@@ -150,7 +151,7 @@ class ChatSnapshot(
     # rows only (no system rows, no grounding metadata).
     transcript: list = Field(default_factory=list, sa_column=Column(_JSONB))
     message_count: int = Field(default=0)
-    # Forensics only; nullable so the snapshot survives session purge.
+    # Nullable FK; retention/takedown delete linked snapshots before the session.
     source_session_id: str | None = Field(
         default=None, foreign_key="grimoire_chat.sessions.id"
     )

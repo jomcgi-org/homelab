@@ -127,7 +127,7 @@ class ChatSnapshot(
     migration), so deleting a session would orphan its snapshots. Retention
     therefore keeps a shared session until its snapshot expires, and takedown
     deletes the snapshot (resolved through ``source_session_id``) before the
-    session. See chat_public/retention.py. Mirrors
+    session. The legacy schema has no mounted writer or purge execution. Mirrors
     chart/migrations/20260620000000_chat_public_shared_snapshots.sql.
     """
 

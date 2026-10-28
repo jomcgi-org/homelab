@@ -324,14 +324,16 @@ def _purge_session_mock():
 
 
 def test_chat_public_retention_commits_and_echoes_counts():
-    from chat_public.retention import PurgeReport
+    from grimoire_chat.retention import PurgeReport
 
     report = PurgeReport("retention", 2, 5, 1)
     session, active = _purge_session_mock()
     with (
         mock.patch("core.db.get_engine", return_value=object()),
         mock.patch("sqlmodel.Session", return_value=session),
-        mock.patch("chat_public.retention.purge_expired", return_value=report) as core,
+        mock.patch(
+            "grimoire_chat.retention.purge_expired", return_value=report
+        ) as core,
         mock.patch.object(jobs_main, "configure_logging"),
     ):
         result = runner.invoke(jobs_main.app, ["chat-public-retention"])
@@ -350,14 +352,14 @@ def test_chat_public_retention_commits_and_echoes_counts():
 
 
 def test_chat_public_retention_dry_run_rolls_back():
-    from chat_public.retention import PurgeReport
+    from grimoire_chat.retention import PurgeReport
 
     session, active = _purge_session_mock()
     with (
         mock.patch("core.db.get_engine", return_value=object()),
         mock.patch("sqlmodel.Session", return_value=session),
         mock.patch(
-            "chat_public.retention.purge_expired",
+            "grimoire_chat.retention.purge_expired",
             return_value=PurgeReport("retention", 1, 1, 1),
         ),
         mock.patch.object(jobs_main, "configure_logging"),
@@ -371,14 +373,14 @@ def test_chat_public_retention_dry_run_rolls_back():
 
 
 def test_chat_public_takedown_by_session_id_never_echoes_selector():
-    from chat_public.retention import PurgeReport
+    from grimoire_chat.retention import PurgeReport
 
     report = PurgeReport("takedown_session", 1, 3, 2)
     session, active = _purge_session_mock()
     with (
         mock.patch("core.db.get_engine", return_value=object()),
         mock.patch("sqlmodel.Session", return_value=session),
-        mock.patch("chat_public.retention.takedown", return_value=report) as core,
+        mock.patch("grimoire_chat.retention.takedown", return_value=report) as core,
         mock.patch.object(jobs_main, "configure_logging"),
         mock.patch.object(jobs_main.logger, "info") as log,
     ):
@@ -395,14 +397,14 @@ def test_chat_public_takedown_by_session_id_never_echoes_selector():
 
 
 def test_chat_public_takedown_by_ip_hash_dry_run():
-    from chat_public.retention import PurgeReport
+    from grimoire_chat.retention import PurgeReport
 
     session, active = _purge_session_mock()
     with (
         mock.patch("core.db.get_engine", return_value=object()),
         mock.patch("sqlmodel.Session", return_value=session),
         mock.patch(
-            "chat_public.retention.takedown",
+            "grimoire_chat.retention.takedown",
             return_value=PurgeReport("takedown_ip_hash", 2, 4, 1),
         ) as core,
         mock.patch.object(jobs_main, "configure_logging"),
@@ -429,7 +431,7 @@ def test_chat_public_takedown_by_ip_hash_dry_run():
 )
 def test_chat_public_takedown_requires_exactly_one_selector(args):
     with (
-        mock.patch("chat_public.retention.takedown") as core,
+        mock.patch("grimoire_chat.retention.takedown") as core,
         mock.patch("core.db.get_engine") as engine,
     ):
         result = runner.invoke(jobs_main.app, ["chat-public-takedown", *args])

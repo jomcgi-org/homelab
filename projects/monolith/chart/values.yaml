@@ -311,9 +311,10 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
-    # Public chat retention (ADR security/005): deletes sessions idle past 30 days
+    # Grimoire chat retention (ADR security/005), compatibility command names:
+    # deletes grimoire_chat sessions idle past 30 days
     # (kept while they have a shared snapshot) and snapshots older than 365 days,
-    # then writes one chat_public.purge_audit row. Windows are overridable via
+    # then writes one grimoire_chat.purge_audit row. Windows are overridable via
     # CHAT_PUBLIC_SESSION_RETENTION_DAYS / CHAT_PUBLIC_SNAPSHOT_RETENTION_DAYS.
     - name: chat-public-retention
       args: ["chat-public-retention"]
@@ -327,7 +328,7 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
-    # Public chat takedown, manual-only: removes a session (or every session of one
+    # Grimoire takedown, manual-only: removes a session (or every session of one
     # stored ip_hash) with its transcript and shared snapshots. Pass the STORED
     # ip_hash, never a raw IP. Submit with exactly one selector:
     #   argo submit --from cronworkflow/chat-public-takedown -n monolith-workflows -p session-id=<id>
