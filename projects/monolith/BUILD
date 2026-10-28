@@ -1870,6 +1870,8 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "app/main_domain.py",
     # Batch-jobs entrypoint: runs as :jobs_image, never in the public binary.
     "app/jobs_main.py",
+    # Purge execution belongs only to the jobs image and its private DB role.
+    "grimoire_chat/retention.py",
     # Visibility write path must not ship in public or agents images.
     "knowledge/publish.py",
     # Private knowledge routers / write paths / heavy maintenance internals.
@@ -8780,12 +8782,13 @@ bdd_test(
     srcs = ["chat_public_grants_test.py"],
 )
 
-# Real-Postgres test: chat_public retention and takedown purge (ADR security/005).
+# Real-Postgres test: Grimoire retention and takedown purge (ADR security/005).
 # Pins the 30-day session and 365-day snapshot windows, that a takedown removes
 # the session's snapshots, and that public_writer cannot touch purge_audit.
 bdd_test(
-    name = "chat_public_retention_test",
-    srcs = ["chat_public/retention_test.py"],
+    name = "grimoire_chat_retention_test",
+    srcs = ["grimoire_chat/retention_test.py"],
+    deps = ["@pip//typer"],
 )
 
 # Real-Postgres test: the public_api.knowledge_chunks view exposes only chunks of

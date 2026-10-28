@@ -394,7 +394,7 @@ def publish_facts(
 
 
 def _run_chat_public_purge(name: str, purge, dry_run: bool) -> None:
-    """Run one chat_public purge core in a transaction; dry-run rolls back."""
+    """Run one Grimoire purge core in a transaction; dry-run rolls back."""
     from sqlmodel import Session
 
     from core.db import get_engine
@@ -415,8 +415,8 @@ def _run_chat_public_purge(name: str, purge, dry_run: bool) -> None:
 def chat_public_retention(
     dry_run: bool = typer.Option(False, "--dry-run", help="Report without deleting"),
 ) -> None:
-    """Delete expired public chat sessions, transcripts and shared snapshots."""
-    from chat_public.retention import purge_expired
+    """Delete expired Grimoire sessions, transcripts and shared snapshots."""
+    from grimoire_chat.retention import purge_expired
 
     _run_chat_public_purge("chat-public-retention", purge_expired, dry_run)
 
@@ -427,7 +427,7 @@ def chat_public_takedown(
     ip_hash: str = typer.Option("", "--ip-hash", help="Stored ip_hash to purge"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Report without deleting"),
 ) -> None:
-    """Purge a public chat session, or every session of one stored ip_hash.
+    """Purge a Grimoire session, or every session of one stored ip_hash.
 
     Removes transcripts, session details and shared snapshots. Pass exactly one
     selector (an empty string counts as unset). The selector is never logged.
@@ -435,7 +435,7 @@ def chat_public_takedown(
     if bool(session_id) == bool(ip_hash):
         raise typer.BadParameter("pass exactly one of --session-id or --ip-hash")
 
-    from chat_public.retention import takedown
+    from grimoire_chat.retention import takedown
 
     def purge(session):
         return takedown(session, session_id=session_id or None, ip_hash=ip_hash or None)

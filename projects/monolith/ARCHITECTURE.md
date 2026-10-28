@@ -1362,28 +1362,33 @@ training events as benign, turning a false positive into supervised feedback.
 (see: /projects/monolith/chat/safeguards.py)
 (see: /projects/monolith/chart/migrations/20260711220000_chat_safeguards.sql)
 
-Public chat v3 verifies a Turnstile challenge before minting a session and
-applies turn, token, prompt-size, concurrency, and shared GPU admission limits.
-The write path uses its restricted public database identity. On the hub its
-inference is the hosted Spark API at a global concurrency of one, set as a
-whole environment list in the GKE overlay because the chart carries that list
-as a literal. Grimoire chat is a parallel public chat surface grounded by
-pgvector retrieval over the Grimoire corpus; it streams model output, compacts
-long conversations, and shares the same admission and resource-control pattern,
-but its chat input is text rather than a multimodal message payload.
+Grimoire chat verifies a Turnstile challenge before minting a session and
+applies turn, token, prompt-size and concurrency limits. The write path uses its
+restricted public database identity. The checked-in hub overlay uses the hosted
+Spark API at a global concurrency of one to bound anonymous inference spend.
+The environment list is replaced as a whole in the overlay. Grimoire chat uses
+pgvector retrieval over the Grimoire corpus, streams model output and compacts
+long conversations. Its chat input is text.
 (see: /projects/monolith/grimoire_chat/limits.py)
 (see: /projects/monolith-public/deploy/values-gke.yaml)
 (see: /projects/monolith/grimoire_chat/router.py)
 
-Public chat purges run only from the jobs image. A daily `chat-public-retention`
-CronWorkflow (04:15 UTC) deletes sessions idle past 30 days and snapshots older
-than 365 days. A manual-only `chat-public-takedown` CronWorkflow, submitted with
+Grimoire purges run only from the private jobs image. The compatibility-named
+`chat-public-retention` CronWorkflow (04:15 UTC) targets `grimoire_chat`, deleting
+sessions idle past 30 days and snapshots older than 365 days. A manual-only
+`chat-public-takedown` CronWorkflow, submitted with
 `argo submit --from cronworkflow/chat-public-takedown -n monolith-workflows -p
 session-id=<id>` (or `-p ip-hash=<stored hash>`), removes one session or every
 session sharing a stored `ip_hash`, with its transcript, session details and
-shared snapshots. Every run writes one `chat_public.purge_audit` row.
-(see: /projects/monolith/chat_public/retention.py)
-(see: /projects/monolith/chart/migrations/20261001150000_chat_public_purge_audit.sql)
+shared snapshots. Every committed run writes one `grimoire_chat.purge_audit` row;
+`--dry-run` rolls back deletes and audit together. This is staged repository
+behavior. Migration, rollout, actual job-role ACLs, synthetic-record checks and
+scheduled execution remain unverified under #7038. No live purge is authorized
+by this change. Repository composition has no remaining `chat_public` writer;
+deployed-writer confirmation remains part of operational acceptance. The legacy
+schema and historical migrations stay in place.
+(see: /projects/monolith/grimoire_chat/retention.py)
+(see: /projects/monolith/chart/migrations/20261028120000_grimoire_chat_purge_audit.sql)
 
 **Why.** `shared_snapshots.source_session_id` is `ON DELETE SET NULL`, so
 deleting a session first would orphan its snapshots and no later takedown could
@@ -1391,12 +1396,12 @@ find them. Every purge therefore resolves snapshots through
 `source_session_id` and deletes them before the session rows, in one
 transaction, and retention keeps a shared session until its snapshot expires so
 a takedown can always resolve it. The audit holds counts and a sha256 digest of
-the takedown selector only, never a raw id or hash, and `public_writer` cannot
-read or rewrite it. Takedown takes the stored `ip_hash` because the hashing salt
-lives only in monolith-public. The 30 and 365 day windows are reversible
+the takedown selector only, never a raw id or hash. Both restricted public roles
+are denied table and sequence access. Takedown takes the stored `ip_hash` because
+the hashing salt lives only in monolith-public. The 30 and 365 day windows are reversible
 defaults (env overrides read at call time), not policy commitments. Out of
-scope: `response_cache` is keyed by message rather than session, Grimoire chat
-has its own schema, and a forked session copies a transcript with no lineage,
+scope: `response_cache` is keyed by message rather than session, unrelated schemas
+are untouched, and a forked session copies a transcript with no lineage,
 so takedown does not follow forks.
 
 **Why.** LLM-only abuse detection was rejected because it charges a model call
@@ -1406,7 +1411,7 @@ of the friends surface (ADR chat/003). One ledger and one enforcement choke poin
 combine cheap deterministic signals, asynchronous semantic judgment, and a
 shadow-first learned model. The design accepts delayed LLM verdicts and tunable
 false positives, with score recovery and pardon providing the correction path.
-Anonymous chat adds Turnstile and bounded admission because its GPU and write
+Anonymous chat adds Turnstile and bounded admission because its inference and write
 paths cannot rely on an authenticated principal (ADR security/005).
 
 ### Household gateway retired
@@ -2227,6 +2232,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Retarget retention, takedown and protected audit evidence to Grimoire; retain the legacy schema | section 5; Joe's fix decision | #7038 | repository-only staged delivery under an unmerged landing hold; live migration, role ACLs, synthetic records, cadence and deployed-writer checks remain |
 | Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
 | Release execution capacity for quiescent paused or landing-held tasks while retaining ownership and durable authorized resume intent | section 4; Joe's 2026-10-18 decision | #7163 | repository implementation staged; separately authorized rollout and live capacity, ownership and reacquisition checks remain |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
@@ -2595,7 +2601,7 @@ mismatch without silently rewriting the decision record.
 | ADR | Title | Status | Disposition |
 | --- | --- | --- | --- |
 | `security/004` | Public Read-Only Service Isolation | Accepted, shipped: separate pruned binary, `public_reader` on the CNPG standby, ingress and egress policy where the CRDs exist (see: /projects/monolith-public/chart/values.yaml). Private-tier default-deny egress still open (#5143) | deleted |
-| `security/005` | Public Chat Adversarial Hardening | Implemented: Turnstile, per-session and global admission limits, single-host egress allow (see: /projects/monolith/grimoire_chat/limits.py). Retention and takedown purge jobs implemented (see: /projects/monolith/chat_public/retention.py); live rollout not yet observed (#3899). The notes chat the ADR hardened and the Ember exhibits were retired in 2026-10 (#6913); Grimoire chat carries the controls and the retention jobs keep purging the `chat_public` schema | deleted |
+| `security/005` | Public Chat Adversarial Hardening | Implemented: Turnstile, per-session and global admission limits, single-host egress allow (see: /projects/monolith/grimoire_chat/limits.py). Grimoire retention and takedown staged (see: /projects/monolith/grimoire_chat/retention.py); live operational acceptance remains #7038. The legacy `chat_public` schema is retained without purge execution | deleted |
 | 006 | Crossing (`moving`) on `friends.jomcgi.dev` as a second authentik lane | Accepted, shipped (see: /projects/monolith/chart/templates/httproute-friends.yaml) | deleted |
 
 ### Platform

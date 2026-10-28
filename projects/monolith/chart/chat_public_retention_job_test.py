@@ -1,4 +1,4 @@
-"""Render assertions for the chat_public retention and takedown CronWorkflows."""
+"""Render Grimoire purge workflows with their compatibility command names."""
 
 from __future__ import annotations
 
@@ -20,6 +20,14 @@ def _render() -> list[dict]:
             str(chart_dir),
             "--namespace",
             "monolith",
+            "-f",
+            os.environ.get(
+                "DEPLOY_VALUES", str(chart_dir.parent / "deploy/values.yaml")
+            ),
+            "-f",
+            os.environ.get(
+                "GKE_VALUES", str(chart_dir.parent / "deploy/values-gke.yaml")
+            ),
             "--set",
             "jobs.image.repository=registry.invalid/jobs",
             "--set-string",
@@ -75,6 +83,22 @@ def test_takedown_is_manual_only_with_parameters(documents):
         "--ip-hash",
         "{{workflow.parameters.ip-hash}}",
     ]
+
+
+@pytest.mark.parametrize("name", ["chat-public-retention", "chat-public-takedown"])
+def test_purge_jobs_use_bounded_jobs_image_and_private_database(documents, name):
+    spec = _cron(documents, name)["spec"]
+    assert spec["concurrencyPolicy"] == "Forbid"
+    assert spec["workflowSpec"]["activeDeadlineSeconds"] == 600
+    container = spec["workflowSpec"]["templates"][0]["container"]
+    assert container["image"] == "registry.invalid/jobs@sha256:test"
+    assert container["resources"] == {
+        "requests": {"cpu": "100m", "memory": "256Mi"},
+        "limits": {"memory": "256Mi"},
+    }
+    env = {item["name"]: item for item in container["env"]}
+    assert "DATABASE_URL" in env
+    assert "PUBLIC_WRITER_DATABASE_URL" not in env
 
 
 def test_existing_cronworkflow_renders_without_arguments(documents):

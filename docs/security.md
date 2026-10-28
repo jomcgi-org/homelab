@@ -435,13 +435,16 @@ closure is pruned in `projects/monolith/BUILD` and asserted by
   blocks a new `CREATE TABLE` in a public schema without one; it fires only
   for edits made through Claude Code.
 - **One write path.** Public chat writes as `public_writer` on the primary,
-  scoped to DML on `chat_public` (`projects/monolith/chat_public_grants_test.py`).
+  scoped to chat data in `chat_public` and `grimoire_chat`. The mounted writer
+  is Grimoire (`projects/monolith/grimoire_chat/`).
   Sessions are Turnstile-bound with per-session token budgets and a global
   concurrency slot of one (`projects/monolith/grimoire_chat/limits.py`). On
   the hub the chat model is an external API (`CHAT_PUBLIC_INFERENCE_URL` in
   `projects/monolith-public/deploy/values-gke.yaml`), so anonymous prompts
   leave the cluster and the slot bounds spend rather than a GPU. The
-  scheduled purge ADR security/005 requires is not built (#3899).
+  Grimoire retention and takedown are staged in the private jobs image, with
+  protected audit evidence. Live migration, job-role ACLs, synthetic-record
+  checks and scheduled execution remain unverified (#7038).
 - **No `/api` on the public origin.** The public `HTTPRoute`s
   (`projects/monolith-public/chart/templates/httproute-public.yaml`) carry
   no `/api` rule, asserted by `public_httproute_chat_guard_test`; pages
@@ -609,6 +612,6 @@ document carries what shipped.
 | security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | deleted |
 | security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Accepted, never built (#3894); the sandboxes it targeted became Firecracker guests | deleted |
 | security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica, imports test and private rootfs hardening shipped; private egress policy is gated pending live audit and inert on the hub (#3897, #5277); tracking #3895 | deleted |
-| security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Implemented except the purge (#3899); inference moved off-cluster | deleted |
+| security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Grimoire purge staged in the jobs image; live operational acceptance remains #7038; inference moved off-cluster | deleted |
 | security/006 Friends authorization lane | `/moving` on `friends.jomcgi.dev` behind an authentik `family` group | Accepted, shipped (#4968) | deleted |
 | security/007 Aggregate threat model index | one ranked index over labelled issues, re-ranked by hand | Accepted; decisions 1, 2 and 4 live, decision 3 superseded by STPA lenses (#5294) | deleted |

@@ -29,6 +29,7 @@ import pytest  # noqa: F401  (keeps the gazelle pytest dep; see module docstring
 # is matched as a module name OR a dotted prefix (so "chat" also forbids
 # "chat.anything").
 FORBIDDEN_MODULES = [
+    "grimoire_chat.retention",
     "auth.module",
     "auth.platform",
     # Factory public composition must never load mutation or execution code.
