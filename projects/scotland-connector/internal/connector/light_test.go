@@ -243,6 +243,69 @@ func TestLightFixtureCloudAndProvenance(t *testing.T) {
 	}
 }
 
+func TestLightElapsedNightsAreUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		now      time.Time
+		defaults bool
+	}{
+		{"fixture", fixture.Now, false},
+		{"default dates", fixture.Now, true},
+		{"before morning cutover", time.Date(2026, 10, 20, 7, 59, 0, 0, time.UTC), true},
+		{"at morning cutover", time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := fixture.Service(true)
+			svc.Now = func() time.Time { return tc.now }
+			p := fixture.LightParams()
+			if tc.defaults {
+				p.From, p.To = nil, nil
+			}
+			env, err := svc.Light(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := env.Data.(connector.LightResult)
+			if r.Site == nil || len(r.Nights) == 0 {
+				t.Fatal("fixture must exercise nearby-site night assessments", r)
+			}
+			ds := fixture.Dataset()
+			site, _ := ds.Nearest(r.Query.Lat, r.Query.Lon, r.Query.RadiusKm)
+			first := stars.FirstNight(tc.now)
+			elapsed := 0
+			for _, n := range r.Nights {
+				if n.Night < stars.NightName(first) {
+					elapsed++
+					if n.Verdict != "unknown" || n.Coverage != stars.CoverageNone || !strings.Contains(n.Why, "ended") || strings.Contains(n.Why, "tonight") {
+						t.Errorf("elapsed night must be unknown/none with an elapsed explanation: %+v", n)
+					}
+					continue
+				}
+				date, err := time.Parse(time.DateOnly, n.Night)
+				if err != nil {
+					t.Fatal(err)
+				}
+				night := stars.NightDay(date.Add(12 * time.Hour))
+				ws := ds.Windows(stars.WindowsQuery{Lat: site.Lat, Lon: site.Lon, RadiusKm: 0.01, Night: night, Nights: 1, Limit: 1, Now: tc.now})
+				if len(ws) != 1 || len(ws[0].Nights) != 1 {
+					t.Fatal("missing fixture window", ws)
+				}
+				want := ds.AssessNight(site, &ws[0].Nights[0], night, tc.now.UTC().Truncate(time.Hour), ws[0].Climate, stars.NightAssessmentOptions{OmitMoonAdvice: true})
+				if n.Verdict != want.Verdict || n.Coverage != want.Coverage || n.Why != want.Why {
+					t.Errorf("current/future night assessment changed: got %+v, want %+v", n, want)
+				}
+			}
+			wantElapsed := 1
+			if tc.name == "before morning cutover" {
+				wantElapsed = 0
+			}
+			if elapsed != wantElapsed {
+				t.Errorf("elapsed nights = %d, want %d", elapsed, wantElapsed)
+			}
+		})
+	}
+}
+
 func TestLightETagTracksExactExpiryAndQueries(t *testing.T) {
 	svc := fixture.Service(true)
 	ds := fixture.Dataset()
