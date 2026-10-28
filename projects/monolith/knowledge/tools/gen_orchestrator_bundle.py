@@ -75,9 +75,7 @@ def build_bundle(root: Path) -> str:
     return assemble_bundle(base_prompt, structure_lines)
 
 
-def assemble_bundle(
-    base_prompt: str, structure_lines: list[str]
-) -> str:
+def assemble_bundle(base_prompt: str, structure_lines: list[str]) -> str:
     """Pure concatenation in the exact stable section order (no I/O, no git).
 
     Split out from ``build_bundle`` so determinism and formatting can be unit

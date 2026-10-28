@@ -28,6 +28,7 @@ _BUNDLE_PATH = Path(__file__).with_name("orchestrator_bundle.md")
 # Feature name for the ADR 029 consent grant that gates the orchestrator tier.
 ORCHESTRATOR_FEATURE = "orchestrator"
 
+
 class BriefParseError(Exception):
     """Raised when the model's output cannot be parsed into a valid verdict for
     the active route. The caller (:func:`compile`) turns this into a fail-open."""
@@ -216,7 +217,9 @@ def _parse_chat(data: dict) -> ChatVerdict:
     )
 
 
-def parse_brief(content: str, *, allowed_scopes: frozenset[str]) -> SessionVerdict | ChatVerdict:
+def parse_brief(
+    content: str, *, allowed_scopes: frozenset[str]
+) -> SessionVerdict | ChatVerdict:
     """Parse the model's strict-JSON output, route-partitioned (spec section 3).
 
     ``route: goose`` validates and returns a :class:`SessionVerdict`; ``route: chat``
