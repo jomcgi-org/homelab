@@ -104,6 +104,7 @@ type (
 		value float64
 	}
 )
+
 type lightCurve struct {
 	samples []lightSample
 	at      func(time.Time) float64
