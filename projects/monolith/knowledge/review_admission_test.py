@@ -203,7 +203,6 @@ def test_a_retelling_that_changes_no_column_still_advances_the_revision(session)
 def test_housekeeping_updates_do_not_move_the_revision(session):
     row = add(session, volatile())
     row.indexed_at = NOW
-    row.layout_x = 1.0
     row.review_after = NOW
     session.commit()
     assert row.revision == 0

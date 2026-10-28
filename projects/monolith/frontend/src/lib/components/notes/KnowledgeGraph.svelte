@@ -1,18 +1,16 @@
 <script>
-  // Knowledge graph rendered to a canvas. Layout positions (`node.x`,
-  // `node.y`) are computed server-side by the gardener every reconcile
-  // cycle and shipped on the wire — the client just paints. We keep the
+  // Knowledge graph rendered to a canvas with local D3 positioning. Keep the
   // quadtree hit-test, the d3-zoom pan/zoom + click-vs-drag detection,
   // viewport-aware zoom-to-node, and the greedy-collision label drawer.
   // Search box, legend, side panel, and status bar live in sibling
   // components and drive this one via props/events.
 
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { select } from "d3-selection";
   import { zoom as d3Zoom, zoomIdentity } from "d3-zoom";
   import { quadtree as d3Quadtree } from "d3-quadtree";
   import { colorFor, CLUSTER_COLORS } from "./clusters.js";
-  import { radiusFor, projectXY } from "./knowledge-graph-layout.js";
+  import { graphFingerprint, layoutGraph } from "./knowledge-graph-layout.js";
 
   /**
    * @typedef {{ id: string, title: string, type: string, degree: number }} Node
@@ -43,15 +41,7 @@
     onZoom = () => {},
   } = $props();
 
-  // Render-time tuning only. Layout (positions, spread, edge tension)
-  // runs server-side in projects/monolith/knowledge/layout.py
-  // (FA2 + hard collide post-process). The render code does not own
-  // any layout parameters.
-  //
-  // baseRadius/hubBoost reduced 35% from 2.8/0.5 in feat/kg-layout-v2
-  // to reduce visible overlap in dense atom clusters; combined with
-  // API-side orphan filtering and a hard collide post-process this
-  // minimizes node overlap while preserving the FA2 cluster shape.
+  // Preserve the existing canvas sizes and label thresholds.
   const CFG = {
     baseRadius: 1.82,
     hubBoost: 0.325,
@@ -69,7 +59,7 @@
   };
 
   // Internal mutable state. simNodes/simEdges are local copies of the
-  // server-supplied data with x/y rescaled into pixel space and edges
+  // API data with locally computed pixel positions and edges
   // kept as string-id references (we resolve to objects in render via
   // `byId.get(...)`).
   let stage; // root div
@@ -83,6 +73,8 @@
   // Pending requestAnimationFrame id for coalesced repaints (see
   // scheduleRender). 0 means no frame is queued.
   let rafId = 0;
+  let layout;
+  let autoFit = true;
 
   let simNodes = [];
   let simEdges = [];
@@ -122,39 +114,30 @@
     return resolved.__other ?? "#888";
   }
 
-  // Server coords arrive normalised to ~[-1, +1] (see compute_layout in
-  // knowledge/layout.py — connected nodes scaled to core_fraction, then
-  // a hard collide post-process spreads them out further; orphans are
-  // filtered out at the API layer so they never reach this component).
-  // projectXY scales them so the unit canvas fills the smaller stage
-  // dimension minus a margin; fitToBbox() later refines the initial zoom.
-
   function rebuildGraph() {
+    layout?.stop();
+    autoFit = true;
+    placedLabels = [];
+    hovered = null;
     const w = stage?.clientWidth ?? canvas?.width ?? 1200;
     const h = stage?.clientHeight ?? canvas?.height ?? 800;
-    const cx = w / 2;
-    const cy = h / 2;
-    const margin = 60;
-    const span = Math.max(50, Math.min(w, h) / 2 - margin);
-
-    simNodes = nodes.map((n) => {
-      const [x, y] = projectXY(n, cx, cy, span);
-      return {
-        id: n.id,
-        title: n.title,
-        cluster: n.type,
-        degree: n.degree ?? 0,
-        r: radiusFor(n.degree ?? 0, CFG),
-        color: colorForResolved(n.type),
-        x,
-        y,
-      };
+    layout = layoutGraph(nodes, edges, {
+      width: w,
+      height: h,
+      config: CFG,
+      colorFor: colorForResolved,
+      onTick: (done) => {
+        rebuildQuadtree();
+        if (done && autoFit) {
+          const selected = selectedId && byId.get(selectedId);
+          if (selected) focusNode(selected);
+          else fitToBbox();
+        }
+        scheduleRender();
+      },
     });
-    simEdges = edges.map((e) => ({
-      source: e.source,
-      target: e.target,
-      kind: e.kind ?? e.edge_type ?? null,
-    }));
+    simNodes = layout.nodes;
+    simEdges = layout.edges;
     byId = new Map(simNodes.map((n) => [n.id, n]));
     neighborsOf = new Map(simNodes.map((n) => [n.id, new Set()]));
     for (const e of simEdges) {
@@ -714,10 +697,9 @@
     ctx = canvas.getContext("2d");
     resolved = resolveColors();
 
-    // resize() before rebuildGraph() so the projection picks up the real
-    // stage size — server x/y are normalised to ~[-1, +1] and we scale
-    // them against the canvas dimensions.
+    // Seed the local layout using the actual stage size.
     resize();
+    lastDataFingerprint = graphFingerprint(nodes, edges);
     rebuildGraph();
     rebuildQuadtree();
     fitToBbox();
@@ -742,6 +724,7 @@
       })
       .on("zoom", (e) => {
         transform = e.transform;
+        if (e.sourceEvent) autoFit = false;
         onZoom(transform.k);
         if (e.sourceEvent && e.sourceEvent.type === "mousemove") {
           panning = true;
@@ -761,11 +744,13 @@
 
     resizeObserver = new ResizeObserver(() => {
       resize();
+      // Keep user navigation and selection framing across viewport changes.
+      if (autoFit && !selectedId) fitToBbox();
       scheduleRender();
     });
     resizeObserver.observe(stage);
 
-    // First paint with the server-supplied positions.
+    // First paint with deterministic local seeds, before the bounded layout.
     render();
 
     // Cleanup runs on component destroy. Returning it from onMount
@@ -773,9 +758,11 @@
     // to the SSR export and crashes on client (svelte/package.json
     // exports map's `default` is the server bundle).
     return () => {
+      layout?.stop();
       if (rafId) cancelAnimationFrame(rafId);
       if (resizeObserver) resizeObserver.disconnect();
       if (canvas) {
+        select(canvas).interrupt().on(".zoom", null);
         canvas.removeEventListener("mousedown", handleMouseDown);
         canvas.removeEventListener("mousemove", handleMouseMove);
         canvas.removeEventListener("mouseleave", handleMouseLeave);
@@ -788,28 +775,19 @@
 
   // ───────────────────────── reactive effects ─────────────────────────
 
-  // Rebuild the graph when nodes/edges change. Tracked via referential
-  // identity — the parent should pass new array refs when the data set
-  // actually changes.
-  //
-  // BUT: the parent's `nodesWithDegree` is a $derived.by that produces
-  // a new array every time the parent re-renders (any unrelated state
-  // change like updating `hoverTitle` re-runs the derived). We can't
-  // tell "real shape change" from "spurious new ref" just from the
-  // ===, so fingerprint by length + first/last id and only rebuild
-  // when that fingerprint actually changes. Otherwise hovering a node
-  // would re-project all coords and the picture would micro-jitter.
+  // Compare all rendered fields and edge IDs, including interior replacements.
+  // Parent-derived arrays may get new references on unrelated hover updates.
   let lastDataFingerprint = "";
   $effect(() => {
-    const fp =
-      `${nodes.length}:${edges.length}:` +
-      `${nodes[0]?.id ?? ""}:${nodes[nodes.length - 1]?.id ?? ""}`;
+    const fp = graphFingerprint(nodes, edges);
     if (fp === lastDataFingerprint) return;
     lastDataFingerprint = fp;
     if (!ctx) return;
-    rebuildGraph();
-    rebuildQuadtree();
-    render();
+    untrack(() => {
+      rebuildGraph();
+      rebuildQuadtree();
+      render();
+    });
   });
 
   // React to selection changes — the parent owns selectedId; we just
@@ -826,7 +804,7 @@
     render();
   });
 
-  // Cluster toggle is a render-time mask, not a layout reflow: server
+  // Cluster toggle is a render-time mask, not a layout reflow: local
   // positions are computed for every node regardless of cluster (cluster
   // colours just for paint), and render() gates every node and edge on
   // activeClusters. Toggling a chip therefore just shows/hides without

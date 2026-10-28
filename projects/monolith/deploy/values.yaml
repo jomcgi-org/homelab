@@ -28,8 +28,8 @@ backend:
     requests:
       # 4Gi -> 1Gi: the old 4Gi was headroom for the in-process FA2 graph-layout
       # job that OOMKilled the API pod when heavy jobs piled up. All batch jobs
-      # now run off-pod as Argo CronWorkflows (knowledge.layout carries its own
-      # 4Gi request), so the API pod only serves HTTP/MCP: live baseline RSS is
+      # now run off-pod as Argo CronWorkflows, so the API pod only serves
+      # HTTP/MCP: live baseline RSS is
       # ~250Mi, and 1Gi is ~4x headroom for request-path spikes. requests==limits
       # per the repo memory convention.
       memory: "1Gi"

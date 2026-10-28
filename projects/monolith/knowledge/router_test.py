@@ -1000,8 +1000,6 @@ def _seed_public_note(
     type="atom",
     content=None,
     indexed_at=None,
-    layout_x=None,
-    layout_y=None,
     tags=None,
     aliases=None,
     path=None,
@@ -1015,8 +1013,6 @@ def _seed_public_note(
         type=type,
         content=content,
         indexed_at=indexed_at or datetime.now(timezone.utc),
-        layout_x=layout_x,
-        layout_y=layout_y,
         tags=tags or [],
         aliases=aliases or [],
         path=path or f"{note_id}.md",
@@ -1268,17 +1264,13 @@ class TestPublicGraphEndpoint:
         assert body["nodes"] == []
         assert body["indexed_at"] is None
 
-    def test_public_graph_returns_layout_coords(self, real_session):
-        """The handler returns the view's (already-coalesced) layout columns
-        verbatim as each node's x/y. The public-vs-full COALESCE itself now
-        lives in the view, so it is not re-tested here."""
+    def test_public_graph_returns_coordinate_free_nodes(self, real_session):
+        """Both graph contracts leave positioning to the shared canvas."""
         _seed_public_note(
             real_session,
             note_id="pub-A",
             title="Pub A",
             type="atom",
-            layout_x=0.7,
-            layout_y=0.8,
         )
 
         app.dependency_overrides[get_session] = lambda: real_session
@@ -1291,8 +1283,7 @@ class TestPublicGraphEndpoint:
         body = res.json()
         nodes = body["nodes"]
         assert len(nodes) == 1
-        assert nodes[0]["x"] == 0.7
-        assert nodes[0]["y"] == 0.8
+        assert set(nodes[0]) == {"id", "title", "type", "degree", "verification_state"}
 
 
 class TestPublicNoteEndpoint:

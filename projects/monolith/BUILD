@@ -1877,7 +1877,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "knowledge/tasks_router.py",
     "knowledge/gaps.py",
     "knowledge/mcp.py",
-    "knowledge/layout.py",
     # The public observability router needs the model and parser, never the
     # snapshot writer or its PostgreSQL mutation path.
     "observability/merged_prs_writer.py",
@@ -1966,7 +1965,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     "knowledge/router.py",
     "knowledge/tasks_router.py",
     "knowledge/gaps.py",
-    "knowledge/layout.py",
     # Private home scheduling and observability writer paths. home/** is not in
     # the allowlist today, but keeping the individual paths documents the
     # boundary if a narrow home dependency is added later.
@@ -4306,18 +4304,6 @@ py_test(
 )
 
 py_test(
-    name = "scripts_preview_layout_test",
-    srcs = ["scripts/preview_layout_test.py"],
-    data = ["scripts/preview-layout.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//networkx",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "chat_agent_helper_functions_test",
     srcs = ["chat/agent_helper_functions_test.py"],
     imports = ["."],
@@ -6216,17 +6202,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "knowledge_layout_test",
-    srcs = ["knowledge/layout_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//networkx",
         "@pip//pytest",
     ],
 )

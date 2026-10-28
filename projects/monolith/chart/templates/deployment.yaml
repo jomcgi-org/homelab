@@ -595,20 +595,6 @@ spec:
               value: {{ .Values.knowledge.feeds.repoDiff.reconcile.enabled | quote }}
             - name: KG_DOCFIX_REVIEW_ENABLED
               value: {{ .Values.knowledge.feeds.docFixReview.enabled | quote }}
-            - name: KNOWLEDGE_LAYOUT_SCALING_RATIO
-              value: {{ .Values.knowledge.layout.scalingRatio | quote }}
-            - name: KNOWLEDGE_LAYOUT_GRAVITY
-              value: {{ .Values.knowledge.layout.gravity | quote }}
-            - name: KNOWLEDGE_LAYOUT_MAX_ITER
-              value: {{ .Values.knowledge.layout.maxIter | quote }}
-            - name: KNOWLEDGE_LAYOUT_LINLOG
-              value: {{ .Values.knowledge.layout.linlog | quote }}
-            - name: KNOWLEDGE_LAYOUT_CORE_FRACTION
-              value: {{ .Values.knowledge.layout.coreFraction | quote }}
-            - name: KNOWLEDGE_LAYOUT_NODE_SIZE_SCALE
-              value: {{ .Values.knowledge.layout.nodeSizeScale | quote }}
-            - name: KNOWLEDGE_LAYOUT_SEED
-              value: {{ .Values.knowledge.layout.seed | quote }}
             {{- end }}
             {{- if and .Values.agent .Values.agent.discord }}
             - name: MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID

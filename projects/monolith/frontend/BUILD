@@ -148,6 +148,7 @@ js_library(
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@esbuild/linux-x64",
         # d3 sub-packages used by the /notes graph view
+        ":node_modules/d3-force",
         ":node_modules/d3-quadtree",
         ":node_modules/d3-selection",
         ":node_modules/d3-zoom",
@@ -224,6 +225,7 @@ js_library(
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@esbuild/linux-x64",
         # d3 sub-packages used by the /notes graph view
+        ":node_modules/d3-force",
         ":node_modules/d3-quadtree",
         ":node_modules/d3-selection",
         ":node_modules/d3-zoom",

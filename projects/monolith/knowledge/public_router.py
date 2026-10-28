@@ -296,11 +296,6 @@ def get_public_graph(
                 ),
                 else_=PublicNote.review_after,
             ).label("review_after"),
-            # The view already COALESCEs layout_x_public/layout_x (and y), so
-            # these columns are the public-preferred positions. Keep both
-            # nullable in the response; the client handles either.
-            PublicNote.layout_x.label("x"),
-            PublicNote.layout_y.label("y"),
         ).where(
             PublicNote.type.in_(list(GRAPH_NOTE_TYPES)),
             current_predicate(now=now, model=PublicNote),
@@ -354,8 +349,6 @@ def get_public_graph(
             "type": row.type,
             "verification_state": row.verification_state,
             "degree": degree_by_note_id.get(row.note_id, 0),
-            "x": row.x,
-            "y": row.y,
         }
         for row in public_note_rows
     ]

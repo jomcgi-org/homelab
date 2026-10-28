@@ -280,8 +280,6 @@ def _make_note(
     type_: str = "atom",
     content: str | None = "Body text.",
     indexed_at: datetime = _NOW,
-    x: float | None = None,
-    y: float | None = None,
     verification_state: str = "verified",
     disputed: bool = False,
 ) -> PublicNote:
@@ -292,8 +290,6 @@ def _make_note(
         content=content,
         indexed_at=indexed_at,
         path=f"atoms/{note_id}.md",
-        layout_x=x,
-        layout_y=y,
         verification_state=verification_state,
         disputed=disputed,
         observed_at=_NOW,
@@ -451,14 +447,13 @@ class TestPublicGraphWithData:
         parsed = datetime.fromisoformat(body["indexed_at"])
         assert isinstance(parsed, datetime)
 
-    def test_layout_coordinates_included_in_node(self, client, session):
-        session.add(_make_note("n1", "Placed", x=3.14, y=2.71))
+    def test_layout_coordinates_absent_from_node(self, client, session):
+        session.add(_make_note("n1", "Placed"))
         session.commit()
 
         body = client.get("/api/knowledge/public/graph").json()
         node = body["nodes"][0]
-        assert node["x"] == pytest.approx(3.14)
-        assert node["y"] == pytest.approx(2.71)
+        assert set(node) == {"id", "title", "type", "degree", "verification_state"}
 
     def test_verification_state_included_in_node(self, client, session):
         session.add(_make_note("n1", "Unverified", verification_state="unverified"))

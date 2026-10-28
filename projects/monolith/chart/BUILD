@@ -7,6 +7,8 @@ filegroup(
     srcs = glob([
         "migrations/*.sql",
         "migrations/atlas.sum",
+        # Test data only. The Helm ConfigMap globs migrations/*.sql exclusively.
+        "staged-migrations/*.sql",
     ]),
     visibility = ["//projects/monolith:__subpackages__"],
 )

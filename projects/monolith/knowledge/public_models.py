@@ -38,8 +38,6 @@ class PublicNote(SQLModel, table=True):
     type: str | None = None
     content: str | None = None
     indexed_at: datetime
-    layout_x: float | None = None
-    layout_y: float | None = None
     tags: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
     aliases: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
     path: str

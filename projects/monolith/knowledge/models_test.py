@@ -305,14 +305,10 @@ class TestDefaultFactoryTimestamps:
         assert ri.created_at == explicit_ts
 
 
-def test_note_model_has_optional_layout_columns():
-    note = Note(note_id="n1", path="x.md", title="X", content_hash="h")
-    assert note.layout_x is None
-    assert note.layout_y is None
-    note.layout_x = 0.1
-    note.layout_y = -0.2
-    assert note.layout_x == 0.1
-    assert note.layout_y == -0.2
+def test_note_model_has_no_persisted_layout_columns():
+    assert not {"layout_x", "layout_y", "layout_x_public", "layout_y_public"} & set(
+        Note.__table__.columns.keys()
+    )
 
 
 def test_note_visibility_accepts_public_private_or_none():

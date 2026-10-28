@@ -1757,6 +1757,61 @@ job (ADR agents/063). Guests never write the graph because identity and
 provenance are server-stamped: the guest that produced a candidate fact must
 not be the party that asserts its provenance.
 
+### Knowledge graph positions and staged schema retirement
+
+The shared public/private knowledge canvas computes positions with D3 force
+layout. API nodes carry identity, display metadata and visible degree, with no
+coordinates. Local simulation nodes and D3-mutated links are separate from
+props and string-ID rendering edges. Layout advances for at most 120 ticks in
+cancellable frame batches; data replacement and unmount stop outstanding work.
+Pan/zoom, cluster masks, search, selection and touched-note highlights remain
+canvas concerns. Cached payload coordinates are ignored.
+
+**Why.** Newly indexed notes must be visible without waiting for a stored-layout
+job. Joe's 2026-10-28 decision (#6920) retires the Python layout, preview tooling
+and all four persisted coordinate columns, including the public variants.
+The public view and its dependent note-entity view require an explicit rebuild
+because PostgreSQL cannot remove view columns with CREATE OR REPLACE VIEW.
+
+The forward SQL is staged at
+`chart/staged-migrations/20261028180000_retire_knowledge_layout.sql`. The Helm
+ConfigMap includes only `migrations/*.sql`, so this SQL does not automatically
+run. The AtlasMigration resource has no rollout barrier ordering it after both
+application deployments. Adding the drop directly to that bundle would allow
+old ORM or public-view readers to fail during a rolling upgrade.
+
+Authorized operational acceptance remains on #6920. This PR must stay draft
+and unmerged under its operator landing hold. The later operational sequence is:
+
+1. Review the staged SQL and inventory actual dependent views, owners and grants.
+   Confirm the deployed view still matches the tested pre-transition definition.
+   Unexpected dependencies abort through RESTRICT; investigate them before
+   promoting the SQL. Preserve a recovery snapshot under existing backup policy.
+2. In a separately authorized rollout, deploy the coordinate-free application
+   to both monolith and monolith-public while leaving the old schema intact.
+   Wait for chart write-back and verify actual deployed revisions, old pods,
+   jobs and other SQL readers are no longer using any coordinate column. The
+   new explicit SELECT lists tolerate the old view's additional columns.
+3. Only after that acceptance, promote the staged SQL into `chart/migrations`
+   through another reviewed PR with a version later than the latest applied
+   migration and a regenerated Atlas checksum. Atlas must execute it in one
+   transaction. The SQL drops the known dependent view first, rebuilds the
+   coordinate-free notes and note-entity views, restores their owners and
+   explicit public_reader SELECT grants, and removes only four layout columns.
+   Do not roll back to an old application after the drop. Recovery needs a
+   separately reviewed schema restoration before any old reader starts.
+4. Verify notes, edges, view projections, ownership and grants survived. Verify
+   the actual public_reader role and public same-origin graph endpoint return
+   the intended public-only coordinate-free contract. Verify both live graphs
+   with new connected notes, pan/zoom, selection, search, cluster filters,
+   labels, touched highlights, refresh and resize, without console errors.
+
+PostgreSQL contract tests exercise existing and dropped schemas, restricted
+readers, projection equality, note/edge survival and unexpected-dependency
+rollback. CI cannot establish production dependency completeness, replication
+catch-up or live browser acceptance. No production migration is authorized by
+these tests.
+
 ## 7. MCP surface
 
 `monolith_agent_schema_retirement_inventory` is a parameterless private-tier
@@ -2227,6 +2282,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Compute knowledge graph positions client-side and retire stored coordinates | section 6; Joe's 2026-10-28 decision | #6920 | repository-only staged delivery, operator landing hold; authorized schema transition and live public/private rendering acceptance remain |
 | Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
 | Release execution capacity for quiescent paused or landing-held tasks while retaining ownership and durable authorized resume intent | section 4; Joe's 2026-10-18 decision | #7163 | repository implementation staged; separately authorized rollout and live capacity, ownership and reacquisition checks remain |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
