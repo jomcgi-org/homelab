@@ -162,15 +162,18 @@ def takedown(
 
     if session_id:
         action, selector = "takedown_session", session_id
-        ids = [session_id]
+        query = text("SELECT id FROM grimoire_chat.sessions WHERE id = :sel FOR UPDATE")
     else:
         action, selector = "takedown_ip_hash", ip_hash
-        ids = list(
-            session.execute(
-                text("SELECT id FROM grimoire_chat.sessions WHERE ip_hash = :sel"),
-                {"sel": selector},
-            ).scalars()
+        query = text(
+            "SELECT id FROM grimoire_chat.sessions WHERE ip_hash = :sel "
+            "ORDER BY id FOR UPDATE"
         )
+
+    # Snapshot INSERTs acquire a foreign-key KEY SHARE lock on the parent.
+    # FOR UPDATE conflicts with it, fencing new shares before child deletion.
+    # Without this lock a concurrent share could survive as a SET NULL orphan.
+    ids = list(session.execute(query, {"sel": selector}).scalars())
 
     sessions, messages, snapshots = _delete_sessions(session, ids)
     report = PurgeReport(
