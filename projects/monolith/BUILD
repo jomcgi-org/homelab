@@ -416,8 +416,7 @@ py_venv_binary(
 )
 
 # Stdlib-only generator for the ADR 036 orchestrator baked context bundle.
-# Concatenates chat/orchestrator_prompt.md, the recipe catalog under
-# goosecracker/recipes/*.yaml, and a repo structure
+# Concatenates chat/orchestrator_prompt.md and a repo structure
 # digest into the committed chat/orchestrator_bundle.md, byte-deterministic (git
 # ls-files driven, no timestamps) so the orchestrator's system-message prefix
 # stays cache-stable across escalations. Run via
@@ -3916,16 +3915,6 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "chat_orchestrator_plan_test",
-    srcs = ["chat/orchestrator_plan_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
     ],
 )
 
@@ -9013,17 +9002,6 @@ bdd_test(
 py_test(
     name = "goosecracker_repo_catalog_test",
     srcs = ["goosecracker/tests/repo_catalog_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "goosecracker_recipe_catalog_test",
-    srcs = ["goosecracker/tests/recipe_catalog_test.py"],
-    data = glob(["goosecracker/recipes/*.yaml"]),
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",

@@ -1331,10 +1331,17 @@ only when Joe requests resumption.
 Proactive work is scheduled rather than reactive: hourly changelog summaries
 for three repositories, a reminders drain every two minutes, a weekly directive
 observation pass and a daily directive autopilot, daily channel summaries, and
-weekly safeguards training, all as CronWorkflows. The orchestrator brief
-compiler decides chat against task submission on channels that hold the
+weekly safeguards training, all as CronWorkflows. The orchestrator
+`compile()` decides only chat versus session on channels that hold the
 `orchestrator` consent grant, with an ordered provider fallback chain that
-fails open to direct submit.
+fails open to direct submit. It makes no `submit_plan` call. Each enabled,
+granted attempt records one routing telemetry row; a session verdict carries its row id for
+thread linkage. Sessions use the caller's raw prompt, selected repo and model.
+
+**Why.** The generated plan had no runtime consumer after the session executor
+retirement. Joe chose to remove plan generation and its recipe catalog in
+#7043. Repository grants and the chat reply guidance remain in the routing tier.
+Historical telemetry stays readable in the existing JSON column.
 (see: /projects/monolith/chart/values.yaml)
 (see: /projects/monolith/chat/orchestrator_client.py)
 (see: /projects/monolith/chat/acl.py)
@@ -2241,6 +2248,7 @@ this table when the work ships or the issue closes without it.
 | The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
 | Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
 | One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789; #5786 closed 2026-09-14) | not started |
+| Chat orchestration decides chat versus session only; remove unused plan generation and its recipe catalog | section 4, chat routing | #7043 | implemented in repository, accepted by Joe on 2026-10-28 |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
 | Execution profiles (implement, investigate, debug, research) become policy dimensions beside difficulty and risk | The factory conductor | #5784 | not started; conductor and planner on Astra since generation 11 |
 | The knowledge graph gains project context, runtime evidence and known-work linkage in bounded slices behind a measured retrieval baseline | section 6 | #5829 (children #6128, #5849, #5571, #5573, #5913, #5926) | not started: baseline #6128 first |

@@ -12,16 +12,12 @@ from chat.directive_admin import list_directives  # re-exported
 from chat.directive_admin import pin_directive  # re-exported
 from chat.directive_admin import revert_directive  # re-exported
 from chat.directive_admin import set_directive  # re-exported
-from chat.orchestrator_plan import Plan  # re-exported
 from chat.safeguards import pardon_user  # re-exported
 from chat.safeguards import trust_status  # re-exported
-from chat.orchestrator_plan import PlanStep  # re-exported
 from chat.outbox import enqueue_message  # re-exported
 from chat.summarizer import run_summary_generation  # re-exported
 
 __all__ = [
-    "Plan",
-    "PlanStep",
     "enqueue_message",
     "run_changelog_for_config",
     "run_summary_generation",
