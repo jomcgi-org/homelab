@@ -3188,7 +3188,7 @@ class UtteranceRequest(BaseModel):
     started_at: AwareDatetime
     ended_at: AwareDatetime
     text: str = Field(min_length=1, max_length=4000)
-    confidence: float = Field(ge=0, le=1)
+    confidence: float | None = Field(ge=0, le=1)
     source: Literal["browser", "table", "discord"]
     audience: UtteranceAudience = Field(default_factory=UtteranceAudience)
     request_id: UUID | None = None
@@ -3371,8 +3371,13 @@ def get_transcript_state(
     session: Session = Depends(get_session),
 ) -> dict:
     _get_member_or_404(session, campaign_id, email)
+    from grimoire.stt.control import provider_status
+
     return {
-        "state": _session_in_campaign(session, campaign_id, session_id).transcript_state
+        "state": _session_in_campaign(
+            session, campaign_id, session_id
+        ).transcript_state,
+        "provider": provider_status(session),
     }
 
 
@@ -3485,6 +3490,20 @@ def ingest_utterance(
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> SessionEventView:
+    result = ingest_utterance_core(session, campaign_id, session_id, body, email)
+    session.commit()
+    return result
+
+
+def ingest_utterance_core(
+    session: Session,
+    campaign_id: str,
+    session_id: str,
+    body: UtteranceRequest,
+    email: str,
+) -> SessionEventView:
+    """Validated shared writer; caller owns transaction and request identity."""
+    require_transcript_enabled()
     member = _get_member_or_404(session, campaign_id, email)
     # State transitions and all event writers take this lock first. Refresh it
     # before checking state so an identity-map cache cannot bypass a pause.
@@ -3590,8 +3609,6 @@ def ingest_utterance(
         raise HTTPException(409, detail=str(exc)) from exc
     except (InvalidEventAudienceError, ValueError) as exc:
         raise HTTPException(422, detail=str(exc)) from exc
-    session.commit()
-    session.refresh(row)
     return _event_view(row, member)
 
 
@@ -4633,3 +4650,8 @@ def decide_invitation(
 
 # Specific public-capability endpoints stay behind their own default-off gate.
 router.include_router(join_links_router)
+
+# Imported after the shared ingest core to keep the audio boundary thin.
+from grimoire.stt.routes import router as speech_router
+
+router.include_router(speech_router)

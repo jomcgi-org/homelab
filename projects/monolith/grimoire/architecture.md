@@ -166,7 +166,70 @@ pause from on, and a repeated pause is a no-op. Ended sessions refuse all state
 writes. Each actual transition locks the session and appends one table-audience
 system event with the caller as author, the previous state and the new state.
 All members read the current state. Consent and state requests forbid unknown
-fields, including audio. No raw audio is accepted or stored by this surface.
+fields, including audio. These JSON state and consent routes never accept audio.
+
+### Default-off segment transcription (#6620)
+
+`POST /campaigns/{id}/sessions/{sid}/audio-segments` accepts one binary multipart
+`audio` field with `audio/webm;codecs=opus` or PCM16 `audio/wav`, mono or stereo.
+`X-Request-ID` is a UUID. The existing play and transcript gates stay off.
+Authentication, membership, active session state and active consent naming
+`Google Speech-to-Text` are checked before parsing audio or constructing a provider.
+The request stream has a five-second deadline and a 1,000,000-byte audio budget
+plus 8,192 bytes of multipart framing. Content-Length is not trusted. An
+in-memory parser precedes any framework upload parser; no UploadFile is used.
+RIFF lengths and WebM element extents are validated before PyAV decodes from
+BytesIO. Decoded sample duration must be positive and at most 15 seconds;
+timestamp gaps are also bounded, allowing only one stream timestamp tick of
+quantization. Unknown-sized streaming WebM containers must have complete finite
+elements; an interruption exactly between elements cannot be distinguished
+from a completed streaming container. No disk spool or background audio queue
+is used. Reference release is not a claim of secure byte erasure in Python.
+
+**Why.** Google v2 synchronous Recognize supports inline bytes, auto decoding
+for WAV_LINEAR16 and WEBM_OPUS, and inline phrase sets. The regional language
+matrix documents `eu` / `short` / `en-GB` with adaptation and confidence. These
+are the first adapter's bounded defaults, not approval to process live audio.
+The contract is grounded in Google's [Recognize schema](https://docs.cloud.google.com/speech-to-text/docs/reference/rest/v2/projects.locations.recognizers/recognize),
+[RecognitionConfig schema](https://docs.cloud.google.com/speech-to-text/docs/reference/rest/v2/projects.locations.recognizers)
+and [language/model matrix](https://docs.cloud.google.com/speech-to-text/docs/speech-to-text-supported-languages).
+`stt/fixtures/recognize.json` is a sanitized, schema-authored contract fixture,
+not a recording of a live paid request. PyAV's [file-like input API](https://pyav.org/docs/stable/api/_globals.html)
+provides the in-memory decoder. Provider contract tests do not replace live
+format, model, processing-policy or identity acceptance.
+
+`Transcriber` and deterministic `FakeTranscriber` separate ingestion from the
+provider. The Google adapter uses the regional endpoint and implicit `_`
+recognizer, an eight-second deadline, bounded response and no recognition
+retries. ADC initialization is lazy and receives no audio; it consumes the
+Operator-backed credential file, or a separately configured existing workload
+identity. The final issue decision is represented by a default-off
+OnePasswordItem declaration, not a real item or embedded credentials. Only
+when grimoire, play and transcript are all enabled does Helm require the
+existing project and approved item path, render the resource, and mount its
+Secret read-only in the backend. The frontend only receives status configuration.
+
+Speaker hints reuse `visible_entities_query`, including name-only grants, and
+the caller's own PC (all campaign PCs for the DM). They are bounded and deduplicated.
+Short DB phases own their sessions and use session-first locks; none spans
+provider I/O. Fresh authorization after recognition checks membership, state
+and consent before the shared validated utterance-ingest core appends as the
+authenticated browser speaker. PostgreSQL-backed admission applies 12 segments
+per minute per member across sessions and replicas. Three provider failures
+open a shared breaker for 30 seconds, followed by one 15-second leased probe.
+Old requests cannot close a newer breaker. A durable per-member/session/request
+receipt prevents duplicate billing; pending or unknown outcomes return conflict
+instead of retrying a possibly billed request. Receipts hold metadata only.
+
+The session-state response exposes provider availability; the existing session
+poll reads it and shows “Transcription unavailable. Play can continue.” without
+disabling play. The segment span records session id, latency, sanitized provider
+failure and `metadata.totalBilledDuration` only when Google returns it. Missing,
+partial, timeout or cancellation billing remains unknown, never inferred from
+input duration. Provider HTTP/auth auto-instrumentation and raw decoder logging
+are suppressed; audio, text, phrase hints and raw provider errors are not span
+attributes. Live latency, per-session billing visibility and outage/privacy
+acceptance remain operator-owned under #6620 after an authorized staged rollout.
 
 Utterance ingest accepts attributed text with timezone-aware start and end
 times, confidence and a browser, table or Discord source. Browser speakers

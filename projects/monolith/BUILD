@@ -1200,6 +1200,9 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        "@pip//av",
+        "@pip//google_auth",
+        "@pip//requests",
         ":pkg_auth",
         ":pkg_core",
         ":pkg_framework",
@@ -6523,6 +6526,40 @@ py_test(
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
+)
+
+py_test(
+    name = "grimoire_stt_test",
+    srcs = ["grimoire/stt_test.py"],
+    data = ["grimoire/stt/fixtures/recognize.json"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//av",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "grimoire_stt_postgres_test",
+    srcs = ["grimoire/stt_postgres_test.py"],
+)
+
+py_test(
+    name = "grimoire_stt_chart_test",
+    srcs = ["grimoire/stt_chart_test.py"],
+    data = [
+        "//projects/monolith/chart:docfix_review_test_data",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    imports = ["."],
+    deps = ["@pip//pytest", "@pip//pyyaml"],
 )
 
 py_test(

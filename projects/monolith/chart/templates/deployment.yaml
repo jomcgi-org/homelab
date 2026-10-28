@@ -680,6 +680,7 @@ spec:
               value: {{ .Values.grimoire.play.enabled | quote }}
             - name: GRIMOIRE_TRANSCRIPT_ENABLED
               value: {{ .Values.grimoire.transcript.enabled | quote }}
+            {{- include "monolith.sttEnv" . | nindent 12 }}
             - name: GRIMOIRE_INVITATION_LINKS_ENABLED
               value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
             - name: PLATFORM_AUTH_MANAGEMENT_ENABLED
@@ -870,6 +871,11 @@ spec:
           volumeMounts:
             - name: backend-tmp
               mountPath: /tmp
+            {{- if include "monolith.sttEnabled" . }}
+            - name: grimoire-stt
+              mountPath: /run/grimoire-stt
+              readOnly: true
+            {{- end }}
             {{- if .Values.tokenBroker.spiffe.enabled }}
             - name: tokenbroker-svid
               mountPath: /run/tokenbroker-svid
@@ -974,6 +980,10 @@ spec:
               value: {{ .Values.grimoire.play.enabled | quote }}
             - name: GRIMOIRE_TRANSCRIPT_ENABLED
               value: {{ .Values.grimoire.transcript.enabled | quote }}
+            {{- if include "monolith.sttEnabled" . }}
+            - name: GRIMOIRE_STT_PROVIDER
+              value: {{ .Values.grimoire.transcript.provider | quote }}
+            {{- end }}
             - name: GRIMOIRE_INVITATION_LINKS_ENABLED
               value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
             - name: PLATFORM_AUTH_MANAGEMENT_ENABLED
@@ -1036,6 +1046,15 @@ spec:
       # serving images have no persistent filesystem state; Python tempfile
       # users and any language cache fallback can use only these mounts.
       volumes:
+        {{- if include "monolith.sttEnabled" . }}
+        - name: grimoire-stt
+          secret:
+            secretName: {{ include "monolith.fullname" . }}-grimoire-stt
+            defaultMode: 0444
+            items:
+              - key: {{ .Values.grimoire.transcript.google.credentialKey | quote }}
+                path: credentials.json
+        {{- end }}
         - name: backend-tmp
           emptyDir: {}
         - name: progress-ingest-tmp

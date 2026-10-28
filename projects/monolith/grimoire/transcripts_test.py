@@ -37,6 +37,7 @@ EXPECTED_ROUTES = {
     ("GET", SETTINGS),
     ("PATCH", SETTINGS),
     ("POST", UTTERANCES),
+    ("POST", PREFIX + "/sessions/{session_id}/audio-segments"),
     ("PUT", CONSENT),
     ("DELETE", CONSENT),
     ("GET", CONSENT),
@@ -851,7 +852,8 @@ def test_dm_state_transitions_append_one_table_event_each(http_harness):
         assert h.snapshot() == before
         for viewer in ("dm", "player_a", "player_b", "no_character"):
             assert client.get(url(h, state=True), headers=h.headers(viewer)).json() == {
-                "state": value
+                "state": value,
+                "provider": "unavailable",
             }
         previous = value
 

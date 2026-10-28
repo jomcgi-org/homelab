@@ -1,0 +1,10 @@
+{
+  "results": [
+    {
+      "alternatives": [{"transcript": "A spoken clue", "confidence": 0.92}],
+      "resultEndOffset": "1.250s",
+      "languageCode": "en-GB"
+    }
+  ],
+  "metadata": {"requestId": "sanitized-request", "totalBilledDuration": "2s"}
+}

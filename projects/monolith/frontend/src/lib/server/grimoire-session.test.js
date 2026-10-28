@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionState } from "./grimoire-session.js";
 
 const cookies = { get: () => "signed-grimoire-token" };
@@ -9,6 +9,47 @@ const response = (value) => ({
 });
 
 describe("sessionState", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each(["available", "degraded", "unavailable"])(
+    "reads real transcription status %s without interrupting play",
+    async (provider) => {
+      vi.stubEnv("GRIMOIRE_TRANSCRIPT_ENABLED", "true");
+      const fetch = vi.fn(async (url) => {
+        if (url.endsWith("/lobby"))
+          return response({ campaigns: [{ id: "campaign", role: "player" }] });
+        if (url.endsWith("/sessions"))
+          return response([{ id: "session", status: "active" }]);
+        if (url.endsWith("/transcript")) {
+          if (provider === "unavailable") throw new Error("status unavailable");
+          return response({ state: "on", provider });
+        }
+        if (url.includes("/journal")) return response({});
+        return response([]);
+      });
+      const state = await sessionState(fetch, cookies, "campaign");
+      expect(state.transcription.provider).toBe(provider);
+      expect(state.session.id).toBe("session");
+      expect(state.events).toEqual([]);
+    },
+  );
+
+  it("does not request transcription state when disabled", async () => {
+    vi.stubEnv("GRIMOIRE_TRANSCRIPT_ENABLED", "false");
+    const fetch = vi.fn(async (url) => {
+      if (url.endsWith("/lobby"))
+        return response({ campaigns: [{ id: "campaign", role: "player" }] });
+      if (url.endsWith("/sessions")) return response([{ id: "session" }]);
+      if (url.includes("/journal")) return response({});
+      return response([]);
+    });
+    expect(
+      (await sessionState(fetch, cookies, "campaign")).transcription,
+    ).toBeNull();
+    expect(fetch.mock.calls.some(([url]) => url.endsWith("/transcript"))).toBe(
+      false,
+    );
+  });
   it("loads the selected historical session and fails closed for an unknown session", async () => {
     const fetch = vi.fn(async (url) => {
       if (url.endsWith("/lobby"))

@@ -2027,6 +2027,14 @@ grimoire:
   transcript:
     # Off until the capture surface is ready.
     enabled: false
+    provider: google
+    google:
+      # Repository defaults only: no API, identity or item is provisioned.
+      # Uses v2 eu / short / en-GB with inline phrase adaptation.
+      project: ""
+      onepassword:
+        itemPath: ""
+      credentialKey: credentials.json
   s3Bucket: "grimoire"
   # Default extraction model (spec #5): DeepSeek V4 Flash via OpenRouter, with
   # reasoning disabled per call in code. deploy/values.yaml can repoint this at

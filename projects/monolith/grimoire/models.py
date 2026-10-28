@@ -987,6 +987,49 @@ class CampaignMember(SQLModel, table=True):
     )
 
 
+class SpeechControl(SQLModel, table=True):
+    """Replica-shared admission counters, never media or recognition content."""
+
+    __tablename__ = "speech_control"
+    __table_args__ = ({"schema": "grimoire", "extend_existing": True},)
+    key: str = Field(primary_key=True, max_length=80)
+    window_started: float = 0
+    count: int = 0
+    failures: int = 0
+    open_until: float = 0
+    probe_until: float = 0
+    probe_id: str | None = None
+
+
+class SpeechAttempt(SQLModel, table=True):
+    """Durable first-result-wins receipt; uncertain requests are never rebilled."""
+
+    __tablename__ = "speech_attempt"
+    __table_args__ = ({"schema": "grimoire", "extend_existing": True},)
+    id: str = Field(sa_column=_uuid_column(primary_key=True))
+    session_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.game_session.id", ondelete="CASCADE"
+        )
+    )
+    member_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.campaign_member.id", ondelete="CASCADE"
+        )
+    )
+    state: str = "pending"
+    event_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.session_event.id", ondelete="SET NULL"),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
+    )
+
+
 # nosemgrep: sqlmodel-datetime-without-factory (revoked_at is NULL until consent is revoked)
 class TranscriptConsent(SQLModel, table=True):
     __tablename__ = "transcript_consent"

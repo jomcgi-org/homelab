@@ -251,7 +251,7 @@ attrs==25.4.0 \
     #   jsonschema
     #   rasterio
     #   referencing
-audioop-lts==0.2.2 \
+audioop-lts==0.2.2 ; python_full_version >= '3.13' \
     --hash=sha256:0337d658f9b81f4cd0fdb1f47635070cc084871a3d4646d9de74fdf4e7c3d24a \
     --hash=sha256:03f061a1915538fd96272bac9551841859dbb2e3bf73ebe4a23ef043766f5449 \
     --hash=sha256:068aa17a38b4e0e7de771c62c60bbca2455924b67a8814f3b0dee92b5820c0b3 \
@@ -313,6 +313,60 @@ authlib==1.7.2 \
     #   --override bazel/requirements/overrides.txt
     #   -r bazel/requirements/runtime.txt
     #   fastmcp
+av==16.1.0 \
+    --hash=sha256:05ad70933ac3b8ef896a820ea64b33b6cca91a5fac5259cb9ba7fa010435be15 \
+    --hash=sha256:0816143530624a5a93bc5494f8c6eeaf77549b9366709c2ac8566c1e9bff6df5 \
+    --hash=sha256:0ba32fb9e9300948a7fa9f8a3fc686e6f7f77599a665c71eb2118fdfd2c743f9 \
+    --hash=sha256:0ce07a89c15644407f49d942111ca046e323bbab0a9078ff43ee57c9b4a50dad \
+    --hash=sha256:22bf77a2f658827043a1e184b479c3bf25c4c43ab32353677df2d119f080e28f \
+    --hash=sha256:2395748b0c34fe3a150a1721e4f3d4487b939520991b13e7b36f8926b3b12295 \
+    --hash=sha256:273a3e32de64819e4a1cd96341824299fe06f70c46f2288b5dc4173944f0fd62 \
+    --hash=sha256:27ee558d9c02a142eebcbe55578a6d817fedfde42ff5676275504e16d07a7f86 \
+    --hash=sha256:2dd419d262e6a71cab206d80bbf28e0a10d0f227b671cdf5e854c028faa2d043 \
+    --hash=sha256:2e3e67144a202b95ed299d165232533989390a9ea3119d37eccec697dc6dbb0c \
+    --hash=sha256:358ab910fef3c5a806c55176f2b27e5663b33c4d0a692dafeb049c6ed71f8aff \
+    --hash=sha256:39a634d8e5a87e78ea80772774bfd20c0721f0d633837ff185f36c9d14ffede4 \
+    --hash=sha256:408dbe6a2573ca58a855eb8cd854112b33ea598651902c36709f5f84c991ed8e \
+    --hash=sha256:441892be28582356d53f282873c5a951592daaf71642c7f20165e3ddcb0b4c63 \
+    --hash=sha256:53585986fd431cd436f290fba662cfb44d9494fbc2949a183de00acc5b33fa88 \
+    --hash=sha256:565093ebc93b2f4b76782589564869dadfa83af5b852edebedd8fee746457d06 \
+    --hash=sha256:574081a24edb98343fd9f473e21ae155bf61443d4ec9d7708987fa597d6b04b2 \
+    --hash=sha256:57f657f86652a160a8a01887aaab82282f9e629abf94c780bbdbb01595d6f0f7 \
+    --hash=sha256:58fe47aeaef0f100c40ec8a5de9abbd37f118d3ca03829a1009cf288e9aef67c \
+    --hash=sha256:640f57b93f927fba8689f6966c956737ee95388a91bd0b8c8b5e0481f73513d6 \
+    --hash=sha256:6cbac833092e66b6b0ac4d81ab077970b8ca874951e9c3974d41d922aaa653ed \
+    --hash=sha256:6f90dc082ff2068ddbe77618400b44d698d25d9c4edac57459e250c16b33d700 \
+    --hash=sha256:720edd4d25aa73723c1532bb0597806d7b9af5ee34fc02358782c358cfe2f879 \
+    --hash=sha256:72d7ac832710a158eeb7a93242370aa024a7646516291c562ee7f14a7ea881fd \
+    --hash=sha256:76f5ed8495cf41e1209a5775d3699dc63fdc1740b94a095e2485f13586593205 \
+    --hash=sha256:7ae547f6d5fa31763f73900d43901e8c5fa6367bb9a9840978d57b5a7ae14ed2 \
+    --hash=sha256:7dec3dcbc35a187ce450f65a2e0dda820d5a9e6553eea8344a1459af11c98649 \
+    --hash=sha256:8cf065f9d438e1921dc31fc7aa045790b58aee71736897866420d80b5450f62a \
+    --hash=sha256:8d55397190f12a1a3ae7538be58c356cceb2bf50df1b33523817587748ce89e5 \
+    --hash=sha256:9ab00ea29c25ebf2ea1d1e928d7babb3532d562481c5d96c0829212b70756ad0 \
+    --hash=sha256:9d51d9037437218261b4bbf9df78a95e216f83d7774fbfe8d289230b5b2e28e2 \
+    --hash=sha256:a094b4fd87a3721dacf02794d3d2c82b8d712c85b9534437e82a8a978c175ffd \
+    --hash=sha256:a345877a9d3cc0f08e2bc4ec163ee83176864b92587afb9d08dff50f37a9a829 \
+    --hash=sha256:a84a91188c1071f238a9523fd42dbe567fb2e2607b22b779851b2ce0eac1b560 \
+    --hash=sha256:adbad2b355c2ee4552cac59762809d791bda90586d134a33c6f13727fb86cb3a \
+    --hash=sha256:ae3fb658eec00852ebd7412fdc141f17f3ddce8afee2d2e1cf366263ad2a3b35 \
+    --hash=sha256:c2cd0de4dd022a7225ff224fde8e7971496d700be41c50adaaa26c07bb50bf97 \
+    --hash=sha256:c7f2bc703d0df260a1fdf4de4253c7f5500ca9fc57772ea241b0cb241bcf972e \
+    --hash=sha256:ca04d17815182d34ce3edc53cbda78a4f36e956c0fd73e3bab249872a831c4d7 \
+    --hash=sha256:cac0c074892ea97113b53556ff41c99562db7b9f09f098adac1f08318c2acad5 \
+    --hash=sha256:cb296073fa6935724de72593800ba86ae49ed48af03960a4aee34f8a611f442b \
+    --hash=sha256:ce2a1b3d8bf619f6c47a9f28cfa7518ff75ddd516c234a4ee351037b05e6a587 \
+    --hash=sha256:d69c393809babada7d54964d56099e4b30a3e1f8b5736ca5e27bd7be0e0f3c83 \
+    --hash=sha256:d831a1062a3c47520bf99de6ec682bd1d64a40dfa958e5457bb613c5270e7ce3 \
+    --hash=sha256:e3a28053af29644696d0c007e897d19b1197585834660a54773e12a40b16974c \
+    --hash=sha256:e88ad64ee9d2b9c4c5d891f16c22ae78e725188b8926eb88187538d9dd0b232f \
+    --hash=sha256:eb990672d97c18f99c02f31c8d5750236f770ffe354b5a52c5f4d16c5e65f619 \
+    --hash=sha256:ee0e8de2e124a9ef53c955fe2add6ee7c56cc8fd83318265549e44057db77142 \
+    --hash=sha256:f42e1a68ec2aebd21f7eb6895be69efa6aa27eec1670536876399725bbda4b99 \
+    --hash=sha256:f49243b1d27c91cd8c66fdba90a674e344eb8eb917264f36117bf2b6879118fd
+    # via
+    #   -c bazel/requirements/runtime.txt
+    #   -r bazel/requirements/runtime.txt
 beartype==0.22.9 \
     --hash=sha256:8f82b54aa723a2848a56008d18875f91c1db02c32ef6a62319a002e3e25a975f \
     --hash=sha256:d16c9bbc61ea14637596c5f6fbff2ee99cbe3573e46a716401734ef50c3060c2
@@ -623,7 +677,6 @@ colorama==0.4.6 ; sys_platform == 'win32' \
     #   click
     #   pytest
     #   tqdm
-    #   uvicorn
 cryptography==50.0.0 \
     --hash=sha256:031e2d5dd4bb9caa3ca9c82e5a197fd8ae680232cee62603d1a813f3f07e3d03 \
     --hash=sha256:06a32a980526a6ab9a4b9bf8f7385800791e2bb960903cb6b530e4817509a3b7 \
@@ -676,6 +729,7 @@ cryptography==50.0.0 \
     #   --override bazel/requirements/overrides.txt
     #   -r bazel/requirements/runtime.txt
     #   authlib
+    #   google-auth
     #   joserfc
     #   pyjwt
     #   secretstorage
@@ -932,6 +986,12 @@ geopandas==1.1.2 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+google-auth==2.62.0 \
+    --hash=sha256:0bef0ce54bdf9ce226c5d66e4264413bd918141c31bbe49fb52eac882f513d69 \
+    --hash=sha256:4ff4319aeb4ad128409759d397a9fcafad126d0031d241cc0dd6b9a00b43e3f3
+    # via
+    #   -c bazel/requirements/runtime.txt
+    #   -r bazel/requirements/runtime.txt
 googleapis-common-protos==1.72.0 \
     --hash=sha256:4299c5a82d5ae1a9702ada957347726b167f9f8d1fc352477702a1e851ff4038 \
     --hash=sha256:e55a601c1b32b52d7a3e65f43563e2aa61bcd737998ee672ac9b951cd49319f5
@@ -1141,7 +1201,6 @@ httptools==0.7.1 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
-    #   uvicorn
 httpx==0.28.1 \
     --hash=sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc \
     --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
@@ -1706,7 +1765,6 @@ openai==2.45.0 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
-    #   pydantic-ai-slim
 openapi-pydantic==0.5.1 \
     --hash=sha256:a3a09ef4586f5bd760a8df7f43028b60cafb6d9f61de2acba9574766255ab146 \
     --hash=sha256:ff6835af6bde7a459fb93eb93bb92b8749b754fc6e51b2f1590a19dc3005ee0d
@@ -2146,7 +2204,7 @@ protobuf==6.33.5 \
     #   -r bazel/requirements/runtime.txt
     #   googleapis-common-protos
     #   opentelemetry-proto
-psycopg[binary]==3.3.3 \
+psycopg==3.3.3 \
     --hash=sha256:5e9a47458b3c1583326513b2556a2a9473a1001a56c9efe9e587245b43148dd9 \
     --hash=sha256:f96525a72bcfade6584ab17e89de415ff360748c766f0106959144dcbb38c698
     # via
@@ -2213,13 +2271,27 @@ psycopg-binary==3.3.3 ; implementation_name != 'pypy' \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   psycopg
-py-key-value-aio[filetree, keyring, memory]==0.4.4 \
+py-key-value-aio==0.4.4 \
     --hash=sha256:18e17564ecae61b987f909fc2cd41ee2012c84b4b1dcb8c055cf8b4bc1bf3f5d \
     --hash=sha256:e3012e6243ed7cc09bb05457bd4d03b1ba5c2b1ca8700096b3927db79ffbbe55
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   fastmcp
+pyasn1==0.6.5 \
+    --hash=sha256:4017b0fce125096b8573b39c989fdb1a4b19cf761e683398184550fea0e66587 \
+    --hash=sha256:6b11616a6bcf3a40e635f082bb232fa57b5e0dd7f517bd7ddd69ec3794508a47
+    # via
+    #   -c bazel/requirements/runtime.txt
+    #   -r bazel/requirements/runtime.txt
+    #   pyasn1-modules
+pyasn1-modules==0.4.2 \
+    --hash=sha256:29253a9207ce32b64c3ac6600edc75368f98473906e8fd1043bd6b5b1de2c14a \
+    --hash=sha256:677091de870a80aae844b1ca6134f54652fa2c8c5a52aa396440ac3106e941e6
+    # via
+    #   -c bazel/requirements/runtime.txt
+    #   -r bazel/requirements/runtime.txt
+    #   google-auth
 pycparser==3.0 ; implementation_name != 'PyPy' \
     --hash=sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29 \
     --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
@@ -2227,7 +2299,7 @@ pycparser==3.0 ; implementation_name != 'PyPy' \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   cffi
-pydantic[email]==2.12.5 \
+pydantic==2.12.5 \
     --hash=sha256:4d351024c75c0f085a9febbb665ce8c0c6ec5d30e903bdb6394b7ede26aebb49 \
     --hash=sha256:e561593fccf61e8a20fc46dfc2dfe075b8be7d0188df33f221ad1f0139180f9d
     # via
@@ -2243,7 +2315,7 @@ pydantic[email]==2.12.5 \
     #   pydantic-graph
     #   pydantic-settings
     #   sqlmodel
-pydantic-ai-slim[openai]==1.107.6 \
+pydantic-ai-slim==1.107.6 \
     --hash=sha256:09e0d02c93245586d7728fde101ad2689a07e576003f77249db9f63abfec4c7b \
     --hash=sha256:33b7a84e28448aa5ae4190158f703fd3d7de948c7610252b993420d6bc84b9a5
     # via
@@ -2399,7 +2471,7 @@ pygments==2.20.0 \
     #   -r bazel/requirements/runtime.txt
     #   pytest
     #   rich
-pyjwt[crypto]==2.15.0 \
+pyjwt==2.15.0 \
     --hash=sha256:7a3742debf6b879e912dbb9819ceec1594be812452b78c5f2e2dfc56564954f8 \
     --hash=sha256:b11c5f9791d7bf51c2b39a81ed669f6b2dbbd669df2942f6c60167e9e3d1abe4
     # via
@@ -2563,7 +2635,6 @@ python-dotenv==1.2.2 \
     #   -r bazel/requirements/runtime.txt
     #   fastmcp
     #   pydantic-settings
-    #   uvicorn
 python-multipart==0.0.32 \
     --hash=sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e \
     --hash=sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23
@@ -2685,7 +2756,6 @@ pyyaml==6.0.3 \
     #   fastmcp
     #   jsonschema-path
     #   kubernetes-asyncio
-    #   uvicorn
 rasterio==1.5.0 \
     --hash=sha256:015c1ab6e5453312c5e29692752e7ad73568fe4d13567cbd448d7893128cbd2d \
     --hash=sha256:08a7580cbb9b3bd320bdf827e10c9b2424d0df066d8eef6f2feb37e154ce0c17 \
@@ -3102,7 +3172,7 @@ soupsieve==2.9 \
     #   --override bazel/requirements/overrides.txt
     #   -r bazel/requirements/runtime.txt
     #   beautifulsoup4
-sqlalchemy[asyncio]==2.0.48 \
+sqlalchemy==2.0.48 \
     --hash=sha256:01f6bbd4308b23240cf7d3ef117557c8fd097ec9549d5d8a52977544e35b40ad \
     --hash=sha256:07edba08061bc277bfdc772dd2a1a43978f5a45994dd3ede26391b405c15221e \
     --hash=sha256:10853a53a4a00417a00913d270dddda75815fcb80675874285f41051c094d7dd \
@@ -3254,7 +3324,6 @@ tiktoken==0.12.0 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
-    #   pydantic-ai-slim
 timelength==1.1.7 \
     --hash=sha256:2a6b6e0960f97e75997b8e298dfbb501ff326d78a4179c62eebedc078cde6fc6
     # via
@@ -3287,9 +3356,14 @@ typing-extensions==4.15.0 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+    #   aiohttp
+    #   aiosignal
+    #   anyio
     #   beautifulsoup4
+    #   exceptiongroup
     #   fastapi
     #   grpcio
+    #   httpx2
     #   mcp
     #   openai
     #   opentelemetry-api
@@ -3297,10 +3371,14 @@ typing-extensions==4.15.0 \
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
+    #   psycopg
     #   py-key-value-aio
     #   pydantic
     #   pydantic-core
+    #   pytest-asyncio
+    #   referencing
     #   sqlalchemy
+    #   starlette
     #   typing-inspection
 typing-inspection==0.4.2 \
     --hash=sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7 \
@@ -3341,7 +3419,7 @@ urllib3==2.8.0 \
     #   botocore
     #   kubernetes-asyncio
     #   requests
-uvicorn[standard]==0.41.0 \
+uvicorn==0.41.0 \
     --hash=sha256:09d11cf7008da33113824ee5a1c6422d89fbc2ff476540d69a34c87fab8b571a \
     --hash=sha256:29e35b1d2c36a04b9e180d4007ede3bcb32a85fbdfd6c6aeb3f26839de088187
     # via
@@ -3402,7 +3480,6 @@ uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'c
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
-    #   uvicorn
 watchfiles==1.1.1 \
     --hash=sha256:00485f441d183717038ed2e887a7c868154f216877653121068107b227a2f64c \
     --hash=sha256:03fa0f5237118a0c5e496185cafa92878568b652a2e9a9382a5151b1a0380a43 \
@@ -3517,7 +3594,6 @@ watchfiles==1.1.1 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   fastmcp
-    #   uvicorn
 websockets==16.0 \
     --hash=sha256:0298d07ee155e2e9fda5be8a9042200dd2e3bb0b8a38482156576f863a9d457c \
     --hash=sha256:04cdd5d2d1dacbad0a7bf36ccbcd3ccd5a30ee188f2560b7a62a30d14107b31a \
@@ -3585,7 +3661,6 @@ websockets==16.0 \
     #   -r bazel/requirements/runtime.txt
     #   dbos
     #   fastmcp
-    #   uvicorn
 wrapt==1.17.3 \
     --hash=sha256:02b551d101f31694fc785e58e0720ef7d9a10c4e62c1c9358ce6f63f23e30a56 \
     --hash=sha256:042ec3bb8f319c147b1301f2393bc19dba6e176b7da446853406d041c36c7828 \
