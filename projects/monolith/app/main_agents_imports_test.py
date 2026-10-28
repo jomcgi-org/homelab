@@ -79,7 +79,6 @@ FORBIDDEN_MODULES = [
     "chat.observer_job",
     "chat.orchestrator",
     "chat.orchestrator_client",
-    "chat.orchestrator_plan",
     "chat.reminders",
     "chat.reply_repair_log",
     "chat.reply_sanitize",
