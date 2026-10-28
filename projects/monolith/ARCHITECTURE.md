@@ -1395,7 +1395,9 @@ deleting a session first would orphan its snapshots and no later takedown could
 find them. Every purge therefore resolves snapshots through
 `source_session_id` and deletes them before the session rows, in one
 transaction, and retention keeps a shared session until its snapshot expires so
-a takedown can always resolve it. The audit holds counts and a sha256 digest of
+a takedown can always resolve it. Takedown locks selected sessions before
+deleting children, fencing concurrent snapshot inserts through the foreign key.
+The audit holds counts and a sha256 digest of
 the takedown selector only, never a raw id or hash. Both restricted public roles
 are denied table and sequence access. Takedown takes the stored `ip_hash` because
 the hashing salt lives only in monolith-public. The 30 and 365 day windows are reversible

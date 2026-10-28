@@ -7,11 +7,14 @@ test uses unique ids and asserts only on its own rows. Hand-written bdd_test
 
 import hashlib
 import json
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy.exc import IntegrityError, ProgrammingError
+from sqlalchemy import event
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlmodel import Session, create_engine, text
 from typer.testing import CliRunner
 
@@ -531,6 +534,76 @@ def test_real_jobs_cli_transaction(pg, monkeypatch, command, outcome):
             cleanup.execute(
                 text("DELETE FROM grimoire_chat.shared_snapshots WHERE id = :id"),
                 {"id": snap},
+            )
+            cleanup.execute(
+                text("DELETE FROM grimoire_chat.sessions WHERE id = :id"), {"id": sid}
+            )
+            cleanup.execute(
+                text("DELETE FROM grimoire_chat.purge_audit WHERE id > :last"),
+                {"last": last},
+            )
+            cleanup.commit()
+        engine.dispose()
+
+
+@pytest.mark.parametrize("selector", ["session", "ip"])
+def test_takedown_fences_concurrent_share_before_deleting_children(pg, selector):
+    """A second connection cannot create a SET NULL orphan during takedown."""
+    engine = create_engine(pg.url)
+    sid, ip = _uid("race-session"), _uid("race-hash")
+    original, concurrent = _uid("original-share"), _uid("concurrent-share")
+    deleted_children = threading.Event()
+    resume = threading.Event()
+    with Session(engine) as seed:
+        _session(seed, sid, ip_hash=ip, messages=1)
+        _snapshot(seed, original, sid)
+        last = _last_audit_id(seed)
+        seed.commit()
+
+    def pause_after_snapshots(conn, cursor, statement, parameters, context, many):
+        if statement.startswith("DELETE FROM grimoire_chat.shared_snapshots"):
+            deleted_children.set()
+            if not resume.wait(timeout=10):
+                raise TimeoutError("concurrent share test did not release takedown")
+
+    def purge():
+        # Each thread owns its Session; only the engine is shared.
+        with Session(engine) as session:
+            kwargs = {"session_id": sid} if selector == "session" else {"ip_hash": ip}
+            report = retention.takedown(session, **kwargs)
+            session.commit()
+            return report
+
+    event.listen(engine, "after_cursor_execute", pause_after_snapshots)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            future = workers.submit(purge)
+            try:
+                assert deleted_children.wait(timeout=5)
+                with Session(engine) as share:
+                    share.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                    with pytest.raises(OperationalError, match="lock timeout"):
+                        _snapshot(share, concurrent, sid)
+                    share.rollback()
+            finally:
+                resume.set()
+            report = future.result(timeout=10)
+        assert (
+            report.sessions_deleted,
+            report.messages_deleted,
+            report.snapshots_deleted,
+        ) == (1, 1, 1)
+        with Session(engine) as check:
+            assert _count(check, "sessions", "id", sid) == 0
+            assert _count(check, "shared_snapshots", "id", original) == 0
+            assert _count(check, "shared_snapshots", "id", concurrent) == 0
+    finally:
+        resume.set()
+        event.remove(engine, "after_cursor_execute", pause_after_snapshots)
+        with Session(engine) as cleanup:
+            cleanup.execute(
+                text("DELETE FROM grimoire_chat.shared_snapshots WHERE id IN (:a, :b)"),
+                {"a": original, "b": concurrent},
             )
             cleanup.execute(
                 text("DELETE FROM grimoire_chat.sessions WHERE id = :id"), {"id": sid}
