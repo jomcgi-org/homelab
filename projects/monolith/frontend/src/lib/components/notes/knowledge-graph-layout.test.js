@@ -1,92 +1,149 @@
-import { describe, it, expect } from "vitest";
-import { radiusFor, projectXY } from "./knowledge-graph-layout.js";
+import { describe, it, expect, vi } from "vitest";
+import {
+  radiusFor,
+  graphFingerprint,
+  layoutGraph,
+} from "./knowledge-graph-layout.js";
 
-const CFG = { baseRadius: 2.8, hubBoost: 0.5 };
+const config = { baseRadius: 1.82, hubBoost: 0.325 };
+const node = (id) => ({ id, title: id, type: "fact", degree: 1 });
+function start(nodes, edges) {
+  const frames = new Map();
+  let next = 0;
+  let clock = 0;
+  const onTick = vi.fn();
+  const layout = layoutGraph(nodes, edges, {
+    width: 800,
+    height: 600,
+    config,
+    colorFor: () => "ink",
+    onTick,
+    requestFrame: (callback) => {
+      frames.set(++next, callback);
+      return next;
+    },
+    cancelFrame: (id) => frames.delete(id),
+    // One tick per batch makes cancellation deterministic.
+    now: () => (clock += 9),
+  });
+  return {
+    layout,
+    frames,
+    onTick,
+    flush() {
+      let count = 0;
+      while (frames.size) {
+        expect(++count).toBeLessThanOrEqual(120);
+        const [id, callback] = frames.entries().next().value;
+        frames.delete(id);
+        callback();
+      }
+    },
+  };
+}
 
-describe("radiusFor", () => {
-  it("returns baseRadius when degree is 0", () => {
-    expect(radiusFor(0, CFG)).toBeCloseTo(2.8);
+describe("client positioning", () => {
+  it("retains radius scaling", () => {
+    expect(radiusFor(0, config)).toBe(config.baseRadius);
+    expect(radiusFor(3, config)).toBe(config.baseRadius + config.hubBoost * 2);
   });
 
-  it("treats null/undefined degree as 0", () => {
-    expect(radiusFor(undefined, CFG)).toBeCloseTo(2.8);
-    expect(radiusFor(null, CFG)).toBeCloseTo(2.8);
-  });
-
-  it("is monotonic in degree", () => {
-    const r0 = radiusFor(0, CFG);
-    const r1 = radiusFor(1, CFG);
-    const r10 = radiusFor(10, CFG);
-    expect(r1).toBeGreaterThan(r0);
-    expect(r10).toBeGreaterThan(r1);
-  });
-
-  it("uses log2(1 + degree) scaling", () => {
-    // radiusFor(d) = base + hubBoost * log2(1 + d)
-    // For degree=3: base + hubBoost * log2(4) = 2.8 + 0.5 * 2 = 3.8
-    expect(radiusFor(3, CFG)).toBeCloseTo(3.8);
-  });
-});
-
-describe("projectXY", () => {
-  const cx = 600;
-  const cy = 400;
-  const span = 300;
-
-  it("scales server coords from [-1, 1] into pixel space centred on (cx, cy)", () => {
-    const [x, y] = projectXY({ x: 0, y: 0 }, cx, cy, span);
-    expect(x).toBe(cx);
-    expect(y).toBe(cy);
-  });
-
-  it("places node at right edge when server x = 1", () => {
-    const [x, _] = projectXY({ x: 1, y: 0 }, cx, cy, span);
-    expect(x).toBe(cx + span); // 900
-  });
-
-  it("places node at top-left when server (x, y) = (-1, -1)", () => {
-    const [x, y] = projectXY({ x: -1, y: -1 }, cx, cy, span);
-    expect(x).toBe(cx - span);
-    expect(y).toBe(cy - span);
-  });
-
-  it("falls back to centre + jitter when server x is undefined", () => {
-    // Stub rand to return 0.5 → jitter() = 0
-    const rand = () => 0.5;
-    const [x, y] = projectXY(
-      { x: undefined, y: undefined },
-      cx,
-      cy,
-      span,
-      rand,
-    );
-    expect(x).toBe(cx);
-    expect(y).toBe(cy);
-  });
-
-  it("falls back when server coord is NaN or Infinity", () => {
-    const rand = () => 0.5; // jitter = 0
-    expect(projectXY({ x: NaN, y: 0 }, cx, cy, span, rand)).toEqual([cx, cy]);
-    expect(projectXY({ x: 0, y: Infinity }, cx, cy, span, rand)).toEqual([
-      cx,
-      cy,
-    ]);
-  });
-
-  it("fallback positions are bounded by ±50 px around the centre", () => {
-    // For any rand in [0, 1): jitter ∈ [-50, +50)
-    for (const r of [0, 0.001, 0.5, 0.999]) {
-      const [x, y] = projectXY(
-        { x: undefined, y: undefined },
-        cx,
-        cy,
-        span,
-        () => r,
-      );
-      expect(x).toBeGreaterThanOrEqual(cx - 50);
-      expect(x).toBeLessThan(cx + 50);
-      expect(y).toBeGreaterThanOrEqual(cy - 50);
-      expect(y).toBeLessThan(cy + 50);
+  it.each(
+    [[], [node("a")], [node("a"), node("b"), node("c")]].map((nodes) => ({
+      nodes,
+    })),
+  )("positions empty, singleton and disconnected data: %j", ({ nodes }) => {
+    const run = start(nodes, []);
+    run.flush();
+    expect(run.layout.nodes).toHaveLength(nodes.length);
+    for (const n of run.layout.nodes) {
+      expect(Number.isFinite(n.x) && Number.isFinite(n.y)).toBe(true);
     }
+    expect(new Set(run.layout.nodes.map((n) => `${n.x},${n.y}`)).size).toBe(
+      nodes.length,
+    );
+    run.layout.stop();
+  });
+
+  it("lays out new connected nodes after refresh without mutating payloads or edge IDs", () => {
+    const nodes = [node("a"), node("b")].map(Object.freeze);
+    const edges = [
+      Object.freeze({ source: "a", target: "b", kind: "supports" }),
+    ];
+    const before = JSON.stringify({ nodes, edges });
+    const first = start(nodes, edges);
+    first.flush();
+    first.layout.stop();
+    const refreshed = start(
+      [...nodes, node("c")],
+      [...edges, { source: "b", target: "c" }],
+    );
+    refreshed.flush();
+    const c = refreshed.layout.nodes.find((n) => n.id === "c");
+    expect(Number.isFinite(c.x) && Number.isFinite(c.y)).toBe(true);
+    expect(
+      Math.hypot(
+        c.x - refreshed.layout.nodes[1].x,
+        c.y - refreshed.layout.nodes[1].y,
+      ),
+    ).toBeGreaterThan(3);
+    expect(refreshed.layout.edges[0]).toEqual(edges[0]);
+    expect(JSON.stringify({ nodes, edges })).toBe(before);
+    expect(refreshed.onTick).toHaveBeenLastCalledWith(true);
+    refreshed.layout.stop();
+  });
+
+  it("ignores dangling links and cached legacy positions", () => {
+    const nodes = [node("a"), node("b")];
+    const edges = [
+      { source: "a", target: "b" },
+      { source: "missing", target: "b" },
+    ];
+    const clean = start(nodes, edges);
+    const cached = start(
+      nodes.map((n) => ({ ...n, x: Infinity, y: -300 })),
+      edges,
+    );
+    clean.flush();
+    cached.flush();
+    expect(cached.layout.nodes).toEqual(clean.layout.nodes);
+    expect(clean.layout.edges).toEqual([
+      { source: "a", target: "b", kind: null },
+    ]);
+    clean.layout.stop();
+    cached.layout.stop();
+  });
+
+  it("cancels pending work and releases the simulation on stop", () => {
+    const run = start([node("a"), node("b")], []);
+    expect(run.frames.size).toBe(1);
+    run.layout.stop();
+    expect(run.frames.size).toBe(0);
+    run.flush();
+    expect(run.onTick).not.toHaveBeenCalled();
+  });
+
+  it("detects interior replacements, metadata and rewired edges", () => {
+    const nodes = [node("a"), node("b"), node("c")];
+    const edges = [{ source: "a", target: "b" }];
+    const fp = graphFingerprint(nodes, edges);
+    expect(graphFingerprint([nodes[0], node("d"), nodes[2]], edges)).not.toBe(
+      fp,
+    );
+    expect(graphFingerprint(nodes, [{ source: "a", target: "c" }])).not.toBe(
+      fp,
+    );
+    expect(
+      graphFingerprint(
+        nodes.map((n) => ({ ...n, title: "new" })),
+        edges,
+      ),
+    ).not.toBe(fp);
+    expect(
+      graphFingerprint(
+        nodes.map((n) => ({ ...n, x: 1, y: 2 })),
+        edges,
+      ),
+    ).toBe(fp);
   });
 });

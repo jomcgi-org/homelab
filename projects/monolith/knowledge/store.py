@@ -1001,9 +1001,8 @@ class KnowledgeStore:
         the canonical ``note_id`` so it joins cleanly with the
         corresponding node on the frontend.
 
-        Each node payload also ships server-computed ``degree`` (count of
-        incident visible edges) and persisted ``x`` / ``y`` layout
-        positions (``None`` until a layout job has run).
+        Each node payload ships server-computed ``degree`` (count of
+        incident visible edges). The shared canvas computes positions locally.
         """
         all_note_rows = self.session.execute(
             select(
@@ -1011,8 +1010,6 @@ class KnowledgeStore:
                 Note.title,
                 Note.type,
                 Note.indexed_at,
-                Note.layout_x,
-                Note.layout_y,
             ).where(Note.deleted_at.is_(None))
         ).all()
         # Filter out notes whose type isn't in the graph set BEFORE we
@@ -1085,8 +1082,6 @@ class KnowledgeStore:
                     "title": row.title,
                     "type": row.type,
                     "degree": degree_by_note_id.get(row.note_id, 0),
-                    "x": row.layout_x,
-                    "y": row.layout_y,
                 }
                 for row in connected_note_rows
             ],

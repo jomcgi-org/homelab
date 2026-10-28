@@ -1379,14 +1379,6 @@ def test_get_graph_response_includes_degree_and_positions(session):
         metadata=_meta(title="C", type="atom"),
     )
 
-    # Set layout coordinates on note-a directly — the upsert path doesn't
-    # touch layout fields (those are written by the layout job, not ingest).
-    note_a = session.execute(select(Note).where(Note.note_id == "note-a")).scalar_one()
-    note_a.layout_x = 0.3
-    note_a.layout_y = -0.4
-    session.add(note_a)
-    session.commit()
-
     result = store.get_graph()
     by_id = {n["id"]: n for n in result["nodes"]}
 
@@ -1394,10 +1386,8 @@ def test_get_graph_response_includes_degree_and_positions(session):
     assert by_id["note-b"]["degree"] == 1
     assert by_id["note-c"]["degree"] == 1
 
-    assert by_id["note-a"]["x"] == 0.3
-    assert by_id["note-a"]["y"] == -0.4
-    assert by_id["note-b"]["x"] is None
-    assert by_id["note-b"]["y"] is None
+    for node in by_id.values():
+        assert set(node) == {"id", "title", "type", "degree"}
 
 
 def test_get_graph_filters_nodes_by_type(session):
