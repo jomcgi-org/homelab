@@ -103,11 +103,16 @@ def verify_stored_review_preflight(
 
 
 def capture_dependency(node: dict, runs: list[dict]) -> dict | None:
-    """A review may consume one exact successful capture dependency."""
+    """Select the server-defined capture contract, never guest artifact fields."""
     if not node["node_key"].startswith("review_"):
         return None
     captures = []
     for dependency in node.get("deps", []):
+        # Only this node type receives an admitted retention contract and a
+        # trusted producer receipt. Ordinary implementation/correction output
+        # cannot opt its reviewer into a handoff by adding browser_evidence.
+        if not dependency.startswith("implement_browser_capture_"):
+            continue
         succeeded = [
             r
             for r in runs
@@ -118,10 +123,13 @@ def capture_dependency(node: dict, runs: list[dict]) -> dict | None:
         run = max(succeeded, key=lambda r: r.get("attempt", 0))
         outcome = json.loads(run.get("outcome_json") or "{}")
         artifact = outcome.get("value") or outcome.get("artifact") or {}
-        if "browser_evidence" in artifact:
-            if artifact.get("status") != "complete":
-                raise EvidenceError("browser capture dependency is not complete")
-            captures.append(run)
+        if artifact.get("status") != "complete":
+            raise EvidenceError("browser capture dependency is not complete")
+        if not isinstance(artifact.get("browser_evidence"), dict):
+            raise EvidenceError(
+                "browser capture dependency has no evidence declaration"
+            )
+        captures.append(run)
     if len(captures) > 1:
         raise EvidenceError("review must name exactly one browser capture dependency")
     return captures[0] if captures else None

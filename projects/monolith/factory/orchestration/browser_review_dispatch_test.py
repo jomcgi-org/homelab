@@ -23,7 +23,7 @@ class BrowserReviewDispatchTest(unittest.TestCase):
         )
         self.run = {
             "id": 1,
-            "node_key": "capture",
+            "node_key": "implement_browser_capture_mobile",
             "attempt": 1,
             "session_id": 4,
             "status": "succeeded",
@@ -31,7 +31,10 @@ class BrowserReviewDispatchTest(unittest.TestCase):
                 {"value": {"status": "complete", "browser_evidence": self.value}}
             ),
         }
-        self.node = {"node_key": "review_browser", "deps": ["capture"]}
+        self.node = {
+            "node_key": "review_browser",
+            "deps": ["implement_browser_capture_mobile"],
+        }
 
     def test_completed_capture_identity_survives_real_guest_cleanup(self):
         import tempfile
@@ -318,9 +321,61 @@ class BrowserReviewDispatchTest(unittest.TestCase):
         )
         with self.assertRaises(EvidenceError):
             dispatch.capture_dependency(
-                {**self.node, "deps": ["capture", "capture2"]},
-                [self.run, {**self.run, "node_key": "capture2"}],
+                {
+                    **self.node,
+                    "deps": [
+                        "implement_browser_capture_mobile",
+                        "implement_browser_capture_desktop",
+                    ],
+                },
+                [
+                    self.run,
+                    {**self.run, "node_key": "implement_browser_capture_desktop"},
+                ],
             )
+
+    def test_ordinary_correction_cannot_select_browser_handoff(self):
+        for declaration in ({}, self.value):
+            with self.subTest(declaration=declaration):
+                correction = {
+                    **self.run,
+                    "node_key": "correct_1",
+                    "outcome_json": json.dumps(
+                        {
+                            "value": {
+                                "status": "complete",
+                                "browser_evidence": declaration,
+                            }
+                        }
+                    ),
+                }
+                self.assertIsNone(
+                    dispatch.capture_dependency(
+                        {"node_key": "review_1", "deps": ["correct_1"]},
+                        [correction],
+                    )
+                )
+
+    def test_capture_contract_cannot_be_omitted_by_its_artifact(self):
+        for artifact in (
+            {"status": "complete"},
+            {"status": "complete", "browser_evidence": None},
+        ):
+            with self.subTest(artifact=artifact), self.assertRaises(EvidenceError):
+                dispatch.capture_dependency(
+                    self.node,
+                    [{**self.run, "outcome_json": json.dumps({"value": artifact})}],
+                )
+
+    def test_ordinary_correction_does_not_mask_required_capture(self):
+        correction = {**self.run, "node_key": "correct_1"}
+        self.assertEqual(
+            dispatch.capture_dependency(
+                {**self.node, "deps": [*self.node["deps"], "correct_1"]},
+                [correction, self.run],
+            ),
+            self.run,
+        )
 
     def prepare(
         self,
