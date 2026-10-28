@@ -76,6 +76,16 @@ def test_transcript_default_off_and_explicit_switch_reach_both_containers(
         )
     if enabled is not None:
         command.extend(["--set", f"grimoire.transcript.enabled={str(enabled).lower()}"])
+    if enabled:
+        # Inert render inputs only. No item or Google project is provisioned.
+        command.extend(
+            [
+                "--set",
+                "grimoire.transcript.google.project=existing-project",
+                "--set",
+                "grimoire.transcript.google.onepassword.itemPath=vaults/test/items/not-created",
+            ]
+        )
     result = subprocess.run(
         command, capture_output=True, text=True, timeout=120, check=True
     )

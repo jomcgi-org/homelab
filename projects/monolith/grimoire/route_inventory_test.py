@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import re
 import secrets
+import wave
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -13,9 +15,12 @@ import httpx
 import pytest
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
+from sqlmodel import select
 
 from grimoire import join_links, search
-from grimoire.models import CampaignJoinLink
+from grimoire.models import CampaignJoinLink, TranscriptConsent
+from grimoire.stt import FakeTranscriber
+from grimoire.stt import routes as speech_routes
 from grimoire.testing.leak_harness import (
     PNG_BYTES,
     ROLES,
@@ -48,11 +53,30 @@ class Case:
     reads: dict[str, int] = field(default_factory=dict)
     # The positive control returns bytes, not JSON.
     binary: bool = False
+    headers: dict = field(default_factory=dict)
+
+
+def audio_fixture():
+    output = io.BytesIO()
+    with wave.open(output, "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(8000)
+        stream.writeframes(b"\0" * 16000)
+    return output.getvalue()
 
 
 # $row.column values resolve against real persisted fixture rows. Bodies are
 # valid requests; no denial may pass through FastAPI's validation error (422).
 CASES = {
+    ("POST", PREFIX + "/sessions/{session_id}/audio-segments"): Case(
+        params={"session_id": "$campaign_session.id"},
+        caller="player_a",
+        state="transcript",
+        denied_writers=(),
+        headers={"X-Request-ID": str(uuid4())},
+        files={"audio": ("segment.wav", audio_fixture(), "audio/wav")},
+    ),
     ("GET", PREFIX + "/facts"): Case(),
     ("POST", PREFIX + "/facts/{fact_id}/dispute"): Case(
         params={"fact_id": "$fact_a.id"},
@@ -346,6 +370,8 @@ CAPABILITY_CASES = {
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_STT_PROVIDER", "google")
+    monkeypatch.setattr(speech_routes, "transcriber", FakeTranscriber)
     monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "true")
     monkeypatch.setenv("GRIMOIRE_INVITATION_LINKS_ENABLED", "true")
@@ -402,7 +428,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 74  # Main plus eight transcript routes.
+    assert len(enumerated) == 75  # Main plus nine transcript routes.
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
@@ -455,7 +481,7 @@ def call(client, h, method, path, case, viewer, *, params=None, query=None):
     response = client.request(
         method,
         path.format(**values),
-        headers=h.headers(viewer),
+        headers={**h.headers(viewer), **case.headers},
         params=resolve(h, case.query if query is None else query),
         json=resolve(h, case.body),
         files=case.files,
@@ -469,6 +495,10 @@ def test_campaign_route_matrix(harness, method, path):
     h = harness
     case = CASES[method, path]
     h.prepare(case.state)
+    if path.endswith("/audio-segments"):
+        for consent in h.session.exec(select(TranscriptConsent)).all():
+            consent.processor = "Google Speech-to-Text"
+        h.session.commit()
     before = h.snapshot()
     with TestClient(h.app()) as client:
         for viewer in ("outsider", "other_campaign"):

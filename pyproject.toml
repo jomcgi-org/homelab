@@ -21,6 +21,9 @@ dependencies = [
     # it PyJWT has no RSA backend and RS256 verification raises at runtime.
     "pyjwt[crypto]>=2.13.0",
     "httpx~=0.28.1",
+    # In-memory STT media validation and the existing GCP identity mechanisms.
+    "av>=16,<17",
+    "google-auth[requests]>=2.40,<3",
     # curl_cffi impersonates a browser TLS/JA3 fingerprint. The BC Parks
     # (camping.bcparks.ca) reservation API sits behind an Azure WAF that 403s
     # httpx/urllib on fingerprint; curl_cffi is how the campsites job reads it.

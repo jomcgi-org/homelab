@@ -36,7 +36,20 @@ export async function sessionState(
   const events = [];
   let journal = null;
   let initiative = null;
+  let transcription = null;
   if (session) {
+    if (process.env.GRIMOIRE_TRANSCRIPT_ENABLED === "true") {
+      try {
+        transcription = await grimoireJson(
+          fetch,
+          cookies,
+          `${base}/sessions/${session.id}/transcript`,
+        );
+      } catch {
+        // A failed transcript status read must not interrupt the play feed.
+        transcription = { provider: "unavailable" };
+      }
+    }
     initiative = await grimoireJson(
       fetch,
       cookies,
@@ -78,6 +91,7 @@ export async function sessionState(
     journal,
     voices,
     initiative,
+    transcription,
     user: lobby.user,
     ...(selectedSessionId ? { selectedSessionId } : {}),
     ...dmData,

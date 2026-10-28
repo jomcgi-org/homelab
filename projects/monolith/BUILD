@@ -1205,9 +1205,11 @@ py_library(
         ":pkg_knowledge",
         ":pkg_scheduler",
         ":pkg_shared",
+        "@pip//av",
         "@pip//boto3",
         "@pip//certifi",
         "@pip//fastapi",
+        "@pip//google_auth",
         "@pip//httpx",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation",
@@ -1220,6 +1222,7 @@ py_library(
         "@pip//pydantic",
         "@pip//python_multipart",
         "@pip//pyyaml",
+        "@pip//requests",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//tzdata",
@@ -6530,6 +6533,43 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "grimoire_stt_test",
+    srcs = ["grimoire/stt_test.py"],
+    data = ["grimoire/stt/fixtures/recognize.json"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//av",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "grimoire_stt_postgres_test",
+    srcs = ["grimoire/stt_postgres_test.py"],
+)
+
+py_test(
+    name = "grimoire_stt_chart_test",
+    srcs = ["grimoire/stt_chart_test.py"],
+    data = [
+        "//projects/monolith/chart:docfix_review_test_data",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    imports = ["."],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
 

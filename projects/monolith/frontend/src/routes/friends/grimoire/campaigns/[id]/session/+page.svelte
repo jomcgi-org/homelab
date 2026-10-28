@@ -53,6 +53,10 @@
   // the panel always shows the latest projection for it.
   let journal = $derived(state.journal?.[journalView] ?? null);
   let playing = $derived(state.session && state.session.status !== "ended");
+  let transcriptionUnavailable = $derived(
+    playing &&
+      ["degraded", "unavailable"].includes(state.transcription?.provider),
+  );
   // The state carries the caller's own view of the order. A player can also
   // follow the latest turn event, which is the same player projection.
   let turnOrder = $derived.by(() => {
@@ -284,6 +288,10 @@
       >
     </div>
   </header>
+
+  {#if transcriptionUnavailable}
+    <p role="status">Transcription unavailable. Play can continue.</p>
+  {/if}
 
   {#key `${state.campaign.id}:${state.session?.id}`}
     <ReadAloud
