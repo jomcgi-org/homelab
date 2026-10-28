@@ -1,0 +1,68 @@
+# Inactive template. An authorized dispatcher must install this as
+# .github/workflows/trips-fixture-evidence.yml before it can run.
+name: Trips fixture evidence
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - projects/monolith/frontend/**
+      - projects/design-system/**
+      - .github/workflows/trips-fixture-evidence.yml
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - package.json
+      - bazel/patches/**
+
+# PR code runs on a fresh hosted runner with no deployment, repository-write
+# or remote-cache credentials. This workflow only uploads synthetic evidence.
+permissions:
+  contents: read
+
+concurrency:
+  group: trips-fixture-evidence-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  trips-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TRIPS_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.3"
+      - name: Install the existing frozen workspace dependencies
+        run: |
+          npm install --global pnpm@10.34.5
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify the source head, test the pages and build the fixture
+        working-directory: projects/monolith/frontend
+        run: |
+          test "$(git rev-parse HEAD)" = "$TRIPS_HEAD"
+          pnpm exec vitest run src/routes/public/app/trips src/lib/trips --maxWorkers=2
+          pnpm exec vite build --config trips-preview/vite.config.js
+      - name: Install the pinned browser runner and system dependencies
+        run: |
+          python3 -m venv /tmp/trips-browser
+          /tmp/trips-browser/bin/pip install playwright==1.63.0
+          /tmp/trips-browser/bin/playwright install --with-deps chromium
+      - name: Capture the exact-head page and interaction matrix
+        run: |
+          /tmp/trips-browser/bin/python projects/monolith/frontend/trips-preview/browser_check.py \
+            --artifact projects/monolith/frontend/trips-fixture-preview \
+            --output trips-fixture-evidence \
+            --head "$TRIPS_HEAD"
+      - name: Upload all PNGs and checks.json, including failed captures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: trips-fixture-evidence-${{ github.event.pull_request.head.sha }}
+          path: trips-fixture-evidence/
+          if-no-files-found: error
+          retention-days: 14

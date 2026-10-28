@@ -304,6 +304,9 @@ js_library(
         "test/app-state-stub.js",
         "test/app-stores-stub.js",
         "test/ProfileRoute.svelte",
+        "test/TripsRoute.svelte",
+        "test/trips-fixtures.js",
+        "test/trips-map-stub.js",
         "test/profile-page.svelte.js",
         "test/profile-stores.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
@@ -356,6 +359,43 @@ apko_image(
 )
 
 # Keep synthetic preview fixtures out of the production source/build closure.
+# Trips fixtures use the production route/layout/components with invented data.
+js_library(
+    name = "trips_fixture_src",
+    srcs = glob(
+        ["trips-preview/**"],
+        exclude = ["trips-preview/__pycache__/**"],
+    ) + [
+        "preview/fonts.css",
+        "preview/fonts/OFL.txt",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "test/TripsRoute.svelte",
+        "test/app-environment-stub.js",
+        "test/profile-page.svelte.js",
+        "test/profile-stores.js",
+        "test/trips-fixtures.js",
+    ],
+    deps = [":src"],
+)
+
+js_run_binary(
+    name = "trips_fixture_preview",
+    srcs = [":trips_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "trips-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["trips-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "trips_fixture_preview_build_test",
+    targets = [":trips_fixture_preview"],
+)
+
 # The dedicated Actions job compiles these real route components and runs
 # Chromium. This independent contract target makes fixture edits participate
 # in affected-target CI without making a test output an input to a build.

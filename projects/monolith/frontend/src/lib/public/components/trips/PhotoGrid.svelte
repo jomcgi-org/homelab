@@ -30,9 +30,10 @@
 <style>
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 2px;
-    border: 2px solid var(--ink);
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 140px), 1fr));
+    gap: 1px;
+    background: var(--stroke);
+    border: 1px solid var(--ink);
   }
   .tile {
     position: relative;
@@ -48,15 +49,14 @@
     height: 100%;
     object-fit: cover;
     display: block;
-    transition: opacity 150ms ease;
   }
   .tile:hover img,
   .tile:focus-visible img {
     opacity: 0.75;
   }
   .empty {
-    font-family: var(--mono);
+    font-family: var(--font-code);
     font-size: 12px;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
 </style>
