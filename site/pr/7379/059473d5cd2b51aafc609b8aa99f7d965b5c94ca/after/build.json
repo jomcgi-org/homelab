@@ -1,0 +1,9 @@
+{
+  "commit": "059473d5cd2b51aafc609b8aa99f7d965b5c94ca",
+  "suites": [
+    "blog",
+    "factory",
+    "review"
+  ],
+  "scope": "synthetic fixtures only"
+}
