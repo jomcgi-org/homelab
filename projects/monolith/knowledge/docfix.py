@@ -12,6 +12,7 @@ import httpx
 from sqlalchemy import text
 from sqlmodel import Session
 
+from core.env import flag
 from shared.invocation_outcomes import UNKNOWN_INVOCATION
 from core.github import GITHUB_API, GITHUB_REPO
 
@@ -147,11 +148,11 @@ as the last thing in the message."""
 
 
 def _review_enabled() -> bool:
-    return os.environ.get("KG_DOCFIX_REVIEW_ENABLED", "false").lower() == "true"
+    return flag("KG_DOCFIX_REVIEW_ENABLED")
 
 
 def _auto_merge_enabled() -> bool:
-    return os.environ.get("DRAINER_DOCFIX_AUTO_MERGE", "false").lower() == "true"
+    return flag("DRAINER_DOCFIX_AUTO_MERGE")
 
 
 def schedule_docfix_review(

@@ -8,11 +8,11 @@ cessation. The existing factory supervisor consumes exact durable Ember proof.
 from __future__ import annotations
 
 import json
-import os
 import re
 
 from sqlmodel import Session, select
 
+from core.env import flag
 from factory.execution.api import (
     inspect_factory_attempt_stop,
     fence_factory_attempt_stop,
@@ -27,7 +27,7 @@ MAX_CANCEL_REQUESTS = 2
 
 
 def enabled() -> bool:
-    return os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() == "true"
+    return flag("FACTORY_STOP_SUPERVISION_ENABLED")
 
 
 def _requests(db: Session, task_id: str) -> list[dict]:

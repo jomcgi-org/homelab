@@ -11,10 +11,10 @@ import hashlib
 import hmac
 import json
 import math
-import os
 
 from sqlmodel import select
 
+from core.env import flag
 from core.jsonio import dumps
 from factory.execution import admission, result_receipts
 from factory.execution.runtime_meter_evidence import (
@@ -43,7 +43,7 @@ MAX_USAGE_AGE_SECONDS = 900
 
 
 def enabled():
-    return os.getenv("FACTORY_RUNTIME_METER_ENABLED", "false").lower() == "true"
+    return flag("FACTORY_RUNTIME_METER_ENABLED")
 
 
 def _records(db, task_ids, actions):

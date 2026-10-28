@@ -9,10 +9,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
-import os
 
 from sqlalchemy import DateTime
 from sqlmodel import Field, SQLModel
+
+from core.env import flag
 
 INTERVAL_SECONDS = 1800
 LEAD_SECONDS = 300
@@ -42,7 +43,7 @@ class ReservationReview(SQLModel, table=True):
 
 
 def enabled() -> bool:
-    return os.getenv("FACTORY_RESERVATION_REVIEW_ENABLED", "false").lower() == "true"
+    return flag("FACTORY_RESERVATION_REVIEW_ENABLED")
 
 
 def aware(value: datetime) -> datetime:

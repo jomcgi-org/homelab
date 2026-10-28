@@ -19,6 +19,7 @@ import os
 from sqlalchemy import exists, or_, text
 from sqlmodel import Session, select
 
+from core.env import flag
 from core.clock import aware
 from factory.execution import admission
 from factory.execution.constants import (
@@ -127,7 +128,7 @@ def _never_invoked_live_guest(db, permit, agent, turn, observed, guest_id):
 
 
 def _probe_enabled():
-    return os.getenv("AGENT_PROBE_SUPERVISION_ENABLED", "false").lower() == "true"
+    return flag("AGENT_PROBE_SUPERVISION_ENABLED")
 
 
 def _stale_unbound_tier(permit):

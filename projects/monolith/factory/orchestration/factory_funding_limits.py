@@ -2,9 +2,9 @@
 
 from datetime import datetime
 import json
-import os
 from sqlalchemy import or_
 from sqlmodel import select
+from core.env import flag
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -19,7 +19,7 @@ LEGACY_REVIEW_MODEL = "astra"
 
 
 def enabled():
-    return os.getenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false").lower() == "true"
+    return flag("FACTORY_CONDUCTOR_FUNDING_ENABLED")
 
 
 def latest(db, task_id, action):

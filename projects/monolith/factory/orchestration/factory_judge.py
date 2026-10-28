@@ -20,6 +20,7 @@ import os
 import re
 from collections import Counter
 
+from core.env import flag
 from factory.orchestration.turn_artifact import run_artifact
 
 logger = logging.getLogger(__name__)
@@ -90,7 +91,7 @@ ASSESSMENT_SCHEMA = {
 
 
 def enabled() -> bool:
-    return os.getenv(ENABLED_ENV, "false").lower() == "true"
+    return flag(ENABLED_ENV)
 
 
 def _amount(name: str, default: float) -> float:

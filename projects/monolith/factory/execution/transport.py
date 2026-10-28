@@ -30,6 +30,7 @@ from typing import Awaitable, Callable, NamedTuple, Protocol
 import httpx
 from opentelemetry import trace
 
+from core.env import flag
 from factory import execution as agent_sessions
 from factory.execution import model_family
 from factory.execution import create_outcome
@@ -521,7 +522,7 @@ _receipt_db_executor = ThreadPoolExecutor(
 
 
 def receipt_adoption_enabled() -> bool:
-    return os.getenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false").lower() == "true"
+    return flag("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED")
 
 
 async def _receipt_database_call(fn, *args, **kwargs):

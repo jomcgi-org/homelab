@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import httpx
+from core.env import flag
 from core.github import GITHUB_API
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import select
@@ -62,7 +63,7 @@ query DependencyQueue($owner: String!, $name: String!, $branch: String!) {
 
 
 def enabled() -> bool:
-    return os.environ.get(ENABLED_ENV, "").lower() == "true"
+    return flag(ENABLED_ENV)
 
 
 class GitHub:

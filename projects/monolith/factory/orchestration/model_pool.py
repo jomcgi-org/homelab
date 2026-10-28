@@ -21,6 +21,8 @@ import math
 import os
 from datetime import datetime, timezone
 
+from core.env import flag
+
 logger = logging.getLogger(__name__)
 
 ROLES = ("conductor", "worker", "implement", "refine", "reviewer", "judge")
@@ -423,7 +425,7 @@ def exhausted_grant_exclusion_enabled() -> bool:
     Monolith and EmberVM promote independently. Default off keeps old sidecars
     from serving an account the new admission gate has excluded.
     """
-    return os.environ.get("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "").lower() == "true"
+    return flag("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION")
 
 
 def _sidecar_exhausted(view: dict, now: datetime | None) -> bool:

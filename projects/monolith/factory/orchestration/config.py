@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 
+from core.env import flag
+
 
 def enabled() -> bool:
-    return os.environ.get("SWARM_ENABLED", "false").lower() == "true"
+    return flag("SWARM_ENABLED")
 
 
 def implementer_model() -> str:

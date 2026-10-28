@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
+from core.env import flag
 from core.github import GITHUB_API
 from sqlmodel import select
 
@@ -64,7 +65,7 @@ class Refusal:
 
 def enabled() -> bool:
     """Only an explicit true enables publication."""
-    return os.environ.get(PUBLISH_ENABLED_ENV, "").lower() == "true"
+    return flag(PUBLISH_ENABLED_ENV)
 
 
 def _default_token_provider() -> str | None:

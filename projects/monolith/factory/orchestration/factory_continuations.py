@@ -2,8 +2,8 @@
 
 from datetime import timedelta
 import json
-import os
 
+from core.env import flag
 from core.clock import aware
 from factory.orchestration import factory_controls as controls, graph
 from factory.execution.review_leases import digest
@@ -12,9 +12,7 @@ ACTOR = "factory:continuation"
 
 
 def enabled():
-    return (
-        os.getenv("FACTORY_AUTONOMOUS_CONTINUATION_ENABLED", "false").lower() == "true"
-    )
+    return flag("FACTORY_AUTONOMOUS_CONTINUATION_ENABLED")
 
 
 def _replay(grant, review_run, edits, cause):
