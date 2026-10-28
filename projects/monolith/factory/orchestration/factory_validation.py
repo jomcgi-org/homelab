@@ -511,9 +511,7 @@ def _backlog_preview(db, control, reason, *, include_refinement=False):
     primary = controls.repo_entry(before, repo)
     if primary["labels"] != ["agent-ready"]:
         raise ValueError("backlog_requires_agent_ready_filter")
-    if not {"needs-human", "security-finding", "wontfix"} <= set(
-        primary["exclude_labels"]
-    ):
+    if not {"needs-human", "wontfix"} <= set(primary["exclude_labels"]):
         raise ValueError("backlog_requires_safe_exclusions")
     after["intake"] = {
         **intake,

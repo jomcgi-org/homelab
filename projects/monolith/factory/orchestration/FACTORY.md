@@ -742,7 +742,7 @@ carry it:
 {
   "enabled": false,
   "labels": ["agent-ready"],
-  "exclude_labels": ["needs-human", "wontfix", "security-finding"],
+  "exclude_labels": ["needs-human", "wontfix"],
   "max_per_day": 5,
   "cooldown_hours": 24,
   "refine_enabled": false
@@ -755,7 +755,13 @@ rather than what it takes in. It is optional and defaults to `false`.
 
 `enabled` controls autonomous issue discovery. `labels` names delivery-ready
 labels and may be empty, in which case no issue is a delivery candidate.
-`exclude_labels` rejects an issue before selection. `max_per_day` counts
+`exclude_labels` rejects an issue before selection. A `security-finding` issue
+with `agent-ready` is an ordinary delivery candidate, subject to every other
+eligibility fence. `human` ownership always excludes both lanes. Explicit
+global exclusions and per-repository overrides remain authoritative. The staged
+#7372 migration removes `security-finding` only from the two known legacy
+global default lists; it leaves custom membership and repository overrides
+unchanged. `max_per_day` counts
 delivery admissions only and is between 1 and 10000, and `cooldown_hours` is
 between 1 and 168. `refine_enabled` allows an
 otherwise eligible issue with none of the delivery labels to enter the refine
@@ -895,7 +901,7 @@ applies whether the lane found the work or was told to do it. Classes come from
 the issue's labels in this order:
 `security-finding` and `needs-thought` select `judgment-analysis`, `bug` selects
 `bug-fix`, `documentation` selects `docs`, and `todo` selects
-`mechanical-refactor`. `security-finding` remains excluded by default. An
+`mechanical-refactor`. An
 unclassified `agent-ready` issue defaults to `bug-fix`. A receipt written
 before classes existed also reads as `bug-fix`, so operator-posted receipts are
 unaffected.

@@ -194,7 +194,7 @@ DEFAULT_MAX_REVIEW_RECOVERY_ROUNDS = 0
 DEFAULT_INTAKE = {
     "enabled": False,
     "labels": ["agent-ready"],
-    "exclude_labels": ["needs-human", "wontfix", "security-finding"],
+    "exclude_labels": ["needs-human", "wontfix"],
     "max_per_day": 5,
     "cooldown_hours": 24,
     "refine_enabled": False,
@@ -3447,8 +3447,7 @@ def _active_admission_policy(db: Session, control) -> dict:
         or problem_issues_policy(policy)["enabled"]
         or enabled_repos(policy) != [policy["repo"]]
         or primary["labels"] != ["agent-ready"]
-        or not {"needs-human", "security-finding", "wontfix"}
-        <= set(primary["exclude_labels"])
+        or not {"needs-human", "wontfix"} <= set(primary["exclude_labels"])
     ):
         raise ValueError("backlog_active_requires_safe_posture")
     return policy

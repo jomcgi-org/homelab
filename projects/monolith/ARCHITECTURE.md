@@ -536,6 +536,13 @@ agents/038 decision 5 gives judgment work an Opus-or-better implementer floor
 because no machine oracle can verify its correctness; quota pressure parks that
 work instead of demoting it.
 
+**Why.** Security findings carry STPA evidence and acceptance in their issues.
+`security-finding` marks risk class while `human` marks ownership. Excluding
+security findings kept otherwise agent-ready work out of delivery (#7372).
+The repository change is staged: only known legacy global exclusion lists
+migrate, preserving custom membership, explicit repository overrides and all
+other eligibility fences. Rollout and natural-sweep acceptance remain open.
+
 **Why.** Repository is a property of the work item and receipt, not of the
 lane, because pointing the single-repo policy at loom would have meant
 replacing the whole homelab policy and pausing homelab to work elsewhere.
@@ -2227,6 +2234,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Admit agent-ready security findings under existing ownership and eligibility fences | Joe's 2026-10-28 decision, section 4 | [#7372](https://github.com/jomcgi-org/homelab/issues/7372) | repository-only staged delivery; guarded migration, rollout and natural-sweep acceptance remain |
 | Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
 | Release execution capacity for quiescent paused or landing-held tasks while retaining ownership and durable authorized resume intent | section 4; Joe's 2026-10-18 decision | #7163 | repository implementation staged; separately authorized rollout and live capacity, ownership and reacquisition checks remain |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |

@@ -65,8 +65,8 @@ DISCOVERY_REFRESH_SECONDS = 240
 RANK_LABELS = ("critical", "bug")
 # ADR agents/038 decision 5, read off the issue's own labels. A refine
 # candidate is advisory whatever else it carries, because it delivers a
-# comment rather than a change. security-finding is excluded by default, but
-# this mapping applies when an operator removes it from the exclusions.
+# comment rather than a change. Security findings retain their judgment class
+# when agent-ready makes them delivery candidates.
 CLASS_LABELS = (
     ("security-finding", "judgment-analysis"),
     ("needs-thought", "judgment-analysis"),

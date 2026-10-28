@@ -184,6 +184,43 @@ def test_derive_task_class_uses_label_precedence():
     )
 
 
+@pytest.mark.parametrize("fence", [None, "needs-human", "wontfix", "human"])
+@pytest.mark.parametrize("override", [None, "global", "repository"])
+def test_security_delivery_uses_effective_default_exclusions_and_audit(
+    db, monkeypatch, fence, override
+):
+    configured = policy()
+    # Omit the helper's explicit empty exclusion list to exercise real defaults.
+    del configured["intake"]["exclude_labels"]
+    exclusions = ["needs-human", "wontfix", "security-finding"]
+    if override == "global":
+        configured["intake"]["exclude_labels"] = exclusions
+    elif override == "repository":
+        configured["repos"] = {"owner/repo": {"exclude_labels": exclusions}}
+    labels = ["security-finding", "agent-ready"] + ([fence] if fence else [])
+    fake_pages(monkeypatch, [issue(1, labels)])
+
+    received = intake_loop.intake_tick(configured, generation=0)
+
+    accepted = fence is None and override is None
+    assert [r["receipt"]["issue_number"] for r in received] == ([1] if accepted else [])
+    with Session(db) as session:
+        receipts = session.exec(select(FactoryReceipt)).all()
+        assert len(receipts) == int(accepted)
+        if accepted:
+            assert receipts[0].task_class == "judgment-analysis"
+    evaluated = json.loads(audits(db, "intake_evaluated")[-1].detail_json)
+    assert evaluated["candidates"] == {"advisory": 0, "delivery": int(accepted)}
+    if accepted:
+        assert len(audits(db, "intake_admitted")) == 1
+    else:
+        assert audits(db, "intake_admitted") == []
+        assert (
+            evaluated["excluded"]["human" if fence == "human" else "excluded_label"]
+            == 1
+        )
+
+
 def test_refinement_batch_never_admits_implementation_or_other_issues(db, monkeypatch):
     fake_pages(
         monkeypatch,

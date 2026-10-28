@@ -3039,6 +3039,46 @@ def test_backlog_empty_manual_allowlist_cannot_ingest_unreviewed_work(
         controls.validate_policy(inactive)
 
 
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize(
+    "exclusions,accepted",
+    [
+        (["needs-human", "wontfix"], True),
+        (["needs-human", "security-finding", "wontfix"], True),
+        (["needs-human", "operator-only", "wontfix"], True),
+        (["needs-human"], False),
+        (["wontfix"], False),
+    ],
+)
+def test_backlog_preview_preserves_effective_exclusions(
+    database, validation_ready, active, exclusions, accepted
+):
+    if active:
+        safe = validation_ready.preview_backlog("prepare")["policy_after"]
+        safe["issue_numbers"] = [7001]
+        safe["intake"]["enabled"] = False
+    with Session(database) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        policy = safe if active else json.loads(control.policy_json)
+        policy["repos"][policy["repo"]]["exclude_labels"] = exclusions
+        control.policy_json = json.dumps(policy)
+        if active:
+            db.get(FactoryReceipt, 838).state = "admitted"
+    if not accepted:
+        with pytest.raises(ValueError, match="backlog_requires_safe_exclusions"):
+            validation_ready.preview_backlog("restore")
+        return
+    proposal = validation_ready.preview_backlog("restore")
+    assert (
+        controls.repo_entry(proposal["policy_after"], policy["repo"])["exclude_labels"]
+        == exclusions
+    )
+    assert (
+        proposal["policy_after"]["intake"]["exclude_labels"]
+        == controls.intake_policy(policy)["exclude_labels"]
+    )
+
+
 def test_backlog_concurrent_apply_has_one_winner(database, validation_ready):
     proposal = validation_ready.preview_backlog("resume")
 
@@ -3114,6 +3154,43 @@ def active_backlog(database, validation_ready):
         db.get(FactoryControl, "factory").policy_json = json.dumps(safe)
         db.get(FactoryReceipt, 838).state = "admitted"
     return validation_ready
+
+
+@pytest.mark.parametrize("operation", ["restore", "batch"])
+@pytest.mark.parametrize(
+    "exclusions,accepted",
+    [
+        (["needs-human", "wontfix"], True),
+        (["needs-human", "security-finding", "wontfix"], True),
+        (["needs-human", "operator-only", "wontfix"], True),
+        (["needs-human"], False),
+        (["wontfix"], False),
+    ],
+)
+def test_active_admission_checks_effective_repository_exclusions(
+    database, active_backlog, operation, exclusions, accepted
+):
+    with Session(database) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        # The primary override, not the global defaults, is the guard's input.
+        policy["repos"].setdefault(policy["repo"], {})["exclude_labels"] = exclusions
+        control.policy_json = json.dumps(policy)
+        before = controls.validate_policy(policy)
+        if not accepted:
+            with pytest.raises(
+                ValueError, match="backlog_active_requires_safe_posture"
+            ):
+                controls._active_admission_policy(db, control)
+            return
+        after = (
+            controls.active_intake_restoration_policy(db, control)
+            if operation == "restore"
+            else controls.refinement_batch_policy(db, control, [7002])
+        )
+        assert after["repos"] == before["repos"]
+        assert after["intake"]["exclude_labels"] == before["intake"]["exclude_labels"]
+        assert control.policy_json == json.dumps(policy)
 
 
 @pytest.mark.parametrize("active", [True, False])
