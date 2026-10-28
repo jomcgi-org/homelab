@@ -2080,8 +2080,7 @@ orchestrator:
   # holding that provider's key; empty means no auth for a local provider). Empty
   # list = no fallback (single-attempt contract).
   fallbacks: []
-  # Initial-compile budget: covers BOTH the route-decision call and the
-  # submit_plan tool call (plan construction is real work, not a quick classify).
+  # Timeout for each provider attempt in the route-decision call.
   timeoutSeconds: 60
 
 # Marine / AIS ship tracking: streams vessel positions from AISStream.io.

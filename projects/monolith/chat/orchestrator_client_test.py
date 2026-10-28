@@ -11,7 +11,6 @@ from chat.orchestrator_client import (
     _read_config,
     _read_fallback_chain,
     call,
-    call_tool,
 )
 
 
@@ -171,13 +170,6 @@ class TestCallFailures:
                 await call("system", "user")
 
 
-_TOOL_SCHEMA = {
-    "name": "submit_plan",
-    "description": "Submit the delegation plan for this task.",
-    "parameters": {"type": "object", "properties": {}},
-}
-
-
 _FALLBACK_ENV = {
     "ORCHESTRATOR_MODEL": "nvidia/nemotron-3-ultra-550b-a55b",
     "ORCHESTRATOR_BASE_URL": "https://integrate.api.nvidia.com/v1",
@@ -306,48 +298,6 @@ class TestCallFallback:
         assert instance.post.call_count == 1
 
 
-class TestCallToolFallback:
-    @pytest.mark.asyncio
-    async def test_tool_call_falls_back_on_unusable_primary_shape(self):
-        """A primary response missing tool_calls (weaker forced-tool support)
-        degrades to the fallback provider, which returns a valid plan."""
-        args_payload = {
-            "enabled_subrecipes": [],
-            "steps": [],
-            "done_criteria": [],
-        }
-        bad = _ok_response({"choices": [{"message": {"content": "no tool call"}}]})
-        good = _ok_response(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "submit_plan",
-                                        "arguments": json.dumps(args_payload),
-                                    }
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        )
-        instance = _mock_client(post_side_effect=[bad, good])
-        with (
-            patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
-            patch.dict("os.environ", _FALLBACK_ENV, clear=False),
-        ):
-            args, response = await call_tool("system", "user", schema=_TOOL_SCHEMA)
-
-        assert args == args_payload
-        assert instance.post.call_count == 2
-        second_args, second_kwargs = instance.post.call_args_list[1]
-        assert second_kwargs["json"]["model"] == "deepseek/deepseek-v4-flash"
-
-
 class TestReadFallbackChain:
     def test_empty_when_unset(self, monkeypatch):
         monkeypatch.delenv("ORCHESTRATOR_FALLBACKS", raising=False)
@@ -417,113 +367,3 @@ class TestReadConfig:
         monkeypatch.setenv("ORCHESTRATOR_TIMEOUT_S", "not-a-number")
         _model, _base_url, _api_key, timeout_s = _read_config()
         assert timeout_s == 60.0
-
-
-class TestCallTool:
-    @pytest.mark.asyncio
-    async def test_parses_tool_call_arguments(self):
-        args_payload = {
-            "enabled_subrecipes": ["query"],
-            "steps": [{"sub_recipe": "query", "context": "look it up"}],
-            "done_criteria": [],
-        }
-        payload = {
-            "choices": [
-                {
-                    "message": {
-                        "tool_calls": [
-                            {
-                                "function": {
-                                    "name": "submit_plan",
-                                    "arguments": json.dumps(args_payload),
-                                }
-                            }
-                        ]
-                    }
-                }
-            ],
-            "usage": {"prompt_tokens": 50, "completion_tokens": 10},
-        }
-        instance = _mock_client(mock_response=_ok_response(payload))
-
-        env = {"ORCHESTRATOR_MODEL": "m", "OPENROUTER_API_KEY": "k"}
-        with (
-            patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
-            patch.dict("os.environ", env, clear=False),
-        ):
-            args, response = await call_tool(
-                "system", "user", schema=_TOOL_SCHEMA, timeout_s=60
-            )
-
-        assert args == args_payload
-        assert response.prompt_tokens == 50
-        assert response.completion_tokens == 10
-        assert response.latency_ms >= 0
-
-        instance.post.assert_called_once()
-        _, kwargs = instance.post.call_args
-        payload_sent = kwargs["json"]
-        assert payload_sent["tools"] == [{"type": "function", "function": _TOOL_SCHEMA}]
-        assert payload_sent["tool_choice"] == {
-            "type": "function",
-            "function": {"name": "submit_plan"},
-        }
-
-    @pytest.mark.asyncio
-    async def test_http_400_raises_orchestrator_unavailable(self):
-        resp = MagicMock()
-        resp.status_code = 400
-        error = httpx.HTTPStatusError(
-            "400 Bad Request", request=MagicMock(), response=resp
-        )
-        resp.raise_for_status.side_effect = error
-        instance = _mock_client(mock_response=resp)
-
-        env = {"ORCHESTRATOR_MODEL": "m", "OPENROUTER_API_KEY": "k"}
-        with (
-            patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
-            patch.dict("os.environ", env, clear=False),
-        ):
-            with pytest.raises(OrchestratorUnavailable):
-                await call_tool("system", "user", schema=_TOOL_SCHEMA)
-
-    @pytest.mark.asyncio
-    async def test_missing_tool_calls_raises_orchestrator_unavailable(self):
-        payload = {"choices": [{"message": {"content": "no tool call here"}}]}
-        instance = _mock_client(mock_response=_ok_response(payload))
-
-        env = {"ORCHESTRATOR_MODEL": "m", "OPENROUTER_API_KEY": "k"}
-        with (
-            patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
-            patch.dict("os.environ", env, clear=False),
-        ):
-            with pytest.raises(OrchestratorUnavailable):
-                await call_tool("system", "user", schema=_TOOL_SCHEMA)
-
-    @pytest.mark.asyncio
-    async def test_malformed_json_arguments_raises_orchestrator_unavailable(self):
-        payload = {
-            "choices": [
-                {
-                    "message": {
-                        "tool_calls": [
-                            {
-                                "function": {
-                                    "name": "submit_plan",
-                                    "arguments": "{not json",
-                                }
-                            }
-                        ]
-                    }
-                }
-            ]
-        }
-        instance = _mock_client(mock_response=_ok_response(payload))
-
-        env = {"ORCHESTRATOR_MODEL": "m", "OPENROUTER_API_KEY": "k"}
-        with (
-            patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
-            patch.dict("os.environ", env, clear=False),
-        ):
-            with pytest.raises(OrchestratorUnavailable):
-                await call_tool("system", "user", schema=_TOOL_SCHEMA)

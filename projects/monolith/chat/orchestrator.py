@@ -1,31 +1,8 @@
-"""ADR 036 orchestrator brief compiler: consent gate, prompt assembly, parse,
-and fail-open telemetry.
+"""Consent-gated chat-versus-session routing with fail-open telemetry.
 
-This is the host-side tier that runs on an escalation candidate before any
-Firecracker microVM boots. It assembles a deterministic, cache-friendly prompt
-(baked bundle + versioned channel directive as ``system``; the volatile context
-as ``user``), calls the OpenRouter client, and turns the reply into one of:
-
-- ``PlanVerdict`` - the request needs a real agent session. The route call
-                    yields the repo scope (with ADR 029 out-of-scope
-                    replacement); a second ``submit_plan`` tool call then yields
-                    a validated typed :class:`Plan` (ordered sub-recipe steps
-                    with per-step context). Supersedes ``Brief`` on the goose
-                    route (runtime-recipe orchestrator, Task 5).
-- ``ChatVerdict`` - the request is conversational; carries the model's reply
-                    guidance (context, direction, optional redirect) for the
-                    Meta Spark concierge to author the actual reply.
-- ``FailOpen``    - degrade to today's direct-submit path (disabled, ungranted,
-                    unreachable, unparseable, or an unusable/invalid plan).
-
-Two calls on the goose route, one on the chat route. The first call is the
-unchanged route decision (chat vs goose, yielding the goose ``Brief`` used only
-for its repo scope); on the goose route a second ``call_tool`` produces the
-plan. Every compile that actually calls the model writes exactly one
-``chat.orchestrator_brief`` telemetry row (the plan call does NOT write a second
-row; the single goose row is augmented with plan fields in ``brief_json``). The
-disabled/ungranted path writes no row and reads no key: per spec section 1, an
-ungranted channel produces no OpenRouter traffic at all.
+compile() makes only that routing decision, never a submit_plan call. Each
+enabled, granted attempt records one telemetry row from the routing response.
+Session callers keep their raw prompt, selected repository and model.
 """
 
 from __future__ import annotations
@@ -40,10 +17,9 @@ from pathlib import Path
 from sqlmodel import Session
 
 from core.db import get_engine
-from chat import acl, orchestrator_client, orchestrator_plan
+from chat import acl, orchestrator_client
 from chat.models import OrchestratorBrief
-from chat.orchestrator_plan import Plan
-from goosecracker.api import CATALOG, describe_repos
+from goosecracker.api import describe_repos
 
 logger = logging.getLogger(__name__)
 
@@ -51,20 +27,6 @@ _BUNDLE_PATH = Path(__file__).with_name("orchestrator_bundle.md")
 
 # Feature name for the ADR 029 consent grant that gates the orchestrator tier.
 ORCHESTRATOR_FEATURE = "orchestrator"
-
-# The goose brief keys that must be present for a goose verdict to be usable.
-# Missing any of them forces a fail-open (the guest still routes itself from the
-# raw prompt), so the model is instructed to fill every field.
-_REQUIRED_GOOSE_KEYS = (
-    "recipe",
-    "repo",
-    "repo_paths",
-    "hints",
-    "constraints",
-    "done_criteria",
-    "stages",
-)
-
 
 class BriefParseError(Exception):
     """Raised when the model's output cannot be parsed into a valid verdict for
@@ -80,40 +42,16 @@ class Directive:
 
 
 @dataclass
-class Brief:
-    """A compiled goose task brief (spec section 3). ``stages`` is the ordered
-    list of stage titles used to pre-render the ADR 035 checklist. ``repo`` is
-    advisory: when the model named a repo outside the invoker's ADR 029 scopes
-    it is discarded and ``repo_replaced`` is set for logging."""
+class SessionVerdict:
+    """A session route with advisory repo metadata, never session input.
 
-    recipe: str
-    repo: str
-    repo_paths: list[str]
-    hints: str
-    constraints: str
-    done_criteria: list[str]
-    stages: list[str]
+    brief_id links the routing telemetry to the thread created by the caller.
+    Out-of-scope repos are replaced with the invoker's scope by compile().
+    """
+
+    repo: str = ""
+    repo_paths: list[str] = field(default_factory=list)
     repo_replaced: bool = False
-
-
-@dataclass
-class PlanVerdict:
-    """A compiled runtime-plan verdict for the goose route (Task 5).
-
-    Supersedes :class:`Brief` on the goose route. The route-decision call still
-    yields the repo scope (with ADR 029 out-of-scope replacement carried here as
-    ``repo`` / ``repo_replaced``), but the recipe / hints / stages are replaced
-    by ``plan``: a validated typed :class:`Plan` produced by a second
-    ``submit_plan`` tool call. The plan (ordered sub-recipe steps with per-step
-    context) is what the downstream router renderer specializes; the Brief's own
-    recipe/hints/stages are intentionally not carried forward."""
-
-    plan: Plan
-    repo: str
-    repo_paths: list[str]
-    repo_replaced: bool = False
-    # Id of the telemetry row this verdict wrote, so start_agent_flow can
-    # backfill its thread_id once the session thread exists (see link_thread).
     brief_id: int | None = None
 
 
@@ -163,7 +101,7 @@ class RequestContext:
     directive: Directive = field(default_factory=Directive)
 
 
-Verdict = PlanVerdict | ChatVerdict | FailOpen
+Verdict = SessionVerdict | ChatVerdict | FailOpen
 
 
 def enabled() -> bool:
@@ -216,7 +154,7 @@ def assemble_prompt(
         + "\n\n## Channel context\n\n"
         + (channel_context.strip() or "(none)")
         + "\n\n## Available repos\n\n"
-        + "When the request needs a repo checkout, set the goose brief's `repo` "
+        + "When the request needs a repo checkout, set the goose route's `repo` "
         "to exactly one of these owner/repo ids, and leave it empty only for a "
         "repo-less artifact or build. Never name a repo that is not listed.\n\n"
         + (repo_menu.strip() or "(none)")
@@ -225,43 +163,6 @@ def assemble_prompt(
         + "\n"
     )
     return system, user
-
-
-def plan_system_prompt() -> str:
-    """Build the ``submit_plan`` (second, goose-route) call's system message.
-
-    This is the plan-construction framing, distinct from the route-decision
-    bundle (which stays byte-identical so its provider prefix cache keeps
-    hitting). It is validated in spirit against ``scratchpad/probe_submit_plan.py``
-    (12/12) and its sub-recipe menu is sourced verbatim from
-    ``CATALOG`` so the prose and the tool-schema enum can never
-    drift. Byte-deterministic: derived only from the ordered catalog, no
-    timestamps/ids, so identical catalogs give identical bytes and this call's
-    own prefix stays cache-friendly too.
-    """
-    lines = [
-        "You are the delegation orchestrator in front of a coding agent "
-        "(goose/Pi). The routing tier has already decided this request needs a "
-        "real agent session; your only job now is to construct the PLAN for it.",
-        "",
-        "You never write code yourself, you never invent sub-recipe names, and "
-        "you never author recipe YAML. You select an allow-set of sub-recipes and "
-        "order them into steps, each step naming exactly one sub-recipe plus the "
-        "context that step needs. You may only use these sub-recipes:",
-        "",
-    ]
-    lines.extend(f"- {entry.id} = {entry.description}" for entry in CATALOG.values())
-    lines.extend(
-        [
-            "",
-            "Submit the plan by calling the submit_plan tool. Keep plans minimal: "
-            "include only the steps the task actually needs, in execution order. "
-            "Every step's context must be non-empty and grounded in the request. "
-            "Every sub-recipe named by a step must also appear in "
-            "enabled_subrecipes.",
-        ]
-    )
-    return "\n".join(lines)
 
 
 def _strip_fences(content: str) -> str:
@@ -284,66 +185,16 @@ def _strip_fences(content: str) -> str:
     return text
 
 
-def _extract_stage_titles(stages_raw: object) -> list[str]:
-    """Pull ordered stage titles out of the ``stages`` field.
-
-    Accepts the spec shape ``[{"title": "..."}]`` and tolerates a plain list of
-    strings. Non-string / blank titles are dropped rather than failing the whole
-    parse, since stages are advisory (they only pre-render the checklist).
-    """
-    if not isinstance(stages_raw, list):
-        return []
-    titles: list[str] = []
-    for stage in stages_raw:
-        if isinstance(stage, dict):
-            title = stage.get("title")
-            if isinstance(title, str) and title.strip():
-                titles.append(title.strip())
-        elif isinstance(stage, str) and stage.strip():
-            titles.append(stage.strip())
-    return titles
-
-
-def _parse_goose(data: dict, allowed_scopes: frozenset[str]) -> Brief:
-    missing = [k for k in _REQUIRED_GOOSE_KEYS if k not in data]
-    if missing:
-        raise BriefParseError(f"goose brief missing required keys: {missing}")
-
-    recipe = data["recipe"]
-    if not isinstance(recipe, str) or not recipe.strip():
-        raise BriefParseError("goose 'recipe' must be a non-empty string")
-
-    repo = data["repo"] if isinstance(data["repo"], str) else ""
-    repo_paths = (
-        [str(p) for p in data["repo_paths"]]
-        if isinstance(data["repo_paths"], list)
-        else []
-    )
-    hints = str(data.get("hints") or "")
-    constraints = str(data.get("constraints") or "")
-    done_criteria = (
-        [str(d) for d in data["done_criteria"]]
-        if isinstance(data["done_criteria"], list)
-        else []
-    )
-    stages = _extract_stage_titles(data["stages"])
-
-    # ADR 029: a brief may only name a repo the invoker already holds. An
-    # out-of-scope repo is discarded here (flagged for logging); the caller
-    # substitutes the invoker's own scope. A blank repo needs no check.
-    repo_replaced = False
-    if repo and repo not in allowed_scopes:
+def _parse_goose(data: dict, allowed_scopes: frozenset[str]) -> SessionVerdict:
+    repo = data.get("repo")
+    if not isinstance(repo, str):
         repo = ""
-        repo_replaced = True
-
-    return Brief(
-        recipe=recipe.strip(),
-        repo=repo,
+    paths = data.get("repo_paths")
+    repo_paths = [str(p) for p in paths] if isinstance(paths, list) else []
+    repo_replaced = bool(repo and repo not in allowed_scopes)
+    return SessionVerdict(
+        repo="" if repo_replaced else repo,
         repo_paths=repo_paths,
-        hints=hints,
-        constraints=constraints,
-        done_criteria=done_criteria,
-        stages=stages,
         repo_replaced=repo_replaced,
     )
 
@@ -365,15 +216,15 @@ def _parse_chat(data: dict) -> ChatVerdict:
     )
 
 
-def parse_brief(content: str, *, allowed_scopes: frozenset[str]) -> Brief | ChatVerdict:
+def parse_brief(content: str, *, allowed_scopes: frozenset[str]) -> SessionVerdict | ChatVerdict:
     """Parse the model's strict-JSON output, route-partitioned (spec section 3).
 
-    ``route: goose`` validates and returns a :class:`Brief`; ``route: chat``
+    ``route: goose`` validates and returns a :class:`SessionVerdict`; ``route: chat``
     validates the reply-guidance block and returns a :class:`ChatVerdict`. The
     non-active block may be absent, and unknown keys are tolerated; missing
     required keys for the active route raise :class:`BriefParseError` (which the
     caller turns into a fail-open). A repo outside ``allowed_scopes`` is
-    discarded with ``Brief.repo_replaced`` set.
+    discarded with ``SessionVerdict.repo_replaced`` set.
     """
     text = _strip_fences(content)
     try:
@@ -391,44 +242,6 @@ def parse_brief(content: str, *, allowed_scopes: frozenset[str]) -> Brief | Chat
     raise BriefParseError(f"unknown or missing route: {route!r}")
 
 
-def _brief_to_json(brief: Brief) -> dict:
-    """Serialize a Brief for the telemetry ``brief_json`` column."""
-    return {
-        "recipe": brief.recipe,
-        "repo": brief.repo,
-        "repo_paths": brief.repo_paths,
-        "hints": brief.hints,
-        "constraints": brief.constraints,
-        "done_criteria": brief.done_criteria,
-        "stages": brief.stages,
-        "repo_replaced": brief.repo_replaced,
-    }
-
-
-def _plan_to_json(verdict: Brief, plan: Plan, plan_latency_ms: int) -> dict:
-    """Serialize a goose PlanVerdict for the single telemetry ``brief_json`` row.
-
-    Reuses the existing JSONB column (no new DB column / migration): the repo
-    scope carried from the route-decision Brief plus the validated plan and its
-    call metrics (step count, plan-call latency). The route call's own token /
-    latency accounting stays in the row's dedicated columns.
-    """
-    return {
-        "repo": verdict.repo,
-        "repo_paths": verdict.repo_paths,
-        "repo_replaced": verdict.repo_replaced,
-        "plan": {
-            "enabled_subrecipes": list(plan.enabled_subrecipes),
-            "steps": [
-                {"sub_recipe": s.sub_recipe, "context": s.context} for s in plan.steps
-            ],
-            "done_criteria": list(plan.done_criteria),
-        },
-        "plan_step_count": len(plan.steps),
-        "plan_latency_ms": plan_latency_ms,
-    }
-
-
 def _guidance_to_json(verdict: ChatVerdict) -> dict:
     """Serialize chat reply guidance for the telemetry ``brief_json`` column."""
     return {
@@ -436,37 +249,6 @@ def _guidance_to_json(verdict: ChatVerdict) -> dict:
         "direction": verdict.direction,
         "redirect": verdict.redirect,
     }
-
-
-def render_brief(brief: Brief) -> str:
-    """Render a Brief as the markdown header the guest receives as task input.
-
-    The compiled task input is this markdown plus the raw user prompt (never the
-    brief alone: the user's words stay ground truth, spec section 3). Kept
-    deterministic and prose-light so it reads as guidance, not gospel.
-    """
-    lines = [
-        "# Task brief (advisory, ADR 036 orchestrator)",
-        "",
-        f"Recipe: {brief.recipe}",
-    ]
-    if brief.repo:
-        lines.append(f"Repo: {brief.repo}")
-    if brief.repo_paths:
-        lines.append("")
-        lines.append("Relevant paths:")
-        lines.extend(f"- {p}" for p in brief.repo_paths)
-    if brief.hints:
-        lines += ["", "Hints:", brief.hints]
-    if brief.constraints:
-        lines += ["", "Constraints:", brief.constraints]
-    if brief.done_criteria:
-        lines += ["", "Done when:"]
-        lines.extend(f"- {d}" for d in brief.done_criteria)
-    if brief.stages:
-        lines += ["", "Planned stages:"]
-        lines.extend(f"{i + 1}. {title}" for i, title in enumerate(brief.stages))
-    return "\n".join(lines)
 
 
 def _record(
@@ -542,12 +324,8 @@ async def compile(ctx: RequestContext) -> Verdict:
        ``failopen`` telemetry row.
     3. On the chat route, write one ``chat`` row and return the
        :class:`ChatVerdict`.
-    4. On the goose route, apply the ADR 029 out-of-scope repo replacement, then
-       make a SECOND call (``submit_plan`` tool) to construct the plan. A plan
-       call that is unavailable, returns nothing usable, or fails
-       :func:`orchestrator_plan.validate_plan` fails open (one ``failopen`` row).
-       A valid plan writes one ``goose`` row (augmented with plan fields, never a
-       second row) and returns a :class:`PlanVerdict`.
+    4. On the goose route, apply the ADR 029 repo replacement, write one
+       plan-free row and return a SessionVerdict carrying its row id.
     """
     if not enabled():
         return FailOpen("orchestrator disabled")
@@ -596,7 +374,7 @@ async def compile(ctx: RequestContext) -> Verdict:
         )
         return FailOpen(reason, brief_id=brief_id)
 
-    if isinstance(verdict, Brief):
+    if isinstance(verdict, SessionVerdict):
         if verdict.repo_replaced:
             logger.warning(
                 "orchestrator: brief named a repo outside invoker scopes; "
@@ -605,87 +383,24 @@ async def compile(ctx: RequestContext) -> Verdict:
             )
             verdict.repo = ctx.invoker_scope
 
-        # Second call (goose route only): construct the typed plan. Any failure
-        # here fails open to today's baked recipe="agent" path, writing the one
-        # telemetry row this compile is allowed (no separate plan-call row).
-        try:
-            # timeout_s=None => call_tool falls back to the client's configured
-            # ORCHESTRATOR_TIMEOUT_S (default 60s). Single source of truth for the
-            # whole initial compile: the route call() and this plan call_tool()
-            # both draw the same budget from orchestrator_client._read_config.
-            plan_args, plan_resp = await orchestrator_client.call_tool(
-                plan_system_prompt(),
-                user,
-                schema=orchestrator_plan.submit_plan_schema(),
-                timeout_s=None,
-            )
-        except orchestrator_client.OrchestratorUnavailable as exc:
-            reason = f"plan call unavailable: {exc}"
-            logger.warning("orchestrator: failing open, %s", reason)
-            brief_id = await asyncio.to_thread(
-                _record,
-                ctx,
-                "failopen",
-                model,
-                None,
-                resp.latency_ms,
-                resp.prompt_tokens,
-                resp.completion_tokens,
-                resp.cached_tokens,
-                reason,
-            )
-            return FailOpen(reason, brief_id=brief_id)
-
-        try:
-            # Both parse and validate run inside the guard: a malformed tool
-            # payload (e.g. a null context or a dict where a sub-recipe id
-            # belongs) must never escape compile. plan_from_dict coerces
-            # defensively, and any residual AttributeError/TypeError here still
-            # lands on the single-row FailOpen path below rather than unwinding
-            # (the "compile always fails open" invariant).
-            plan = orchestrator_plan.plan_from_dict(plan_args)
-            errors = orchestrator_plan.validate_plan(plan)
-        except (AttributeError, TypeError) as exc:
-            plan = None
-            plan_error = f"plan tool returned an unusable object: {exc}"
-        else:
-            plan_error = f"invalid plan: {errors}" if errors else ""
-
-        if plan is None or plan_error:
-            logger.warning("orchestrator: failing open, %s", plan_error)
-            brief_id = await asyncio.to_thread(
-                _record,
-                ctx,
-                "failopen",
-                model,
-                None,
-                resp.latency_ms,
-                resp.prompt_tokens,
-                resp.completion_tokens,
-                resp.cached_tokens,
-                plan_error,
-            )
-            return FailOpen(plan_error, brief_id=brief_id)
-
         brief_id = await asyncio.to_thread(
             _record,
             ctx,
             "goose",
             model,
-            _plan_to_json(verdict, plan, plan_resp.latency_ms),
+            {
+                "repo": verdict.repo,
+                "repo_paths": verdict.repo_paths,
+                "repo_replaced": verdict.repo_replaced,
+            },
             resp.latency_ms,
             resp.prompt_tokens,
             resp.completion_tokens,
             resp.cached_tokens,
             None,
         )
-        return PlanVerdict(
-            plan=plan,
-            repo=verdict.repo,
-            repo_paths=verdict.repo_paths,
-            repo_replaced=verdict.repo_replaced,
-            brief_id=brief_id,
-        )
+        verdict.brief_id = brief_id
+        return verdict
 
     await asyncio.to_thread(
         _record,

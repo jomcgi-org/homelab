@@ -1669,7 +1669,7 @@ class ChatBot(discord.Client):
             logger.exception("agent: failed to persist trigger message %s", message.id)
 
         # Ack-first (Task 8): post the ⏳ queue reaction BEFORE start_agent_flow,
-        # which runs the ADR 036 orchestrator.compile (route + submit_plan, up to
+        # which runs the ADR 036 orchestrator.compile (chat-versus-session routing, up to
         # 60s). This hides that latency behind a visible ack so an engaged user
         # sees immediate feedback; the runner then flips ⏳ -> 👀 -> ✅/❌ as the
         # turn runs. Best-effort: a reaction failure must not block the run. (The
