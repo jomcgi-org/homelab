@@ -35,7 +35,10 @@ _NOW = datetime(2024, 6, 1, 12, tzinfo=timezone.utc)
 
 
 def _retire_layout(session):
-    migration = Path(__file__).parent / "chart/staged-migrations/20261028180000_retire_knowledge_layout.sql"
+    migration = (
+        Path(__file__).parent
+        / "chart/staged-migrations/20261028180000_retire_knowledge_layout.sql"
+    )
     session.execute(text(migration.read_text()))
 
 
@@ -47,41 +50,77 @@ def graph_schema(request, session):
 
 def test_layout_drop_preserves_data_projection_owners_and_reader_grants(session):
     _seed(session)
-    session.execute(text("UPDATE knowledge.notes SET layout_x = 0.5, layout_y_public = 0.7"))
+    session.execute(
+        text("UPDATE knowledge.notes SET layout_x = 0.5, layout_y_public = 0.7")
+    )
+
     def rows(query):
         return session.execute(text(query)).all()
 
-    before_notes = [dict(row._mapping) for row in rows(
-        "SELECT * FROM public_api.knowledge_notes ORDER BY note_id"
-    )]
+    before_notes = [
+        dict(row._mapping)
+        for row in rows("SELECT * FROM public_api.knowledge_notes ORDER BY note_id")
+    ]
     before_links = rows("SELECT * FROM knowledge.note_links ORDER BY id")
-    before_entities = rows("SELECT * FROM public_api.knowledge_note_entities ORDER BY id")
+    before_entities = rows(
+        "SELECT * FROM public_api.knowledge_note_entities ORDER BY id"
+    )
     before_ids = rows("SELECT id, note_id FROM knowledge.notes ORDER BY id")
-    owners = rows("SELECT relname, relowner, relacl::text FROM pg_class WHERE oid IN "
-                  "('public_api.knowledge_notes'::regclass, 'public_api.knowledge_note_entities'::regclass) ORDER BY relname")
+    owners = rows(
+        "SELECT relname, relowner, relacl::text FROM pg_class WHERE oid IN "
+        "('public_api.knowledge_notes'::regclass, 'public_api.knowledge_note_entities'::regclass) ORDER BY relname"
+    )
     assert all("layout_x" in row for row in before_notes)
     # The old reader really depends on the columns. A direct drop must fail.
     with pytest.raises(InternalError, match="depend"):
         with session.connection().begin_nested():
-            session.execute(text("ALTER TABLE knowledge.notes DROP COLUMN layout_x RESTRICT"))
+            session.execute(
+                text("ALTER TABLE knowledge.notes DROP COLUMN layout_x RESTRICT")
+            )
     _retire_layout(session)
-    after_notes = [dict(row._mapping) for row in rows(
-        "SELECT * FROM public_api.knowledge_notes ORDER BY note_id"
-    )]
+    after_notes = [
+        dict(row._mapping)
+        for row in rows("SELECT * FROM public_api.knowledge_notes ORDER BY note_id")
+    ]
     assert after_notes == [
-        {key: value for key, value in row.items() if key not in {"layout_x", "layout_y"}}
+        {
+            key: value
+            for key, value in row.items()
+            if key not in {"layout_x", "layout_y"}
+        }
         for row in before_notes
     ]
     assert rows("SELECT * FROM knowledge.note_links ORDER BY id") == before_links
-    assert rows("SELECT * FROM public_api.knowledge_note_entities ORDER BY id") == before_entities
+    assert (
+        rows("SELECT * FROM public_api.knowledge_note_entities ORDER BY id")
+        == before_entities
+    )
     assert rows("SELECT id, note_id FROM knowledge.notes ORDER BY id") == before_ids
-    assert rows("SELECT relname, relowner, relacl::text FROM pg_class WHERE oid IN "
-                "('public_api.knowledge_notes'::regclass, 'public_api.knowledge_note_entities'::regclass) ORDER BY relname") == owners
-    assert rows("SELECT column_name FROM information_schema.columns WHERE table_schema = 'knowledge' "
-                "AND table_name = 'notes' AND column_name IN ('layout_x', 'layout_y', 'layout_x_public', 'layout_y_public')") == []
+    assert (
+        rows(
+            "SELECT relname, relowner, relacl::text FROM pg_class WHERE oid IN "
+            "('public_api.knowledge_notes'::regclass, 'public_api.knowledge_note_entities'::regclass) ORDER BY relname"
+        )
+        == owners
+    )
+    assert (
+        rows(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'knowledge' "
+            "AND table_name = 'notes' AND column_name IN ('layout_x', 'layout_y', 'layout_x_public', 'layout_y_public')"
+        )
+        == []
+    )
     session.execute(text("SET LOCAL ROLE public_reader"))
-    assert [row[0] for row in rows("SELECT note_id FROM public_api.knowledge_notes ORDER BY note_id")] == ["note-a", "note-b"]
-    assert rows("SELECT * FROM public_api.knowledge_note_entities ORDER BY id") == before_entities
+    assert [
+        row[0]
+        for row in rows(
+            "SELECT note_id FROM public_api.knowledge_notes ORDER BY note_id"
+        )
+    ] == ["note-a", "note-b"]
+    assert (
+        rows("SELECT * FROM public_api.knowledge_note_entities ORDER BY id")
+        == before_entities
+    )
     with pytest.raises(ProgrammingError, match="permission denied"):
         with session.connection().begin_nested():
             rows("SELECT * FROM knowledge.notes")
@@ -89,7 +128,11 @@ def test_layout_drop_preserves_data_projection_owners_and_reader_grants(session)
 
 
 def test_unexpected_view_dependency_aborts_layout_retirement(session):
-    session.execute(text("CREATE VIEW public_api.layout_blocker AS SELECT layout_x FROM public_api.knowledge_notes"))
+    session.execute(
+        text(
+            "CREATE VIEW public_api.layout_blocker AS SELECT layout_x FROM public_api.knowledge_notes"
+        )
+    )
     with pytest.raises(InternalError, match="depend"):
         with session.connection().begin_nested():
             _retire_layout(session)
@@ -240,7 +283,9 @@ def _seed(session) -> None:
     session.commit()
 
 
-def test_views_derive_public_only_and_endpoints_filter(session, client, monkeypatch, graph_schema):
+def test_views_derive_public_only_and_endpoints_filter(
+    session, client, monkeypatch, graph_schema
+):
     """Views expose only public, non-deleted rows; endpoints filter private
     targets and strip private wikilinks. Seeded + read through the SAVEPOINT
     session so nothing persists across tests."""
@@ -320,7 +365,10 @@ def test_views_derive_public_only_and_endpoints_filter(session, client, monkeypa
     assert graph.status_code == 200
     g = graph.json()
     assert {n["id"] for n in g["nodes"]} == {"note-a", "note-b"}
-    assert all(set(node) == {"id", "title", "type", "degree", "verification_state"} for node in g["nodes"])
+    assert all(
+        set(node) == {"id", "title", "type", "degree", "verification_state"}
+        for node in g["nodes"]
+    )
     # A->C dropped (target private/absent from the public node set).
     assert {(e["source"], e["target"]) for e in g["edges"]} == {("note-a", "note-b")}
 
