@@ -7,6 +7,7 @@ import http.server
 import importlib.metadata
 import itertools
 import json
+import os
 import re
 import threading
 from pathlib import Path
@@ -668,5 +669,21 @@ if __name__ == "__main__":
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument(
+        "--capture-only",
+        action="store_true",
+        help="Run the existing sheet checklist and collect evidence for independent review",
+    )
     args = parser.parse_args()
-    check(args.artifact.resolve(), args.output.resolve(), args.expected_sha)
+    if not args.capture_only:
+        check(args.artifact.resolve(), args.output.resolve(), args.expected_sha)
+    # Extend the existing Linux job and its evidence upload, without requiring
+    # a new workflow, permission, credential or production endpoint.
+    if args.capture_only or os.environ.get("GITHUB_ACTIONS") == "true":
+        from sheet_ci_check import run as check_sheets
+
+        check_sheets(
+            args.output.resolve() / "sheets",
+            args.expected_sha,
+            capture_only=args.capture_only,
+        )

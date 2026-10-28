@@ -28,7 +28,8 @@ concurrency:
 jobs:
   browser:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Full-document base/head segments and traces exceed the old viewport-only budget.
+    timeout-minutes: 40
     env:
       FACTORY_PREVIEW_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
