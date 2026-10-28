@@ -412,9 +412,14 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 		ordered = append(ordered, night)
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	firstNight := stars.FirstNight(now)
 	for _, night := range ordered {
 		n := LightNight{Night: stars.NightName(night), Verdict: verdict.Unknown, Coverage: stars.CoverageNone, Why: "No nearby snapshot site."}
-		if site != nil {
+		if night < firstNight {
+			// Morning geometry can refer to a night whose forecast hours
+			// have already been dropped. AssessNight only covers live nights.
+			n.Why = "This night has ended; the current snapshot cannot assess it."
+		} else if site != nil {
 			ws := ds.Windows(stars.WindowsQuery{Lat: site.Lat, Lon: site.Lon, RadiusKm: 0.01, Night: night, Nights: 1, Limit: 1, Now: now})
 			if len(ws) > 0 {
 				a := ds.AssessNight(site, &ws[0].Nights[0], night, now.UTC().Truncate(time.Hour), ws[0].Climate, stars.NightAssessmentOptions{OmitMoonAdvice: true})
