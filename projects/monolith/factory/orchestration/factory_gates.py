@@ -442,11 +442,14 @@ def matching_delivery_pulls(repo: str, issue_number: int) -> list[dict]:
             elif row.task_id:
                 recorded_targets.add((f"factory/{row.task_id}", None))
 
+    # Keep the 500-row coverage bound while fitting large PR bodies beneath
+    # the shared 1 MB response cap. A capped scan never proves absence.
+    page_size = 25
     candidates = []
-    for page in range(1, 6):
+    for page in range(1, 21):
         pulls = conductor.github_list(
             repo,
-            f"pulls?state=open&sort=created&direction=asc&per_page=100&page={page}",
+            f"pulls?state=open&sort=created&direction=asc&per_page={page_size}&page={page}",
         )
         candidates.extend(
             pr
@@ -458,7 +461,7 @@ def matching_delivery_pulls(repo: str, issue_number: int) -> list[dict]:
                 or (pr.get("head", {}).get("ref"), None) in recorded_targets
             )
         )
-        if len(pulls) < 100:
+        if len(pulls) < page_size:
             return sorted(candidates, key=lambda pr: pr["number"])
     raise ValueError("open PR discovery incomplete")
 

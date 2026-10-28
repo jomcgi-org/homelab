@@ -917,27 +917,174 @@ def test_a_truncated_sweep_says_so(db, monkeypatch):
     assert intake_loop._listing_due(swept_at + timedelta(hours=1))
 
 
-def test_pull_listing_uses_fifty_item_pages_and_reads_after_a_full_page(
-    db, monkeypatch
-):
+def test_pull_listing_uses_small_pages_and_reads_after_a_full_page(db, monkeypatch):
     calls = []
-    full_pull_page = [{"number": number} for number in range(1, 51)]
+    full_pull_page = [{"number": number} for number in range(1, 26)]
 
     def github_list(_repo, suffix):
         calls.append(suffix)
         if suffix.startswith("issues?"):
             return []
-        return full_pull_page if suffix.endswith("page=1") else [{"number": 51}]
+        return full_pull_page if suffix.endswith("page=1") else [{"number": 26}]
 
     monkeypatch.setattr(intake_loop, "github_list", github_list)
     assert intake_loop.intake_tick(policy(), generation=0) == []
     assert calls == [
-        "issues?state=open&sort=created&direction=asc&per_page=100&page=1",
-        "pulls?state=open&sort=created&direction=asc&per_page=50&page=1",
-        "pulls?state=open&sort=created&direction=asc&per_page=50&page=2",
+        "issues?state=open&sort=created&direction=asc&per_page=25&page=1",
+        "pulls?state=open&sort=created&direction=asc&per_page=25&page=1",
+        "pulls?state=open&sort=created&direction=asc&per_page=25&page=2",
     ]
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert "truncated" not in detail
+
+
+def bounded_page_reader(rows, calls, *, fail_page=None):
+    """Model GitHub's pagination and the production reader's existing byte cap."""
+    from urllib.parse import parse_qs, urlsplit
+
+    def read(_repo, suffix):
+        query = parse_qs(urlsplit(suffix).query)
+        size, page = int(query["per_page"][0]), int(query["page"][0])
+        calls.append((size, page))
+        result = rows[(page - 1) * size : page * size]
+        if page == fail_page or len(json.dumps(result).encode()) > 1_000_000:
+            raise ValueError("GitHub response exceeds factory limit")
+        return result
+
+    return read
+
+
+def test_intake_reads_large_pull_corpus_with_unchanged_byte_limit(monkeypatch):
+    rows = [{"number": n, "body": "x" * 23_000} for n in range(48)]
+    assert len(json.dumps(rows).encode()) > 1_000_000
+    calls = []
+    monkeypatch.setattr(intake_loop, "github_list", bounded_page_reader(rows, calls))
+    found, truncated = intake_loop._pages(
+        "owner/repo", "pulls", page_size=intake_loop.PULL_PAGE_SIZE
+    )
+    assert found == rows and not truncated
+    assert calls == [(25, 1), (25, 2)]
+
+
+@pytest.mark.parametrize("endpoint, ceiling", [("issues", 500), ("pulls", 250)])
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+def test_smaller_pages_preserve_intake_row_ceilings(
+    monkeypatch, endpoint, ceiling, delta
+):
+    rows = [{"number": n} for n in range(ceiling + delta)]
+    calls = []
+    monkeypatch.setattr(intake_loop, "github_list", bounded_page_reader(rows, calls))
+    found, truncated = intake_loop._pages("owner/repo", endpoint)
+    assert found == rows[:ceiling]
+    assert truncated is (delta >= 0)
+    assert calls == [(25, page) for page in range(1, ceiling // 25 + 1)]
+
+
+def test_incomplete_pull_scan_cannot_admit_unseen_owner(db, monkeypatch):
+    calls = []
+    pulls = [{"number": n, "body": ""} for n in range(251)]
+    # The closing PR is just beyond the bounded scan. Absence is not established.
+    pulls[-1]["body"] = "Closes #1"
+    read = bounded_page_reader(pulls, calls)
+    monkeypatch.setattr(
+        intake_loop,
+        "github_list",
+        lambda repo, suffix: (
+            [issue(1, ["agent-ready"])]
+            if suffix.startswith("issues?")
+            else read(repo, suffix)
+        ),
+    )
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    assert len(calls) == 10
+    assert audits(db, "intake_error")
+    assert (
+        intake_loop.intake_state(policy())["last_evaluated"]["detail"]["truncated"]
+        is True
+    )
+    assert (
+        intake_loop.intake_state(policy())["last_evaluated"]["detail"]["github"]
+        == "failed"
+    )
+
+
+@pytest.mark.parametrize("count", [48, 499])
+def test_delivery_association_reads_later_pages_without_losing_ownership(
+    db, monkeypatch, count
+):
+    from factory.orchestration import factory_conductor, factory_gates
+
+    rows = [
+        {
+            "number": n + 1,
+            "body": "x" * (23_000 if count == 48 else 1),
+            "head": {"repo": {"full_name": "owner/repo"}, "ref": "source"},
+        }
+        for n in range(count)
+    ]
+    rows[0]["body"] = "Closes #123"
+    rows[0]["head"]["repo"]["full_name"] = "someone/else"
+    rows[-1]["body"] += "\nCloses #123"
+    calls = []
+    monkeypatch.setattr(
+        factory_conductor, "github_list", bounded_page_reader(rows, calls)
+    )
+    assert factory_gates.matching_delivery_pulls("owner/repo", 123) == [rows[-1]]
+    assert calls == [(25, page) for page in range(1, (count + 24) // 25 + 1)]
+
+
+@pytest.mark.parametrize("fail_page", [None, 2])
+def test_delivery_association_never_accepts_partial_scan(db, monkeypatch, fail_page):
+    from factory.orchestration import factory_conductor, factory_gates
+
+    rows = [
+        {
+            "number": n + 1,
+            "body": "Closes #123",
+            "head": {"repo": {"full_name": "owner/repo"}, "ref": "source"},
+        }
+        for n in range(501)
+    ]
+    calls = []
+    monkeypatch.setattr(
+        factory_conductor,
+        "github_list",
+        bounded_page_reader(rows, calls, fail_page=fail_page),
+    )
+    with pytest.raises(ValueError, match="exceeds factory limit|discovery incomplete"):
+        factory_gates.matching_delivery_pulls("owner/repo", 123)
+    assert len(calls) == (fail_page or 20)
+
+
+def test_delivery_association_preserves_recorded_target_on_later_page(db, monkeypatch):
+    from factory.orchestration import factory_conductor, factory_gates
+
+    with Session(db) as session:
+        intake_receipt(
+            session,
+            123,
+            direction_json=json.dumps(
+                {
+                    "delivery_branch": "factory/recorded",
+                    "delivery_pr_number": 26,
+                }
+            ),
+        )
+        session.commit()
+    rows = [
+        {
+            "number": n + 1,
+            "body": "Refs #123",
+            "head": {"repo": {"full_name": "owner/repo"}, "ref": "factory/recorded"},
+        }
+        for n in range(26)
+    ]
+    calls = []
+    monkeypatch.setattr(
+        factory_conductor, "github_list", bounded_page_reader(rows, calls)
+    )
+    assert factory_gates.matching_delivery_pulls("owner/repo", 123) == [rows[-1]]
+    assert calls == [(25, 1), (25, 2)]
 
 
 def test_the_sweep_asks_for_the_oldest_first(db, monkeypatch):
