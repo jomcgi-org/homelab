@@ -113,6 +113,28 @@ func TestLightGallowayCore(t *testing.T) {
 	}
 }
 
+func TestLightGrazingCoreAtCoverageBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		date string
+		lat  float64
+		lon  float64
+	}{
+		{"north boundary in November", "2026-11-11", 61, -8.25},
+		{"rounds to north boundary", "2026-11-11", 60.996, -8.25},
+		{"north boundary in March", "2026-03-10", 61, -8.92},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := lightDay(t, tc.date, tc.lat, tc.lon)
+			for _, w := range d.Windows {
+				if w.Kind == "milky_way" {
+					t.Errorf("grazing core at latitude 61 must not produce a Milky Way window: %+v", w)
+				}
+			}
+		})
+	}
+}
+
 func TestLightDatesAndMissingEvents(t *testing.T) {
 	loc, err := time.LoadLocation("Europe/London")
 	if err != nil {
