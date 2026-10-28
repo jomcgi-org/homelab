@@ -4750,33 +4750,47 @@ def test_unqueued_start_sweep_retains_any_execution_or_ownership_evidence(
     assert _lock_holder(admission_database, "kg:unqueued") is not None
 
 
-def test_a_job_payload_model_reaches_the_session(monkeypatch):
+@pytest.mark.parametrize("model", ["sol", "astra"])
+def test_a_job_payload_model_reaches_the_session(monkeypatch, model):
     jobs = [
-        {"name": "retro", "payload": {"prompt": "go", "model": "sol"}},
+        {"name": "retro", "payload": {"prompt": "go", "model": model}},
         {"name": "plain", "payload": {"prompt": "go"}},
     ]
     _result, _claims, starts, completions, _n, _d = _run(monkeypatch, jobs)
 
-    assert [start[2] for start in starts] == ["sol", "luna"]
+    assert [start[2] for start in starts] == [model, "luna"]
     assert [c[1] for c in completions] == ["ok", "ok"]
 
 
-def test_an_unlisted_payload_model_fails_before_any_session(monkeypatch):
-    jobs = [{"name": "bad", "payload": {"prompt": "go", "model": "opus"}}]
+@pytest.mark.parametrize("model", ["opus", "unknown", 7, False, [], {}])
+def test_an_unlisted_payload_model_fails_before_any_session(monkeypatch, model):
+    cancelled = []
+    monkeypatch.setattr(
+        drainer, "cancel_drainer_reservation", lambda *args: cancelled.append(args)
+    )
+    jobs = [{"name": "bad", "payload": {"prompt": "go", "model": model}}]
     _result, _claims, starts, completions, _n, _d = _run(monkeypatch, jobs)
 
     assert starts == []
     assert completions[0][:2] == ("bad", "error")
-    assert "model must be one of luna, sol" in completions[0][2]
+    assert "model must be one of luna, sol, astra" in completions[0][2]
+    assert len(cancelled) == 1
 
 
-def test_job_model_is_lenient_for_the_claim_and_strict_for_the_start():
-    assert drainer._job_model({"prompt": "x"}) == "luna"
-    assert drainer._job_model({"model": "sol"}) == "sol"
-    assert drainer._job_model({"model": "opus"}) == "luna"
+@pytest.mark.parametrize("serialized", [False, True])
+def test_job_model_is_lenient_for_the_claim_and_strict_for_the_start(serialized):
+    def payload(value):
+        return json.dumps(value) if serialized else value
+
+    for strict in (False, True):
+        assert drainer._job_model(payload({"prompt": "x"}), strict=strict) == "luna"
+        for model in ("luna", "sol", "astra"):
+            assert drainer._job_model(payload({"model": model}), strict=strict) == model
+    for model in ("opus", "unknown", 7, False, [], {}):
+        assert drainer._job_model(payload({"model": model})) == "luna"
+        with pytest.raises(drainer.MalformedPayload):
+            drainer._job_model(payload({"model": model}), strict=True)
     assert drainer._job_model(None) == "luna"
-    with pytest.raises(drainer.MalformedPayload):
-        drainer._job_model({"model": "opus"}, strict=True)
 
 
 def test_a_retro_digest_job_appends_the_server_built_digest(monkeypatch):
@@ -4803,24 +4817,37 @@ def test_a_retro_digest_job_appends_the_server_built_digest(monkeypatch):
     assert completions[1][:2] == ("odd", "error")
 
 
+@pytest.mark.parametrize("model", ["sol", "astra"])
 def test_a_sol_job_reserves_sol_and_defers_on_its_own_provider(
-    admission_database, monkeypatch
+    admission_database, monkeypatch, model
 ):
     from sqlmodel import select
 
     from factory.execution.models import AgentCapacityReservation
+    from factory.orchestration import model_pool
 
     with Session(admission_database) as db:
         db.execute(
             text("""INSERT INTO routine_jobs (name,routine_kind,next_run_at,payload)
             VALUES ('retro','qwen-drain','2026-01-01',:payload)"""),
-            {"payload": json.dumps({"prompt": "go", "model": "sol"})},
+            {"payload": json.dumps({"prompt": "go", "model": model})},
         )
         db.commit()
     monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
-    monkeypatch.setattr(drainer, "model_walled", lambda model: (True, "exhausted"))
+    checked = []
+    availability = model_pool.availability
+
+    def check_model(model, quota, role):
+        checked.append((model, role))
+        return availability(model, quota, role)
+
+    monkeypatch.setattr(model_pool, "availability", check_model)
+    monkeypatch.setattr(
+        model_pool, "quota_summary", lambda: {"codex": {"exhausted": True}}
+    )
 
     assert _admitted_claim("wf-walled") is None
+    assert checked == [(model, drainer.DRAINER_QUOTA_ROLE)]
     with Session(admission_database) as db:
         assert db.exec(select(AgentCapacityReservation)).all() == []
         job = db.execute(
@@ -4828,13 +4855,15 @@ def test_a_sol_job_reserves_sol_and_defers_on_its_own_provider(
         ).one()
         assert job.locked_by is None
 
-    checked = []
+    checked.clear()
     monkeypatch.setattr(
-        drainer, "model_walled", lambda model: checked.append(model) or (False, "ok")
+        model_pool, "quota_summary", lambda: {"codex": {"headline_used_percent": 0.0}}
     )
     claimed = _admitted_claim("wf-open")
     assert claimed is not None and claimed["name"] == "retro"
-    assert checked == ["sol"]
+    assert checked == [(model, drainer.DRAINER_QUOTA_ROLE)]
+    assert isinstance(claimed["payload"], str)
+    assert drainer._job_model(claimed["payload"], strict=True) == model
     with Session(admission_database) as db:
         reservations = db.exec(select(AgentCapacityReservation)).all()
-        assert [r.model for r in reservations] == ["sol"]
+        assert [r.model for r in reservations] == [model]
