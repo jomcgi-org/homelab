@@ -18,24 +18,70 @@
         "summary": "Light and night-sky windows at a Scottish point",
         "description": "Staged repository delivery pending operational acceptance. Astronomy is computed without upstream calls and remains available without a snapshot. Europe/London civil dates, today by default, three-day default span, seven-day maximum and no later than 13 days ahead. Windows are clipped to each civil date. Cloud verdicts describe supporting nearby-site clear twilight-dark hourly samples only. Missing observations, including golden/blue light, stay unknown. Night suitability is reported separately. Anonymous, cookie-free responses use plan's bounded browser and Cloudflare cache policies, including ETag validation; forecasts prevent permanent caching.",
         "parameters": [
-          {"name":"lat","in":"query","required":true,"schema":{"type":"number","minimum":54.5,"maximum":61},"description":"Latitude, rounded to 0.01 degrees."},
-          {"name":"lon","in":"query","required":true,"schema":{"type":"number","minimum":-9,"maximum":-0.5},"description":"Longitude, degrees east, rounded to 0.01 degrees."},
-          {"name":"radius_km","in":"query","schema":{"type":"number","minimum":1,"maximum":100,"default":30},"description":"Site search ceiling; effective reach is min(radius_km,30) km. Nearest site wins, then ID for distance ties."},
-          {"name":"from","in":"query","schema":{"type":"string","format":"date"},"description":"Inclusive first Europe/London civil date, today by default, at most 13 days ahead."},
-          {"name":"to","in":"query","schema":{"type":"string","format":"date"},"description":"Inclusive last date, three-day default, seven-day maximum, no later than 13 days ahead."}
+          {
+            "name": "lat",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "number", "minimum": 54.5, "maximum": 61 },
+            "description": "Latitude, rounded to 0.01 degrees."
+          },
+          {
+            "name": "lon",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "number", "minimum": -9, "maximum": -0.5 },
+            "description": "Longitude, degrees east, rounded to 0.01 degrees."
+          },
+          {
+            "name": "radius_km",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30
+            },
+            "description": "Site search ceiling; effective reach is min(radius_km,30) km. Nearest site wins, then ID for distance ties."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": { "type": "string", "format": "date" },
+            "description": "Inclusive first Europe/London civil date, today by default, at most 13 days ahead."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": { "type": "string", "format": "date" },
+            "description": "Inclusive last date, three-day default, seven-day maximum, no later than 13 days ahead."
+          }
         ],
         "responses": {
           "200": {
-            "description":"Astronomical windows and scoped cloud sample support; missing weather is an explained unknown.",
-            "headers":{
-              "Cache-Control":{"schema":{"type":"string","const":"public, max-age=60, s-maxage=600, stale-while-revalidate=3600, stale-if-error=86400"}},
-              "Cloudflare-CDN-Cache-Control":{"schema":{"type":"string","const":"public, max-age=600, stale-while-revalidate=3600, stale-if-error=86400"}},
-              "ETag":{"schema":{"type":"string"}}
+            "description": "Astronomical windows and scoped cloud sample support; missing weather is an explained unknown.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "public, max-age=60, s-maxage=600, stale-while-revalidate=3600, stale-if-error=86400"
+                }
+              },
+              "Cloudflare-CDN-Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "public, max-age=600, stale-while-revalidate=3600, stale-if-error=86400"
+                }
+              },
+              "ETag": { "schema": { "type": "string" } }
             },
-            "content":{"application/json":{"schema":{"$ref":"#/components/schemas/LightResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LightResponse" }
+              }
+            }
           },
-          "304":{"description":"Not modified (If-None-Match matched)."},
-          "400":{"$ref":"#/components/responses/BadRequest"}
+          "304": { "description": "Not modified (If-None-Match matched)." },
+          "400": { "$ref": "#/components/responses/BadRequest" }
         }
       }
     },
@@ -755,87 +801,207 @@
         }
       },
       "LightResponse": {
-        "type":"object","required":["data","meta"],
-        "properties":{"data":{"$ref":"#/components/schemas/LightResult"},"meta":{"$ref":"#/components/schemas/Meta"}}
+        "type": "object",
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/LightResult" },
+          "meta": { "$ref": "#/components/schemas/Meta" }
+        }
       },
       "LightQuery": {
-        "type":"object","required":["lat","lon","radius_km","from","to"],
-        "properties":{
-          "lat":{"type":"number","minimum":54.5,"maximum":61},
-          "lon":{"type":"number","minimum":-9,"maximum":-0.5},
-          "radius_km":{"type":"number","minimum":1,"maximum":100},
-          "from":{"type":"string","format":"date"},"to":{"type":"string","format":"date"}
+        "type": "object",
+        "required": ["lat", "lon", "radius_km", "from", "to"],
+        "properties": {
+          "lat": { "type": "number", "minimum": 54.5, "maximum": 61 },
+          "lon": { "type": "number", "minimum": -9, "maximum": -0.5 },
+          "radius_km": { "type": "number", "minimum": 1, "maximum": 100 },
+          "from": { "type": "string", "format": "date" },
+          "to": { "type": "string", "format": "date" }
         }
       },
       "LightResult": {
-        "type":"object","required":["query","timezone","site","days","nights"],
-        "properties":{
-          "query":{"$ref":"#/components/schemas/LightQuery"},
-          "timezone":{"type":"string","const":"Europe/London"},
-          "site":{"$ref":"#/components/schemas/LightSite"},
-          "days":{"type":"array","minItems":1,"maxItems":7,"items":{"$ref":"#/components/schemas/LightDay"}},
-          "nights":{"type":"array","description":"Distinct noon-to-noon NightDay labels represented in the windows. AssessNight suitability includes moonlight and coverage; it is never an interval cloud forecast. Lunar advice text is omitted because days already supply lunar geometry.","items":{"$ref":"#/components/schemas/LightNight"}}
+        "type": "object",
+        "required": ["query", "timezone", "site", "days", "nights"],
+        "properties": {
+          "query": { "$ref": "#/components/schemas/LightQuery" },
+          "timezone": { "type": "string", "const": "Europe/London" },
+          "site": { "$ref": "#/components/schemas/LightSite" },
+          "days": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 7,
+            "items": { "$ref": "#/components/schemas/LightDay" }
+          },
+          "nights": {
+            "type": "array",
+            "description": "Distinct noon-to-noon NightDay labels represented in the windows. AssessNight suitability includes moonlight and coverage; it is never an interval cloud forecast. Lunar advice text is omitted because days already supply lunar geometry.",
+            "items": { "$ref": "#/components/schemas/LightNight" }
+          }
         }
       },
       "LightSite": {
-        "type":["object","null"],"description":"Nearest snapshot site within min(radius_km,30) km. Null when absent; astronomy still answers.",
-        "required":["site_id","lat","lon","distance_km","forecast_fetched_at","hourly_until","truncated"],
-        "properties":{
-          "site_id":{"type":"string"},"lat":{"type":"number"},"lon":{"type":"number"},"distance_km":{"type":"number","minimum":0,"maximum":30},
-          "forecast_fetched_at":{"$ref":"#/components/schemas/LightEvent"},
-          "hourly_until":{"$ref":"#/components/schemas/LightEvent"},
-          "truncated":{"type":"boolean","description":"The materializer omitted some clear hours; missing rows cannot establish cloud."}
+        "type": ["object", "null"],
+        "description": "Nearest snapshot site within min(radius_km,30) km. Null when absent; astronomy still answers.",
+        "required": [
+          "site_id",
+          "lat",
+          "lon",
+          "distance_km",
+          "forecast_fetched_at",
+          "hourly_until",
+          "truncated"
+        ],
+        "properties": {
+          "site_id": { "type": "string" },
+          "lat": { "type": "number" },
+          "lon": { "type": "number" },
+          "distance_km": { "type": "number", "minimum": 0, "maximum": 30 },
+          "forecast_fetched_at": { "$ref": "#/components/schemas/LightEvent" },
+          "hourly_until": { "$ref": "#/components/schemas/LightEvent" },
+          "truncated": {
+            "type": "boolean",
+            "description": "The materializer omitted some clear hours; missing rows cannot establish cloud."
+          }
         }
       },
       "LightEvent": {
-        "type":["string","null"],"format":"date-time","description":"UTC RFC3339 instant, seconds. Null means no crossing on this civil date (including events on adjacent dates and persistent twilight), or absent source time where used in provenance. Numerical resolution is about a second, not a claim of astronomical accuracy."
+        "type": ["string", "null"],
+        "format": "date-time",
+        "description": "UTC RFC3339 instant, seconds. Null means no crossing on this civil date (including events on adjacent dates and persistent twilight), or absent source time where used in provenance. Numerical resolution is about a second, not a claim of astronomical accuracy."
       },
       "LightTwilight": {
-        "type":"object","required":["dawn","dusk"],
-        "properties":{"dawn":{"$ref":"#/components/schemas/LightEvent"},"dusk":{"$ref":"#/components/schemas/LightEvent"}}
+        "type": "object",
+        "required": ["dawn", "dusk"],
+        "properties": {
+          "dawn": { "$ref": "#/components/schemas/LightEvent" },
+          "dusk": { "$ref": "#/components/schemas/LightEvent" }
+        }
       },
       "LightMoon": {
-        "type":"object","required":["rise","set","reference_at","phase","direction","illumination"],
-        "properties":{
-          "rise":{"$ref":"#/components/schemas/LightEvent"},"set":{"$ref":"#/components/schemas/LightEvent"},
-          "reference_at":{"type":"string","format":"date-time","description":"Local noon of the civil date, expressed in UTC."},
-          "phase":{"type":"number","minimum":0,"maximum":1,"description":"Cycle fraction: new 0, first quarter .25, full .5, last quarter .75. Rounded to four decimal places."},
-          "direction":{"type":"string","enum":["waxing","waning"],"description":"Waxing before phase .5, waning from .5; derived from the unrounded signed illumination angle."},
-          "illumination":{"type":"number","minimum":0,"maximum":1,"description":"Lit disc fraction, at reference_at, rounded to four decimals."}
+        "type": "object",
+        "required": [
+          "rise",
+          "set",
+          "reference_at",
+          "phase",
+          "direction",
+          "illumination"
+        ],
+        "properties": {
+          "rise": { "$ref": "#/components/schemas/LightEvent" },
+          "set": { "$ref": "#/components/schemas/LightEvent" },
+          "reference_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Local noon of the civil date, expressed in UTC."
+          },
+          "phase": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Cycle fraction: new 0, first quarter .25, full .5, last quarter .75. Rounded to four decimal places."
+          },
+          "direction": {
+            "type": "string",
+            "enum": ["waxing", "waning"],
+            "description": "Waxing before phase .5, waning from .5; derived from the unrounded signed illumination angle."
+          },
+          "illumination": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Lit disc fraction, at reference_at, rounded to four decimals."
+          }
         }
       },
       "LightDay": {
-        "type":"object","required":["date","sunrise","sunset","civil","nautical","astronomical","moon","windows"],
-        "properties":{
-          "date":{"type":"string","format":"date"},
-          "sunrise":{"$ref":"#/components/schemas/LightEvent"},"sunset":{"$ref":"#/components/schemas/LightEvent"},
-          "civil":{"$ref":"#/components/schemas/LightTwilight"},"nautical":{"$ref":"#/components/schemas/LightTwilight"},"astronomical":{"$ref":"#/components/schemas/LightTwilight"},
-          "moon":{"$ref":"#/components/schemas/LightMoon"},
-          "windows":{"type":"array","description":"From-inclusive, until-exclusive intervals clipped to local midnight boundaries, sorted by from then kind. Absent windows are omitted, with an empty array when none exist. Sunrise/set and moonrise/set: centre -0.833 degrees. Twilight bands: civil -6 to -0.833, nautical -12 to -6, astronomical -18 to -12. Golden -4 to +6; blue -6 to -4. Milky Way: fixed core RA 17h45m, declination -29 degrees above 0, intersected with sun below -12. July twilight and moonlight can still limit visibility; no terrain/refraction model for core.","items":{"$ref":"#/components/schemas/LightWindow"}}
+        "type": "object",
+        "required": [
+          "date",
+          "sunrise",
+          "sunset",
+          "civil",
+          "nautical",
+          "astronomical",
+          "moon",
+          "windows"
+        ],
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "sunrise": { "$ref": "#/components/schemas/LightEvent" },
+          "sunset": { "$ref": "#/components/schemas/LightEvent" },
+          "civil": { "$ref": "#/components/schemas/LightTwilight" },
+          "nautical": { "$ref": "#/components/schemas/LightTwilight" },
+          "astronomical": { "$ref": "#/components/schemas/LightTwilight" },
+          "moon": { "$ref": "#/components/schemas/LightMoon" },
+          "windows": {
+            "type": "array",
+            "description": "From-inclusive, until-exclusive intervals clipped to local midnight boundaries, sorted by from then kind. Absent windows are omitted, with an empty array when none exist. Sunrise/set and moonrise/set: centre -0.833 degrees. Twilight bands: civil -6 to -0.833, nautical -12 to -6, astronomical -18 to -12. Golden -4 to +6; blue -6 to -4. Milky Way: fixed core RA 17h45m, declination -29 degrees above 0, intersected with sun below -12. July twilight and moonlight can still limit visibility; no terrain/refraction model for core.",
+            "items": { "$ref": "#/components/schemas/LightWindow" }
+          }
         }
       },
       "LightWindow": {
-        "type":"object","required":["kind","from","until","night","cloud"],
-        "properties":{
-          "kind":{"type":"string","enum":["civil_twilight","nautical_twilight","astronomical_twilight","golden","blue","astronomical_darkness","milky_way"]},
-          "from":{"type":"string","format":"date-time"},"until":{"type":"string","format":"date-time"},
-          "night":{"type":"string","format":"date","description":"Existing NightDay label at the window midpoint, named for its evening."},
-          "cloud":{"$ref":"#/components/schemas/LightCloud"}
+        "type": "object",
+        "required": ["kind", "from", "until", "night", "cloud"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "civil_twilight",
+              "nautical_twilight",
+              "astronomical_twilight",
+              "golden",
+              "blue",
+              "astronomical_darkness",
+              "milky_way"
+            ]
+          },
+          "from": { "type": "string", "format": "date-time" },
+          "until": { "type": "string", "format": "date-time" },
+          "night": {
+            "type": "string",
+            "format": "date",
+            "description": "Existing NightDay label at the window midpoint, named for its evening."
+          },
+          "cloud": { "$ref": "#/components/schemas/LightCloud" }
         }
       },
       "LightCloud": {
-        "type":"object","required":["verdict","coverage","supported_seconds","samples","why"],
-        "description":"Scope is hourly clear twilight-dark sample support at result.site, attributed to MET Norway in meta.sources. A listed hour supports its hourly bucket, clipped further to requested-point sun below -10. This is neither a continuous cloud forecast nor night suitability. Expired, missing or future site fetches, hours before the as-of hour, hours after the earlier site/dataset 48-hour horizon and unsupported portions have no support. Absence never proves cloud.",
-        "properties":{
-          "verdict":{"type":"string","enum":["clear","unknown"],"description":"Clear only when supported hourly bucket intersections cover the entire interval. Unknown when any portion lacks support. No cloudy verdict can be inferred from filtered rows."},
-          "coverage":{"type":"string","enum":["full","partial","none"]},
-          "supported_seconds":{"type":"integer","minimum":0,"description":"Union of supported bucket intersections, seconds; not a clear-sky probability."},
-          "samples":{"type":"integer","minimum":0},"why":{"type":"string"}
+        "type": "object",
+        "required": [
+          "verdict",
+          "coverage",
+          "supported_seconds",
+          "samples",
+          "why"
+        ],
+        "description": "Scope is hourly clear twilight-dark sample support at result.site, attributed to MET Norway in meta.sources. A listed hour supports its hourly bucket, clipped further to requested-point sun below -10. This is neither a continuous cloud forecast nor night suitability. Expired, missing or future site fetches, hours before the as-of hour, hours after the earlier site/dataset 48-hour horizon and unsupported portions have no support. Absence never proves cloud.",
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": ["clear", "unknown"],
+            "description": "Clear only when supported hourly bucket intersections cover the entire interval. Unknown when any portion lacks support. No cloudy verdict can be inferred from filtered rows."
+          },
+          "coverage": { "type": "string", "enum": ["full", "partial", "none"] },
+          "supported_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Union of supported bucket intersections, seconds; not a clear-sky probability."
+          },
+          "samples": { "type": "integer", "minimum": 0 },
+          "why": { "type": "string" }
         }
       },
       "LightNight": {
-        "type":"object","required":["night","verdict","coverage","why"],
-        "properties":{"night":{"type":"string","format":"date"},"verdict":{"$ref":"#/components/schemas/Verdict"},"coverage":{"type":"string","enum":["full","partial","none"]},"why":{"type":"string"}}
+        "type": "object",
+        "required": ["night", "verdict", "coverage", "why"],
+        "properties": {
+          "night": { "type": "string", "format": "date" },
+          "verdict": { "$ref": "#/components/schemas/Verdict" },
+          "coverage": { "type": "string", "enum": ["full", "partial", "none"] },
+          "why": { "type": "string" }
+        }
       },
       "CheckItem": {
         "type": "object",

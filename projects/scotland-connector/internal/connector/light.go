@@ -97,11 +97,13 @@ type LightResult struct {
 	Nights   []LightNight `json:"nights"`
 }
 
-type lightInterval struct{ from, until time.Time }
-type lightSample struct {
-	at    time.Time
-	value float64
-}
+type (
+	lightInterval struct{ from, until time.Time }
+	lightSample   struct {
+		at    time.Time
+		value float64
+	}
+)
 type lightCurve struct {
 	samples []lightSample
 	at      func(time.Time) float64
@@ -314,6 +316,7 @@ func maxTime(a, b, c time.Time) time.Time {
 	}
 	return a
 }
+
 func minTime(a, b, c time.Time) time.Time {
 	if b.Before(a) {
 		a = b
