@@ -1335,8 +1335,9 @@ weekly safeguards training, all as CronWorkflows. The orchestrator
 `compile()` decides only chat versus session on channels that hold the
 `orchestrator` consent grant, with an ordered provider fallback chain that
 fails open to direct submit. It makes no `submit_plan` call. Each enabled,
-granted attempt records one routing telemetry row; a session verdict carries its row id for
-thread linkage. Sessions use the caller's raw prompt, selected repo and model.
+granted attempt records one routing telemetry row; a session verdict carries its
+row id for thread linkage. Sessions use the caller's raw prompt, selected repo
+and model.
 
 **Why.** The generated plan had no runtime consumer after the session executor
 retirement. Joe chose to remove plan generation and its recipe catalog in
