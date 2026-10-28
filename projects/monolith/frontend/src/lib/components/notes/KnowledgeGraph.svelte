@@ -744,7 +744,8 @@
 
     resizeObserver = new ResizeObserver(() => {
       resize();
-      fitToBbox();
+      // Keep user navigation and selection framing across viewport changes.
+      if (autoFit && !selectedId) fitToBbox();
       scheduleRender();
     });
     resizeObserver.observe(stage);

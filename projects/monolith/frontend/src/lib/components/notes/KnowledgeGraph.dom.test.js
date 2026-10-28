@@ -191,3 +191,27 @@ it("preserves hit testing, cluster/search masks, touched labels and zoom", async
   run.flush();
   expect(run.onZoom.mock.calls.length).toBeGreaterThan(zoomCalls);
 });
+
+it.each([null, "a"])(
+  "preserves the user viewport on resize with selectedId=%s",
+  async (selectedId) => {
+    const run = await setup({ selectedId });
+    run.flush();
+    const canvas = document.querySelector("canvas");
+    const wheel = new WheelEvent("wheel", { deltaY: -400, bubbles: true });
+    // happy-dom's WheelEvent does not carry MouseEvent coordinates.
+    Object.defineProperties(wheel, {
+      clientX: { value: 250 },
+      clientY: { value: 200 },
+    });
+    canvas.dispatchEvent(wheel);
+    run.flush();
+    const before = { ...canvas.__zoom };
+    expect(before.k).toBeGreaterThan(1.5);
+    expect(Number.isFinite(before.x) && Number.isFinite(before.y)).toBe(true);
+    run.resize();
+    run.flush();
+    expect({ ...canvas.__zoom }).toEqual(before);
+    expect(run.layout).toHaveBeenCalledTimes(1);
+  },
+);
