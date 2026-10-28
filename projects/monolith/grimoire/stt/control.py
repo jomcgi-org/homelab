@@ -84,9 +84,18 @@ def admit(session, session_id, member_id, request_id, now=None):
 
 
 def finish(session, attempt_id, *, success):
+    """Settle provider health; None leaves health unchanged for client rejection."""
     provider = locked_control(session, "provider:google")
     attempt = session.get(SpeechAttempt, attempt_id)
-    if success:
+    if success is None:
+        # A rejected recovery probe proves neither health nor an outage. Release
+        # only its lease so another member can test recovery immediately.
+        if provider.probe_id == attempt_id:
+            provider.probe_until = 0
+            provider.probe_id = None
+        if attempt is not None:
+            attempt.state = "unknown"
+    elif success:
         # An ordinary request admitted before an outage cannot clear a newer
         # open breaker. Only the single leased recovery probe can clear it.
         if provider.failures < FAILURE_THRESHOLD or provider.probe_id == attempt_id:

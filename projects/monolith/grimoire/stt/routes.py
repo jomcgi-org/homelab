@@ -11,18 +11,21 @@ from uuid import UUID
 from core.db import get_session
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from opentelemetry import trace
-from sqlmodel import Session, select
+from sqlalchemy import func
+from sqlmodel import Session, or_, select
 
 from grimoire.access import get_authenticated_email
 from grimoire.models import (
     CampaignMember,
+    Entity,
     GameSession,
+    KnowledgeGrant,
     PlayerCharacter,
     SessionEvent,
     TranscriptConsent,
 )
 from grimoire.session_events import require_transcript_enabled
-from grimoire.stt import ProviderUnavailable
+from grimoire.stt import AudioRejected, ProviderUnavailable
 from grimoire.stt.control import admit, finish, unavailable
 from grimoire.stt.media import read_audio, validate_media
 from grimoire.visibility import visible_entities_query
@@ -85,21 +88,40 @@ def speaker_hints(session, campaign_id, member):
     from grimoire.router import _viewer_for_member
 
     viewer = _viewer_for_member(session, campaign_id, member)
-    rows = session.exec(visible_entities_query(campaign_id, viewer).limit(500)).all()
-    names = [entity.name for entity, _ in rows]
     characters = select(PlayerCharacter).where(
         PlayerCharacter.campaign_id == campaign_id
     )
     if viewer != "dm":
         characters = characters.where(PlayerCharacter.id == member.player_character_id)
-    names.extend(
-        row.character_name for row in session.exec(characters.limit(100)).all()
+    visible = visible_entities_query(campaign_id, viewer)
+    campaign_names = visible.where(
+        or_(KnowledgeGrant.id.is_not(None), Entity.is_global.is_(False))
     )
-    return tuple(
-        sorted(
-            {name.strip() for name in names if name and 0 < len(name.strip()) <= 100}
+    global_names = visible.where(
+        KnowledgeGrant.id.is_(None), Entity.is_global.is_(True)
+    )
+    names = {}
+    # Keep the canonical visibility predicate in every entity query. Distinct
+    # usable names are ordered before limiting so duplicate DM grant rows and
+    # a large extracted corpus cannot displace PCs or campaign-specific names.
+    for query, column in (
+        (characters, PlayerCharacter.character_name),
+        (campaign_names, Entity.name),
+        (global_names, Entity.name),
+    ):
+        name = func.trim(column)
+        query = (
+            query.with_only_columns(name)
+            .where(func.length(name).between(1, 100))
+            .distinct()
+            .order_by(name)
+            .limit(100)
         )
-    )[:100]
+        for value in session.execute(query).scalars():
+            names[value] = None
+            if len(names) == 100:
+                return tuple(names)
+    return tuple(names)
 
 
 def authorized_context(
@@ -154,9 +176,9 @@ def reserve(context, campaign_id, session_id, request_id):
         return identity, None, hints
 
 
-def failed(context, attempt_id):
+def failed(context, attempt_id, *, provider_failure=True):
     with _new_session(context) as session:
-        finish(session, attempt_id, success=False)
+        finish(session, attempt_id, success=False if provider_failure else None)
         session.commit()
 
 
@@ -237,6 +259,13 @@ async def audio_segment(
                     segment = await transcriber().transcribe(
                         audio, mime, "en-GB", hints
                     )
+            except AudioRejected:
+                span.set_attribute("grimoire.stt.provider_error", "invalid_audio")
+                span.set_attribute("grimoire.stt.billing", "unknown")
+                await asyncio.to_thread(
+                    failed, context, attempt_id, provider_failure=False
+                )
+                raise HTTPException(422, "audio segment rejected") from None
             except (ProviderUnavailable, TimeoutError):
                 span.set_attribute("grimoire.stt.provider_error", "unavailable")
                 span.set_attribute("grimoire.stt.billing", "unknown")

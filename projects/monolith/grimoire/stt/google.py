@@ -14,7 +14,7 @@ import re
 import httpx
 from opentelemetry.instrumentation.utils import suppress_instrumentation
 
-from grimoire.stt import ProviderUnavailable, Segment
+from grimoire.stt import AudioRejected, ProviderUnavailable, Segment
 
 TIMEOUT_SECONDS = 8
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -113,7 +113,7 @@ class GoogleTranscriber:
             return credentials.token
 
     async def transcribe(self, audio, mime, lang_hint, phrase_hints):
-        failed = False
+        failure = None
         result = None
         try:
             async with asyncio.timeout(TIMEOUT_SECONDS):
@@ -132,6 +132,10 @@ class GoogleTranscriber:
                             json=request_body(audio, mime, lang_hint, phrase_hints),
                         ) as response,
                     ):
+                        # Invalid argument/media responses concern this segment.
+                        # Auth, quota and outage failures still degrade the provider.
+                        if response.status_code in {400, 413, 422}:
+                            raise AudioRejected()
                         if response.status_code != 200:
                             raise ValueError()
                         payload = bytearray()
@@ -142,13 +146,15 @@ class GoogleTranscriber:
                         import json
 
                         result = parse_response(json.loads(payload))
+        except AudioRejected:
+            failure = AudioRejected
         except Exception:  # noqa: BLE001 - sanitize every SDK/transport/parser failure
             # Raise outside the handler so no raw exception survives in the
             # public exception chain or an auto-recorded exception event.
-            failed = True
+            failure = ProviderUnavailable
         finally:
             audio = None
             phrase_hints = ()
-        if failed:
-            raise ProviderUnavailable() from None
+        if failure:
+            raise failure() from None
         return result

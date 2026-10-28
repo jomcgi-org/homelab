@@ -179,7 +179,11 @@ def validate_media(audio, mime):
             import wave
 
             with wave.open(io.BytesIO(audio), "rb") as wav:
-                if wav.getsampwidth() != 2 or wav.getnchannels() not in {1, 2}:
+                if (
+                    wav.getsampwidth() != 2
+                    or wav.getnchannels() not in {1, 2}
+                    or not 8000 <= wav.getframerate() <= 48000
+                ):
                     raise ValueError()
                 frames = wav.getnframes()
                 if not 0 < frames <= MAX_SECONDS * wav.getframerate():

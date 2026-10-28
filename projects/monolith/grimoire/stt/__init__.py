@@ -22,6 +22,10 @@ class ProviderUnavailable(Exception):
     """A deliberately content-free provider failure."""
 
 
+class AudioRejected(Exception):
+    """A content-free invalid-segment response, independent of provider health."""
+
+
 class FakeTranscriber:
     """Deterministic offline seam; it never retains the input."""
 

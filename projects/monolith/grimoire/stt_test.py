@@ -20,12 +20,20 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from grimoire.models import (
+    Entity,
     SessionEvent,
     SpeechAttempt,
+    SpeechControl,
     TranscriptConsent,
 )
-from grimoire.stt import FakeTranscriber, ProviderUnavailable, Segment, routes
-from grimoire.stt.control import FAILURE_THRESHOLD, RATE_PER_MINUTE
+from grimoire.stt import (
+    AudioRejected,
+    FakeTranscriber,
+    ProviderUnavailable,
+    Segment,
+    routes,
+)
+from grimoire.stt.control import FAILURE_THRESHOLD, RATE_PER_MINUTE, admit, finish
 from grimoire.stt.google import GoogleTranscriber, parse_response
 from grimoire.stt.media import MAX_AUDIO_BYTES, read_audio, validate_media
 from grimoire.testing.leak_harness import sqlite_harness
@@ -191,13 +199,19 @@ def test_hints_use_canonical_visibility_positive_and_negative_controls(capture):
     hints = " ".join(calls[0][2])
     # The harness places distinct full, partial, name-only, global, DM-only,
     # other-player and cross-campaign canaries. Check its authoritative ACL.
-    for token, (allowed, placement) in h.canaries.items():
-        if (
-            placement.endswith("name")
-            and "entity" in placement
-            and "player_a" not in allowed
-        ):
-            assert token.casefold() not in hints.casefold()
+    forbidden = {
+        placement: token
+        for token, (allowed, placement) in h.canaries.items()
+        if placement.endswith("name") and "player_a" not in allowed
+    }
+    assert {
+        "private.name",
+        "b_only.name",
+        "character.character_name",
+    } <= forbidden.keys()
+    for token in forbidden.values():
+        assert token.casefold() not in hints.casefold()
+    assert h.rows["character_a"].character_name in calls[0][2]
     names = []
     for entity, grant in h.session.exec(
         routes.visible_entities_query(h.rows["campaign"].id, h.rows["character_a"].id)
@@ -207,6 +221,121 @@ def test_hints_use_canonical_visibility_positive_and_negative_controls(capture):
     for name in names:
         if len(name) <= 100:
             assert name in calls[0][2]
+
+
+@pytest.mark.parametrize("viewer", ["player_a", "dm"])
+def test_hint_cap_prioritizes_characters_and_campaign_names(capture, viewer):
+    h, client, calls = capture
+    # More than the former unordered pre-limit, inserted in reverse order.
+    h.session.add_all(
+        Entity(
+            name=f"Aboleth {index:03}",
+            entity_type="creature",
+            is_global=True,
+            source_type="extracted",
+        )
+        for index in reversed(range(600))
+    )
+    h.session.commit()
+    assert upload(h, client, viewer=viewer).status_code == 200
+    hints = calls[-1][2]
+    characters = [h.rows["character_a"].character_name]
+    campaign_names = [h.rows[key].name for key in ("a_only", "partial", "name_only")]
+    if viewer == "dm":
+        characters.append(h.rows["character"].character_name)
+        campaign_names.extend(h.rows[key].name for key in ("private", "b_only"))
+    assert hints[: len(characters)] == tuple(sorted(characters))
+    assert set(campaign_names) <= set(hints)
+    assert len(hints) == len(set(hints)) == 100
+    global_hints = [name for name in hints if name.startswith("Aboleth ")]
+    assert global_hints == [f"Aboleth {index:03}" for index in range(len(global_hints))]
+    assert upload(h, client, viewer=viewer).status_code == 200
+    assert calls[-1][2] == hints
+
+
+@pytest.mark.parametrize("rate", [1, 100, 4000, 7999, 48001, 96000, 192000])
+def test_unsupported_wav_rate_rejected_before_admission(capture, rate):
+    h, client, calls = capture
+    for _ in range(FAILURE_THRESHOLD):
+        assert upload(h, client, audio=wav(rate=rate)).status_code == 422
+    assert not calls
+    assert h.session.exec(select(SpeechAttempt)).all() == []
+    assert h.session.exec(select(SpeechControl)).all() == []
+    assert (
+        upload(h, client, viewer="player_b", audio=wav(rate=16000)).status_code == 200
+    )
+
+
+@pytest.mark.parametrize("rate", [8000, 16000, 48000])
+def test_supported_wav_sample_rates(rate):
+    assert validate_media(wav(rate=rate), "audio/wav") == 1
+
+
+@pytest.mark.parametrize("status", [400, 413, 422])
+def test_provider_client_rejections_do_not_trip_shared_breaker(
+    capture, monkeypatch, status
+):
+    h, client, _calls = capture
+    monkeypatch.setenv("GRIMOIRE_STT_PROJECT", "existing-project")
+    responses = [status] * FAILURE_THRESHOLD + [200]
+    requests = []
+
+    def transport(request):
+        requests.append(1)
+        code = responses.pop(0)
+        if code != 200:
+            return httpx.Response(code, text="PRIVATE_AUDIO_HINT_TOKEN")
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(
+        routes,
+        "transcriber",
+        lambda: GoogleTranscriber(
+            token_loader=lambda: "test-only",
+            transport=httpx.MockTransport(transport),
+        ),
+    )
+    for _ in range(FAILURE_THRESHOLD):
+        key = uuid4()
+        response = upload(h, client, key=key)
+        assert response.status_code == 422, response.text
+        assert "PRIVATE" not in response.text
+        assert upload(h, client, key=key).status_code == 409
+    assert len(requests) == FAILURE_THRESHOLD
+    with Session(h.session.get_bind()) as session:
+        provider = session.get(SpeechControl, "provider:google")
+        assert provider.failures == provider.open_until == provider.probe_until == 0
+        assert all(
+            row.state == "unknown" for row in session.exec(select(SpeechAttempt))
+        )
+    assert (
+        upload(h, client, viewer="player_b", audio=wav(rate=16000)).status_code == 204
+    )
+
+
+def test_client_rejection_preserves_outage_and_releases_only_its_probe(capture):
+    h, _client, _calls = capture
+    with Session(h.session.get_bind()) as session:
+        args = (session, h.rows["campaign_session"].id, h.rows["member_player_a"].id)
+        old, _ = admit(*args, uuid4(), now=100)
+        provider = session.get(SpeechControl, "provider:google")
+        provider.failures = FAILURE_THRESHOLD
+        provider.open_until = 99
+        probe, _ = admit(*args, uuid4(), now=100)
+        probe_id, probe_until = provider.probe_id, provider.probe_until
+        finish(session, old.id, success=None)
+        assert old.state == "unknown"
+        assert (provider.probe_id, provider.probe_until) == (probe_id, probe_until)
+        finish(session, probe.id, success=None)
+        assert probe.state == "unknown"
+        assert provider.failures == FAILURE_THRESHOLD
+        assert provider.open_until == 99
+        assert provider.probe_id is None
+        assert provider.probe_until == 0
+        replacement, fresh = admit(*args, uuid4(), now=100)
+        assert fresh
+        finish(session, replacement.id, success=True)
+        assert provider.failures == provider.open_until == 0
 
 
 def test_provider_failure_breaker_and_replay(capture, monkeypatch):
@@ -325,6 +454,10 @@ async def test_google_official_schema_request_and_response(monkeypatch):
 @pytest.mark.parametrize(
     "response",
     [
+        *[
+            httpx.Response(status, text="PRIVATE_AUDIO_HINT_TOKEN")
+            for status in (401, 403, 404, 408, 429, 503)
+        ],
         httpx.Response(500, text="PRIVATE_AUDIO_HINT_TOKEN"),
         httpx.Response(200, json={"results": [{}]}),
         httpx.Response(200, text="malformed"),
@@ -337,6 +470,25 @@ async def test_google_sanitizes_errors(monkeypatch, response, caplog):
         transport=httpx.MockTransport(lambda request: response),
     )
     with pytest.raises(ProviderUnavailable) as error:
+        await provider.transcribe(
+            b"PRIVATE_AUDIO", "audio/wav", "en-GB", ("PRIVATE_HINT",)
+        )
+    assert str(error.value) == ""
+    assert error.value.__context__ is None
+    assert "PRIVATE" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 413, 422])
+async def test_google_sanitizes_client_rejections(monkeypatch, status, caplog):
+    monkeypatch.setenv("GRIMOIRE_STT_PROJECT", "existing-project")
+    provider = GoogleTranscriber(
+        token_loader=lambda: "PRIVATE_TOKEN",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(status, text="PRIVATE_AUDIO_HINT_TOKEN")
+        ),
+    )
+    with pytest.raises(AudioRejected) as error:
         await provider.transcribe(
             b"PRIVATE_AUDIO", "audio/wav", "en-GB", ("PRIVATE_HINT",)
         )
