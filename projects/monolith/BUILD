@@ -1877,7 +1877,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "knowledge/tasks_router.py",
     "knowledge/gaps.py",
     "knowledge/mcp.py",
-    "knowledge/layout.py",
     # The public observability router needs the model and parser, never the
     # snapshot writer or its PostgreSQL mutation path.
     "observability/merged_prs_writer.py",
@@ -1966,7 +1965,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     "knowledge/router.py",
     "knowledge/tasks_router.py",
     "knowledge/gaps.py",
-    "knowledge/layout.py",
     # Private home scheduling and observability writer paths. home/** is not in
     # the allowlist today, but keeping the individual paths documents the
     # boundary if a narrow home dependency is added later.

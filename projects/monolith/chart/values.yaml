@@ -411,16 +411,6 @@ jobs:
           memory: 512Mi
         limits:
           memory: 1Gi
-    # knowledge.layout: FA2 graph layout, ~2.7GiB peak / 1 core / ~3 min,
-    # measured live. It recomputes the WHOLE graph every run with no
-    # change-detection, but the graph (notes + links) is static for days at a
-    # time (e.g. 0 note changes in 24h, 36 in 7d), so a 5-min cadence meant
-    # ~860 identical recomputes over 3 days. Run it WEEKLY instead: a
-    # change-gate would still have to reserve the memory and spin a pod every
-    # tick, so cutting the cadence is the cleaner win. Trigger a one-off
-    # Workflow by hand after a bulk note import if an immediate relayout is
-    # needed. Forbid so a slow layout never overlaps; 4Gi request==limit covers
-    # the 2.7GiB peak with growth headroom; cpu:1 (single-threaded FA2).
     # stats_rollup counts cluster resources via the in-cluster K8s API, so it
     # runs under the dedicated least-privilege monolith-stats SA (defined in the
     # argo-workflows platform chart) instead of the shared executor SA.
@@ -1510,14 +1500,6 @@ knowledge:
     docFixReview:
       # Demand-driven only. There is no schedule, so an idle queue costs nothing.
       enabled: false
-  layout:
-    scalingRatio: 2.0
-    gravity: 0.1
-    maxIter: 100
-    linlog: false
-    coreFraction: 0.99
-    seed: 42
-    nodeSizeScale: 0.005
 
 # cd health component (issue #4597): the `cd` entry in the deep /api/health
 # response, which UptimeRobot polls offsite. Tunables live here so changing what
