@@ -3502,8 +3502,7 @@ def ingest_utterance_core(
     body: UtteranceRequest,
     email: str,
 ) -> SessionEventView:
-    """Validated shared writer; caller owns transaction and request identity."""
-    require_transcript_enabled()
+    """Validated shared writer; caller owns HTTP gating and transaction."""
     member = _get_member_or_404(session, campaign_id, email)
     # State transitions and all event writers take this lock first. Refresh it
     # before checking state so an identity-map cache cannot bypass a pause.
