@@ -2056,13 +2056,13 @@ grimoire:
   # the number that actually matters here.
   extractConcurrency: ""
 
-# ADR 036 orchestrator brief compiler: a host-side OpenRouter call that routes
-# chat vs goose and compiles a grounded task brief for escalations. Disabled
+# ADR 036 orchestrator: a host-side call that decides chat versus session.
+# It does not generate a task brief or plan. Disabled
 # by default; the private deploy values flip it on. OPENROUTER_API_KEY is NOT
 # synced by a dedicated OnePasswordItem here: it is sourced from the existing
 # "goosecracker" Secret (synced from the goosecracker 1Password item for the
 # artifact egress sidecar), so the same key is never double-synced. model is
-# pinned (never ":auto") so briefs stay attributable; timeoutSeconds bounds
+# pinned (never ":auto") so routing stays attributable; timeoutSeconds bounds
 # the fail-open budget before the flow falls back to direct submit.
 orchestrator:
   enabled: false
