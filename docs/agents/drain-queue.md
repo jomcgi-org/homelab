@@ -5,10 +5,10 @@ The job kind (`qwen-drain`), PR label (`qwen-agent-for-review`), git identity
 was built on. The default worker is Luna: `DRAIN_MODEL = "luna"` in
 `projects/monolith/factory/orchestration/drainer.py`, a Codex-family model on
 claude-runtime. A `qwen-drain` job may name another model from `DRAIN_MODELS`
-(`luna`, `sol`) in `payload.model`; KG jobs always run on Luna.
+(`luna`, `sol`, `astra`) in `payload.model`; KG jobs always run on Luna.
 
 The drainer runs `claude_agent.routine_jobs` rows of kind `qwen-drain` as one
-fresh Luna session each, strictly serially, claimed by a `*/15` CronWorkflow
+fresh session each, strictly serially, claimed by a `*/15` CronWorkflow
 tick. The lane spends subscription quota rather than per-token billing, so it
 exists to turn idle capacity into audits, reports, and small PRs. The same
 drainer claims `kg-drain` jobs for knowledge extraction, and `docfix:` jobs are
@@ -32,11 +32,11 @@ Register with the MCP tool `monolith-agent-register-routine-job`:
 
 - `kind: "qwen-drain"`, `payload: {"prompt": ...}` (optional `repo`, `branch`,
   `reasoning`, `model`, `digest`).
-- `model` picks the worker: `luna` (default) or `sol`. Any other value fails the
-  job before a session starts. The claim reservation, the session and the
-  quota check all use the job's model: the lane-wide gate judges Luna, and a
-  Sol job is also deferred when Sol's own provider is walled (Sol and Luna
-  share the Codex grants, so in practice the two readings agree).
+- `model` picks the worker: `luna` (default), `sol` or `astra`. Any other value
+  fails the job before a session starts. The claim reservation, the session
+  and the quota check all use the job's model: the lane-wide gate judges Luna,
+  and a Sol or Astra job is also deferred when its own provider is walled.
+  All three share the Codex grants. There is no cross-model spill.
 - `digest` appends a server-built evidence block to the prompt at claim time.
   The only value is `factory-retro` (see below).
 - One-shot jobs: `interval_secs` null, `next_run_at` now. On completion
@@ -74,7 +74,8 @@ sweeps do not. Split "audit all runbooks" into one job per runbook.
 
 `agents.drainer.reasoning` and `payload.reasoning` become the invoke's
 `thinking` field, which only pi sessions read. Codex effort is pinned per model
-in the EmberVM shim's `CODEX_MODELS` table (`luna`: `medium`, `sol`: `high`),
+in the EmberVM shim's `CODEX_MODELS` table (`luna`: `medium`, `sol`: `high`,
+`astra`: `high`),
 so choosing `payload.model` also chooses the depth; change that table to change
 it. There is no per-job effort. Nothing ends a looping Luna turn short of the timeouts, so
 fix a looping job's search space or prompt.

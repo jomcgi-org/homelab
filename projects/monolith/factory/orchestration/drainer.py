@@ -160,7 +160,7 @@ def pin_drainer_settings() -> dict:
 # reservation whose model changed is refused, and a refused reservation never
 # dispatches. Both read the model through _job_model.
 DRAIN_MODEL = "luna"
-DRAIN_MODELS = ("luna", "sol")
+DRAIN_MODELS = ("luna", "sol", "astra")
 DRAINER_QUOTA_ROLE = "drainer"
 
 
