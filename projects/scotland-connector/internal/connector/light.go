@@ -199,8 +199,10 @@ func (c lightCurve) above(level float64) []lightInterval {
 		t := c.crossing(a, b, level)
 		if b.value >= level {
 			start = t
-		} else if t.After(start) {
-			out = append(out, lightInterval{start, t})
+		} else {
+			if t.After(start) {
+				out = append(out, lightInterval{start, t})
+			}
 			start = time.Time{}
 		}
 	}

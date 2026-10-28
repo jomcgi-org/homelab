@@ -100,6 +100,25 @@ func TestLightSolverGrazingAndAllDay(t *testing.T) {
 	}
 }
 
+func TestLightAboveSubsecondGrazingDoesNotExtendToDayEnd(t *testing.T) {
+	start := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 0, 1)
+	peak := start.Add(12*time.Hour + 500*time.Millisecond)
+	at := func(t time.Time) float64 {
+		x := t.Sub(peak).Seconds()
+		return 0.04 - x*x
+	}
+	c := lightCurve{at: at}
+	for _, t := range []time.Time{start, peak.Add(-400 * time.Millisecond), peak, peak.Add(400 * time.Millisecond), end} {
+		c.samples = append(c.samples, lightSample{t, at(t)})
+	}
+	// Both crossings truncate to the same second. Dropping that empty
+	// interval must also clear its start, with no later rise to replace it.
+	if got := c.above(0); len(got) != 0 {
+		t.Fatalf("sub-second grazing peak produced above intervals: %+v", got)
+	}
+}
+
 func TestLightIntervalCloudScope(t *testing.T) {
 	start := time.Date(2026, 10, 19, 20, 0, 0, 0, time.UTC)
 	now := start.Add(-time.Hour)
