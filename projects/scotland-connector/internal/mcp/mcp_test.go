@@ -384,6 +384,36 @@ func TestLegacyClient(t *testing.T) {
 	}
 }
 
+func TestDiscoveryInstructionsIncludeLightScope(t *testing.T) {
+	for _, tc := range []struct {
+		method  string
+		body    string
+		headers map[string]string
+	}{
+		{"initialize", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`, nil},
+		{"server/discover", `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMeta + `}}`, modern("server/discover", "")},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			code, _, r := post(t, handler(), tc.body, tc.headers)
+			if code != http.StatusOK || r.Error != nil {
+				t.Fatalf("status %d error %+v", code, r.Error)
+			}
+			instructions, ok := r.Result["instructions"].(string)
+			if !ok || instructions != Instructions {
+				t.Fatalf("instructions missing or inconsistent: %v", r.Result["instructions"])
+			}
+			for _, guidance := range []string{"Use light", "no top-level verdict", "cloud", "nearby-site hourly sample support", "nights", "interval cloud forecasts", "For plan, check and aurora", "meta.sources"} {
+				if !strings.Contains(instructions, guidance) {
+					t.Errorf("discovery instructions omit %q", guidance)
+				}
+			}
+			if strings.Contains(instructions, "Lead with each answer's verdict") {
+				t.Error("discovery requires a verdict from light")
+			}
+		})
+	}
+}
+
 func TestTransportGuards(t *testing.T) {
 	h := handler()
 	for _, method := range []string{http.MethodGet, http.MethodDelete} {

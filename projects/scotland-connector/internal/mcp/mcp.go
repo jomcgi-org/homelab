@@ -72,11 +72,15 @@ type Handler struct {
 }
 
 // Instructions are returned by server/discover and initialize.
-const Instructions = "Read-only answers to Scottish outdoor trip questions from forecast and climatology data. " +
+const Instructions = "Read-only answers to Scottish outdoor trip questions from forecast and climatology data and local astronomy. " +
 	"Use plan for open questions (where and when to walk or stargaze near a place over the next few days) " +
 	"and check for a specific plan (a named walk on a date, stargazing at a place on a night). " +
 	"Use aurora for a snapshot-only, near-term aurora heuristic; unsupported times or missing inputs return unknown. " +
-	"Lead with each answer's verdict and why. Every result carries meta.sources: credit them when you present the data."
+	"Use light for sun, moon, twilight, golden/blue light and Milky Way windows on Europe/London civil dates. " +
+	"Light has no top-level verdict; present the requested events and windows with their coverage and why. " +
+	"Its per-window cloud is nearby-site hourly sample support; unsupported portions, including golden/blue light, stay unknown and missing rows never prove cloud. " +
+	"Its nights are separate night suitability assessments, never interval cloud forecasts. " +
+	"For plan, check and aurora, lead with the verdict and why. Every result carries meta.sources: credit them when you present the data."
 
 // New builds the handler. allowedOrigins lists the browser origins accepted;
 // requests without an Origin header (every server-side connector) always pass.
