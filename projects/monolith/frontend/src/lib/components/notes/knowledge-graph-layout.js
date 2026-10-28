@@ -81,6 +81,12 @@ export function layoutGraph(
     )
     .force("x", forceX(width / 2).strength(0.035))
     .force("y", forceY(height / 2).strength(0.035));
+  // Keep the first paint in the stage, including singleton/orphan payloads
+  // for which the canvas deliberately has no connected-node fit bounds.
+  for (const n of localNodes) {
+    n.x += width / 2;
+    n.y += height / 2;
+  }
   let frame = 0;
   let ticks = 0;
   let stopped = false;

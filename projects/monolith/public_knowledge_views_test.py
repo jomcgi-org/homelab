@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import InternalError, ProgrammingError
 from sqlmodel import Session, create_engine, text
 
 _INSERT_NOTE = text(
@@ -61,8 +61,8 @@ def test_layout_drop_preserves_data_projection_owners_and_reader_grants(session)
                   "('public_api.knowledge_notes'::regclass, 'public_api.knowledge_note_entities'::regclass) ORDER BY relname")
     assert all("layout_x" in row for row in before_notes)
     # The old reader really depends on the columns. A direct drop must fail.
-    with pytest.raises(ProgrammingError, match="depend"):
-        with session.begin_nested():
+    with pytest.raises(InternalError, match="depend"):
+        with session.connection().begin_nested():
             session.execute(text("ALTER TABLE knowledge.notes DROP COLUMN layout_x RESTRICT"))
     _retire_layout(session)
     after_notes = [dict(row._mapping) for row in rows(
@@ -83,15 +83,15 @@ def test_layout_drop_preserves_data_projection_owners_and_reader_grants(session)
     assert [row[0] for row in rows("SELECT note_id FROM public_api.knowledge_notes ORDER BY note_id")] == ["note-a", "note-b"]
     assert rows("SELECT * FROM public_api.knowledge_note_entities ORDER BY id") == before_entities
     with pytest.raises(ProgrammingError, match="permission denied"):
-        with session.begin_nested():
+        with session.connection().begin_nested():
             rows("SELECT * FROM knowledge.notes")
     session.execute(text("RESET ROLE"))
 
 
 def test_unexpected_view_dependency_aborts_layout_retirement(session):
     session.execute(text("CREATE VIEW public_api.layout_blocker AS SELECT layout_x FROM public_api.knowledge_notes"))
-    with pytest.raises(ProgrammingError, match="depend"):
-        with session.begin_nested():
+    with pytest.raises(InternalError, match="depend"):
+        with session.connection().begin_nested():
             _retire_layout(session)
     # The explicit dependent-view drop earlier in the DO block also rolled back.
     session.execute(text("SELECT * FROM public_api.knowledge_note_entities"))

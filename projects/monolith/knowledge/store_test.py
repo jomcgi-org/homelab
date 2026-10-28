@@ -1172,12 +1172,9 @@ def test_get_graph_returns_nodes_and_edges(session):
     assert any(e["source"] == "id-a" and e["target"] == "id-b" for e in result["edges"])
     assert result["indexed_at"] is not None
 
-    # Every node ships degree (server-side, was client-side) and x/y layout
-    # positions (None until a layout job has populated them).
+    # Every node ships visible degree. Positions belong to the shared canvas.
     for node in result["nodes"]:
-        assert set(node.keys()) == {"id", "title", "type", "degree", "x", "y"}
-        assert node["x"] is None
-        assert node["y"] is None
+        assert set(node.keys()) == {"id", "title", "type", "degree"}
     by_id = {n["id"]: n for n in result["nodes"]}
     assert by_id["id-a"]["degree"] == 1
     assert by_id["id-b"]["degree"] == 1
@@ -1341,15 +1338,12 @@ def test_get_graph_preserves_edge_type_when_target_resolves(session):
     assert typed_edges[0]["edge_type"] == "refines"
 
 
-def test_get_graph_response_includes_degree_and_positions(session):
-    """Server now computes degree (was client-side) and ships positions on each node."""
+def test_get_graph_response_includes_degree_without_positions(session):
+    """The server computes visible degree and leaves positions to the client."""
     store = KnowledgeStore(session)
 
-    # note-a links to both note-b and note-c. note-a also has persisted
-    # layout coordinates; the others do not. (We used to also seed an
-    # isolated note-d here, but orphans are now filtered out of the
-    # graph response — see test_get_graph_filters_orphan_and_typed_nodes
-    # for the dedicated orphan-filter assertions.)
+    # note-a links to both note-b and note-c. The dedicated orphan-filter
+    # tests cover the excluded isolated notes.
     _upsert(
         store,
         note_id="note-a",
