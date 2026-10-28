@@ -115,4 +115,28 @@ describe("friends moving server load", () => {
     );
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it.each(["network", "status", "json"])(
+    "preserves unavailable on %s failure",
+    async (failure) => {
+      const fetch = vi.fn(async () => {
+        if (failure === "network") throw new Error("synthetic offline");
+        return {
+          ok: failure !== "status",
+          status: failure === "status" ? 503 : 200,
+          json: async () => {
+            throw new Error("synthetic invalid JSON");
+          },
+        };
+      });
+      await expect(
+        load(event(fetch, { mode: "manage", scope: "mine" })),
+      ).resolves.toEqual({
+        status: "unavailable",
+        scope: "all",
+        mode: "manage",
+        state: null,
+      });
+    },
+  );
 });
