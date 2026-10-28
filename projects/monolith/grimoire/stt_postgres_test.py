@@ -61,6 +61,15 @@ def speech(pg, monkeypatch):
         yield engine, context, campaign_id, session_id, consent_id
     finally:
         with Session(engine) as session:
+            session.execute(
+                delete(TranscriptConsent).where(
+                    TranscriptConsent.campaign_id == campaign_id
+                )
+            )
+            session.execute(delete(GameSession).where(GameSession.id == session_id))
+            session.execute(
+                delete(CampaignMember).where(CampaignMember.campaign_id == campaign_id)
+            )
             session.execute(delete(Campaign).where(Campaign.id == campaign_id))
             session.execute(delete(AppUser).where(AppUser.id == context.user_id))
             session.execute(
