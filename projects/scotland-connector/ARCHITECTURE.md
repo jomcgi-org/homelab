@@ -35,6 +35,131 @@ parameters, apply the caps, query the dataset and wrap the answer in the
 provenance envelope. `internal/httpapi` and `internal/mcp` only translate
 transport.
 
+## Light: staged repository delivery
+
+`light` and `GET /v1/light` answer the astronomical part without a snapshot.
+Inputs are `lat`, `lon`, `radius_km`, `from` and `to`. Coordinates use the
+existing 0.01-degree rounding. Dates own Europe/London civil days, from local
+midnight inclusive to the next midnight exclusive, including 23-hour and
+25-hour DST days. The default is today through two days later. The range is
+at most seven dates and ends no later than 13 days ahead, matching plan's
+daytime caps. Times are UTC RFC3339 seconds. A null event means no crossing
+on that date; a window array omits absent intervals. Each window carries the
+existing `NightDay`/`NightName` label at its midpoint. Windows spanning
+midnight are clipped and returned on both dates under the same night label.
+
+Sunrise and sunset use `SunTimes` seeds refined against `SunElevation` at
+centre altitude -0.833 degrees. Civil, nautical and astronomical dawn/dusk
+cross -6, -12 and -18 degrees. Their windows are the bands between those
+thresholds, with civil ending at -0.833. Golden light is -4 to +6 degrees;
+blue light is -6 to -4. Moonrise/set use topocentric `MoonAltitude` at
+-0.833 degrees, an approximate refraction plus disc-radius allowance.
+Phase and `MoonIllumination` are sampled at local noon, recorded in
+`reference_at`. Phase is a signed cycle fraction: new 0, first quarter .25,
+full .5 and last quarter .75. Direction distinguishes waxing and waning
+using the unrounded phase. These truncated series do not model local terrain.
+
+Milky Way windows intersect fixed galactic-centre RA 17h45m and declination
+-29 degrees above the geometric horizon with sun below -12 degrees, the
+stars model's nautical darkness. The existing linear sidereal-time path is
+reused. Astronomical twilight can persist throughout Scottish July nights;
+these windows establish geometry only. Twilight, extinction, bright moonlight,
+terrain and cloud can prevent useful views. Astronomical darkness below -18
+degrees is returned separately. No new data source or per-request fetch exists.
+
+Hourly altitude samples bracket crossings, with local quadratic extremum
+fits to retain short grazing intervals. Safeguarded secant refinement is
+bounded and resolves events to about a second numerically. This is solver
+resolution, with no corresponding claim about ephemeris accuracy. Tests compare
+against an independent one-minute scan and bisection oracle across Scottish
+latitudes and months, plus synthetic narrow crossings and all-day intervals.
+
+The nearest snapshot site is selected within `min(radius_km,30)` km, using
+the existing check reach cap, with site ID breaking exact distance ties.
+`site` records coordinates, distance, entity fetch, effective hourly horizon
+and truncation. The producer in `stars/router.py` filters every retained row
+to cloud below 10% and sun below -10 degrees. It supplies no daylight or
+cloudy-hour measurements. A window's `cloud` therefore measures positive
+hourly sample support at that nearby site. Each retained row supports its
+one-hour bucket, clipped to the window and to requested-point sun below -10.
+`supported_seconds` is their union; `samples` counts matching rows.
+`clear` requires support over the whole window; otherwise the verdict is
+`unknown`, with `full`, `partial` or `none` coverage. This is sampled forecast
+support, with no claim of continuous clear conditions at the requested point.
+Golden and blue cloud remain unknown. Missing rows never prove cloud.
+
+Hours before the as-of hour or before the site's fetch hour are excluded.
+Complete hourly buckets must end by the earlier of site fetch plus 48 hours
+and the dataset horizon. Missing, future-dated or expired fetches supply no
+support. Truncation never turns an omitted row into a cloudy hour.
+`AssessNight` supplies a separate suitability verdict for each represented
+night, including moonlight, coverage and truncation. Its optional omission of
+moon advice avoids recomputing lunar geometry already returned by light;
+plan/check use the unchanged default explanation. A night verdict is never
+copied into a window's cloud field. `meta.sources` attributes geometry and,
+when a nearby site is used, the existing weather/grid/climatology sources.
+
+**Why.** The existing snapshots can support clear dark-hour observations and
+night suitability. Photography windows also need useful times when weather
+is unavailable. Separating numerical geometry, hourly sample support and night
+suitability preserves that distinction without extending producers or fetching
+another forecast.
+
+**Why.** Light reuses plan's browser and Cloudflare cache headers, with a
+snapshot-version, as-of-hour, freshness-state and canonical-query ETag.
+Night explanations use the as-of hour; exact site expiry is included in the
+ETag even when it falls inside that hour. Forecast-backed support can change
+while astronomical geometry stays the same. The chart's existing
+`/scotland/v1` PathPrefix route rewrites every versioned endpoint to `/v1`,
+so light reaches the same backend as plan. The repository has no path-specific
+Cloudflare Cache Rule to extend. The documented apex rule and query-key
+behavior require live observation after a separately authorized release.
+No Cloudflare account configuration is changed here.
+
+### Reference evidence and benchmark
+
+`TestLightPublishedEdinburghSun` records US Naval Observatory API v4.0.1
+one-day tables fetched on 2026-10-28, at WGS84 55.9533,-3.1868, `tz=0`,
+`isdst=false`. For 2026-03-20, 2026-06-21 and 2026-12-21 the UTC rise/set
+clocks are 06:15/18:26, 03:26/21:03 and 08:42/15:40. Each assertion allows
+two minutes. The independently published full moon is 2026-07-29 14:36 UTC.
+Sources are the USNO [one-day API](https://aa.usno.navy.mil/api/rstt/oneday?date=2026-03-20&coords=55.9533,-3.1868&tz=0)
+and [phase API](https://aa.usno.navy.mil/api/moon/phases/date?date=2026-07-01&nump=4).
+The USNO table at 55.95,-3.19 with `tz=1` records no moonrise on
+2026-07-07; that absence is tested independently of the solver.
+
+The July date was chosen against independent PyEphem 4.2 (libastro),
+downloaded only for offline reference generation, with no runtime dependency.
+At WGS84 Galloway 54.95,-4.45 on 2026-07-31 23:00 UTC, pressure zero,
+PyEphem gives sun altitude -14:48:37.3 and the J2000 fixed core +3:39:10.6.
+It establishes nautical darkness with persistent astronomical twilight. The
+test also checks December's absence and every returned core-window interior.
+The reference can be reproduced with:
+
+```python
+import ephem
+o = ephem.Observer()
+o.lat, o.lon, o.pressure = "54.95", "-4.45", 0
+o.date = "2026/7/31 23:00"
+core = ephem.FixedBody()
+core._ra, core._dec, core._epoch = "17:45", "-29", ephem.J2000
+core.compute(o)
+print(ephem.Sun(o).alt, core.alt)
+```
+
+Linux amd64, Intel Xeon @ 2.80 GHz, Go 1.26.9, `GOMAXPROCS=1`:
+`go test ./projects/scotland-connector/internal/connector -run '^$' -bench
+'^BenchmarkLight$' -benchtime=2s -count=3 -benchmem` measured 972941,
+963344 and 974873 ns/op, 96168 to 96170 B/op and 942 allocations/op.
+Every iteration computes a complete seven-day answer against the dense fixture
+(35340 sites, 3000 walks); fixture setup is outside timing. No response cache
+is on this service path.
+
+Repository delivery is staged in an unmerged draft under the operator landing
+hold. #7367 stays open for separately authorized release and acceptance of
+published REST/MCP/spec behavior, actual Cloudflare cache/query isolation and
+honest published cloud coverage. This change authorizes no live operation.
+
 ## Tools: plan and check
 
 The two tools are the two questions a person brings to a trip. `plan` is
@@ -509,3 +634,4 @@ this table when the work ships or the issue closes without it.
 | Slot rule slides past a second gap                | #7275  | not started |
 | Directory listings                                | #7255  | staged      |
 | Near-term aurora, independent snapshot and terrain preprocessing | #7256 | staged off, live acceptance pending |
+| Light windows and scoped cloud sample support | #7367 | staged draft, live acceptance pending |

@@ -33,6 +33,12 @@ func readOnly(title string) Annotations {
 // Tools is the fixed tool list, in a deterministic order.
 var Tools = []Tool{
 	{
+		Name: "light", Title: "Find Scottish light and night-sky windows",
+		Description: "Sunrise, sunset, twilight, golden and blue light, moon rise/set and phase, and Milky Way core above the horizon in nautical darkness at a Scottish point. Local civil dates, up to seven days, at most 13 days ahead. Cloud describes only supporting clear twilight-dark hourly samples at the nearest snapshot site within min(radius_km,30) km. Unsupported portions, including daylight, remain unknown; night suitability is separate. Staged repository delivery pending operational acceptance.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"lat":{"type":"number","minimum":54.5,"maximum":61},"lon":{"type":"number","minimum":-9,"maximum":-0.5},"radius_km":{"type":"number","minimum":1,"maximum":100,"default":30},"from":{"type":"string","format":"date","description":"First Europe/London civil date, today by default, at most 13 days ahead."},"to":{"type":"string","format":"date","description":"Inclusive last civil date, three-day default and seven-day maximum; no later than 13 days ahead."}},"required":["lat","lon"],"additionalProperties":false}`),
+		Annotations: readOnly("Find Scottish light and night-sky windows"),
+	},
+	{
 		Name: "aurora", Title: "Check near-term Scottish aurora conditions",
 		Description: "Read-only, snapshot-only aurora heuristic at one RFC3339 instant near a supported site. Returns go, marginal, no or unknown with NOAA, MET cloud, solar darkness and northern terrain evidence. NOAA supports only its exact published forecast instant, never a multi-day forecast or calibrated sighting probability. Missing, stale or unsupported inputs remain unknown. Staged/default-off until operational acceptance.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"lat":{"type":"number","minimum":54.5,"maximum":61},"lon":{"type":"number","minimum":-9,"maximum":-0.5},"at":{"type":"string","format":"date-time","maxLength":40}},"required":["lat","lon","at"],"additionalProperties":false}`),
@@ -122,6 +128,12 @@ func call(svc *connector.Service, name string, args json.RawMessage) (*connector
 		args = json.RawMessage(`{}`)
 	}
 	switch name {
+	case "light":
+		var p connector.LightParams
+		if err := strictDecode(args, &p); err != nil {
+			return nil, err
+		}
+		return svc.Light(p)
 	case "aurora":
 		var p connector.AuroraParams
 		if err := strictDecode(args, &p); err != nil {

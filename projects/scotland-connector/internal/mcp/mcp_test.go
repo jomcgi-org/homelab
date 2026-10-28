@@ -84,7 +84,7 @@ func TestToolListAndAnnotations(t *testing.T) {
 			t.Errorf("%s: inputSchema %v", tool["name"], schema)
 		}
 	}
-	if strings.Join(names, ",") != "aurora,plan,check" {
+	if strings.Join(names, ",") != "light,aurora,plan,check" {
 		t.Fatalf("tools = %v", names)
 	}
 }
@@ -233,6 +233,49 @@ func TestCheckToolCall(t *testing.T) {
 	items := r.Result["structuredContent"].(map[string]any)["data"].(map[string]any)["items"].([]any)
 	if len(items) != 2 || items[0].(map[string]any)["verdict"] != "no" || items[1].(map[string]any)["verdict"] != "marginal" {
 		t.Fatalf("items %v", items)
+	}
+}
+
+func TestLightToolCall(t *testing.T) {
+	r := callTool(t, handler(), "light", fixture.LightArgs)
+	if r.Error != nil || r.Result["isError"] != false {
+		t.Fatal(r)
+	}
+	env, err := fixture.Service(true).Light(fixture.LightParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(env)
+	var want map[string]any
+	if err := json.Unmarshal(b, &want); err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, _ := json.Marshal(want)
+	gotJSON, _ := json.Marshal(r.Result["structuredContent"])
+	if string(wantJSON) != string(gotJSON) {
+		t.Fatal("MCP differs from shared service")
+	}
+	var tool Tool
+	for _, candidate := range Tools {
+		if candidate.Name == "light" {
+			tool = candidate
+		}
+	}
+	var schema struct {
+		Properties map[string]struct{ Minimum, Maximum, Default float64 }
+		Required   []string
+	}
+	if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(schema.Required, ",") != "lat,lon" || schema.Properties["radius_km"].Maximum != connector.MaxRadiusKm || schema.Properties["radius_km"].Default != connector.DefaultRadiusKm {
+		t.Fatal(schema)
+	}
+	for _, args := range []string{`{}`, `{"lat":57.3}`, `{"lat":57.3,"lon":-3.7,"to":"2026-10-26"}`, `{"lat":57.3,"lon":-3.7,"extra":1}`} {
+		r := callTool(t, handler(), "light", args)
+		if r.Result["isError"] != true {
+			t.Fatal(args, r)
+		}
 	}
 }
 

@@ -53,3 +53,12 @@ func TestMoonMatchesEphem(t *testing.T) {
 		}
 	}
 }
+
+func TestMoonAltitudeWithoutIlluminationMatchesFullPath(t *testing.T) {
+	for _, r := range reference {
+		at, _ := time.Parse(time.RFC3339, r.at)
+		if got, want := MoonAltitude(at, r.lat, r.lon), MoonAt(at).Altitude(r.lat, r.lon); got != want {
+			t.Fatalf("optimized altitude %g != full path %g", got, want)
+		}
+	}
+}

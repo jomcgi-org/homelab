@@ -290,7 +290,11 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 	for path, methods := range spec.Paths {
 		for method := range methods {
 			ops = append(ops, strings.ToUpper(method)+" "+path)
-			req := httptest.NewRequest(strings.ToUpper(method), path+"?lat=57.19&lon=-3.83&at=2026-10-20T23:00:00Z", strings.NewReader(checkBody))
+			query := "?lat=57.19&lon=-3.83"
+			if path == "/v1/aurora" {
+				query += "&at=2026-10-20T23:00:00Z"
+			}
+			req := httptest.NewRequest(strings.ToUpper(method), path+query, strings.NewReader(checkBody))
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
@@ -299,7 +303,7 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 		}
 	}
 	sort.Strings(ops)
-	if got := strings.Join(ops, ","); got != "GET /v1/aurora,GET /v1/method,GET /v1/openapi.json,GET /v1/plan,POST /v1/check" {
+	if got := strings.Join(ops, ","); got != "GET /v1/aurora,GET /v1/light,GET /v1/method,GET /v1/openapi.json,GET /v1/plan,POST /v1/check" {
 		t.Errorf("spec operations = %s", got)
 	}
 
@@ -391,5 +395,162 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 	}
 	if got := strings.Join(schemas["Verdict"].Enum, ","); got != strings.Join(want, ",") {
 		t.Errorf("Verdict = %s, code %v", got, want)
+	}
+}
+
+func TestLightHTTPRoundTripAndCache(t *testing.T) {
+	h := handler(true)
+	url := "/v1/light?lat=57.3&lon=-3.7&from=2026-10-19&to=2026-10-21"
+	rec, body := get(t, h, url)
+	if rec.Code != 200 {
+		t.Fatal(rec.Code, rec.Body)
+	}
+	checkMeta(t, "light", body)
+	env, err := fixture.Service(true).Light(fixture.LightParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(env)
+	got, _ := json.Marshal(body)
+	var wantBody map[string]any
+	if err := json.Unmarshal(want, &wantBody); err != nil {
+		t.Fatal(err)
+	}
+	want, _ = json.Marshal(wantBody)
+	if string(want) != string(got) {
+		t.Fatal("REST differs from shared service")
+	}
+	for _, header := range []string{"Cache-Control", "Cloudflare-CDN-Cache-Control"} {
+		plan, _ := get(t, h, "/v1/plan?lat=57.3&lon=-3.7")
+		if rec.Header().Get(header) != plan.Header().Get(header) {
+			t.Fatal(header, rec.Header())
+		}
+	}
+	if rec.Header().Get("Set-Cookie") != "" || rec.Header().Get("ETag") == "" {
+		t.Fatal(rec.Header())
+	}
+	notModified, _ := get(t, h, url, "If-None-Match", rec.Header().Get("ETag"))
+	if notModified.Code != 304 || notModified.Body.Len() != 0 || notModified.Header().Get("Cloudflare-CDN-Cache-Control") != CacheControl.edge {
+		t.Fatal(notModified)
+	}
+	other, _ := get(t, h, strings.Replace(url, "lon=-3.7", "lon=-4.7", 1), "If-None-Match", rec.Header().Get("ETag"))
+	if other.Code != 200 || other.Header().Get("ETag") == rec.Header().Get("ETag") {
+		t.Fatal("query cache isolation")
+	}
+	missing, missingBody := get(t, handler(false), url)
+	if missing.Code != 200 || missingBody["data"].(map[string]any)["site"] != nil {
+		t.Fatal("astronomy unavailable without snapshot")
+	}
+	for _, suffix := range []string{"", "?lat=NaN&lon=-3.7", "?lat=57&lon=Inf", "?lat=57&lon=-4&radius_km=101", "?lat=57&lon=-4&lat=58", "?lat=57&lon=-4&from=no", "?lat=57&lon=-4&to=2026-10-26", "?lat=57&lon=-4&extra=1"} {
+		r, b := get(t, h, "/v1/light"+suffix)
+		if r.Code != 400 || b["error"] == nil || r.Header().Get("Cache-Control") != cacheControlError.browser || r.Header().Get("Cloudflare-CDN-Cache-Control") != cacheControlError.edge {
+			t.Fatal(suffix, r.Code, r.Header())
+		}
+	}
+	for _, method := range []string{"POST", "DELETE", "OPTIONS"} {
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequest(method, "/v1/light", nil))
+		if r.Code != 405 || r.Header().Get("Allow") != "GET" {
+			t.Fatal(method, r.Code, r.Header())
+		}
+	}
+}
+
+// Check the fixture's complete response against the published response shape,
+// including nullable events, required metadata, enums and nested references.
+func TestLightOpenAPIResponse(t *testing.T) {
+	var doc map[string]any
+	if err := json.Unmarshal(openAPI, &doc); err != nil {
+		t.Fatal(err)
+	}
+	schemas := doc["components"].(map[string]any)["schemas"].(map[string]any)
+	var validate func(any, map[string]any, string)
+	validate = func(value any, s map[string]any, path string) {
+		if ref, ok := s["$ref"].(string); ok {
+			name := strings.TrimPrefix(ref, "#/components/schemas/")
+			target, ok := schemas[name].(map[string]any)
+			if !ok {
+				t.Fatalf("missing ref %s", ref)
+			}
+			validate(value, target, path)
+			return
+		}
+		if value == nil {
+			raw, _ := json.Marshal(s["type"])
+			if !strings.Contains(string(raw), "null") {
+				t.Errorf("%s unexpected null", path)
+			}
+			return
+		}
+		if e, ok := s["enum"].([]any); ok {
+			found := false
+			for _, v := range e {
+				if v == value {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s invalid enum %v", path, value)
+			}
+		}
+		switch v := value.(type) {
+		case map[string]any:
+			if req, ok := s["required"].([]any); ok {
+				for _, key := range req {
+					if _, ok := v[key.(string)]; !ok {
+						t.Errorf("%s missing %v", path, key)
+					}
+				}
+			}
+			props, _ := s["properties"].(map[string]any)
+			for key, item := range v {
+				child, ok := props[key].(map[string]any)
+				if !ok {
+					t.Errorf("%s undocumented field %s", path, key)
+					continue
+				}
+				validate(item, child, path+"."+key)
+			}
+		case []any:
+			item, ok := s["items"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s undocumented array", path)
+			}
+			for _, x := range v {
+				validate(x, item, path+"[]")
+			}
+		case float64:
+			if lo, ok := s["minimum"].(float64); ok && v < lo {
+				t.Errorf("%s below minimum", path)
+			}
+			if hi, ok := s["maximum"].(float64); ok && v > hi {
+				t.Errorf("%s above maximum", path)
+			}
+		}
+	}
+	_, body := get(t, handler(true), "/v1/light?lat=57.3&lon=-3.7")
+	validate(body, schemas["LightResponse"].(map[string]any), "response")
+	op := doc["paths"].(map[string]any)["/v1/light"].(map[string]any)["get"].(map[string]any)
+	params := op["parameters"].([]any)
+	if len(params) != 5 {
+		t.Fatal(params)
+	}
+	for _, raw := range params {
+		p := raw.(map[string]any)
+		s := p["schema"].(map[string]any)
+		switch p["name"] {
+		case "lat":
+			if s["minimum"] != connector.Coverage.MinLat || s["maximum"] != connector.Coverage.MaxLat || p["required"] != true {
+				t.Fatal(p)
+			}
+		case "lon":
+			if s["minimum"] != connector.Coverage.MinLon || s["maximum"] != connector.Coverage.MaxLon || p["required"] != true {
+				t.Fatal(p)
+			}
+		case "radius_km":
+			if s["maximum"] != float64(connector.MaxRadiusKm) || s["default"] != float64(connector.DefaultRadiusKm) {
+				t.Fatal(p)
+			}
+		}
 	}
 }

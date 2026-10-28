@@ -64,6 +64,11 @@ type NightAssessment struct {
 	Coverage Coverage
 }
 
+// NightAssessmentOptions avoids duplicate lunar computation for callers such
+// as light that already return date-specific moon events and illumination.
+// The suitability rules and coverage remain identical.
+type NightAssessmentOptions struct{ OmitMoonAdvice bool }
+
 func localDay(t time.Time) string { return t.In(london).Format("Mon 15:04") }
 
 func moonPhrase(n *NightWindow) string {
@@ -81,10 +86,13 @@ func moonPhrase(n *NightWindow) string {
 
 // AssessNight gives the verdict for one site on one night. climate, when
 // known, is quoted for nights past the forecast.
-func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, now time.Time, climate *Climate) (a NightAssessment) {
+func (d *Dataset) AssessNight(site *Site, n *NightWindow, night int32, now time.Time, climate *Climate, options ...NightAssessmentOptions) (a NightAssessment) {
 	until := site.Horizon(d.HourlyUntil)
 	a = NightAssessment{Coverage: nightCoverageUntil(night, until)}
 	defer func() {
+		if len(options) > 0 && options[0].OmitMoonAdvice {
+			return
+		}
 		if n.ClearDark == 0 {
 			a.Why += " " + MoonAdvice(site.Lat, site.Lon, night, now)
 		} else if n.MoonLit >= 0.8 && n.MoonlessDark < n.ClearDark {
