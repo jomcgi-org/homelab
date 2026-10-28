@@ -352,7 +352,7 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 	}
 	nights := map[int32]bool{}
 	for day := from; day <= to; day++ {
-		y, m, d := time.Unix(int64(day)*86400, 0).Date()
+		y, m, d := time.Unix(int64(day)*86400, 0).UTC().Date()
 		start := time.Date(y, m, d, 0, 0, 0, 0, lightLondon)
 		end := start.AddDate(0, 0, 1)
 		rise, set, _ := astro.SunTimes(time.Unix(int64(day)*86400, 0), q.Lat, q.Lon)
@@ -421,8 +421,10 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 			// have already been dropped. AssessNight only covers live nights.
 			n.Why = "This night has ended; the current snapshot cannot assess it."
 		} else if site != nil {
+			n.Why = "No night assessment for the selected snapshot site."
 			ws := ds.Windows(stars.WindowsQuery{Lat: site.Lat, Lon: site.Lon, RadiusKm: 0.01, Night: night, Nights: 1, Limit: 1, Now: now})
-			if len(ws) > 0 {
+			// Clear-hour ranking can prefer a different co-located site.
+			if len(ws) > 0 && ws[0].Site == site {
 				a := ds.AssessNight(site, &ws[0].Nights[0], night, now.UTC().Truncate(time.Hour), ws[0].Climate, stars.NightAssessmentOptions{OmitMoonAdvice: true})
 				n.Verdict, n.Coverage, n.Why = a.Verdict, a.Coverage, a.Why
 			}

@@ -146,6 +146,28 @@ func TestLightDatesAndMissingEvents(t *testing.T) {
 	}
 }
 
+func TestLightDatesIgnoreProcessTimezone(t *testing.T) {
+	original := time.Local
+	t.Cleanup(func() { time.Local = original })
+	for _, date := range []string{"2026-03-29", "2026-10-25", "2026-10-19"} {
+		time.Local = time.UTC
+		want, err := json.Marshal(lightDay(t, date, 57.3, -3.7))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, offset := range []int{-5 * 3600, 14 * 3600} {
+			time.Local = time.FixedZone("process", offset)
+			got, err := json.Marshal(lightDay(t, date, 57.3, -3.7))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != string(want) {
+				t.Errorf("%s events or windows changed with process UTC offset %d", date, offset)
+			}
+		}
+	}
+}
+
 func TestLightValidationAndAstronomyWithoutSnapshot(t *testing.T) {
 	svc := fixture.Service(false)
 	base := connector.LightParams{Lat: f(57.3), Lon: f(-3.7)}
@@ -240,6 +262,52 @@ func TestLightFixtureCloudAndProvenance(t *testing.T) {
 	b, err := json.Marshal(env)
 	if err != nil || !strings.Contains(string(b), `"cloud":`) || !strings.Contains(string(b), `"sources":`) {
 		t.Fatal("serialized response", err)
+	}
+}
+
+func TestLightCoincidentSitesKeepNightIdentity(t *testing.T) {
+	const a = `{"id":"a","lat":57.3,"lon":-3.7,"forecast_fetched_at":"2026-10-19T14:05:00Z","clear_dark_hours":0,"clear_twilight_hours":0,"best_hours":[]}`
+	const z = `{"id":"z","lat":57.3,"lon":-3.7,"forecast_fetched_at":"2026-10-19T14:05:00Z","clear_dark_hours":1,"clear_twilight_hours":1,"best_hours":[{"time":"2026-10-19T21:00:00Z","cloud_area_fraction":0,"dark":true}]}`
+	for _, rows := range []string{a + "," + z, z + "," + a} {
+		ds, err := stars.Parse([]byte(`{"fetched_at":"2026-10-19T14:05:00Z","sites":[`+rows+`]}`), []byte(`{"sites":[]}`), "coincident")
+		if err != nil {
+			t.Fatal(err)
+		}
+		site, _ := ds.Nearest(57.3, -3.7, 30)
+		ws := ds.Windows(stars.WindowsQuery{Lat: 57.3, Lon: -3.7, RadiusKm: 0.01, Night: stars.FirstNight(fixture.Now), Nights: 1, Limit: 1, Now: fixture.Now})
+		if site == nil || site.ID != "a" || len(ws) != 1 || ws[0].Site.ID != "z" {
+			t.Fatal("fixture must select a but rank z's night first", site, ws)
+		}
+		svc := fixture.Service(false)
+		svc.Data = fixture.Source{DS: ds}
+		env, err := svc.Light(fixture.LightParams())
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := env.Data.(connector.LightResult)
+		if r.Site == nil || r.Site.ID != "a" {
+			t.Fatal("wrong selected site", r.Site)
+		}
+		for _, d := range r.Days {
+			for _, w := range d.Windows {
+				if w.Cloud.Samples != 0 || w.Cloud.Verdict != "unknown" {
+					t.Fatal("cloud borrowed another site's samples", w)
+				}
+			}
+		}
+		found := false
+		for _, n := range r.Nights {
+			if n.Night != "2026-10-19" {
+				continue
+			}
+			found = true
+			if n.Verdict != "unknown" || n.Coverage != stars.CoverageNone || !strings.Contains(n.Why, "selected snapshot site") {
+				t.Errorf("night borrowed another site's assessment: %+v", n)
+			}
+		}
+		if !found {
+			t.Fatal("missing coincident-site night")
+		}
 	}
 }
 
