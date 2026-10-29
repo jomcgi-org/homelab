@@ -348,8 +348,9 @@ The existing digest supplies source session and turn identities. A successful
 Luna result can propose one finding with at most three recent source turns. The
 completion transaction verifies the original turns and pins their hashes, then
 registers at most one outstanding one-shot Astra evaluation in the existing
-queue. Source hashes, finding signature and claimed code SHA form the retained
-dedupe identity. Repeated identical evidence never re-arms that job; unresolved
+queue. Source turn identities and hashes form the retained dedupe identity; model
+wording and claimed code revisions do not count as new evidence. Bounded original
+excerpts with explicit truncation metadata accompany the evaluator packet. Repeated identical evidence never re-arms that job; unresolved
 or unknown evaluations block new candidates. Both stages use existing subscription
 admission and drain model limits without new quota allowances.
 
