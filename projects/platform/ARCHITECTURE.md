@@ -124,7 +124,7 @@ The root carries an `ignoreDifferences` entry per promoted Application plus `Res
 
 **The merge queue is GitHub's native one**, configured on the default-branch ruleset (`lets-not-delete-everything`): rebase merges only, `HEADGREEN` grouping, build up to 3 entries, merge up to 5, and a 3-minute minimum wait. `gh pr merge --auto` enqueues (the queue sets the strategy and refuses a strategy flag); nobody rebases a PR because main moved, the queue does. The chart write-back commit lands under an org-admin bypass so it never queues behind itself. The `ready-to-merge` label exists and means "reviewed by the judgment tier", but nothing in the repo consumes it: the stateless DBOS reconciler that would (ADR platform/014) was never built and its issues are closed.
 
-**Per-PR preview environments do not exist.** ADR platform/005 (label-gated ApplicationSet previews with copy-on-write CNPG clones) is Draft and unbuilt: no `ApplicationSet` exists on either cluster, and the hub has no second lane at all. Its tracking issues #3882 to #3887 were closed not planned.
+**Per-PR preview environments do not exist.** ADR platform/005 (label-gated ApplicationSet previews with copy-on-write CNPG clones) is Draft and unbuilt: no preview `ApplicationSet` exists on the hub. Its tracking issues #3882 to #3887 were closed not planned. EmberVM's standing dev lane is separate from per-PR previews.
 
 (see: `projects/gke-cluster/root/root-application.yaml`, `projects/gke-cluster/hub-root-application.yaml`, `projects/gke-apps/`, `projects/platform/kargo/values.yaml`, `projects/platform/kargo/README.md`, `bazel/helm/README.md`, `AGENTS.md` "Git and PRs", ADR platform/009, ADR platform/011, ADR platform/014)
 
@@ -135,9 +135,11 @@ OCI semver ranges, while a production-only Kargo stage was rejected because it
 adds a controller without a validation stage. Post-merge idempotent publishing
 and monotonic write-back remove PR contention, and Kargo promotion accepts live
 Application state as the deployed version plus a soak gate that proves readiness
-only (ADR platform/009). The hub runs exactly the production-only shape that was
-rejected, as a stated reduction: automatic health-verified promotion replaced
-hand-edited pins. EmberVM's dev stage is restored on the hub; restoring the monolith's is the follow-up. ADR platform/014's
+only (ADR platform/009). The monolith pipelines run the production-only shape
+that was rejected, as a stated reduction: automatic health-verified promotion replaced
+hand-edited pins. EmberVM's dev stage is restored on the hub. The monolith has
+no dev stage; #7034 retired its scaffolding, and future monolith dev work starts
+fresh under #7004. ADR platform/014's
 custom merge reconciler was superseded by the native queue; its reasoning about
 concurrent branches becoming stale after every merge still holds.
 

@@ -55,7 +55,7 @@ BENCH MODE RENAMES THIS ON PURPOSE, and the rename IS the mechanism.
 
 Every in-cluster caller reaches the LLM at the hardcoded DNS name
 `inference.inference.svc.cluster.local` (monolith chart/values.yaml
-LLAMA_CPP_URL in six places, monolith-dev, and the EmberVM egress allowlist).
+LLAMA_CPP_URL in six places and the EmberVM egress allowlist).
 Renaming the Service makes that name NXDOMAIN, so those callers fail at DNS
 resolution, immediately and loudly, instead of hanging on a connect. The
 external route keeps working because httproute-private.yaml resolves its

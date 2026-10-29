@@ -124,6 +124,11 @@ spec:
           port: {{ .Values.cfIngress.private.servicePort | int }}
 ---
 {{- if eq (.Values.cfIngress.private.auth | default "cloudflare") "authentik" }}
+{{- $issuer := required "cfIngress.private.authentik.issuer is required when auth is authentik" .Values.cfIngress.private.authentik.issuer }}
+{{- $jwksUri := required "cfIngress.private.authentik.jwksUri is required when auth is authentik" .Values.cfIngress.private.authentik.jwksUri }}
+{{- $clientID := required "cfIngress.private.authentik.clientID is required when auth is authentik" .Values.cfIngress.private.authentik.clientID }}
+{{- $clientSecretName := required "cfIngress.private.authentik.clientSecretName is required when auth is authentik" .Values.cfIngress.private.authentik.clientSecretName }}
+{{- $itemPath := required "cfIngress.private.authentik.onepassword.itemPath is required when auth is authentik" .Values.cfIngress.private.authentik.onepassword.itemPath }}
 {{- /*
 AUTHENTIK-GATED VARIANT of the private route's policy, for a deployment whose
 audience includes AGENTS rather than only a browser at a keyboard.
@@ -162,10 +167,10 @@ spec:
       name: {{ include "monolith.fullname" . }}-private
   oidc:
     provider:
-      issuer: {{ .Values.cfIngress.private.authentik.issuer | quote }}
-    clientID: {{ .Values.cfIngress.private.authentik.clientID | quote }}
+      issuer: {{ $issuer | quote }}
+    clientID: {{ $clientID | quote }}
     clientSecret:
-      name: {{ .Values.cfIngress.private.authentik.clientSecretName | quote }}
+      name: {{ $clientSecretName | quote }}
     redirectURL: {{ printf "https://%s/oauth2/callback" .Values.cfIngress.private.hostname | quote }}
     logoutPath: /oauth2/logout
     # Scoped to THIS host, never the apex. Envoy sets the cookie on the named
@@ -190,9 +195,9 @@ spec:
   jwt:
     providers:
       - name: authentik
-        issuer: {{ .Values.cfIngress.private.authentik.issuer | quote }}
+        issuer: {{ $issuer | quote }}
         remoteJWKS:
-          uri: {{ .Values.cfIngress.private.authentik.jwksUri | quote }}
+          uri: {{ $jwksUri | quote }}
         extractFrom:
           # The ID token, not the access token: OIDC REQUIRES the ID token to
           # carry `email` when that scope is granted, whereas whether an access
@@ -239,12 +244,12 @@ spec:
 apiVersion: onepassword.com/v1
 kind: OnePasswordItem
 metadata:
-  name: {{ .Values.cfIngress.private.authentik.clientSecretName | quote }}
+  name: {{ $clientSecretName | quote }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "monolith.labels" . | nindent 4 }}
 spec:
-  itemPath: {{ .Values.cfIngress.private.authentik.onepassword.itemPath | quote }}
+  itemPath: {{ $itemPath | quote }}
 {{- else }}
 {{- $spParams := dict
   "name" (printf "%s-private" (include "monolith.fullname" .))

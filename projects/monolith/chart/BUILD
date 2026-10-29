@@ -153,8 +153,6 @@ py_test(
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",
-        "//projects/monolith/chart/testdata:fresh_database_values",
-        "//projects/monolith/chart/testdata:isolated_values",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
         "@multitool//tools/helm",

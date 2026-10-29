@@ -18,7 +18,7 @@ cfIngress:
       clientID: isolation-test
       clientSecretName: isolation-oidc
       onepassword:
-        itemPath: ''
+        itemPath: vaults/test-only/items/isolation-oidc
       allowedGroups:
       - test-operators
   shipsRedirect:

@@ -567,11 +567,11 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
         # bots/streams. Followers just serve HTTP. See app/leadership.py.
         app.state.elector = None
         elector_task = None
-        # A second deployment fed by a copy of prod's database (the standing dev
-        # environment) must start NONE of these. Two of them act on queue state
-        # the copy brings with it: the chat outbox drain would post prod's
+        # Any isolated deployment fed by a copy of prod's database must start
+        # NONE of these. Two of them act on queue state the copy brings with
+        # it: the chat outbox drain would post prod's
         # queued messages to Discord a second time, and DBOS recovers pending
-        # workflows on launch, so dev would resume prod's in-flight agent runs.
+        # workflows on launch, so the copy would resume prod's in-flight agent runs.
         #
         # The gate stops the elector being CONSTRUCTED rather than stopping its
         # callbacks. The lease is scoped by profile.leader_lease_key, not by

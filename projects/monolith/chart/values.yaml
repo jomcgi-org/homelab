@@ -2095,7 +2095,7 @@ marine:
 
 # Shared S3 configuration gate. False omits the chart-owned R2 producer and
 # the shared S3 configuration and credentials below; disable unrelated jobs
-# separately in the recovery overlay.
+# separately in any deployment that disables shared S3.
 sharedS3:
   enabled: true
 
@@ -2191,8 +2191,8 @@ cfIngress:
       - profile
       - email
   # The legacy ships.jomcgi.dev -> /app/ships redirect. Gated so a second
-  # deployment of this chart (dev) does not claim a production hostname on the
-  # shared cloudflare-ingress Gateway. True here, false in dev's overlay.
+  # deployment of this chart does not claim a production hostname on the
+  # shared cloudflare-ingress Gateway. Disable it for any isolated deployment.
   shipsRedirect:
     enabled: true
     # The one cloudflare-ingress Gateway every HTTPRoute here attaches to.
@@ -2219,8 +2219,8 @@ cfIngress:
     githubWebhook:
       enabled: true
     authentik:
-      # Set these explicitly when selecting auth: authentik. No private-tier
-      # provider or client Secret is provisioned by the chart defaults.
+      # Required when the private route is enabled with auth: authentik.
+      # No private-tier provider or client Secret is provisioned by defaults.
       issuer: ""
       jwksUri: ""
       clientID: ""
@@ -2254,7 +2254,7 @@ cfIngress:
   # The moving planner's lane on friends.jomcgi.dev (ADR security/006), gated to
   # the authentik `family` group. See templates/httproute-friends.yaml.
   #
-  # Disabled by default so a second deployment of this chart (dev) does not
+  # Disabled by default so a second deployment of this chart does not
   # claim a production hostname on the shared Gateway, the same reason
   # shipsRedirect above is gated. Production enables it in deploy/values.yaml.
   friends:
