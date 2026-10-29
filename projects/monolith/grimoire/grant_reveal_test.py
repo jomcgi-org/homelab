@@ -13,7 +13,6 @@ from sqlmodel import select
 from grimoire import router, search
 from grimoire.models import (
     CampaignMember,
-    Embedding,
     Entity,
     GameSession,
     PlayerCharacter,
@@ -116,11 +115,11 @@ def test_grantee_projection_and_wire_audience(harness, entity, scope):
             client,
             h,
             "POST",
-            "/grants",
-            json=item(h, entity, scope=scope, details=details),
+            "/grants/bulk",
+            json={"grants": [item(h, entity, scope=scope, details=details)]},
         )
         assert response.status_code == 200, response.text
-        assert response.json()["granted_in_session"] == h.rows["campaign_session"].id
+        assert response.json()[0]["granted_in_session"] == h.rows["campaign_session"].id
         (row,) = events(h)
         assert row.campaign_id == h.rows["campaign"].id
         assert row.session_id == h.rows["campaign_session"].id
@@ -134,26 +133,29 @@ def test_grantee_projection_and_wire_audience(harness, entity, scope):
             )
         ).one()
         assert row.author_member_id == dm.id
-        assert set(row.body) == (
+        assert set(row.body["reveals"][0]) == (
             IDENTITY_KEYS if scope == "name_only" else IDENTITY_KEYS | {"entity"}
         )
-        assert row.body["entity_id"] == h.rows[entity].id
-        assert row.body["grant_scope"] == scope
+        assert row.body["reveals"][0]["entity_id"] == h.rows[entity].id
+        assert row.body["reveals"][0]["grant_scope"] == scope
         if scope == "partial":
-            assert set(row.body["entity"]) == {
+            assert set(row.body["reveals"][0]["entity"]) == {
                 "id",
                 "entity_type",
                 "name",
                 "revealed_details",
             }
-            assert row.body["entity"]["revealed_details"] == details
+            assert row.body["reveals"][0]["entity"]["revealed_details"] == details
         elif scope == "full":
-            assert row.body["entity"]["race"] == h.rows["a_only_detail"].race
             assert (
-                row.body["entity"]["description"] == h.rows["a_only_detail"].description
+                row.body["reveals"][0]["entity"]["race"] == h.rows["a_only_detail"].race
             )
-            assert isinstance(row.body["entity"]["created_at"], str)
-            datetime.fromisoformat(row.body["entity"]["created_at"])
+            assert (
+                row.body["reveals"][0]["entity"]["description"]
+                == h.rows["a_only_detail"].description
+            )
+            assert isinstance(row.body["reveals"][0]["entity"]["created_at"], str)
+            datetime.fromisoformat(row.body["reveals"][0]["entity"]["created_at"])
         h.session.expire(row)
         stored_body = copy.deepcopy(row.body)
         responses = poll_all(client, h)
@@ -196,14 +198,25 @@ def test_current_session_and_explicit_session(harness, status, explicit):
     if explicit:
         body["granted_in_session"] = origin.id
     with TestClient(h.app()) as client:
-        response = call(client, h, "POST", "/grants", json=body)
+        response = call(
+            client,
+            h,
+            "POST",
+            "/grants/bulk",
+            json={
+                "grants": [
+                    {k: v for k, v in body.items() if k != "granted_in_session"}
+                ],
+                "granted_in_session": body.get("granted_in_session"),
+            },
+        )
         assert response.status_code == 200
         expected = (
             origin.id
             if explicit
             else (None if status == "ended" else h.rows["campaign_session"].id)
         )
-        assert response.json()["granted_in_session"] == expected
+        assert response.json()[0]["granted_in_session"] == expected
         assert len(events(h)) == (0 if status == "ended" else 1)
         if status != "ended":
             assert events(h)[0].session_id == h.rows["campaign_session"].id
@@ -214,12 +227,16 @@ def test_flag_off_preserves_grants_and_unfiltered_reads(harness, monkeypatch):
     h = harness
     h.prepare("play")
     remove_grant(h, "grant_name_only")
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
+    h.rows["campaign_session"].status = "ended"
+    h.session.commit()
     with TestClient(h.app()) as client:
-        response = call(client, h, "POST", "/grants", json=item(h, "name_only"))
+        response = call(
+            client, h, "POST", "/grants/bulk", json={"grants": [item(h, "name_only")]}
+        )
         assert response.status_code == 200
-        assert response.json()["granted_in_session"] is None
-        grant_id = response.json()["id"]
+        assert response.json()[0]["granted_in_session"] is None
+        grant_id = response.json()[0]["id"]
+        monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
         assert (
             call(
                 client,
@@ -242,8 +259,8 @@ def test_flag_off_preserves_grants_and_unfiltered_reads(harness, monkeypatch):
             ).status_code
             == 404
         )
-        for route in ("/entities", "/search"):
-            params = {"q": "canary", "k": 50} if route == "/search" else {}
+        for route in ("/entities",):
+            params = {}
             baseline = call(client, h, "GET", route, params=params)
             assert baseline.status_code == 200
             for viewer in ROLES:
@@ -319,8 +336,12 @@ def test_retract_identity_and_original_unchanged(harness, silent):
             client,
             h,
             "POST",
-            "/grants",
-            json=item(h, "partial", scope="partial", details={"public": "hello"}),
+            "/grants/bulk",
+            json={
+                "grants": [
+                    item(h, "partial", scope="partial", details={"public": "hello"})
+                ]
+            },
         )
         assert response.status_code == 200
         original = copy.deepcopy(events(h)[0].body)
@@ -328,12 +349,15 @@ def test_retract_identity_and_original_unchanged(harness, silent):
             client,
             h,
             "DELETE",
-            f"/grants/{response.json()['id']}",
+            f"/grants/{response.json()[0]['id']}",
             params={"silent": silent},
         )
         assert response.status_code == 204
         first, second = events(h)
-        assert first.body == original
+        assert first.body == {
+            **original,
+            "retracted_entity_ids": [h.rows["partial"].id],
+        }
         assert first.retracted_at is not None
         expected = {"retracted": True, "silent": silent}
         if not silent:
@@ -552,7 +576,13 @@ def test_append_failure_rolls_back_every_write(harness, monkeypatch, operation):
     monkeypatch.setattr(router, "append_event", fail_append)
     with TestClient(h.app(), raise_server_exceptions=False) as client:
         if operation == "create":
-            response = call(client, h, "POST", "/grants", json=item(h, "ancestry"))
+            response = call(
+                client,
+                h,
+                "POST",
+                "/grants/bulk",
+                json={"grants": [item(h, "ancestry")]},
+            )
         elif operation == "upgrade":
             response = call(
                 client,
@@ -582,30 +612,10 @@ def test_append_failure_rolls_back_every_write(harness, monkeypatch, operation):
         poll_all(client, h)
 
 
-@pytest.mark.parametrize("route", ["/entities", "/search"])
+@pytest.mark.parametrize("route", ["/entities"])
 def test_dm_not_granted_to_excludes_every_known_scope_and_globals(harness, route):
     h = harness
-    # Include global entities and corpus chunks among vector candidates as well.
-    h.session.add_all(
-        [
-            Embedding(
-                embeddable_kind="entity",
-                embeddable_id=h.rows["ancestry"].id,
-                model="test",
-                dim=1024,
-                vector=[0.0] * 1024,
-            ),
-            Embedding(
-                embeddable_kind="chunk",
-                embeddable_id=h.rows["chunk_private"].id,
-                model="test",
-                dim=1024,
-                vector=[0.0] * 1024,
-            ),
-        ]
-    )
-    h.session.commit()
-    params = {"q": "canary", "k": 50} if route == "/search" else {}
+    params = {}
     with TestClient(h.app()) as client:
         baseline = call(client, h, "GET", route, params=params)
         assert baseline.status_code == 200
@@ -617,7 +627,7 @@ def test_dm_not_granted_to_excludes_every_known_scope_and_globals(harness, route
             params={**params, "not_granted_to": h.rows["character_a"].id},
         )
         assert response.status_code == 200
-        rows = response.json() if route == "/search" else response.json()["items"]
+        rows = response.json()["items"]
         ids = {row["id"] for row in rows if row.get("kind", "entity") == "entity"}
         assert ids == {h.rows["private"].id, h.rows["b_only"].id}
         if route == "/search":
@@ -689,14 +699,12 @@ def test_bulk_missing_and_malformed_identifiers(harness, monkeypatch, field, inv
         assert h.snapshot() == before
 
 
-@pytest.mark.parametrize("route", ["/entities", "/search"])
+@pytest.mark.parametrize("route", ["/entities"])
 @pytest.mark.parametrize("invalid", INVALID_UUIDS)
 def test_filter_invalid_pc_preserves_auth_order(harness, monkeypatch, route, invalid):
     h = harness
     value = MISSING_UUID if invalid is None else invalid
     params = {"not_granted_to": value}
-    if route == "/search":
-        params["q"] = "canary"
     original_get = h.session.get
 
     def guarded_get(model, identifier, *args, **kwargs):
@@ -777,38 +785,6 @@ def test_bulk_uuid_case_grouping_uses_resolved_character(harness, monkeypatch):
             grant["player_character_id"] == h.rows["character_a"].id
             for grant in response.json()
         )
-        poll_all(client, h)
-
-
-@pytest.mark.parametrize("enabled", [False, True])
-def test_create_reveal_uses_resolved_character_id(harness, monkeypatch, enabled):
-    h = harness
-    h.prepare("play")
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true" if enabled else "false")
-    original_get = h.session.get
-
-    def uuid_get(model, identifier, *args, **kwargs):
-        # Production PostgreSQL returns its canonical stored UUID spelling.
-        if (
-            model is PlayerCharacter
-            and identifier.casefold() == h.rows["character_a"].id.casefold()
-        ):
-            return h.rows["character_a"]
-        return original_get(model, identifier, *args, **kwargs)
-
-    monkeypatch.setattr(h.session, "get", uuid_get)
-    body = item(h, "ancestry")
-    body["player_character_id"] = body["player_character_id"].lower()
-    with TestClient(h.app()) as client:
-        response = call(client, h, "POST", "/grants", json=body)
-        assert response.status_code == 200
-        assert response.json()["player_character_id"] == (
-            h.rows["character_a"].id if enabled else body["player_character_id"]
-        )
-        assert len(events(h)) == int(enabled)
-        if enabled:
-            assert events(h)[0].audience_pc_ids == [h.rows["character_a"].id]
-        monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
         poll_all(client, h)
 
 

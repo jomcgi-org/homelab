@@ -19,17 +19,15 @@ from fastapi.testclient import TestClient
 from knowledge.api import get_embedding_client
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from grimoire.access import get_authenticated_identity, get_grimoire_operator_email
+from grimoire.access import get_authenticated_identity
 from grimoire.models import (
     AppUser,
     Book,
-    Campaign,
     CampaignMember,
     ChunkEntityMention,
     Entity,
     KnowledgeChunk,
     KnowledgeGrant,
-    PlayerCharacter,
     Relationship,
 )
 from grimoire.router import router
@@ -68,7 +66,8 @@ class FakeEmbedClient:
 
 
 @pytest.fixture(name="client")
-def client_fixture(session):
+def client_fixture(session, monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
@@ -115,25 +114,29 @@ def _create_character(
     return response.json()
 
 
-def _provision(
-    client: TestClient,
-    dm_email: str,
-    campaign_id: str,
-    player_email: str,
-    character_id: str | None,
-) -> dict:
-    client.app.dependency_overrides[get_grimoire_operator_email] = lambda: dm_email
-    response = client.post(
-        f"/api/grimoire/campaigns/{campaign_id}/members",
-        headers=_auth(dm_email),
-        json={
-            "email": player_email,
-            "player_character_id": character_id,
-        },
+def _provision(client, dm_email, campaign_id, player_email, character_id):
+    """Seed legacy membership without exposing a repair HTTP endpoint."""
+    player_email = player_email.strip().lower()
+    session = client.app.dependency_overrides[get_session]()
+    user = session.exec(select(AppUser).where(AppUser.email == player_email)).first()
+    if user is None:
+        user = AppUser(email=player_email)
+        session.add(user)
+        session.flush()
+    member = CampaignMember(
+        campaign_id=campaign_id,
+        app_user_id=user.id,
+        role="player",
+        player_character_id=character_id,
     )
-    del client.app.dependency_overrides[get_grimoire_operator_email]
-    assert response.status_code == 200
-    return response.json()
+    session.add(member)
+    session.commit()
+    return {
+        "id": member.id,
+        "email": user.email,
+        "role": member.role,
+        "player_character_id": member.player_character_id,
+    }
 
 
 def _seed_table(session: Session, client: TestClient) -> SimpleNamespace:
@@ -202,23 +205,31 @@ def _seed_table(session: Session, client: TestClient) -> SimpleNamespace:
         session.refresh(entity)
 
     grant_a_response = client.post(
-        f"/api/grimoire/campaigns/{campaign_a['id']}/grants",
+        f"/api/grimoire/campaigns/{campaign_a['id']}/grants/bulk",
         headers=_auth(DM_EMAIL),
         json={
-            "entity_id": private_a.id,
-            "player_character_id": player_character["id"],
-            "grant_scope": "partial",
-            "revealed_details": {"known": "safe"},
+            "grants": [
+                {
+                    "entity_id": private_a.id,
+                    "player_character_id": player_character["id"],
+                    "grant_scope": "partial",
+                    "revealed_details": {"known": "safe"},
+                }
+            ]
         },
     )
     assert grant_a_response.status_code == 200
     grant_b_response = client.post(
-        f"/api/grimoire/campaigns/{campaign_b['id']}/grants",
+        f"/api/grimoire/campaigns/{campaign_b['id']}/grants/bulk",
         headers=_auth(OTHER_DM_EMAIL),
         json={
-            "entity_id": private_b.id,
-            "player_character_id": foreign_character["id"],
-            "grant_scope": "full",
+            "grants": [
+                {
+                    "entity_id": private_b.id,
+                    "player_character_id": foreign_character["id"],
+                    "grant_scope": "full",
+                }
+            ]
         },
     )
     assert grant_b_response.status_code == 200
@@ -257,8 +268,8 @@ def _seed_table(session: Session, client: TestClient) -> SimpleNamespace:
         private_a=private_a,
         ungranted_a=ungranted_a,
         private_b=private_b,
-        grant_a=grant_a_response.json(),
-        grant_b=grant_b_response.json(),
+        grant_a=grant_a_response.json()[0],
+        grant_b=grant_b_response.json()[0],
         chunk=chunk,
     )
 
@@ -431,70 +442,6 @@ def test_initial_dm_provisions_player_character_acl_and_revocation(session, clie
     assert session.exec(select(AppUser).where(AppUser.email == PLAYER_EMAIL)).first()
 
 
-def test_operator_bootstraps_existing_campaign_without_rewriting_characters(
-    session, client
-):
-    campaign = Campaign(name="Imported campaign", dm_name="Legacy DM")
-    session.add(campaign)
-    session.flush()
-    character = PlayerCharacter(
-        campaign_id=campaign.id,
-        character_name="Imported character",
-        sheet={"legacy": True},
-    )
-    session.add(character)
-    session.commit()
-    session.refresh(campaign)
-    session.refresh(character)
-
-    hidden = client.get(
-        f"/api/grimoire/campaigns/{campaign.id}",
-        headers=_auth(DM_EMAIL),
-    )
-    assert hidden.status_code == 404
-
-    unrelated = client.post(
-        f"/api/grimoire/campaigns/{campaign.id}/bootstrap-dm",
-        headers=_auth(DM_EMAIL),
-        json={"email": DM_EMAIL},
-    )
-    assert unrelated.status_code == 403
-    assert session.exec(select(CampaignMember)).all() == []
-
-    bootstrapped = client.post(
-        f"/api/grimoire/campaigns/{campaign.id}/bootstrap-dm",
-        headers=_auth(OPERATOR_EMAIL),
-        json={"email": "  DM@EXAMPLE.TEST  "},
-    )
-    assert bootstrapped.status_code == 200
-    assert bootstrapped.json()["email"] == DM_EMAIL
-    assert bootstrapped.json()["role"] == "dm"
-
-    visible_characters = client.get(
-        f"/api/grimoire/campaigns/{campaign.id}/characters",
-        headers=_auth(DM_EMAIL),
-    )
-    assert visible_characters.status_code == 200
-    assert visible_characters.json() == [
-        {
-            "id": character.id,
-            "campaign_id": campaign.id,
-            "player_name": None,
-            "character_name": "Imported character",
-            "class_name": None,
-            "level": None,
-            "sheet": {"legacy": True},
-        }
-    ]
-
-    repeated = client.post(
-        f"/api/grimoire/campaigns/{campaign.id}/bootstrap-dm",
-        headers=_auth(OPERATOR_EMAIL),
-        json={"email": OTHER_DM_EMAIL},
-    )
-    assert repeated.status_code == 409
-
-
 def test_nonmember_and_cross_campaign_reads_reveal_nothing(session, client):
     seed = _seed_table(session, client)
     outsider = _auth("outsider@example.test")
@@ -526,8 +473,6 @@ def test_nonmember_and_cross_campaign_reads_reveal_nothing(session, client):
         "/characters",
         "/entities",
         f"/entities/{seed.private_b.id}",
-        f"/entities/{seed.private_b.id}/relationships",
-        f"/entities/{seed.private_b.id}/mentions",
     ):
         response = client.get(
             f"/api/grimoire/campaigns/{seed.campaign_b['id']}{suffix}",
@@ -536,7 +481,7 @@ def test_nonmember_and_cross_campaign_reads_reveal_nothing(session, client):
         assert response.status_code == 404
     assert (
         client.get(
-            f"/api/grimoire/campaigns/{seed.campaign_b['id']}/search?q=secret",
+            f"/api/grimoire/campaigns/{seed.campaign_b['id']}/knowledge/search?q=secret",
             headers=player,
         ).status_code
         == 404
@@ -574,23 +519,22 @@ def test_player_cannot_use_any_existing_dm_only_mutation(session, client):
             headers=player,
             json={"character_name": "Forbidden"},
         ),
-        client.post(
-            f"/api/grimoire/campaigns/{campaign_id}/members",
-            headers=player,
-            json={"email": "new@example.test"},
-        ),
         client.get(f"/api/grimoire/campaigns/{campaign_id}/members", headers=player),
         client.delete(
             f"/api/grimoire/campaigns/{campaign_id}/members/{seed.player_member['id']}",
             headers=player,
         ),
         client.post(
-            f"/api/grimoire/campaigns/{campaign_id}/grants",
+            f"/api/grimoire/campaigns/{campaign_id}/grants/bulk",
             headers=player,
             json={
-                "entity_id": seed.global_entity.id,
-                "player_character_id": seed.player_character["id"],
-                "grant_scope": "full",
+                "grants": [
+                    {
+                        "entity_id": seed.global_entity.id,
+                        "player_character_id": seed.player_character["id"],
+                        "grant_scope": "full",
+                    }
+                ]
             },
         ),
         client.get(f"/api/grimoire/campaigns/{campaign_id}/grants", headers=player),
@@ -609,20 +553,8 @@ def test_player_cannot_use_any_existing_dm_only_mutation(session, client):
             headers=player,
             json={"status": "paused"},
         ),
-        client.patch(
-            "/api/grimoire/books/private-book",
-            headers=player,
-            json={"display_name": "Forbidden"},
-        ),
     ]
     assert [response.status_code for response in attempts] == [403] * len(attempts)
-
-    allowed = client.patch(
-        "/api/grimoire/books/private-book",
-        headers=_auth(OPERATOR_EMAIL),
-        json={"display_name": "Operator Authored"},
-    )
-    assert allowed.status_code == 200
 
 
 def test_campaign_creation_never_mints_global_corpus_authority(session, client):
@@ -638,19 +570,17 @@ def test_campaign_creation_never_mints_global_corpus_authority(session, client):
     session.add(Book(id="global-book", display_name="Original"))
     session.commit()
 
-    denied_player = client.patch(
-        "/api/grimoire/books/global-book",
+    denied_player = client.post(
+        "/api/grimoire/alias-candidates/scan",
         headers=_auth(PLAYER_EMAIL),
-        json={"display_name": "Player edit"},
     )
     assert denied_player.status_code == 403
 
     player_campaign = _create_campaign(client, PLAYER_EMAIL, "Player-created")
     assert player_campaign["name"] == "Player-created"
-    still_denied = client.patch(
-        "/api/grimoire/books/global-book",
+    still_denied = client.post(
+        "/api/grimoire/alias-candidates/scan",
         headers=_auth(PLAYER_EMAIL),
-        json={"display_name": "Minted edit"},
     )
     assert still_denied.status_code == 403
 
@@ -661,10 +591,9 @@ def test_campaign_creation_never_mints_global_corpus_authority(session, client):
     assert revoked.status_code == 204
     revoked_campaign = _create_campaign(client, PLAYER_EMAIL, "After revocation")
     assert revoked_campaign["name"] == "After revocation"
-    revoked_still_denied = client.patch(
-        "/api/grimoire/books/global-book",
+    revoked_still_denied = client.post(
+        "/api/grimoire/alias-candidates/scan",
         headers=_auth(PLAYER_EMAIL),
-        json={"display_name": "Revoked edit"},
     )
     assert revoked_still_denied.status_code == 403
 
@@ -679,23 +608,31 @@ def test_foreign_object_and_character_ids_cannot_cross_campaigns(session, client
     campaign_id = seed.campaign_a["id"]
 
     foreign_entity = client.post(
-        f"/api/grimoire/campaigns/{campaign_id}/grants",
+        f"/api/grimoire/campaigns/{campaign_id}/grants/bulk",
         headers=dm,
         json={
-            "entity_id": seed.private_b.id,
-            "player_character_id": seed.player_character["id"],
-            "grant_scope": "full",
+            "grants": [
+                {
+                    "entity_id": seed.private_b.id,
+                    "player_character_id": seed.player_character["id"],
+                    "grant_scope": "full",
+                }
+            ]
         },
     )
     assert foreign_entity.status_code == 404
 
     foreign_character = client.post(
-        f"/api/grimoire/campaigns/{campaign_id}/grants",
+        f"/api/grimoire/campaigns/{campaign_id}/grants/bulk",
         headers=dm,
         json={
-            "entity_id": seed.global_entity.id,
-            "player_character_id": seed.foreign_character["id"],
-            "grant_scope": "full",
+            "grants": [
+                {
+                    "entity_id": seed.global_entity.id,
+                    "player_character_id": seed.foreign_character["id"],
+                    "grant_scope": "full",
+                }
+            ]
         },
     )
     assert foreign_character.status_code == 404
@@ -731,16 +668,13 @@ def test_foreign_object_and_character_ids_cannot_cross_campaigns(session, client
         == 404
     )
 
-    client.app.dependency_overrides[get_grimoire_operator_email] = lambda: DM_EMAIL
-    provision_foreign_character = client.post(
-        f"/api/grimoire/campaigns/{campaign_id}/members",
+    provision_foreign_character = client.put(
+        f"/api/grimoire/campaigns/{campaign_id}/members/{seed.player_member['id']}/character",
         headers=dm,
         json={
-            "email": "foreign-character@example.test",
             "player_character_id": seed.foreign_character["id"],
         },
     )
-    del client.app.dependency_overrides[get_grimoire_operator_email]
     assert provision_foreign_character.status_code == 404
 
 
@@ -766,11 +700,10 @@ def test_grant_session_provenance_must_belong_to_campaign(session, client):
         "grant_scope": "full",
     }
     foreign = client.post(
-        base,
+        base + "/bulk",
         headers=_auth(DM_EMAIL),
         json={
-            **common,
-            "entity_id": foreign_entity.id,
+            "grants": [{**common, "entity_id": foreign_entity.id}],
             "granted_in_session": seed.game_b["id"],
         },
     )
@@ -778,27 +711,25 @@ def test_grant_session_provenance_must_belong_to_campaign(session, client):
 
     missing_session_id = "00000000-0000-0000-0000-000000000099"
     missing = client.post(
-        base,
+        base + "/bulk",
         headers=_auth(DM_EMAIL),
         json={
-            **common,
-            "entity_id": missing_entity.id,
+            "grants": [{**common, "entity_id": missing_entity.id}],
             "granted_in_session": missing_session_id,
         },
     )
     assert missing.status_code == 404
 
     own = client.post(
-        base,
+        base + "/bulk",
         headers=_auth(DM_EMAIL),
         json={
-            **common,
-            "entity_id": own_entity.id,
+            "grants": [{**common, "entity_id": own_entity.id}],
             "granted_in_session": seed.game_a["id"],
         },
     )
     assert own.status_code == 200
-    assert own.json()["granted_in_session"] == seed.game_a["id"]
+    assert own.json()[0]["granted_in_session"] == seed.game_a["id"]
 
     grants = session.exec(
         select(KnowledgeGrant).where(
@@ -833,13 +764,6 @@ def test_query_viewpoint_tampering_never_changes_player_authority(session, clien
     assert seed.private_a.id in visible_ids
     assert seed.ungranted_a.id not in visible_ids
     assert seed.private_b.id not in visible_ids
-
-    relationships = client.get(
-        f"{base}/entities/{seed.private_a.id}/relationships?as=dm",
-        headers=player,
-    )
-    assert relationships.status_code == 200
-    assert relationships.json() == []
 
     chunk = client.get(
         f"/api/grimoire/chunks/{seed.chunk.id}?campaign={seed.campaign_a['id']}&as=dm",

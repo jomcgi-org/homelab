@@ -171,14 +171,6 @@ def test_owner_invites_only_registered_users_and_cannot_bypass_acceptance(client
     register(client, "player")
     assert (
         client.post(
-            url + "/members",
-            headers=headers("owner"),
-            json={"email": "player@example.test"},
-        ).status_code
-        == 403
-    )
-    assert (
-        client.post(
             url + "/invitations",
             headers=headers("player"),
             json={"email": "owner@example.test"},

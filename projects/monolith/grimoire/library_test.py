@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 
 from grimoire import library
+from grimoire.models import AppUser, CampaignMember
 from grimoire.access import (
     get_authenticated_email,
     get_game_creator_email,
@@ -345,28 +346,6 @@ class TestSections:
         assert by_path["Ch2 > Setup"]["first_chunk_id"] == without_hierarchy.id
 
 
-class TestListChunks:
-    def test_pagination_and_section_filter(self, session, client):
-        seed = seed_book(session)
-        first = client.get("/api/grimoire/books/mm/chunks?limit=2").json()
-        assert [c["seq"] for c in first["items"]] == [0, 1]
-        assert first["next_cursor"] == "1"
-        assert first["items"][0]["kind"] == "text"
-
-        second = client.get(
-            f"/api/grimoire/books/mm/chunks?limit=2&cursor={first['next_cursor']}"
-        ).json()
-        assert [c["seq"] for c in second["items"]] == [2, 3]
-        assert second["next_cursor"] is None
-        # The image chunk reports kind=image.
-        assert second["items"][0]["kind"] == "image"
-
-        section = client.get(
-            "/api/grimoire/books/mm/chunks?section=Monsters/Beholder"
-        ).json()
-        assert [c["id"] for c in section["items"]] == [seed.c3.id]
-
-
 class TestReadBook:
     def test_full_content_and_image_key(self, session, client):
         seed = seed_book(session)
@@ -450,14 +429,18 @@ class TestGetChunk:
             json={"character_name": "Rogue"},
         ).json()
         player_email = "rogue@example.test"
-        provisioned = client.post(
-            f"/api/grimoire/campaigns/{campaign['id']}/members",
-            json={
-                "email": player_email,
-                "player_character_id": pc["id"],
-            },
+        user = AppUser(email=player_email)
+        session.add(user)
+        session.flush()
+        session.add(
+            CampaignMember(
+                campaign_id=campaign["id"],
+                app_user_id=user.id,
+                role="player",
+                player_character_id=pc["id"],
+            )
         )
-        assert provisioned.status_code == 200
+        session.commit()
 
         chunk = client.get(
             f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}",
@@ -470,61 +453,6 @@ class TestGetChunk:
             f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}"
         ).json()
         assert {e["name"] for e in dm["entities"]} == {"Aboleth"}
-
-
-class TestMentions:
-    def test_dm_sees_sources(self, session, client):
-        seed = seed_book(session)
-        campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
-        body = client.get(
-            f"/api/grimoire/campaigns/{campaign['id']}/entities/e-aboleth/mentions"
-        ).json()
-        chunk_ids = {m["chunk_id"] for m in body}
-        assert chunk_ids == {seed.c0.id, seed.c1.id}
-        assert all(m["book_id"] == "mm" for m in body)
-
-    def test_player_without_grant_404(self, session, client):
-        seed = seed_book(session)
-        seed.aboleth.is_global = False
-        session.add(seed.aboleth)
-        session.commit()
-        campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
-        pc = client.post(
-            f"/api/grimoire/campaigns/{campaign['id']}/characters",
-            json={"character_name": "Rogue"},
-        ).json()
-        player_email = "rogue@example.test"
-        provisioned = client.post(
-            f"/api/grimoire/campaigns/{campaign['id']}/members",
-            json={
-                "email": player_email,
-                "player_character_id": pc["id"],
-            },
-        )
-        assert provisioned.status_code == 200
-        r = client.get(
-            f"/api/grimoire/campaigns/{campaign['id']}/entities/e-aboleth/mentions",
-            headers={"X-Test-Auth-Email": player_email},
-        )
-        assert r.status_code == 404
-
-
-class TestRenameBook:
-    def test_rename_and_404(self, session, client):
-        seed_book(session)
-        client.post("/api/grimoire/campaigns", json={"name": "C"})
-        r = client.patch(
-            "/api/grimoire/books/mm", json={"display_name": "The Monster Manual"}
-        )
-        assert r.status_code == 200
-        assert r.json().get("display_name") == "The Monster Manual"
-        assert session.get(Book, "mm").display_name == "The Monster Manual"
-
-        missing = client.patch("/api/grimoire/books/nope", json={"display_name": "X"})
-        assert missing.status_code == 404
-
-        empty = client.patch("/api/grimoire/books/mm", json={"display_name": "  "})
-        assert empty.status_code == 422
 
 
 class _FakeBody:

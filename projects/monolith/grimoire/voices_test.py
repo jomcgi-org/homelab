@@ -2,6 +2,8 @@
 
 from uuid import UUID, uuid4
 
+from datetime import datetime, timezone
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -224,10 +226,8 @@ def test_delete_entity_preset_finds_original_uuid_spelling(setup):
 def test_retracted_narration_does_not_expose_speaker_key(setup):
     client, h = setup
     event_id = h.rows["event_table"].id
-    retracted = client.post(
-        f"{events_path(h)}/{event_id}/retract", headers=h.headers("dm")
-    )
-    assert retracted.status_code == 200, retracted.text
+    h.rows["event_table"].retracted_at = datetime.now(timezone.utc)
+    h.session.commit()
     response = client.get(events_path(h), headers=h.headers("player_a"))
     assert response.status_code == 200
     h.assert_no_leak(response, "player_a")

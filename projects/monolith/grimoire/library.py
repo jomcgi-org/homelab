@@ -49,10 +49,6 @@ _PREVIEW_LEN = 200
 # shelf covers even though they are technically image chunks.
 _COVER_MIN_SEQ = 4
 
-# Default and max page size for the paged chunk list.
-DEFAULT_CHUNK_PAGE = 100
-MAX_CHUNK_PAGE = 500
-
 # Default and max page size for the continuous reader (full content per item,
 # so pages are kept smaller than the preview list above).
 DEFAULT_READ_PAGE = 40
@@ -302,57 +298,6 @@ def list_sections(session: Session, book_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def list_chunks(
-    session: Session,
-    book_id: str,
-    *,
-    section: str | None = None,
-    cursor: str | None = None,
-    limit: int = DEFAULT_CHUNK_PAGE,
-) -> dict[str, Any]:
-    """Seq-ordered page of a book's chunks (optionally within one section).
-
-    Keyset paginated on ``seq`` (unique within a book), so ``cursor`` is simply
-    the last seq returned; the next page is ``seq > cursor``. Returns
-    ``{items, next_cursor}`` where ``next_cursor`` is null on the last page.
-    """
-    limit = max(1, min(limit, MAX_CHUNK_PAGE))
-    query = select(KnowledgeChunk).where(KnowledgeChunk.book_id == book_id)
-    if section is not None:
-        query = query.where(KnowledgeChunk.section_path == section)
-    if cursor is not None:
-        try:
-            after = int(cursor)
-        except (TypeError, ValueError):
-            after = None
-        if after is not None:
-            query = query.where(KnowledgeChunk.seq > after)
-    # limit + 1 to detect whether another page follows without a second query.
-    query = query.order_by(KnowledgeChunk.seq).limit(limit + 1)
-    rows = session.exec(query).all()
-
-    has_more = len(rows) > limit
-    rows = rows[:limit]
-    items = [
-        {
-            "id": chunk.id,
-            "seq": chunk.seq,
-            "section_path": chunk.section_path,
-            "kind": _kind(chunk),
-            "preview": chunk.content[:_PREVIEW_LEN],
-            "created_at": aware_iso(chunk.created_at),
-        }
-        for chunk in rows
-    ]
-    # Guard against a NULL seq on the boundary row: stringifying it would yield
-    # "None", and the next request's int("None") would fail, drop the cursor, and
-    # re-serve page one forever. seq is backfilled + loader-set so this is an
-    # edge case, but the column is nullable, so fail safe by ending the page.
-    last_seq = rows[-1].seq if rows else None
-    next_cursor = str(last_seq) if has_more and last_seq is not None else None
-    return {"items": items, "next_cursor": next_cursor}
-
-
 def _image_object_key(image_ref: str | None) -> str | None:
     """Bucket-relative S3 object key from a chunk's ``s3://bucket/key`` ref.
 
@@ -412,10 +357,9 @@ def read_page(
 ) -> dict[str, Any]:
     """Seq-ordered page of FULL chunks for the continuous book reader.
 
-    The reader reconstructs the book: complete text (not the preview
-    ``list_chunks`` serves), and for image chunks the bucket-relative object
-    key plus the caption as ``content``. Keyset paginated on ``seq`` exactly
-    like ``list_chunks`` (cursor = last seq returned; NULL-seq boundary rows
+    The reader reconstructs the book: complete text, and for image chunks the
+    bucket-relative object key plus the caption as ``content``. Keyset
+    paginated on ``seq`` (cursor = last seq returned; NULL-seq boundary rows
     end the page rather than emitting a "None" cursor).
 
     Each item also carries ``entities``: the is_global entity mentions on that
@@ -715,17 +659,3 @@ def adventure_entities(session: Session, adventure_id: str) -> dict[str, Any] | 
             for eid, name, entity_type, category in entity_rows
         ],
     }
-
-
-def rename_book(session: Session, book_id: str, display_name: str) -> Book | None:
-    """Set a book's display_name. Returns the updated row, or None if no such
-    book exists (the loader upserts a row per book, so a missing book means the
-    id was never loaded)."""
-    book = session.get(Book, book_id)
-    if book is None:
-        return None
-    book.display_name = display_name
-    session.add(book)
-    session.commit()
-    session.refresh(book)
-    return book

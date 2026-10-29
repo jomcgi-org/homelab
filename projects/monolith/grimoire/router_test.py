@@ -44,7 +44,8 @@ def session_fixture(tmp_path):
 
 
 @pytest.fixture(name="client")
-def client_fixture(session):
+def client_fixture(session, monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
@@ -123,41 +124,53 @@ class TestGrants:
         campaign = _create_campaign(client)
         other_campaign = _create_campaign(client, name="Storm King's Thunder")
         character = _create_character(client, campaign["id"])
-        entity_id = "entity-strahd"
+        entity_id = "00000000-0000-4000-8000-000000000001"
         _seed_entity(session, entity_id)
 
         created = client.post(
-            f"/api/grimoire/campaigns/{campaign['id']}/grants",
+            f"/api/grimoire/campaigns/{campaign['id']}/grants/bulk",
             json={
-                "entity_id": entity_id,
-                "player_character_id": character["id"],
-                "grant_scope": "partial",
-                "revealed_details": {"note": "a pale nobleman"},
+                "grants": [
+                    {
+                        "entity_id": entity_id,
+                        "player_character_id": character["id"],
+                        "grant_scope": "partial",
+                        "revealed_details": {"note": "a pale nobleman"},
+                    }
+                ]
             },
         )
         assert created.status_code == 200
-        created_body = created.json()
+        created_body = created.json()[0]
         assert created_body["grant_scope"] == "partial"
         assert created_body["revealed_details"] == {"note": "a pale nobleman"}
 
         # Duplicate (entity_id, player_character_id) is a 409.
         duplicate = client.post(
-            f"/api/grimoire/campaigns/{campaign['id']}/grants",
+            f"/api/grimoire/campaigns/{campaign['id']}/grants/bulk",
             json={
-                "entity_id": entity_id,
-                "player_character_id": character["id"],
-                "grant_scope": "full",
+                "grants": [
+                    {
+                        "entity_id": entity_id,
+                        "player_character_id": character["id"],
+                        "grant_scope": "full",
+                    }
+                ]
             },
         )
         assert duplicate.status_code == 409
 
         # A PC from a different campaign is rejected.
         mismatched = client.post(
-            f"/api/grimoire/campaigns/{other_campaign['id']}/grants",
+            f"/api/grimoire/campaigns/{other_campaign['id']}/grants/bulk",
             json={
-                "entity_id": "entity-other",
-                "player_character_id": character["id"],
-                "grant_scope": "full",
+                "grants": [
+                    {
+                        "entity_id": "00000000-0000-4000-8000-000000000002",
+                        "player_character_id": character["id"],
+                        "grant_scope": "full",
+                    }
+                ]
             },
         )
         assert mismatched.status_code == 404
@@ -168,15 +181,19 @@ class TestGrants:
     def test_patch_partial_then_full(self, client, session):
         campaign = _create_campaign(client)
         character = _create_character(client, campaign["id"])
-        _seed_entity(session, "entity-strahd")
+        _seed_entity(session, "00000000-0000-4000-8000-000000000001")
         created = client.post(
-            f"/api/grimoire/campaigns/{campaign['id']}/grants",
+            f"/api/grimoire/campaigns/{campaign['id']}/grants/bulk",
             json={
-                "entity_id": "entity-strahd",
-                "player_character_id": character["id"],
-                "grant_scope": "name_only",
+                "grants": [
+                    {
+                        "entity_id": "00000000-0000-4000-8000-000000000001",
+                        "player_character_id": character["id"],
+                        "grant_scope": "name_only",
+                    }
+                ]
             },
-        ).json()
+        ).json()[0]
 
         patched = client.patch(
             f"/api/grimoire/campaigns/{campaign['id']}/grants/{created['id']}",
@@ -208,15 +225,19 @@ class TestGrants:
     def test_delete_grant_then_gone(self, client, session):
         campaign = _create_campaign(client)
         character = _create_character(client, campaign["id"])
-        _seed_entity(session, "entity-strahd")
+        _seed_entity(session, "00000000-0000-4000-8000-000000000001")
         created = client.post(
-            f"/api/grimoire/campaigns/{campaign['id']}/grants",
+            f"/api/grimoire/campaigns/{campaign['id']}/grants/bulk",
             json={
-                "entity_id": "entity-strahd",
-                "player_character_id": character["id"],
-                "grant_scope": "full",
+                "grants": [
+                    {
+                        "entity_id": "00000000-0000-4000-8000-000000000001",
+                        "player_character_id": character["id"],
+                        "grant_scope": "full",
+                    }
+                ]
             },
-        ).json()
+        ).json()[0]
 
         deleted = client.delete(
             f"/api/grimoire/campaigns/{campaign['id']}/grants/{created['id']}"
@@ -239,11 +260,15 @@ class TestGrants:
         campaign = _create_campaign(client)
         character = _create_character(client, campaign["id"])
         r = client.post(
-            f"/api/grimoire/campaigns/{campaign['id']}/grants",
+            f"/api/grimoire/campaigns/{campaign['id']}/grants/bulk",
             json={
-                "entity_id": "no-such-entity",
-                "player_character_id": character["id"],
-                "grant_scope": "full",
+                "grants": [
+                    {
+                        "entity_id": "no-such-entity",
+                        "player_character_id": character["id"],
+                        "grant_scope": "full",
+                    }
+                ]
             },
         )
         assert r.status_code == 404

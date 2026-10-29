@@ -395,12 +395,9 @@ def test_event_audience_change_and_retraction_helper(harness):
     sync_event_embeddings(h.session, row)
     h.session.commit()
     assert stored(h, eid)["audience_pc_ids"] == sorted(row.audience_pc_ids)
-    with TestClient(h.app()) as client:
-        response = client.post(
-            prefix(h) + f"/sessions/{row.session_id}/events/{row.id}/retract",
-            headers=h.headers("dm"),
-        )
-    assert response.status_code == 200, response.text
+    row.retracted_at = datetime.now(UTC)
+    sync_event_embeddings(h.session, row)
+    h.session.commit()
     assert stored(h, eid) is None
 
 
@@ -582,10 +579,7 @@ def test_retracting_a_handout_removes_its_embedding(harness):
     )
     eid = embedding(h.session, row)
     assert stored(h, eid) is not None
-    with TestClient(h.app()) as client:
-        response = client.post(
-            prefix(h) + f"/sessions/{row.session_id}/events/{row.id}/retract",
-            headers=h.headers("dm"),
-        )
-    assert response.status_code == 200, response.text
+    row.retracted_at = datetime.now(UTC)
+    sync_event_embeddings(h.session, row)
+    h.session.commit()
     assert stored(h, eid) is None

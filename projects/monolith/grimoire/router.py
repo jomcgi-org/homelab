@@ -55,7 +55,6 @@ from grimoire.access import (
     get_authenticated_email,
     get_authenticated_identity,
     get_game_creator_email,
-    get_grimoire_operator_email,
 )
 from grimoire.accounts import find_registered_user
 from grimoire.audience import (
@@ -65,7 +64,7 @@ from grimoire.audience import (
     inventory_predicate,
     note_predicate,
 )
-from grimoire.character_facts import project_fact, visible_facts_predicate
+from grimoire.character_facts import project_fact
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
 from grimoire.handouts import (
     MAX_UPLOAD_BYTES,
@@ -106,7 +105,6 @@ from grimoire.models import (
     MemberRole,
     Note,
     PlayerCharacter,
-    Relationship,
     SessionEvent,
     SessionInitiative,
     SessionStatus,
@@ -117,13 +115,12 @@ from grimoire.play_embeddings import (
     event_note_markdown as _event_note_markdown,
 )
 from grimoire.play_embeddings import (
-    sync_event_embeddings,
     sync_events_embeddings,
     sync_fact_embeddings,
     sync_note_embeddings,
 )
 from grimoire.reveals import reveal_items
-from grimoire.search import search_campaign, search_knowledge
+from grimoire.search import search_knowledge
 from grimoire.session_events import (
     EventRequestConflictError,
     InvalidEventAudienceError,
@@ -1254,26 +1251,6 @@ def delete_inventory(
     )
 
 
-class CampaignSettingsRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    notes_dm_readable_default: bool
-
-
-@router.patch("/campaigns/{campaign_id}/settings", response_model=CampaignView)
-def patch_campaign_settings(
-    campaign_id: str,
-    body: CampaignSettingsRequest,
-    email: str = Depends(get_authenticated_email),
-    session: Session = Depends(get_session),
-) -> Campaign:
-    _require_dm(session, campaign_id, email)
-    campaign = _get_campaign_or_404(session, campaign_id)
-    campaign.notes_dm_readable_default = body.notes_dm_readable_default
-    session.commit()
-    session.refresh(campaign)
-    return campaign
-
-
 # --- Player characters --------------------------------------------------
 
 
@@ -1700,15 +1677,6 @@ def return_character_sheet(
 # --- Campaign membership -----------------------------------------------
 
 
-class MemberCreateRequest(BaseModel):
-    email: str
-    player_character_id: str | None = None
-
-
-class BootstrapDmRequest(BaseModel):
-    email: str
-
-
 class MemberCharacterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1822,101 +1790,6 @@ def assign_member_character(
     return _member_view(session, member)
 
 
-@router.post(
-    "/campaigns/{campaign_id}/bootstrap-dm",
-    response_model=MemberView,
-)
-def bootstrap_existing_campaign_dm(
-    campaign_id: str,
-    body: BootstrapDmRequest,
-    _operator_email: str = Depends(get_grimoire_operator_email),
-    session: Session = Depends(get_session),
-) -> MemberView:
-    """Explicitly attach the first DM to an upgraded existing campaign."""
-    campaign = _get_campaign_or_404(session, campaign_id)
-    existing_dm = session.exec(
-        select(CampaignMember).where(
-            CampaignMember.campaign_id == campaign_id,
-            CampaignMember.role == "dm",
-        )
-    ).first()
-    if existing_dm is not None:
-        raise HTTPException(status_code=409, detail="campaign already has a DM")
-
-    dm_email = body.email.strip().lower()
-    if not dm_email or len(dm_email) > 320:
-        raise HTTPException(status_code=422, detail="invalid DM email")
-    user = _get_or_create_user(session, dm_email)
-    existing_member = session.exec(
-        select(CampaignMember).where(
-            CampaignMember.campaign_id == campaign_id,
-            CampaignMember.app_user_id == user.id,
-        )
-    ).first()
-    if existing_member is not None:
-        raise HTTPException(status_code=409, detail="campaign member already exists")
-
-    campaign.owner_app_user_id = user.id
-    session.add(campaign)
-    member = CampaignMember(
-        campaign_id=campaign_id,
-        app_user_id=user.id,
-        role="dm",
-    )
-    session.add(member)
-    session.commit()
-    session.refresh(member)
-    return _member_view(session, member)
-
-
-@router.post("/campaigns/{campaign_id}/members", response_model=MemberView)
-def provision_player(
-    campaign_id: str,
-    body: MemberCreateRequest,
-    _operator: str = Depends(get_grimoire_operator_email),
-    email: str = Depends(get_authenticated_email),
-    session: Session = Depends(get_session),
-) -> MemberView:
-    """Operator repair path for legacy memberships."""
-    _require_dm(session, campaign_id, email)
-    invited_email = body.email.strip().lower()
-    if not invited_email or len(invited_email) > 320:
-        raise HTTPException(status_code=422, detail="invalid member email")
-    if body.player_character_id is not None:
-        _get_character_in_campaign_or_404(
-            session, campaign_id, body.player_character_id
-        )
-        assigned = session.exec(
-            select(CampaignMember).where(
-                CampaignMember.campaign_id == campaign_id,
-                CampaignMember.player_character_id == body.player_character_id,
-            )
-        ).first()
-        if assigned is not None:
-            raise HTTPException(status_code=409, detail="character already assigned")
-
-    user = _get_or_create_user(session, invited_email)
-    existing = session.exec(
-        select(CampaignMember).where(
-            CampaignMember.campaign_id == campaign_id,
-            CampaignMember.app_user_id == user.id,
-        )
-    ).first()
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="campaign member already exists")
-
-    member = CampaignMember(
-        campaign_id=campaign_id,
-        app_user_id=user.id,
-        role="player",
-        player_character_id=body.player_character_id,
-    )
-    session.add(member)
-    session.commit()
-    session.refresh(member)
-    return _member_view(session, member)
-
-
 @router.get("/campaigns/{campaign_id}/members", response_model=list[MemberView])
 def list_members(
     campaign_id: str,
@@ -1978,14 +1851,6 @@ def revoke_player(
 
 
 # --- Knowledge grants ----------------------------------------------------
-
-
-class GrantCreateRequest(BaseModel):
-    entity_id: str
-    player_character_id: str
-    grant_scope: GrantScope
-    revealed_details: dict | None = None
-    granted_in_session: str | None = None
 
 
 class GrantUpdateRequest(BaseModel):
@@ -2149,73 +2014,6 @@ def _append_reveal(
     except Exception:
         session.rollback()
         raise
-
-
-@router.post("/campaigns/{campaign_id}/grants", response_model=GrantView)
-def create_grant(
-    campaign_id: str,
-    body: GrantCreateRequest,
-    email: str = Depends(get_authenticated_email),
-    session: Session = Depends(get_session),
-) -> KnowledgeGrant:
-    member = _require_dm(session, campaign_id, email)
-    character = _get_character_in_campaign_or_404(
-        session, campaign_id, body.player_character_id
-    )
-    # Validate the entity exists before insert: knowledge_grant.entity_id is a
-    # FK, so on Postgres a missing entity raises IntegrityError and surfaces as
-    # an unhandled 500. (SQLite fixtures do not enforce FKs, so this guard is
-    # what makes the 404 behavior consistent across both backends.)
-    entity = session.get(Entity, body.entity_id)
-    if entity is None:
-        raise HTTPException(status_code=404, detail="entity not found")
-    if not entity_belongs_to_campaign(session, campaign_id, entity):
-        raise HTTPException(status_code=404, detail="entity not found")
-    if body.granted_in_session is not None:
-        game_session = session.get(GameSession, body.granted_in_session)
-        if game_session is None or game_session.campaign_id != campaign_id:
-            raise HTTPException(status_code=404, detail="session not found")
-
-    existing = session.exec(
-        select(KnowledgeGrant).where(
-            KnowledgeGrant.entity_id == body.entity_id,
-            KnowledgeGrant.player_character_id == body.player_character_id,
-        )
-    ).first()
-    if existing is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="grant already exists for this entity and character",
-        )
-
-    current = _current_reveal_session(session, campaign_id)
-    grant = KnowledgeGrant(
-        campaign_id=campaign_id,
-        entity_id=body.entity_id,
-        player_character_id=(
-            body.player_character_id if current is None else character.id
-        ),
-        grant_scope=body.grant_scope,
-        revealed_details=body.revealed_details,
-        granted_in_session=(
-            body.granted_in_session
-            if body.granted_in_session is not None or current is None
-            else current.id
-        ),
-    )
-    session.add(grant)
-    if current is not None:
-        session.flush()
-        _append_reveal(
-            session,
-            current,
-            member,
-            grant.player_character_id,
-            _reveal_body(session, grant),
-        )
-    session.commit()
-    session.refresh(grant)
-    return grant
 
 
 @router.post(
@@ -2611,94 +2409,6 @@ def get_entity(
     return projected
 
 
-@router.get("/campaigns/{campaign_id}/entities/{entity_id}/relationships")
-def list_entity_relationships(
-    campaign_id: str,
-    entity_id: str,
-    email: str = Depends(get_authenticated_email),
-    session: Session = Depends(get_session),
-) -> list[dict[str, Any]]:
-    """1-hop relationship edges from/to entity_id, grant-filtered per neighbor.
-
-    The center entity must itself be visible to the viewer in lookup context
-    (same 404-or-not check as get_entity, existence must not leak). Each
-    neighbor is then projected independently in "relationship" context so a
-    name_only neighbor becomes a recognition stub instead of vanishing, while
-    a wholly invisible neighbor (ungranted, non-global) drops its edge.
-    """
-    member = _get_member_or_404(session, campaign_id, email)
-    viewer = _viewer_for_member(session, campaign_id, member)
-
-    center_rows = session.exec(
-        visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
-    ).all()
-    if not center_rows:
-        raise HTTPException(status_code=404, detail="entity not found")
-    if viewer != "dm":
-        center_entity, center_grant = center_rows[0]
-        center_projected = project_entity(
-            center_entity, None, center_grant, viewer, context="lookup"
-        )
-        if center_projected is None:
-            raise HTTPException(status_code=404, detail="entity not found")
-
-    outgoing = session.exec(
-        select(Relationship).where(Relationship.from_entity_id == entity_id)
-    ).all()
-    incoming = session.exec(
-        select(Relationship).where(Relationship.to_entity_id == entity_id)
-    ).all()
-    edges = [(rel, "out", rel.to_entity_id) for rel in outgoing] + [
-        (rel, "in", rel.from_entity_id) for rel in incoming
-    ]
-
-    items: list[dict[str, Any]] = []
-    for rel, direction, neighbor_id in edges:
-        neighbor = _project_neighbor(session, campaign_id, viewer, neighbor_id)
-        if neighbor is None:
-            continue
-        items.append(
-            {
-                "rel_type": rel.rel_type,
-                "direction": direction,
-                "properties": rel.properties,
-                "entity": neighbor,
-            }
-        )
-    return items
-
-
-@router.get("/campaigns/{campaign_id}/entities/{entity_id}/mentions")
-def list_entity_mentions(
-    campaign_id: str,
-    entity_id: str,
-    email: str = Depends(get_authenticated_email),
-    session: Session = Depends(get_session),
-) -> list[dict[str, Any]]:
-    """Chunks that mention this entity (the "Sources" list on entity detail).
-
-    Gated behind the same visibility check as get_entity: the viewer must be
-    able to see the entity in lookup context, or this 404s (existence must not
-    leak, and a name_only viewer gets nothing, consistent with the entity
-    detail 404). Chunks themselves are corpus-global in v1, so once the gate
-    passes every mention is returned.
-    """
-    member = _get_member_or_404(session, campaign_id, email)
-    viewer = _viewer_for_member(session, campaign_id, member)
-
-    rows = session.exec(
-        visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
-    ).all()
-    if not rows:
-        raise HTTPException(status_code=404, detail="entity not found")
-    if viewer != "dm":
-        entity, grant = rows[0]
-        if project_entity(entity, None, grant, viewer, context="lookup") is None:
-            raise HTTPException(status_code=404, detail="entity not found")
-
-    return library.list_entity_mentions(session, entity_id)
-
-
 # --- Library / corpus (book + chunk reads, corpus-global) ------------
 
 # Books and chunks are NOT campaign-scoped: the corpus is global in v1 (matching
@@ -2708,32 +2418,11 @@ def list_entity_mentions(
 # thin.
 
 
-class BookRenameRequest(BaseModel):
-    display_name: str
-
-
 @router.get("/books")
 def list_books(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
     """Per-book coverage rows for the Library (counts, extraction progress,
     entity yield, timestamps). See library.list_books."""
     return library.list_books(session)
-
-
-@router.patch("/books/{book_id}")
-def rename_book(
-    book_id: str,
-    body: BookRenameRequest,
-    _operator_email: str = Depends(get_grimoire_operator_email),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    """Rename a book (set its display_name) from the Library UI."""
-    display_name = body.display_name.strip()
-    if not display_name:
-        raise HTTPException(status_code=422, detail="display_name must not be empty")
-    book = library.rename_book(session, book_id, display_name)
-    if book is None:
-        raise HTTPException(status_code=404, detail="book not found")
-    return {"book_id": book.id, "display_name": book.display_name}
 
 
 @router.get("/books/{book_id}/sections")
@@ -2742,22 +2431,6 @@ def list_book_sections(
 ) -> list[dict[str, Any]]:
     """Ordered section tree for one book (reading order, chunk counts)."""
     return library.list_sections(session, book_id)
-
-
-@router.get("/books/{book_id}/chunks")
-def list_book_chunks(
-    book_id: str,
-    section: str | None = Query(default=None),
-    cursor: str | None = Query(default=None),
-    limit: int = Query(
-        default=library.DEFAULT_CHUNK_PAGE, ge=1, le=library.MAX_CHUNK_PAGE
-    ),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    """Seq-ordered page of a book's chunks (optionally one section)."""
-    return library.list_chunks(
-        session, book_id, section=section, cursor=cursor, limit=limit
-    )
 
 
 @router.get("/books/{book_id}/read")
@@ -2857,40 +2530,6 @@ def get_chunk_image(
 # ``app.dependency_overrides[get_embedding_client]``.
 
 
-@router.get("/campaigns/{campaign_id}/search")
-async def search_campaign_route(
-    campaign_id: str,
-    q: str = Query(min_length=1),
-    k: int = Query(default=10, ge=1, le=50),
-    not_granted_to: str | None = Query(default=None),
-    email: str = Depends(get_authenticated_email),
-    session: Session = Depends(get_session),
-    embed_client: EmbeddingClient = Depends(get_embedding_client),
-) -> list[dict[str, Any]]:
-    """kNN search over embedding, grant-filtered, mixed entity/chunk hits.
-
-    All visibility filtering happens in search.search_campaign, which builds
-    on the same visible_entities_query()/project_entity() helpers as the
-    entity read paths above.
-
-    DM-only ``not_granted_to`` means "hide entities that PC already knows",
-    including global entities and any grant scope. Chunk hits are unaffected;
-    fewer than k hits are acceptable. The filter requires the play flag.
-    """
-    member = _get_member_or_404(session, campaign_id, email)
-    _authorize_reveal_filter(session, campaign_id, member, not_granted_to)
-    viewer = _viewer_for_member(session, campaign_id, member)
-    return await search_campaign(
-        session,
-        embed_client,
-        campaign_id,
-        viewer,
-        q,
-        k=k,
-        not_granted_to=not_granted_to,
-    )
-
-
 @router.get(
     "/campaigns/{campaign_id}/knowledge/search",
     dependencies=[Depends(require_play_enabled)],
@@ -2912,27 +2551,6 @@ async def search_knowledge_route(
 
 
 # --- Game sessions ---------------------------------------------------
-
-
-@router.get(
-    "/campaigns/{campaign_id}/facts", dependencies=[Depends(require_play_enabled)]
-)
-def list_character_facts(
-    campaign_id: str,
-    email: str = Depends(get_authenticated_email),
-    session: Session = Depends(get_session),
-):
-    member = _get_member_or_404(session, campaign_id, email)
-    viewer = _viewer_for_member(session, campaign_id, member)
-    facts = session.exec(
-        select(CharacterFact)
-        .where(
-            visible_facts_predicate(campaign_id, viewer),
-            CharacterFact.status.in_(("active", "disputed")),
-        )
-        .order_by(CharacterFact.id)
-    ).all()
-    return [project_fact(fact, viewer, member) for fact in facts]
 
 
 @router.post(
@@ -3003,28 +2621,6 @@ def list_game_sessions(
         .where(GameSession.campaign_id == campaign_id)
         .order_by(GameSession.started_at.desc(), GameSession.id.desc())
     ).all()
-
-
-@router.get(
-    "/campaigns/{campaign_id}/sessions/current",
-    response_model=GameSessionView,
-    dependencies=[Depends(require_play_enabled)],
-)
-def current_game_session(
-    campaign_id: str,
-    email: str = Depends(get_authenticated_email),
-    session: Session = Depends(get_session),
-) -> GameSession:
-    _get_member_or_404(session, campaign_id, email)
-    row = session.exec(
-        select(GameSession).where(
-            GameSession.campaign_id == campaign_id,
-            GameSession.status.in_(("active", "paused")),
-        )
-    ).first()
-    if row is None:
-        raise HTTPException(status_code=404, detail="game session not found")
-    return row
 
 
 @router.post(
@@ -4048,45 +3644,6 @@ def list_session_events(
         else _visible_handout_entities(session, campaign_id, viewer, rows)
     )
     return [_event_view(row, member, visible) for row in rows]
-
-
-@router.post(
-    "/campaigns/{campaign_id}/sessions/{session_id}/events/{event_id}/retract",
-    response_model=SessionEventView,
-    dependencies=[Depends(require_play_enabled)],
-)
-def retract_session_event(
-    campaign_id: str,
-    session_id: str,
-    event_id: str,
-    email: str = Depends(get_authenticated_email),
-    session: Session = Depends(get_session),
-) -> SessionEventView:
-    member = _get_member_or_404(session, campaign_id, email)
-    _session_in_campaign(session, campaign_id, session_id)
-    row = session.exec(
-        select(SessionEvent)
-        .where(
-            SessionEvent.id == event_id,
-            SessionEvent.session_id == session_id,
-            SessionEvent.campaign_id == campaign_id,
-        )
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="session event not found")
-    if member.role != "dm" and (
-        row.kind != "action" or row.author_member_id != member.id
-    ):
-        raise HTTPException(status_code=403, detail="own player action required")
-    # Retraction is idempotent and permitted after a session ends.
-    if row.retracted_at is None:
-        row.retracted_at = datetime.now(timezone.utc)
-        sync_event_embeddings(session, row)
-        session.commit()
-        session.refresh(row)
-    return _event_view(row, member)
 
 
 def _require_handout_dm(
