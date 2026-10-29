@@ -4,9 +4,15 @@ import { launcher } from "./launcher.js";
 
 describe("private launcher", () => {
   it("keeps the retired Qwen page and proxies out of the private route tree", () => {
-    for (const route of ["+page.svelte", "chat/+server.js", "stats/+server.js"]) {
+    for (const route of [
+      "+page.svelte",
+      "chat/+server.js",
+      "stats/+server.js",
+    ]) {
       expect(
-        existsSync(new URL(`../../routes/private/qwen/${route}`, import.meta.url)),
+        existsSync(
+          new URL(`../../routes/private/qwen/${route}`, import.meta.url),
+        ),
       ).toBe(false);
     }
   });
