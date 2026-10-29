@@ -20,6 +20,18 @@ import suite
 
 ROOT = Path(__file__).resolve().parents[3]
 EXTRA_FIXTURES = {
+    "agents": [
+        "profile-preview/App.svelte",
+        "profile-preview/fixtures.js",
+        "profile-preview/vite.config.js",
+        "test/ProfileRoute.svelte",
+        "test/profile-page.svelte.js",
+        "test/profile-stores.js",
+        "test/app-environment-stub.js",
+        "test/app-navigation-stub.js",
+        "preview/fonts.css",
+        "preview/fonts/SchibstedGrotesk.ttf",
+    ],
     "trips": [
         "test/trips-fixtures.js",
         "test/TripsRoute.svelte",
@@ -107,6 +119,12 @@ def baseline_plan(head_source, base_source, names):
 
 
 def case_details(name, filename):
+    if name == "agents":
+        match = re.fullmatch(
+            r"agents-(390|1440)-(light|dark)-(normal|reduced|no-js)-(opening|full|resume|banner)\.png",
+            filename,
+        )
+        return f"{match[3]}-{match[4]}", int(match[1]), match[2]
     if name == "blog":
         match = re.fullmatch(r"(\d+)x\d+-(opening|full|complete)\.png", filename)
         return match[2], int(match[1]), "light"

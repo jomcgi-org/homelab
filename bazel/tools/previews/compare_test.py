@@ -70,6 +70,18 @@ class CompareTests(unittest.TestCase):
                 )
             )
 
+    def test_agents_harness_is_not_invented_on_the_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            head, base = self.setup_sources(root, "agents")
+            shutil.rmtree(base / "projects/monolith/frontend/agents-preview")
+            inputs, eligible = compare.baseline_plan(head, base, ["agents"])
+            self.assertEqual(eligible, [])
+            self.setup_artifacts(root, "agents", baseline=False)
+            model = self.assemble(root, "agents", baseline=False, fingerprints=inputs)
+            self.assertEqual(len(model["rows"]), 48)
+            self.assertTrue(all(row["before"] is None for row in model["rows"]))
+
     def test_missing_historical_fixture_inputs_are_unavailable(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
