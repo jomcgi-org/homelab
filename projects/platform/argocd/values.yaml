@@ -39,6 +39,18 @@ cfIngress:
     rewritePrefix: /api/webhook
 
 argo-cd:
+  # Supported 3.3 patch line includes upstream #28201 (live status replay).
+  # The 9.5 chart line supplies matching 3.3 CRDs; keep its patch image current.
+  global:
+    image:
+      tag: v3.3.18
+  # Keep unrelated image and license changes outside this controller repair.
+  redis:
+    image:
+      tag: 7.2.11-alpine
+  dex:
+    image:
+      tag: v2.44.0
   configs:
     cm:
       accounts.mcp-agent: apiKey
