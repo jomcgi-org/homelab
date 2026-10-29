@@ -2098,10 +2098,10 @@ change.
 
 Activation still requires operator work outside this repository-only slice:
 
-1. Deliver a broker-minted `review-publisher` token to the trusted monolith
-   caller through the `bosun-review-publisher` SPIFFE grant described in
-   `projects/embervm/tokenbroker/README.md`. Do not expose that grant to guests,
-   implementers or the shared noded identity.
+1. Supply `FACTORY_REVIEW_PUBLISHER_TOKEN` only to the trusted monolith caller.
+   The tokenbroker GitHub App lane was removed in #7060; any replacement GitHub
+   identity belongs to #6442 or a successor issue. Keep the token away from
+   guests, implementers and the shared noded identity.
 2. Canary a real check, then require `factory/review` on `main`, pinned to the
    Bosun numeric App ID alongside existing Linux CI. Do not use an any-App
    source or add an agent to a bypass list.
