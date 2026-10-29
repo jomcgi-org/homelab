@@ -315,8 +315,9 @@ swarm:
 # switches.
 agents:
   drainer:
-    # Requires the existing factory-retro-daily payload opt-in; adds no scheduler.
+    # Reconcile only the observed existing daily payload. Preserve its cadence.
     learningHandoffEnabled: true
+    learningDailyPayloadSha256: "e121e88364d8636ebaed35f00c2ff6711d5650a08e1c276af9b697a7780acf02"
     enabled: true
     # Accommodate the 20,000-review catch-up allowance plus the former 2,000
     # extraction/audit allowance. This is a shared ceiling, not a reservation.
