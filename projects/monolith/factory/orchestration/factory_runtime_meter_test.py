@@ -3815,3 +3815,147 @@ def test_landing_hold_only_preserves_expired_lease_and_funding(
         assert after[key] == before[key]
     with Session(database) as db:
         assert funding.amendment(db, "task") == original
+
+
+@pytest.fixture
+def recovered_amendment(database, expired_recovery):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    args, _, now = expired_recovery
+    args = {**args, "max_work_turns": 7}
+    proposal = recovery.preview(**args)
+    recovery.apply(
+        **args,
+        actor="operator",
+        request_key="recover-for-amendment",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    return now
+
+
+@pytest.mark.parametrize(
+    "overlay", [{"max_review_rounds": 3}, {"max_task_turns_hard": 8}]
+)
+def test_recovered_amendment_preserves_deadline_and_recovery_grant(
+    database, recovered_amendment, overlay
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_funding_limits as funding
+
+    with Session(database) as db:
+        original_recovery = controls.task_recovery_grant("task", session=db)
+        original_funding = funding.amendment(db, "task")
+        original_task = db.get(SwarmTask, "task").model_dump()
+    proposal = amendments.preview(
+        838, overlay, "Adjust policy only; retain recovery limits."
+    )
+    args = dict(
+        actor="operator",
+        request_key="review-cap-only",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    applied = amendments.apply(
+        838, overlay, "Adjust policy only; retain recovery limits.", **args
+    )
+    assert (
+        amendments.apply(
+            838, overlay, "Adjust policy only; retain recovery limits.", **args
+        )
+        == applied
+    )
+    with Session(database) as db:
+        current = funding.amendment(db, "task")
+        assert current["deadline_at"] == original_funding["deadline_at"]
+        assert current["review_due_at"] == original_funding["review_due_at"]
+        assert controls.task_recovery_grant("task", session=db) == original_recovery
+        assert db.get(SwarmTask, "task").model_dump() == original_task
+        row = db.get(FactoryReceipt, 838)
+        assert row.task_paused and controls.landing_held(row)
+        assert controls.nonrenewable_recovery(row)
+        assert all(
+            funding.effective_policy(db, row)[k] == v for k, v in overlay.items()
+        )
+        assert (
+            controls.task_recovery_grant("task", session=db)["work_turn_ceiling"] == 7
+        )
+    assert (
+        controls.task_snapshot("task")["deadline_at"]
+        == original_recovery["deadline_at"]
+    )
+
+
+@pytest.mark.parametrize("change", ["recovery", "identical_recovery", "funding"])
+def test_recovered_amendment_binds_existing_authority(
+    database, recovered_amendment, change
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_funding_limits as funding
+
+    overlay = {"max_review_rounds": 3}
+    proposal = amendments.preview(838, overlay, "Review cap.")
+    with Session(database) as db, db.begin():
+        if change in {"recovery", "identical_recovery"}:
+            action = controls.TASK_RECOVERY_ACTION
+            detail = {"proposal": controls.task_recovery_grant("task", session=db)}
+            if change == "recovery":
+                detail["proposal"]["work_turn_ceiling"] = 6
+        else:
+            action = "funding_granted"
+            detail = funding.amendment(db, "task")
+            detail.pop("audit_id")
+            detail["review_due_at"] = recovered_amendment.isoformat()
+        controls._audit(db, "other-operator", action, task_id="task", **detail)
+    with pytest.raises(ValueError, match="policy_amendment_preview_changed"):
+        amendments.apply(
+            838,
+            overlay,
+            "Review cap.",
+            actor="operator",
+            request_key="stale-recovery",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+
+
+def test_recovered_amendment_preserves_expired_funding_lease(
+    database, recovered_amendment
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_funding_limits as funding
+
+    with Session(database) as db, db.begin():
+        prior = funding.amendment(db, "task")
+        prior.pop("audit_id")
+        prior["review_due_at"] = (
+            recovered_amendment - timedelta(minutes=1)
+        ).isoformat()
+        controls._audit(db, "operator", "funding_granted", task_id="task", **prior)
+    proposal = amendments.preview(838, {"max_review_rounds": 3}, "Review cap.")
+    amendments.apply(
+        838,
+        {"max_review_rounds": 3},
+        "Review cap.",
+        actor="operator",
+        request_key="no-renewal",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    with Session(database) as db:
+        assert funding.amendment(db, "task")["review_due_at"] == prior["review_due_at"]
+
+
+def test_recovered_amendment_rejects_expired_absolute_deadline(
+    database, recovered_amendment, monkeypatch
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    monkeypatch.setattr(
+        controls, "_now", lambda: recovered_amendment + timedelta(hours=1)
+    )
+    with pytest.raises(ValueError, match="amendment_task_deadline_expired"):
+        amendments.preview(838, {"max_review_rounds": 3}, "Review cap.")
+
+
+def test_recovered_amendment_cannot_change_timeout(database, recovered_amendment):
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    with pytest.raises(ValueError, match="amendment_recovery_deadline_immutable"):
+        amendments.preview(838, {"task_timeout_seconds": 86400}, "Change timeout.")

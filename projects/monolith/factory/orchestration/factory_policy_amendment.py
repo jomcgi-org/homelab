@@ -93,11 +93,24 @@ def _preview(db, control, receipt_id, overlay, direction):
         if task.created_at.tzinfo is None
         else task.created_at
     )
-    if (
-        not hold_only
-        and created + timedelta(seconds=amended["task_timeout_seconds"])
-        <= controls._now()
-    ):
+    deadline = created + timedelta(seconds=amended["task_timeout_seconds"])
+    recovery_binding = None
+    recovery = controls.task_recovery_grant(row.task_id, session=db)
+    if recovery is not None and not hold_only:
+        # Recovery owns an absolute deadline and a separate work ceiling.
+        # A policy amendment must neither renew nor replace that authority.
+        if amended["task_timeout_seconds"] != policy["task_timeout_seconds"]:
+            raise ValueError("amendment_recovery_deadline_immutable")
+        deadline = controls._recovery_deadline(db, row.task_id)
+        existing = funding.amendment(db, row.task_id)
+        if existing is None:
+            raise ValueError("amendment_recovery_funding_missing")
+        recovery_binding = {
+            "grant": funding.latest(db, row.task_id, controls.TASK_RECOVERY_ACTION),
+            "funding": existing,
+            "deadline_at": deadline.isoformat(),
+        }
+    if not hold_only and deadline <= controls._now():
         raise ValueError("amendment_task_deadline_expired")
     objective = funding.objective_for_receipt(db, row)
     spent = controls._accounting(starts)
@@ -109,6 +122,7 @@ def _preview(db, control, receipt_id, overlay, direction):
         "expected_revision": revision,
         "previous_policy": policy,
         "hold_only": hold_only,
+        "recovery_binding": recovery_binding,
         "policy_overlay": {}
         if hold_only
         else {
@@ -196,6 +210,15 @@ def apply(
                 else task.created_at
             )
             task_deadline = created + timedelta(seconds=policy["task_timeout_seconds"])
+            binding = proposal["recovery_binding"]
+            deadline_at = (
+                binding["funding"]["deadline_at"]
+                if binding
+                else task_deadline.isoformat()
+            )
+            review_due_at = (
+                binding["funding"]["review_due_at"] if binding else deadline_at
+            )
             if proposal["pending_funding_request_id"] is not None:
                 controls._audit(
                     db,
@@ -215,8 +238,8 @@ def apply(
                 policy_overlay=combined,
                 reason="Operator applied the reviewed exact-receipt policy preview.",
                 next_plan=direction,
-                deadline_at=task_deadline.isoformat(),
-                review_due_at=task_deadline.isoformat(),
+                deadline_at=deadline_at,
+                review_due_at=review_due_at,
                 objective=proposal["objective"],
             )
             # Graph budgeting already consumes funding_granted. Keep the task's
