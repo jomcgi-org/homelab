@@ -46,4 +46,4 @@ substrate:
 
 Everything builds in Bazel, including the Elixir control plane via a
 hermetic OTP toolchain with pinned hex dependencies. Images are apko-based;
-noded ships dual-arch.
+noded ships a single linux/amd64 image.

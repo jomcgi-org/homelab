@@ -2280,6 +2280,11 @@ embervm/033, ADR embervm/036).
 
 ## 11. Deployment shape
 
+**Why.** Noded's image is amd64-only (#7065, Joe's 2026-10-28 decision):
+the fleet has no arm64 consumer. The daemon and all four Firecracker bundle
+files are retained in two amd64 layers on Wolfi. Shared archive registration
+still fetches both architectures.
+
 ### Minimum platform contract
 
 | Requirement | Why | Fails how if absent |
