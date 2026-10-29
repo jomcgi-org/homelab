@@ -749,6 +749,9 @@ carry it:
 }
 ```
 
+Once `20261029000000_factory_daily_admission_limit_1000` is applied, the homelab
+daily admission cap is 1000; rollout is pending.
+
 `auto_merge` is a separate top-level policy field rather than part of this
 block, because it governs what the lane does after a delivery is approved
 rather than what it takes in. It is optional and defaults to `false`.
