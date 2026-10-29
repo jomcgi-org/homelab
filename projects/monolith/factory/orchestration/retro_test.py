@@ -726,7 +726,11 @@ def test_learning_pending_blocks_new_fingerprint(learning_db):
     db = learning_db
     _learn(db, _finding())
     output = _finding()
-    output["findings"][0]["code_sha"] = "b" * 40
+    db.execute(
+        text(
+            "UPDATE agent_turns SET result_text='new original evidence' WHERE session_id=2"
+        )
+    )
     _learn(db, output)
     assert len(_learning_jobs(db)) == 1
     parent = json.loads(
@@ -799,3 +803,56 @@ def test_learning_retains_evaluation_lineage_without_authorizing_links(learning_
     assert payload["learning_evaluation"]["session_id"] == 3
     assert payload["learning_evaluation"]["links_verified_by_server"] is False
     assert len(_learning_jobs(db)) == 1
+
+
+def test_learning_rewording_is_not_new_evidence(learning_db):
+    db = learning_db
+    _learn(db, _finding())
+    job = _learning_jobs(db)[0]
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET next_run_at=NULL,last_status='ok' WHERE name=:name"
+        ),
+        {"name": job.name},
+    )
+    output = _finding()
+    output["findings"][0]["code_sha"] = "b" * 40
+    output["findings"][0]["signature"] = "different wording"
+    _learn(db, output)
+    assert len(_learning_jobs(db)) == 1
+
+
+def test_learning_unknown_evaluation_holds_new_evidence(learning_db):
+    db = learning_db
+    _learn(db, _finding())
+    job = _learning_jobs(db)[0]
+    payload = json.loads(job.payload)
+    payload["learning_evaluation"] = {"verdict": "unknown"}
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET next_run_at=NULL,last_status='ok',payload=:payload WHERE name=:name"
+        ),
+        {"name": job.name, "payload": json.dumps(payload)},
+    )
+    db.execute(
+        text(
+            "UPDATE agent_turns SET result_text='new original evidence' WHERE session_id=2"
+        )
+    )
+    _learn(db, _finding())
+    assert len(_learning_jobs(db)) == 1
+
+
+def test_learning_prompt_contains_bounded_original_evidence(learning_db):
+    db = learning_db
+    db.execute(
+        text("UPDATE agent_turns SET result_text=:result WHERE session_id=2"),
+        {"result": "original failure " + "x" * 3000},
+    )
+    _learn(db, _finding())
+    payload = json.loads(_learning_jobs(db)[0].payload)
+    source = payload["learning_evidence"]["sources"][0]
+    assert source["truncated"] is True
+    assert len(source["excerpt"]) == 2000
+    assert "original failure" in learning.prompt(payload)
+    assert "omitted" in learning.prompt(payload)

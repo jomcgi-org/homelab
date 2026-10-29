@@ -59,8 +59,8 @@ def prompt(payload):
     if not isinstance(packet, dict):
         raise ValueError("Missing pinned learning evidence")
     return common + (
-        "Corroborate the candidate against current source, its cited original turns and "
-        "existing issues, PRs and active ownership. Reject stale or unsupported claims. "
+        "Corroborate the candidate against current source, its server-supplied original turn excerpts and "
+        "existing issues, PRs and active ownership. Reject stale or unsupported claims. Truncated excerpts cannot establish omitted facts; return unknown when needed evidence is omitted. "
         "A cited SHA is a claim to verify, not proof. Deduplicate against existing work. "
         'Return only JSON {"verdict":"corroborated|duplicate|rejected|unknown",'
         '"issue_number":6781,"pr_number":null,"rationale":"evidence and next bounded action"}. '
@@ -225,16 +225,13 @@ def complete(db, name, holder):
                         **ref,
                         "result_sha256": _sha(source["result_text"]),
                         "observed_at": observed.isoformat(),
+                        "excerpt": (source["result_text"] or "")[:2000],
+                        "truncated": len(source["result_text"] or "") > 2000,
                     }
                 )
             evidence = sorted(evidence, key=lambda r: (r["session_id"], r["turn_seq"]))
-            fingerprint = _sha(
-                {
-                    "signature": finding["signature"].strip().lower(),
-                    "code_sha": finding["code_sha"],
-                    "sources": evidence,
-                }
-            )
+            # Model wording and claimed code revisions are not new evidence.
+            fingerprint = _sha({"sources": evidence})
             target = PREFIX + fingerprint
             packet = {
                 "finding": finding,
@@ -247,9 +244,14 @@ def complete(db, name, holder):
             existing = _rows(
                 db, f"SELECT name FROM {jobs} WHERE name=:name", {"name": target}
             )
+            verdict = (
+                "json_extract(payload, '$.learning_evaluation.verdict')"
+                if db.get_bind().dialect.name == "sqlite"
+                else "payload->'learning_evaluation'->>'verdict'"
+            )
             pending = _rows(
                 db,
-                f"SELECT name FROM {jobs} WHERE name LIKE :prefix AND (next_run_at IS NOT NULL OR locked_by IS NOT NULL OR last_status='invocation_outcome_unknown') LIMIT 1",
+                f"SELECT name FROM {jobs} WHERE name LIKE :prefix AND (next_run_at IS NOT NULL OR locked_by IS NOT NULL OR COALESCE(last_status,'pending') != 'ok' OR {verdict}='unknown') LIMIT 1",
                 {"prefix": PREFIX + "%"},
             )
             disposition = (
