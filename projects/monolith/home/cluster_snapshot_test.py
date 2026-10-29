@@ -6,11 +6,12 @@ dashboard health collector.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from home import cluster_snapshot, dashboard
 
@@ -46,12 +47,38 @@ def test_read_returns_none_when_row_absent():
     assert cluster_snapshot.read_cluster_snapshot(session) is None
 
 
+def test_read_does_not_hide_schema_errors():
+    session = MagicMock()
+    error = ProgrammingError("SELECT health", {}, Exception("column health missing"))
+    session.execute.side_effect = error
+    with pytest.raises(ProgrammingError):
+        cluster_snapshot.read_cluster_snapshot(session)
+    session.rollback.assert_called_once()
+
+
+def test_read_does_not_hide_connection_errors():
+    session = MagicMock()
+    session.execute.side_effect = OperationalError(
+        "SELECT health", {}, Exception("connection lost")
+    )
+    with pytest.raises(OperationalError):
+        cluster_snapshot.read_cluster_snapshot(session)
+    session.rollback.assert_called_once()
+
+
+def test_read_assumes_utc_for_naive_timestamp():
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    session = _fake_session_returning(({"healthy": True}, now))
+    snap = cluster_snapshot.read_cluster_snapshot(session)
+    assert snap["snapshot_at"].endswith("+00:00")
+    assert snap["age_secs"] < 5
+
+
 def test_read_returns_parsed_snapshot_when_fresh():
     now = datetime.now(timezone.utc)
     session = _fake_session_returning(
         (
             {"healthy": True, "scanned": 235, "unhealthy": {}},
-            {},
             now,
         )
     )
@@ -59,7 +86,7 @@ def test_read_returns_parsed_snapshot_when_fresh():
     snap = cluster_snapshot.read_cluster_snapshot(session)
     assert snap is not None
     assert snap["health"]["scanned"] == 235
-    assert snap["alerts"] == {}
+    assert set(snap) == {"health", "snapshot_at", "age_secs"}
     assert snap["age_secs"] < 5
 
 
@@ -69,7 +96,6 @@ def test_read_parses_string_columns_from_sqlite_style_row():
     session = _fake_session_returning(
         (
             json.dumps({"healthy": False, "unhealthy": {"pods": [{"name": "x"}]}}),
-            json.dumps({}),
             now.isoformat(),
         )
     )
@@ -77,14 +103,14 @@ def test_read_parses_string_columns_from_sqlite_style_row():
     snap = cluster_snapshot.read_cluster_snapshot(session)
     assert snap is not None
     assert snap["health"]["healthy"] is False
-    assert snap["alerts"] == {}
+    assert "alerts" not in snap
 
 
 def test_read_returns_none_when_stale():
     old = datetime.now(timezone.utc) - timedelta(
         seconds=cluster_snapshot._STALE_FALLBACK_SECS + 60
     )
-    session = _fake_session_returning(({"healthy": True}, {}, old))
+    session = _fake_session_returning(({"healthy": True}, old))
 
     # A wedged refresher must not leave the dashboard showing stale "healthy".
     assert cluster_snapshot.read_cluster_snapshot(session) is None
@@ -96,7 +122,7 @@ def test_read_returns_none_when_stale():
 
 
 @pytest.mark.asyncio
-async def test_refresh_persists_health_and_empty_alerts_on_success():
+async def test_refresh_persists_health_on_success():
     write = MagicMock()
     agent_write = MagicMock()
     resources = _empty_resources()
@@ -112,11 +138,32 @@ async def test_refresh_persists_health_and_empty_alerts_on_success():
     ):
         await cluster_snapshot.refresh_cluster_snapshot()
 
-    health, alerts = write.call_args.args
+    (health,) = write.call_args.args
     assert health["scanned"] == 10
-    assert alerts == {}
     assert agent_write.call_args.args[0]["complete"] is True
     assert agent_write.call_args.args[0]["scanned"]["pods"] == 10
+
+
+@pytest.mark.asyncio
+async def test_refresh_keeps_both_writers_off_event_loop():
+    event_thread = threading.get_ident()
+    writer_threads = []
+
+    def write(payload):
+        writer_threads.append(threading.get_ident())
+
+    with (
+        patch.object(
+            cluster_snapshot,
+            "scan_cluster_resources_live",
+            AsyncMock(return_value=(_empty_resources(), {})),
+        ),
+        patch.object(cluster_snapshot, "_write_cluster_snapshot", write),
+        patch.object(cluster_snapshot, "_write_agent_cluster_snapshot", write),
+    ):
+        await cluster_snapshot.refresh_cluster_snapshot()
+    assert len(writer_threads) == 2
+    assert all(thread != event_thread for thread in writer_threads)
 
 
 @pytest.mark.asyncio
@@ -134,9 +181,8 @@ async def test_refresh_stores_error_marker_for_failing_health():
     ):
         await cluster_snapshot.refresh_cluster_snapshot()
 
-    health, alerts = write.call_args.args
+    (health,) = write.call_args.args
     assert health == {"error": "k8s down"}
-    assert alerts == {}
     assert agent_write.call_args.args[0] == {
         "schema_version": 1,
         "complete": False,
@@ -365,7 +411,6 @@ async def test_refresh_excludes_failed_kind_from_agent_summary_only():
 async def test_collect_health_uses_snapshot_and_adds_freshness():
     snap = {
         "health": {"healthy": True, "scanned": 42, "unhealthy": {}},
-        "alerts": {},
         "snapshot_at": "2026-07-12T20:00:00+00:00",
         "age_secs": 3.0,
     }

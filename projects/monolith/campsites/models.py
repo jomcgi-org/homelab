@@ -1,6 +1,12 @@
 """SQLModel tables for BC Parks campsite availability x clear-sky weather (schema 'campsites').
 
 Mirrors chart/migrations/20260630150000_campsites_schema.sql.
+
+The conservative retention option in #7030 preserves stored fields currently
+omitted by the API: Campground.park_map_id/description, Availability.loops_open
+and Weather.precip_prob/wind_max. Their ingestion and storage behavior is
+unchanged. This records retained-only semantics, without a new serving feature
+or a separate human decision to remove campsite data.
 """
 
 from __future__ import annotations

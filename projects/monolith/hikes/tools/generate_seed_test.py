@@ -10,8 +10,21 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from generate_seed import BATCH_SIZE, COLUMNS, generate, main, sql_literal
 
-from generate_seed import BATCH_SIZE, COLUMNS, generate, sql_literal
+
+def test_cli_explicit_db_is_deterministic(tmp_path, monkeypatch, capsys):
+    db = _make_db([_row(uuid="b"), _row(uuid="a", summary=None)])
+    output = tmp_path / "seed.sql"
+    monkeypatch.setattr(
+        "sys.argv", ["generate_seed.py", "--db", str(db), "--out", str(output)]
+    )
+    assert main() == 0
+    first = output.read_bytes()
+    assert main() == 0
+    assert output.read_bytes() == first
+    assert first.index(b"'a'") < first.index(b"'b'")
+    assert "emitted 2 rows, skipped 0" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
