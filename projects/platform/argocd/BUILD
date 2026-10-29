@@ -62,7 +62,10 @@ py_test(
         "values.yaml",
         "values-gke.yaml",
         "@multitool//tools/helm",
-    ] + glob(["templates/**/*", "charts/**/*"]),
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+    ]),
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
     deps = ["@pip//pyyaml"],
 )
