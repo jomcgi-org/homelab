@@ -58,9 +58,8 @@ helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml
   (`projects/monolith/hikes/seed/`).
 - **Grep the tests before changing a number.** TTLs, timeouts, `max_tokens`
   and retry counts are asserted; update the assertions in the same change.
-- **Images are apko plus `rules_apko`, never Dockerfiles**, amd64 only (every
-  caller but `projects/embervm/noded/image` passes `arm64 = False`; the macro
-  default is `True`, and noded still ships an amd64 plus arm64 index),
+- **Images are apko plus `rules_apko`, never Dockerfiles**, amd64 only (all
+  callers pass `arm64 = False`; the macro default is `True`),
   non-root uid 65532 with `runAsNonRoot: true`. Re-adding arm64 needs
   `arm64 = True` and per-arch `tars`: `arm64 = False` with `multiarch_tars`
   fails only at push.

@@ -114,11 +114,12 @@ The binary runs as uid `65532` (distroless nonroot convention).
 ## `apko_image`
 
 Builds an image from an apko config and lock file, optionally layering in
-additional tars. The macro defaults `arm64 = True`; 24 of its 25 callers pass
-`arm64 = False` and get a single amd64 image, and `projects/embervm/noded/image`
-keeps an amd64 plus arm64 index. Every apko config lists both `x86_64` and
-`aarch64` in `archs`: the lock checksums the config, and apko ignores a
-declared arch nobody builds, so `arm64 = False` needs no `archs` edit.
+additional tars. The macro defaults `arm64 = True`; callers pass
+`arm64 = False` and get a single amd64 image. Most apko configs, including
+noded's, declare only `x86_64` in `archs`. Building arm64 also requires
+declaring `aarch64` and regenerating the lock.
+apko ignores a declared arch nobody builds. Changing `archs` requires
+regenerating the lock, which checksums the entire config.
 
 ```python
 # projects/monolith/obsidian-image/BUILD
@@ -248,8 +249,8 @@ the deploy-time `values.yaml` never needs manual image entries.
 ## Conventions
 
 - Linux CI builds `go_image` and `py3_image` as single-platform amd64 images.
-  `apko_image` retains its separate `arm64` knob: callers pass `False` except
-  noded, which builds an amd64 plus arm64 index with `multiarch_tars`.
+  `apko_image` retains its separate `arm64` knob: callers pass `False` and use
+  concrete per-architecture `tars` for architecture-specific layers.
 - All containers run as uid `65532` (nonroot). The distroless base enforces
   this; apko images should declare a non-root user in their config.
 - The `{name}.push` target is visible to `//bazel/images:__pkg__` by default,
