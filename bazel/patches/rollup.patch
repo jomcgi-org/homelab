@@ -1,28 +1,20 @@
 diff --git a/dist/native.js b/dist/native.js
-index 962a10163ad9a8289ef4661070b526f886293dff..64cb68462f24e7dc81e52aaa4a69a3681df0a2b1 100644
 --- a/dist/native.js
 +++ b/dist/native.js
-@@ -121,9 +121,20 @@ const requireWithFriendlyError = id => {
- 	}
- };
- 
--const { parse, parseAsync, xxhashBase64Url, xxhashBase36, xxhashBase16 } = requireWithFriendlyError(
--	existsSync(path.join(__dirname, localName)) ? localName : `@rollup/rollup-${packageBase}`
--);
-+const { parse, parseAsync, xxhashBase64Url, xxhashBase36, xxhashBase16 } = (() => {
-+	const localPath = path.join(__dirname, localName);
-+	if (existsSync(localPath)) return require(localPath);
-+	try {
-+		return requireWithFriendlyError(`@rollup/rollup-${packageBase}`);
-+	} catch {
-+		// Fallback for sandboxed build environments (e.g. Bazel) where the
-+		// platform-specific native module is linked in the workspace node_modules
-+		// rather than in rollup's own virtual store node_modules.
-+		return require(require.resolve(`@rollup/rollup-${packageBase}`, {
-+			paths: [path.join(process.cwd(), 'node_modules')]
-+		}));
-+	}
-+})();
- 
- function getPackageBase() {
- 	const imported = bindingsByPlatformAndArch[platform]?.[arch];
+@@ -108,6 +108,15 @@ const localName = `./rollup.${packageBase}.node`;
+ const requireWithFriendlyError = id => {
+ 	try {
+-		return require(id);
++		try {
++			return require(id);
++		} catch (error) {
++			if (!id.startsWith('@rollup/rollup-')) throw error;
++			// Bazel links native modules in the workspace node_modules rather
++			// than Rollup's own virtual store node_modules.
++			return require(require.resolve(id, {
++				paths: [path.join(process.cwd(), 'node_modules')]
++			}));
++		}
+ 	} catch (error) {
+ 		if (
+ 			platform === 'win32' &&

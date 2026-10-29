@@ -31,7 +31,7 @@ patchedDependencies:
     hash: f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4
     path: bazel/patches/@sveltejs__kit.patch
   rollup:
-    hash: f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248
+    hash: 1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067
     path: bazel/patches/rollup.patch
 
 importers:
@@ -2066,9 +2066,9 @@ snapshots:
 
   '@polka/url@1.0.0-next.29': {}
 
-  '@rollup/plugin-commonjs@29.0.2(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))':
+  '@rollup/plugin-commonjs@29.0.2(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))':
     dependencies:
-      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
+      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))
       commondir: 1.0.1
       estree-walker: 2.0.2
       fdir: 6.5.0(picomatch@4.0.7)
@@ -2076,38 +2076,38 @@ snapshots:
       magic-string: 0.30.21
       picomatch: 4.0.7
     optionalDependencies:
-      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
+      rollup: 4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067)
 
-  '@rollup/plugin-json@6.1.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))':
+  '@rollup/plugin-json@6.1.0(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))':
     dependencies:
-      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
+      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))
     optionalDependencies:
-      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
+      rollup: 4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067)
 
-  '@rollup/plugin-node-resolve@16.0.3(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))':
+  '@rollup/plugin-node-resolve@16.0.3(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))':
     dependencies:
-      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
+      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))
       '@types/resolve': 1.20.2
       deepmerge: 4.3.1
       is-module: 1.0.0
       resolve: 1.22.11
     optionalDependencies:
-      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
+      rollup: 4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067)
 
-  '@rollup/plugin-replace@6.0.3(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))':
+  '@rollup/plugin-replace@6.0.3(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))':
     dependencies:
-      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
+      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))
       magic-string: 0.30.21
     optionalDependencies:
-      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
+      rollup: 4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067)
 
-  '@rollup/pluginutils@5.3.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))':
+  '@rollup/pluginutils@5.3.0(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))':
     dependencies:
       '@types/estree': 1.0.9
       estree-walker: 2.0.2
       picomatch: 4.0.7
     optionalDependencies:
-      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
+      rollup: 4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067)
 
   '@rollup/rollup-android-arm-eabi@4.59.0':
     optional: true
@@ -2266,12 +2266,12 @@ snapshots:
 
   '@sveltejs/adapter-node@5.5.7(@sveltejs/kit@2.70.3(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.9(@typescript-eslint/types@8.53.1))(vite@6.4.4(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.9(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.4(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))':
     dependencies:
-      '@rollup/plugin-commonjs': 29.0.2(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
-      '@rollup/plugin-json': 6.1.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
-      '@rollup/plugin-node-resolve': 16.0.3(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
-      '@rollup/plugin-replace': 6.0.3(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
+      '@rollup/plugin-commonjs': 29.0.2(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))
+      '@rollup/plugin-json': 6.1.0(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))
+      '@rollup/plugin-node-resolve': 16.0.3(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))
+      '@rollup/plugin-replace': 6.0.3(rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067))
       '@sveltejs/kit': 2.70.3(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.9(@typescript-eslint/types@8.53.1))(vite@6.4.4(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.9(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.4(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
-      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
+      rollup: 4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067)
 
   '@sveltejs/kit@2.70.3(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.9(@typescript-eslint/types@8.53.1))(vite@6.4.4(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.9(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.4(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))':
     dependencies:
@@ -3080,7 +3080,7 @@ snapshots:
 
   robust-predicates@3.0.3: {}
 
-  rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248):
+  rollup@4.59.0(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067):
     dependencies:
       '@types/estree': 1.0.8
     optionalDependencies:
@@ -3111,7 +3111,7 @@ snapshots:
       '@rollup/rollup-win32-x64-msvc': 4.59.0
       fsevents: 2.3.3
 
-  rollup@4.64.12(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248):
+  rollup@4.64.12(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067):
     dependencies:
       '@types/estree': 1.0.9
     optionalDependencies:
@@ -3235,7 +3235,7 @@ snapshots:
       fdir: 6.5.0(picomatch@4.0.7)
       picomatch: 4.0.7
       postcss: 8.5.31
-      rollup: 4.64.12(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
+      rollup: 4.64.12(patch_hash=1f27f5805861dc0cf208a3cfa71749bea1029718139fe75e0019602468b41067)
       tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 22.19.7
