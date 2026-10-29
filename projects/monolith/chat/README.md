@@ -4,13 +4,12 @@ AI-powered Discord bot with embeddings, vision, web search, and channel summaris
 
 ## Overview
 
-Responds to messages using on-cluster LLM inference, with context from the knowledge graph. Supports history backfill, channel summarisation, multimodal inputs (images via vision), and owner-gated artifact generation via the `/artifact <prompt>` command (goose-backed sessions).
+Responds to messages using on-cluster LLM inference, with context from the knowledge graph. Supports channel summarisation, multimodal inputs (images via vision), and owner-gated artifact generation via the `/artifact <prompt>` command (goose-backed sessions).
 
 | Module           | Description                                                                      |
 | ---------------- | -------------------------------------------------------------------------------- |
 | **bot**          | Core Discord bot with message handling and response generation                   |
 | **agent**        | LLM agent with tool execution (web search, knowledge graph, vision)              |
-| **backfill**     | Historical message import and re-processing                                      |
 | **summarizer**   | Channel summarisation with scheduled digests                                     |
 | **explorer**     | Conversation exploration and search                                              |
 | **vision**       | Image analysis via multimodal LLM                                                |

@@ -64,7 +64,6 @@ FORBIDDEN_MODULES = [
     "chat.attention",
     "chat.attention_log",
     "chat.autopilot_job",
-    "chat.backfill",
     "chat.bot",
     "chat.changelog",
     "chat.cluster_agent",

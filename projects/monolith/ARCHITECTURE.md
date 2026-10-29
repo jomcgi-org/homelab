@@ -2624,7 +2624,7 @@ mismatch without silently rewriting the decision record.
 
 | ADR | Title | Status | Disposition |
 | --- | --- | --- | --- |
-| `services/001` | Discord History Backfill | Accepted, shipped (see: /projects/monolith/chat/backfill.py) | deleted |
+| `services/001` | Discord History Backfill | Accepted, shipped; obsolete history import removed in #7048 | deleted |
 | `services/002` | Discord Chat Automation & Reactivity | Draft, superseded in practice: reminders, ambient engagement, thread sessions and changelog posts shipped through chat/001, agents/035 and agents/043; #3901 to #3904 hold the remainder | deleted |
 | `services/003` | Knowledge Search Overlay | Deprecated | deleted |
 | `services/004` | D&D Sourcebook Knowledge Graph Integration | Deprecated | deleted |
