@@ -1,7 +1,7 @@
 const API_BASE = process.env.API_BASE;
 const TIMEOUT_MS = 15000;
 
-export async function GET({ params }) {
+export async function GET({ params, request }) {
   const itemId = parseInt(params.id, 10);
   if (isNaN(itemId)) {
     return new Response(JSON.stringify({ error: "invalid item id" }), {
@@ -14,6 +14,7 @@ export async function GET({ params }) {
     const response = await fetch(
       `${API_BASE}/api/agents/factory/work-items/${itemId}`,
       {
+        headers: { "X-Auth-Email": request?.headers.get("x-auth-email") ?? "" },
         signal: AbortSignal.timeout(TIMEOUT_MS),
       },
     );

@@ -943,6 +943,12 @@ def _settle_superseded(
 
 
 def _settle(task: dict, run: dict, policy: dict) -> None:
+    from factory.orchestration.factory_controls import _receipt, receipt_is_executable
+
+    with _read_session() as db:
+        row = _receipt(db, task["id"])
+        if row is not None and not receipt_is_executable(db, row):
+            return
     recorded = _recorded_mismatch(task["id"])
     if recorded is not None:
         # The verdict is already established. Retry only the settlement, so a
@@ -1160,6 +1166,12 @@ def reconcile(
     task_class: str = TASK_CLASS,
 ) -> None:
     from factory.orchestration import factory_conductor
+    from factory.orchestration.factory_controls import _receipt, receipt_is_executable
+
+    with _read_session() as db:
+        row = _receipt(db, task["id"])
+        if row is not None and not receipt_is_executable(db, row):
+            return
 
     if task_class != TASK_CLASS:
         # Phase 3 fills this hook. Pausing is deliberate so an unreachable

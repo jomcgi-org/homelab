@@ -134,6 +134,7 @@ def sync_pointers(*, actor: str, limit: int = 20) -> dict:
             .where(
                 WorkItem.source_kind == "github",
                 WorkItem.github_issue_number.is_not(None),
+                WorkItem.execution_mode == "factory",
                 WorkItem.state != "closed",
                 WorkItem.pointer_synced_version < func.coalesce(advancing_version, 0),
                 (

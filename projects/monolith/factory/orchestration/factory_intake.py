@@ -221,6 +221,10 @@ def receive_issue(
         ):
             raise ValueError("invalid delivery target")
     with _locked_session(session) as (db, _control):
+        if work_item_id is not None:
+            linked = db.get(WorkItem, work_item_id)
+            if linked is None or linked.execution_mode != "factory":
+                raise ValueError("work_item_not_executable")
         existing = db.exec(
             select(FactoryReceipt).where(
                 FactoryReceipt.repo == repo,
@@ -682,6 +686,10 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # only a tier with room in `available` admits anything.
         row = None
         for candidate in candidates:
+            from factory.orchestration.factory_controls import receipt_is_executable
+
+            if not receipt_is_executable(db, candidate):
+                continue
             if candidate.actor in (
                 INTAKE_ACTOR,
                 "factory:reconciler",

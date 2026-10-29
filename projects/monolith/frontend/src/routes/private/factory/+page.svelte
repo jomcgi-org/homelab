@@ -3,6 +3,7 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import FactorySheet from "./FactorySheet.svelte";
+  import TrackingItem from "./TrackingItem.svelte";
   import { relativeTime } from "./execution/run-history.js";
   import {
     NODE_STATE_WORD,
@@ -162,6 +163,19 @@
       </p>
       <a href="/factory/escalations">Review decisions</a>
     </div>
+  </section>
+
+  <section aria-label="Manual and external work">
+    <h2>Manual and external work</h2>
+    {#each board?.tracking_items ?? [] as item (item.id)}
+      <TrackingItem {item} />
+    {:else}
+      <p>
+        {unavailable
+          ? "Tracking records unavailable."
+          : "No tracking records in this read."}
+      </p>
+    {/each}
   </section>
 
   <details class="diagnostics">

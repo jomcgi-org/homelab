@@ -879,11 +879,16 @@ Delivery candidates rank before every refine candidate. Within either group,
 candidate carrying `critical` never outranks a delivery candidate without a
 rank label.
 
-Local-authority work items are a second intake source alongside GitHub. State
+Local-authority work items with `execution_mode=factory` are a second intake
+source alongside GitHub. State
 `ready` makes a local item a delivery candidate, while state `open` makes it a
 refine candidate when `refine_enabled` is true. The same label, receipt,
 cooldown, blocker, lane, and one-per-lane exclusions apply to both sources.
 Local and GitHub candidates rank together by priority and age.
+
+Manual/external `tracking_only` records are excluded regardless of state or
+local authority. Their `ready` and `active` states describe the named owner's
+work, not factory admission. See [the private tracking contract](../TRACKING.md).
 
 The `not_open`, `assigned`, `linked_pr`, and `pull_request` exclusions do not
 apply to local items. The item is ours, and intake does not read back a human
@@ -2709,12 +2714,18 @@ back.
 The sync runs at most 20 items per tick. A failed GitHub write triggers
 exponential backoff: wait 2^n minutes (capped at 1440 minutes / 24 hours) after
 the nth failure, then retry. A successful write clears the backoff counter. The
-sync excludes closed work items and skips work items lacking a GitHub issue
-number.
+sync excludes closed and `tracking_only` work items and skips work items lacking
+a GitHub issue number. A tracking source URL is only a reference, including
+when it points to a GitHub issue.
 
 The `/factory/work-items/{id}` page ships work item details, edges, and recent
 events. All edges show their source (manual, github_body, or decision) for
 transparency about how each relationship was created.
+The board and work-item browser reads require exactly one nonempty verified
+Access email. The `FACTORY_OPERATOR_EMAILS` allowlist narrows controls only;
+readers Access admits retain board, escalation and work-item visibility (#6002).
+Tracking detail shows source, owner, recorded status and event history without
+factory receipts, relationship forms or execution controls.
 
 ### Autonomous correction continuation
 

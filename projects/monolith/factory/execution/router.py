@@ -57,7 +57,7 @@ from factory.execution.transport import EmberInterruptFailure
 from goosecracker.api import REPO_CATALOG
 from knowledge.api import attach_recall
 from factory.execution.rationale import parse_rationale
-from factory.access import factory_decider
+from factory.access import factory_decider, factory_viewer
 
 from auth.api import Principal, current_principal, get_principal
 from core.jsonio import loads_or
@@ -346,15 +346,22 @@ def list_sessions(
 
 
 @router.get("/factory")
-def factory_board(task: str | None = None) -> dict:
-    """Read-only board for the private agents page: control state, policy,
-    in-flight tasks with their plan and sessions, the queue, and recent
-    outcomes. Sits beside /sessions rather than under the operator-gated
-    /api/swarm/factory routes because the browser on the private tier carries
-    no bearer, and this is a view, not a control."""
+def factory_board(
+    task: str | None = None, viewer: str = Depends(factory_viewer)
+) -> dict:
+    """Private board, gated by the server-verified Access email.
+
+    Includes execution state and separately labelled tracking-only records.
+    The browser carries no bearer and this route exposes no controls.
+    """
+    from core.db import get_engine
+
+    from factory.orchestration.tracking import listing
     from factory.private_view import build_factory_view
 
-    return build_factory_view(task)
+    board = build_factory_view(task)
+    board["tracking_items"] = listing(get_engine(), limit=100)["items"]
+    return board
 
 
 @router.get("/factory/work-items")
@@ -363,6 +370,7 @@ def factory_work_items(
     authority: str | None = None,
     limit: int = 50,
     session: Session = Depends(get_session),
+    viewer: str = Depends(factory_viewer),
 ) -> dict:
     """Read durable work items for the private agents page."""
     from factory.orchestration.work_items import list_work_items
@@ -375,7 +383,11 @@ def factory_work_items(
 
 
 @router.get("/factory/work-items/{item_id}")
-def factory_work_item(item_id: int, session: Session = Depends(get_session)) -> dict:
+def factory_work_item(
+    item_id: int,
+    session: Session = Depends(get_session),
+    viewer: str = Depends(factory_viewer),
+) -> dict:
     """Read one durable work item with edges and recent events."""
     from factory.orchestration.work_items import work_item_document
 

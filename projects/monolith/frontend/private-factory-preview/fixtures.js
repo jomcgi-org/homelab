@@ -214,6 +214,17 @@ export function workItem(empty = false) {
 }
 export function board(empty = false) {
   return {
+    tracking_items: empty
+      ? []
+      : [
+          trackingItem(),
+          trackingItem({
+            id: 100102,
+            tracking_kind: "manual",
+            state: "done",
+            completion_evidence: "Synthetic owner supplied a completion note.",
+          }),
+        ],
     ok: true,
     state: "enabled",
     version: 44,
@@ -257,5 +268,52 @@ export function fixtureData(view, scenario = "populated") {
   if (view === "escalations")
     return { escalations: error || empty ? [] : escalations(), error };
   if (scenario === "missing") return { itemId, missing: true };
+  if (scenario === "tracking")
+    return {
+      itemId,
+      document: {
+        item: trackingItem(),
+        events: [
+          {
+            version: 1,
+            op: "tracking_create",
+            author_kind: "operator",
+            author: "synthetic-operator@example.test",
+            created_at: at,
+            change_json: JSON.stringify({
+              execution_mode: "tracking_only",
+              state: "open",
+            }),
+          },
+        ],
+        receipts: [],
+        edges_in: [],
+        edges_out: [],
+      },
+      error: false,
+    };
   return { itemId, document: error ? null : workItem(empty), error };
+}
+
+export function trackingItem(overrides = {}) {
+  return {
+    id: 100101,
+    execution_mode: "tracking_only",
+    tracking_kind: "external",
+    title: "Synthetic external task with a long source and named owner",
+    source_kind: "mcp",
+    source_ref:
+      "https://example.test/synthetic-external-owner/" +
+      "long-reference-".repeat(15),
+    owner: "Synthetic human and external coordination owner ".repeat(5),
+    state: "active",
+    blocker: "Waiting for the external owner to confirm their next step.",
+    next_action: "Record the owner's evidence when it arrives.",
+    tracking_version: 1,
+    created_at: at,
+    updated_at: at,
+    completed_at: null,
+    completion_evidence: null,
+    ...overrides,
+  };
 }
