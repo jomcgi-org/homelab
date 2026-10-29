@@ -250,7 +250,8 @@ actions:
           commit_format_drift() {
             format_commit_subject="$1"
             shift
-            if git diff --exit-code && [ "$#" -eq 0 ]; then
+            # Include tracked lock repairs already staged before tests.
+            if git diff --exit-code HEAD && [ "$#" -eq 0 ]; then
               echo "All files formatted correctly"
             elif [ "$ON_MAIN" = true ]; then
               # Main is read-only after publish. Never send an unreviewed
@@ -323,6 +324,22 @@ actions:
           # The checker asks Bazel for the evaluated srcs graph, so macros and
           # globs count while comments, data, and unrelated deps do not.
           python3 ./bazel/tools/ci/test_source_reachability.py
+
+          # ---- 1c. repair Python locks on writable PR heads ---------------
+          # Ordinary tests include the lock drift tests, so repair must happen
+          # before stage 2. Main, queue candidates and completed format-bot
+          # heads only validate committed locks. A Go-graph-only bot commit
+          # still needs the remaining Python repair and full format stages.
+          # Stage 4 writes back tracked repairs.
+          AUTHOR="$(git log -1 --format='%an')"
+          COMMIT_SUBJECT="$(git log -1 --format=%s)"
+          if [ "$ON_MAIN" = false ] && [ "${GIT_PR_NUMBER:-0}" != "0" ] &&
+             [[ ! "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] &&
+             { [ "$AUTHOR" != "ci-format-bot" ] || [ "$COMMIT_SUBJECT" != "style: auto-format" ]; }; then
+            if ! git diff --quiet "$base_ref" -- pyproject.toml bazel/requirements; then
+              ./bazel/tools/format/update-python-requirements-if-needed.sh
+            fi
+          fi
 
           # ---- 2. tests ---------------------------------------------------
           # -future excludes future-feature BDD specs (executable specs for
@@ -423,6 +440,11 @@ actions:
                [ "$(git log -1 --format=%s)" = "style: auto-format" ]; then
               echo "HEAD is the ci-format-bot commit; formatting just ran, going straight to tests."
             else
+              # Serial outer invocation before Gazelle reads the manifest and
+              # parallel formatters touch YAML. The normal writeback below owns
+              # tracked changes and still refuses main/queue pushes.
+              ./bazel/tools/ci/python-manifest.sh update
+
               # :run_generators runs every committed doc/config generator, so
               # drift is auto-committed below rather than hard-failing. Single
               # source of truth for the list: run-generators.sh, which local
@@ -478,6 +500,10 @@ actions:
               commit_format_drift "style: auto-format"
             fi
           fi
+
+          # This isolated guard has no normal test exclusions. It also runs on
+          # bot-authored heads that skip the mutating format stage above.
+          ./bazel/tools/ci/python-manifest.sh check "$base_ref"
 
           # Read-only generated-source acceptance also runs on ci-format-bot
           # heads and chart writebacks. A drifted PR exits above after pushing;

@@ -40,6 +40,13 @@ exit 0
 EOF
 chmod +x "$ROOT/bazel/tools/ci/affected-targets.sh"
 
+cat >"$ROOT/bazel/tools/ci/python-manifest.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$MANIFEST_LOG"
+exit "${MANIFEST_STATUS:-0}"
+EOF
+chmod +x "$ROOT/bazel/tools/ci/python-manifest.sh"
+
 cat >"$STUB_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$GIT_LOG"
@@ -66,9 +73,10 @@ chmod +x "$STUB_BIN/bazel"
 run_runner() {
 	BUILD_WORKSPACE_DIRECTORY="$ROOT" CI_BASE_REF=origin/main PATH="$STUB_BIN:$PATH" \
 		AFFECTED_LOG="$TMP/affected.log" GIT_LOG="$TMP/git.log" \
+		MANIFEST_LOG="$TMP/manifest.log" MANIFEST_STATUS="${MANIFEST_STATUS:-0}" \
 		GIT_UNTRACKED_OUTPUT="${GIT_UNTRACKED_OUTPUT:-}" \
 		BAZEL_LOG="$TMP/bazel.log" TARGETS_LOG="$TMP/targets.log" \
-		"$RUNNER"
+		"$RUNNER" "$@"
 }
 
 rm -f "$TMP"/*.log
@@ -93,7 +101,8 @@ fi
 
 rm -f "$TMP"/*.log
 if AFFECTED_OUTPUT="" run_runner >"$TMP/empty.out" 2>&1 &&
-	grep -qF "no Bazel targets affected" "$TMP/empty.out" && [[ ! -e "$TMP/bazel.log" ]]; then
+	grep -qF "no Bazel targets affected" "$TMP/empty.out" && [[ ! -e "$TMP/bazel.log" ]] &&
+	grep -qx check "$TMP/manifest.log"; then
 	pass "empty_subset_skipped"
 else
 	fail "empty_subset_skipped" "$(tr '\n' ' ' <"$TMP/empty.out")"
@@ -114,6 +123,24 @@ if [[ "$status" -eq 3 ]]; then
 	pass "test_failure_propagated"
 else
 	fail "test_failure_propagated" "expected 3, got $status"
+fi
+
+rm -f "$TMP"/*.log
+if run_runner //p:explicit >"$TMP/explicit.out" 2>&1 &&
+	grep -qx check "$TMP/manifest.log" &&
+	grep -qx //p:explicit "$TMP/targets.log" && [[ ! -e "$TMP/affected.log" ]]; then
+	pass "explicit_targets_check_manifest"
+else
+	fail "explicit_targets_check_manifest" "$(tr '\n' ' ' <"$TMP/explicit.out")"
+fi
+
+rm -f "$TMP"/*.log
+status=0
+MANIFEST_STATUS=3 run_runner >"$TMP/manifest-failure.out" 2>&1 || status=$?
+if [[ "$status" -eq 3 && ! -e "$TMP/affected.log" ]]; then
+	pass "manifest_failure_blocks_empty_selection"
+else
+	fail "manifest_failure_blocks_empty_selection" "expected 3 before selection, got $status"
 fi
 
 echo "--- $PASS passed, $FAIL failed ---"

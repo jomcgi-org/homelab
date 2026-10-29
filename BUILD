@@ -116,10 +116,9 @@ exports_files(
 #
 # gazelle:python_manifest_file_name bazel/tools/python/gazelle_python.yaml
 #
-# Python gazelle configuration moved to //bazel/tools/python to avoid eager-fetching
-# all pip packages during CI analysis phase. Use:
-# - bazel run //bazel/tools/python:gazelle_python_manifest.update
-# - bazel test //bazel/tools/python:gazelle_python_manifest.test
+# Python manifest targets live in //bazel/tools/python, excluded from ordinary
+# test discovery. Outer Linux CI runs python-manifest.sh update before format
+# and check outside the format-bot guard. See bazel/ARCHITECTURE.md section 2.
 
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.

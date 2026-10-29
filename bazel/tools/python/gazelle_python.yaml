@@ -6,93 +6,51 @@
 ---
 manifest:
   modules_mapping:
-    AppKit: pyobjc_framework_Cocoa
-    Cocoa: pyobjc_framework_Cocoa
-    CoreBluetooth: pyobjc_framework_CoreBluetooth
-    CoreFoundation: pyobjc_framework_Cocoa
-    Foundation: pyobjc_framework_Cocoa
     PIL: pillow
-    PyObjCTools.AppCategories: pyobjc_framework_Cocoa
-    PyObjCTools.AppHelper: pyobjc_framework_Cocoa
-    PyObjCTools.Conversion: pyobjc_framework_Cocoa
-    PyObjCTools.FndCategories: pyobjc_framework_Cocoa
-    PyObjCTools.KeyValueCoding: pyobjc_core
-    PyObjCTools.MachSignals: pyobjc_core
-    PyObjCTools.Signals: pyobjc_core
-    PyObjCTools.TestSupport: pyobjc_core
     affine: affine
     aiofile: aiofile
     aiohappyeyeballs: aiohappyeyeballs
     aiohttp: aiohttp
     aiosignal: aiosignal
-    aiosqlite: aiosqlite
     annotated_doc: annotated_doc
     annotated_types: annotated_types
     anyio: anyio
-    apscheduler: APScheduler
     asgiref: asgiref
     astral: astral
-    asyncstdlib: asyncstdlib
     attr: attrs
     attrs: attrs
+    audioop: audioop_lts
     authlib: authlib
-    babel: babel
     beartype: beartype
-    bleak: bleak
-    bng_latlon: bng_latlon
-    boltons: boltons
     boto3: boto3
     botocore: botocore
-    bracex: bracex
-    brotli: brotli
     bs4: beautifulsoup4
     cachetools: cachetools
     caio: caio
-    cattr: cattrs
-    cattrs: cattrs
-    cdk8s: cdk8s
     certifi: certifi
     cffi: cffi
     charset_normalizer: charset_normalizer
     click: click
-    click_default_group: click_default_group
-    click_option_group: click_option_group
-    click_plugins: click_plugins
     cligj: cligj
-    colorama: colorama
-    construct: construct
-    constructs: constructs
-    copier: copier
-    courlan: courlan
     cryptography: cryptography
-    cv2: opencv_python
+    curl_cffi: curl_cffi
     cyclopts: cyclopts
-    dateparser: dateparser
-    dateparser_cli: dateparser
-    dateparser_data: dateparser
-    dateparser_scripts: dateparser
     dateutil: python_dateutil
-    dbus_fast: dbus_fast
+    dbos: dbos
     defusedxml: defusedxml
-    dispatch: pyobjc_framework_libdispatch
+    discord: discord_py
     distro: distro
     dns: dnspython
     docstring_parser: docstring_parser
     docutils: docutils
     dotenv: python_dotenv
-    dunamai: dunamai
-    edfc647aaf02b20aa651__mypyc: mypy
     email_validator: email_validator
     exceptiongroup: exceptiongroup
-    face: face
     fastapi: fastapi
-    fastembed: fastembed
     fastmcp: fastmcp
-    feedparser: feedparser
     frozenlist: frozenlist
-    funcy: funcy
+    genai_prices: genai_prices
     geopandas: geopandas
-    glom: glom
     google.api.annotations_pb2: googleapis_common_protos
     google.api.auth_pb2: googleapis_common_protos
     google.api.backend_pb2: googleapis_common_protos
@@ -126,11 +84,10 @@ manifest:
     google.api.system_parameter_pb2: googleapis_common_protos
     google.api.usage_pb2: googleapis_common_protos
     google.api.visibility_pb2: googleapis_common_protos
-    google.auth: google_auth
+    google.cloud.common_resources_pb2: googleapis_common_protos
     google.cloud.extended_operations_pb2: googleapis_common_protos
     google.cloud.location.locations_pb2: googleapis_common_protos
     google.gapic.metadata.gapic_metadata_pb2: googleapis_common_protos
-    google.genai: google_genai
     google.logging.type.http_request_pb2: googleapis_common_protos
     google.logging.type.log_severity_pb2: googleapis_common_protos
     google.longrunning.operations_grpc: googleapis_common_protos
@@ -139,7 +96,6 @@ manifest:
     google.longrunning.operations_pb2_grpc: googleapis_common_protos
     google.longrunning.operations_proto: googleapis_common_protos
     google.longrunning.operations_proto_pb2: googleapis_common_protos
-    google.oauth2: google_auth
     google.protobuf: protobuf
     google.rpc.code_pb2: googleapis_common_protos
     google.rpc.context.attribute_context_pb2: googleapis_common_protos
@@ -164,53 +120,45 @@ manifest:
     google.type.postal_address_pb2: googleapis_common_protos
     google.type.quaternion_pb2: googleapis_common_protos
     google.type.timeofday_pb2: googleapis_common_protos
+    greenlet: greenlet
+    griffe: griffelib
     grpc: grpcio
     h11: h11
-    haversine: haversine
-    htmldate: htmldate
     httpcore: httpcore
+    httpcore2: httpcore2
     httptools: httptools
     httpx: httpx
+    httpx2: httpx2
     httpx_sse: httpx_sse
+    icalendar: icalendar
     idna: idna
-    ifaddr: ifaddr
     importlib_metadata: importlib_metadata
-    importlib_resources: importlib_resources
     iniconfig: iniconfig
     jaraco.classes: jaraco.classes
     jaraco.context: jaraco_context
     jaraco.functools: jaraco_functools
-    jinja2: jinja2
-    jinja2_ansible_filters: jinja2_ansible_filters
+    jeepney: jeepney
+    jiter: jiter
     jmespath: jmespath
-    jsii: jsii
+    joserfc: joserfc
     jsonref: jsonref
     jsonschema: jsonschema
     jsonschema_path: jsonschema_path
     jsonschema_specifications: jsonschema_specifications
-    justext: justext
     jwt: pyjwt
     key_value: py_key_value_aio
     keyring: keyring
-    libdispatch: pyobjc_framework_libdispatch
-    lxml: lxml
-    lxml_html_clean: lxml_html_clean
-    mako: mako
+    kubernetes_asyncio: kubernetes_asyncio
+    logfire_api: logfire_api
     markdown_it: markdown_it_py
-    markupsafe: markupsafe
     mcp: mcp
     mdurl: mdurl
     more_itertools: more_itertools
     multidict: multidict
     multipart: python_multipart
-    mypy: mypy
-    mypy_extensions: mypy_extensions
-    mypyc: mypy
-    nats: nats_py
     networkx: networkx
     numpy: numpy
-    objc: pyobjc_core
-    open_gopro: open_gopro
+    openai: openai
     openapi_pydantic: openapi_pydantic
     opentelemetry.attributes: opentelemetry_api
     opentelemetry.baggage: opentelemetry_api
@@ -231,9 +179,7 @@ manifest:
     opentelemetry.instrumentation.httpx: opentelemetry_instrumentation_httpx
     opentelemetry.instrumentation.instrumentor: opentelemetry_instrumentation
     opentelemetry.instrumentation.propagators: opentelemetry_instrumentation
-    opentelemetry.instrumentation.requests: opentelemetry_instrumentation_requests
     opentelemetry.instrumentation.sqlcommenter_utils: opentelemetry_instrumentation
-    opentelemetry.instrumentation.threading: opentelemetry_instrumentation_threading
     opentelemetry.instrumentation.utils: opentelemetry_instrumentation
     opentelemetry.instrumentation.version: opentelemetry_instrumentation
     opentelemetry.metrics: opentelemetry_api
@@ -254,34 +200,23 @@ manifest:
     opentelemetry.util.re: opentelemetry_api
     opentelemetry.util.types: opentelemetry_api
     opentelemetry.version: opentelemetry_api
-    osmium: osmium
     packaging: packaging
     pandas: pandas
-    parse: parse
-    parse_type: parse_type
     pathable: pathable
-    pathspec: pathspec
-    peewee: peewee
-    pexpect: pexpect
+    pgvector: pgvector
     platformdirs: platformdirs
-    playhouse: peewee
     pluggy: pluggy
-    plumbum: plumbum
-    prompt_toolkit: prompt_toolkit
     propcache: propcache
     proxytypes: jsonref
-    ptyprocess: ptyprocess
-    publication: publication
-    pwiz: peewee
+    psycopg: psycopg
+    psycopg_binary: psycopg_binary
     py: pytest
-    pyasn1: pyasn1
-    pyasn1_modules: pyasn1_modules
     pycparser: pycparser
     pydantic: pydantic
+    pydantic_ai: pydantic_ai_slim
     pydantic_core: pydantic_core
-    pydantic_extra_types: pydantic_extra_types
+    pydantic_graph: pydantic_graph
     pydantic_settings: pydantic_settings
-    pydantic_sqlite: pydantic_sqlite
     pygments: pygments
     pyogrio: pyogrio
     pyparsing: pyparsing
@@ -289,62 +224,45 @@ manifest:
     pyproj: pyproj
     pytest: pytest
     pytest_asyncio: pytest_asyncio
-    pytest_bdd: pytest_bdd
     python_multipart: python_multipart
-    pytz: pytz
-    questionary: questionary
     rasterio: rasterio
     referencing: referencing
     regex: regex
     requests: requests
-    requests_cache: requests_cache
-    returns: returns
     rich: rich
     rich_rst: rich_rst
     rpds: rpds_py
-    rsa: rsa
-    ruamel.yaml: ruamel_yaml
     s3transfer: s3transfer
-    semantic_version: semantic_version
-    semdep: semgrep
-    semgrep: semgrep
-    sgmllib: sgmllib3k
+    secretstorage: secretstorage
     shapely: shapely
     shellingham: shellingham
     six: six
-    sqlmodel: sqlmodel
     sniffio: sniffio
     soupsieve: soupsieve
-    sqlite_fts4: sqlite_fts4
-    sqlite_utils: sqlite_utils
+    sqlalchemy: sqlalchemy
+    sqlmodel: sqlmodel
     sse_starlette: sse_starlette
     starlette: starlette
-    sunrisesunset: sunrisesunset
-    tabulate: tabulate
-    tenacity: tenacity
+    tiktoken: tiktoken
+    tiktoken_ext.openai_public: tiktoken
     timelength: timelength
-    tinydb: tinydb
-    tld: tld
-    tomli: tomli
-    trafilatura: trafilatura
-    typeguard: typeguard
+    tqdm: tqdm
+    truststore: truststore
     typer: typer
     typing_extensions: typing_extensions
     typing_inspection: typing_inspection
     tzdata: tzdata
-    tzlocal: tzlocal
-    url_normalize: url_normalize
+    uncalled_for: uncalled_for
     urllib3: urllib3
     uvicorn: uvicorn
     uvloop: uvloop
+    version: dbos
     watchfiles: watchfiles
-    wcmatch: wcmatch
-    wcwidth: wcwidth
     websockets: websockets
     wrapt: wrapt
     yaml: pyyaml
     yarl: yarl
-    zeroconf: zeroconf
     zipp: zipp
   pip_repository:
     name: pip
+integrity: efc0338cbf030d46eb953bb4122235e822776bbe9e5e4d01b48b06b2493fbc3f

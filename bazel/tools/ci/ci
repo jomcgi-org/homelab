@@ -219,6 +219,10 @@ cmd_regen() {
 		./bazel/tools/format/sync-helm-deps.sh
 	fi
 
+	# Bazel-backed manifest generation belongs to the outer Linux format stage.
+	if changed_files | grep -qE '^(pyproject\.toml|MODULE\.bazel(\.lock)?|bazel/requirements/|bazel/tools/python/)'; then
+		dim "regen: Python manifest inputs changed; PR Linux CI refreshes and checks the manifest"
+	fi
 	if need_generators; then
 		log "regen: running generators (inputs changed)"
 		./bazel/tools/format/run-generators.sh
@@ -292,15 +296,10 @@ cmd_test() {
 		exit 1
 	fi
 
-	local -a test_flags=(
-		--config=ci
-		--deleted_packages=bazel/tools/python
-		--test_tag_filters=-external,-future
-	)
 	local -a remote_args=()
+	local affected_script
+	affected_script="$(cat "$ROOT/bazel/tools/ci/local-affected-test.sh")"
 	if [[ ${#targets[@]} -eq 0 ]]; then
-		local affected_script
-		affected_script="$(cat "$ROOT/bazel/tools/ci/local-affected-test.sh")"
 		remote_args+=(
 			--env="CI_BASE_REF=$BASE_REF"
 			--script="$affected_script"
@@ -308,7 +307,13 @@ cmd_test() {
 		log "test: bb remote affected targets (linux/amd64)"
 		dim "  bb remote --os=linux --arch=amd64 --env=CI_BASE_REF=$BASE_REF --script=<affected-test>"
 	else
-		remote_args+=(test "${targets[@]}" "${test_flags[@]}")
+		local quoted_targets
+		printf -v quoted_targets '%q ' "${targets[@]}"
+		remote_args+=(
+			--env="CI_BASE_REF=$BASE_REF"
+			--script="set -- $quoted_targets
+$affected_script"
+		)
 		log "test: bb remote explicit targets (linux/amd64)"
 		dim "  bb remote --os=linux --arch=amd64 ${remote_args[*]}"
 	fi
