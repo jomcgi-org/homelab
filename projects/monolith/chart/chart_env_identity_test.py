@@ -31,7 +31,9 @@ CLUSTER_SCOPED = {
 
 _DOC_KIND = re.compile(r"^kind:\s*(\S+)\s*$", re.M)
 _DOC_NAME = re.compile(r"^\s{2}name:\s*(\S+)\s*$", re.M)
-_HOSTNAME = re.compile(r"^\s*-\s*[\"']?([a-z0-9.-]+\.(?:jomcgi\.dev|example\.invalid))[\"']?\s*$", re.M)
+_HOSTNAME = re.compile(
+    r"^\s*-\s*[\"']?([a-z0-9.-]+\.(?:jomcgi\.dev|example\.invalid))[\"']?\s*$", re.M
+)
 
 
 def _write_forced_jobs_image() -> Path:
@@ -255,12 +257,18 @@ def test_generic_private_oidc_uses_explicit_configuration(renders):
     assert len(policies) == 1
     spec = policies[0]["spec"]
     assert spec["targetRefs"][0]["name"] == routes[0]["metadata"]["name"]
-    assert spec["oidc"]["provider"]["issuer"] == "https://identity.example.invalid/application/o/isolation/"
+    assert (
+        spec["oidc"]["provider"]["issuer"]
+        == "https://identity.example.invalid/application/o/isolation/"
+    )
     assert spec["oidc"]["clientID"] == "isolation-test"
     assert spec["oidc"]["clientSecret"]["name"] == "isolation-oidc"
     assert spec["authorization"]["defaultAction"] == "Deny"
     assert spec["jwt"]["providers"][0]["issuer"] == spec["oidc"]["provider"]["issuer"]
-    assert spec["jwt"]["providers"][0]["remoteJWKS"]["uri"] == "https://identity.example.invalid/application/o/isolation/jwks/"
+    assert (
+        spec["jwt"]["providers"][0]["remoteJWKS"]["uri"]
+        == "https://identity.example.invalid/application/o/isolation/jwks/"
+    )
     assert spec["authorization"]["rules"][0]["principal"]["jwt"]["claims"] == [
         {"name": "groups", "valueType": "StringArray", "values": ["test-operators"]},
     ]
@@ -271,8 +279,13 @@ def test_private_oidc_defaults_have_no_retired_provider():
     private = values["cfIngress"]["private"]
     assert private["auth"] == "cloudflare"
     oidc = private["authentik"]
-    assert {key: oidc[key] for key in ("issuer", "jwksUri", "clientID", "clientSecretName")} == {
-        "issuer": "", "jwksUri": "", "clientID": "", "clientSecretName": "",
+    assert {
+        key: oidc[key] for key in ("issuer", "jwksUri", "clientID", "clientSecretName")
+    } == {
+        "issuer": "",
+        "jwksUri": "",
+        "clientID": "",
+        "clientSecretName": "",
     }
     assert oidc["onepassword"]["itemPath"] == ""
 
@@ -883,7 +896,8 @@ def test_cnpg_fresh_dev_database_and_consumers_have_isolated_references(tmp_path
     deployment = next(
         doc
         for doc in documents
-        if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "monolith-test"
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "monolith-test"
     )
     containers = {
         container["name"]: container
@@ -1887,10 +1901,6 @@ def test_fresh_database_and_local_consumers(fresh_database_render):
     migrations = [d for d in documents if d.get("kind") == "AtlasMigration"]
     assert len(migrations) == 1
     assert migrations[0]["spec"]["urlFrom"] == {"secretKeyRef": expected_ref}
-
-
-
-
 
 
 def test_clone_merge_job_is_weekly_suspended_and_receives_database(renders):

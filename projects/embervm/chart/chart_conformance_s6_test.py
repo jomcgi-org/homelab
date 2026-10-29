@@ -193,17 +193,18 @@ def test_s6_on_refuses_to_render_without_s6_resources() -> None:
     assert "conformance.s6.resources is required" in result.stderr
 
 
-
-
 @pytest.mark.parametrize("s6", ["false", "true"])
 def test_disabled_conformance_has_no_runner_even_with_s6_on(s6: str) -> None:
     rendered = _render(
-        "embervm-dev", _dev_values(),
+        "embervm-dev",
+        _dev_values(),
         ["conformance.enabled=false", f"conformance.s6.enabled={s6}"],
     )
     assert _runner_pod(rendered) is None
     assert "S6_TLC_" not in rendered
-    assert any(doc.get("kind") == "Deployment" for doc in yaml.safe_load_all(rendered) if doc)
+    assert any(
+        doc.get("kind") == "Deployment" for doc in yaml.safe_load_all(rendered) if doc
+    )
 
 
 def test_production_namespace_refuses_runner_with_s6_on() -> None:

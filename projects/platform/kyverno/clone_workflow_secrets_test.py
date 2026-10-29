@@ -25,10 +25,19 @@ EXPECTED = {
 def objects():
     chart = Path(__file__).resolve().parent
     result = subprocess.run(
-        [os.environ.get("HELM_BIN", "helm"), "template", "kyverno", str(chart),
-         "--namespace", "kyverno", "--show-only",
-         "templates/clone-monolith-pg-secret-policy.yaml"],
-        capture_output=True, text=True, check=True,
+        [
+            os.environ.get("HELM_BIN", "helm"),
+            "template",
+            "kyverno",
+            str(chart),
+            "--namespace",
+            "kyverno",
+            "--show-only",
+            "templates/clone-monolith-pg-secret-policy.yaml",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
 
@@ -42,13 +51,25 @@ def _assert_production_policy(policy):
     for rule in rules:
         secret = EXPECTED[rule["name"]]
         assert rule["skipBackgroundRequests"] is True
-        assert rule["match"] == {"any": [{"resources": {
-            "kinds": ["Secret"], "namespaces": ["monolith"], "names": [secret],
-        }}]}
+        assert rule["match"] == {
+            "any": [
+                {
+                    "resources": {
+                        "kinds": ["Secret"],
+                        "namespaces": ["monolith"],
+                        "names": [secret],
+                    }
+                }
+            ]
+        }
         assert rule["generate"] == {
-            "apiVersion": "v1", "kind": "Secret", "name": secret,
-            "namespace": "monolith-workflows", "synchronize": True,
-            "generateExisting": True, "clone": {"namespace": "monolith", "name": secret},
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "name": secret,
+            "namespace": "monolith-workflows",
+            "synchronize": True,
+            "generateExisting": True,
+            "clone": {"namespace": "monolith", "name": secret},
         }
 
 
@@ -59,7 +80,9 @@ def test_exact_production_rules_and_source_triggered_rotation(objects):
 
 
 def test_controllers_keep_their_secret_access(objects):
-    roles = {doc["metadata"]["name"]: doc for doc in objects if doc["kind"] == "ClusterRole"}
+    roles = {
+        doc["metadata"]["name"]: doc for doc in objects if doc["kind"] == "ClusterRole"
+    }
     assert set(roles) == {
         "kyverno:clone-monolith-pg-secret-background",
         "kyverno:clone-monolith-pg-secret-admission",
@@ -69,13 +92,24 @@ def test_controllers_keep_their_secret_access(objects):
         ("admission", ["get", "list", "watch"]),
     ):
         role = roles[f"kyverno:clone-monolith-pg-secret-{controller}"]
-        assert role["metadata"]["labels"][f"rbac.kyverno.io/aggregate-to-{controller}-controller"] == "true"
-        assert role["rules"] == [{"apiGroups": [""], "resources": ["secrets"], "verbs": verbs}]
+        assert (
+            role["metadata"]["labels"][
+                f"rbac.kyverno.io/aggregate-to-{controller}-controller"
+            ]
+            == "true"
+        )
+        assert role["rules"] == [
+            {"apiGroups": [""], "resources": ["secrets"], "verbs": verbs}
+        ]
 
 
-@pytest.mark.parametrize("broken", ["empty", "source", "target", "rotation", "backfill"])
+@pytest.mark.parametrize(
+    "broken", ["empty", "source", "target", "rotation", "backfill"]
+)
 def test_contract_rejects_collateral_removal_or_weakened_generation(objects, broken):
-    policy = copy.deepcopy(next(doc for doc in objects if doc["kind"] == "ClusterPolicy"))
+    policy = copy.deepcopy(
+        next(doc for doc in objects if doc["kind"] == "ClusterPolicy")
+    )
     if broken == "empty":
         policy["spec"]["rules"] = []
     else:

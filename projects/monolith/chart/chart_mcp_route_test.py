@@ -25,7 +25,8 @@ RENDER_CASES = [
     *(pytest.param((overlay,), id=overlay) for overlay in OVERLAYS),
     pytest.param(("deploy/values.yaml",), id="production-application"),
     pytest.param(
-        ("deploy/values.yaml", "chart/testdata/isolated-values.yaml"), id="isolated-chart"
+        ("deploy/values.yaml", "chart/testdata/isolated-values.yaml"),
+        id="isolated-chart",
     ),
     pytest.param(("deploy/values.yaml", "deploy/values-gke.yaml"), id="production-gke"),
 ]

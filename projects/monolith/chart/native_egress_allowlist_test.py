@@ -42,7 +42,10 @@ def _gke_values() -> Path:
 
 
 def _dev_values() -> Path:
-    return _env("DEV_VALUES", _chart_dir().parent / "chart" / "testdata" / "isolated-values.yaml")
+    return _env(
+        "DEV_VALUES",
+        _chart_dir().parent / "chart" / "testdata" / "isolated-values.yaml",
+    )
 
 
 def _fresh_database_values() -> Path:
