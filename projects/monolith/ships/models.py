@@ -11,6 +11,12 @@ from sqlmodel import Field, SQLModel
 
 
 class Vessel(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+    """Retain received IMO, call sign, dimensions and draught (#7030).
+
+    The ships API currently omits these stored AIS fields. Dropping them loses
+    existing data for no gain; ingestion and storage mappings remain intact.
+    """
+
     __tablename__ = "vessels"
     __table_args__ = {"schema": "ships", "extend_existing": True}
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One-time bootstrap of the hikes.walks corpus in production.
+# Operator-only disaster-recovery reseed of hikes.walks in production.
+# Requires separate operational authorization. See ../README.md before use.
 #
 # The WalkHighlands snapshot (1,620 walks) used to ship as an Atlas migration,
 # but at ~676 KiB it pushed the monolith-migrations ConfigMap past the 256 KiB
@@ -7,7 +8,7 @@
 # here as plain SQL and is loaded out-of-band by this script instead.
 #
 # Safe to re-run: every INSERT ends with ON CONFLICT (uuid) DO NOTHING, so a
-# second run is a no-op. Run it once after the hikes schema migration has been
+# second run preserves existing rows. Run only after the hikes schema has been
 # applied (i.e. the hikes.walks table exists); the weekly scrape job keeps the
 # corpus fresh thereafter.
 #
