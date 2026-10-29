@@ -36,7 +36,7 @@ def _client():
 
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not endpoint:
-        raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot store artifact")
+        raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot read artifact")
     # The chart supplies HTTPS for R2. HTTP prefixing is retained only for
     # scheme-less legacy/test endpoints; explicit schemes pass through.
     if not endpoint.startswith(("http://", "https://")):
