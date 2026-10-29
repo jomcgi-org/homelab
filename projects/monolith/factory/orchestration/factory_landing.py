@@ -5,6 +5,8 @@ rather than reading it. Merge mutations are behind the policy ``auto_merge``
 flag, while review check publication has its own environment gate. Both default
 off. Merge observation and rollout reconciliation still follow deliveries
 merged by another actor; observing a merge never enables arming.
+Exact-head conflicts outside the queue can enter bounded repository repair
+while merging is disabled, subject to the existing execution and hold fences.
 
 Landing is deliberately serial. This repository merges through the GitHub
 merge queue, and a queue ejection cascades across every candidate behind the
@@ -844,6 +846,47 @@ def _recover_refused(policy: dict) -> None:
             return
 
 
+def _recover_conflict_without_arming(repo: str, item: dict) -> None:
+    """Repair an observed conflict without enabling or disturbing merge entry.
+
+    A disabled merge policy still permits bounded repository repair. Only the
+    exact reviewed head, outside auto-merge and the queue, can enter the existing
+    recovery path. Other refusals and unknown GitHub evidence remain closed.
+    """
+    refusal = item.get("refusal") or {}
+    if (
+        item["merged"]
+        or item.get("dependency_review")
+        or item.get("recovery_skipped")
+        or refusal.get("reason")
+        not in (
+            None,
+            "merge_conflict",
+            "ejected_from_merge_queue",
+        )
+    ):
+        return
+    try:
+        pr = github_get(repo, f"pulls/{item['pr_number']}")
+        head = (pr.get("head") or {}).get("sha")
+        node_id = pr.get("node_id")
+        if (
+            pr.get("merged")
+            or pr.get("state") != "open"
+            or pr.get("draft")
+            or pr.get("mergeable") is not False
+            or head != item.get("approved_head_sha")
+            or not isinstance(node_id, str)
+            or not node_id
+            or pr.get("auto_merge") is not None
+            or node_id in _queued_ids([node_id])
+        ):
+            return
+        _recover_delivery(item, head, "delivered_pr")
+    except (httpx.HTTPError, ValueError) as exc:
+        _error(item["task_id"], "recover", exc)
+
+
 def _record_merged(repo: str, item: dict, pr: dict) -> bool:
     """Observation is not permission to accept a different delivery head."""
     from factory.orchestration import factory_conductor as conductor
@@ -1283,6 +1326,9 @@ def landing_tick(policy: dict) -> None:
         # A paused delivery with an observed owned merge can finish verification,
         # but can never publish a review, recover, or arm an unmerged PR.
         deliveries = [item for item in deliveries if not item.get("paused")]
+        if not merge_enabled:
+            for item in deliveries:
+                _recover_conflict_without_arming(repo, item)
         if publish_enabled:
             candidates = [
                 item
