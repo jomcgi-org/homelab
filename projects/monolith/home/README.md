@@ -6,8 +6,9 @@ health and freshness; the independent agent projection uses
 
 The original migration defines `alerts JSONB NOT NULL` without a default.
 Old code selects and inserts `alerts`; new code omits it. New writes fail on
-the original schema, and old readers and writers fail after the drop. A rolling
-mixed-version deployment is unsafe.
+the original schema. After the drop, old writers fail and old readers catch
+the missing-column error and fall back to a live scan. A rolling mixed-version
+deployment is unsafe.
 
 The `AtlasMigration` reads the migrations ConfigMap directly. The chart has no
 sync-wave or readiness barrier ordering migration, backend and jobs. Argo
