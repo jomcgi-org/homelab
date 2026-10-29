@@ -130,6 +130,8 @@ def test_gate_flips_via_its_chart_key(key: str, env_name: str) -> None:
         assert rendered[other] == "false", f"{key} must not move {other}"
 
 
-@pytest.mark.parametrize("sets", [[], ["dispatcher.placementRetry=true"], ["asyncLifecycleWrites=true"]])
+@pytest.mark.parametrize(
+    "sets", [[], ["dispatcher.placementRetry=true"], ["asyncLifecycleWrites=true"]]
+)
 def test_retired_async_env_is_absent(sets: list[str]) -> None:
     assert "EMBERVM_ASYNC_LIFECYCLE_WRITES" not in _render_env(sets)
