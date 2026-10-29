@@ -1386,7 +1386,7 @@ async def factory_control(
     budgets, receipt holds and refill/breaker history. Enabling does not grant
     landing authority: exact-head scoped authorization, independent review,
     repository policy and protected CI/queue gates remain mandatory. Disabling
-    stops new arming; it does not promise to dequeue already authorized PRs.
+    stops new arming. It does not promise to dequeue already authorized PRs.
 
     pause_admissions stops admitting new tasks. Existing tasks keep running.
     enable resumes admissions under the existing policy. pause_task fences new
