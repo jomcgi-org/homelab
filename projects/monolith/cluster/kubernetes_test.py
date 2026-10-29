@@ -1034,11 +1034,13 @@ async def test_sync_argocd_app_patches_correct_body_and_returns_dict(k8s_client)
         patch("cluster.kubernetes.ApiClient", return_value=mock_api),
         patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
     ):
-        result = await k8s_client.sync_argocd_app("my-app", prune=True, dry_run=False)
+        result = await k8s_client.sync_argocd_app(
+            "my-app", prune=True, dry_run=False, initiated_by="subject-alice"
+        )
 
     expected_body = {
         "operation": {
-            "initiatedBy": {"username": "monolith-k8s-mcp"},
+            "initiatedBy": {"username": "subject-alice"},
             "sync": {"prune": True, "dryRun": False},
         }
     }
@@ -1066,15 +1068,35 @@ async def test_sync_argocd_app_dry_run_mode(k8s_client):
         patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
     ):
         result = await k8s_client.sync_argocd_app(
-            "my-app", namespace="custom-ns", prune=False, dry_run=True
+            "my-app",
+            namespace="custom-ns",
+            prune=False,
+            dry_run=True,
+            initiated_by="subject-bob",
         )
 
     _, kwargs = mock_custom.patch_namespaced_custom_object.call_args
     assert kwargs["namespace"] == "custom-ns"
+    assert kwargs["body"]["operation"]["initiatedBy"] == {"username": "subject-bob"}
     assert kwargs["body"]["operation"]["sync"]["dryRun"] is True
     assert kwargs["body"]["operation"]["sync"]["prune"] is False
     assert result["dry_run"] is True
     assert result["prune"] is False
+
+
+@pytest.mark.asyncio
+async def test_sync_argocd_app_requires_an_explicit_initiator(k8s_client):
+    """No default identity: a caller that forgets attribution fails before I/O."""
+    mock_custom = MagicMock()
+    mock_custom.patch_namespaced_custom_object = AsyncMock(return_value={})
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=MagicMock()),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        with pytest.raises(TypeError, match="initiated_by"):
+            await k8s_client.sync_argocd_app("my-app")
+    mock_custom.patch_namespaced_custom_object.assert_not_awaited()
 
 
 def _kargo_patches(mock_custom):

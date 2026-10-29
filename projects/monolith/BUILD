@@ -657,6 +657,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_auth",
         ":pkg_core",
         ":pkg_framework",
         ":pkg_shared",
