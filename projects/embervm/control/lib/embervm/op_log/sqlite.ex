@@ -1174,9 +1174,8 @@ defmodule Embervm.OpLog.SQLite do
     # survives, and the unique index stays a pure backstop. Terminal holders
     # conflict as well (a reused key after destroy never silently mints a fresh
     # session); retention compaction freeing the row is what frees the key.
-    # A holder EQUAL to this op's own session_id is not a collision: it is the
-    # adopt-and-backfill repair racing a late-draining original append, which
-    # INSERT OR IGNORE alone used to absorb as a benign no-op.
+    # A holder equal to this op's own session_id is a repeated record for the
+    # same session. Accept it as an idempotent no-op and preserve the binding.
     idempotency_key = Map.get(payload, :idempotency_key)
 
     case existing_session_for_idempotency_key(conn, op.principal, idempotency_key) do
@@ -1192,7 +1191,7 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   defp do_insert_session_created(conn, op, payload, idempotency_key) do
-    # Repeated session_created repairs preserve the existing ownership row.
+    # Repeated session_created records preserve the existing ownership row.
     sql = """
     INSERT OR IGNORE INTO sessions
       (session_id, tenant, principal, workload, state, node_id, vm_id, volume_node_id,

@@ -2429,7 +2429,6 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Retire unarmed async lifecycle writes; preserve placement retry and its separate dev-stage work | section 5, embervm/014 decision 2 superseded | #7059 | repository removal implemented; PR left unmerged for independent review |
 | Brick scale-down couples durable archive acknowledgement with one brick per node (Joe, 2026-10-10) | section 7 | #6533 | single repository gate default-off; staged enable and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | built and staged; dev arming then production after a dev soak (#6965) |
