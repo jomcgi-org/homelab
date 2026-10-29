@@ -153,7 +153,6 @@ def apko_image(
     # than on RBE, and they own the critical path of a cold run. `manual` only
     # removes a target from wildcard EXPANSION, so the transitioned filegroup
     # still pulls it in as a dependency and :{name} is unaffected.
-    # domain_images.bzl already does this for the same reason.
     _apko_image(
         name = name + "_base_amd64",
         architecture = "x86_64",

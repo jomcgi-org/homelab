@@ -63,7 +63,6 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/oci:py3_image.bzl", "py3_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 load("//projects/monolith:bdd_test.bzl", "bdd_test")
-load("//projects/monolith:domain_images.bzl", "MONOLITH_DOMAINS", "monolith_domain_images")
 
 # Keep changed architecture documentation addressable by affected-targets.
 exports_files(["ARCHITECTURE.md"])
@@ -1863,10 +1862,9 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "campsites/gen_catalog.py",
     # Private entrypoint.
     "app/main.py",
-    # Private module registry (imports chat/agent/...) and the
-    # single-domain entrypoint: never part of the public composition.
+    # Private module registry (imports chat/agent/...): never part of the
+    # public composition.
     "app/modules_private.py",
-    "app/main_domain.py",
     # Batch-jobs entrypoint: runs as :jobs_image, never in the public binary.
     "app/jobs_main.py",
     # Visibility write path must not ship in public or agents images.
@@ -1952,7 +1950,6 @@ _AGENTS_PRUNE_EXCLUDE = [
     # explicitly as well as by the standard test patterns above.
     "app/main.py",
     "app/modules_private.py",
-    "app/main_domain.py",
     "app/jobs_main.py",
     "app/progress_main.py",
     "app/main_agents_imports_test.py",
@@ -2173,44 +2170,6 @@ py3_image(
     },
     main = "app/main_public.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-backend",
-)
-
-# ---------------------------------------------------------------------------
-# FastMonolith per-domain composition (ADR services/010): one shared binary
-# that composes a single domain selected by MONOLITH_DOMAIN, and one build-only
-# dual-arch image per domain baking that env in. All 18 images share ONE layer
-# set (each extra image costs only its config); note the layers do NOT dedupe
-# against :image in the registry, because py_image_layer embeds the binary
-# name (main vs main_domain) in every path.
-# Build one:  bazel build //projects/monolith:image_domain_hikes
-# Build all:  bazel build //projects/monolith:domain_images
-# ---------------------------------------------------------------------------
-py_venv_binary(
-    name = "main_domain",
-    srcs = _BACKEND_SRCS,  # keep
-    data = [
-        # Same runtime data files as :main (any domain may be selected at
-        # startup); only the static frontend bundle is omitted, because the
-        # domain profile never serves it (framework: static_frontend=False).
-        "campsites/catalog.json",
-        "chat/directive_seed.md",
-        "chat/orchestrator_bundle.md",
-        "worldcup/ratings/elo_2026.json",
-    ],
-    imports = ["."],  # keep
-    main = "app/main_domain.py",
-    visibility = ["//:__subpackages__"],
-    deps = [":monolith_backend"],  # keep
-)
-
-monolith_domain_images(
-    name = "domain_images",
-    binary = ":main_domain",
-    config_test_domain = "hikes",
-    domains = MONOLITH_DOMAINS,
-    extra_env = {"REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson"},
-    extra_tars = [":repo_docs_manifest_layer"],
-    main = "app/main_domain.py",
 )
 
 alias(
@@ -2846,20 +2805,6 @@ py_test(
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "main_domain_test",
-    srcs = ["app/main_domain_test.py"],
-    data = ["domain_images.bzl"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//fastapi",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
     ],
 )
 

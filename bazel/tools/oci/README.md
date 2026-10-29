@@ -175,8 +175,7 @@ Created targets:
 
 Builds one Python 3 image using `py_image_layer` from `@aspect_rules_py`.
 The platform transition selects Linux for the caller's CPU, amd64 in Linux
-CI. The default Ubuntu base supports amd64 and arm64, including the separate
-dual-arch `//projects/monolith:domain_images` targets. Handles runfiles layout,
+CI. The default Ubuntu base supports amd64 and arm64. Handles runfiles layout,
 `PYTHONPATH`, and a `/bin/bash` symlink layer automatically.
 
 ```python

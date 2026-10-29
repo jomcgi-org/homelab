@@ -93,7 +93,6 @@ FORBIDDEN_MODULES = [
     "chat.web_search",
     # Private monolith entrypoints and registries.
     "app.main",
-    "app.main_domain",
     "app.jobs_main",
     "app.mcp_app",
     "app.modules_private",
