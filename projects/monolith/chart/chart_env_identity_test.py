@@ -1,28 +1,8 @@
-"""The dev deployment must not claim any identity production owns.
+"""Chart identity and production contracts.
 
-Dev renders this SAME chart with an overlay layered on production's values, so
-everything not explicitly overridden is inherited. That is the point, and it is
-also the hazard: inheriting is safe for settings describing how a workload
-BEHAVES, and unsafe for the ones describing WHO IT CLAIMS TO BE.
-
-Two of those slipped through in one evening, both silently:
-
-  1. Dev inherited cfIngress and claimed private.jomcgi.dev and
-     ships.jomcgi.dev. Every HTTPRoute attaches to the one cloudflare-ingress
-     Gateway, and Gateway API MERGES routes attaching to the same Gateway for
-     the same hostname, so production traffic could have been served by a dev
-     build running against a copy of production's data. Nothing errors.
-
-  2. Dev ran under releaseName `monolith`, so it rendered ClusterRole/monolith,
-     which is cluster-scoped and therefore the very object production owns.
-     ArgoCD's shared-resource protection caught that one:
-
-       ClusterRole/monolith is part of applications argocd/monolith-dev
-       and monolith
-
-Neither is reachable by a normal unit test, and neither shows up as a red
-render: both charts template perfectly. Only comparing the two rendered
-outputs against each other finds them, which is what this does.
+Synthetic test-only overlays exercise a second release and a fresh database.
+They preserve chart isolation coverage after #7034 retired monolith-dev and
+the staged recovery deployment. They authorize no deployment or account.
 """
 
 from __future__ import annotations
@@ -51,7 +31,9 @@ CLUSTER_SCOPED = {
 
 _DOC_KIND = re.compile(r"^kind:\s*(\S+)\s*$", re.M)
 _DOC_NAME = re.compile(r"^\s{2}name:\s*(\S+)\s*$", re.M)
-_HOSTNAME = re.compile(r"^\s*-\s*[\"']?([a-z0-9.-]+\.jomcgi\.dev)[\"']?\s*$", re.M)
+_HOSTNAME = re.compile(
+    r"^\s*-\s*[\"']?([a-z0-9.-]+\.(?:jomcgi\.dev|example\.invalid))[\"']?\s*$", re.M
+)
 
 
 def _write_forced_jobs_image() -> Path:
@@ -166,7 +148,7 @@ _RELEASE_NAME = re.compile(r"^\s*releaseName:\s*(\S+)\s*$", re.M)
 def _release_name(application_yaml: Path) -> str:
     """Read releaseName from the Application, NOT from this test.
 
-    Load-bearing. The defect this file exists to catch lived in
+    The defect this file exists to catch lived in
     deploy/application.yaml, not in the chart: the chart renders disjoint names
     perfectly well when handed two different release names. Hardcoding them here
     would produce a test that passes while the Application says otherwise, which
@@ -184,7 +166,7 @@ def renders():
     dev_overlay = Path(os.environ["DEV_VALUES"])
     gke_overlay = Path(os.environ["GKE_VALUES"])
     prod_release = _release_name(Path(os.environ["PROD_APPLICATION"]))
-    dev_release = _release_name(Path(os.environ["DEV_APPLICATION"]))
+    dev_release = "monolith-test"
     return {
         "prod": _render(prod_release, base),
         "dev": _render(dev_release, base + [dev_overlay]),
@@ -200,7 +182,7 @@ def test_dev_claims_no_cluster_scoped_object_production_owns(renders):
     assert not shared, (
         f"dev and production both render {sorted(shared)}. These kinds have no "
         "namespace, so that is ONE object with two ArgoCD owners, both with "
-        "selfHeal. Give the dev Application a distinct releaseName."
+        "selfHeal. Use a distinct releaseName for the isolated chart render."
     )
     # Guard the guard: if production stops rendering cluster-scoped objects
     # entirely, the disjointness above passes for the wrong reason.
@@ -208,17 +190,11 @@ def test_dev_claims_no_cluster_scoped_object_production_owns(renders):
 
 
 def test_dev_claims_no_hostname_production_claims(renders):
-    """The ingress collision, generalised now that dev has a hostname.
+    """Synthetic and production routes must claim disjoint hostnames.
 
-    This began as "dev claims NO hostname", which was right while dev had none
-    of its own. Once dev.jomcgi.dev exists that phrasing would have to be
-    deleted to let dev work, and deleting it would silently remove the check
-    that caught dev claiming private.jomcgi.dev and ships.jomcgi.dev.
-
-    So it asserts the property that was always the real one: the environments
-    claim DISJOINT hostnames. Every HTTPRoute attaches to the one
-    cloudflare-ingress Gateway, and Gateway API merges routes claiming the same
-    hostname, so an overlap is production traffic reaching a dev build.
+    Historical dev once claimed private.jomcgi.dev and ships.jomcgi.dev.
+    Routes sharing a Gateway and hostname merge, so this contract compares
+    nonempty hostname sets even after retirement of that deployment.
     """
 
     def hosts(env):
@@ -270,6 +246,96 @@ def test_dev_exposes_no_unauthenticated_path(renders):
         "production stopped rendering the webhook route; this test is inert "
         "and GitHub deliveries are probably broken."
     )
+
+
+def test_generic_private_oidc_uses_explicit_configuration(renders):
+    documents = [doc for doc in yaml.safe_load_all(renders["dev"]) if doc]
+    routes = [doc for doc in documents if doc["kind"] == "HTTPRoute"]
+    assert len(routes) == 1
+    assert routes[0]["spec"]["hostnames"] == ["isolation.example.invalid"]
+    policies = [doc for doc in documents if doc["kind"] == "SecurityPolicy"]
+    assert len(policies) == 1
+    spec = policies[0]["spec"]
+    assert spec["targetRefs"][0]["name"] == routes[0]["metadata"]["name"]
+    assert (
+        spec["oidc"]["provider"]["issuer"]
+        == "https://identity.example.invalid/application/o/isolation/"
+    )
+    assert spec["oidc"]["clientID"] == "isolation-test"
+    assert spec["oidc"]["clientSecret"]["name"] == "isolation-oidc"
+    assert spec["authorization"]["defaultAction"] == "Deny"
+    assert spec["jwt"]["providers"][0]["issuer"] == spec["oidc"]["provider"]["issuer"]
+    assert (
+        spec["jwt"]["providers"][0]["remoteJWKS"]["uri"]
+        == "https://identity.example.invalid/application/o/isolation/jwks/"
+    )
+    assert spec["authorization"]["rules"][0]["principal"]["jwt"]["claims"] == [
+        {"name": "groups", "valueType": "StringArray", "values": ["test-operators"]},
+    ]
+    secret = next(
+        doc
+        for doc in documents
+        if doc["kind"] == "OnePasswordItem"
+        and doc["metadata"]["name"] == spec["oidc"]["clientSecret"]["name"]
+    )
+    assert secret["spec"]["itemPath"] == "vaults/test-only/items/isolation-oidc"
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["issuer", "jwksUri", "clientID", "clientSecretName", "onepassword.itemPath"],
+)
+@pytest.mark.parametrize("empty", ["", None])
+def test_private_oidc_rejects_missing_configuration(tmp_path, field, empty):
+    authentik = {}
+    target = authentik
+    parts = field.split(".")
+    for part in parts[:-1]:
+        target = target.setdefault(part, {})
+    target[parts[-1]] = empty
+    override = tmp_path / "missing-oidc.yaml"
+    override.write_text(
+        yaml.safe_dump({"cfIngress": {"private": {"authentik": authentik}}})
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"cfIngress\.private\.authentik\.{re.escape(field)} is required",
+    ):
+        _render("monolith-test", [Path(os.environ["DEV_VALUES"]), override])
+
+
+def test_private_oidc_requires_configuration_only_when_enabled(tmp_path):
+    override = tmp_path / "private-oidc.yaml"
+    override.write_text("cfIngress:\n  private:\n    auth: authentik\n")
+    with pytest.raises(
+        RuntimeError, match=r"cfIngress\.private\.authentik\.issuer is required"
+    ):
+        _render("monolith-test", [override])
+
+    override.write_text(
+        "cfIngress:\n  private:\n    enabled: false\n    auth: authentik\n"
+    )
+    rendered = _render("monolith-test", [override])
+    assert not any(
+        name == "monolith-test-private-authentik" for _, name, _ in _docs(rendered)
+    )
+
+
+def test_private_oidc_defaults_have_no_retired_provider():
+    values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    private = values["cfIngress"]["private"]
+    assert private["auth"] == "cloudflare"
+    oidc = private["authentik"]
+    assert {
+        key: oidc[key] for key in ("issuer", "jwksUri", "clientID", "clientSecretName")
+    } == {
+        "issuer": "",
+        "jwksUri": "",
+        "clientID": "",
+        "clientSecretName": "",
+    }
+    assert oidc["onepassword"]["itemPath"] == ""
 
 
 def test_dev_claims_no_resource_pinned_outside_its_namespace(renders):
@@ -407,7 +473,7 @@ def test_dev_takes_no_backups(renders):
     # the chart entirely would leave this test green.
     chart = _chart_dir()
     forced_dev = _render(
-        _release_name(Path(os.environ["DEV_APPLICATION"])),
+        "monolith-test",
         [
             chart / "values.yaml",
             Path(os.environ["DEPLOY_VALUES"]),
@@ -734,7 +800,7 @@ def _render_cnpg_override(tmp_path, override, *, production=False):
     base = [Path(os.environ["DEPLOY_VALUES"])] if production else []
     return [
         doc
-        for doc in yaml.safe_load_all(_render("monolith-dev", [*base, values]))
+        for doc in yaml.safe_load_all(_render("monolith-test", [*base, values]))
         if isinstance(doc, dict)
     ]
 
@@ -828,13 +894,13 @@ def test_cnpg_fresh_dev_database_and_consumers_have_isolated_references(tmp_path
                     "enabled": True,
                     "database": "embervm_oplog_recovery",
                     "role": "embervm_recovery",
-                    "passwordSecret": "monolith-dev-pg-embervm-oplog",
+                    "passwordSecret": "monolith-test-pg-embervm-oplog",
                 },
             },
         },
     )
     cluster = _cnpg_cluster(documents)
-    assert cluster["metadata"]["name"] == "monolith-dev-pg"
+    assert cluster["metadata"]["name"] == "monolith-test-pg"
     spec = cluster["spec"]
     assert spec["instances"] == 1
     assert spec["storage"] == {"size": "10Gi", "storageClass": "standard-rwo"}
@@ -857,7 +923,7 @@ def test_cnpg_fresh_dev_database_and_consumers_have_isolated_references(tmp_path
             "name": "embervm_recovery",
             "ensure": "present",
             "login": True,
-            "passwordSecret": {"name": "monolith-dev-pg-embervm-oplog"},
+            "passwordSecret": {"name": "monolith-test-pg-embervm-oplog"},
             "comment": "EmberVM op-log owner (ADR embervm/007); owns only its own database",
         },
     )
@@ -867,9 +933,9 @@ def test_cnpg_fresh_dev_database_and_consumers_have_isolated_references(tmp_path
     )
     databases = [doc for doc in documents if doc.get("kind") == "Database"]
     assert len(databases) == 1
-    assert databases[0]["metadata"]["name"] == "monolith-dev-pg-embervm-oplog"
+    assert databases[0]["metadata"]["name"] == "monolith-test-pg-embervm-oplog"
     assert databases[0]["spec"] == {
-        "cluster": {"name": "monolith-dev-pg"},
+        "cluster": {"name": "monolith-test-pg"},
         "name": "embervm_oplog_recovery",
         "owner": "embervm_recovery",
         "ensure": "present",
@@ -878,13 +944,14 @@ def test_cnpg_fresh_dev_database_and_consumers_have_isolated_references(tmp_path
     deployment = next(
         doc
         for doc in documents
-        if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "monolith-dev"
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "monolith-test"
     )
     containers = {
         container["name"]: container
         for container in deployment["spec"]["template"]["spec"]["containers"]
     }
-    expected_ref = {"name": "monolith-dev-pg-app", "key": "uri"}
+    expected_ref = {"name": "monolith-test-pg-app", "key": "uri"}
     for name in ("backend", "progress-ingest"):
         env = {entry["name"]: entry for entry in containers[name]["env"]}
         assert env["DATABASE_URL"] == {
@@ -893,7 +960,7 @@ def test_cnpg_fresh_dev_database_and_consumers_have_isolated_references(tmp_path
         }
     migrations = [doc for doc in documents if doc.get("kind") == "AtlasMigration"]
     assert len(migrations) == 1
-    assert migrations[0]["metadata"]["name"] == "monolith-dev"
+    assert migrations[0]["metadata"]["name"] == "monolith-test"
     assert migrations[0]["spec"]["urlFrom"] == {"secretKeyRef": expected_ref}
 
 
@@ -1374,15 +1441,15 @@ _NOTIFICATION_ENV = {
 
 
 @pytest.mark.parametrize(
-    "environment", ["default", "prod", "gke", "dev", "recovery-gke"]
+    "environment", ["default", "prod", "gke", "dev", "fresh-database"]
 )
 def test_retired_gateway_has_no_resources_or_credentials(
-    environment, renders, recovery_gke_render
+    environment, renders, fresh_database_render
 ):
     if environment == "default":
         rendered = _render("monolith", [])
-    elif environment == "recovery-gke":
-        rendered = recovery_gke_render
+    elif environment == "fresh-database":
+        rendered = fresh_database_render
     else:
         rendered = renders[environment]
     documents = [doc for doc in yaml.safe_load_all(rendered) if doc]
@@ -1491,7 +1558,7 @@ def test_cd_health_defaults_remain_inert():
     assert json.loads(env["CD_HEALTH_KARGO_APPS"]["value"]) == []
 
 
-def test_historical_dev_keeps_its_own_dormancy_fence(renders):
+def test_isolated_values_can_disable_replicas_autoscaling_and_jobs(renders):
     docs = [doc for doc in yaml.safe_load_all(renders["dev"]) if doc]
     backend = next(doc for doc in docs if doc["kind"] == "Deployment")
     assert backend["spec"]["replicas"] == 0
@@ -1794,16 +1861,16 @@ def test_deployed_startup_controls_remain_enabled(renders, tier):
 
 
 @pytest.fixture(scope="module")
-def recovery_gke_render():
-    # Do not inherit production's restored DB or historical dev's leader mute.
-    return _render("monolith-dev", [Path(os.environ["RECOVERY_GKE_VALUES"])])
+def fresh_database_render():
+    # Exercise fresh DB and startup gates without production values.
+    return _render("monolith-test", [Path(os.environ["FRESH_DATABASE_VALUES"])])
 
 
-@pytest.mark.parametrize("tier", ["prod", "gke", "dev", "recovery-gke"])
+@pytest.mark.parametrize("tier", ["prod", "gke", "dev", "fresh-database"])
 def test_deployment_observations_hub_only_with_a_bounded_cycle_everywhere(
-    renders, recovery_gke_render, tier
+    renders, fresh_database_render, tier
 ):
-    rendered = recovery_gke_render if tier == "recovery-gke" else renders[tier]
+    rendered = fresh_database_render if tier == "fresh-database" else renders[tier]
     env = _startup_control_env(rendered)
 
     # Only the hub (#5571, environment:homelab) writes deployment observations.
@@ -1819,7 +1886,7 @@ def test_deployment_observations_hub_only_with_a_bounded_cycle_everywhere(
     assert timeout + interval < 750
 
 
-def test_recovery_gke_has_no_shared_control_or_external_owners(recovery_gke_render):
+def test_fresh_database_has_no_shared_control_or_external_owners(fresh_database_render):
     forbidden = CLUSTER_SCOPED | {
         "Role",
         "RoleBinding",
@@ -1832,18 +1899,18 @@ def test_recovery_gke_has_no_shared_control_or_external_owners(recovery_gke_rend
         "CiliumNetworkPolicy",
         "HorizontalPodAutoscaler",
     }
-    for kind, name, document in _docs(recovery_gke_render):
+    for kind, name, document in _docs(fresh_database_render):
         assert kind not in forbidden, (kind, name)
-        assert _pinned_namespace(document) in {None, "monolith-dev"}, (kind, name)
-    assert _r2_producers(recovery_gke_render) == []
+        assert _pinned_namespace(document) in {None, "monolith-test"}, (kind, name)
+    assert _r2_producers(fresh_database_render) == []
 
 
-def test_recovery_gke_uses_fresh_database_and_local_consumers(recovery_gke_render):
+def test_fresh_database_and_local_consumers(fresh_database_render):
     documents = [
-        d for d in yaml.safe_load_all(recovery_gke_render) if isinstance(d, dict)
+        d for d in yaml.safe_load_all(fresh_database_render) if isinstance(d, dict)
     ]
     cluster = _cnpg_cluster(documents)
-    assert cluster["metadata"]["name"] == "monolith-dev-pg"
+    assert cluster["metadata"]["name"] == "monolith-test-pg"
     spec = cluster["spec"]
     assert spec["instances"] == 1
     assert spec["storage"] == {"size": "10Gi", "storageClass": "standard-rwo"}
@@ -1862,18 +1929,18 @@ def test_recovery_gke_uses_fresh_database_and_local_consumers(recovery_gke_rende
         assert roles[name]["login"] is False
         assert "passwordSecret" not in roles[name]
     assert roles["embervm"]["passwordSecret"] == {
-        "name": "monolith-dev-pg-embervm-oplog"
+        "name": "monolith-test-pg-embervm-oplog"
     }
     database = next(d for d in documents if d.get("kind") == "Database")
     assert database["spec"] == {
-        "cluster": {"name": "monolith-dev-pg"},
+        "cluster": {"name": "monolith-test-pg"},
         "name": "embervm_oplog",
         "owner": "embervm",
         "ensure": "present",
         "databaseReclaimPolicy": "retain",
     }
     deployment = next(d for d in documents if d.get("kind") == "Deployment")
-    expected_ref = {"name": "monolith-dev-pg-app", "key": "uri"}
+    expected_ref = {"name": "monolith-test-pg-app", "key": "uri"}
     containers = deployment["spec"]["template"]["spec"]["containers"]
     for container in containers:
         if container["name"] in {"backend", "progress-ingest"}:
@@ -1882,67 +1949,6 @@ def test_recovery_gke_uses_fresh_database_and_local_consumers(recovery_gke_rende
     migrations = [d for d in documents if d.get("kind") == "AtlasMigration"]
     assert len(migrations) == 1
     assert migrations[0]["spec"]["urlFrom"] == {"secretKeyRef": expected_ref}
-
-
-def test_recovery_gke_keeps_real_failover_and_bounded_drainer(recovery_gke_render):
-    documents = [
-        d for d in yaml.safe_load_all(recovery_gke_render) if isinstance(d, dict)
-    ]
-    deployments = [d for d in documents if d.get("kind") == "Deployment"]
-    assert len(deployments) == 1
-    deployment = deployments[0]
-    assert deployment["metadata"]["name"] == "monolith-dev"
-    assert deployment["spec"]["replicas"] == 2
-    assert (
-        deployment["spec"]["template"]["spec"]["serviceAccountName"] == "monolith-dev"
-    )
-    env = _env_by_name(_deployment_backend_env(recovery_gke_render))
-    expected = {
-        "MONOLITH_LEADER_SINGLETONS": "true",
-        "HOME_OBSERVABILITY_PRIME_ENABLED": "false",
-        "CD_PROBE_ENABLED": "false",
-        "DRAINER_ENABLED": "true",
-        "DRAINER_JOB_KINDS": "qwen-drain",
-        "DRAINER_MAX_JOBS_PER_CYCLE": "1",
-        "DRAINER_NOTIFY_FAILURES": "false",
-        "DRAINER_DOCFIX_ENABLED": "false",
-        "DRAINER_DOCFIX_AUTO_MERGE": "false",
-        "AGENT_SESSIONS_CHANNEL_NOTIFY": "none",
-        "AGENT_MODELS": "luna",
-        "SCHEDULER_WORKFLOW_NAMESPACE": "monolith-dev",
-    }
-    for name, value in expected.items():
-        assert env[name]["value"] == value, name
-    assert "SWARM_ENABLED" not in env
-    default_jobs = yaml.safe_load((_chart_dir() / "values.yaml").read_text())["jobs"]
-    replaced = {
-        j["replaces"] for j in default_jobs["cronWorkflows"] if j.get("replaces")
-    }
-    assert replaced
-    assert set(filter(None, env["ARGO_JOBS"]["value"].split(","))) == replaced
-
-
-def test_recovery_gke_session_dependencies_use_dev_identities(recovery_gke_render):
-    env = _env_by_name(_deployment_backend_env(recovery_gke_render))
-    expected = {
-        "EMBERVM_URL": "http://embervm-dev-embervm.embervm-dev:8080",
-        "EMBER_TOKENBROKER_URL": "http://embervm-dev-embervm-tokenbroker.embervm-dev:8080",
-        "SANDBOX_WORKLOAD_PREFIX": "sandbox-dev-",
-        "AUTH_AUTHENTIK_JWKS_URL": "https://auth.jomcgi.dev/application/o/mcp-recovery/jwks/",
-        "AUTH_AUTHENTIK_ISSUER": "https://auth.jomcgi.dev/application/o/mcp-recovery/",
-        "AUTH_AUTHENTIK_AUDIENCE": "https://factory-recovery.jomcgi.dev",
-        "AUTH_AUTHENTIK_AGENT_JWKS_URL": "https://auth.jomcgi.dev/application/o/mcp-recovery/jwks/",
-        "AUTH_AUTHENTIK_AGENT_ISSUER": "https://auth.jomcgi.dev/application/o/mcp-recovery/",
-        "AUTH_AUTHENTIK_AGENT_AUDIENCE": "https://factory-recovery.jomcgi.dev",
-    }
-    for name, value in expected.items():
-        assert env[name]["value"] == value, name
-    assert not (
-        {"DISCORD_BOT_TOKEN", "OWNER_DISCORD_USER_ID", "AISSTREAM_API_KEY"} & env.keys()
-    )
-    assert not (set(_BACKEND_SHARED_ENV) & env.keys())
-    assert not (_SHARED_CREDENTIAL_KEYS & _secret_keys(list(env.values())))
-    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
 
 
 def test_clone_merge_job_is_weekly_suspended_and_receives_database(renders):

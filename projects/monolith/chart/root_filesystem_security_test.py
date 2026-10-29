@@ -64,7 +64,7 @@ def app_pod_spec(request: pytest.FixtureRequest) -> dict:
         "DEPLOY_VALUES", chart_dir.parent / "deploy" / "values.yaml"
     )
     dev_values = _values_path(
-        "DEV_VALUES", chart_dir.parent / "dev" / "deploy" / "values.yaml"
+        "DEV_VALUES", chart_dir.parent / "chart" / "testdata" / "isolated-values.yaml"
     )
     gke_values = _values_path(
         "GKE_VALUES", chart_dir.parent / "deploy" / "values-gke.yaml"

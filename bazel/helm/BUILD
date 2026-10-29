@@ -49,7 +49,6 @@ MANIFEST_SETS = [
     "//projects/monolith-public/deploy:manifests_gke/all.yaml",
     "//projects/monolith/deploy:manifests/all.yaml",
     "//projects/monolith/deploy:manifests_gke/all.yaml",
-    "//projects/monolith/dev/deploy:manifests/all.yaml",
     "//projects/operators/oci-model-cache/deploy:manifests/all.yaml",
     "//projects/scotland-connector/deploy:manifests/all.yaml",
     # Platform charts rendered by argocd_app. The plain `manifests` target is
@@ -82,8 +81,6 @@ MANIFEST_SETS = [
 # below enforces the record against the source tree.
 SKIPPED_MANIFEST_SETS = {
     "projects/embervm/dev/deploy/values-store-validation-gke.yaml": "Default-off store validation overlay, rendered by its hermetic config test.",
-    "projects/embervm/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
-    "projects/monolith/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/platform/atlas-operator/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
     "projects/platform/authentik": "Hub-only chart; rendered with its hub overlay by :manifests_gke.",
     "projects/platform/cf-ingress-library": "Library chart, which renders nothing.",
@@ -106,7 +103,6 @@ NO_CILIUM_MANIFESTS = [
         "_gke",
     ]
 ] + [
-    "//projects/monolith/dev/deploy:manifests/all.yaml",
     "//projects/embervm/dev/deploy:manifests/all.yaml",
 ]
 

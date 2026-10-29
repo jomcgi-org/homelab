@@ -1,4 +1,24 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
+
+py_test(
+    name = "clone_workflow_secrets_test",
+    srcs = ["clone_workflow_secrets_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+    ]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
 
 helm_chart(
     name = "chart",

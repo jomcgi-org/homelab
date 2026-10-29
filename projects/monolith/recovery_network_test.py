@@ -1,10 +1,9 @@
-"""Exercise the inactive recovery policy's allowed flows and isolation boundary.
+"""Exercise a test-only network policy's allowed flows and isolation boundary.
 
 This evaluates only the selector/ipBlock/port subset used by this manifest.
 It is a static contract test, not a substitute for GKE dataplane probes.
 """
 
-import os
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 
@@ -12,16 +11,9 @@ import pytest
 import yaml
 
 
-ROOT = Path(__file__).resolve().parent / "dev" / "deploy"
-EMBER_VALUES = Path(
-    os.environ.get(
-        "EMBER_RECOVERY_VALUES",
-        Path(__file__).resolve().parents[1]
-        / "embervm/dev/deploy/values-recovery-gke.yaml",
-    )
-)
-MONOLITH = "monolith-dev"
-EMBER = "embervm-dev"
+ROOT = Path(__file__).resolve().parent / "testdata"
+MONOLITH = "test-monolith"
+EMBER = "test-ember"
 
 
 def _app(name, instance, component=None):
@@ -39,7 +31,7 @@ PODS = {
     "control": (EMBER, _app("embervm", EMBER)),
     "broker": (EMBER, _app("embervm-tokenbroker", EMBER, "tokenbroker")),
     "noded": (EMBER, _app("embervm-noded", EMBER, "noded-brick")),
-    "postgres": (MONOLITH, {"cnpg.io/cluster": "monolith-dev-pg"}),
+    "postgres": (MONOLITH, {"cnpg.io/cluster": "test-monolith-pg"}),
     "operator": ("cnpg-system", _app("cloudnative-pg", "cnpg")),
     "atlas": (
         "argocd",
@@ -51,7 +43,7 @@ PODS = {
     "atlas_dev_db": (
         MONOLITH,
         {
-            **_app("atlas-dev-db", "monolith-dev-atlas-dev-db"),
+            **_app("atlas-dev-db", "test-monolith-atlas-dev-db"),
             "app.kubernetes.io/part-of": "atlas-operator",
             "atlasgo.io/engine": "postgres",
         },
@@ -62,7 +54,7 @@ PODS = {
 
 @pytest.fixture(scope="module")
 def policies():
-    return list(yaml.safe_load_all((ROOT / "recovery-network-policy.yaml").read_text()))
+    return list(yaml.safe_load_all((ROOT / "network-boundary.yaml").read_text()))
 
 
 def _matches(selector, labels):
@@ -202,38 +194,3 @@ def test_atlas_helper_is_private_to_the_migration_controller(policies):
             assert not _allows(policies, "egress", helper, pod, port)
     assert not _allows(policies, "egress", helper, None, 443, address="8.8.8.8")
     assert not _allows(policies, "ingress", PODS["postgres"], PODS["atlas"], 8000)
-
-
-def test_secret_resources_join_recovery_consumers_without_values():
-    items = list(yaml.safe_load_all((ROOT / "recovery-secrets.yaml").read_text()))
-    values = yaml.safe_load((ROOT / "values-recovery-gke.yaml").read_text())
-    ember = yaml.safe_load(EMBER_VALUES.read_text())
-    op_log = ember["opLog"]["postgres"]
-    auth = ember["tokenBroker"]["authentik"]
-    assert len(items) == 2
-    for item in items:
-        assert set(item) == {"apiVersion", "kind", "metadata", "type", "spec"}
-        assert item["apiVersion"] == "onepassword.com/v1"
-        assert item["kind"] == "OnePasswordItem"
-        assert set(item["spec"]) == {"itemPath"}
-    database, identity = items
-    assert database["metadata"] == {
-        "namespace": MONOLITH,
-        "name": values["postgres"]["embervmOpLog"]["passwordSecret"],
-        "labels": {"cnpg.io/reload": ""},
-    }
-    assert database["type"] == "kubernetes.io/basic-auth"
-    assert database["metadata"]["name"] == op_log["secretName"]
-    assert database["spec"]["itemPath"] == op_log["onepassword"]["itemPath"]
-    assert op_log["secretKey"] == "password"
-    assert op_log["user"] == values["postgres"]["embervmOpLog"]["role"]
-    assert identity["metadata"] == {
-        "namespace": EMBER,
-        "name": auth["appPasswordRef"]["name"],
-    }
-    assert auth["appPasswordRef"]["key"] == "app-password"
-    assert auth["username"] == "kg-agent-recovery-sa"
-    assert identity["type"] == "Opaque"
-    assert identity["spec"]["itemPath"] == (
-        "vaults/k8s-homelab/items/embervm-authentik-recovery-agent"
-    )

@@ -124,7 +124,7 @@ The root carries an `ignoreDifferences` entry per promoted Application plus `Res
 
 **The merge queue is GitHub's native one**, configured on the default-branch ruleset (`lets-not-delete-everything`): rebase merges only, `HEADGREEN` grouping, build up to 3 entries, merge up to 5, and a 3-minute minimum wait. `gh pr merge --auto` enqueues (the queue sets the strategy and refuses a strategy flag); nobody rebases a PR because main moved, the queue does. The chart write-back commit lands under an org-admin bypass so it never queues behind itself. The `ready-to-merge` label exists and means "reviewed by the judgment tier", but nothing in the repo consumes it: the stateless DBOS reconciler that would (ADR platform/014) was never built and its issues are closed.
 
-**Per-PR preview environments do not exist.** ADR platform/005 (label-gated ApplicationSet previews with copy-on-write CNPG clones) is Draft and unbuilt: no `ApplicationSet` exists on either cluster, and the hub has no second lane at all. Its tracking issues #3882 to #3887 were closed not planned.
+**Per-PR preview environments do not exist.** ADR platform/005 (label-gated ApplicationSet previews with copy-on-write CNPG clones) is Draft and unbuilt: no preview `ApplicationSet` exists on the hub. Its tracking issues #3882 to #3887 were closed not planned. EmberVM's standing dev lane is separate from per-PR previews.
 
 (see: `projects/gke-cluster/root/root-application.yaml`, `projects/gke-cluster/hub-root-application.yaml`, `projects/gke-apps/`, `projects/platform/kargo/values.yaml`, `projects/platform/kargo/README.md`, `bazel/helm/README.md`, `AGENTS.md` "Git and PRs", ADR platform/009, ADR platform/011, ADR platform/014)
 
@@ -135,9 +135,11 @@ OCI semver ranges, while a production-only Kargo stage was rejected because it
 adds a controller without a validation stage. Post-merge idempotent publishing
 and monotonic write-back remove PR contention, and Kargo promotion accepts live
 Application state as the deployed version plus a soak gate that proves readiness
-only (ADR platform/009). The hub runs exactly the production-only shape that was
-rejected, as a stated reduction: automatic health-verified promotion replaced
-hand-edited pins. EmberVM's dev stage is restored on the hub; restoring the monolith's is the follow-up. ADR platform/014's
+only (ADR platform/009). The monolith pipelines run the production-only shape
+that was rejected, as a stated reduction: automatic health-verified promotion replaced
+hand-edited pins. EmberVM's dev stage is restored on the hub. The monolith has
+no dev stage; #7034 retired its scaffolding, and future monolith dev work starts
+fresh under #7004. ADR platform/014's
 custom merge reconciler was superseded by the native queue; its reasoning about
 concurrent branches becoming stale after every merge still holds.
 
@@ -147,7 +149,19 @@ concurrent branches becoming stale after every merge still holds.
 
 **Block storage on the hub** is GCE persistent disk through the default `standard-rwo` class (pd-balanced, `WaitForFirstConsumer`). There is no Longhorn on the hub.
 
-**CloudNativePG** provides Postgres on the hub, which runs three `Cluster` CRs (monolith-pg with two instances, authentik-pg, context-forge-pg), each bootstrapped by recovery from the home cluster's archive and now archiving to its own prefix of a GCS Barman object store under a distinct server name, so the two clusters' archives never collide. monolith-pg also hosts EmberVM's op-log and SPIRE's datastore as additional databases. The home overlay's nightly dev-database refresh was retired with it (#6914); the hub has no dev lane.
+**CloudNativePG** provides Postgres on the hub, which runs three `Cluster` CRs (monolith-pg with two instances, authentik-pg, context-forge-pg), each bootstrapped by recovery from the home cluster's archive and now archiving to its own prefix of a GCS Barman object store under a distinct server name, so the two clusters' archives never collide. monolith-pg also hosts EmberVM's op-log and SPIRE's datastore as additional databases. The home overlay's nightly dev-database refresh was retired with it (#6914); the hub has no monolith dev lane. EmberVM retains its registered `embervm-dev` Application and Kargo dev/prod pipeline.
+
+**Why.** Joe chose retirement of the unregistered monolith-dev overlay, both
+staged recovery profiles, the unused authentik dev provider and the dev Secret
+clone rule on 2026-10-28 (#7034). Keeping deployable inputs without an owner
+implied a supported recovery path. Chart isolation and network contracts now
+use test-only fixtures. Future monolith dev work starts fresh under #7004;
+the existing EmberVM dev lane remains supported. The repository changes stay
+unmerged pending delivery. Merge makes ArgoCD replace the live Kyverno policy
+and remove `dev-auth.yaml` from `authentik-mcp-blueprints`. #7034 remains open
+for live acceptance of all eight production Secret adoptions and the absence
+of an orphaned dev provider or application. The live-validation gate authorizes
+no Secret deletion, credential change or account mutation.
 
 **Blob storage** is Cloudflare R2 for the monolith and monolith-public (artifacts, images, chat attachments, the stars grid, knowledge raws), with bucket names unchanged from the previous store and credentials delivered as `OnePasswordItem`s: a read-write item for the backend and its CronWorkflows, a read-only item for the public tier. EmberVM's base store and volume exports on the hub go to same-region GCS through the S3 interop endpoint.
 
@@ -276,9 +290,9 @@ EmberVM session-create denial incident.
 **Kyverno** renders two cluster policies on the hub (`projects/platform/kyverno/templates/`):
 
 - `require-resource-requests` checks first-party namespaces for CPU and memory requests plus a memory limit. `validationFailureAction: Audit`, so violations surface as PolicyReports and nothing is rejected
-- `clone-monolith-workflows-secrets` copies the Secrets Argo CronWorkflow jobs need, the R2 credential among them, into `monolith-workflows`
+- `clone-production-monolith-workflow-secrets` copies the production Secrets Argo CronWorkflow jobs need, the R2 credential among them, into `monolith-workflows`. #7034 changes the policy name when removing the dev rule because synchronized rule membership is immutable
 
-The `inject-otel-env-vars` template is disabled. Non-root execution and dropped capabilities come from each chart's own `securityContext`. Network policy on the hub is plain `NetworkPolicy` only, and one exists (section 3); nothing on the hub enforces a `securityContext` at admission, since Kyverno's rules are Audit.
+The `inject-otel-env-vars` template is disabled. Non-root execution and dropped capabilities come from each chart's own `securityContext`. Network policy on the hub is plain `NetworkPolicy` only, and one exists (section 3). No policy enforces a `securityContext` at admission: the resource policy is Audit and the Secret policy is generate-only. Merging #7034 makes ArgoCD replace `clone-monolith-workflows-secrets` with `clone-production-monolith-workflow-secrets`. The live-validation gate must verify adoption of all eight production clones, including their policy-name labels and current source UIDs; Ready or Synced/Healthy alone does not prove adoption.
 
 **Sandbox runtime.** No workload runs under gVisor. The hub carries GKE's own `gvisor` RuntimeClass and no pod selects it; home never had one. ADR security/003 (runsc for agent sandbox pods) was accepted for a pod-shaped agent runtime that was then replaced: untrusted code runs in EmberVM Firecracker guests (`projects/embervm/ARCHITECTURE.md`, section 10), so the second kernel boundary is the microVM. #3894 remains open as the record; nothing depends on it.
 
@@ -351,6 +365,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Retire unowned monolith dev/recovery scaffolding; preserve EmberVM dev | section 5 | #7034 | repository retirement staged in an unmerged PR; live acceptance outstanding for Kyverno policy replacement, all eight production Secret adoptions, and authentik dev blueprint/provider/application absence; future monolith dev starts fresh under #7004 |
 | Hub-only Renovate and reviewed dependency maintenance | section 9 | #7068, #7001 | cleanup integrated by #7358 with both hub schedules suspended; verified identity, required evidence check, CI isolation and #7186 activation acceptance outstanding |
 | Shared CNPG backup-age observations feed the private advisory and Discord notifier | section 5 | #7002 | repository implementation staged off; rollout, effective RBAC and failure/recovery acceptance outstanding |
 | Native `NetworkPolicy` successor enforcement on the hub | section 3 | #5276, #5277 | inert templates removed in #5816; native egress remains staged off pending its own live validation; hub-only since #4964 closed 2026-09-18 |

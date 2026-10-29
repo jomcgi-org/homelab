@@ -81,10 +81,24 @@ def test_stars_grid_job_is_isolated_suspended_and_configurable(tmp_path):
     assert mounts == {"work": "/work", "tmp": "/tmp"}
 
 
-def test_production_keeps_grid_job_suspended_and_dev_omits_it():
-    production = yaml.safe_load(Path(os.environ["DEPLOY_VALUES"]).read_text())
-    development = yaml.safe_load(Path(os.environ["DEV_VALUES"]).read_text())
+def test_production_keeps_grid_job_suspended_and_isolated_render_omits_it():
+    chart = Path(__file__).resolve().parent
+    helm = os.environ.get("HELM_BIN", "helm")
+    production = Path(os.environ["DEPLOY_VALUES"])
+    isolated = Path(os.environ["DEV_VALUES"])
 
-    prod_job = production["stars"]["gridGenerator"]
-    assert prod_job == {"enabled": True, "suspend": True}
-    assert development["stars"]["gridGenerator"]["enabled"] is False
+    for values, expected_count in [([production], 1), ([production, isolated], 0)]:
+        argv = [helm, "template", "monolith", str(chart), "--namespace", "monolith"]
+        for value in values:
+            argv += ["--values", str(value)]
+        result = subprocess.run(argv, capture_output=True, text=True, check=True)
+        workflows = [
+            doc
+            for doc in yaml.safe_load_all(result.stdout)
+            if doc
+            and doc.get("kind") == "CronWorkflow"
+            and doc.get("metadata", {}).get("name") == "stars-grid-compute"
+        ]
+        assert len(workflows) == expected_count
+        for workflow in workflows:
+            assert workflow["spec"]["suspend"] is True

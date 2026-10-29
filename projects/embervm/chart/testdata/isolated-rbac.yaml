@@ -1,0 +1,17 @@
+# Test-only namespace RBAC and named broker grants. No deployment consumes this.
+rbac:
+  scope: namespace
+  secretNames: []
+bricks:
+  enabled: true
+  nodeFloors: []
+noded:
+  enabled: false
+tokenBroker:
+  grants:
+  - name: codex-cluster
+    provider: codex-chatgpt
+    fqdn: auth.example.invalid
+  - name: test-agent-mcp
+    provider: authentik
+    fqdn: test-mcp.example.invalid

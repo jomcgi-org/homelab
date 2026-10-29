@@ -40,8 +40,8 @@ Qwen3.8 row in [`model-bench/models.yaml`](../model-bench/models.yaml) follows
 the same rule through its `api_model` field.
 
 Change the alias only with all callsites and benchmark records in scope. The
-source references include monolith dev values, benchmark configuration, and
-the private route documentation.
+source references include benchmark configuration and the private route
+documentation. The monolith dev values were retired in #7034.
 
 ## Configured consumers
 
@@ -50,7 +50,6 @@ Repository configuration records these call paths:
 | Consumer | NInfer relationship in current source |
 | --- | --- |
 | Monolith base values | [`monolith/deploy/values.yaml`](../monolith/deploy/values.yaml) injects the NInfer base URL as `LLAMA_CPP_URL`. Chat can fall back to it when no provider-specific base URL is selected; summarization, vision, and classification share the same seam. The GKE overlay replaces the value with Meta Spark, and the home cluster no longer enrolls monolith. |
-| Monolith dev | [`monolith/dev/deploy/values.yaml`](../monolith/dev/deploy/values.yaml) points its brief compiler and Grimoire extraction settings at NInfer and uses `qwen3.6-27b`. Those paths retain their own enablement gates. |
 | Public monolith | The base chart can use the service through `CHAT_PUBLIC_INFERENCE_URL`. [`monolith-public/deploy/values-gke.yaml`](../monolith-public/deploy/values-gke.yaml) replaces generation with Meta Spark while keeping the in-cluster embeddings service. |
 | `model-bench` | The harness reaches any OpenAI-compatible `/v1` base URL on demand. Its self-hosted Qwen3.8 row sends the `qwen3.6-27b` API model ID. |
 

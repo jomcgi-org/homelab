@@ -18,15 +18,14 @@
 # shared ember-bricks Spot pool, three workloads (the ones the conformance
 # suite drives: sandbox-python for S1,
 # pi-runtime for S2 and S3, sandbox-elixir for S5), SQLite op-log, no object
-# store. The recovery (values-recovery-gke.yaml) and store-validation
-# (values-store-validation-gke.yaml) presets target the same embervm-dev
-# release; activating either one means replacing this Application's value
-# files, not stacking a second release.
+# store. The store-validation preset (values-store-validation-gke.yaml) targets
+# the same embervm-dev release; activating it means replacing this Application's
+# value files, not stacking a second release.
 
 # Recover interrupted turns before adoption parks them. Rollback: set false.
 restartFlushInflightInvokes: true
 
-# Namespace-scoped RBAC, as the recovery preset chose for this release. At the
+# Namespace-scoped RBAC for this release. At the
 # chart default (cluster scope) the dev control plane, which by design runs
 # chart versions before they are verified, would hold cluster-wide Secret reads
 # and Deployment scale rights on the hub that holds every production secret.
@@ -35,8 +34,7 @@ rbac:
   scope: namespace
   secretNames: []
 
-# The hub has no longhorn. standard-rwo is GKE's default balanced PD class and
-# what the recovery preset already chose for the same PVC.
+# The hub has no longhorn. standard-rwo is GKE's default balanced PD class.
 opLog:
   storageClass: standard-rwo
 

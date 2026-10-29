@@ -1,13 +1,10 @@
-# Inactive GKE Dataplane V2 profile for the two fixed recovery namespaces.
-# Apply before recovery workloads, only under the reviewed activation plan.
-# API endpoint and DNS service are live-cluster facts to revalidate first.
-# Public TCP 443 is deliberately broad, not an FQDN allowlist. See
-# recovery-network.md for the flow matrix, host-network limits and live checks.
+# Test-only selector/port boundary fixture. Never a deployment input.
+# Addresses are synthetic inputs to the evaluator, not observed cluster state.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: recovery-default-deny
-  namespace: monolith-dev
+  namespace: test-monolith
 spec:
   podSelector: {}
   policyTypes:
@@ -20,7 +17,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: recovery-default-deny
-  namespace: embervm-dev
+  namespace: test-ember
 spec:
   podSelector: {}
   policyTypes:
@@ -33,12 +30,12 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: recovery-backend
-  namespace: monolith-dev
+  namespace: test-monolith
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: monolith
-      app.kubernetes.io/instance: monolith-dev
+      app.kubernetes.io/instance: test-monolith
       app.kubernetes.io/component: app
   policyTypes:
   - Ingress
@@ -47,11 +44,11 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: embervm-dev
+          kubernetes.io/metadata.name: test-ember
       podSelector:
         matchLabels:
           app.kubernetes.io/name: embervm-noded
-          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/instance: test-ember
           app.kubernetes.io/component: noded-brick
     ports:
     - protocol: TCP
@@ -92,28 +89,28 @@ spec:
   - to:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: monolith-dev
+          kubernetes.io/metadata.name: test-monolith
       podSelector:
         matchLabels:
-          cnpg.io/cluster: monolith-dev-pg
+          cnpg.io/cluster: test-monolith-pg
     ports:
     - protocol: TCP
       port: 5432
   - to:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: embervm-dev
+          kubernetes.io/metadata.name: test-ember
       podSelector:
         matchLabels:
           app.kubernetes.io/name: embervm
-          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/instance: test-ember
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: embervm-dev
+          kubernetes.io/metadata.name: test-ember
       podSelector:
         matchLabels:
           app.kubernetes.io/name: embervm-tokenbroker
-          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/instance: test-ember
           app.kubernetes.io/component: tokenbroker
     ports:
     - protocol: TCP
@@ -123,12 +120,12 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: recovery-control-plane
-  namespace: embervm-dev
+  namespace: test-ember
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: embervm
-      app.kubernetes.io/instance: embervm-dev
+      app.kubernetes.io/instance: test-ember
   policyTypes:
   - Ingress
   - Egress
@@ -136,19 +133,19 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: monolith-dev
+          kubernetes.io/metadata.name: test-monolith
       podSelector:
         matchLabels:
           app.kubernetes.io/name: monolith
-          app.kubernetes.io/instance: monolith-dev
+          app.kubernetes.io/instance: test-monolith
           app.kubernetes.io/component: app
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: embervm-dev
+          kubernetes.io/metadata.name: test-ember
       podSelector:
         matchLabels:
           app.kubernetes.io/name: embervm-noded
-          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/instance: test-ember
           app.kubernetes.io/component: noded-brick
     ports:
     - protocol: TCP
@@ -193,11 +190,11 @@ spec:
   - to:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: embervm-dev
+          kubernetes.io/metadata.name: test-ember
       podSelector:
         matchLabels:
           app.kubernetes.io/name: embervm-noded
-          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/instance: test-ember
           app.kubernetes.io/component: noded-brick
     ports:
     - protocol: TCP
@@ -205,10 +202,10 @@ spec:
   - to:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: monolith-dev
+          kubernetes.io/metadata.name: test-monolith
       podSelector:
         matchLabels:
-          cnpg.io/cluster: monolith-dev-pg
+          cnpg.io/cluster: test-monolith-pg
     ports:
     - protocol: TCP
       port: 5432
@@ -217,12 +214,12 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: recovery-tokenbroker
-  namespace: embervm-dev
+  namespace: test-ember
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: embervm-tokenbroker
-      app.kubernetes.io/instance: embervm-dev
+      app.kubernetes.io/instance: test-ember
       app.kubernetes.io/component: tokenbroker
   policyTypes:
   - Ingress
@@ -231,19 +228,19 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: monolith-dev
+          kubernetes.io/metadata.name: test-monolith
       podSelector:
         matchLabels:
           app.kubernetes.io/name: monolith
-          app.kubernetes.io/instance: monolith-dev
+          app.kubernetes.io/instance: test-monolith
           app.kubernetes.io/component: app
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: embervm-dev
+          kubernetes.io/metadata.name: test-ember
       podSelector:
         matchLabels:
           app.kubernetes.io/name: embervm-noded
-          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/instance: test-ember
           app.kubernetes.io/component: noded-brick
     ports:
     - protocol: TCP
@@ -290,12 +287,12 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: recovery-noded
-  namespace: embervm-dev
+  namespace: test-ember
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: embervm-noded
-      app.kubernetes.io/instance: embervm-dev
+      app.kubernetes.io/instance: test-ember
       app.kubernetes.io/component: noded-brick
   policyTypes:
   - Ingress
@@ -304,11 +301,11 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: embervm-dev
+          kubernetes.io/metadata.name: test-ember
       podSelector:
         matchLabels:
           app.kubernetes.io/name: embervm
-          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/instance: test-ember
     ports:
     - protocol: TCP
       port: 9090
@@ -346,18 +343,18 @@ spec:
   - to:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: embervm-dev
+          kubernetes.io/metadata.name: test-ember
       podSelector:
         matchLabels:
           app.kubernetes.io/name: embervm
-          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/instance: test-ember
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: embervm-dev
+          kubernetes.io/metadata.name: test-ember
       podSelector:
         matchLabels:
           app.kubernetes.io/name: embervm-tokenbroker
-          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/instance: test-ember
           app.kubernetes.io/component: tokenbroker
     ports:
     - protocol: TCP
@@ -365,11 +362,11 @@ spec:
   - to:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: monolith-dev
+          kubernetes.io/metadata.name: test-monolith
       podSelector:
         matchLabels:
           app.kubernetes.io/name: monolith
-          app.kubernetes.io/instance: monolith-dev
+          app.kubernetes.io/instance: test-monolith
           app.kubernetes.io/component: app
     ports:
     - protocol: TCP
@@ -381,11 +378,11 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: recovery-postgres
-  namespace: monolith-dev
+  namespace: test-monolith
 spec:
   podSelector:
     matchLabels:
-      cnpg.io/cluster: monolith-dev-pg
+      cnpg.io/cluster: test-monolith-pg
   policyTypes:
   - Ingress
   - Egress
@@ -393,25 +390,25 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: monolith-dev
+          kubernetes.io/metadata.name: test-monolith
       podSelector:
         matchLabels:
           app.kubernetes.io/name: monolith
-          app.kubernetes.io/instance: monolith-dev
+          app.kubernetes.io/instance: test-monolith
           app.kubernetes.io/component: app
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: embervm-dev
+          kubernetes.io/metadata.name: test-ember
       podSelector:
         matchLabels:
           app.kubernetes.io/name: embervm
-          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/instance: test-ember
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: monolith-dev
+          kubernetes.io/metadata.name: test-monolith
       podSelector:
         matchLabels:
-          cnpg.io/cluster: monolith-dev-pg
+          cnpg.io/cluster: test-monolith-pg
     ports:
     - protocol: TCP
       port: 5432
@@ -464,10 +461,10 @@ spec:
   - to:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: monolith-dev
+          kubernetes.io/metadata.name: test-monolith
       podSelector:
         matchLabels:
-          cnpg.io/cluster: monolith-dev-pg
+          cnpg.io/cluster: test-monolith-pg
     ports:
     - protocol: TCP
       port: 5432
@@ -478,12 +475,12 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: recovery-atlas-dev-db
-  namespace: monolith-dev
+  namespace: test-monolith
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: atlas-dev-db
-      app.kubernetes.io/instance: monolith-dev-atlas-dev-db
+      app.kubernetes.io/instance: test-monolith-atlas-dev-db
       app.kubernetes.io/part-of: atlas-operator
       atlasgo.io/engine: postgres
   policyTypes:

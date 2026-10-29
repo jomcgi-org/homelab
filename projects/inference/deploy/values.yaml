@@ -104,7 +104,7 @@ runtimeClassName: nvidia
 #
 # ENABLING THIS IS A DELIBERATE OUTAGE for every in-cluster qwen consumer:
 # the monolith's Discord, summarize, chat, vision and classifier callsites,
-# monolith-dev, and EmberVM pi-runtime qwen sessions. They fail at DNS, so
+# and EmberVM pi-runtime qwen sessions. They fail at DNS, so
 # expect fast errors and dead letters rather than hangs. (The public /health
 # inference component that used to latch on this rename left with the
 # retired notes chat, #6913.)

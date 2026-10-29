@@ -23,8 +23,8 @@ All six Applications live in `argocd` and are registered through
 `projects/gke-apps/kustomization.yaml`. The three monolith pipelines and the
 scotland-connector pipeline subscribe directly to their Warehouses and have no
 upstream Stage or soak. There is no
-registered monolith dev Application. This configuration makes no decision
-about adding one.
+registered monolith dev Application. #7034 retires its obsolete scaffolding;
+future monolith dev work starts fresh under #7004. EmberVM's dev lane remains.
 
 Each Warehouse polls its OCI chart under `ghcr.io/jomcgi/homelab/charts` every
 five minutes, subject to its configured semver constraint and discovery limit.

@@ -235,7 +235,6 @@ filegroup(
         "//projects/model-bench/probe:repo_docs",
         "//projects/monolith/auth:repo_docs",
         "//projects/monolith/deploy:repo_docs",
-        "//projects/monolith/dev/deploy:repo_docs",
         "//projects/monolith/dev/grimoire:repo_docs",
         "//projects/monolith/frontend:repo_docs",
         "//projects/operators/oci-model-cache:repo_docs",
@@ -9363,17 +9362,13 @@ py_test(
     ],
 )
 
-# Static boundary contract for the inactive GKE recovery manifests.
+# Static allowed-flow and deny-boundary contract over test-only policy data.
 py_test(
     name = "recovery_network_test",
     srcs = ["recovery_network_test.py"],
     data = [
-        "//projects/embervm/dev/deploy:recovery_values",
-        "//projects/monolith/dev/deploy:recovery_support_manifests",
+        "//projects/monolith/testdata:network_boundary",
     ],
-    env = {
-        "EMBER_RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
-    },
     deps = [
         "@pip//pytest",
         "@pip//pyyaml",

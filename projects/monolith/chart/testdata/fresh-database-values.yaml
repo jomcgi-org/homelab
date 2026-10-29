@@ -1,0 +1,101 @@
+# Test-only fresh database and disabled producer overrides, loaded over chart defaults.
+# No deployment, recovery drill, provider or external account is configured here.
+backend:
+  replicas: 2
+  autoscaling:
+    enabled: false
+  leaderSingletons: true
+  primeObservabilitySnapshots: false
+  otelEndpoint: ''
+rbac:
+  clusterAccess:
+    enabled: false
+  schedulerWorkflows:
+    enabled: false
+  faas:
+    enabled: false
+  kargoPromote:
+    enabled: false
+postgres:
+  instances: 1
+  storage:
+    size: 10Gi
+    storageClass: standard-rwo
+  bootstrap:
+    recovery: null
+  externalClusters: []
+  backup:
+    enabled: false
+    destinationPath: ''
+    credentialsSecret: ''
+    onepassword:
+      itemPath: ''
+  spire:
+    enabled: false
+  clientRoles:
+    publicReader:
+      login: false
+      passwordSecret: ''
+    agentsWriter:
+      login: false
+      passwordSecret: ''
+    publicWriter:
+      login: false
+      passwordSecret: ''
+  embervmOpLog:
+    enabled: true
+    database: embervm_oplog
+    role: embervm
+    passwordSecret: monolith-test-pg-embervm-oplog
+jobs:
+  image: ''
+  workflowNamespace: monolith-test
+  dbSecretName: monolith-test-pg-app
+cdHealth:
+  probeEnabled: false
+chat:
+  enabled: false
+  onepassword:
+    itemPath: ''
+marine:
+  enabled: false
+  onepassword:
+    itemPath: ''
+knowledge:
+  enabled: false
+orchestrator:
+  enabled: false
+goosecracker:
+  enabled: false
+grimoire:
+  enabled: false
+scratchPostgres:
+  enabled: false
+sharedS3:
+  enabled: false
+stars:
+  onepassword:
+    itemPath: ''
+faas:
+  s3ReadBase: ''
+  s3Bucket: ''
+onepassword:
+  enabled: false
+imgproxySigning:
+  enabled: false
+frontend:
+  otelCollectorUrl: ''
+tailnet:
+  enabled: false
+cfIngress:
+  shipsRedirect:
+    enabled: false
+  private:
+    enabled: false
+    githubWebhook:
+      enabled: false
+  friends:
+    enabled: false
+networkPolicy:
+  egress:
+    enabled: false

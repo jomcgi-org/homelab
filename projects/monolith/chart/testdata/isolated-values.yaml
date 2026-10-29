@@ -1,0 +1,75 @@
+# Test-only chart isolation overrides. No Application consumes this fixture.
+backend:
+  replicas: 0
+  autoscaling:
+    enabled: false
+  leaderSingletons: false
+  otelEndpoint: ''
+cfIngress:
+  private:
+    enabled: true
+    hostname: isolation.example.invalid
+    auth: authentik
+    githubWebhook:
+      enabled: false
+    authentik:
+      issuer: https://identity.example.invalid/application/o/isolation/
+      jwksUri: https://identity.example.invalid/application/o/isolation/jwks/
+      clientID: isolation-test
+      clientSecretName: isolation-oidc
+      onepassword:
+        itemPath: vaults/test-only/items/isolation-oidc
+      allowedGroups:
+      - test-operators
+  shipsRedirect:
+    enabled: false
+  grimoire:
+    enabled: false
+  friends:
+    enabled: false
+postgres:
+  instances: 1
+  backup:
+    enabled: false
+tokenBroker:
+  url: http://test-broker.test-ember:8080
+  spiffe:
+    enabled: false
+networkPolicy:
+  egress:
+    targets:
+      embervm:
+        namespace: test-ember
+        matchLabels:
+          app.kubernetes.io/name: embervm
+          app.kubernetes.io/instance: test-ember
+        port: 8080
+      tokenBroker:
+        namespace: test-ember
+        matchLabels:
+          app.kubernetes.io/name: embervm-tokenbroker
+          app.kubernetes.io/instance: test-ember
+          app.kubernetes.io/component: tokenbroker
+        port: 8080
+      embervmServing:
+        namespace: test-ember
+        matchLabels:
+          app.kubernetes.io/name: embervm-serving-envoy
+          app.kubernetes.io/instance: test-ember
+          app.kubernetes.io/component: serving-envoy
+        port: 5401
+jobs:
+  image: ''
+stars:
+  gridGenerator:
+    enabled: false
+rbac:
+  kargoPromote:
+    enabled: false
+platformAuth:
+  managementEnabled: false
+  enrollmentEnabled: false
+  enforcementEnabled: false
+  enrollmentFlowUrl: ''
+semgrep:
+  embervmUrl: http://test-ember.test-ember:8080

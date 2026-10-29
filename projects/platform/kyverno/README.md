@@ -1,26 +1,15 @@
 # Kyverno
 
-Policy engine for Kubernetes with custom ClusterPolicies for automated observability.
+Policy engine for Kubernetes with production Secret synchronization and resource auditing.
 
 ## Overview
 
-Kyverno acts as a Kubernetes admission controller that mutates resources to enforce cluster-wide conventions. This chart wraps the upstream Kyverno chart and adds custom ClusterPolicies that automatically inject OpenTelemetry configuration.
-
-```mermaid
-flowchart LR
-    API[API Server] -->|admission webhook| KYV[Kyverno]
-
-    subgraph Policies
-        OTEL[OTel Injection Policy]
-    end
-
-    KYV --> OTEL
-    OTEL -->|inject env vars| Workloads[Deployments / StatefulSets / DaemonSets]
-```
+This chart wraps upstream Kyverno. Its defaults render a resource-audit policy
+and a production Secret-clone policy. OpenTelemetry injection is disabled.
 
 ## Architecture
 
-The chart deploys four Kyverno controllers plus four custom ClusterPolicies:
+The chart deploys four Kyverno controllers:
 
 - **Admission Controller** - Intercepts API server requests to mutate and validate resources against policies
 - **Background Controller** - Applies policies retroactively to existing resources (not just new ones)
@@ -29,24 +18,28 @@ The chart deploys four Kyverno controllers plus four custom ClusterPolicies:
 
 Custom policies included:
 
-- **OTel Injection** (`inject-otel-env-vars`) - Mutates Deployments, StatefulSets, and DaemonSets to inject `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` environment variables
+- **OTel Injection** (`inject-otel-env-vars`) - Disabled by default; when enabled, injects OTLP endpoint and protocol into workloads
 - **Require Resource Requests** (`require-resource-requests`) - Audits workloads for missing CPU/memory resource requests
-- **Clone Monolith Workflow Secrets** (`clone-monolith-workflows-secrets`) - Clones the monolith Postgres app secret and the other job-pod Secrets into `monolith-workflows`, triggered on each source Secret so a recreated source is re-cloned
-- **Clone SigNoz API Key** (`clone-signoz-api-key`) - Replicates the SigNoz `signoz-api-key` secret from the `signoz` namespace into the namespaces that call the SigNoz API
+- **Clone Monolith Workflow Secrets** (`clone-production-monolith-workflow-secrets`) - Clones the monolith Postgres app secret and the other job-pod Secrets into `monolith-workflows`, triggered on each source Secret so a recreated source is re-cloned
 
-## Key Features
-
-- **Cluster-wide observability** - All workloads automatically get OTel configuration
-- **Opt-out model** - Label with `otel.instrumentation: disabled` to exclude
-- **Background enforcement** - Policies apply to both existing and new resources
-- **Audit mode** - Policies use `validationFailureAction: Audit` (non-blocking)
-- **Policy exceptions** - Supports Kyverno PolicyExceptions for fine-grained overrides
+The Secret policy uses `synchronize: true` and `generateExisting: true` on
+source-Secret matches so creation and rotation both update the clones. It is
+generate-only and has no Audit validation mode. #7034 retires the monolith-dev
+rule and renames the policy because synchronized rule membership is immutable.
+Every production rule and the controller aggregation grants are preserved.
+Merge makes ArgoCD create `clone-production-monolith-workflow-secrets` and prune
+`clone-monolith-workflows-secrets`. #7034 remains open for the live-validation
+gate: the replacement must be Ready with exactly eight rules, the old policy
+must be gone, and every production clone must carry the replacement policy-name
+label and the UID of its current source Secret. Synced/Healthy alone does not
+prove adoption. The repository changes remain staged in an unmerged PR; no
+manual Secret deletion or credential change is authorized.
 
 ## Configuration
 
 | Value                                       | Description                                | Default                                               |
 | ------------------------------------------- | ------------------------------------------ | ----------------------------------------------------- |
-| `otelInjection.enabled`                     | Enable OTel env var injection policy       | `true`                                                |
+| `otelInjection.enabled`                     | Enable OTel env var injection policy       | `false`                                               |
 | `otelInjection.endpoint`                    | OTel collector endpoint                    | `""`                                                  |
 | `otelInjection.protocol`                    | OTel exporter protocol                     | `grpc`                                                |
 | `otelInjection.targetKinds`                 | Resource kinds to inject into              | `[Deployment, StatefulSet, DaemonSet]`                |

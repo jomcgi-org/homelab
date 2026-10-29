@@ -129,12 +129,12 @@ py_test(
     data = [
         "Chart.yaml",
         "values.yaml",
+        "//projects/embervm/chart/testdata:isolated_rbac",
         "//projects/embervm/deploy:deploy_values",
         "//projects/embervm/deploy:gke_values",
         "//projects/embervm/dev/deploy:application",
         "//projects/embervm/dev/deploy:deploy_values",
         "//projects/embervm/dev/deploy:gke_values",
-        "//projects/embervm/dev/deploy:recovery_values",
         "//projects/embervm/dev/deploy:store_validation_values",
         "//projects/gke-apps/embervm:application.yaml",
         "//projects/gke-apps/embervm-dev:application.yaml",
@@ -146,13 +146,12 @@ py_test(
     ]),
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "ISOLATED_VALUES": "$(rootpath //projects/embervm/chart/testdata:isolated_rbac)",
         "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
         # The hub overlay, so the agent MCP kernel token test reads the file
         # that actually carries it.
         "GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
         "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
-        # The INACTIVE GKE recovery preset, rendered over chart defaults only.
-        "RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
         "STORE_VALIDATION_VALUES": "$(rootpath //projects/embervm/dev/deploy:store_validation_values)",
         "GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
         # The Applications, so releaseName is read from where it is DECLARED.
@@ -515,7 +514,6 @@ py_test(
         "//projects/embervm/deploy:deploy_values",
         "//projects/embervm/dev/deploy:deploy_values",
         "//projects/embervm/dev/deploy:gke_values",
-        "//projects/embervm/dev/deploy:recovery_values",
         "@multitool//tools/helm",
     ] + glob([
         "files/**/*",
@@ -527,7 +525,6 @@ py_test(
         "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
-        "RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
         "S6_IMAGE_TEST": "$(rootpath //projects/embervm/conformance:s6_tlc_image_test.go)",
         "S6_LAYER_MTREE": "$(rootpath //projects/embervm/conformance:tla_layer_mtree.sh)",
     },

@@ -30,7 +30,7 @@ NOT the same kind of problem:
     not.
 
 This test guards against that by:
-1. Parsing active blueprints/*.yaml and the inactive recovery blueprint
+1. Parsing active blueprints/*.yaml
 2. Building YAML AST without constructing objects, so we can inspect node shapes
 3. Asserting that any !Env in sequence form has exactly 2 elements
 4. Failing with a message naming the offending file and line/column if found
@@ -107,16 +107,9 @@ BLUEPRINT_DIR = pathlib.Path(__file__).resolve().parent / "blueprints"
 
 
 def _blueprint_files():
-    """Check active blueprints and the separately staged recovery blueprint."""
+    """Check active blueprints packaged by the chart."""
     if BLUEPRINT_DIR.exists():
-        # Keep the inactive file explicit: missing runfile data must fail when
-        # the parametrized test reads it, not silently remove its test case.
-        return sorted(
-            [
-                *BLUEPRINT_DIR.glob("*.yaml"),
-                BLUEPRINT_DIR.parent / "dev" / "mcp-recovery.yaml",
-            ]
-        )
+        return sorted(BLUEPRINT_DIR.glob("*.yaml"))
     return []
 
 

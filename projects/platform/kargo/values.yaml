@@ -148,8 +148,8 @@ promotion:
       # single-resource syncs that preempt the full sync and starve every other
       # resource in the Application, green the whole time.
       waitTimeout: 10m0s
-      # NOT "monolith" or "monolith-dev": a Kargo Project owns a namespace of that
-      # name and both already exist with live workloads in them.
+      # A Kargo Project owns a namespace of its name. Keep it distinct from the
+      # monolith workload namespace, including any future isolated release.
       project: kargo-monolith
       chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith
       # Floor at the version dev was pinned to when this was built, so the first
