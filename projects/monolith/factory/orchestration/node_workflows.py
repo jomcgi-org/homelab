@@ -223,6 +223,7 @@ def _node_prompt(
             for key in ("dependency_assessment", "browser_evidence")
         )
         or schema.get("x-factory-scout-read-only") is True
+        or schema.get("x-factory-merged-read-only") is True
     )
     working = (
         f"\n\nInspect branch {branch} read-only. Do not modify source, commit or push. "

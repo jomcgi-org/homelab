@@ -722,6 +722,11 @@ def _arm(repo: str, item: dict) -> None:
             _refuse(item, "pull request has no node id")
             return
         from factory import review_publisher
+        from factory.orchestration.factory_merged_delivery import recover_stranded
+
+        # Same recovery owner and tick while merge arming is disabled. This
+        # separate bounded scan includes escalated receipts absent below.
+        recover_stranded(policy)
         from factory.orchestration import factory_landing_release as releases
         from factory.orchestration.factory_controls import (
             _receipt,
