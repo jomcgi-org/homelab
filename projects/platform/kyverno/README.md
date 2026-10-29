@@ -27,8 +27,13 @@ source-Secret matches so creation and rotation both update the clones. It is
 generate-only and has no Audit validation mode. #7034 retires the monolith-dev
 rule and renames the policy because synchronized rule membership is immutable.
 Every production rule and the controller aggregation grants are preserved.
-This is repository configuration; no live migration or Secret deletion is
-performed by the retirement PR.
+Merge makes ArgoCD create `clone-production-monolith-workflow-secrets` and prune
+`clone-monolith-workflows-secrets`. #7034 remains open for the live-validation
+gate: the replacement must be Ready with exactly eight rules, the old policy
+must be gone, and every production clone must carry the replacement policy-name
+label and the UID of its current source Secret. Synced/Healthy alone does not
+prove adoption. The repository changes remain staged in an unmerged PR; no
+manual Secret deletion or credential change is authorized.
 
 ## Configuration
 

@@ -156,8 +156,12 @@ staged recovery profiles, the unused authentik dev provider and the dev Secret
 clone rule on 2026-10-28 (#7034). Keeping deployable inputs without an owner
 implied a supported recovery path. Chart isolation and network contracts now
 use test-only fixtures. Future monolith dev work starts fresh under #7004;
-the existing EmberVM dev lane remains supported. This is repository retirement
-only and performs no live policy migration, secret deletion or account change.
+the existing EmberVM dev lane remains supported. The repository changes stay
+unmerged pending delivery. Merge makes ArgoCD replace the live Kyverno policy
+and remove `dev-auth.yaml` from `authentik-mcp-blueprints`. #7034 remains open
+for live acceptance of all eight production Secret adoptions and the absence
+of an orphaned dev provider or application. The live-validation gate authorizes
+no Secret deletion, credential change or account mutation.
 
 **Blob storage** is Cloudflare R2 for the monolith and monolith-public (artifacts, images, chat attachments, the stars grid, knowledge raws), with bucket names unchanged from the previous store and credentials delivered as `OnePasswordItem`s: a read-write item for the backend and its CronWorkflows, a read-only item for the public tier. EmberVM's base store and volume exports on the hub go to same-region GCS through the S3 interop endpoint.
 
@@ -288,7 +292,7 @@ EmberVM session-create denial incident.
 - `require-resource-requests` checks first-party namespaces for CPU and memory requests plus a memory limit. `validationFailureAction: Audit`, so violations surface as PolicyReports and nothing is rejected
 - `clone-production-monolith-workflow-secrets` copies the production Secrets Argo CronWorkflow jobs need, the R2 credential among them, into `monolith-workflows`. #7034 changes the policy name when removing the dev rule because synchronized rule membership is immutable
 
-The `inject-otel-env-vars` template is disabled. Non-root execution and dropped capabilities come from each chart's own `securityContext`. Network policy on the hub is plain `NetworkPolicy` only, and one exists (section 3). No policy enforces a `securityContext` at admission: the resource policy is Audit and the Secret policy is generate-only. These are repository contracts; the #7034 retirement does not claim a live policy migration.
+The `inject-otel-env-vars` template is disabled. Non-root execution and dropped capabilities come from each chart's own `securityContext`. Network policy on the hub is plain `NetworkPolicy` only, and one exists (section 3). No policy enforces a `securityContext` at admission: the resource policy is Audit and the Secret policy is generate-only. Merging #7034 makes ArgoCD replace `clone-monolith-workflows-secrets` with `clone-production-monolith-workflow-secrets`. The live-validation gate must verify adoption of all eight production clones, including their policy-name labels and current source UIDs; Ready or Synced/Healthy alone does not prove adoption.
 
 **Sandbox runtime.** No workload runs under gVisor. The hub carries GKE's own `gvisor` RuntimeClass and no pod selects it; home never had one. ADR security/003 (runsc for agent sandbox pods) was accepted for a pod-shaped agent runtime that was then replaced: untrusted code runs in EmberVM Firecracker guests (`projects/embervm/ARCHITECTURE.md`, section 10), so the second kernel boundary is the microVM. #3894 remains open as the record; nothing depends on it.
 
@@ -361,7 +365,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Retire unowned monolith dev/recovery scaffolding; preserve EmberVM dev | section 5 | #7034 | repository retirement; future monolith dev starts fresh under #7004 |
+| Retire unowned monolith dev/recovery scaffolding; preserve EmberVM dev | section 5 | #7034 | repository retirement staged in an unmerged PR; live acceptance outstanding for Kyverno policy replacement, all eight production Secret adoptions, and authentik dev blueprint/provider/application absence; future monolith dev starts fresh under #7004 |
 | Hub-only Renovate and reviewed dependency maintenance | section 9 | #7068, #7001 | cleanup integrated by #7358 with both hub schedules suspended; verified identity, required evidence check, CI isolation and #7186 activation acceptance outstanding |
 | Shared CNPG backup-age observations feed the private advisory and Discord notifier | section 5 | #7002 | repository implementation staged off; rollout, effective RBAC and failure/recovery acceptance outstanding |
 | Native `NetworkPolicy` successor enforcement on the hub | section 3 | #5276, #5277 | inert templates removed in #5816; native egress remains staged off pending its own live validation; hub-only since #4964 closed 2026-09-18 |

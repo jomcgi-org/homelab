@@ -405,9 +405,12 @@ enforces any of it. The repository defines `require-resource-requests` in
 separate generate policy `clone-production-monolith-workflow-secrets` copies
 production Secrets into the job namespace with synchronization on each source
 Secret. It has no Audit validation mode. #7034 renames that policy when removing
-the retired monolith-dev clone rule; this records repository configuration and
-does not claim a live migration. The OTel injection policy is disabled. Nothing is
-rejected at admission, and no check flags a new exception: the repo's
+the retired monolith-dev clone rule. Merge makes ArgoCD replace the live policy;
+#7034 remains open until the live-validation gate verifies adoption of all eight
+production clones by policy-name label and current source UID. The gate also
+checks removal of `dev-auth.yaml` from `authentik-mcp-blueprints` and absence of
+an orphaned dev provider or application. The OTel injection policy is disabled.
+Nothing is rejected at admission, and no check flags a new exception: the repo's
 `no-privileged` and `no-host-network` Semgrep rules were removed (#4777).
 
 (see: `projects/embervm/`, `projects/monolith/sandbox/`, `projects/platform/kyverno/`)

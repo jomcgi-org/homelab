@@ -49,10 +49,7 @@ argocd_app(
 py_test(
     name = "blueprint_tags_test",
     srcs = ["blueprint_tags_test.py"],
-    data = glob([
-        "blueprints/*.yaml",
-        "dev/mcp-recovery.yaml",
-    ]),
+    data = glob(["blueprints/*.yaml"]),
     deps = [
         "@pip//pytest",
         "@pip//pyyaml",
