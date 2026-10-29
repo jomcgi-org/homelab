@@ -76,9 +76,9 @@ _PR_URL = re.compile(r"/pull/([0-9]+)$")
 # counts are the state and a one-row-per-action fence would freeze it.
 _REPEATABLE = ("merge_armed", "merge_ejected")
 _ARM_AUTO_MERGE = """
-mutation ArmAutoMerge($pullRequestId: ID!) {
+mutation ArmAutoMerge($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
   enablePullRequestAutoMerge(
-    input: {pullRequestId: $pullRequestId, mergeMethod: REBASE}
+    input: {pullRequestId: $pullRequestId, mergeMethod: REBASE, expectedHeadOid: $expectedHeadOid}
   ) {
     pullRequest {
       number
@@ -780,7 +780,9 @@ def _arm(repo: str, item: dict) -> None:
                 ):
                     refusal = "scoped_landing_authorization_identity_changed"
             if not refusal:
-                github_graphql(_ARM_AUTO_MERGE, {"pullRequestId": node_id})
+                github_graphql(
+                    _ARM_AUTO_MERGE, {"pullRequestId": node_id, "expectedHeadOid": head}
+                )
         if refusal:
             _scope_wait(item, refusal)
             return

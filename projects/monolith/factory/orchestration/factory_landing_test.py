@@ -270,7 +270,7 @@ def pull(
 
 def github(monkeypatch, *, pulls=None, issues=None, refuse=None):
     """A GitHub that behaves: the mutations move the state the reads return."""
-    calls = {"get": [], "list": [], "graphql": [], "write": []}
+    calls = {"get": [], "list": [], "graphql": [], "write": [], "arm_heads": []}
     pulls = {} if pulls is None else pulls
     issues = {} if issues is None else issues
 
@@ -297,7 +297,14 @@ def github(monkeypatch, *, pulls=None, issues=None, refuse=None):
                     for node_id in variables["ids"]
                 ]
             }
-        calls["graphql"].append(variables)
+        if query == landing._ARM_AUTO_MERGE:
+            number = int(variables["pullRequestId"].removeprefix("PR_"))
+            assert variables["expectedHeadOid"] == pulls[number]["head"]["sha"]
+            assert "expectedHeadOid: $expectedHeadOid" in query
+            calls["arm_heads"].append(variables["expectedHeadOid"])
+        calls["graphql"].append(
+            {key: value for key, value in variables.items() if key != "expectedHeadOid"}
+        )
         if refuse is not None:
             refuse()
         number = int(variables["pullRequestId"].removeprefix("PR_"))
@@ -3227,3 +3234,24 @@ def test_scope_cleanup_confirms_dequeue(db, monkeypatch):
     assert audits(db, "landing_error")[0]["stage"] == "scoped_landing"
     assert not audits(db, "landing_authorization_wait")
     assert not audits(db, "merge_armed")
+
+
+def test_head_change_at_arming_is_rejected_by_github_cas(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: pull(3)}
+    github(monkeypatch, pulls=pulls)
+    graphql = landing.github_graphql
+
+    def raced(query, variables):
+        if query == landing._ARM_AUTO_MERGE:
+            assert variables["expectedHeadOid"] == HEAD
+            assert "expectedHeadOid: $expectedHeadOid" in query
+            pulls[3]["head"]["sha"] = "c" * 40
+            raise landing.GraphQLRefused("UNPROCESSABLE", "Head changed")
+        return graphql(query, variables)
+
+    monkeypatch.setattr(landing, "github_graphql", raced)
+    landing.landing_tick(POLICY)
+    assert not audits(db, "merge_armed")
+    assert pulls[3]["auto_merge"] is None
+    assert audits(db, "merge_arm_refused")[0]["reason"] == "UNPROCESSABLE"
