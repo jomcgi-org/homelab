@@ -24693,3 +24693,24 @@ def test_saved_finish_fences_claimed_native_turn(feedback_db, monkeypatch):
         task, policy, conductor.graph.node_runs(task["id"])
     )
     assert controls.task_snapshot(task["id"])["state"] == "admitted"
+
+
+def test_expired_typed_stop_card_is_not_a_planner_decision(paused_settlement):
+    from factory.orchestration import factory_controls as controls, factory_pause
+
+    s = paused_settlement
+    pause_trigger(s, "deadline")
+    document = {
+        "kind": factory_pause.KIND,
+        "task_id": s.task["id"],
+        "resolved": None,
+        "question": "Stop this paused task?",
+        "reason": "Operator recovery exhausted",
+        "options": [factory_pause.STOP],
+    }
+    with Session(s.engine) as db, db.begin():
+        controls._receipt(db, s.task["id"]).escalation_json = json.dumps(document)
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    after = controls.task_snapshot(s.task["id"])
+    assert after["escalation"] == document
+    assert after["task_paused"] is True

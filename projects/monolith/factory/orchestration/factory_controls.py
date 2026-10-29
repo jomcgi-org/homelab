@@ -2400,7 +2400,31 @@ def task_recovery_grant(task_id: str, *, session=None) -> dict | None:
             .order_by(FactoryAudit.id.desc())
             .limit(1)
         ).first()
-        return json.loads(event.detail_json)["proposal"] if event else None
+        if event is None:
+            return None
+        original = json.loads(event.detail_json)["proposal"]
+        from factory.orchestration.factory_funding_limits import latest
+
+        authorization = latest(db, task_id, "progress_continuation_authorized")
+        lease = latest(db, task_id, "progress_continuation_lease")
+        if (
+            authorization
+            and lease
+            and lease["original_recovery_audit_id"] == event.id
+            and authorization["proposal"]["original_recovery"]["audit_id"] == event.id
+        ):
+            return {
+                **original,
+                **{
+                    key: lease[key]
+                    for key in (
+                        "deadline_at",
+                        "work_turn_ceiling",
+                        "planner_turn_ceiling",
+                    )
+                },
+            }
+        return original
 
 
 def _recovery_plan_accepted(db, task_id, recovery):

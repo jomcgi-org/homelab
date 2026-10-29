@@ -3959,3 +3959,291 @@ def test_recovered_amendment_cannot_change_timeout(database, recovered_amendment
 
     with pytest.raises(ValueError, match="amendment_recovery_deadline_immutable"):
         amendments.preview(838, {"task_timeout_seconds": 86400}, "Change timeout.")
+
+
+@pytest.fixture
+def progress_recovery(database, recovered_amendment, monkeypatch):
+    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_conductor as conductor
+
+    head = "a" * 40
+    artifact = {
+        "pr_number": 3,
+        "head_sha": head,
+        "verdict": "changes_requested",
+        "summary": "Remove the unrelated edits",
+    }
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        policy = json.loads(row.policy_json)
+        policy["reviewer_model"] = "astra"
+        row.policy_json = json.dumps(policy)
+        task = db.get(SwarmTask, "task")
+        task.repo = "org/repo"
+        task.base_branch = "main"
+        db.add(
+            SwarmNodeRun(
+                task_id="task",
+                node_key="review_fix",
+                attempt=1,
+                status="succeeded",
+                head_sha=head,
+                model="astra",
+                cost_usd=0.1,
+                outcome_json=json.dumps({"artifact": artifact}),
+            )
+        )
+    monkeypatch.setattr(
+        conductor,
+        "_review_recovery_evidence",
+        lambda task, review, **kw: {"state": "ready", **conductor._artifact(review)},
+    )
+    quota = {
+        "available": True,
+        "providers": {
+            "codex": {
+                "observed": True,
+                "age_seconds": 0,
+                "status": "allowed",
+                "windows": [
+                    {
+                        "name": "primary",
+                        "used_percent": 20,
+                        "expired": False,
+                        "resets_at": (
+                            recovered_amendment + timedelta(days=1)
+                        ).isoformat(),
+                    }
+                ],
+            }
+        },
+    }
+    monkeypatch.setattr(
+        progress.provider_quota, "fetch_provider_quota_sync", lambda **kw: quota
+    )
+    return {
+        "receipt_id": 838,
+        "pr_number": 3,
+        "head_sha": head,
+        "direction": "Continue the same artifact; retain landing hold and all accounting.",
+    }, quota
+
+
+def test_progress_authorization_preserves_original_grant_and_accounting(
+    database, progress_recovery
+):
+    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding_limits as funding
+
+    args, _ = progress_recovery
+    with Session(database) as db:
+        original = funding.latest(db, "task", controls.TASK_RECOVERY_ACTION)
+        spent = controls._accounting(controls._starts(db, "task"))
+        direction = db.get(FactoryReceipt, 838).direction_json
+    proposal = progress.preview(**args)
+    request = {
+        **args,
+        "actor": "operator",
+        "request_key": "progress-one",
+        "expected_preview_sha256": proposal["preview_sha256"],
+    }
+    first = progress.apply(**request)
+    assert first["ok"] and progress.apply(**request) == first
+    with Session(database) as db:
+        assert funding.latest(db, "task", controls.TASK_RECOVERY_ACTION) == original
+        assert controls._accounting(controls._starts(db, "task")) == spent
+        row = db.get(FactoryReceipt, 838)
+        assert row.direction_json == direction
+        assert row.task_id == "task" and not row.task_paused
+        assert controls.landing_held(row)
+        effective = controls.task_recovery_grant("task", session=db)
+        assert effective["deadline_at"] == first["lease"]["deadline_at"]
+        assert funding.effective_policy(db, row)["task_budget_usd"] == 50
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == progress.LEASE)
+                ).all()
+            )
+            == 1
+        )
+    assert not progress.renew("task")  # No new reviewed head is no new authority.
+
+
+@pytest.mark.parametrize(
+    "change", ["version", "grant", "funding", "head", "uncertain", "pause", "quota"]
+)
+def test_progress_apply_rechecks_bound_authority(database, progress_recovery, change):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    args, quota = progress_recovery
+    proposal = progress.preview(**args)
+    with Session(database) as db, db.begin():
+        if change == "version":
+            db.get(FactoryControl, "factory").version += 1
+        elif change == "grant":
+            raw = db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.action == controls.TASK_RECOVERY_ACTION
+                )
+            ).first()
+            db.add(
+                FactoryAudit(
+                    actor="other",
+                    action=raw.action,
+                    task_id="task",
+                    detail_json=raw.detail_json,
+                )
+            )
+        elif change == "funding":
+            controls._audit(
+                db,
+                "other",
+                "funding_granted",
+                task_id="task",
+                policy_overlay={"max_task_turns_hard": 8},
+            )
+        elif change == "head":
+            row = db.exec(
+                select(SwarmNodeRun).where(SwarmNodeRun.node_key == "review_fix")
+            ).one()
+            row.outcome_json = row.outcome_json.replace("a" * 40, "b" * 40)
+        elif change == "uncertain":
+            db.exec(select(FactoryStart)).first().status = "uncertain"
+        elif change == "pause":
+            db.get(FactoryReceipt, 838).task_paused = False
+        elif change == "quota":
+            quota["providers"]["codex"]["age_seconds"] = 999999
+    with pytest.raises(ValueError):
+        progress.apply(
+            **args,
+            actor="operator",
+            request_key="progress-stale",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    with Session(database) as db:
+        assert (
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == progress.ACTION)
+            ).first()
+            is None
+        )
+
+
+def test_progress_new_review_renews_once_then_repeated_failure_stops(
+    database, progress_recovery
+):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    args, _ = progress_recovery
+    p = progress.preview(**args)
+    progress.apply(
+        **args,
+        actor="operator",
+        request_key="progress",
+        expected_preview_sha256=p["preview_sha256"],
+    )
+    for i, head in enumerate(("b" * 40, "c" * 40)):
+        artifact = {
+            "pr_number": 3,
+            "head_sha": head,
+            "verdict": "changes_requested",
+            "summary": "Still not fixed",
+        }
+        with Session(database) as db, db.begin():
+            db.add(
+                SwarmNodeRun(
+                    task_id="task",
+                    node_key=f"review_next_{i}",
+                    attempt=1,
+                    status="succeeded",
+                    head_sha=head,
+                    model="astra",
+                    cost_usd=0.1,
+                    outcome_json=json.dumps({"artifact": artifact}),
+                )
+            )
+        assert progress.renew("task") is (i == 0)
+    with Session(database) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == progress.LEASE)
+                ).all()
+            )
+            == 2
+        )
+
+
+@pytest.mark.parametrize(
+    "problem", ["unavailable", "exhausted", "unobserved", "missing_windows"]
+)
+def test_progress_subscription_evidence_fails_closed(progress_recovery, problem):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    args, quota = progress_recovery
+    if problem == "unavailable":
+        quota["available"] = False
+    elif problem == "exhausted":
+        quota["providers"]["codex"]["windows"][0]["used_percent"] = 100
+    elif problem == "unobserved":
+        quota["providers"]["codex"]["observed"] = False
+    else:
+        quota["providers"]["codex"]["windows"] = []
+    with pytest.raises(ValueError, match="progress_"):
+        progress.preview(**args)
+
+
+@pytest.mark.parametrize("restriction", ["pause", "cancel", "uncertain"])
+def test_progress_renewal_does_not_clear_later_restrictions(
+    database, progress_recovery, restriction
+):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    args, _ = progress_recovery
+    proposal = progress.preview(**args)
+    progress.apply(
+        **args,
+        actor="operator",
+        request_key="progress",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if restriction == "pause":
+            row.task_paused = True
+        elif restriction == "cancel":
+            row.cancellation_requested = True
+        else:
+            db.exec(select(FactoryStart)).first().status = "uncertain"
+        db.add(
+            SwarmNodeRun(
+                task_id="task",
+                node_key="review_later",
+                attempt=1,
+                status="succeeded",
+                model="astra",
+                cost_usd=0.1,
+                head_sha="b" * 40,
+                outcome_json=json.dumps(
+                    {
+                        "artifact": {
+                            "pr_number": 3,
+                            "head_sha": "b" * 40,
+                            "verdict": "approve",
+                            "summary": "Reviewed",
+                        }
+                    }
+                ),
+            )
+        )
+    assert not progress.renew("task")
+    with Session(database) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == progress.LEASE)
+                ).all()
+            )
+            == 1
+        )
