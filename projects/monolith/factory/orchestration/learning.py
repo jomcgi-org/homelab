@@ -312,7 +312,7 @@ def complete(db, name, holder):
     )
 
 
-def reconcile_daily_payload(db, *, default_repo=None):
+def reconcile_daily_payload(db, *, default_repo=None, default_branch=None):
     """Reconcile only the approved existing daily job under the admission pool lock.
 
     Caller owns the transaction. Never insert, rearm, unlock or alter scheduling.
@@ -353,7 +353,7 @@ def reconcile_daily_payload(db, *, default_repo=None):
         or row["locked_at"] is not None
         or row["last_status"] != "ok"
         or payload.get("model") != "sol"
-        or payload.get("branch", "main") != "main"
+        or payload.get("branch", default_branch) != "main"
         or payload.get("repo", default_repo) != REPO
         or payload.get("digest") != "factory-retro"
         or "learning_stage" in payload
@@ -388,6 +388,7 @@ def reconcile_daily_payload(db, *, default_repo=None):
         **payload,
         "model": "luna",
         "repo": REPO,
+        "branch": "main",
         "learning_stage": "evidence",
         "prompt": "Report bounded evidence for the existing factory learning program.",
         "learning_activation": {
@@ -395,11 +396,13 @@ def reconcile_daily_payload(db, *, default_repo=None):
             "previous_payload_sha256": _sha(payload),
             "previous_fields": {
                 key: payload[key]
-                for key in ("model", "prompt", "repo")
+                for key in ("model", "prompt", "repo", "branch")
                 if key in payload
             },
             "previous_absent_fields": [
-                key for key in ("repo", "learning_stage") if key not in payload
+                key
+                for key in ("repo", "branch", "learning_stage")
+                if key not in payload
             ],
             "configured_at": datetime.now(timezone.utc).isoformat(),
         },
