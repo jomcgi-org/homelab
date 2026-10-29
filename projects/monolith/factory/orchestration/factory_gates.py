@@ -89,7 +89,10 @@ GATE_SCHEMA = {
 }
 
 GATE_PROMPT = (
-    "Unmerged: leave_unmerged. "
+    "Use leave_unmerged: true only when the authorized scope explicitly "
+    "requires an unmerged delivery; otherwise omit it. Outstanding live checks "
+    "alone do not require a new landing hold. Existing operator holds remain "
+    "binding, and only the authorized landing owner may merge or deploy. "
     "Conductor policy for reversible gates: classify a missing name, retention "
     "count, threshold, schedule or similar parameter in `gate` with kind "
     "`parameter`, classification `reversible`, a concrete proposed `value`, and "
