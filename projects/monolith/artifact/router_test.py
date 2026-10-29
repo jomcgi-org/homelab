@@ -7,7 +7,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from artifact import register, register_public, s3
-from artifact.router import _ARTIFACT_CSP
 
 
 @pytest.fixture(params=[register, register_public], ids=["full", "public"])
@@ -65,7 +64,12 @@ def test_raw_serves_html_with_sandboxed_csp(client: TestClient):
     assert "default-src 'none'" in csp
     assert "connect-src https:" in csp  # live data / API refresh allowed
     assert "http:" not in csp  # https only: no plaintext / LAN-probe downgrade
-    assert csp == _ARTIFACT_CSP
+    assert csp == (
+        "sandbox allow-scripts; default-src 'none'; "
+        "script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; "
+        "img-src data: blob: https:; font-src data: https:; "
+        "connect-src https:; form-action 'none'; base-uri 'none'"
+    )
     assert "script-src 'unsafe-inline' https:" in csp
     assert "style-src 'unsafe-inline' https:" in csp
     assert "img-src data: blob: https:" in csp
