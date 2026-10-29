@@ -325,15 +325,26 @@ def test_production_learning_activation_preserves_all_other_controls(tmp_path):
 
 
 def test_daily_learning_hash_is_empty_until_explicitly_pinned(tmp_path):
-    before = _render_documents(DEPLOY, GKE)
+    before = _render_documents()
     env = _backend_env(before)
     assert env["FACTORY_LEARNING_DAILY_PAYLOAD_SHA256"] == ""
     override = tmp_path / "pin.yaml"
     override.write_text(
         'agents:\n  drainer:\n    learningDailyPayloadSha256: "' + "a" * 64 + '"\n'
     )
-    after = _render_documents(DEPLOY, GKE, override)
+    after = _render_documents(override)
     assert _backend_env(after) == env | {
         "FACTORY_LEARNING_DAILY_PAYLOAD_SHA256": "a" * 64
+    }
+    assert _cronworkflows(before) == _cronworkflows(after)
+
+
+def test_production_daily_pin_changes_only_payload_guard(tmp_path):
+    rollback = tmp_path / "rollback.yaml"
+    rollback.write_text('agents:\n  drainer:\n    learningDailyPayloadSha256: ""\n')
+    before = _render_documents(DEPLOY, GKE, rollback)
+    after = _render_documents(DEPLOY, GKE)
+    assert _backend_env(after) == _backend_env(before) | {
+        "FACTORY_LEARNING_DAILY_PAYLOAD_SHA256": "e121e88364d8636ebaed35f00c2ff6711d5650a08e1c276af9b697a7780acf02"
     }
     assert _cronworkflows(before) == _cronworkflows(after)
