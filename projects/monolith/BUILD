@@ -4280,21 +4280,6 @@ py_test(
 )
 
 py_test(
-    name = "app_main_summary_edge_test",
-    srcs = ["app/main_summary_edge_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-        "@pip//tzdata",
-    ],
-)
-
-py_test(
     name = "scripts_preview_layout_test",
     srcs = ["scripts/preview_layout_test.py"],
     data = ["scripts/preview-layout.py"],
@@ -4314,18 +4299,6 @@ py_test(
         ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "chat_backfill_test",
-    srcs = ["chat/backfill_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -6003,28 +5976,6 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "chat_router_backfill_exception_test",
-    srcs = ["chat/router_backfill_exception_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "chat_backfill_flush_test",
-    srcs = ["chat/backfill_flush_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
         "@pip//sqlmodel",
     ],
 )
@@ -8033,17 +7984,6 @@ sh_binary(
     name = "generate-routes",
     srcs = ["generate-routes.sh"],
     visibility = ["//bazel/tools/format:__pkg__"],
-)
-
-py_test(
-    name = "chat_backfill_extra_test",
-    srcs = ["chat/backfill_extra_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
 )
 
 py_test(

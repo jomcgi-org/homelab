@@ -1,14 +1,10 @@
-"""Chat API routes -- backfill, explore and cluster endpoints."""
+"""Chat API routes: explore and cluster endpoints."""
 
-import asyncio
 import logging
-from collections.abc import Awaitable
-from datetime import datetime, timezone
-from typing import Annotated, Literal
 
 import shared.inference
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi import APIRouter, Request
+from pydantic import BaseModel, Field
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -18,88 +14,11 @@ from pydantic_ai.messages import (
 )
 from shared.embedding import EmbeddingClient
 
-from chat.backfill import BackfillProgress, run_backfill
 from chat.cluster_agent import ClusterDeps, create_cluster_agent
 from chat.explorer import ExplorerDeps, create_explorer_agent, explorer_store
 from chat.sse import SSEEmitter, SSEStreamingResponse
 
 logger = logging.getLogger(__name__)
-
-
-def _log_backfill_exception(task: "asyncio.Task[object]") -> None:
-    """Log unhandled exceptions from the backfill task."""
-    if not task.cancelled() and task.exception():
-        logger.error("Backfill task failed", exc_info=task.exception())
-
-
-DiscordChannelId = Annotated[str, Field(pattern=r"^[1-9][0-9]{0,19}$")]
-
-
-class BackfillRequest(BaseModel):
-    """Optional scope for a backfill. Omitted or null means all channels."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    channel_ids: Annotated[list[DiscordChannelId] | None, Field(min_length=1)] = None
-
-    @field_validator("channel_ids")
-    @classmethod
-    def validate_channel_ids(cls, value: list[str] | None) -> list[str] | None:
-        if value is None:
-            return None
-        if len(value) != len(set(value)):
-            raise ValueError("channel_ids must not contain duplicates")
-        if any(int(channel_id) > (1 << 64) - 1 for channel_id in value):
-            raise ValueError("channel_ids must be unsigned 64-bit Discord snowflakes")
-        return value
-
-
-class BackfillStatus(BaseModel):
-    """Inspectable lifecycle and progress for the most recent backfill."""
-
-    status: Literal["idle", "running", "success", "failure", "cancelled"]
-    channel_ids: list[str] | None = None
-    channels_total: int = 0
-    channels_completed: int = 0
-    messages_stored: int = 0
-    messages_skipped: int = 0
-    current_channel_id: str | None = None
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    error: str | None = None
-
-
-def _update_backfill_progress(
-    status: BackfillStatus, progress: BackfillProgress
-) -> None:
-    status.channels_total = progress.channels_total
-    status.channels_completed = progress.channels_completed
-    status.messages_stored = progress.messages_stored
-    status.messages_skipped = progress.messages_skipped
-    status.current_channel_id = progress.current_channel_id
-
-
-async def _track_backfill(
-    operation: Awaitable[BackfillProgress], status: BackfillStatus
-) -> None:
-    try:
-        progress = await operation
-    except asyncio.CancelledError:
-        status.status = "cancelled"
-        status.current_channel_id = None
-        status.finished_at = datetime.now(timezone.utc)
-        raise
-    except Exception as exc:
-        status.status = "failure"
-        status.current_channel_id = None
-        status.finished_at = datetime.now(timezone.utc)
-        status.error = str(exc)
-        raise
-    else:
-        _update_backfill_progress(status, progress)
-        status.status = "success"
-        status.current_channel_id = None
-        status.finished_at = datetime.now(timezone.utc)
 
 
 def _history_to_messages(history: list[dict]) -> list[ModelMessage]:
@@ -121,57 +40,6 @@ def _history_to_messages(history: list[dict]) -> list[ModelMessage]:
 
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
-
-
-@router.post("/backfill", status_code=202)
-async def backfill(request: Request, body: BackfillRequest | None = None):
-    """Launch a background backfill for all or selected Discord channels."""
-    bot = request.app.state.bot
-    if not bot:
-        raise HTTPException(503, "Discord bot not running")
-
-    task = getattr(request.app.state, "backfill_task", None)
-    if task and not task.done():
-        raise HTTPException(409, "Backfill already running")
-
-    channel_ids = body.channel_ids if body is not None else None
-    channels = [c for g in bot.guilds for c in g.text_channels]
-    if channel_ids is not None:
-        visible_ids = {str(channel.id) for channel in channels}
-        unknown_ids = sorted(set(channel_ids) - visible_ids)
-        if unknown_ids:
-            raise HTTPException(
-                422, f"Unknown or inaccessible channel_ids: {', '.join(unknown_ids)}"
-            )
-        requested_ids = set(channel_ids)
-        channels = [c for c in channels if str(c.id) in requested_ids]
-
-    status = BackfillStatus(
-        status="running",
-        channel_ids=channel_ids,
-        channels_total=len(channels),
-        started_at=datetime.now(timezone.utc),
-    )
-    operation = run_backfill(
-        bot,
-        channel_ids=channel_ids,
-        on_progress=lambda progress: _update_backfill_progress(status, progress),
-    )
-    task = asyncio.create_task(_track_backfill(operation, status))
-    task.add_done_callback(_log_backfill_exception)
-    request.app.state.backfill_task = task
-    request.app.state.backfill_status = status
-
-    return {"status": "started", "channels": len(channels)}
-
-
-@router.get("/backfill/status", response_model=BackfillStatus)
-async def backfill_status(request: Request) -> BackfillStatus:
-    """Return progress and the terminal result of the most recent backfill."""
-    status = getattr(request.app.state, "backfill_status", None)
-    if status is None:
-        return BackfillStatus(status="idle")
-    return status
 
 
 class ExploreRequest(BaseModel):

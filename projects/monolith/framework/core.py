@@ -544,8 +544,6 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.bot = None
-        app.state.backfill_task = None
-        app.state.backfill_status = None
         app.state.singleton_tasks = []
         app.state.leader_singleton_failures = set()
         app.state.leader_singletons_dbos_launched = False
@@ -679,9 +677,6 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
             close_shutdown_guard()
         if elector_task is not None and exit_process is not None:
             elector_task.cancel()
-        backfill_task = getattr(app.state, "backfill_task", None)
-        if backfill_task and not backfill_task.done():
-            backfill_task.cancel()
 
         if _OTEL_PROVIDER is not None:
             _OTEL_PROVIDER.shutdown()

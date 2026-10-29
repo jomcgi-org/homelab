@@ -17,6 +17,7 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi.routing import iter_route_contexts
 
 # Ensure no valid static directory is set before importing main
 os.environ.pop("STATIC_DIR", None)
@@ -183,38 +184,18 @@ class TestLifespanAppStateBotAssignment:
                 assert app.state.bot is None, (
                     "app.state.bot should be None when no DISCORD_BOT_TOKEN is set"
                 )
-
-    @pytest.mark.asyncio
-    async def test_app_state_backfill_state_initialised_to_none_on_startup(self):
-        """Lifespan initialises the backfill task and status on startup."""
-
-        def capture_create_task(coro, **kwargs):
-            if hasattr(coro, "close"):
-                coro.close()
-            return _AwaitableTask()
-
-        env_without_token = {
-            k: v for k, v in os.environ.items() if k != "DISCORD_BOT_TOKEN"
-        }
-        env_without_token["DISCORD_BOT_TOKEN"] = ""
-
-        patches = _lifespan_patches_no_discord()
-        with (
-            patch.dict(os.environ, env_without_token, clear=True),
-            patch("asyncio.create_task", side_effect=capture_create_task),
-            patches[0],
-            patches[1],
-        ):
-            async with lifespan(app):
-                assert hasattr(app.state, "backfill_task"), (
-                    "app.state.backfill_task was not set during lifespan startup"
-                )
-                assert app.state.backfill_task is None, (
-                    "app.state.backfill_task should be None at startup"
-                )
-                assert hasattr(app.state, "backfill_status"), (
-                    "app.state.backfill_status was not set during lifespan startup"
-                )
-                assert app.state.backfill_status is None, (
-                    "app.state.backfill_status should be None at startup"
-                )
+def test_private_app_chat_routes_and_openapi():
+    """The composed app retains chat clients and omits the retired import API."""
+    paths = app.openapi()["paths"]
+    routes = list(iter_route_contexts(app.routes))
+    registered = {
+        (route.path, method)
+        for route in routes
+        for method in route.methods
+    }
+    for path in ("/api/chat/explore", "/api/chat/cluster"):
+        assert (path, "POST") in registered
+        assert "post" in paths[path]
+    for path in ("/api/chat/backfill", "/api/chat/backfill/status"):
+        assert path not in {route.path for route in routes}
+        assert path not in paths
