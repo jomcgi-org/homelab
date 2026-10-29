@@ -51,6 +51,7 @@
   // new attempt and therefore needs a fresh key, while a transport failure or
   // uncertain outcome keeps the old key so replay can inspect that request.
   let requestAttempts = $state({});
+  let requestRecords = $state({});
   const pendingContexts = new Set();
 
   const pending = $derived(openOnes(escalations));
@@ -167,11 +168,11 @@
           "The previous response is uncertain. Restore the same action and note to check its result; do not send a different decision.";
         return;
       }
-      const record = (status) =>
-        sessionStorage.setItem(
-          storageKey,
-          JSON.stringify({ body: requestBody, attempt, status }),
-        );
+      const record = (status) => {
+        const saved = { body: requestBody, attempt, status };
+        sessionStorage.setItem(storageKey, JSON.stringify(saved));
+        requestRecords = { ...requestRecords, [contextKey(item)]: saved };
+      };
       record("pending");
       const response = await fetch(
         `/factory/escalations/decisions/${item.receipt_id}`,
@@ -349,7 +350,32 @@
     }
   }
 
+  function checkPrevious(item) {
+    const saved = requestRecords[contextKey(item)];
+    if (saved?.status !== "pending") return;
+    const { request_key: _key, ...body } = saved.body;
+    return send(item, body, "checking previous result");
+  }
+
   onMount(() => {
+    for (const item of pending) {
+      try {
+        const saved = JSON.parse(
+          sessionStorage.getItem(`factory-decision:${contextKey(item)}`) ??
+            "null",
+        );
+        if (
+          saved?.status === "pending" &&
+          saved.body?.decision_id === item.decision_id
+        ) {
+          requestRecords[contextKey(item)] = saved;
+          notes[item.receipt_id] = saved.body.note ?? "";
+        }
+      } catch {
+        failure =
+          "Previous request state is unavailable. Refresh before acting.";
+      }
+    }
     const timer = setInterval(() => {
       if (document.visibilityState === "visible" && !busy) refresh();
     }, POLL_MS);
@@ -446,6 +472,18 @@
             </p>
           {/each}
 
+          {#if index !== cursor}
+            <button
+              class="context-select"
+              onclick={() => {
+                confirming = null;
+                focusOn(item);
+                expanded = { ...expanded, [item.receipt_id]: true };
+              }}
+            >
+              Open context and note
+            </button>
+          {/if}
           {#if index === cursor || contexts[contextKey(item)]}
             {@const context = contexts[contextKey(item)]}
             {@const error = contextErrors[contextKey(item)]}
@@ -479,6 +517,17 @@
             </details>
           {/if}
 
+          {#if requestRecords[contextKey(item)]?.status === "pending"}
+            <p role="status">
+              Previous request awaiting confirmation. Check its result before
+              choosing another action.
+            </p>
+            <button
+              class="context-select"
+              disabled={busy !== null || unavailable}
+              onclick={() => checkPrevious(item)}>Check previous result</button
+            >
+          {/if}
           <div class="options">
             {#each item.options as option, i (option.key)}
               <button
@@ -605,6 +654,14 @@
   textarea:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: 3px;
+  }
+
+  .context-select {
+    min-height: 44px;
+    padding: 0.5rem;
+    color: var(--ink);
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
   }
 
   .decision-context summary,
