@@ -922,9 +922,11 @@ Reviewer-driven class escalation and the verdict ledger are deliberately not
 built in these phases (#3843).
 
 A refine task runs one planner-class node with at most two attempts and has no
-DAG. It researches before briefing: the knowledge graph first, then the
-checkout's ARCHITECTURE.md `**Why.**` paragraphs, file history and referenced
-pull requests, then the web only for a named external product, version or CVE.
+DAG. It inspects the code, recorded decisions and current issue/PR state that
+the verdict depends on. A focused knowledge query can supply relevant history;
+confirm decisive claims against current evidence, even when marked verified.
+Missing KG access does not block a repository-backed verdict. Web research
+covers external facts needed for the decision.
 The brief cites those sources under `### Evidence`, and after the verdict the
 node reports its issue number, verdict and one-sentence reason back to the
 knowledge graph on a best-effort basis. The node then posts exactly one
@@ -942,11 +944,15 @@ then reaches exactly one of five verdicts and acts on it:
 
 `reject` and `stale` are for a premise a reader can check: a decision recorded
 in an ARCHITECTURE.md **Why.** paragraph, work already merged, a file or flag
-that is gone. `needs-human` is for a decision a person can make in about a
-minute and that unblocks the work, such as which of two scopes, whether the
-work is still wanted, or confirming that #z supersedes this. A question that
-needs real thought, a design, or a window only the author can declare is the
-`defer` verdict, taken by the node itself.
+that is gone. Refinement chooses routine reversible designs within accepted
+goals and scope and records the approach in Acceptance. `needs-human` is for
+conflicting goals, missing authority, a constraint exception or an explicit
+human-owned decision. `defer` requires a concrete prerequisite or external
+event preventing progress. Missing design detail alone justifies neither.
+Brief-only restrictions and typed gate effects still apply. A new
+`leave_unmerged` hold requires an explicit unmerged-delivery scope; outstanding
+live checks alone do not create one. Existing holds remain binding, and the
+authorized landing owner still decides whether merge and rollout may proceed.
 
 Closing is gated twice. It needs `close_enabled`, and it needs room under
 `max_closes_per_day`, counted from the `intake_closed` audits of the last 24
