@@ -41,8 +41,8 @@ tailnet service.
 
 Pi uses Meta Spark through its [runtime shim](../embervm/runtimes/claude/shim.py).
 Its local context, output and compaction limits are tested independently of
-this chart. Monolith's hub overlay also selects Meta Spark for generative
-requests. This change does not alter either provider route.
+this chart. Monolith uses configured external LLM provider APIs for generative
+requests. This change does not alter provider routing.
 
 ## Validation
 
