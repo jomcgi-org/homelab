@@ -358,8 +358,8 @@ Decided and not yet built, each with the issue that tracks it. A row leaves
 this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
-| Retire unowned monolith dev/recovery scaffolding; preserve EmberVM dev | section 5 | #7034 | repository retirement; future monolith dev starts fresh under #7004 |
 | --- | --- | --- | --- |
+| Retire unowned monolith dev/recovery scaffolding; preserve EmberVM dev | section 5 | #7034 | repository retirement; future monolith dev starts fresh under #7004 |
 | Hub-only Renovate and reviewed dependency maintenance | section 9 | #7068, #7001 | cleanup integrated by #7358 with both hub schedules suspended; verified identity, required evidence check, CI isolation and #7186 activation acceptance outstanding |
 | Shared CNPG backup-age observations feed the private advisory and Discord notifier | section 5 | #7002 | repository implementation staged off; rollout, effective RBAC and failure/recovery acceptance outstanding |
 | Native `NetworkPolicy` successor enforcement on the hub | section 3 | #5276, #5277 | inert templates removed in #5816; native egress remains staged off pending its own live validation; hub-only since #4964 closed 2026-09-18 |
