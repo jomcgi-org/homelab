@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 
 from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import event
@@ -513,7 +514,9 @@ def test_browser_routes_serve_the_full_work_item_document(db):
     try:
         via_browser = browser.get(f"/api/agents/factory/work-items/{item_id}").json()
         with Session(db) as session:
-            assert via_browser == work_items.work_item_document(session, item_id)
+            assert via_browser == jsonable_encoder(
+                work_items.work_item_document(session, item_id)
+            )
         assert [receipt["id"] for receipt in via_browser["receipts"]] == [
             newer_id,
             older_id,
@@ -527,8 +530,14 @@ def test_browser_routes_serve_the_full_work_item_document(db):
             "task_id": None,
         }
         with Session(db) as session:
-            assert browser.get("/api/agents/factory/work-items?state=ready").json() == {
-                "work_items": work_items.list_work_items(session, state="ready")
-            }
+            assert browser.get(
+                "/api/agents/factory/work-items?state=ready"
+            ).json() == jsonable_encoder(
+                {
+                    "work_items": work_items.list_work_items(
+                        session, state="ready", authority=None, limit=50
+                    )
+                }
+            )
     finally:
         browser_app.dependency_overrides.clear()
