@@ -366,11 +366,9 @@ decisions. These surfaces do not share a blanket per-record authorization guaran
 task tools and session reads/mutations retain caller-scoping gaps, alongside note
 lookup and turn-detail reads. These are examples, not an exhaustive gap inventory.
 Section 7's surface matrix remains the authentication and result-access reference.
-The pruned agents tier lacks verified delegated task identity; planner preview
-binding fails closed even with its flag enabled. Public composition uses published,
-read-only projections and the restricted public database role.
-See [domain ownership](factory/orchestration/FACTORY.md#domain-ownership) and
-[planner preview](factory/orchestration/FACTORY.md#planner-preview).
+The pruned agents tier lacks verified delegated task identity. Public composition
+uses published, read-only projections and the restricted public database role.
+See [domain ownership](factory/orchestration/FACTORY.md#domain-ownership).
 
 **Why.** Connected MCP callers can retain a tool catalog after the native server
 consolidates names. The session dispatch diagnostics compatibility name delegates
@@ -403,7 +401,7 @@ The model definitions are [orchestration records](factory/orchestration/factory_
 
 | Store | Owned records |
 | --- | --- |
-| `swarm` | `factory_control`, `factory_receipt`, `factory_start`, `factory_audit`, `factory_planner_preview` |
+| `swarm` | `factory_control`, `factory_receipt`, `factory_start`, `factory_audit` |
 | `swarm` | `work_item`, `work_item_edge`, `work_item_event`, `factory_webhook_delivery`, `factory_github_issue_state`, `factory_class_tier`, `factory_review_verdict` (retained historical routing/review records) |
 | `swarm` | `swarm_task`, `swarm_plan_version`, `swarm_plan_node`, `swarm_node_run`, `swarm_conductor_call`, `swarm_decision` |
 | `agent_sessions` | `agent_sessions`, `agent_turns`, `pending_messages`, `capacity_pool`, `capacity_reservations`, `probe_observations`, `result_receipts`, `reservation_reviews`, `voice_ui_companions`, `voice_ui_ledger` |
