@@ -37,10 +37,4 @@ apiServerProxyAdmins:
 
 egressNamespace: tailscale
 
-# The private /qwen page uses the FreeToken bridge to node-4 over the tailnet.
-# The operator's proxy forwards the Service port unchanged, so node-4 must
-# listen on port 8090.
-egressServices:
-  - name: inference-bridge-freetoken
-    tailnetFqdn: "node-4.tail33e678.ts.net"
-    port: 8090
+egressServices: []

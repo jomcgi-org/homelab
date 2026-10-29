@@ -986,12 +986,6 @@ spec:
               {{- else }}
               value: ""
               {{- end }}
-            {{- if .Values.frontend.qwenApiBase }}
-            # FreeToken (Qwen on node-4) over the Tailscale egress Service, for
-            # the private /qwen chat page.
-            - name: QWEN_API_BASE
-              value: {{ .Values.frontend.qwenApiBase | quote }}
-            {{- end }}
             - name: AGENT_SESSION_STOP_CONTROL_ENABLED
               value: {{ .Values.agents.sessions.stopControlEnabled | quote }}
             {{- if .Values.frontend.otelCollectorUrl }}
