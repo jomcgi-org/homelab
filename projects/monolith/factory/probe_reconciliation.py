@@ -24,21 +24,24 @@ ACTION = "quota_probe_undelivered_resolved"
 PREFIX = "synthetic:factory-quota:"
 
 
-def proof(db, session_id, seq, permit_id):
+def proof(db, session_id, seq, permit_id, *, lock=False):
     """Recheck all evidence, including the original supervision settlement."""
     if (
         any(type(v) is not int or v < 1 for v in (session_id, seq, permit_id))
         or seq != 1
     ):
         raise ValueError("probe_invalid_identity")
-    agent = db.exec(
-        select(AgentSession).where(AgentSession.id == session_id).with_for_update()
-    ).first()
-    permit = db.exec(
-        select(AgentCapacityReservation)
-        .where(AgentCapacityReservation.id == permit_id)
-        .with_for_update()
-    ).first()
+    # Status is observational and must never acquire row locks out of order.
+    # Mutation callers already hold control and capacity locks before this.
+    session_query = select(AgentSession).where(AgentSession.id == session_id)
+    permit_query = select(AgentCapacityReservation).where(
+        AgentCapacityReservation.id == permit_id
+    )
+    if lock:
+        session_query = session_query.with_for_update()
+        permit_query = permit_query.with_for_update()
+    agent = db.exec(session_query).first()
+    permit = db.exec(permit_query).first()
     observed = db.get(ProbeObservation, permit_id)
     if (
         agent is None
@@ -174,7 +177,7 @@ def _preview(db, control, session_id, seq, permit_id, reason):
         "version": control.version,
         "generation": json.loads(control.policy_json).get("generation", 0),
         "reason": reason,
-        "proof": proof(db, session_id, seq, permit_id),
+        "proof": proof(db, session_id, seq, permit_id, lock=True),
         "effect": "resolve_only_this_undelivered_probe",
         "dispatch": False,
     }

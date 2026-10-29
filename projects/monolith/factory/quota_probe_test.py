@@ -1020,3 +1020,24 @@ def test_probe_resolution_refuses_any_result_receipt_and_missing_origin(db):
         session.commit()
     with pytest.raises(ValueError, match="origin_invalid"):
         recovery.preview(*ids, "reason")
+
+
+def test_resolved_probe_status_never_acquires_row_locks(db):
+    from sqlalchemy import event
+    from factory import probe_reconciliation as recovery
+
+    ids = settled_probe(db)
+    p = recovery.preview(*ids, "reason")
+    recovery.apply("operator", *ids, "reason", "key", p["preview_sha256"])
+    locked = []
+
+    def inspect(conn, clause, multiparams, params, options):
+        if getattr(clause, "_for_update_arg", None) is not None:
+            locked.append(clause)
+
+    event.listen(db, "before_execute", inspect)
+    try:
+        assert not probe.probe_status()["unresolved_probe_present"]
+        assert not locked
+    finally:
+        event.remove(db, "before_execute", inspect)
