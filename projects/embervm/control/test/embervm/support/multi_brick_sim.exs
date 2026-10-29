@@ -810,7 +810,7 @@ defmodule Embervm.MultiBrickSim do
     # Managers first, so a worker still blocked in a fake RPC is never finished
     # as a crash (which would audit a denial into the application's Metering).
     for pid <-
-          [sim.ctx.callers, sim.ctx.mgr, sim.ctx.disp, sim.ctx.task_store, sim.ctx.bc, sim.ctx.store, sim.ctx.writer] ++
+          [sim.ctx.callers, sim.ctx.mgr, sim.ctx.disp, sim.ctx.task_store, sim.ctx.bc, sim.ctx.store] ++
             [sim.ctx.sup, sim.ctx.registry_pid, sim.ctx.op_log, sim.ctx.deployments] do
       Embervm.TestProcess.stop_safely(pid)
     end
