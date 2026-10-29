@@ -5,13 +5,19 @@ py_test(
     name = "clone_workflow_secrets_test",
     srcs = ["clone_workflow_secrets_test.py"],
     data = [
-        "Chart.yaml",
         "Chart.lock",
+        "Chart.yaml",
         "values.yaml",
         "@multitool//tools/helm",
-    ] + glob(["templates/**/*", "charts/**/*"]),
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+    ]),
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
-    deps = ["@pip//pytest", "@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 helm_chart(

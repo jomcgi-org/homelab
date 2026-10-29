@@ -127,9 +127,9 @@ py_test(
     name = "chart_env_identity_test",
     srcs = ["chart_env_identity_test.py"],
     data = [
-        "//projects/embervm/chart/testdata:isolated_rbac",
         "Chart.yaml",
         "values.yaml",
+        "//projects/embervm/chart/testdata:isolated_rbac",
         "//projects/embervm/deploy:deploy_values",
         "//projects/embervm/deploy:gke_values",
         "//projects/embervm/dev/deploy:application",

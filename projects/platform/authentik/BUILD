@@ -5,13 +5,21 @@ py_test(
     name = "blueprint_retirement_test",
     srcs = ["blueprint_retirement_test.py"],
     data = [
-        "Chart.yaml",
         "Chart.lock",
+        "Chart.yaml",
         "values.yaml",
         "@multitool//tools/helm",
-    ] + glob(["templates/**/*", "charts/**/*", "blueprints/*.yaml", "optional/*.yaml"]),
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "blueprints/*.yaml",
+        "optional/*.yaml",
+    ]),
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
-    deps = ["@pip//pytest", "@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 helm_chart(
