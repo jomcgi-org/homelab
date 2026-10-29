@@ -244,9 +244,7 @@ def factory_decision(
     return with_request_knowledge(result, principal.subject, body.request_key)
 
 
-def factory_receipt(
-    body: ReceiptRequest, principal: Principal
-) -> dict:
+def factory_receipt(body: ReceiptRequest, principal: Principal) -> dict:
     """Validate and receive MCP issue submissions, without an HTTP registration."""
     from factory.orchestration.factory_conductor import github_get
     from factory.orchestration.factory_intake import receive_issue
