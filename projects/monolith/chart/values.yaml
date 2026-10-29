@@ -1336,7 +1336,6 @@ tokenBroker:
           memory: 32Mi
 
 frontend:
-  otelCollectorUrl: ""
   # OpenAI-compatible FreeToken endpoint for the private /qwen chat page; empty
   # leaves QWEN_API_BASE unset and the page answers 503.
   qwenApiBase: ""

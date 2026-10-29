@@ -178,10 +178,9 @@ while confirming players cannot open the matrix.
 The launcher serves its own ephemeral JWKS and signs local ID tokens. The
 normal backend signature, issuer, audience and campaign checks still run.
 These identity endpoints live only in this development entrypoint, outside the
-production source globs. Local runs disable browser telemetry instrumentation
-and require no model, Authentik or cluster credentials. Fixtures use model
-schema creation; production migration and real OIDC enrollment checks remain
-separate from this simulated rehearsal.
+production source globs. Local runs require no model, Authentik or cluster
+credentials. Fixtures use model schema creation; production migration and real
+OIDC enrollment checks remain separate from this simulated rehearsal.
 
 A reviewed local snapshot is included in [evidence/report.json](evidence/report.json),
 with provenance and screenshot checks in [evidence/review.json](evidence/review.json).
