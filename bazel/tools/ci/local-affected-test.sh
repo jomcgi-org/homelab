@@ -28,9 +28,17 @@ if [[ "$base_ref" == origin/* ]]; then
 	git fetch origin "${base_ref#origin/}" --quiet
 fi
 
+# An empty affected set and explicit target overrides still check the manifest.
+# bb remote may supply BUILD_WORKSPACE_DIRECTORY; this is an outer script.
+env -u BUILD_WORKSPACE_DIRECTORY ./bazel/tools/ci/python-manifest.sh check "$base_ref"
+
 targets_file="$(mktemp)"
 trap 'rm -f "$targets_file"' EXIT
-./bazel/tools/ci/affected-targets.sh "$base_ref" HEAD -- "${query_args[@]}" >"$targets_file"
+if [[ $# -gt 0 ]]; then
+	printf '%s\n' "$@" >"$targets_file"
+else
+	./bazel/tools/ci/affected-targets.sh "$base_ref" HEAD -- "${query_args[@]}" >"$targets_file"
+fi
 
 target_count="$(grep -c . "$targets_file" || true)"
 if [[ "$target_count" -eq 0 ]]; then
