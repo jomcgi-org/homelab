@@ -326,7 +326,11 @@ def claim_drainer_job(
         if learning.enabled() and "qwen-drain" in remaining_kinds:
             set_attributes(
                 span,
-                {"drain.learning_config": learning.reconcile_daily_payload(session)},
+                {
+                    "drain.learning_config": learning.reconcile_daily_payload(
+                        session, default_repo=agent_config.load_drainer_settings().repo
+                    )
+                },
             )
         while remaining_kinds:
             # Keep the pool lock while rolling back a refused job's lease.

@@ -312,7 +312,7 @@ def complete(db, name, holder):
     )
 
 
-def reconcile_daily_payload(db):
+def reconcile_daily_payload(db, *, default_repo=None):
     """Reconcile only the approved existing daily job under the admission pool lock.
 
     Caller owns the transaction. Never insert, rearm, unlock or alter scheduling.
@@ -350,7 +350,7 @@ def reconcile_daily_payload(db):
         or row["locked_at"] is not None
         or row["last_status"] != "ok"
         or payload.get("model") != "sol"
-        or payload.get("repo") != REPO
+        or payload.get("repo", default_repo) != REPO
         or payload.get("digest") != "factory-retro"
         or "learning_stage" in payload
         or "learning_activation" in payload
@@ -383,12 +383,20 @@ def reconcile_daily_payload(db):
     updated = {
         **payload,
         "model": "luna",
+        "repo": REPO,
         "learning_stage": "evidence",
         "prompt": "Report bounded evidence for the existing factory learning program.",
         "learning_activation": {
             "version": 1,
             "previous_payload_sha256": _sha(payload),
-            "previous_fields": {"model": payload["model"], "prompt": payload["prompt"]},
+            "previous_fields": {
+                key: payload[key]
+                for key in ("model", "prompt", "repo")
+                if key in payload
+            },
+            "previous_absent_fields": [
+                key for key in ("repo", "learning_stage") if key not in payload
+            ],
             "configured_at": datetime.now(timezone.utc).isoformat(),
         },
     }
