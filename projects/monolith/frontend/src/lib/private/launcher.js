@@ -18,7 +18,6 @@ export const launcher = [
     external: true,
   },
   { label: "Factory", desc: "autonomous work", href: "/factory" },
-  { label: "Qwen", desc: "4090 chat and inference stats", href: "/qwen" },
   { label: "Grimoire", desc: "character sheets", href: "/grimoire" },
   { label: "Updates", desc: "daily release journal", href: "/updates" },
   {

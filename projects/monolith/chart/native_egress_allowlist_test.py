@@ -203,16 +203,6 @@ def _expected_endpoints(release: str, namespace: str, embervm: str) -> set[tuple
             tcp(5401),
         ),
         (
-            "tailscale",
-            (
-                ("tailscale.com/managed", "true"),
-                ("tailscale.com/parent-resource", "inference-bridge-freetoken"),
-                ("tailscale.com/parent-resource-ns", "tailscale"),
-                ("tailscale.com/parent-resource-type", "svc"),
-            ),
-            tcp(8090),
-        ),
-        (
             namespace,
             (
                 ("app.kubernetes.io/component", "searxng"),
@@ -258,6 +248,55 @@ def test_shipped_overlays_render_only_their_supported_egress_policy():
     assert not _cnps(gke_docs)
     native_names = {doc["metadata"]["name"] for doc in _network_policies(gke_docs)}
     assert "monolith-app-egress-native" not in native_names
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("profile", ["defaults", "gke"])
+def test_private_qwen_configuration_and_proxy_route_are_retired(profile, enabled):
+    values = [_chart_dir() / "values.yaml"]
+    if profile == "gke":
+        values += [_deploy_values(), _gke_values()]
+    for path in values:
+        config = yaml.safe_load(path.read_text())
+        assert "qwenApiBase" not in config.get("frontend", {})
+        targets = config.get("networkPolicy", {}).get("egress", {}).get("targets", {})
+        assert "inferenceBridge" not in targets
+
+    override = _native_enabled() if enabled else {}
+    # Old frontend values must not restore the removed environment variable.
+    override["frontend"] = {"qwenApiBase": "http://retired.test:8090"}
+    docs = _render("monolith", "monolith", values, override)
+    rendered = yaml.safe_dump_all(docs)
+    for retired in ("QWEN_API_BASE", "/private/qwen", "inference-bridge-freetoken"):
+        assert retired not in rendered
+    routes = [doc for doc in docs if doc["kind"] == "HTTPRoute"]
+    rules = {
+        match["path"]["value"]: rule
+        for route in routes
+        for rule in route["spec"]["rules"]
+        for match in rule.get("matches", [])
+        if "path" in match
+    }
+    # The other streaming routes still need their existing long timeouts.
+    for path in (
+        "/private/chat",
+        "/private/agents/vms/stream",
+        "/private/factory/execution/vms/stream",
+    ):
+        assert rules[path]["timeouts"] == {
+            "request": "600s",
+            "backendRequest": "600s",
+        }
+    assert "/" in rules
+    if enabled:
+        assert _native_endpoint_rules(_native_policy(docs, "monolith")) == (
+            _expected_endpoints("monolith", "monolith", "embervm")
+        )
+    else:
+        assert not any(
+            doc["metadata"]["name"] == f"monolith{NATIVE_POLICY_SUFFIX}"
+            for doc in _network_policies(docs)
+        )
 
 
 @pytest.mark.parametrize("profile", ["defaults", "deploy", "gke", "dev", "recovery"])

@@ -212,8 +212,7 @@ Tunnel protocol is pinned to `http2`. The Tailscale operator is the second
 way in: it publishes the Kubernetes API to the tailnet and impersonates the
 tailnet identity as a Kubernetes user bound to `cluster-admin` for the
 admins listed in `projects/platform-gke/tailscale/values.yaml`, exposes the
-monolith API as a tailnet host, and runs three egress bridges to the home
-inference host.
+monolith API as a tailnet host. No inference egress Service is configured.
 
 **GKE Dataplane V2 is the CNI, and there is no enforced private-monolith
 egress policy on the hub.**
