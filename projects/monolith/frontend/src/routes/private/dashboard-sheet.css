@@ -1,0 +1,288 @@
+/* Dashboard-owned layout. Descendant tools keep their own styles and scroll. */
+.dashboard.sheet {
+  padding: 3rem 1.25rem 4rem;
+}
+.dashboard .frame {
+  max-width: 78rem;
+}
+.dashboard .dashboard-trail {
+  display: inline-block;
+  margin-bottom: 2rem;
+}
+.dashboard .masthead {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+.dashboard .greeting {
+  margin: 0;
+  font-size: clamp(1.8rem, 4vw, 3rem);
+  font-weight: 650;
+  line-height: 1.1;
+}
+.dashboard .greeting-mark {
+  color: var(--accent-ink);
+}
+.dashboard .masthead-date {
+  margin: 0.5rem 0 0;
+  color: var(--ink-2);
+}
+.dashboard .clock {
+  font: 1.5rem var(--font-code);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dashboard .pulse {
+  padding: 1rem;
+  border: 1px solid var(--stroke);
+  margin-bottom: 1rem;
+}
+.dashboard .pulse,
+.dashboard .pulse-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+.dashboard .pulse--bad {
+  border-color: var(--tone-disk);
+}
+.dashboard .pulse-dot,
+.dashboard .ci-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--ink-2);
+  flex: 0 0 auto;
+}
+.dashboard .pulse-dot--ok,
+.dashboard .ci-dot--success {
+  background: var(--ok);
+}
+.dashboard .pulse-dot--bad,
+.dashboard .ci-dot--failure {
+  background: var(--tone-disk);
+}
+.dashboard .ci-dot--pending {
+  background: var(--warn);
+}
+.dashboard .pulse-sub {
+  color: var(--ink-2);
+  margin-left: 0.5rem;
+}
+.dashboard .pulse-list {
+  flex-basis: 100%;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.dashboard .pulse-kind {
+  color: var(--ink-2);
+  margin-right: 0.5rem;
+}
+.dashboard .grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+.dashboard .edition {
+  min-width: 0;
+  margin: 0;
+}
+.dashboard .section-label {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--stroke);
+  background: var(--band);
+  font: 500 0.85rem var(--font-code);
+}
+.dashboard .section-label--stacked {
+  border-top: 1px solid var(--stroke);
+}
+.dashboard .sub-label {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  border-block: 1px solid var(--line);
+  font: 500 0.8rem var(--font-code);
+}
+.dashboard .unavail {
+  padding: 1rem;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.85rem;
+}
+.dashboard .event-list,
+.dashboard .task-list,
+.dashboard .plain-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.dashboard .event-row,
+.dashboard .task-row,
+.dashboard .pr-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
+  padding: 0.8rem 1rem;
+  font-size: 0.85rem;
+  min-width: 0;
+}
+.dashboard .event-row + .event-row,
+.dashboard .task-row + .task-row,
+.dashboard .plain-list li + li {
+  border-top: 1px solid var(--line);
+}
+.dashboard .event-title,
+.dashboard .task-title,
+.dashboard .pr-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dashboard .event-time,
+.dashboard .event-meta,
+.dashboard .task-due,
+.dashboard .mono,
+.dashboard .dim {
+  font-family: var(--font-code);
+  font-size: 0.75rem;
+}
+.dashboard .event-time {
+  min-width: 3rem;
+}
+.dashboard .event-meta,
+.dashboard .task-due,
+.dashboard .dim {
+  color: var(--ink-2);
+}
+.dashboard .event-location {
+  display: block;
+  color: var(--ink-2);
+  font-size: 0.8rem;
+}
+.dashboard .event-row--past .event-title {
+  text-decoration: line-through;
+}
+.dashboard .event-row--active {
+  background: var(--band);
+  border-left: 2px solid var(--accent-ink);
+}
+.dashboard .task-check {
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 2rem;
+  align-self: center;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--stroke);
+  background: var(--sheet);
+  color: var(--ink);
+  padding: 0.45rem;
+  cursor: pointer;
+}
+.dashboard .task-check svg {
+  width: 100%;
+  stroke: transparent;
+}
+.dashboard .task-check--done svg {
+  stroke: var(--ok);
+}
+.dashboard .task-title--done {
+  text-decoration: line-through;
+}
+.dashboard .task-title--weekly {
+  font-weight: 550;
+}
+.dashboard .pr-row {
+  color: var(--ink);
+  text-decoration: none;
+}
+.dashboard .pr-row:hover,
+.dashboard .tile:hover {
+  background: var(--band);
+  color: var(--accent-ink);
+}
+.dashboard .launcher,
+.dashboard .card--chat {
+  grid-column: 1 / -1;
+}
+.dashboard .launcher-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.dashboard .tile {
+  display: flex;
+  min-width: 0;
+  gap: 0.7rem;
+  padding: 1rem;
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+}
+.dashboard .tile:not(:nth-child(3n)) {
+  border-right: 1px solid var(--line);
+}
+.dashboard .tile-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-top: 0.45rem;
+  background: var(--accent-ink);
+  flex-shrink: 0;
+}
+.dashboard .tile-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dashboard .tile-name {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.dashboard .tile-ext {
+  font-size: 0.8rem;
+}
+.dashboard .tile-desc {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--ink-2);
+}
+.dashboard .card--chat .cluster-chat {
+  padding: 1rem;
+}
+.dashboard :is(a, button, input):focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: -2px;
+}
+@media (max-width: 760px) {
+  .dashboard.sheet {
+    padding-top: 2rem;
+  }
+  .dashboard .dashboard-trail {
+    display: none;
+  }
+  .dashboard .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dashboard .masthead {
+    flex-wrap: wrap;
+  }
+  .dashboard .launcher-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dashboard .tile:not(:nth-child(3n)) {
+    border-right: 0;
+  }
+  .dashboard .tile:nth-child(odd) {
+    border-right: 1px solid var(--line);
+  }
+  .dashboard .task-row {
+    flex-wrap: wrap;
+  }
+  .dashboard .task-due {
+    margin-left: auto;
+  }
+}

@@ -1,21 +1,8 @@
 <script>
-  import "$lib/private/dashboard-theme.css";
+  import "$lib/public/styles/technical-drawing.css";
   import { page } from "$app/stores";
 
   let { children } = $props();
-  // Clean light/dark from the color scheme, matching the document pages
-  // under it; the clock-drift palette stays a dashboard-only feature.
-  let dark = $state(
-    typeof window !== "undefined" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches,
-  );
-  $effect(() => {
-    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => (dark = scheme.matches);
-    apply();
-    scheme.addEventListener("change", apply);
-    return () => scheme.removeEventListener("change", apply);
-  });
 
   // Minimal private-tier chrome: the shared Nav is suppressed for the whole
   // tier (see routes/+layout.svelte), so every private page other than the
@@ -47,40 +34,36 @@
 </script>
 
 {#if showBack}
-  <a class="back-to-dashboard shell {dark ? 'night' : 'day'}" href="/"
-    >&larr; dashboard</a
-  >
+  <a class="back-to-dashboard td-chrome" href="/">&larr; dashboard</a>
 {/if}
 
 {@render children()}
 
 <style>
-  /* A quiet text link. This renders OUTSIDE any page's .shell, so it carries
-     the current period itself. dashboard-theme.css's .shell class only defines
-     custom properties, making the matching palette resolve here without
-     inheriting any page styling. */
+  /* Token-only chrome must not match body:has(.td): full-screen children
+     own their scroll containers. The shared palette follows data-theme. */
   .back-to-dashboard {
     position: fixed;
     top: 1.1rem;
     left: 1.2rem;
     z-index: 1000;
-    font-family: var(--font-ui);
+    font-family: var(--font-code);
     font-size: 13px;
     font-weight: 500;
     letter-spacing: 0.01em;
     color: var(--ink-2);
     text-decoration: none;
-    padding: 4px 2px;
-    transition: color 0.15s ease;
+    padding: 6px 8px;
+    border: 1px solid var(--stroke);
+    background: var(--sheet);
   }
 
   .back-to-dashboard:hover {
-    color: var(--accent);
+    color: var(--accent-ink);
   }
 
   .back-to-dashboard:focus-visible {
-    outline: 1.5px solid var(--accent);
+    outline: 2px solid var(--accent-ink);
     outline-offset: 2px;
-    border-radius: 4px;
   }
 </style>

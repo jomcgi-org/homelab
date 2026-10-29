@@ -3,6 +3,9 @@ export const itemId = "100001";
 export const taskId =
   "t-synthetic-78381e85-5d08-4751-a77a-long-operator-investigation";
 export const routes = {
+  dashboard: "/",
+  updates: "/updates",
+  qwen: "/qwen",
   board: "/factory",
   escalations: "/factory/escalations",
   item: `/factory/work-items/${itemId}`,
@@ -252,10 +255,83 @@ export function board(empty = false) {
 export function fixtureData(view, scenario = "populated") {
   const error = scenario === "unavailable",
     empty = scenario === "empty";
+  if (view === "dashboard") return dashboardData(scenario);
+  if (view === "updates")
+    return {
+      updates: [],
+      projects: [],
+      technologies: [],
+      months: [],
+      selectedMonth: "2026-10",
+      selectedProject: "",
+      selectedTechnology: "",
+      error: false,
+      invalidMonth: false,
+    };
   if (view === "board")
     return { board: error ? null : board(empty), task: null, error };
   if (view === "escalations")
     return { escalations: error || empty ? [] : escalations(), error };
   if (scenario === "missing") return { itemId, missing: true };
   return { itemId, document: error ? null : workItem(empty), error };
+}
+
+export function dashboardData(scenario = "populated") {
+  const daily = {
+    note_id: "synthetic-daily",
+    title: "Synthetic daily task",
+    status: "todo",
+    due: "2026-10-29",
+  };
+  const weekly = {
+    note_id: "synthetic-weekly",
+    title: "Synthetic weekly task",
+    status: "todo",
+    due: "2026-10-31",
+  };
+  if (scenario === "unavailable")
+    return { dashboard: null, tasksDaily: null, tasksWeekly: null };
+  return {
+    tasksDaily: scenario === "empty" ? [] : [daily],
+    tasksWeekly: scenario === "empty" ? [] : [daily, weekly],
+    dashboard: {
+      today: {
+        events:
+          scenario === "empty"
+            ? []
+            : [
+                { allDay: true, title: "Synthetic all-day observation" },
+                {
+                  time: "00:00",
+                  endTime: "00:01",
+                  title: "Synthetic past event",
+                },
+                {
+                  time: "00:01",
+                  endTime: "23:59",
+                  title: "Synthetic active event",
+                  location: "Synthetic long location " + "reference".repeat(16),
+                },
+              ],
+      },
+      health: { healthy: true, scanned: 42 },
+      github: {
+        open_prs:
+          scenario === "empty"
+            ? []
+            : [
+                {
+                  number: 90001,
+                  title:
+                    "Synthetic dashboard investigation " +
+                    "long-reference".repeat(10),
+                  url: "https://example.test/pull/90001",
+                  ci: "success",
+                  draft: true,
+                },
+              ],
+        recent_merges: [],
+      },
+    },
+  };
 }

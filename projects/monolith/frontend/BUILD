@@ -500,6 +500,7 @@ js_library(
         "package.json",
     ],
     deps = [
+        ":node_modules/marked",
         ":node_modules/@esbuild/linux-x64",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@sveltejs/vite-plugin-svelte",

@@ -2,7 +2,7 @@
 // Import it here too: a fixture must not conceal inherited cascade defects.
 import "../src/lib/public/styles/design-system.css";
 import "../factory-preview/fonts.css";
-import { mount } from "svelte";
+import { mount, unmount } from "svelte";
 import App from "./App.svelte";
 import {
   board,
@@ -31,6 +31,7 @@ const state = (window.__privateFixture = {
   outcomes: [],
   hold: false,
   release: null,
+  dashboard: fixtureData("dashboard", scenario).dashboard,
 });
 const response = (body, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -44,8 +45,56 @@ window.fetch = async (input, init = {}) => {
   state.requests.push({
     url,
     method,
-    body: init.body ? JSON.parse(init.body) : null,
+    body:
+      init.body instanceof FormData
+        ? Object.fromEntries(init.body)
+        : init.body
+          ? JSON.parse(init.body)
+          : null,
   });
+  if (method === "GET" && url === "/dashboard-data") {
+    const outcome = state.outcomes.shift();
+    if (outcome === "transport") throw new Error("Synthetic poll failure");
+    return response(
+      outcome === "error" ? { error: true } : state.dashboard,
+      outcome === "refused" ? 503 : 200,
+    );
+  }
+  if (method === "GET" && url === "/private/qwen/stats")
+    return response({ stats: {} });
+  if (method === "POST" && url === "?/toggleTask") {
+    if (state.hold)
+      await new Promise((resolve) => {
+        state.release = resolve;
+      });
+    const outcome = state.outcomes.shift();
+    if (outcome === "transport") throw new Error("Synthetic action failure");
+    return response(
+      outcome === "refused"
+        ? { type: "failure" }
+        : {
+            type: "success",
+            data: {
+              status: init.body.get("status") === "todo" ? "done" : "todo",
+            },
+          },
+    );
+  }
+  if (method === "POST" && url === "/dashboard-chat") {
+    const events = [
+      {
+        type: "tool_call",
+        data: { tool: "synthetic_observation", args: { scope: "fixture" } },
+      },
+      { type: "text_chunk", data: { text: "Synthetic reply " } },
+      { type: "text_chunk", data: { text: "complete" } },
+      { type: "done", data: {} },
+    ];
+    return new Response(
+      events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  }
   if (method === "GET" && /^\/factory(?:\?task=[^&]+)?$/.test(url))
     return response(
       board(scenario === "empty"),
@@ -107,15 +156,22 @@ document.addEventListener(
     const path = new URL(anchor.href).pathname;
     const destination = Object.keys(routes).find((key) => routes[key] === path);
     if (destination) {
-      const url = new URL(location.href);
-      url.search = new URLSearchParams({ view: destination, scenario });
-      location.href = url;
+      state.navigate(destination);
     }
   },
   true,
 );
-mount(App, {
+let instance = mount(App, {
   target: document.getElementById("app"),
   props: { view, data: fixtureData(view, scenario) },
 });
+state.navigate = async (next) => {
+  if (!Object.hasOwn(routes, next)) throw new Error("Unknown synthetic view");
+  await unmount(instance);
+  setRoute(next);
+  instance = mount(App, {
+    target: document.getElementById("app"),
+    props: { view: next, data: fixtureData(next, scenario) },
+  });
+};
 state.ready = true;

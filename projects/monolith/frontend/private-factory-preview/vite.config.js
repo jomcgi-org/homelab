@@ -9,6 +9,7 @@ export const aliases = [
   { find: "$lib", replacement: here("../src/lib") },
   { find: "$app/stores", replacement: here("./state.js") },
   { find: "$app/navigation", replacement: here("./state.js") },
+  { find: "$app/forms", replacement: here("./forms.js") },
 ];
 export default defineConfig({
   root: here("./"),
@@ -27,7 +28,7 @@ export default defineConfig({
             this.error(`Non-fixture module: ${id}`);
           if (
             /src\/routes\/private\//.test(id) &&
-            !/\/private\/(?:\+layout\.svelte|factory\/(?:FactorySheet\.svelte|\+page\.svelte|factory-view\.js|execution\/(?:run-history|run-lexicon|dag)\.js|escalations\/(?:\+page\.svelte|escalations-view\.js)|work-items\/\[id\]\/(?:\+page\.svelte|work-item-view\.js)))(?:\?|$)/.test(
+            !/\/private\/(?:\+layout\.svelte|\+page\.svelte|dashboard-sheet\.css|updates\/(?:\+page\.svelte|updates\.js)|qwen\/(?:\+page\.svelte|markdown\.js|metrics\.js)|factory\/(?:FactorySheet\.svelte|\+page\.svelte|factory-view\.js|execution\/(?:run-history|run-lexicon|dag)\.js|escalations\/(?:\+page\.svelte|escalations-view\.js)|work-items\/\[id\]\/(?:\+page\.svelte|work-item-view\.js)))(?:\?|$)/.test(
               id,
             )
           )
@@ -44,7 +45,7 @@ export default defineConfig({
             {
               commit: process.env.FACTORY_PREVIEW_SHA ?? "local-unpublished",
               scope:
-                "synthetic private factory routes, real layouts and inherited legacy CSS",
+                "synthetic private factory and dashboard routes, updates/qwen regressions, real layouts and inherited legacy CSS",
               sources,
             },
             null,

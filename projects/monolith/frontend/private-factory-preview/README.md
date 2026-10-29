@@ -48,6 +48,30 @@ add/remove and persisted scheme selection against the opposite system scheme.
 Screenshots require visual review. CI evidence is linked from the PR, expires
 after 14 days and must be regenerated if the PR head changes.
 
+## Dashboard and child cascade (#7153)
+
+The same private-only harness mounts the production dashboard, updates journal
+and Qwen page. Its exact module allowlist still rejects server code. Dashboard
+refresh, form actions and SSE chat receive explicit synthetic responses. The
+form adapter tests UI outcomes only; it does not claim server serialization
+coverage. No loader or proxy is changed by this migration.
+
+`dashboard.test.js` covers polling and cleanup, task deduplication and optimistic
+success/revert, split SSE frames and history, empty/error states and destinations.
+`dashboard_browser_check.py` runs through `ci_check.py` in the existing Linux
+browser job. `private/dashboard/MATRIX.md` links the 390/1440 light/dark captures;
+`results.json` records source hashes, dimensions, scrolling, focus, synthetic
+interactions and fresh-load/client-navigation parity for adjacent consumers.
+Stored sheet choice is tested against the opposite OS scheme. Updates and Qwen
+retain their OS-driven palette; Qwen retains a viewport-high chat with an
+internally scrolling transcript and its existing mobile statistics below.
+
+The dashboard no longer uses `.shell` or its legacy token aliases. Updates,
+Qwen and execution import their own compatibility stylesheet. The shared back
+link uses `.td-chrome`, which shares only palette declarations with `.td` and
+does not opt full-screen children into `body:has(.td)` scrolling. Factory pages
+keep their own Trail and scheme control, without duplicate back chrome.
+
 ## Non-factory task integration (#7400)
 
 This preview covers factory delivery only. The tracking-only MCP implementation

@@ -13,6 +13,9 @@
  * (.sheet) every technical-drawing page is built from.
  */
 
+/* Token-only chrome can coexist with full-screen tools without opting their
+ * document into the .td page typography and scrolling contract. */
+.td-chrome,
 .td {
   --sheet: #ffffff;
   --paper: #f3f1ea;
@@ -52,6 +55,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .td-chrome,
   :root:not([data-theme="light"]) .td {
     --sheet: #181a20;
     --paper: #14151b;
@@ -72,6 +76,7 @@
   }
 }
 
+:root[data-theme="dark"] .td-chrome,
 :root[data-theme="dark"] .td {
   --sheet: #181a20;
   --paper: #14151b;
