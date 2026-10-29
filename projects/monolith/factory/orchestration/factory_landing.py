@@ -68,8 +68,8 @@ WRITE_TIMEOUT_SECONDS = 15
 RESPONSE_LIMIT_BYTES = 1_000_000
 # Bound each response below the shared read cap at typical pull body sizes.
 # Exhausting the page budget cannot prove the arming slot is free.
-OPEN_PULLS_PAGE = 50
-OPEN_PULLS_MAX_PAGES = 5
+OPEN_PULLS_PAGE = 25
+OPEN_PULLS_MAX_PAGES = 10
 FACTORY_BRANCH_PREFIX = "factory/"
 _PR_URL = re.compile(r"/pull/([0-9]+)$")
 # Multi-row actions: a delivery can be armed, ejected and armed again, so the

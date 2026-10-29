@@ -1398,14 +1398,14 @@ def test_holder_on_second_page_controls_whether_landing_arms(db, monkeypatch, ar
     def listing(_repo, suffix):
         pages.append(suffix)
         if suffix.endswith("page=1"):
-            return [pull(number) for number in range(100, 150)]
+            return [pull(number) for number in range(100, 125)]
         return [pull(999, armed=armed)]
 
     monkeypatch.setattr(landing, "github_list", listing)
     landing.landing_tick(POLICY)
     assert pages == [
-        "pulls?state=open&sort=created&direction=asc&per_page=50&page=1",
-        "pulls?state=open&sort=created&direction=asc&per_page=50&page=2",
+        "pulls?state=open&sort=created&direction=asc&per_page=25&page=1",
+        "pulls?state=open&sort=created&direction=asc&per_page=25&page=2",
     ]
     if armed:
         assert calls["graphql"] == []
@@ -1426,11 +1426,11 @@ def test_incomplete_holder_pagination_never_arms(db, monkeypatch, failure):
         pages.append(suffix)
         if failure == "read_error" and len(pages) == 2:
             raise ValueError("GitHub response exceeds factory limit")
-        return [pull(number) for number in range(100, 150)]
+        return [pull(number) for number in range(100, 125)]
 
     monkeypatch.setattr(landing, "github_list", listing)
     landing.landing_tick(POLICY)
-    assert len(pages) == (5 if failure == "page_limit" else 2)
+    assert len(pages) == (10 if failure == "page_limit" else 2)
     assert calls["graphql"] == []
     assert audits(db, "landing_error", "t-1") == [
         {"stage": "holder", "error": "ValueError", "status": None}
@@ -1729,7 +1729,7 @@ def test_queue_entry_on_second_page_holds_the_lane(db, monkeypatch):
 
     def listing(_repo, suffix):
         if suffix.endswith("page=1"):
-            return [pull(number) for number in range(100, 150)]
+            return [pull(number) for number in range(100, 125)]
         return [queued]
 
     monkeypatch.setattr(landing, "github_list", listing)
@@ -3255,3 +3255,36 @@ def test_head_change_at_arming_is_rejected_by_github_cas(db, monkeypatch):
     assert not audits(db, "merge_armed")
     assert pulls[3]["auto_merge"] is None
     assert audits(db, "merge_arm_refused")[0]["reason"] == "UNPROCESSABLE"
+
+
+@pytest.mark.parametrize("armed", [False, True])
+def test_holder_scan_bounds_serialized_pages_and_preserves_later_owner(
+    db, monkeypatch, armed
+):
+    """Real PR bodies can exceed the shared byte guard on a 50-row page."""
+    from urllib.parse import parse_qs, urlsplit
+
+    delivered(db, "t-1", 11, 3)
+    calls = github(monkeypatch, pulls={3: pull(3)})
+    rows = [{**pull(n), "body": "x" * 24000} for n in range(100, 144)]
+    rows[-1] = {**rows[-1], "auto_merge": {} if armed else None}
+    pages = []
+
+    def listing(_repo, suffix):
+        query = parse_qs(urlsplit(suffix).query)
+        size, page = int(query["per_page"][0]), int(query["page"][0])
+        rows_on_page = rows[(page - 1) * size : page * size]
+        pages.append(page)
+        if len(json.dumps(rows_on_page).encode()) > 1_000_000:
+            raise ValueError("GitHub response exceeds factory limit")
+        return rows_on_page
+
+    monkeypatch.setattr(landing, "github_list", listing)
+    landing.landing_tick(POLICY)
+    assert pages == [1, 2]
+    assert audits(db, "landing_error", "t-1") == []
+    if armed:
+        assert calls["graphql"] == []
+        assert audits(db, "merge_deferred", "t-1")[-1]["blocked_by_pr"] == 143
+    else:
+        assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
