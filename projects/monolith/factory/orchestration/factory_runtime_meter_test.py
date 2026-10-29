@@ -3771,12 +3771,16 @@ def test_scoped_landing_apply_rechecks_preview(database, scoped_delivery, change
             assert controls.landing_held(row)
 
 
-def test_landing_hold_only_preserves_expired_lease_and_funding(database, monkeypatch):
+@pytest.mark.parametrize("task_paused", [False, True])
+def test_landing_hold_only_preserves_expired_lease_and_funding(
+    database, monkeypatch, task_paused
+):
     from factory.orchestration import factory_policy_amendment as amendments
     from factory.orchestration import factory_funding_limits as funding
 
     paused(database)
     with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).task_paused = task_paused
         controls._audit(
             db,
             "factory",
@@ -3800,7 +3804,7 @@ def test_landing_hold_only_preserves_expired_lease_and_funding(database, monkeyp
     assert amendments.apply(838, overlay, direction, **args) == applied
     after = controls.task_snapshot("task")
     assert after["direction"]["landing_hold"]["request_key"] == "hold-only"
-    assert after["task_paused"]
+    assert after["task_paused"] == task_paused
     for key in (
         "policy",
         "deadline_at",
