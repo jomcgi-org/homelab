@@ -1831,6 +1831,195 @@ def test_staged_competing_handoffs_share_one_durable_graph_identity(
     assert len(conductor.graph.node_runs(s.task["id"])) == 2
 
 
+@pytest.mark.parametrize("blocked", ["held", "unreadable"])
+def test_staged_terminal_discovery_rotates_bounded_pages_past_blocked_candidate(
+    merged_handoff, monkeypatch, blocked
+):
+    import httpx
+    from factory.orchestration import factory_controls as controls, factory_landing
+    from factory.orchestration import factory_merged_delivery as merged
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+
+    s = merged_handoff
+    monkeypatch.delenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED")
+    with Session(s.engine) as db, db.begin():
+        db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.node_key == "review_fix")
+        ).one().head_sha = "d" * 40
+    conductor.tick()
+    with Session(s.engine) as db, db.begin():
+        db.add(
+            SwarmTask(
+                id="t-fixture-blocked",
+                task_text="Synthetic blocked receipt",
+                repo="owner/repo",
+                base_branch="main",
+                conductor_model="opus",
+            )
+        )
+        db.flush()
+        db.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=8,
+                title="Synthetic peer",
+                body="",
+                url="https://github.com/owner/repo/issues/8",
+                actor="test",
+                state="escalated",
+                task_id="t-fixture-blocked",
+                policy_json=json.dumps(s.policy),
+                direction_json='{"landing_hold":{"actor":"operator"}}'
+                if blocked == "held"
+                else None,
+            )
+        )
+        db.add_all(
+            [
+                FactoryAudit(
+                    actor="test",
+                    action="owned_pr_merged",
+                    task_id="t-fixture-blocked",
+                    detail_json='{"pr_number":4,"head_sha":"' + "a" * 40 + '"}',
+                ),
+                FactoryAudit(
+                    actor="test",
+                    action="finish_task",
+                    task_id="t-fixture-blocked",
+                    detail_json='{"evidence":{"state":"merged_review_missing"}}',
+                ),
+            ]
+        )
+    original = conductor.github_get
+    reads = []
+
+    def read(repo, path):
+        reads.append(path)
+        if path == "issues/8":
+            raise httpx.ReadTimeout("Synthetic unavailable candidate")
+        return original(repo, path)
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    monkeypatch.setattr(factory_landing, "OBSERVATION_BATCH", 1)
+    monkeypatch.setattr(factory_landing, "landing_tick", s.landing_tick)
+    monkeypatch.setenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED", "true")
+    merged._discovery_cursors[s.task["repo"]] = s.before["id"]
+    conductor.tick()  # First bounded page contains only the blocked candidate.
+    assert not any(
+        n["node_key"] == s.review_key for n in conductor.graph.load_graph(s.task["id"])
+    )
+    conductor.tick()  # Cursor wraps and reaches the eligible terminal receipt.
+    assert any(
+        n["node_key"] == s.review_key for n in conductor.graph.load_graph(s.task["id"])
+    )
+    assert len(conductor.graph.node_runs(s.task["id"])) == 2
+    assert reads.count("issues/8") == int(blocked == "unreadable")
+    assert controls.task_snapshot(s.task["id"])["starts"] == s.before["starts"]
+
+
+@pytest.mark.parametrize(
+    "fence", ["landing", "cancel", "disabled", "ownership", "uncertain"]
+)
+def test_staged_reserved_review_rechecks_physical_start_authority(
+    merged_handoff, monkeypatch, fence
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryStart
+
+    s = merged_handoff
+    conductor.tick()
+    monkeypatch.setattr(conductor, "_dispatch_ready", s.dispatch_ready)
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    conductor.tick()
+    run = conductor.graph.node_runs(s.task["id"])[-1]
+    assert run["node_key"] == s.review_key
+    if fence == "cancel":
+        request_task_cancellation(s)
+    elif fence == "disabled":
+        monkeypatch.delenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED")
+    else:
+        with Session(s.engine) as db, db.begin():
+            row = controls._receipt(db, s.task["id"])
+            if fence == "landing":
+                row.direction_json = '{"landing_hold":{"actor":"operator"}}'
+            elif fence == "ownership":
+                row.direction_json = json.dumps(
+                    {
+                        "delivery_adoption": True,
+                        "delivery_branch": "factory/other",
+                        "delivery_pr_number": 99,
+                    }
+                )
+            else:
+                db.exec(
+                    select(FactoryStart).where(
+                        FactoryStart.start_key == run["dispatch_key"]
+                    )
+                ).one().status = "uncertain"
+    with controls.start_guard(
+        s.task["id"], start_key=run["dispatch_key"]
+    ) as permission:
+        assert not permission["ok"]
+    assert len(conductor.graph.node_runs(s.task["id"])) == 3
+
+
+@pytest.mark.parametrize("still_enabled", [True, False])
+def test_staged_inflight_review_uses_one_existing_reconciler_per_tick(
+    merged_handoff, monkeypatch, still_enabled
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = merged_handoff
+    conductor.tick()
+    monkeypatch.setattr(conductor, "_dispatch_ready", s.dispatch_ready)
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    conductor.tick()
+    run = conductor.graph.node_runs(s.task["id"])[-1]
+    calls = []
+    monkeypatch.setattr(
+        conductor,
+        "_submit_or_reconcile",
+        lambda task, active, dbos: calls.append(active["dispatch_key"]),
+    )
+    if not still_enabled:
+        monkeypatch.delenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED")
+    for _ in range(2):
+        conductor.tick()
+    assert calls == [run["dispatch_key"], run["dispatch_key"]]
+    assert len(conductor.graph.node_runs(s.task["id"])) == 3
+
+
+@pytest.mark.parametrize("acceptance", ["unrecorded", "closing", "staged"])
+def test_staged_review_preserves_outstanding_operational_contract(
+    merged_handoff, acceptance
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = merged_handoff
+    authenticate_handoff_review(s, conductor.graph.node_runs(s.task["id"])[-1])
+    s.pr["body"] = (
+        "Refs #7\n\nConductor rescope: repository-only default-off verification.\n\nOperational acceptance pending\n- [ ] Observe deployed recovery."
+    )
+    if acceptance != "unrecorded":
+        with Session(s.engine) as db, db.begin():
+            controls._receipt(db, s.task["id"]).direction_json = json.dumps(
+                {"conductor_gates": [live_gate()]}
+            )
+    if acceptance == "closing":
+        s.pr["body"] += "\nCloses #7"
+    conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == ("landing" if acceptance == "staged" else "admitted")
+    assert s.issue["state"] == "open"
+    assert after["starts"] == s.before["starts"]
+    if acceptance == "staged":
+        assert (
+            conductor.factory_gates.live_checks(conductor._task(s.task["id"]))
+            == live_gate()["live_checks"]
+        )
+
+
 @pytest.mark.parametrize("verdict", ["changes_requested", "escalate", "invalid"])
 def test_staged_immutable_rejection_never_schedules_branch_correction(
     merged_handoff, monkeypatch, verdict
