@@ -239,12 +239,20 @@ else
 fi
 
 if grep -q 'deleted_packages=bazel/tools/python' "$LOCAL_AFFECTED_TEST" &&
-	grep -q 'test_tag_filters=-external,-future' "$LOCAL_AFFECTED_TEST" &&
+	grep -q -- '--config=ci' "$LOCAL_AFFECTED_TEST" &&
 	grep -q -- '--script=' "$CI"; then
 	pass "ci_affected_argv_locked"
 else
 	fail "ci_affected_argv_locked" "missing affected script mode or locked Test flags"
 fi
+
+for entrypoint in "$BUILD_BUDDY" "$CI" "$LOCAL_AFFECTED_TEST"; do
+	if grep -qE -- '--test_tag_filters=.*(external|future)' "$entrypoint"; then
+		fail "retired_bdd_exclusions_absent" "obsolete test tag filter in $entrypoint"
+	else
+		pass "retired_bdd_exclusions_absent:${entrypoint##*/}"
+	fi
+done
 
 flag_ln=$(grep -n "unexpected flag" "$CI" | head -1 | cut -d: -f1)
 bb_ln=$(grep -n "command -v bb" "$CI" | head -1 | cut -d: -f1)

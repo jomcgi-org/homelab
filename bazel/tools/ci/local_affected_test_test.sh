@@ -84,8 +84,12 @@ fi
 rm -f "$TMP"/*.log
 if AFFECTED_OUTPUT="//p:test" BAZEL_OUTPUT="Executed 1 out of 1 test: 1 test passes." run_runner >"$TMP/subset.out" 2>&1 &&
 	grep -qF "//p:test" "$TMP/targets.log" &&
-	grep -qF -- "--test_tag_filters=-external,-future" "$TMP/bazel.log" &&
-	! grep -qF -- "--test_tag_filters=-external,-future" "$TMP/affected.log"; then
+	grep -qFx -- "--config=ci" "$TMP/bazel.log" &&
+	grep -qFx -- "--deleted_packages=bazel/tools/python" "$TMP/bazel.log" &&
+	grep -qFx -- "--config=ci" "$TMP/affected.log" &&
+	grep -qFx -- "--deleted_packages=bazel/tools/python" "$TMP/affected.log" &&
+	! grep -qF -- "--test_tag_filters=" "$TMP/bazel.log" &&
+	! grep -qF -- "--test_tag_filters=" "$TMP/affected.log"; then
 	pass "subset_tested"
 else
 	fail "subset_tested" "$(tr '\n' ' ' <"$TMP/subset.out")"
