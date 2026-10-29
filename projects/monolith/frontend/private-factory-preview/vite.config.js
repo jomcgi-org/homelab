@@ -28,6 +28,9 @@ export default defineConfig({
             this.error(`Non-fixture module: ${id}`);
           if (
             /src\/routes\/private\//.test(id) &&
+            !/\/private\/factory\/execution\/(?:[\w-]+\/)*[\w+-]+\.(?:svelte|js|css)(?:\?|$)/.test(
+              id,
+            ) &&
             !/\/private\/(?:\+layout\.svelte|\+page\.svelte|dashboard-sheet\.css|updates\/(?:\+page\.svelte|updates\.js)|qwen\/(?:\+page\.svelte|markdown\.js|metrics\.js)|factory\/(?:FactorySheet\.svelte|\+page\.svelte|factory-view\.js|execution\/(?:run-history|run-lexicon|dag)\.js|escalations\/(?:\+page\.svelte|escalations-view\.js)|work-items\/\[id\]\/(?:\+page\.svelte|work-item-view\.js)))(?:\?|$)/.test(
               id,
             )
@@ -45,7 +48,7 @@ export default defineConfig({
             {
               commit: process.env.FACTORY_PREVIEW_SHA ?? "local-unpublished",
               scope:
-                "synthetic private factory and dashboard routes, updates/qwen regressions, real layouts and inherited legacy CSS",
+                "synthetic private factory and dashboard routes, updates/qwen/execution/drain regressions, real layouts and inherited legacy CSS",
               sources,
             },
             null,

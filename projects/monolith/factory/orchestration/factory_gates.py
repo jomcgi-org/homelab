@@ -167,8 +167,16 @@ def guidance(task: dict) -> str:
 
 
 def rescope_text(gate: dict) -> str:
+    # GitHub still treats a negated closing directive as an issue-closing link.
+    # Preserve the operator's meaning when copying a recorded scope into a PR.
+    scope = re.sub(
+        r"\b(?:do not|don't|never)\s+(?:close|fix|resolve)\s+#(\d+)\b",
+        r"Keep issue \1 open",
+        gate["scope"],
+        flags=re.IGNORECASE,
+    )
     return (
-        f"Conductor rescope: {gate['scope']}. Deliver repository changes default-off "
+        f"Conductor rescope: {scope}. Deliver repository changes default-off "
         "or staged. Operational acceptance remains on the issue; do not close it.\n"
         + "\n".join(f"- [ ] {check}" for check in gate["live_checks"])
     )

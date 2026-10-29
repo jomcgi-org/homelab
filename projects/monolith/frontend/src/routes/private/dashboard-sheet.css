@@ -2,7 +2,7 @@
 .dashboard.sheet {
   padding: 3rem 1.25rem 4rem;
 }
-.dashboard .frame {
+.dashboard.sheet .frame {
   max-width: 78rem;
 }
 .dashboard .dashboard-trail {

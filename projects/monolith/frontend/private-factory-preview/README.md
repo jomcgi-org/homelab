@@ -1,6 +1,6 @@
 # Private factory fixture QA
 
-This harness mounts the three production private factory pages inside their
+This harness mounts the production private factory and dashboard pages inside their
 real root and private layouts. It includes the root error node's preloaded
 legacy stylesheet, dashboard tokens and the shared sheet. All data and
 operator responses are invented. Browser fetch is an explicit in-memory
@@ -8,10 +8,20 @@ allowlist, CSP denies connections, and Chromium rejects non-fixture requests.
 No private service, account or credential is used.
 
 The public `factory-preview` remains separate: its module guard excludes private
-code. The private build permits only these three routes and the existing pure
-execution helpers they consume. Its `build.json` records the source digests and
+code. The private build also includes updates, Qwen, execution and drain for
+child-route regressions. Its `build.json` records the source digests and
 tested SHA; it rejects server modules. Neither fixture enters the production
 application build.
+
+Execution and drain header checks render their real pages at 390px and 1440px,
+in both stored schemes against the opposite OS preference. They assert that
+the dashboard link is above each page's own clickable back link and the
+execution console still fits the viewport. Reads return synthetic empty
+sessions, runs, repositories and drain jobs. The VM stream is an inert fixture;
+these checks do not exercise operator actions. The dashboard's external font
+stylesheet is present in the DOM, but CSP blocks it in the browser fixture.
+Screenshots use the bundled Schibsted font; real-host font loading remains live
+acceptance.
 
 The `Factory mobile preview` workflow invokes the public browser entry point,
 which runs `ci_check.py` after its unchanged public checks. This runs the existing

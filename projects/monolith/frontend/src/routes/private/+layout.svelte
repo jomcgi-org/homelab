@@ -6,7 +6,7 @@
 
   // Minimal private-tier chrome: the shared Nav is suppressed for the whole
   // tier (see routes/+layout.svelte), so every private page other than the
-  // dashboard root gets a small fixed "back to dashboard" link.
+  // dashboard root gets a small "back to dashboard" link.
   //
   // Suppressed on:
   // - the dashboard root itself ("/"): it IS the nav
@@ -21,8 +21,11 @@
   // $page.url reflects the browser URL (hooks.js reroute keeps private
   // paths un-prefixed), but strip a literal /private prefix too in case a
   // route is hit directly.
+  let path = $derived(
+    $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/",
+  );
+  let executionBack = $derived(/^\/factory\/execution(\/|$)/.test(path));
   let showBack = $derived.by(() => {
-    const path = $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/";
     if (path === "/") return false;
     if (/^\/(app|review|chat|notes|qwen)(\/|$)/.test(path)) return false;
     // These factory documents carry their own Trail and persisted scheme
@@ -45,13 +48,47 @@
   </script>
 </svelte:head>
 
-{#if showBack}
+{#snippet backLink()}
   <a class="back-to-dashboard td-chrome" href="/">&larr; dashboard</a>
+{/snippet}
+
+{#if executionBack}
+  <!-- Execution and drain own the top-left of their headers. Reserve a row
+       instead of laying the opaque dashboard link over their navigation. -->
+  <div class="private-execution">
+    <nav class="back-row td-chrome" aria-label="Dashboard">
+      {@render backLink()}
+    </nav>
+    {@render children()}
+  </div>
+{:else}
+  {#if showBack}{@render backLink()}{/if}
+  {@render children()}
 {/if}
 
-{@render children()}
-
 <style>
+  .private-execution {
+    --private-back-height: 48px;
+  }
+
+  .back-row {
+    height: var(--private-back-height);
+    display: flex;
+    align-items: center;
+    padding: 0 1.2rem;
+    background: var(--sheet);
+  }
+
+  .back-row .back-to-dashboard {
+    position: static;
+  }
+
+  /* Keep the full-screen console, including its visual-viewport override,
+     inside the space below the reserved row. Drain remains scrollable. */
+  .private-execution :global(main.console) {
+    height: calc(var(--console-h, 100dvh) - var(--private-back-height));
+  }
+
   /* Token-only chrome must not match body:has(.td): full-screen children
      own their scroll containers. The shared palette follows data-theme. */
   .back-to-dashboard {

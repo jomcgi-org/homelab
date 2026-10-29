@@ -38,6 +38,22 @@ const response = (body, status = 200) =>
     status,
     headers: { "content-type": "application/json" },
   });
+// Header regression fixtures never connect to the VM stream or run work.
+window.EventSource = class extends EventTarget {
+  static OPEN = 1;
+  static CLOSED = 2;
+  readyState = 1;
+  constructor(url) {
+    super();
+    if (url !== "/private/factory/execution/vms/stream") {
+      state.unexpected.push({ url, method: "EventSource" });
+      throw new Error(`Unexpected fixture stream: ${url}`);
+    }
+  }
+  close() {
+    this.readyState = 2;
+  }
+};
 // Every fetch is handled in memory. Unknown paths/methods never fall through.
 window.fetch = async (input, init = {}) => {
   const url = String(input),
@@ -52,6 +68,25 @@ window.fetch = async (input, init = {}) => {
           ? JSON.parse(init.body)
           : null,
   });
+  if (method === "GET" && url === "/factory/execution/data")
+    return response(fixtureData("execution"));
+  if (method === "GET" && url === "/factory/execution/repos")
+    return response({ repos: [] });
+  if (
+    method === "GET" &&
+    /^\/factory\/execution\/runs\?active=(true|false)$/.test(url)
+  )
+    return response({ runs: [] });
+  if (method === "GET" && url === "/factory/execution/drain-lane")
+    return response({ enabled: true, due_count: 0, running: [], last: null });
+  if (method === "GET" && url === "/factory/execution/drain/console")
+    return response({
+      now: "2026-10-29T09:01:00Z",
+      lane: { state: "idle" },
+      jobs: [],
+      queue: {},
+      recent_cycles: [],
+    });
   if (method === "GET" && url === "/dashboard-data") {
     const outcome = state.outcomes.shift();
     if (outcome === "transport") throw new Error("Synthetic poll failure");

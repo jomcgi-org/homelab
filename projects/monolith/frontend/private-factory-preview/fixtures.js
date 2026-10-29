@@ -6,6 +6,8 @@ export const routes = {
   dashboard: "/",
   updates: "/updates",
   qwen: "/qwen",
+  execution: "/factory/execution",
+  drain: "/factory/execution/drain",
   board: "/factory",
   escalations: "/factory/escalations",
   item: `/factory/work-items/${itemId}`,
@@ -256,6 +258,7 @@ export function fixtureData(view, scenario = "populated") {
   const error = scenario === "unavailable",
     empty = scenario === "empty";
   if (view === "dashboard") return dashboardData(scenario);
+  if (view === "execution") return { sessions: [], models: [], error: false };
   if (view === "updates")
     return {
       updates: [],

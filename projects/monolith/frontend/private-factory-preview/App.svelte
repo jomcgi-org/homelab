@@ -7,6 +7,8 @@
   import Dashboard from "../src/routes/private/+page.svelte";
   import Updates from "../src/routes/private/updates/+page.svelte";
   import Qwen from "../src/routes/private/qwen/+page.svelte";
+  import Execution from "../src/routes/private/factory/execution/+page.svelte";
+  import Drain from "../src/routes/private/factory/execution/drain/+page.svelte";
   let { view, data } = $props();
 
   // Match client routing: retain the root/private layouts while replacing
@@ -22,6 +24,8 @@
     {#if view === "dashboard"}<Dashboard {data} />
     {:else if view === "updates"}<Updates {data} />
     {:else if view === "qwen"}<Qwen />
+    {:else if view === "execution"}<Execution {data} />
+    {:else if view === "drain"}<Drain />
     {:else if view === "board"}<Board {data} />
     {:else if view === "escalations"}<Escalations {data} />
     {:else if view === "item"}<Item {data} />

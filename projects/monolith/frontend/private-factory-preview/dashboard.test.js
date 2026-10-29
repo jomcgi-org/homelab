@@ -62,6 +62,14 @@ test("preserves sections, launcher destinations and deduplicated daily tasks", a
   expect(document.querySelector(".back-to-dashboard")).toBeNull();
   expect(document.querySelectorAll(".scheme")).toHaveLength(1);
 });
+test("loads the dashboard typeface outside the bundled fixture font", async () => {
+  await render();
+  expect(
+    document.head.querySelector(
+      'link[rel="stylesheet"][href^="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:"]',
+    ),
+  ).not.toBeNull();
+});
 
 test("renders unhealthy resources and preserves clock-driven schedule states", async () => {
   vi.useFakeTimers();

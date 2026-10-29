@@ -19,7 +19,7 @@ from browser_check import Handler, PREFIX
 
 def measure(page):
     return page.evaluate("""() => {
-      const main = document.querySelector('main');
+      const main = document.querySelector('main, .drain-page');
       const css = getComputedStyle(main);
       return {
         width: innerWidth, documentWidth: document.documentElement.scrollWidth,
@@ -253,7 +253,77 @@ def main():
                     assert measure(page)["scheme"] == scheme
                     assert measure(page)["background"] == root["background"]
                 assert not errors and not network, (errors, network)
+                unexpected = page.evaluate("window.__privateFixture.unexpected")
+                assert not unexpected, unexpected
+            except Exception as error:
+                failures.append(
+                    {
+                        "case": name,
+                        "error": str(error),
+                        "traceback": traceback.format_exc(),
+                        "pageErrors": errors,
+                        "network": network,
+                    }
+                )
+            finally:
+                context.close()
+        for width, scheme, view in itertools.product(
+            (390, 1440), ("light", "dark"), ("execution", "drain")
+        ):
+            context = browser.new_context(
+                viewport={"width": width, "height": 900},
+                color_scheme="dark" if scheme == "light" else "light",
+                reduced_motion="reduce",
+                service_workers="block",
+            )
+            context.add_init_script(f"localStorage.setItem('td-theme', '{scheme}');")
+            page = context.new_page()
+            page.set_default_timeout(5000)
+            errors, network = [], []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            context.route("**/*", intercept)
+            name = f"dashboard-{width}-{scheme}-{view}"
+            try:
+                page.clock.install(
+                    time=datetime(2026, 10, 29, 9, 1, tzinfo=timezone.utc)
+                )
+                page.goto(origin + PREFIX + "?" + urlencode({"view": view}))
+                target = ".topbar .wordmark" if view == "execution" else ".top .back"
+                expect(page.locator(target)).to_be_visible()
+                page.evaluate("document.fonts.ready")
+                result = measure(page)
+                result.update(image=f"{name}.png", state=view, commit=args.expected_sha)
+                bounds = page.evaluate(
+                    """(target) => {
+                  const back = document.querySelector('.back-to-dashboard');
+                  const own = document.querySelector(target);
+                  const b = back.getBoundingClientRect(), h = own.getBoundingClientRect();
+                  const console = document.querySelector('main.console');
+                  return {
+                    backBottom: b.bottom, headerTop: h.top,
+                    headerClickable: own.contains(document.elementFromPoint(h.x + h.width / 2, h.y + h.height / 2)),
+                    consoleBottom: console?.getBoundingClientRect().bottom ?? null
+                  };
+                }""",
+                    target,
+                )
+                result["headerBounds"] = bounds
+                assert bounds["backBottom"] < bounds["headerTop"], bounds
+                assert bounds["headerClickable"], bounds
+                assert result["documentWidth"] == width, result
+                if view == "execution":
+                    assert bounds["consoleBottom"] <= 900, bounds
+                page.screenshot(path=str(args.output / result["image"]), full_page=True)
+                records.append(result)
                 assert page.evaluate("window.__privateFixture.unexpected") == []
+                # Exercise the real links; the fixture routes them without a server.
+                page.locator(target).click()
+                expect(
+                    page.locator(
+                        "main.td.sheet" if view == "execution" else "main.console"
+                    )
+                ).to_be_visible()
+                assert not errors and not network, (errors, network)
             except Exception as error:
                 failures.append(
                     {
