@@ -2719,6 +2719,16 @@ py_test(
 )
 
 py_test(
+    name = "modules_private_test",
+    srcs = ["app/modules_private_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "agent_board_test",
     srcs = ["knowledge/board_test.py"],
     imports = ["."],
