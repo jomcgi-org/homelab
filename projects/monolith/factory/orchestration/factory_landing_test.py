@@ -260,6 +260,229 @@ def test_landing_observes_without_mutating_open_pr_when_flags_off(db, monkeypatc
     assert calls["write"] == calls["graphql"] == []
 
 
+@pytest.mark.parametrize("state", ["succeeded", "landing"])
+def test_conflict_repair_is_independent_of_merge_arming(db, monkeypatch, state):
+    delivered(db, "t-1", 11, 3, state=state)
+    policy = {**POLICY, "auto_merge": False}
+    with controls._locked_session() as (session, control):
+        control.policy_json = json.dumps(policy)
+    pulls = {3: {**pull(3), "mergeable": False}}
+    calls = github(monkeypatch, pulls=pulls)
+
+    landing.landing_tick(policy)
+    landing.landing_tick(policy)
+
+    assert receipt_state(db, "t-1") == "admitted"
+    assert len(audits(db, "landing_recovery_requested", "t-1")) == 1
+    assert calls["write"] == calls["graphql"] == []
+    assert not audits(db, "merge_armed")
+
+
+def test_conflict_request_with_merging_disabled_retains_recovery_identity(db):
+    delivered(db, "t-1", 11, 3)
+    with controls._locked_session() as (session, control):
+        control.policy_json = json.dumps({**POLICY, "auto_merge": False})
+    first = controls.request_landing_recovery("t-1", 3, HEAD, "delivered_pr", "test")
+    assert first == {"ok": True, "replayed": False, "state": "admitted"}
+    assert controls.request_landing_recovery(
+        "t-1", 3, HEAD, "delivered_pr", "test"
+    ) == {"ok": True, "replayed": True, "state": "admitted"}
+    assert len(audits(db, "landing_recovery_requested")) == 1
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        "clean",
+        "unknown",
+        "draft",
+        "closed",
+        "stale",
+        "armed",
+        "queued",
+        "refused",
+        "held",
+        "paused",
+        "cancelled",
+        "reserved",
+        "uncertain",
+        "disabled",
+        "dependency",
+    ],
+)
+def test_repair_without_arming_preserves_fences(db, monkeypatch, blocked):
+    delivered(db, "t-1", 11, 3)
+    policy = {**POLICY, "auto_merge": False}
+    pr = {**pull(3), "mergeable": False}
+    with controls._locked_session() as (session, control):
+        control.policy_json = json.dumps(policy)
+        row = session.exec(select(FactoryReceipt)).one()
+        if blocked == "held":
+            row.direction_json = json.dumps({"landing_hold": {"reason": "operator"}})
+        elif blocked == "dependency":
+            row.direction_json = json.dumps(
+                {"dependency_review": {"lane": "inspection"}}
+            )
+        elif blocked == "paused":
+            row.task_paused = True
+        elif blocked == "cancelled":
+            row.cancellation_requested = True
+        elif blocked == "disabled":
+            control.state = "paused"
+        elif blocked in ("reserved", "uncertain"):
+            session.add(
+                FactoryStart(
+                    task_id="t-1",
+                    start_key="pending",
+                    actor="test",
+                    model="astra",
+                    max_cost_usd=1,
+                    status=blocked,
+                )
+            )
+    if blocked == "clean":
+        pr["mergeable"] = True
+    elif blocked == "unknown":
+        pr["mergeable"] = None
+    elif blocked == "draft":
+        pr["draft"] = True
+    elif blocked == "closed":
+        pr["state"] = "closed"
+    elif blocked == "stale":
+        pr["head"] = {**pr["head"], "sha": "b" * 40}
+    elif blocked == "armed":
+        pr["auto_merge"] = {"merge_method": "REBASE"}
+    elif blocked == "queued":
+        pr["queue_entry"] = {"id": "MQ_3"}
+    elif blocked == "refused":
+        landing._record("t-1", "merge_arm_refused", reason="review_not_published")
+    calls = github(monkeypatch, pulls={3: pr})
+
+    landing.landing_tick(policy)
+
+    assert receipt_state(db, "t-1") == "succeeded"
+    assert not audits(db, "landing_recovery_requested")
+    assert calls["write"] == calls["graphql"] == []
+
+
+def test_repaired_head_stays_unarmed_with_merging_disabled(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    policy = {**POLICY, "auto_merge": False}
+    with controls._locked_session() as (session, control):
+        control.policy_json = json.dumps(policy)
+    pulls = {3: {**pull(3), "mergeable": False}}
+    calls = github(monkeypatch, pulls=pulls)
+    landing.landing_tick(policy)
+    assert receipt_state(db, "t-1") == "admitted"
+    new_head = "c" * 40
+    # Recovery cannot settle using just the old approval.
+    evidence = {
+        "pr_url": "https://github.com/owner/repo/pull/3",
+        "head_sha": new_head,
+        "review_session_id": 12,
+        "state": "ready_for_review",
+    }
+    assert not controls.finish_task("t-1", "succeeded", "test", evidence=evidence)["ok"]
+    reviewed_recovery(db, new_head)
+    assert controls.finish_task("t-1", "succeeded", "test", evidence=evidence)["ok"]
+    pulls[3] = {**pull(3, head=new_head), "mergeable": True}
+    landing.landing_tick(policy)
+    assert receipt_state(db, "t-1") == "succeeded"
+    assert calls["write"] == calls["graphql"] == []
+    assert not audits(db, "merge_armed")
+
+
+def test_disabled_merge_conflict_scan_reaches_entire_observation_batch(db, monkeypatch):
+    policy = {**POLICY, "auto_merge": False}
+    with controls._locked_session() as (session, control):
+        control.policy_json = json.dumps(policy)
+    pulls = {}
+    for number in range(1, landing.OBSERVATION_BATCH + 1):
+        delivered(db, f"t-{number}", number + 10, number)
+        pulls[number] = {**pull(number, task_id=f"t-{number}"), "mergeable": True}
+    last = landing.OBSERVATION_BATCH
+    pulls[last]["mergeable"] = False
+    calls = github(monkeypatch, pulls=pulls)
+    landing.landing_tick(policy)
+    assert receipt_state(db, f"t-{last}") == "admitted"
+    assert calls["write"] == calls["graphql"] == []
+
+
+@pytest.mark.parametrize(
+    "policy_update,reason",
+    [
+        ({"repo": "other/repo"}, "merge_conflict"),
+        ({"repos": {"owner/repo": {"enabled": False}}}, "merge_conflict"),
+        ({"repos": {"owner/repo": {"paused": True}}}, "merge_conflict"),
+        ({"repo": None}, "merge_conflict"),
+        ({}, "queue_ejection"),
+    ],
+)
+def test_conflict_repair_does_not_expand_repository_or_queue_authority(
+    db, policy_update, reason
+):
+    delivered(db, "t-1", 11, 3)
+    with controls._locked_session() as (session, control):
+        control.policy_json = json.dumps(
+            {**POLICY, "auto_merge": False, **policy_update}
+        )
+    assert controls.request_landing_recovery(
+        "t-1", 3, HEAD, "merge_queue", "test", reason=reason
+    ) == {"ok": False, "reason": "factory_disabled"}
+    assert receipt_state(db, "t-1") == "succeeded"
+    assert not audits(db, "landing_recovery_requested")
+
+
+def test_conflict_repair_without_merging_keeps_cap_and_accounting(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    policy = {**POLICY, "auto_merge": False}
+    with controls._locked_session() as (session, control):
+        control.policy_json = json.dumps(policy)
+        row = session.exec(select(FactoryReceipt)).one()
+        session.add(
+            FactoryStart(
+                task_id="t-1",
+                start_key="finished",
+                actor="test",
+                model="astra",
+                max_cost_usd=4,
+                cost_usd=2.5,
+                status="succeeded",
+            )
+        )
+        row.policy_json = json.dumps({"max_task_turns_hard": 9})
+        before = (row.id, row.task_id, row.created_at, row.policy_json)
+    pulls = {3: {**pull(3), "mergeable": False}}
+    calls = github(monkeypatch, pulls=pulls)
+    for _ in range(controls.MAX_LANDING_RECOVERIES):
+        landing.landing_tick(policy)
+        assert receipt_state(db, "t-1") == "admitted"
+        reviewed_recovery(db)
+        assert controls.finish_task(
+            "t-1",
+            "succeeded",
+            "test",
+            evidence={
+                "pr_url": "https://github.com/owner/repo/pull/3",
+                "head_sha": HEAD,
+                "review_session_id": 12,
+                "state": "ready_for_review",
+            },
+        )["ok"]
+    landing.landing_tick(policy)
+    assert (
+        len(audits(db, "landing_recovery_requested")) == controls.MAX_LANDING_RECOVERIES
+    )
+    assert audits(db, "merge_arm_refused")[-1]["reason"] == "landing_recovery_exhausted"
+    assert calls["write"] == calls["graphql"] == []
+    with controls._read_session() as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        assert (row.id, row.task_id, row.created_at, row.policy_json) == before
+        accounting = controls._accounting(controls._starts(session, "t-1"))
+        assert accounting["turns_used"] == 1
+        assert accounting["committed_cost_usd"] == 2.5
+
+
 def test_missing_publisher_token_refuses_to_arm_when_enabled(db, monkeypatch):
     from factory import review_publisher
 
@@ -702,35 +925,40 @@ def recovery_at_capacity(db, monkeypatch, constraint, *, state="landing"):
     return pulls, github(monkeypatch, pulls=pulls)
 
 
+@pytest.mark.parametrize("merge_enabled", [False, True])
 @pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
 @pytest.mark.parametrize("state", ["landing", "succeeded"])
 @pytest.mark.parametrize(
     "wait_seconds", [0, controls.LANDING_RECOVERY_TIMEOUT_SECONDS + 60]
 )
 def test_recovery_respects_delivery_capacity(
-    db, monkeypatch, constraint, state, wait_seconds
+    db, monkeypatch, constraint, state, wait_seconds, merge_enabled
 ):
     _pulls, calls = recovery_at_capacity(db, monkeypatch, constraint, state=state)
-    landing.landing_tick(POLICY)
+    policy = {**POLICY, "auto_merge": merge_enabled}
+    with controls._locked_session() as (session, control):
+        stored = json.loads(control.policy_json)
+        control.policy_json = json.dumps({**stored, "auto_merge": merge_enabled})
+    landing.landing_tick(policy)
     assert receipt_state(db, "t-1") == state
     requests = audits(db, "landing_recovery_requested", "t-1")
     assert len(requests) == 1
     with Session(db) as session:
         assert controls._landing_recovery_deadline(session, "t-1") is None
     assert calls["graphql"] == []
-    landing.landing_tick(POLICY)
+    landing.landing_tick(policy)
     assert receipt_state(db, "t-1") == state
     assert audits(db, "landing_recovery_requested", "t-1") == requests
     resumed_at = NOW + timedelta(seconds=wait_seconds)
     monkeypatch.setattr(controls, "_now", lambda: resumed_at)
     for _ in range(3):
-        landing.landing_tick(POLICY)
+        landing.landing_tick(policy)
     assert receipt_state(db, "t-1") == state
     assert audits(db, "landing_recovery_started", "t-1") == []
     with Session(db) as session, session.begin():
         controls._receipt(session, "t-2").task_paused = True
     # Capacity waiting retains intent without consuming the recovery window.
-    landing.landing_tick(POLICY)
+    landing.landing_tick(policy)
     assert receipt_state(db, "t-1") == "admitted"
     assert audits(db, "landing_recovery_requested", "t-1") == requests
     deadline = resumed_at + timedelta(seconds=controls.LANDING_RECOVERY_TIMEOUT_SECONDS)

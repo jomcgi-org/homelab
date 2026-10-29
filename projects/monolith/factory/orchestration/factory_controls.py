@@ -4896,8 +4896,24 @@ def request_landing_recovery(
             return {"ok": False, "reason": "unresolved_execution"}
         if row.state in ("succeeded", "landing"):
             live_policy = json.loads(_control.policy_json or "{}")
-            if _control.state != "enabled" or not repo_auto_merge_enabled(
-                live_policy, row.repo
+            conflict_repair = False
+            if reason == "merge_conflict":
+                # Repository correction is distinct from permission to merge.
+                # Keep it within the enabled primary lane; other queue failures
+                # still require the existing automatic-landing policy.
+                try:
+                    slug = normalize_repo(row.repo)
+                    entry = _stored_repos(live_policy).get(slug)
+                    conflict_repair = (
+                        slug == normalize_repo(live_policy.get("repo"))
+                        and isinstance(entry, dict)
+                        and entry.get("enabled", True) is True
+                        and entry.get("paused", False) is False
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if _control.state != "enabled" or not (
+                conflict_repair or repo_auto_merge_enabled(live_policy, row.repo)
             ):
                 return {"ok": False, "reason": "factory_disabled"}
             active = db.exec(
