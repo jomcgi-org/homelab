@@ -67,5 +67,8 @@ py_test(
         "charts/**/*",
     ]),
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
-    deps = ["@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
