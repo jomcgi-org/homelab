@@ -14,7 +14,7 @@ import json
 import math
 from uuid import uuid4
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
 from factory.execution.models import (
@@ -75,7 +75,10 @@ def _fresh(reading: dict | None, interval: int) -> bool:
     )
 
 
-def _unresolved_probe_filter():
+def _unresolved_probe_filter(db):
+    from factory.probe_reconciliation import resolutions
+
+    resolved = resolutions(db)
     pending = (
         select(PendingMessage.id)
         .where(PendingMessage.session_id == AgentSession.id)
@@ -87,7 +90,10 @@ def _unresolved_probe_filter():
             AgentSession.status == "running",
             AgentSession.ember_session_id.is_not(None),
             pending,
-            store._unknown_outcome_exists(AgentSession.id),
+            and_(
+                store._unknown_outcome_exists(AgentSession.id),
+                AgentSession.id.not_in(resolved),
+            ),
         ),
     )
 
@@ -126,13 +132,13 @@ def probe_status(*, after_session_id=0, limit=20):
         )
         blockers = db.exec(
             select(AgentSession.id)
-            .where(*_unresolved_probe_filter(), AgentSession.id > after_session_id)
+            .where(*_unresolved_probe_filter(db), AgentSession.id > after_session_id)
             .order_by(AgentSession.id)
             .limit(limit + 1)
         ).all()
         has_blocker = (
             db.exec(
-                select(AgentSession.id).where(*_unresolved_probe_filter()).limit(1)
+                select(AgentSession.id).where(*_unresolved_probe_filter(db)).limit(1)
             ).first()
             is not None
         )
@@ -226,8 +232,11 @@ def claim(payload: dict) -> str | None:
                 return None
         # No second guest while a prior probe is running, still bound, or has
         # an unresolved pending turn. Session maintenance owns its recovery.
+        from factory.execution import admission
+
+        admission.lock_pool(db)
         unresolved = db.exec(
-            select(AgentSession.id).where(*_unresolved_probe_filter()).limit(1)
+            select(AgentSession.id).where(*_unresolved_probe_filter(db)).limit(1)
         ).first()
         if unresolved is not None:
             return None

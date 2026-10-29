@@ -3110,3 +3110,17 @@ changes; absence of fresh subscription observations is a refusal, not capacity.
 
 Typed automatic stop-only cards remain paused at deadline. They are not
 reinterpreted as planner decisions or given an invented continue option.
+
+### Settled quota-probe reconciliation
+
+`factory_reconcile_quota_probe` provides standing operators an exact preview/apply
+for a failed Claude probe whose permit supervision already proved no guest delivery.
+It binds the original probe-start audit, session, sole turn and permit, dispatch
+identity, settlement evidence and control version. Any binding or prior binding,
+workflow, cleanup, pending work, receipt, ambiguous attempt or changed proof refuses.
+Apply requires the preview digest and a stable request key. It appends a separate
+resolution audit without rewriting the unknown turn, permit or accounting. The
+normal probe selector revalidates this exact evidence before treating that historical
+unknown marker as resolved. New evidence blocks again. No generic session retry,
+quota observation or factory-task continuation is performed by reconciliation.
+Only the ordinary rate-limited probe can obtain real response-header quota evidence.

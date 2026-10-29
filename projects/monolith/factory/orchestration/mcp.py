@@ -2335,3 +2335,48 @@ async def factory_apply_backlog_intake(
             return {"ok": False, "reason": str(exc)}
 
     return await asyncio.to_thread(apply)
+
+
+@mcp.tool
+async def factory_reconcile_quota_probe(
+    operation: Literal["preview", "apply"],
+    session_id: Annotated[MCPInteger, Field(ge=1)],
+    seq: Annotated[MCPInteger, Field(ge=1)],
+    permit_id: Annotated[MCPInteger, Field(ge=1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Resolve one settled undelivered Claude quota probe as a standing operator.
+
+    Preview first, then apply identical identity and reason with its digest and
+    a stable request key. Rechecks no binding, delivery, pending work or changed
+    settlement under lock. Records separate audited resolution while preserving
+    the unknown turn and accounting. Does not dispatch or refresh quota itself.
+    Only the normal bounded probe can provide a fresh provider observation.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory import probe_reconciliation
+
+    try:
+        if operation == "preview":
+            return await asyncio.to_thread(
+                probe_reconciliation.preview, session_id, seq, permit_id, reason
+            )
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "probe_preview_required"}
+        return await asyncio.to_thread(
+            probe_reconciliation.apply,
+            principal.subject,
+            session_id,
+            seq,
+            permit_id,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
