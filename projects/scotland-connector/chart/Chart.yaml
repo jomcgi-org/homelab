@@ -2,7 +2,7 @@ apiVersion: v2
 name: scotland-connector
 description: Public, read-only Scottish outdoor answers (dark-sky windows) as a REST API and an authless MCP endpoint, served from an in-memory snapshot.
 type: application
-version: 0.23.14
+version: 0.24.2
 appVersion: "0.1.0"
 maintainers:
   - name: homelab
