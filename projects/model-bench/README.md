@@ -592,22 +592,19 @@ Each model in `models.yaml` has a `provider`:
 
 An anchors-only run (`--model claude`) needs no `OPENROUTER_API_KEY` at all.
 
-### In-cluster llama.cpp (self-hosted qwen)
+### Self-hosted benchmark history
 
-`bench run --base-url <url>/v1` points the OpenRouter client at any OpenAI-compatible
-endpoint instead, skipping the API key and OpenRouter pricing (cost records as 0). Two
-routes reach the in-cluster llama.cpp:
+`bench run --base-url <url>/v1` can target an explicitly supplied
+OpenAI-compatible endpoint instead of OpenRouter. The former in-cluster
+`inference` generative Service and private route were retired under #7076.
+The hub inference chart serves CPU embeddings only.
 
-- on-cluster: `kubectl -n inference port-forward svc/inference 18080:8080` and
-  `--base-url http://127.0.0.1:18080/v1`;
-- off-cluster: `--base-url https://private.jomcgi.dev/llm/v1` plus
-  `--header "CF-Access-Client-Id: ..." --header "CF-Access-Client-Secret: ..."`.
-  Cloudflare Access authenticates on those two headers only and ignores `Authorization`.
-
-The `qwen/qwen3.8-27b` entry in `models.yaml` is the self-hosted row: it is
-`status: experimental` so a bare `bench run` never sends that slug to OpenRouter, and its
-`api_model` is the alias llama.cpp actually serves. The comments on that entry are
-canonical for how it is reached.
+The `qwen/qwen3.8-27b` registry row remains experimental and self-hosted;
+a bare `bench run` does not send it to OpenRouter. Its served alias and
+historical leaderboard cells are preserved. The separate experimental
+FreeToken tailnet row is also preserved. Neither registry entry establishes
+current hardware disposition or endpoint reachability. Confirm a separately
+authorized endpoint before running either model.
 
 ## Result cells (billed output — kept out of the worktree)
 

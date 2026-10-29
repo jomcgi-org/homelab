@@ -9388,7 +9388,7 @@ sys.exit(1)
 def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     """pi must be launched with the context budget pinned down.
 
-    Pi gets one bounded share of NInfer's shared KV pool. These flags keep that
+    Pi uses a bounded local per-session window. These flags keep that
     budget available to the task. Losing any of them fails SILENTLY: the turn
     still succeeds, it just spends the window on discovered context or a default
     prompt instead of the task, and the answers quietly get worse.
@@ -9515,13 +9515,7 @@ def test_pi_without_agent_mcp_url_is_unchanged(tmp_path, monkeypatch, value):
 
 
 def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
-    """models.json must declare the bounded per-session NInfer budget.
-
-    If these values are wrong, pi's clampMaxTokensToContext computes available
-    tokens using a false budget. Pi's 128000-token default would let two active
-    sessions consume 256000 tokens, leaving less than the required shared
-    headroom in NInfer's 262144-token page pool.
-    """
+    """Meta Spark models.json must preserve Pi's local context and output limits."""
     manager = _pi_manager(tmp_path, monkeypatch)
     manager.turn("hello", model="spark")
 
@@ -9541,37 +9535,37 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
     assert provider["baseUrl"] == "https://api.meta.ai/v1"
     assert "thinkingFormat" not in provider["compat"]
     assert model_dict["id"] == "muse-spark-1.3-contributor"
-    assert model_dict["contextWindow"] == shim.PI_CONTEXT_WINDOW
-    assert model_dict["maxTokens"] == shim.PI_MAX_OUTPUT_TOKENS
+    assert model_dict["contextWindow"] == 122880
+    assert model_dict["maxTokens"] == 12288
     assert model_dict["reasoning"] is False
 
     manager._close_process()
 
 
-def test_pi_context_window_headroom_relationship():
-    """Two Pi windows plus shared headroom must fit NInfer's KV capacity.
+def test_pi_local_context_safety_budgets():
+    """Pin local limits and room for the observed 4097-token estimation error.
 
-    The cross-file test reads the deployment values. This fast unit test pins
-    the approved production arithmetic even without its Bazel data dependency.
+    These are conservative runtime budgets, independent of any server KV pool.
+    The reserve exceeds output plus pi's safety subtraction. It also absorbs
+    the historical trailing-tool-result underestimate plus a full response.
     """
-    ninfer_kv_capacity = 262144
-    ninfer_max_concurrency = 2
-    declared_window = shim.PI_CONTEXT_WINDOW
-    declared_headroom = shim.PI_CONTEXT_WINDOW_HEADROOM
-    assert declared_window == 122880
-    assert declared_headroom == 16384
-
-    total = declared_window * ninfer_max_concurrency + declared_headroom
-    assert total == ninfer_kv_capacity, (
-        "%s Pi contexts at %s tokens plus %s headroom = %s, which does not "
-        "exactly account for NInfer KV capacity %s."
-        % (
-            ninfer_max_concurrency,
-            declared_window,
-            declared_headroom,
-            total,
-            ninfer_kv_capacity,
-        )
+    assert shim.PI_CONTEXT_WINDOW == 122880
+    assert shim.PI_MAX_OUTPUT_TOKENS == 12288
+    assert shim.PI_CONTEXT_SAFETY_TOKENS == 4096
+    assert shim.PI_COMPACTION_RESERVE_TOKENS == 16896
+    assert shim.PI_COMPACTION_KEEP_RECENT_TOKENS == 8000
+    assert (
+        shim.PI_CONTEXT_WINDOW
+        - shim.PI_COMPACTION_RESERVE_TOKENS
+        + 4097
+        + shim.PI_MAX_OUTPUT_TOKENS
+        < shim.PI_CONTEXT_WINDOW
+    )
+    assert (
+        shim.PI_COMPACTION_RESERVE_TOKENS
+        - shim.PI_MAX_OUTPUT_TOKENS
+        - shim.PI_CONTEXT_SAFETY_TOKENS
+        == 512
     )
 
 
@@ -9601,11 +9595,8 @@ def test_pi_settings_json_is_written_with_compaction_block(tmp_path, monkeypatch
 
     assert "compaction" in settings
     assert settings["compaction"]["enabled"] is True
-    assert settings["compaction"]["reserveTokens"] == shim.PI_COMPACTION_RESERVE_TOKENS
-    assert (
-        settings["compaction"]["keepRecentTokens"]
-        == shim.PI_COMPACTION_KEEP_RECENT_TOKENS
-    )
+    assert settings["compaction"]["reserveTokens"] == 16896
+    assert settings["compaction"]["keepRecentTokens"] == 8000
     assert "defaultThinkingLevel" not in settings
 
     manager._close_process()

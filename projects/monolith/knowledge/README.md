@@ -1,6 +1,6 @@
 # Knowledge Pipeline
 
-LLM-powered knowledge graph with on-cluster inference.
+LLM-powered knowledge graph with remote decomposition and hub CPU embeddings.
 
 ## Overview
 

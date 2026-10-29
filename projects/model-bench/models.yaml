@@ -39,12 +39,11 @@ models:
     retired_date: "2026-10-02"
   - id: qwen/qwen3.6-27b
     status: active
-  # In-cluster llama.cpp Qwen3.8-27B (Unsloth Q4_K_M on node-4). Reach it with
-  # `kubectl -n inference port-forward svc/inference 18080:8080` and
-  # `--base-url http://127.0.0.1:18080/v1`. The served alias is still
-  # qwen3.6-27b so existing callers do not have to change. xhigh is the
-  # highest reasoning_effort Qwen 3.8's template accepts. experimental so a
-  # bare `bench run` does not send this slug to OpenRouter.
+  # Historical self-hosted Qwen3.8-27B benchmark row. The inference chart's
+  # generative Service and route were retired under #7076; this entry does
+  # not establish a currently reachable endpoint. Preserve its served alias,
+  # xhigh reasoning effort and result history. experimental so a bare
+  # bench run does not send this slug to OpenRouter.
   - id: qwen/qwen3.8-27b
     display_name: qwen3.8-27b
     status: experimental

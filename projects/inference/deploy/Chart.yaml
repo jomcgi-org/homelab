@@ -1,23 +1,12 @@
 apiVersion: v2
 name: inference
-description: A Helm chart for NInfer LLM serving and llama.cpp CPU embeddings
+description: A Helm chart for llama.cpp CPU embeddings
 type: application
 version: 2.5.4
 appVersion: "b5270"
-dependencies:
-  # Path-based private ingress helper, same as longhorn, argocd and kargo use.
-  # Only the SecurityPolicy is taken from it: templates/httproute-private.yaml
-  # writes its own HTTPRoute, because the library emits no `timeouts` and an
-  # LLM route cannot live with Envoy's 15s default.
-  - name: cf-ingress
-    version: 0.1.0
-    repository: "file://../../platform/cf-ingress-library"
 keywords:
-  - llm
   - inference
-  - ninfer
   - embeddings
-  - gpu
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
   org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
