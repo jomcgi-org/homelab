@@ -548,8 +548,8 @@ actions:
   # automatically, so promoting it back into the gating "Test" action (dropping
   # `future = True`) becomes a manual step. Re-enable by uncommenting.
   # # BDD future features — runs the `future`-tagged BDD specs: executable specs
-  # # for features that are designed but not built yet (step 3 of the /ship
-  # # lifecycle, "merge failing BDD tests"). This action is INFORMATIONAL and must
+  # # for features that are designed but not built yet (step 3 in
+  # # docs/agents/ship.md, "merge failing BDD tests"). This action is INFORMATIONAL and must
   # # NOT be listed as a required status check in GitHub branch protection, so a
   # # red run never blocks merge. Semantics:
   # #   - red   = specs failing -> feature is mid-build (the expected state).
