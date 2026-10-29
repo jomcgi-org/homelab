@@ -1,286 +1,82 @@
 # AGENTS.md
 
-Instructions for every agent working in this repo, whatever the tool or model.
-There is deliberately no CLAUDE.md: Claude Code reads this file natively. The
-factory decides which model does which work.
+Build and run this homelab autonomously. Maximise useful work shipped against
+Joe's goals, including improvements to the factory itself.
 
-A Kubernetes homelab at
-[jomcgi-org/homelab](https://github.com/jomcgi-org/homelab). The GKE hub
-(`homelab-hub`) runs every workload and is the only management plane.
-The home-cluster configuration was retired in #6914; the hub is the only
-cluster. `projects/platform/ARCHITECTURE.md` has the shape. Services,
-operators and websites live under `projects/<name>/`, each colocating its
-Helm `chart/` with the `deploy/` config ArgoCD ships it from.
-Everything builds with Bazel (bzlmod) and deploys from Git. Go, Python,
-JavaScript and Starlark.
+The GKE hub (`homelab-hub`) is the only cluster. Services live in
+`projects/<name>/` with their Helm `chart/` and GitOps `deploy/`.
+Bazel builds the repo; ArgoCD deploys it. The factory chooses models.
 
-This file is what you would only learn by breaking it. **(gated)** rules fail
-loudly in CI or a git hook. Gotchas marked "Gated" are caught by
-`bazel/tools/ci/source_ratchet.py`, which fails a PR adding a new instance
-(existing ones are grandfathered); a genuinely safe line can opt out with
-`ratchet-allow: <rule> (<reason>)` in a comment.
+## Merge authority
 
-## Invariants
+An explicit request, accepted issue/spec, established goal or standing
+maintenance policy authorizes implementation, review, merge and rollout.
+Do not wait for routine human review or a separate "merge" instruction.
+Choose the simplest reversible approach within that authority and proceed.
+Resolve ordinary design choices yourself; record material assumptions in the PR.
 
-- **The cluster is GitOps, so `kubectl` is read-only.** Never `apply`, `patch`,
-  `edit`, `scale`, `label` or `delete`, and never `helm install` or
-  `helm uninstall`. Change `projects/<service>/deploy/values.yaml` through a
-  PR and ArgoCD syncs it. Gated for scripts (`source_ratchet.py`) and Claude
-  Code's shell (a hook) only.
-- **Never commit to main (gated: `protect-main.sh`).** Worktree, branch, PR.
-  Merging is covered under "Git and PRs" below.
-- **Never move a chart's `version:` or pinned `targetRevision:` forward (gated:
-  `bazel/tools/ci/chart_version_guard.py`).** Main's publish computes the next
-  version after merge and `chart-version-bot` writes both lines back, so a
-  deploy starts at that write-back commit: check it landed before assuming a
-  rollout failed. Lowering a pin is allowed: it is the revert lever.
-- **`ci` is the feedback loop, not PR CI.** Run it before pushing. If `ci` is
-  not on your PATH (a sandboxed guest, say), PR CI is your test run and your
-  task spec says how to deliver.
-- **Conventional Commits (gated: `commit-msg` hook).**
-- **No em-dashes in anything you write**, commits and PR bodies included. Use
-  a comma, colon or parentheses. Do not churn files to strip existing ones.
-- **GitHub Issues are the source of truth for outstanding work**, not committed
-  plan files. The domain's `ARCHITECTURE.md` records a decision and its
-  rationale; the issue records what is left to do.
-- **Secrets come from the 1Password Operator** (`OnePasswordItem` CRD). Never
-  hardcode one. Nothing is exposed to the internet directly: all traffic goes
-  through Cloudflare.
+The factory owns eligible intake, refinement, implementation, review, landing
+and recovery within its configured limits. Unblock failed checks, repair
+regressions and improve its prompts, policies and tooling through this repo.
+Prefer finishing existing work; parallelize independent work when useful.
+A constrained worker hands off to an authorized dispatcher for actions outside
+its allowlist.
 
-## How to work
+Escalate only conflicting goals, an exception to a constraint or budget,
+unapproved destructive work, or an explicit human ownership/approval hold.
+Name the decision and the rule requiring it. Existing approval covers the
+same action and scope. Keep independent work moving while one item is blocked.
+Never bypass a gate, expand your own permissions or clear a hold to make progress.
 
-- A task that modifies tracked files runs in a dedicated worktree on a new
-  branch and becomes a pushed PR: ready when validation passes, draft when it
-  does not or a question is open. Follow eligible work through merge under
-  "Merge authority" below. Report the PR URL and state. If you cannot open
-  the PR, stop and report the blocker.
-- Reach for the simplest approach that holds within the established goals and
-  policies. Resolve design choices those already answer. For a genuine fork
-  they do not settle, put two or three options in front of Joe ranked by
-  complexity with a recommendation, then wait.
-- Verify completion claims (`git show --stat`, re-read the file) before
-  building on or reporting another agent's work.
-- A change that must deploy is done only when the rollout is verified live.
-  With the monolith MCP tools, call `verify_deployment` (its description has
-  the rules), poll while it says `in_progress`, and report its verdict.
-  Without them: the Application is Synced and Healthy, the pod rolled to the
-  new image, and the service answers. Never report success on a subset.
-- When debugging, state the hypothesis and run the one command that would
-  falsify it before writing any fix. On red CI, quote the real failing
-  assertion from the log before proposing a cause, and never retrigger a run
-  before reading it.
-- For site copy and CV prose, audit facts and flag unsupportable claims, but
-  offer at most one draft: Joe writes the final wording.
-- Blocked on a decision only Joe can make while he may be away: send one
-  `monolith-monolith-agent-notify` line, if you have the MCP tools. Subagents
-  report blockers to their dispatcher instead.
+## Delivery
 
-## Git and PRs
+1. Inspect the relevant code and scoped `AGENTS.md`. Use a dedicated branch
+   and worktree, or a new branch through connected GitHub tools.
+2. Implement the smallest complete change. Track outstanding work in GitHub
+   Issues; use `agent-ready` when the task can be picked up alone.
+3. Run `ci` before pushing when available; otherwise use PR CI. Add tests
+   for changed behaviour and concrete failure cases. Docs and mechanical
+   edits need proportionate checks, without invented test or planning phases.
+4. Review the complete diff once with an independent agent
+   ([review guide](docs/agents/review.md)), fix blocking findings and satisfy
+   required checks on the current head. Record scope and validation in the PR.
+5. Land with `homelab pr land <n>`, or `gh pr merge <n> --auto` and follow
+   the merge queue. Pass no strategy flag. Rebase only for conflicts or to
+   incorporate CI's branch writeback, never just because main moved.
+6. For deployable changes, verify the rollout with `verify_deployment` until
+   terminal. Without it, confirm ArgoCD Synced/Healthy, the new pod image and
+   a responding service. Report the PR and actual result; docs need no rollout.
 
-### Merge authority
+Read failed logs before retrying. Change the hypothesis when evidence disproves
+it; do not loop on the same failed action. Verify another agent's completion
+claims against the diff and checks. Never push to a merged branch.
 
-Changes covered by an established goal, accepted issue/spec, explicit user
-request or standing maintenance policy may be implemented, reviewed and merged
-autonomously when they comply with the applicable policies. Human review or a
-fresh "please merge" instruction is not a routine prerequisite, including for
-features, documentation and policy-aligned security fixes. State the goal or
-policy and the evidence of alignment in the PR body.
+## Boundaries
 
-Before enqueueing, validate the current PR head, complete the applicable
-independent agent review (`docs/agents/review.md`), address blocking findings,
-and satisfy required checks. Follow the merge queue to completion and verify
-any required rollout. Do not stop at "ready for review" when these conditions
-are met. An informational review request or CODEOWNERS notification alone is
-not a human-approval requirement.
-
-Escalate only a concrete unresolved decision: conflicting or insufficient goals
-or policies, a proposed exception to a constraint or budget, an unapproved
-destructive action, or an explicit human-owned task or approval hold. Name the
-decision and the rule requiring it. Existing approval covers the same action
-and scope; do not ask again. Fix validation failures within scope and authority;
-escalate if doing so needs such a decision. Missing evidence is not approval.
-
-This is the merge policy for the procedures below and in `docs/agents/` and
-`docs/runbooks/`. Preserve branch protection, required CI, independent review,
-GitOps, factory admission and ownership controls, and narrower worker/reviewer
-allowlists. A constrained lane hands work to an authorized dispatcher for the
-applicable review and landing; it does not expand its own permissions. Never
-bypass a gate or clear an explicit hold just to merge.
-
-### Queue and delivery
-
-- Merge through the GitHub merge queue with `gh pr merge <n> --auto`. Pass no
-  strategy flag: the queue sets it (rebase only) and refuses `--rebase`. A
-  queued PR reads `autoMergeRequest: null`; check the queue with GraphQL
-  (`pullRequest(number:<n>){mergeQueueEntry{state}}`).
-- Never rebase a PR, or `gh pr update-branch`, only because main moved: the
-  queue does that. `DIRTY` or `CONFLICTING` is the one case to rebase yourself,
-  and `--auto` silently enqueues nothing while it lasts.
-- A red queue run ejects the PR. Read the failure, then re-enqueue.
-- `homelab pr land <n>` runs that whole flow where the `homelab` CLI is on
-  PATH: enqueue with bare `--auto`, wait for the merge or ejection, wait for
-  the chart write-back, then poll the rollout verdict for each app the PR
-  touched (`--app` to override). It exits non-zero on ejection, a failed
-  rollout or its timeout; read the failure it names before acting.
-- Never push to a merged branch; start a new worktree. After a push, confirm
-  `gh pr view <n> --json headRefOid` equals `git rev-parse HEAD`.
-- Issues are titled `<area>: <summary>`, labelled `agent-ready` when an agent
-  can pick one up alone. Multi-part work gets a parent with sub-issues
-  (`gh api repos/jomcgi-org/homelab/issues/<parent>/sub_issues -F
-  sub_issue_id=<child database id>`; `-F`, because `-f` sends a string and
-  returns 422). Closing the issue records "shipped".
-
-## Human ownership of factory work
-
-Label an issue `human` when Joe or another person takes ownership, including
-implementation, coordination or observation acceptance. This label excludes
-both delivery and advisory refinement even when `agent-ready` is present.
-Add it before removing `agent-ready`; leave a comment naming the owner, why
-work is handed off and what remains. Assignment is useful but not required.
-`needs-human` means the factory needs a decision; `human` means a person owns
-the work. Agents must not add or remove `human` without an explicit handoff
-instruction, relabel owned work `agent-ready`, or start competing work.
-
-The factory fences new starts after observing `human`, reconciles existing
-attempts and their costs, then records cancellation with `human_handoff`
-evidence. This is neither a delivery success nor an escalation. Unknown
-invocations and reservations remain fenced until normal reconciliation proves
-their outcome. A handoff is sticky for an admitted receipt: removing the label
-does not resume it. Return work through explicit factory re-admission after
-the old task settles; removing `human` only restores intake eligibility.
-Issues and existing PRs stay open for the human owner.
+- GitOps only: cluster access is read-only. Change manifests in Git; no
+  mutating `kubectl`, `helm install` or `helm uninstall`.
+- Use PRs and the merge queue. Preserve branch protection, required CI,
+  independent review, factory admission/ownership controls and worker limits.
+- CI owns chart version increases, deployment pin advances and image pushes.
+  Wait for chart writeback before diagnosing a rollout; lowering a pin is
+  the revert lever.
+- Keep secrets in the 1Password Operator. Internet traffic goes through
+  Cloudflare. Preserve authentication and public/private data boundaries.
+- `human` means human-owned; `needs-human` requests a decision. Do not
+  compete with human-owned work or change `human` without explicit handoff.
+  Removing it does not resume an admitted receipt; re-admission is required.
+- Use Conventional Commits. Keep prose concise and follow `docs/writing.md`.
 
 ## Commands
 
-```bash
-ci              # lint changed files + selective regen + remote Linux test
-ci lint         # format only files changed vs origin/main
-ci regen        # generators only, and only when inputs changed
-ci test         # affected tests on one hosted Linux runner
-ci test -- //...  # explicit full-suite escape hatch
-
-helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml
-```
-
-`./bootstrap.sh` then `direnv allow` puts `ci`, `helm`, `crane`, `go`,
-`python`, `pnpm`, `node` and the formatters on PATH.
-
-- Use `ci`, not bare `bazel` or `bazelisk`: a Mac has no matching remote
-  executors. `bb remote` is allowed. Targeted `pytest` on pure-Python files
-  you edited is fine as an advisory check.
-- **Never pipe `ci` or `bb remote` output into a filter or discard it.** Run
-  unpiped or `| tee` to a file. `ci test` has exited 0 without running
-  anything (#4118): judge a run by its `Executed N out of M tests` line.
-- **BUILD generation is CI-only.** CI's format stage runs `//:gazelle` and
-  auto-commits a `style: auto-format` commit, so fetch and rebase before your
-  next push.
-- **Generated sources needed by ordinary tooling belong in a clean checkout.**
-  Keep pinned Bazel generation authoritative, seed only the required outputs
-  as tracked files, and verify their bytes against regenerated outputs in
-  Linux CI. Reuse the trusted branch autoformat writeback with `git add -u`,
-  after parallel formatters finish; never nest Bazel in `run-generators.sh`.
-  Keep main and merge-queue no-write guards. Do not check in other build
-  artifacts. The EmberVM Go protobuf targets are the pattern (#7066).
-- Image push happens only in CI on merge to main.
-
-## Knowledge
-
-The knowledge graph (monolith, over MCP) is the shared memory across agents
-and sessions, and holds the evidence and incident history behind this repo's
-rules. If your tools include it:
-
-- **Search before investigating** (`search_knowledge`) anything that looks
-  previously hit: a deploy that will not roll, a red gate, a wedged control
-  plane. Results carry `verification_state` and `disputed`: treat them as
-  leads to confirm against the repo, not facts.
-- **Report durable findings** (`report_knowledge`) with the evidence behind
-  them. `dispute_fact` a fact you find wrong; `report_distress` only to request
-  intervention.
-
-If you have no MCP tools, this file, the repo and your task spec are all you
-have; skip the KG rather than treating it as a blocker. When you write a spec
-for another agent, assume it has no KG and put what it must know in the spec.
+`ci` runs changed-file lint, selective generation and affected remote tests.
+Use it rather than bare Bazel. Never filter away its output; confirm tests
+actually ran. Setup and generation details: [reference](docs/agents/reference.md#commands).
 
 ## Gotchas
 
-- **For `monolith`, `monolith-agents`, `monolith-public`, `embervm` and
-  `scotland-connector`, `targetRevision` in git does not say what is deployed.** Kargo owns it on the
-  hub. The `projects/gke-apps/` pins are hand-edited floors kept as the revert lever, so
-  `git != live` is correct there. Read the live value:
-  `kubectl get application monolith -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'`.
-  Every other chart deploys off the git value.
-- **Never hand-pin `@sha256:` digests for this repo's images in values
-  files.** Build-time pinning replaces tags; hand pins go stale into
-  `ImagePullBackOff`. Gated. Third-party digest pins are fine.
-- **Never hardcode a `.svc.cluster.local` URL.** Helm prepends the release
-  name, so a rename silently breaks it. Read it from an env var set in
-  `values.yaml` (`envOr("URL", "")`, no default). Gated.
-- **Monolith endpoints that read cluster resources need matching `ClusterRole`
-  verbs.** A missing verb fails in prod as `Forbidden`, which dashboards show
-  as a generic 5xx.
-- **Keep bulk data out of `chart/migrations/*.sql`.** The migrations ConfigMap
-  has a 256 KiB client-side annotation cap; load seeds out of band
-  (`projects/monolith/hikes/seed/`).
-- **Grep the tests before changing a number.** TTLs, timeouts, `max_tokens`
-  and retry counts are asserted; update the assertions in the same change.
-- **Images are apko plus `rules_apko`, never Dockerfiles**, amd64 only (every
-  caller but `projects/embervm/noded/image` passes `arm64 = False`; the macro
-  default is `True`, and noded still ships an amd64 plus arm64 index),
-  non-root uid 65532 with `runAsNonRoot: true`. Re-adding arm64 needs
-  `arm64 = True` and per-arch `tars`: `arm64 = False` with `multiarch_tars`
-  fails only at push.
-- **Python deps are `@pip//package` via `aspect_rules_py`.** `requirement()`
-  does not exist here. JS is pnpm plus `rules_js`. The
-  `projects/monolith/frontend/` app is Svelte 5 runes only, with CSS imported
-  from JavaScript, never bare `@import` package specifiers inside CSS.
-- **Cluster reads** use `kubectl` against the hub context, or the monolith
-  MCP's `k8s-*` tools and `verify_deployment`. The ArgoCD UI has no route;
-  Kargo's is `private.jomcgi.dev/app/kargo`. MCP topology:
-  `projects/mcp/ARCHITECTURE.md`.
-- **New service:** a chart and `deploy/` under `projects/<svc>/` (copy
-  `projects/monolith/deploy/` for the multi-source pattern), plus a hub
-  Application in `projects/gke-apps/<svc>/` listed in its `kustomization.yaml`.
-  `ci regen` does not create the hub Application.
-
-## Where to look next
-
-Files under `docs/agents/` are procedures for specific jobs. Open one only
-when its row applies.
-
-| When | Read |
-|------|------|
-| Working under `projects/monolith/` or `projects/embervm/` | that directory's `AGENTS.md` |
-| A red CI run you need to diagnose | `docs/agents/ci-triage.md` |
-| Opening, readying or enqueuing a PR without GraphQL (cloud session) | `docs/agents/cloud-sessions.md` |
-| Reviewing a finished PR diff | `docs/agents/review.md` |
-| Taking a feature from idea to merged (`/ship`) | `docs/agents/ship.md` |
-| Refreshing a system's STPA model | `docs/agents/stpa.md` |
-| Queueing or triaging drain-lane (`qwen-drain`) jobs | `docs/agents/drain-queue.md` |
-| Cutting BuildBuddy cache traffic | `docs/agents/buildbuddy-usage.md` |
-| Security-sensitive change | `docs/security.md`; `docs/THREAT-MODEL.md` for open findings |
-| Public tier: jomcgi.dev, monolith-public, `public_reader` data | `docs/runbooks/public-tier-checklist.md` |
-| ArgoCD OutOfSync, stuck rollout, "is my change live?" | `docs/runbooks/argocd-outofsync.md` |
-| Adding a service | "New service" above, `projects/platform/ARCHITECTURE.md` section 4, `projects/gke-apps/kustomization.yaml` (the live workload list) |
-| Observability or alerting | `docs/observability.md` |
-| Frontend or design: tokens, palette, motion, a11y | `.impeccable.md` |
-| Prose humans read: site copy, READMEs, runbooks, posts | `docs/writing.md` |
-| Operator changes | `projects/operators/best-practices.md` |
-| How a domain works today | `projects/<domain>/ARCHITECTURE.md`; each `**Why.**` paragraph carries the rationale |
-| Build, CI, tooling, hooks, Semgrep | `bazel/ARCHITECTURE.md` |
-| Recording a decision | a `**Why.**` paragraph in the domain's ARCHITECTURE.md and a Direction row with its issue; no ADRs (#4667) |
-
-**Runbooks** (`docs/runbooks/`) are explicit-only: open one when Joe names it,
-a row above points at it, or a task asks for it. Index:
-`docs/runbooks/README.md`.
-
-**Claude Code hooks** (`.claude/settings.json`) duplicate CI and git gates to
-fail fast; a rule every author must follow lives in CI or a git hook.
-
-<!-- polylane:start -->
-## Investigating production with Polylane
-
-If your tools include the [Polylane MCP server](https://mcp.polylane.com/mcp),
-check it for production-behaviour questions (an error, a spike, a deploy, a
-missing signal), and read its review comment before merging a PR that touches
-production paths.
-<!-- polylane:end -->
+Read [build and deployment gotchas](docs/agents/reference.md#gotchas) when
+changing those paths. Scoped instructions live beside their code. Consult the
+[task-specific index](docs/agents/reference.md#where-to-look-next) only as needed.
+Use available KG/production evidence to shorten investigations, verify it
+against current code and live state, and record durable findings.

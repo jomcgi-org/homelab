@@ -1,153 +1,45 @@
 # Ship a feature
 
-Take a feature from idea to merged, when asked to "ship" one (`/ship "<feature>"`).
+Deliver an authorized feature through merge and, when applicable, verified
+rollout under `AGENTS.md` "Merge authority". Joe's local Claude Code command
+is `/ship "<feature>"`; this repository does not install it.
 
-You are the orchestrator in the main conversation. You hold the phase sequence,
-decide which phases this change actually needs, own the git operations and the
-issue ledger, and dispatch every unit of work to an agent. Keep your own context
-for sequencing and judgment: the agents carry the detail so this session does not
-have to.
+## Work to completion
 
-## Roles
+- Read the request and existing issue. Infer routine details from the repo,
+  choose a reversible approach and proceed. Ask only when the escalation
+  conditions in `AGENTS.md` apply.
+- Use an existing issue for multi-step work, or create one with the outcome,
+  acceptance criteria and remaining work. A small explicit request can use
+  its PR as the record. Do not create a second planning ledger.
+- Keep one PR when the change is coherent. Split independently deliverable
+  work when that improves throughput. Delegate independent implementation
+  tasks when useful; give each agent its scope, acceptance and constraints.
+- Implement and validate the behaviour in the same change. Follow the root
+  delivery loop: proportionate checks, one independent review of the full
+  diff, required CI, merge queue, and live verification where needed.
+- Fix in-scope failures yourself. Read failure evidence before retrying.
+  Escalate a specific unresolved decision once; continue unrelated work.
+- Close the issue when its acceptance criteria are met. If rollout or
+  observation is outstanding, leave it open and record the exact remainder.
+  Report the PR URL and actual state.
 
-| Work | Who |
-|------|-----|
-| Implementation of a specified task | any implementing agent: a subagent, or the factory via `monolith-factory-submit-issue` |
-| Review of the finished diff | an agent following `docs/agents/review.md`, never the author |
-| Safety model refresh | an agent following `docs/agents/stpa.md` |
+## Add only what the change needs
 
-Which model runs each role is not this document's decision. Give each agent the
-full brief in one shot: an agent that has to come back for clarification costs
-more than the spec would have. Fan out independent tasks in the same turn
-rather than serializing them. Branch and merge mechanics are in `AGENTS.md`.
+- **Architecture:** update the domain's `ARCHITECTURE.md` when adding a
+  service/integration, changing a data model or cross-service contract,
+  moving a trust boundary, or reversing a decision. Record the rationale
+  in a `**Why.**` paragraph; link unbuilt work from Direction to its issue.
+- **Tests:** cover changed behaviour and failure paths. BDD is useful for
+  user-visible flows; a separate specification PR is optional. Existing
+  `future = True` BDD tests are excluded from required `pr-checks`; the
+  informational future-feature action is disabled. Do not count those tests
+  as validation until they are enabled and actually run.
+- **Safety model:** if the system has `STPA.md`, update it using
+  `docs/agents/stpa.md` when changing control actions, feedback/freshness,
+  RBAC, deletion/retention or autonomous actions. Additive UI, copy, docs
+  and changes outside a control loop need no STPA pass.
 
-## Phase 0: clarify
-
-If the feature, its scope, its success criteria, or the systems it touches are
-unclear, ask 2 to 4 questions. Restate the agreed direction in one sentence,
-then proceed.
-
-## Which phases this change needs
-
-Phases 1 and 4 always run. The other three are conditional, and deciding
-correctly is most of the value here: running all five on a small feature spends a
-review cycle per unnecessary phase, while skipping a needed one loses the record
-or the safety case.
-
-**Phase 2, architecture record.** Run when the change adds a service, dependency or external
-integration; alters a data model or adds a non-additive migration; moves a
-security, auth or public/private tier boundary; changes a cross-service contract;
-or reverses an earlier decision. Skip for bug fixes, copy, config values, dependency
-bumps, docs, and refactors with no behaviour change.
-
-**Phase 3, failing BDD.** Run when user-visible behaviour changes, or the change
-adds an endpoint, page or scheduled job. Skip for internal refactors, docs, and
-CI or infra-only changes.
-
-**Phase 5, STPA.** Run when the change adds or alters a control action (a new
-scheduled job, a new trigger, a new write path to the cluster or database); adds
-or alters feedback the system acts on (a new data source, a changed freshness or
-retention rule); or touches a safety constraint (new RBAC verbs, new deletion or
-retention logic, a new autonomous action). Skip for additive UI, copy, docs, and
-any small feature that touches no control loop. Skip outright if the touched
-system has no `STPA.md`.
-
-**Record every skip on the issue as `n/a: <reason>`.** A skipped phase with a
-stated reason is a decision; a silently skipped phase is a gap.
-
-## The ledger
-
-Open or reuse a GitHub tracking issue (`enhancement`, plus `agent-ready` if
-autonomously pickable). The issue body is the source of truth for what is left to
-do. Multi-part work gets a parent with sub-issues.
-
-On resume: `gh issue view <n>`, find the first unchecked box, continue there.
-Closing the issue is how "shipped" is recorded.
-
-```markdown
-## Summary
-
-<!-- one sentence: what we are shipping and why -->
-
-## Plan
-
-<!-- tasks, acceptance, systems touched -->
-
-## Lifecycle
-
-- [ ] 1-plan done= notes=
-- [ ] 2-architecture pr= path= <!-- or n/a: reason -->
-- [ ] 3-bdd pr= specs= <!-- or n/a: reason -->
-- [ ] 4-implement pr= <!-- must include Closes #<this issue> -->
-- [ ] 5-stpa pr= systems= <!-- or n/a: reason -->
-
-## Phase 4 gates (all must be checked before enqueueing)
-
-- [ ] `ci` green on the worktree, or PR CI green when `ci` is unavailable
-- [ ] PR body contains `Closes #<this issue>` (or the parent, if a sub-issue)
-- [ ] No chart version in the diff (`Chart.yaml` `version:` / `targetRevision:` are written post-merge)
-- [ ] Review (`docs/agents/review.md`) run on the full diff; findings acted on or answered
-- [ ] Goal/spec or policy alignment recorded; no unresolved decision or explicit human hold
-- [ ] Required checks and independent review apply to the current PR head
-
-## Notes / blockers
-```
-
-Sub-issues inherit the Phase 4 gates. Lifecycle 1 to 5 stays on the parent unless
-a sub-issue is independently shippable end to end.
-
-## Phase 1: plan
-
-Clarify, then write the plan into the tracking issue. Split it into tasks small
-enough that each is a single one-shot brief for an implementing agent, naming the
-files, the acceptance criteria, and the pattern to imitate.
-
-## Phase 2: architecture record
-
-Record the decision in the domain's `ARCHITECTURE.md`: a `**Why.**` paragraph
-under the section it changes, and a row in the Direction section for anything
-accepted but not yet built, with its issue. Rebase-merge on green.
-
-## Phase 3: failing BDD
-
-Specs define done. `bdd_test(future = True, ...)` with `@covers_*` markers from
-`shared/testing/markers.py`. The gating `pr-checks` run excludes `future`-tagged
-tests, and no CI action runs them (the "BDD future features" action is disabled
-in `buildbuddy.yaml`). Merging red specs is intentional. This is implementation
-work, so it goes to an implementing agent.
-
-## Phase 4: implement
-
-1. Dispatch an implementing agent per task, in parallel where tasks are
-   independent.
-2. Run `ci` and commit with Conventional Commits.
-3. Dispatch a review (`docs/agents/review.md`) **once**, on the full diff, at
-   the end. Not per task.
-4. Check every Phase 4 gate before enqueueing the PR.
-5. Follow `AGENTS.md` "Merge authority": enqueue eligible work, follow it
-   through merge, and verify any required rollout. Report the PR URL and state.
-   Ask Joe only for an unresolved decision or explicit approval hold.
-
-## Phase 5: STPA
-
-For each touched system meeting the criteria above, dispatch an agent to follow
-`docs/agents/stpa.md` with the system directory, the lens and what changed. Rebase-merge on green, record the systems
-on the issue.
-
-## Merge cadence
-
-Every phase, including Phase 4, can enqueue with `gh pr merge <n> --auto` once
-its applicable gates pass. Follow it through to merged. Existing goals and
-policies authorize aligned work without a routine human review step.
-
-## Stop conditions
-
-- Phase 0 clarification unanswered: ask and stop (Discord if Joe may be away).
-- Phase 4 gates incomplete: finish them; diagnose failed checks and address
-  review findings within scope.
-- Unresolved goal/policy decision or explicit human hold: name it and report
-  the PR URL. Green checks alone do not resolve it.
-- CI red on a real failure outside scope: stop and diagnose
-  (`docs/agents/ci-triage.md`).
-- All lifecycle boxes checked and the issue closed: report shipped, with links.
-- User says stop: stop.
+Keep related records and tests in the implementation PR where practical.
+There is no mandatory phase sequence, separate PR per phase, or checklist
+of skipped phases.
