@@ -217,7 +217,6 @@ filegroup(
         "//projects/embervm/dev/apple:repo_docs",
         "//projects/embervm/dev/deploy:repo_docs",
         "//projects/embervm/rootfs:repo_docs",
-        "//projects/embervm/runtimes/bazel:repo_docs",
         "//projects/embervm/runtimes/claude:repo_docs",
         "//projects/embervm/runtimes/python:repo_docs",
         "//projects/embervm/runtimes/python/testdata/echo:repo_docs",
