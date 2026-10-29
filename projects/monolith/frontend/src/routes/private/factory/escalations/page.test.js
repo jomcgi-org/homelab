@@ -290,6 +290,37 @@ describe("escalations page", () => {
     );
   });
 
+  test("poll recovery restores an uncertain request when initial loading was unavailable", async () => {
+    const body = durableBody({
+      option_key: "split",
+      note: "Keep the exact scope",
+    });
+    body.request_key = "browser-v1:saved";
+    sessionStorage.setItem(
+      `factory-decision:3:${DECISION_ID}`,
+      JSON.stringify({ body, attempt: 0, status: "pending" }),
+    );
+    vi.useFakeTimers();
+    stubFetch(
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ escalations: [escalation()] }),
+      })),
+    );
+    const target = renderPage({ escalations: [], error: true });
+    await tick();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(target.querySelector("textarea").value).toBe("Keep the exact scope");
+    expect(target.textContent).toContain("Check previous result");
+    target.querySelector("textarea").value = "New local edit";
+    target
+      .querySelector("textarea")
+      .dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(target.querySelector("textarea").value).toBe("New local edit");
+    vi.useRealTimers();
+  });
+
   test("accepted decisions cannot be submitted twice while polling lags", async () => {
     const fetchMock = vi.fn(async (_, init) => ({
       ok: true,
