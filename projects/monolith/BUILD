@@ -2568,6 +2568,25 @@ py_test(
 )
 
 py_test(
+    name = "home_cluster_snapshot_migration_test",
+    srcs = ["home/cluster_snapshot_migration_test.py"],
+    data = [
+        "hikes/seed/walks_seed.sql",
+        "//projects/monolith/chart:migrations",
+        "@postgres_test//:postgres",
+    ],
+    env = {"PYTEST_ADDOPTS": "-p shared.testing.plugin"},
+    imports = ["."],
+    size = "large",
+    tags = ["bdd"],
+    timeout = "moderate",
+    deps = [
+        ":monolith_backend",
+        ":shared_testing",
+    ],
+)
+
+py_test(
     name = "db_test",
     srcs = ["core/db_test.py"],
     imports = ["."],

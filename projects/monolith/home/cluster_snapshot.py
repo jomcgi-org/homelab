@@ -6,8 +6,7 @@ namespaces (~235 objects), uncached. A cold page load blocked on the whole scan.
 This module moves that work to a scheduled job
 (``home.cluster_snapshot_refresh``) that upserts a single
 ``home.cluster_snapshot`` row, so the dashboard read path (see
-``home.dashboard``) becomes a one-row lookup. The retained alerts column is
-written as an empty object for schema compatibility. The same scan supplies a
+``home.dashboard``) becomes a one-row lookup. The same scan supplies a
 bounded, read-only agent summary in ``agent_view.cluster_snapshot``.
 """
 
@@ -123,7 +122,7 @@ def build_agent_cluster_summary(resources: dict, errors: dict[str, str]) -> dict
     return payload
 
 
-def _write_cluster_snapshot(health: dict, alerts: dict) -> None:
+def _write_cluster_snapshot(health: dict) -> None:
     """Upsert the single snapshot row. Opens its own session so it can run in a
     worker thread off the event loop."""
     from core.db import get_engine
@@ -132,15 +131,14 @@ def _write_cluster_snapshot(health: dict, alerts: dict) -> None:
         session.execute(
             text(
                 """
-                INSERT INTO home.cluster_snapshot (id, health, alerts, snapshot_at)
-                VALUES (1, :health, :alerts, now())
+                INSERT INTO home.cluster_snapshot (id, health, snapshot_at)
+                VALUES (1, :health, now())
                 ON CONFLICT (id) DO UPDATE
                     SET health = EXCLUDED.health,
-                        alerts = EXCLUDED.alerts,
                         snapshot_at = EXCLUDED.snapshot_at
                 """
             ),
-            {"health": json.dumps(health), "alerts": json.dumps(alerts)},
+            {"health": json.dumps(health)},
         )
         session.commit()
 
@@ -183,7 +181,7 @@ async def refresh_cluster_snapshot() -> None:
         health = build_health(resources)
     payload = build_agent_cluster_summary(resources, errors)
     try:
-        await asyncio.to_thread(_write_cluster_snapshot, health, {})
+        await asyncio.to_thread(_write_cluster_snapshot, health)
     except Exception:
         logger.exception("cluster snapshot: dashboard write failed")
     try:
@@ -197,7 +195,7 @@ def read_cluster_snapshot(session: Session) -> dict | None:
     """Return the stored snapshot, or None when the caller should live-scan.
 
     Shape when present:
-        {"health": dict, "alerts": dict, "snapshot_at": iso str, "age_secs": float}
+        {"health": dict, "snapshot_at": iso str, "age_secs": float}
 
     None is returned (meaning "fall back to a live scan") when the row is
     absent (fresh deploy before the first refresh), too stale (a wedged
@@ -207,23 +205,26 @@ def read_cluster_snapshot(session: Session) -> dict | None:
     """
     try:
         row = session.execute(
-            text(
-                "SELECT health, alerts, snapshot_at "
-                "FROM home.cluster_snapshot WHERE id = 1"
-            )
+            text("SELECT health, snapshot_at FROM home.cluster_snapshot WHERE id = 1")
         ).first()
-    except (OperationalError, ProgrammingError):
+    except (OperationalError, ProgrammingError) as exc:
         session.rollback()
-        return None
+        # PostgreSQL undefined_table and SQLite's missing-table fixture path
+        # are expected before migrations. Column drift and connection failures
+        # must reach the dashboard's error reporting, not a healthy live scan.
+        if getattr(exc.orig, "sqlstate", None) == "42P01" or (
+            isinstance(exc, OperationalError)
+            and "no such table: home.cluster_snapshot" in str(exc.orig)
+        ):
+            return None
+        raise
     if row is None:
         return None
 
-    health, alerts, snapshot_at = row
+    health, snapshot_at = row
     # SQLite hands JSON/timestamps back as strings; Postgres parses them.
     if isinstance(health, str):
         health = json.loads(health)
-    if isinstance(alerts, str):
-        alerts = json.loads(alerts)
     if isinstance(snapshot_at, str):
         snapshot_at = datetime.fromisoformat(snapshot_at)
     if snapshot_at.tzinfo is None:
@@ -235,7 +236,6 @@ def read_cluster_snapshot(session: Session) -> dict | None:
 
     return {
         "health": health,
-        "alerts": alerts,
         "snapshot_at": snapshot_at.isoformat(),
         "age_secs": age_secs,
     }
