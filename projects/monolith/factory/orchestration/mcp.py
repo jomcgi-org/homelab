@@ -1466,14 +1466,16 @@ async def factory_amend_policy(
         str | None, Field(pattern=r"^[0-9a-f]{64}$")
     ] = None,
 ) -> dict:
-    """Preview or apply an exact paused-receipt policy amendment as a human.
+    """Preview or apply an exact receipt policy amendment as a human.
 
     Preview first. Apply requires its digest, identical arguments and a fresh
     request key. Replay that key after a lost response. Changes in control,
     graph or accounting invalidate the preview. Only task/turn budgets, work
     and planner turn caps, review rounds and the task timeout can change.
-    Add landing_hold true to retain a reviewed unmerged delivery. This hold
-    is sticky and cannot be released by this operation.
+    Add landing_hold true to retain a reviewed unmerged delivery. A hold-only
+    overlay can restrict a quiescent active receipt without pausing it or
+    changing funding or deadlines. Other amendments require a paused task.
+    This hold is sticky and cannot be released by this operation.
     Add nonrenewable_recovery true to prohibit automatic funding or allowance
     extensions. Set max_planner_turns to the consumed count plus the authorized
     attempts. The final planner result goes through normal server admission.
@@ -1481,9 +1483,10 @@ async def factory_amend_policy(
     This restriction is sticky. Further bounds require another human amendment.
     Dollar fields are recorded but never refuse work. This changes neither
     provider/global limits nor the $500/$1000 emergency limits.
-    A successful amendment supersedes stale funding review and records planner
-    direction, but leaves the same task paused and every existing node pin
-    unchanged. Review the bounded amendment before explicitly resuming.
+    A hold-only amendment preserves funding and the current pause state. Other
+    amendments supersede stale funding review and leave the same task paused.
+    Every existing node pin is unchanged. Review budget amendments before
+    explicitly resuming.
     """
     principal = current_principal()
     refusal = _refuse(principal)

@@ -47,11 +47,12 @@ def _preview(db, control, receipt_id, overlay, direction):
     ):
         raise ValueError("nonrenewable_recovery_can_only_be_added")
     direction = controls._text(direction, "direction", 4000)
+    hold_only = overlay == {"landing_hold": True}
     row = db.get(FactoryReceipt, receipt_id)
     if (
         row is None
         or row.state not in controls._ACTIVE
-        or not row.task_paused
+        or (not row.task_paused and not hold_only)
         or row.cancellation_requested
         or control.state == "stopped"
     ):
@@ -92,7 +93,6 @@ def _preview(db, control, receipt_id, overlay, direction):
         if task.created_at.tzinfo is None
         else task.created_at
     )
-    hold_only = overlay == {"landing_hold": True}
     if (
         not hold_only
         and created + timedelta(seconds=amended["task_timeout_seconds"])
@@ -122,7 +122,7 @@ def _preview(db, control, receipt_id, overlay, direction):
         "pending_funding_request_id": (funding.pending(db, row.task_id) or {}).get(
             "audit_id"
         ),
-        "stays_paused": True,
+        "stays_paused": row.task_paused,
         "auto_merge": policy.get("auto_merge", False),
         "landing_hold": controls.landing_held(row)
         or overlay.get("landing_hold", False),
@@ -230,7 +230,7 @@ def apply(
             "receipt_id": row.id,
             "task_id": row.task_id,
             "version": control.version,
-            "stays_paused": True,
+            "stays_paused": row.task_paused,
             "preview_sha256": proposal["preview_sha256"],
         }
         controls._audit(

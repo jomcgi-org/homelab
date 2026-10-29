@@ -3072,7 +3072,7 @@ deadline. Invalid or temporarily unavailable evidence stays pending.
 Draft-only acceptance requires the existing typed `landing_hold`. The exact
 operator policy-amendment preview/apply can add that hold with an overlay of
 only `landing_hold: true`; this restrictive operation preserves the funding
-ledger and deadline, including an expired deadline, and leaves the task paused.
+ledger and deadline, including an expired deadline, and preserves the task pause state.
 It does not infer authorization from a PR body or grant landing.
 
 **Why.** A completed result arriving after its start lease is an observation

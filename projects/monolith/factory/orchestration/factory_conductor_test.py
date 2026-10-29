@@ -24391,6 +24391,17 @@ def _saved_finish_case(monkeypatch):
     from datetime import datetime, timedelta
     from factory.orchestration import factory_controls as controls
 
+    from sqlmodel import SQLModel
+    from factory.execution.models import AgentSession, PendingMessage
+
+    engine = conductor.get_engine().execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    for module in (conductor, conductor.graph, controls):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    SQLModel.metadata.create_all(
+        engine, tables=[AgentSession.__table__, PendingMessage.__table__]
+    )
     task, policy = feedback_task()
     head = "a" * 40
     complete_feedback_node(
@@ -24641,5 +24652,44 @@ def test_saved_finish_does_not_reinterpret_old_evidence(
             run.outcome_json = json.dumps(body)
     conductor._adopt_saved_finish(
         conductor._task(task["id"]), policy, conductor.graph.node_runs(task["id"])
+    )
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"
+
+
+def test_saved_finish_excludes_issue_less_deliveries(feedback_db, monkeypatch):
+    task, policy, _, _ = _saved_finish_case(monkeypatch)
+    task["issue_number"] = None
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *a: pytest.fail("issue-less read")
+    )
+    assert not conductor._adopt_saved_finish(
+        task, policy, conductor.graph.node_runs(task["id"])
+    )
+
+
+def test_saved_finish_fences_claimed_native_turn(feedback_db, monkeypatch):
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import factory_controls as controls
+
+    task, policy, _, _ = _saved_finish_case(monkeypatch)
+    with controls._locked_session() as (db, _):
+        session = AgentSession(
+            local_session_id=f"factory:{task['id']}:conductor_final:1",
+            repo="owner/repo",
+            workspace="/workspace",
+            branch="test",
+        )
+        db.add(session)
+        db.flush()
+        db.add(
+            PendingMessage(
+                session_id=session.id,
+                seq=1,
+                message_text="saved turn",
+                claimed_by_replica="live-owner",
+            )
+        )
+    assert conductor._adopt_saved_finish(
+        task, policy, conductor.graph.node_runs(task["id"])
     )
     assert controls.task_snapshot(task["id"])["state"] == "admitted"

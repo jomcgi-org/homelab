@@ -6722,6 +6722,10 @@ def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_refine import task_class_for
 
+    if task.get("issue_number") is None:
+        return False
+    from factory.execution.models import AgentSession, PendingMessage
+
     planners = [
         r
         for r in runs
@@ -6794,6 +6798,18 @@ def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
                 )
                 != run_digest
                 or controls._quiescence_refusal(db, task["id"])
+                or db.exec(
+                    select(PendingMessage.id)
+                    .join(AgentSession)
+                    .where(
+                        AgentSession.local_session_id.startswith(
+                            f"factory:{task['id']}:",
+                            autoescape=True,
+                        ),
+                        PendingMessage.claimed_by_replica.isnot(None),
+                    )
+                ).first()
+                is not None
                 or _landing_recovery_requests(task["id"], session=db)
             ):
                 return True
