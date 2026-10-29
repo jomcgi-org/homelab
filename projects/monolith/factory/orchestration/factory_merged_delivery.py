@@ -261,23 +261,18 @@ def _handoff(task: dict, policy: dict, pr: dict) -> None:
 
 def _drive(task: dict, policy: dict, runs: list[dict], pr: dict) -> None:
     from factory.orchestration import factory_conductor as conductor
-    from factory.orchestration import factory_controls as controls, graph, runtime
+    from factory.orchestration import factory_controls as controls, graph
 
     key = f"review_merged_{pr['number']}_{pr['head']['sha']}"
     review_runs = [r for r in runs if r["node_key"] == key]
     if review_runs:
         # No correction/re-review loop on an immutable merged branch. A
         # rejected or ambiguous terminal review stays visible for its owner.
-        if any(r["status"] not in graph.TERMINAL_RUN_STATUSES for r in review_runs):
-            if not _owned_issue(task):
-                return
-            dbos = runtime.init_dbos()
-            for run in review_runs:
-                if run["status"] not in graph.TERMINAL_RUN_STATUSES:
-                    conductor._submit_or_reconcile(
-                        conductor._task(task["id"]), run, dbos
-                    )
-        elif _owned_issue(task):
+        # reconcile_task's active-run path already reconciles admitted work,
+        # including after staging is disabled. Never submit twice in one tick.
+        if all(
+            r["status"] in graph.TERMINAL_RUN_STATUSES for r in review_runs
+        ) and _owned_issue(task):
             with controls._locked_session() as (db, control):
                 row = controls._receipt(db, task["id"])
                 if _authority(
@@ -344,12 +339,14 @@ def recover_stranded(policy: dict) -> None:
         if not rows:
             rows = db.exec(query.limit(factory_landing.OBSERVATION_BATCH)).all()
         _discovery_cursors[repo] = rows[-1].id if rows else 0
-        candidates = [(r.task_id, controls._effective_policy(db, r)) for r in rows]
-    for task_id, pinned_policy in candidates:
+        candidates = [r.task_id for r in rows]
+    for task_id in candidates:
         try:
             with controls._locked_session() as (db, control):
-                if not _authority(db, control, controls._receipt(db, task_id), task_id):
+                row = controls._receipt(db, task_id)
+                if not _authority(db, control, row, task_id):
                     continue
+                pinned_policy = controls._effective_policy(db, row)
             task = conductor._task(task_id)
             if _owned_issue(task):
                 reconcile_merged_delivery(
