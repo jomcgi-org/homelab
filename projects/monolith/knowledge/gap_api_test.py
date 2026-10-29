@@ -7,7 +7,6 @@ Uses the same in-memory SQLite + TestClient fixture pattern as
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -246,99 +245,3 @@ class TestReviewQueue:
         r = client.get("/api/knowledge/gaps/review-queue")
         assert r.status_code == 200
         assert r.json() == {"gaps": []}
-
-
-class TestAnswerGap:
-    """POST /api/knowledge/gaps/{gap_id}/answer."""
-
-    def test_happy_path_commits_gap_fileless(self, client, session):
-        src = _make_source_note(session)
-        gap = _make_gap(
-            session,
-            term="Linkerd mTLS",
-            source_fk=src.id,
-            state="in_review",
-            gap_class="internal",
-        )
-
-        # The atom build+index is the shared fileless core; mock it so the
-        # endpoint stays a unit test (no embeddings, no network) and assert
-        # the gap commit + response shape.
-        index = AsyncMock(return_value="linkerd-mtls")
-        with patch("knowledge.mcp._index_atom", index):
-            r = client.post(
-                f"/api/knowledge/gaps/{gap.id}/answer",
-                json={"answer": "Linkerd uses per-pod sidecars on port 4143."},
-            )
-
-        assert r.status_code == 200
-        body = r.json()
-        assert body == {"gap_id": gap.id, "note_id": "linkerd-mtls"}
-
-        index.assert_awaited_once()
-        kwargs = index.call_args.kwargs
-        assert kwargs["title"] == "Linkerd mTLS"
-        assert kwargs["visibility"] == "private"
-        assert kwargs["source_tier"] == "personal"
-        assert "Linkerd uses per-pod sidecars" in kwargs["body"]
-
-        # Refresh in-session view — gap should be committed.
-        session.expire_all()
-        reloaded = session.get(Gap, gap.id)
-        assert reloaded.state == "committed"
-        assert reloaded.note_id == "linkerd-mtls"
-
-    def test_unknown_gap_id_returns_404(self, client):
-        r = client.post(
-            "/api/knowledge/gaps/9999/answer",
-            json={"answer": "anything"},
-        )
-        assert r.status_code == 404
-        assert "Gap not found" in r.json().get("detail", "")
-
-    def test_wrong_state_returns_409(self, client, session):
-        src = _make_source_note(session)
-        gap = _make_gap(
-            session,
-            term="still-discovered",
-            source_fk=src.id,
-            state="discovered",
-            gap_class=None,
-        )
-
-        r = client.post(
-            f"/api/knowledge/gaps/{gap.id}/answer",
-            json={"answer": "x"},
-        )
-        assert r.status_code == 409
-        assert "expected 'in_review'" in r.json().get("detail", "")
-
-    def test_answer_with_frontmatter_terminator_returns_400(self, client, session):
-        src = _make_source_note(session)
-        gap = _make_gap(
-            session,
-            term="injectable",
-            source_fk=src.id,
-            state="in_review",
-            gap_class="internal",
-        )
-
-        r = client.post(
-            f"/api/knowledge/gaps/{gap.id}/answer",
-            json={"answer": "foo\n---\nbar"},
-        )
-        assert r.status_code == 400
-        assert "frontmatter terminator" in r.json().get("detail", "")
-
-    def test_missing_answer_body_returns_422(self, client, session):
-        src = _make_source_note(session)
-        gap = _make_gap(
-            session,
-            term="x",
-            source_fk=src.id,
-            state="in_review",
-            gap_class="internal",
-        )
-
-        r = client.post(f"/api/knowledge/gaps/{gap.id}/answer", json={})
-        assert r.status_code == 422

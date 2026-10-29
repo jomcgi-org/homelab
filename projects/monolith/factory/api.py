@@ -16,7 +16,6 @@ from factory.execution.api import (
     read_review_cessation_observation as read_review_cessation_observation,
     observe_guest_for_recomputation as observe_guest_for_recomputation,
 )
-from factory.orchestration.api import get_decision_reference as get_decision_reference
 
 
 def operator_access_error(principal) -> str | None:

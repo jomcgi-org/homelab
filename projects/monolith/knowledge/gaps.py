@@ -1,8 +1,8 @@
-"""Gap discovery, review, and answer capture.
+"""Gap discovery and review.
 
 A gap is an unresolved body-text wikilink. Discovery writes unresolved terms
 to Postgres, remote routines classify them through MCP, and review endpoints
-capture or audit answers.
+audit gap state.
 """
 
 from __future__ import annotations
@@ -50,12 +50,6 @@ class GapNotDeletedError(GapError):
     """``undelete`` was called on a gap that is not soft-deleted."""
 
     status_code = 409
-
-
-class GapAnswerInvalidError(GapError):
-    """The supplied answer text is invalid (e.g. a frontmatter terminator)."""
-
-    status_code = 400
 
 
 _VALID_GAP_CLASSES = frozenset({"external", "internal", "hybrid", "parked"})
@@ -150,8 +144,8 @@ def resolve_gaps_for_note(
 
 
 # Terminal states for the audit queue. A gap in one of these states had
-# its lifecycle ended by automation (answer_gap commits, research auto-
-# commits, classifier parks, reject_gap rejects). The audit queue surfaces
+# its lifecycle ended (research auto-commits, classifier parks,
+# reject_gap rejects). The audit queue surfaces
 # them so a human can spot-check the automation's call.
 _TERMINAL_GAP_STATES = ("committed", "rejected", "parked")
 
@@ -211,11 +205,10 @@ def list_gaps_for_review(
     """Return gaps for the private review page, filtered by ``mode``.
 
     ``mode='pending'`` — gaps awaiting user attention (``state='in_review'``,
-    ``human_verified IS FALSE``). For ``gap_class='internal'`` / ``hybrid``
-    the user is expected to answer via :func:`answer_gap`. Oldest first.
+    ``human_verified IS FALSE``). Oldest first.
     This is the same queue that backs the original ``list_review_queue``
     helper plus the ``human_verified`` filter so verified gaps drop out of
-    the queue immediately after a ``/verify`` or ``/answer`` call.
+    the queue immediately after a ``/verify`` call.
 
     ``mode='audit'`` — terminal gaps (``committed|rejected|parked``) where
     ``human_verified IS FALSE``, most-recently-resolved first. NULL
@@ -313,8 +306,7 @@ def verify_gap(session: Session, gap_id: int) -> dict:
     Pure acknowledgement — does not change ``state``, does not touch any
     file. From the pending queue: drops the gap out of the pending filter
     (which requires ``human_verified IS FALSE``) but keeps it in
-    ``state='in_review'`` so the user can still answer it later via
-    :func:`answer_gap`. From the audit queue: same effect, just starting
+    ``state='in_review'``. From the audit queue: same effect, just starting
     from a terminal state.
 
     Raises:
@@ -368,8 +360,7 @@ def set_gap_class(session: Session, gap_id: int, gap_class: str) -> dict:
         * ``external`` -> leave ``state='discovered'`` (the research routine
           pulls discovered and in_review external gaps, there is no
           intermediate state).
-        * ``internal`` / ``hybrid`` -> ``state='in_review'`` (ready for a
-          user answer via :func:`answer_gap`).
+        * ``internal`` / ``hybrid`` -> ``state='in_review'`` (awaiting review).
         * ``parked`` -> ``state='parked'`` and ``resolved_at=now(utc)``
           (terminal SKIP category).
 
@@ -403,159 +394,6 @@ def set_gap_class(session: Session, gap_id: int, gap_class: str) -> dict:
         gap.state,
     )
     return _gap_to_dict(gap, session=session)
-
-
-def _is_tombstone_answer(answer: str) -> bool:
-    """Detect the user's 'Tombstone — ...' convention on a gap answer.
-
-    Matches the leading marker in any of the user's actual forms:
-    ``Tombstone `` (capital T then ASCII space), ``Tombstone—`` (em-dash
-    directly), ``Tombstone -`` (ASCII hyphen). Case-sensitive on the
-    capital T — lowercased ``tombstone`` could plausibly appear in
-    legitimate answers about graveyards, soft-deletes, or tombstone
-    fields in storage engines, none of which the user wants
-    short-circuited.
-    """
-    stripped = (answer or "").lstrip()
-    if not stripped.startswith("Tombstone"):
-        return False
-    after = stripped[len("Tombstone") :]
-    # space, em-dash, ASCII hyphen, or end-of-string all count.
-    return after[:1] in (" ", "—", "-", "")
-
-
-def _load_gap_for_answer(session: Session, gap_id: int) -> Gap:
-    """Load an answerable gap, enforcing the in_review precondition (sync).
-
-    Split out of :func:`answer_gap` so no raw ``session.*`` call sits in the
-    async body (semgrep ``no-sync-session-in-async-def``). A gap in
-    ``state='in_review'`` always carries ``gap_class`` in
-    (internal, hybrid, external) under the ``gaps_state_class_combo`` CHECK, so
-    this guard is what keeps the later commit legal.
-
-    Raises:
-        ValueError: if ``gap_id`` is unknown or the gap is not in
-            ``state='in_review'``.
-    """
-    gap = session.get(Gap, gap_id)
-    if gap is None or gap.deleted_at is not None:
-        raise GapNotFoundError(f"Gap not found: id={gap_id}")
-    if gap.state != "in_review":
-        raise GapWrongStateError(
-            f"Gap id={gap_id} is in state={gap.state!r}, expected 'in_review'"
-        )
-    return gap
-
-
-def _reject_via_tombstone(session: Session, gap_id: int, answer: str) -> dict:
-    """Close a gap via the Tombstone convention: rejected, no atom (sync).
-
-    Split out of :func:`answer_gap` to keep ``session.*`` mutations and the
-    commit out of the async body. ``answer`` is accepted for call-site
-    symmetry; the Tombstone branch deliberately records no answer body.
-    """
-    del answer  # Tombstone gaps store no answer body (behavior preserved).
-    gap = session.get(Gap, gap_id)
-    gap.state = "rejected"
-    gap.human_verified = True
-    gap.resolved_at = datetime.now(timezone.utc)
-    session.commit()
-    session.refresh(gap)
-    logger.info("gaps.answer_gap: tombstoned gap_id=%d term=%r", gap_id, gap.term)
-    return _gap_to_dict(gap, session=session)
-
-
-def _finalize_answered_gap(
-    session: Session, gap_id: int, answer: str, note_id: str
-) -> dict:
-    """Mark an answered gap committed against its new atom (sync).
-
-    Split out of :func:`answer_gap` to keep ``session.*`` mutations and the
-    commit out of the async body.
-    """
-    gap = session.get(Gap, gap_id)
-    gap.answer = answer
-    gap.state = "committed"
-    gap.note_id = note_id
-    gap.resolved_at = datetime.now(timezone.utc)
-    # User-initiated answer is itself a verification - keeps the
-    # /private/review audit queue's "human has looked at this" semantics
-    # consistent with reject_gap and verify_gap.
-    gap.human_verified = True
-    session.commit()
-    logger.info(
-        "gaps.answer_gap: committed gap_id=%d as note_id=%s",
-        gap_id,
-        note_id,
-    )
-    return {
-        "gap_id": gap_id,
-        "note_id": note_id,
-    }
-
-
-async def answer_gap(
-    session: Session,
-    gap_id: int,
-    answer: str,
-) -> dict:
-    """Commit a user answer fileless: emit a personal-tier atom, mark committed.
-
-    Routes the answer through the shared fileless index helper
-    (:func:`knowledge.mcp._index_atom`), the same core ``create_atom`` uses, so
-    the atom lands straight in Postgres with ``source_tier: personal`` and
-    ``visibility: private``. No filesystem, no reconciler.
-
-    The ``Tombstone`` answer convention closes the gap as ``rejected`` with no
-    atom created (see :func:`_is_tombstone_answer`).
-
-    A gap in ``state='in_review'`` always carries ``gap_class`` in
-    (internal, hybrid, external) under the ``gaps_state_class_combo`` Postgres
-    CHECK, so committing it is legal; the in_review precondition (enforced in
-    :func:`_load_gap_for_answer`) is the in-code guard that upholds that
-    invariant.
-
-    All database-session calls live in the sync helpers
-    (:func:`_load_gap_for_answer`, :func:`_reject_via_tombstone`,
-    :func:`_finalize_answered_gap`) so none sit in this async body, matching
-    how ``create_atom`` passes semgrep ``no-sync-session-in-async-def``.
-
-    Raises:
-        ValueError: if ``gap_id`` is unknown or the gap is not in
-            ``state='in_review'``.
-    """
-    gap = _load_gap_for_answer(session, gap_id)
-    if "\n---\n" in f"\n{answer}\n":
-        raise GapAnswerInvalidError(
-            "answer may not contain a frontmatter terminator ('---' on its own line)"
-        )
-
-    if _is_tombstone_answer(answer):
-        # User convention: "Tombstone - <reason>" means "this gap doesn't
-        # deserve a content atom". Route to reject semantics: gap is closed,
-        # NO atom created. Honors the marker text the user has been typing for
-        # months (2026-05-28 vault audit found 14 zombie atoms produced by the
-        # answer-and-then-create-atom path on Tombstone-prefixed answers).
-        return _reject_via_tombstone(session, gap_id, answer)
-
-    # Local import breaks the knowledge.mcp <-> knowledge.gaps cycle: mcp
-    # imports answer_gap, so answer_gap reaches back for the shared index
-    # helper only at call time. The new atom defaults to visibility private:
-    # gap answers are typically Joe writing about his own context (people,
-    # projects, personal decisions); the visibility-review queue flips the
-    # minority that should be public. Public-default would be riskier because
-    # the body is user-supplied free-form text.
-    from knowledge.mcp import _index_atom
-
-    note_id = await _index_atom(
-        session,
-        title=gap.term,
-        body=answer,
-        type="atom",
-        visibility="private",
-        source_tier="personal",
-    )
-    return _finalize_answered_gap(session, gap_id, answer, note_id)
 
 
 def delete_gap(session: Session, gap_id: int) -> dict:

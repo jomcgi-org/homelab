@@ -9,7 +9,6 @@ Uses the same in-memory SQLite + ``TestClient`` pattern as
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,12 +16,10 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from knowledge.gaps import (
-    GapAnswerInvalidError,
     GapError,
     GapNotDeletedError,
     GapNotFoundError,
     GapWrongStateError,
-    answer_gap,
     list_gaps_for_review,
     reject_gap,
     set_gap_class,
@@ -135,7 +132,7 @@ class TestRejectGap:
         assert reloaded.resolved_at is not None
 
     def test_missing_stub_is_tolerated(self, client, session):
-        """Stub absence does not break rejection — same semantics as answer_gap."""
+        """Stub absence does not break rejection."""
         _make_source_note(session)
         gap = _make_gap(session, term="No Stub", state="in_review")
 
@@ -409,35 +406,6 @@ class TestReviewQueueModes:
 
 
 # ---------------------------------------------------------------------------
-# answer_gap now sets human_verified=True
-# ---------------------------------------------------------------------------
-
-
-class TestAnswerGapSetsHumanVerified:
-    @pytest.mark.asyncio
-    async def test_answer_sets_human_verified_true(self, session):
-        """Direct call to answer_gap (no HTTP) must mark human_verified."""
-        _make_source_note(session)
-        gap = _make_gap(
-            session,
-            term="answer-verifies",
-            state="in_review",
-            gap_class="internal",
-            human_verified=False,
-        )
-
-        with patch(
-            "knowledge.mcp._index_atom", AsyncMock(return_value="answer-verifies")
-        ):
-            await answer_gap(session, gap.id, "user-written answer")
-
-        session.expire_all()
-        reloaded = session.get(Gap, gap.id)
-        assert reloaded.state == "committed"
-        assert reloaded.human_verified is True
-
-
-# ---------------------------------------------------------------------------
 # DELETE / POST .../undelete — soft-delete + undo for gaps
 # ---------------------------------------------------------------------------
 
@@ -691,7 +659,6 @@ class TestTypedGapErrors:
             GapNotFoundError,
             GapWrongStateError,
             GapNotDeletedError,
-            GapAnswerInvalidError,
         ):
             assert issubclass(cls, ValueError)
 
@@ -700,7 +667,6 @@ class TestTypedGapErrors:
         assert GapNotFoundError.status_code == 404
         assert GapWrongStateError.status_code == 409
         assert GapNotDeletedError.status_code == 409
-        assert GapAnswerInvalidError.status_code == 400
 
     def test_unknown_gap_raises_not_found(self, session):
         with pytest.raises(GapNotFoundError):
@@ -723,14 +689,6 @@ class TestTypedGapErrors:
         with pytest.raises(GapNotDeletedError):
             undelete_gap(session, gap.id)
 
-    @pytest.mark.asyncio
-    async def test_answer_with_frontmatter_terminator_raises_answer_invalid(
-        self, session
-    ):
-        gap = _make_gap(session, term="Qux", state="in_review", gap_class="internal")
-        with pytest.raises(GapAnswerInvalidError):
-            await answer_gap(session, gap.id, "before\n---\nafter")
-
     def test_map_gap_error_maps_each_class_to_its_status(self):
         from knowledge.router import _map_gap_error
 
@@ -738,7 +696,6 @@ class TestTypedGapErrors:
             (GapNotFoundError("x"), 404),
             (GapWrongStateError("x"), 409),
             (GapNotDeletedError("x"), 409),
-            (GapAnswerInvalidError("x"), 400),
             (GapError("x"), 400),
             (ValueError("untyped"), 400),  # non-GapError falls back to 400
         ]
