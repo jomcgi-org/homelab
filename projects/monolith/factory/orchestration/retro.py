@@ -725,6 +725,22 @@ def _optimizer_github() -> dict:
         return {"error": type(exc).__name__}
 
 
+# Locate the deployment independently of later polling volume. A fixed experiment
+# must not lose coverage merely because it is evaluated weeks after its window.
+_OPTIMIZER_BOUNDARY = """
+SELECT note_id, observed_at, status, extra
+FROM knowledge.notes
+WHERE source = 'deployment-observation' AND scope = 'environment:homelab'
+  AND verification_state = 'verified' AND deleted_at IS NULL
+  AND observed_at >= :since AND observed_at < :as_of
+  AND extra->>'app' = :app AND status = 'complete'
+  AND extra->>'newest_freight_version' = :revision
+  AND extra->>'requested_revision' = :revision
+  AND extra->>'deployed_revision' = :revision
+  AND extra->>'writeback_commit' = :writeback
+ORDER BY observed_at, note_id LIMIT 1
+"""
+_OPTIMIZER_OBSERVATION_LIMIT = 5000
 _OPTIMIZER_OBSERVATIONS = """
 SELECT note_id, observed_at, status, extra
 FROM knowledge.notes
@@ -732,7 +748,7 @@ WHERE source = 'deployment-observation' AND scope = 'environment:homelab'
   AND verification_state = 'verified' AND deleted_at IS NULL
   AND observed_at >= :since AND observed_at < :as_of
   AND extra->>'app' = :app
-ORDER BY observed_at LIMIT 5000
+ORDER BY observed_at, note_id LIMIT :limit
 """
 _OPTIMIZER_COUNTS = """
 WITH attempts AS (
@@ -809,31 +825,44 @@ def _load_optimizer(session, now) -> dict:
     if app not in {"monolith", "embervm"} or not isinstance(revision, str):
         return {**context, "error": "invalid deployment identity"}
     context["rollout"] = _verify_optimizer_rollout(app, revision)
-    observations = _rows(
-        session, _OPTIMIZER_OBSERVATIONS, {"since": merged, "as_of": now, "app": app}
+    boundaries = _rows(
+        session,
+        _OPTIMIZER_BOUNDARY,
+        {
+            "since": merged,
+            "as_of": now,
+            "app": app,
+            "revision": revision,
+            "writeback": experiment.get("writeback_commit"),
+        },
     )
-    context["observations"] = observations
-    if len(observations) >= 5000:
+    if not boundaries:
+        return context
+    boundary = boundaries[0]
+    deployed = _utc_time(boundary["observed_at"])
+    end = min(now, deployed + timedelta(hours=72))
+    observations = _rows(
+        session,
+        _OPTIMIZER_OBSERVATIONS,
+        {
+            "since": deployed,
+            "as_of": end,
+            "app": app,
+            "limit": _OPTIMIZER_OBSERVATION_LIMIT + 1,
+        },
+    )
+    context["observation_coverage"] = {
+        "start": deployed.isoformat(),
+        "end": end.isoformat(),
+        "rows_observed": len(observations),
+        "limit": _OPTIMIZER_OBSERVATION_LIMIT,
+        "complete": len(observations) <= _OPTIMIZER_OBSERVATION_LIMIT,
+    }
+    if not context["observation_coverage"]["complete"]:
         return {
             **context,
-            "error": "Deployment observation history saturated; overlap coverage unknown",
+            "error": "Deployment observation window saturated; overlap coverage unknown",
         }
-    boundary = next(
-        (
-            row
-            for row in observations
-            if row.get("status") == "complete"
-            and row["extra"].get("newest_freight_version") == revision
-            and row["extra"].get("requested_revision") == revision
-            and row["extra"].get("deployed_revision") == revision
-            and row["extra"].get("writeback_commit")
-            == experiment.get("writeback_commit")
-        ),
-        None,
-    )
-    if boundary is None:
-        return context
-    deployed = _utc_time(boundary["observed_at"])
     context["outcomes_and_cost_as_of"] = now.isoformat()
     context["deployment"] = {
         "note_id": boundary["note_id"],
