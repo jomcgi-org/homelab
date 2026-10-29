@@ -57,7 +57,7 @@ from factory.execution.transport import EmberInterruptFailure
 from goosecracker.api import REPO_CATALOG
 from knowledge.api import attach_recall
 from factory.execution.rationale import parse_rationale
-from factory.access import factory_decider
+from factory.access import factory_decider, factory_viewer
 
 from auth.api import Principal, current_principal, get_principal
 from core.jsonio import loads_or
@@ -347,9 +347,9 @@ def list_sessions(
 
 @router.get("/factory")
 def factory_board(
-    task: str | None = None, viewer: str = Depends(factory_decider)
+    task: str | None = None, viewer: str = Depends(factory_viewer)
 ) -> dict:
-    """Private board, gated by the server-verified Access operator email.
+    """Private board, gated by the server-verified Access email.
 
     Includes execution state and separately labelled tracking-only records.
     The browser carries no bearer and this route exposes no controls.
@@ -370,7 +370,7 @@ def factory_work_items(
     authority: str | None = None,
     limit: int = 50,
     session: Session = Depends(get_session),
-    viewer: str = Depends(factory_decider),
+    viewer: str = Depends(factory_viewer),
 ) -> dict:
     """Read durable work items for the private agents page."""
     from factory.orchestration.work_items import list_work_items
@@ -386,7 +386,7 @@ def factory_work_items(
 def factory_work_item(
     item_id: int,
     session: Session = Depends(get_session),
-    viewer: str = Depends(factory_decider),
+    viewer: str = Depends(factory_viewer),
 ) -> dict:
     """Read one durable work item with edges and recent events."""
     from factory.orchestration.work_items import work_item_document

@@ -7,6 +7,7 @@ import os
 from fastapi import Depends, HTTPException, Request
 
 from auth.api import Authority, Principal, PrincipalKind, get_principal
+from core.identity import verified_email
 
 OPERATOR_GROUP = "operators"
 OPERATOR_REQUIRED = "standing operator authority is required"
@@ -25,6 +26,17 @@ def operator(principal: Principal = Depends(get_principal)) -> Principal:
     if not is_operator(principal):
         raise HTTPException(403, OPERATOR_REQUIRED)
     return principal
+
+
+def factory_viewer(request: Request) -> str:
+    """Read access follows the verified Access audience, not the click allowlist."""
+    email = verified_email(request)
+    if email is None:
+        raise HTTPException(
+            status_code=403,
+            detail="missing or ambiguous X-Auth-Email header",
+        )
+    return email
 
 
 def factory_decider(request: Request) -> str:

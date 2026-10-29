@@ -22,13 +22,22 @@ describe("agents factory proxy", () => {
 
     const res = await GET({
       url: new URL("https://private.jomcgi.dev/factory?task=t-1"),
+      request: new Request("https://private.jomcgi.dev/factory", {
+        headers: {
+          "x-auth-email": "viewer@example.test",
+          "cf-access-authenticated-user-email": "forged@example.test",
+        },
+      }),
     });
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(board);
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://backend/api/agents/factory?task=t-1",
-      expect.anything(),
+      {
+        headers: { "X-Auth-Email": "viewer@example.test" },
+        signal: expect.any(AbortSignal),
+      },
     );
   });
 

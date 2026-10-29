@@ -2721,9 +2721,11 @@ when it points to a GitHub issue.
 The `/factory/work-items/{id}` page ships work item details, edges, and recent
 events. All edges show their source (manual, github_body, or decision) for
 transparency about how each relationship was created.
-The board and work-item browser reads require the existing verified Access
-operator email. Tracking detail shows source, owner, recorded status and event
-history without factory receipts, relationship forms or execution controls.
+The board and work-item browser reads require exactly one nonempty verified
+Access email. The `FACTORY_OPERATOR_EMAILS` allowlist narrows controls only;
+readers Access admits retain board, escalation and work-item visibility (#6002).
+Tracking detail shows source, owner, recorded status and event history without
+factory receipts, relationship forms or execution controls.
 
 ### Autonomous correction continuation
 

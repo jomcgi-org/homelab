@@ -101,6 +101,36 @@ def client_fixture(session):
     app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/agents/factory",
+        "/api/agents/factory/work-items",
+        "/api/agents/factory/work-items/1",
+    ],
+)
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"X-Auth-Email": ""},
+        {"X-Auth-Email": "  "},
+        {"Cf-Access-Authenticated-User-Email": "viewer@example.test"},
+        [
+            ("X-Auth-Email", "forged@example.test"),
+            ("X-Auth-Email", "viewer@example.test"),
+        ],
+    ],
+)
+def test_factory_reads_require_one_nonempty_verified_identity(path, headers):
+    app = FastAPI()
+    app.include_router(router)
+    # Denied requests must never reach a database-backed read.
+    app.dependency_overrides[get_session] = lambda: None
+    with TestClient(app) as client:
+        assert client.get(path, headers=headers).status_code == 403
+
+
 def test_factory_read_models_include_work_item_evidence_and_context_404(
     tmp_path, monkeypatch
 ):
@@ -109,6 +139,7 @@ def test_factory_read_models_include_work_item_evidence_and_context_404(
     # this test builds the factory tables on its own engine.
     from sqlalchemy import event
 
+    from factory import private_view
     from factory.orchestration import factory_controls, work_items
     from factory.orchestration.factory_models import (
         FactoryAudit,
@@ -152,6 +183,13 @@ def test_factory_read_models_include_work_item_evidence_and_context_404(
     )
     monkeypatch.setattr(work_items, "get_engine", lambda: engine)
     monkeypatch.setattr(factory_controls, "get_engine", lambda: engine)
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+    monkeypatch.setattr(
+        private_view,
+        "build_factory_view",
+        lambda task: {"ok": True, "escalations": [{"receipt_id": 30}]},
+    )
+    monkeypatch.setenv("FACTORY_OPERATOR_EMAILS", "operator@example.test")
 
     with Session(engine) as session:
         session.add(FactoryControl(id="factory", actor="test"))
@@ -161,7 +199,19 @@ def test_factory_read_models_include_work_item_evidence_and_context_404(
         child = WorkItem(
             title="child", state="ready", source_kind="factory", trust="trusted"
         )
-        session.add_all([parent, child])
+        tracking = WorkItem(
+            title="manual follow-up",
+            state="open",
+            execution_mode="tracking_only",
+            tracking_kind="manual",
+            owner="Named owner",
+            source_kind="mcp",
+            trust="trusted",
+            source_ref="https://example.test/manual-follow-up",
+            authority="local",
+            tracking_version=1,
+        )
+        session.add_all([parent, child, tracking])
         session.flush()
         session.add(WorkItemEdge(from_id=parent.id, to_id=child.id, kind="parent"))
         session.add(
@@ -185,7 +235,7 @@ def test_factory_read_models_include_work_item_evidence_and_context_404(
         )
         session.add(receipt)
         session.commit()
-        child_id, receipt_id = child.id, receipt.id
+        child_id, receipt_id, tracking_id = child.id, receipt.id, tracking.id
 
     app = FastAPI()
     app.include_router(router)
@@ -201,7 +251,19 @@ def test_factory_read_models_include_work_item_evidence_and_context_404(
             client.get(f"/api/agents/factory/work-items/{child_id}").status_code == 403
         )
         assert client.get("/api/agents/factory/work-items").status_code == 403
-        headers = {"X-Auth-Email": "operator@example.test"}
+        assert client.get("/api/agents/factory").status_code == 403
+        # #6002: Access admits readers independently of the click allowlist.
+        headers = {"X-Auth-Email": "viewer@example.test"}
+        board = client.get("/api/agents/factory", headers=headers)
+        assert board.status_code == 200
+        assert board.json()["escalations"] == [{"receipt_id": 30}]
+        assert [item["id"] for item in board.json()["tracking_items"]] == [tracking_id]
+        assert board.json()["tracking_items"][0]["execution_mode"] == "tracking_only"
+        tracking_detail = client.get(
+            f"/api/agents/factory/work-items/{tracking_id}", headers=headers
+        )
+        assert tracking_detail.status_code == 200
+        assert tracking_detail.json()["item"]["owner"] == "Named owner"
         detail = client.get(
             f"/api/agents/factory/work-items/{child_id}", headers=headers
         )
@@ -214,6 +276,14 @@ def test_factory_read_models_include_work_item_evidence_and_context_404(
             headers=headers,
         ).json()["work_items"]
         assert [item["id"] for item in listed] == [child_id]
+        assert (
+            client.post(
+                f"/api/agents/factory/decisions/{receipt_id}",
+                json=factory_decision_body(),
+                headers=headers,
+            ).status_code
+            == 403
+        )
         assert (
             client.get(
                 "/api/agents/factory/work-items/999999", headers=headers
