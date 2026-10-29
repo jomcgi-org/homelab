@@ -823,7 +823,7 @@ defmodule Embervm.TaskStore do
   end
 
   # The attempt the retry budget is charged at. `attempt` stays strictly
-  # monotonic (it is the async-lifecycle epoch fence), so the :capacity
+  # monotonic (it is the lifecycle epoch fence), so the :capacity
   # failures it counted are netted out here instead: a node refusing to boot
   # under pressure ran no guest and must not spend the task's budget. The
   # count is ETS-only, so a control-plane restart resets it (those retries then

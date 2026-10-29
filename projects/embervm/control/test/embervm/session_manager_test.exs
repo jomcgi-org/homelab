@@ -7606,7 +7606,6 @@ defmodule Embervm.SessionManagerTest do
 
     ctx =
       start_stack(
-
         node_confirmed_destroy: true,
         destroy_fun: fn _ch, vm ->
           confirmed = Agent.get(confirmation, & &1)
