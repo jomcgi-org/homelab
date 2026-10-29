@@ -3073,3 +3073,16 @@ green. A repeatable fixture and work baseline expose that regression without a
 pre-release performance gate. Latency, cache occupancy and process memory remain
 observations until enough comparable production evidence exists. The existing
 Kargo history and guarded promotion tool remain the deployment authority.
+
+## Factory evolution follows delivery authority
+
+The [evolution contract](../../docs/agents/evolution.md) gives agents a standing
+mandate to improve delivery against Joe's goals. Factory prompts own the action
+sequence. Existing goals, issues, receipts and audit events retain state.
+
+**Why.** Prompt and tooling changes need a baseline, a success measure and a
+bounded evaluation so the factory can retain useful changes and retire failed
+ones. The existing scout collects and independently reviews findings before
+ordinary issue refinement. This adds no scheduler or policy enablement, and
+does not change pinned task limits or explicit holds.
+

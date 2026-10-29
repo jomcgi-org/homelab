@@ -407,8 +407,12 @@ def _prompt(current, *, collection=None):
             "Collect at most the configured max_findings evidence-backed improvement findings. "
             "Prioritize known reproducible bugs, failing narrow tests, measured latency/performance "
             "and reliability gaps aligned with active goals. Do not invent work to consume quota. "
+            "Include factory bottlenecks, prompt failures and obsolete rules when evidence links "
+            "them to a goal. Prefer a scoped repair or removal over new machinery. "
             "Return an empty findings list when none is actionable. Each finding needs fresh evidence "
             "at the exact repo_head, reproduction, benefit, scoped acceptance tests and proposed owner. "
+            "In benefit state the hypothesis and observed baseline; in acceptance_tests state the "
+            "success measure, evaluation window or sample, and rollback or stop condition. "
             "Observe current rules, open PRs/issues and ownership; do not duplicate active work.\n"
         )
     else:
@@ -419,7 +423,9 @@ def _prompt(current, *, collection=None):
             "Independently review the collected findings against current source, rules, active goals "
             "and complete open-work inventory. Reproduce or verify each evidence claim. Reject "
             "speculation, semantic duplicates, changed evidence or unready scope. Approve only if "
-            "every finding is supported, scoped and safe for ordinary issue refinement. Return the "
+            "every finding is supported, scoped and safe for ordinary issue refinement. Check that "
+            "the proposed measure tests goal progress, preserves delivery quality and has a bounded "
+            "evaluation and rollback or stop condition. Return the "
             "exact review_digest and collection_digest with evidence and approved boolean.\n"
         )
     prompt = text + json.dumps(evidence, sort_keys=True, default=str)
@@ -571,3 +577,4 @@ def reconcile(task, policy, nodes, runs, expected_version):
         _finish(
             task_id, f"scout_invalid_context:{type(exc).__name__}", attempt=bool(runs)
         )
+
