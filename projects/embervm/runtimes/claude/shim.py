@@ -716,21 +716,13 @@ def _canonical_pi_model(model):
     return PI_MODEL_ALIASES.get(model, model)
 
 
-# Pi gets a 120K per-session budget from NInfer's shared 262144-token KV pool.
-# NInfer has two generation lanes, so two full Pi contexts consume 245760
-# tokens and leave 16384 tokens of shared headroom. A lone direct API request
-# can still use the server's full 262144-token maxContext because the server
-# does not statically partition its page pool.
-#
-# The shared gap also absorbs pi's context-estimation error. Pi uses a chars/4
-# heuristic for trailing messages rather than the model tokenizer. Measured in
-# prod on 2026-08-07, two 50 KiB repetitive-ASCII tool results undercounted by
-# 4097 tokens. Pi also subtracts its fixed 4096-token safety margin inside each
-# advertised window. Keep this value and PI_CONTEXT_WINDOW_HEADROOM aligned
-# with ninfer.kvCapacity and ninfer.maxConcurrency; the cross-file sync test
-# enforces the relationship.
+# Pi's local per-session context budget is independent of the embeddings chart.
+# Pi uses a chars/4 heuristic for trailing messages rather than the model
+# tokenizer. On 2026-08-07, two 50 KiB repetitive-ASCII tool results
+# undercounted by 4097 tokens. Keep the existing conservative context,
+# compaction and output budgets when routing Pi to Meta Spark; these are local
+# limits, not a claim about the provider's maximum context capacity.
 PI_CONTEXT_WINDOW = 122880
-PI_CONTEXT_WINDOW_HEADROOM = 16384
 # pi's hardcoded safety margin in clampMaxTokensToContext.
 PI_CONTEXT_SAFETY_TOKENS = 4096
 # Maximum output tokens pi will attempt to generate. This caps reply length to

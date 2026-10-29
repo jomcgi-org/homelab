@@ -1,10 +1,5 @@
 load("//bazel/helm:defs.bzl", "helm_admissibility_render", "helm_chart")
-
-filegroup(
-    name = "values_yaml",
-    srcs = ["values.yaml"],
-    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
-)
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 filegroup(
     name = "gke_values",
@@ -14,8 +9,15 @@ filegroup(
 
 helm_chart(
     name = "chart",
-    lint = False,
     visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "chart_render_test",
+    srcs = ["chart_render_test.py"],
+    data = [":chart", "@multitool//tools/helm"],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = ["@pip//pytest", "@pip//pyyaml"],
 )
 
 helm_admissibility_render(
