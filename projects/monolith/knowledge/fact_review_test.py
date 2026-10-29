@@ -1108,3 +1108,15 @@ def test_citations_preserve_markup_comments_and_escaping_without_repair(
         assert run.result == saved
     assert run.sources == sources
     assert len(db.exec(select(ReviewOutcome)).all()) == 1
+
+
+@pytest.mark.parametrize("coverage_enabled", [False, True])
+def test_operator_status_reports_actual_source_policy(
+    db, monkeypatch, coverage_enabled
+):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(coverage_enabled).lower())
+    monkeypatch.setattr("core.db.get_engine", lambda: db.get_bind())
+    result = review.status()
+    assert result["enabled"] is True
+    assert result["source_coverage_enabled"] is coverage_enabled
+    assert result["throughput"]["attempts"] == 0

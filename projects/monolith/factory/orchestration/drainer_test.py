@@ -4907,3 +4907,26 @@ def test_learning_completion_uses_existing_atomic_step(monkeypatch):
         "factory-retro-daily", "ok", "done", expected_holder="luna-drainer:w:0"
     )
     assert calls == [("transaction", "factory-retro-daily", "luna-drainer:w:0")]
+
+
+def test_daily_payload_reconciles_before_claim_without_rearming(
+    admission_database, monkeypatch
+):
+    from factory.orchestration import learning
+
+    monkeypatch.setenv("FACTORY_LEARNING_HANDOFF_ENABLED", "true")
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (False, ""))
+    monkeypatch.setattr(drainer, "kg_provider_walled", lambda: (False, ""))
+    seen = []
+    original = learning.reconcile_daily_payload
+
+    def reconcile(db):
+        seen.append(True)
+        return original(db)
+
+    monkeypatch.setattr(learning, "reconcile_daily_payload", reconcile)
+    # No row is a no-op: polling must not create a daily job or a session.
+    assert _admitted_claim("learning-missing") is None
+    assert seen == [True]
+    with Session(admission_database) as db:
+        assert db.execute(text("SELECT count(*) FROM routine_jobs")).scalar() == 0

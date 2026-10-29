@@ -65,6 +65,7 @@ def status() -> dict:
     from core.db import get_engine
 
     from knowledge.fact_review_batch import status as batch_status
+    from knowledge.review_coverage import enabled as source_coverage_enabled
 
     max_daily, interval = settings()
     with Session(get_engine()) as session:
@@ -77,6 +78,7 @@ def status() -> dict:
         ).all()
         return {
             "enabled": True,
+            "source_coverage_enabled": source_coverage_enabled(),
             "max_daily": max_daily,
             "interval_seconds": interval,
             "public_facts": fact_summary(session, now=now),

@@ -228,6 +228,20 @@ async def monolith_agent_list_routine_jobs(
         jobs = []
         for row in rows[:limit]:
             projected = {key: row.get(key) for key in fields}
+            if row.get("name") == "factory-retro-daily":
+                payload = row.get("payload")
+                if isinstance(payload, dict):
+                    projected["learning_configuration"] = {
+                        "model": payload.get("model")
+                        if payload.get("model") in {"sol", "luna", "astra"}
+                        else None,
+                        "stage": payload.get("learning_stage")
+                        if payload.get("learning_stage") in {"evidence", "evaluate"}
+                        else None,
+                        "reconciled": isinstance(
+                            payload.get("learning_activation"), dict
+                        ),
+                    }
             truncated = []
             for key, value in projected.items():
                 if isinstance(value, str) and len(value) > 256:
