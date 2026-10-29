@@ -96,21 +96,11 @@ def test_soft_delete_hides_from_every_route_and_is_not_idempotent(http, kind):
             assert request(http, method, viewer, note_id, **args).status_code == 404
 
 
-def settings(http, viewer, value):
-    h, client = http
-    response = client.patch(
-        url(h).removesuffix("/notes") + "/settings",
-        headers=h.headers(viewer),
-        json={"notes_dm_readable_default": value},
-    )
-    h.assert_no_leak(response, viewer)
-    return response
-
-
 def test_campaign_default_only_applies_when_omitted_and_is_exposed(http):
     h, client = http
     assert create(http).json()["dm_readable"] is False
-    assert settings(http, "dm", True).json()["notes_dm_readable_default"] is True
+    h.rows["campaign"].notes_dm_readable_default = True
+    h.session.commit()
     assert create(http).json()["dm_readable"] is True
     private = create(http, dm_readable=False).json()
     assert private["dm_readable"] is False
@@ -118,16 +108,6 @@ def test_campaign_default_only_applies_when_omitted_and_is_exposed(http):
     assert request(http, "GET", "dm", private["id"]).status_code == 404
     response = client.get(url(h).removesuffix("/notes"), headers=h.headers("player_a"))
     assert response.json()["notes_dm_readable_default"] is True
-    before = h.snapshot()
-    for viewer in (
-        "player_a",
-        "player_b",
-        "no_character",
-        "outsider",
-        "other_campaign",
-    ):
-        assert settings(http, viewer, False).status_code in (403, 404)
-        assert h.snapshot() == before
 
 
 def test_note_creation_roles_and_identity_are_server_owned(http):

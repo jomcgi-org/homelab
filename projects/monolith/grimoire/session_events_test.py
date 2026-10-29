@@ -220,10 +220,9 @@ def test_message_retry_after_end_or_retraction_never_restores_body(http_harness)
     token = str(uuid4())
     first = _post(h, client, "player_a", request_id=token)
     event_id = first.json()["id"]
-    retracted = client.post(
-        _url(h, f"/events/{event_id}/retract"), headers=h.headers("dm")
-    )
-    assert retracted.status_code == 200
+    row = h.session.get(SessionEvent, event_id)
+    row.retracted_at = datetime.now(timezone.utc)
+    h.session.commit()
     ended = client.patch(
         _url(h, "/").rstrip("/"), headers=h.headers("dm"), json={"status": "ended"}
     )
@@ -260,21 +259,27 @@ def test_grant_reveal_contains_only_grantee_projection(http_harness, scope):
     assert preview.status_code == 200
     assert h.snapshot() == before
     response = client.post(
-        base,
+        base + "/bulk",
         headers=h.headers("dm"),
         json={
-            "entity_id": h.rows["private"].id,
-            "player_character_id": h.rows["character_a"].id,
-            "grant_scope": scope,
-            "revealed_details": {"clue": "a friendly innkeeper"},
+            "grants": [
+                {
+                    "entity_id": h.rows["private"].id,
+                    "player_character_id": h.rows["character_a"].id,
+                    "grant_scope": scope,
+                    "revealed_details": {"clue": "a friendly innkeeper"},
+                }
+            ]
         },
     )
     assert response.status_code == 200, response.text
-    assert response.json()["granted_in_session"] == h.rows["campaign_session"].id
+    assert response.json()[0]["granted_in_session"] == h.rows["campaign_session"].id
     a_events = client.get(_url(h, "/events"), headers=h.headers("player_a"))
     reveal = next(row for row in a_events.json() if row["kind"] == "reveal")
     assert reveal["audience_pc_ids"] == [h.rows["character_a"].id]
-    projection = reveal["body"].get("entity", preview.json()[0]["projection"])
+    projection = reveal["body"]["reveals"][0].get(
+        "entity", preview.json()[0]["projection"]
+    )
     if scope != "name_only":
         assert projection == preview.json()[0]["projection"]
     if scope != "full":
@@ -320,14 +325,18 @@ def test_partial_grant_edit_and_downgrade_replace_visible_history(http_harness):
     h, client = http_harness
     base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}/grants"
     grant = client.post(
-        base,
+        base + "/bulk",
         headers=h.headers("dm"),
         json={
-            "entity_id": h.rows["private"].id,
-            "player_character_id": h.rows["character_a"].id,
-            "grant_scope": "full",
+            "grants": [
+                {
+                    "entity_id": h.rows["private"].id,
+                    "player_character_id": h.rows["character_a"].id,
+                    "grant_scope": "full",
+                }
+            ]
         },
-    ).json()
+    ).json()[0]
     assert (
         client.patch(
             base + f"/{grant['id']}",
@@ -516,15 +525,19 @@ def test_grant_retraction_scrubs_history_and_emits_recipient_event(
     h, client = http_harness
     base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}/grants"
     grant = client.post(
-        base,
+        base + "/bulk",
         headers=h.headers("dm"),
         json={
-            "entity_id": h.rows["private"].id,
-            "player_character_id": h.rows["character_a"].id,
-            "grant_scope": "partial",
-            "revealed_details": {"clue": "RETRACTED_CLUE"},
+            "grants": [
+                {
+                    "entity_id": h.rows["private"].id,
+                    "player_character_id": h.rows["character_a"].id,
+                    "grant_scope": "partial",
+                    "revealed_details": {"clue": "RETRACTED_CLUE"},
+                }
+            ]
         },
-    ).json()
+    ).json()[0]
     response = client.delete(
         f"{base}/{grant['id']}?silent={str(silent).lower()}", headers=h.headers("dm")
     )
@@ -632,13 +645,17 @@ def test_party_notes_and_visible_event_pin(http_harness):
     h, client = http_harness
     base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
     grant = client.post(
-        base + "/grants",
+        base + "/grants/bulk",
         headers=h.headers("dm"),
         json={
-            "entity_id": h.rows["private"].id,
-            "player_character_id": h.rows["character_a"].id,
-            "grant_scope": "partial",
-            "revealed_details": {"clue": "ONLY_VISIBLE_CLUE"},
+            "grants": [
+                {
+                    "entity_id": h.rows["private"].id,
+                    "player_character_id": h.rows["character_a"].id,
+                    "grant_scope": "partial",
+                    "revealed_details": {"clue": "ONLY_VISIBLE_CLUE"},
+                }
+            ]
         },
     )
     assert grant.status_code == 200
@@ -688,10 +705,8 @@ PLAY_ROUTES = (
     ("GET", "journal"),
     ("GET", "campaign_journal"),
     ("GET", "list"),
-    ("GET", "current"),
     ("POST", "append"),
     ("GET", "poll"),
-    ("POST", "retract"),
     ("POST", "roll"),
 )
 
@@ -711,10 +726,8 @@ def test_all_play_routes_flag_off_before_auth(
         "journal": _url(h, "/journal"),
         "campaign_journal": f"/api/grimoire/campaigns/{h.rows['campaign'].id}/journal",
         "list": _url(h),
-        "current": _url(h) + "/current",
         "append": _url(h, "/events"),
         "poll": _url(h, "/events"),
-        "retract": _url(h, f"/events/{h.rows['event_table'].id}/retract"),
         "roll": _url(h, "/rolls"),
     }
     before = h.snapshot()
@@ -806,14 +819,18 @@ def test_journal_latest_reveal_retraction_own_rolls_and_open_threads(http_harnes
     assert own_roll.status_code == 200
     base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
     grant = client.post(
-        base + "/grants",
+        base + "/grants/bulk",
         headers=h.headers("dm"),
         json={
-            "entity_id": h.rows["private"].id,
-            "player_character_id": member.player_character_id,
-            "grant_scope": "name_only",
+            "grants": [
+                {
+                    "entity_id": h.rows["private"].id,
+                    "player_character_id": member.player_character_id,
+                    "grant_scope": "name_only",
+                }
+            ]
         },
-    ).json()
+    ).json()[0]
     assert (
         client.patch(
             base + f"/grants/{grant['id']}",
@@ -913,7 +930,7 @@ def test_existing_session_writes_work_with_flag_off(http_harness, monkeypatch):
 
 
 @pytest.mark.parametrize("viewer", ("dm", "player_a", "player_b", "no_character"))
-def test_session_list_newest_and_current_active_or_paused(http_harness, viewer):
+def test_session_list_newest_includes_active_paused_and_ended(http_harness, viewer):
     h, client = http_harness
     current = h.rows["campaign_session"]
     older = GameSession(
@@ -929,15 +946,16 @@ def test_session_list_newest_and_current_active_or_paused(http_harness, viewer):
     for status in ("active", "paused"):
         current.status = status
         h.session.commit()
-        response = client.get(_url(h) + "/current", headers=h.headers(viewer))
+        response = client.get(_url(h), headers=h.headers(viewer))
         assert response.status_code == 200
-        assert response.json()["id"] == current.id
-        assert response.json()["status"] == status
+        assert response.json()[0]["id"] == current.id
+        assert response.json()[0]["status"] == status
     current.status = "ended"
     h.session.commit()
-    assert (
-        client.get(_url(h) + "/current", headers=h.headers(viewer)).status_code == 404
-    )
+    response = client.get(_url(h), headers=h.headers(viewer))
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == [current.id, older.id]
+    assert all(row["status"] == "ended" for row in response.json())
 
 
 @pytest.mark.parametrize("viewer", ("player_a", "player_b", "no_character"))
@@ -1199,10 +1217,6 @@ def test_poll_scopes_campaign_and_session(http_harness):
         _url(h, "/events", game_session=second.id), headers=h.headers("dm")
     )
     assert [row["id"] for row in response.json()] == [other_event.id]
-    response = client.post(
-        _url(h, f"/events/{mismatched.id}/retract"), headers=h.headers("dm")
-    )
-    assert response.status_code == 404
 
 
 def test_poll_filters_in_one_sql_query_before_limit(http_harness):
@@ -1263,110 +1277,9 @@ def test_poll_literal_default_maximum_and_strict_after(http_harness):
     assert poll(after=509).json() == []
 
 
-def test_retraction_permissions_body_projection_and_repeat(http_harness):
-    h, client = http_harness
-    response = _post(h, client, "player_a")
-    own_id = response.json()["id"]
-    own_url = _url(h, f"/events/{own_id}/retract")
-    before = h.snapshot()
-    assert client.post(own_url, headers=h.headers("player_b")).status_code == 403
-    for key in ("event_table", "event_dm"):
-        assert (
-            client.post(
-                _url(h, f"/events/{h.rows[key].id}/retract"),
-                headers=h.headers("player_a"),
-            ).status_code
-            == 403
-        )
-    assert h.snapshot() == before
-    response = client.post(own_url, headers=h.headers("player_a"))
-    assert response.status_code == 200
-    assert response.json()["body"] is None
-    timestamp = response.json()["retracted_at"]
-    assert timestamp.endswith("Z")
-    before = h.snapshot()
-    repeated = client.post(own_url, headers=h.headers("player_a"))
-    assert repeated.status_code == 200
-    assert repeated.json()["retracted_at"] == timestamp
-    assert h.snapshot() == before
-    for viewer in ("dm", "player_a", "player_b", "no_character"):
-        response = client.get(_url(h, "/events"), headers=h.headers(viewer))
-        row = next(row for row in response.json() if row["id"] == own_id)
-        assert row["retracted_at"] == timestamp
-        assert row["body"] == ({"text": "Move"} if viewer == "dm" else None)
-    response = client.post(own_url, headers=h.headers("dm"))
-    assert response.status_code == 200
-    assert response.json()["body"] == {"text": "Move"}
-    assert response.json()["retracted_at"] == timestamp
-
-
-@pytest.mark.parametrize("viewer", ("dm", "player_a"))
-def test_retraction_allowed_after_session_ends(http_harness, viewer):
-    h, client = http_harness
-    event_id = _post(h, client, "player_a").json()["id"]
-    h.rows["campaign_session"].status = "ended"
-    h.session.commit()
-    response = client.post(
-        _url(h, f"/events/{event_id}/retract"), headers=h.headers(viewer)
-    )
-    assert response.status_code == 200
-    assert response.json()["retracted_at"] is not None
-
-
-def test_player_cannot_retract_own_server_side_roll(http_harness):
-    h, client = http_harness
-    row = append_event(
-        h.session,
-        game_session=h.rows["campaign_session"],
-        kind="roll",
-        audience=Audience("table"),
-        author_member_id=h.rows["member_player_a"].id,
-        body={"dice": "d20"},
-    )
-    h.session.commit()
-    before = h.snapshot()
-    response = client.post(
-        _url(h, f"/events/{row.id}/retract"), headers=h.headers("player_a")
-    )
-    assert response.status_code == 403
-    assert h.snapshot() == before
-    response = client.post(
-        _url(h, f"/events/{row.id}/retract"), headers=h.headers("dm")
-    )
-    assert response.status_code == 200
-
-
-def test_retraction_locks_and_refreshes_event(http_harness, monkeypatch):
-    h, client = http_harness
-    original_exec = h.session.exec
-    statements = []
-
-    def capture(statement, *args, **kwargs):
-        if any(
-            # Count full-row reads that must lock/refresh the event, excluding
-            # the fact cascade's supporting-evidence id probes.
-            description.get("expr") is SessionEvent
-            and statement._for_update_arg is not None
-            for description in statement.column_descriptions
-        ):
-            statements.append(statement)
-        return original_exec(statement, *args, **kwargs)
-
-    monkeypatch.setattr(h.session, "exec", capture)
-    response = client.post(
-        _url(h, f"/events/{h.rows['event_table'].id}/retract"), headers=h.headers("dm")
-    )
-    assert response.status_code == 200
-    assert len(statements) == 1
-    assert str(statements[0].compile(dialect=postgresql.dialect())).endswith(
-        "FOR UPDATE"
-    )
-    assert statements[0].get_execution_options()["populate_existing"] is True
-
-
 @pytest.mark.parametrize(
     "method,suffix",
-    (("GET", "/events"), ("POST", "/events"), ("POST", "/events/replaced/retract")),
+    (("GET", "/events"), ("POST", "/events")),
 )
 def test_session_and_event_scope_are_404(http_harness, method, suffix):
     h, client = http_harness
@@ -1380,25 +1293,6 @@ def test_session_and_event_scope_are_404(http_harness, method, suffix):
             json={"kind": "action", "audience": "table", "body": {}},
         )
         assert response.status_code == 404
-    # An event from this campaign but another session must also be hidden.
-    second = GameSession(campaign_id=h.rows["campaign"].id, status="ended")
-    h.session.add(second)
-    h.session.commit()
-    if suffix.endswith("/retract"):
-        assert (
-            client.post(
-                _url(h, suffix, game_session=second.id), headers=h.headers("dm")
-            ).status_code
-            == 404
-        )
-        assert (
-            client.post(
-                _url(h, f"/events/{uuid4()}/retract"), headers=h.headers("dm")
-            ).status_code
-            == 404
-        )
-    h.session.delete(second)
-    h.session.commit()
     assert h.snapshot() == before
 
 

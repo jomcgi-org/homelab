@@ -558,7 +558,7 @@ def test_browser_dm_whisper_is_visible_only_to_speaker_and_dm_on_real_feed(
         for path in (
             base + "/journal",
             base + f"/sessions/{h.rows['campaign_session'].id}/journal",
-            base + "/sessions/current",
+            base + "/sessions",
         ):
             journal = client.get(path, headers=h.headers(viewer))
             assert journal.status_code == 200, journal.text

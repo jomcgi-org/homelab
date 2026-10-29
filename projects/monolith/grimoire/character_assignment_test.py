@@ -287,21 +287,26 @@ def test_clear_keeps_character_sheets_and_grants(harness):
             assert after[table] == before[table], f"clear changed {table}"
 
 
-def test_grants_follow_character_through_real_entity_endpoints(harness):
+def test_grants_follow_character_through_real_entity_endpoints(harness, monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     h, client = harness
     character = unassigned_character(h)
     entity_id = h.rows["private"].id
     response = client.post(
-        f"/api/grimoire/campaigns/{h.rows['campaign'].id}/grants",
+        f"/api/grimoire/campaigns/{h.rows['campaign'].id}/grants/bulk",
         headers=h.headers("dm"),
         json={
-            "player_character_id": character.id,
-            "entity_id": entity_id,
-            "grant_scope": "full",
+            "grants": [
+                {
+                    "player_character_id": character.id,
+                    "entity_id": entity_id,
+                    "grant_scope": "full",
+                }
+            ]
         },
     )
     assert response.status_code == 200, response.text
-    grant_id = response.json()["id"]
+    grant_id = response.json()[0]["id"]
     assert (
         assign(
             h, client, {"player_character_id": character.id}, member="member_player_a"

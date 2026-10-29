@@ -17,7 +17,7 @@ It accepts a 1 to 200 character query and returns at most `k` (1 to 50, default
 10) scored hits with `type` (`entity`, `note`, `event`, `fact`, or `chunk`) and `source`
 link fields: `entity_id`, `note_id`, `session_id` plus `seq`, or `book_id` plus
 `chunk_id`. Facts carry only `fact_id` as their source, with no lore link.
-The existing corpus `/search` endpoint is unchanged.
+The public corpus `/search` endpoint remains available.
 
 **Why.** The candidate predicate uses the copied audience columns and the
 existing audience and note SQL contracts. Each candidate is resolved from the
@@ -46,9 +46,9 @@ Events are locked in id order before dependent facts; embedding collection and
 vector persistence follow the same order. PostgreSQL concurrency tests exercise
 the writer, retraction and embedding collection together.
 
-The play-gated `/campaigns/{campaign_id}/facts` API lists own and party facts for
-an assigned player, all facts for the DM, and none for characterless members.
-Search uses the same audiences and rechecks live status after vector retrieval.
+Knowledge search exposes own and party facts to an assigned player, all facts
+to the DM, and none to characterless members. It rechecks live status after
+vector retrieval.
 The search UI renders fact status and offers an own-fact dispute action. The
 dispute endpoint returns the same 404 for other-PC, party, foreign-campaign,
 retracted and absent facts. A player cannot mutate party facts. Responses carry
@@ -505,9 +505,9 @@ The notes API works independently of `GRIMOIRE_PLAY_ENABLED`. Membership and
 the current character determine the viewer. Players with a character may create
 either kind; DMs may create party notes only. Character notes may be edited or
 deleted only by their author; party notes by their author or the DM. Only a
-character note's author may change its DM sharing flag. A DM-only settings
-route updates `notes_dm_readable_default`, initially false, which applies only
-when creation omits the flag. Explicit false remains private. Invisible ids
+character note's author may change its DM sharing flag. The stored campaign
+default `notes_dm_readable_default`, initially false, applies only when
+creation omits the flag. Explicit false remains private. Invisible ids
 return the same 404 as random ids. Search escapes LIKE wildcards and applies
 visibility and substring matching in SQL before ordering and limiting rows.
 

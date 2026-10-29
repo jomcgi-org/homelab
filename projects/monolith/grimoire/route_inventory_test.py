@@ -11,10 +11,11 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 
-from grimoire import join_links, search
+from grimoire import join_links, register_public, search
 from grimoire.models import CampaignJoinLink
 from grimoire.testing.leak_harness import (
     PNG_BYTES,
@@ -53,7 +54,6 @@ class Case:
 # $row.column values resolve against real persisted fixture rows. Bodies are
 # valid requests; no denial may pass through FastAPI's validation error (422).
 CASES = {
-    ("GET", PREFIX + "/facts"): Case(),
     ("POST", PREFIX + "/facts/{fact_id}/dispute"): Case(
         params={"fact_id": "$fact_a.id"},
         caller="player_a",
@@ -136,7 +136,6 @@ CASES = {
         params={"speaker_key": "narrator"},
         success=204,
     ),
-    ("PATCH", PREFIX + "/settings"): Case(body={"notes_dm_readable_default": True}),
     ("GET", PREFIX + "/notes"): Case(),
     ("POST", PREFIX + "/notes"): Case(
         body={"kind": "character", "title": "New note"},
@@ -202,14 +201,6 @@ CASES = {
         body={"comment": "Please revise"},
         state="submitted",
     ),
-    ("POST", PREFIX + "/bootstrap-dm"): Case(
-        body={"email": "$email.dm"},
-        caller="operator",
-        state="bootstrap",
-    ),
-    ("POST", PREFIX + "/members"): Case(
-        body={"email": "$email.outsider"}, caller="operator"
-    ),
     ("GET", PREFIX + "/members"): Case(),
     ("PUT", PREFIX + "/members/{member_id}/character"): Case(
         params={"member_id": "$member_no_character.id"},
@@ -217,14 +208,6 @@ CASES = {
     ),
     ("DELETE", PREFIX + "/members/{member_id}"): Case(
         params={"member_id": "$member.id"}, success=204
-    ),
-    ("POST", PREFIX + "/grants"): Case(
-        body={
-            "entity_id": "$private.id",
-            "player_character_id": "$character.id",
-            "grant_scope": "full",
-            "granted_in_session": "$campaign_session.id",
-        }
     ),
     ("GET", PREFIX + "/grants"): Case(),
     ("POST", PREFIX + "/grants/bulk"): Case(
@@ -250,17 +233,9 @@ CASES = {
     ("GET", PREFIX + "/entities/{entity_id}"): Case(
         params={"entity_id": "$private.id"}
     ),
-    ("GET", PREFIX + "/entities/{entity_id}/relationships"): Case(
-        params={"entity_id": "$private.id"}
-    ),
-    ("GET", PREFIX + "/entities/{entity_id}/mentions"): Case(
-        params={"entity_id": "$private.id"}
-    ),
-    ("GET", PREFIX + "/search"): Case(query={"q": "$private.name", "k": 50}),
     ("GET", PREFIX + "/knowledge/search"): Case(query={"q": "knowledge", "k": 50}),
     ("POST", PREFIX + "/sessions"): Case(),
     ("GET", PREFIX + "/sessions"): Case(),
-    ("GET", PREFIX + "/sessions/current"): Case(state="play"),
     ("PATCH", PREFIX + "/sessions/{session_id}"): Case(
         params={"session_id": "$campaign_session.id"},
         body={"status": "paused"},
@@ -305,9 +280,6 @@ CASES = {
     ("DELETE", PREFIX + "/sessions/{session_id}/initiative"): Case(
         params={"session_id": "$campaign_session.id"},
         state="play",
-    ),
-    ("POST", PREFIX + "/sessions/{session_id}/events/{event_id}/retract"): Case(
-        params={"session_id": "$campaign_session.id", "event_id": "$event_table.id"},
     ),
     ("POST", PREFIX + "/handouts/uploads"): Case(
         files={"file": ("handout.png", PNG_BYTES, "application/octet-stream")},
@@ -402,7 +374,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 74  # Main plus eight transcript routes.
+    assert len(enumerated) == 64  # Campaign routes, including eight transcript routes.
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
@@ -420,6 +392,75 @@ def assert_inventory(app):
 
 def test_route_inventory(harness):
     assert_inventory(harness.app())
+
+
+def test_retired_private_routes_absent_and_supported_neighbors_remain(harness):
+    app = harness.app()  # Uses grimoire.register, the production private mount.
+    registered = {
+        (method, context.path)
+        for context in iter_route_contexts(app.routes)
+        for method in context.methods
+    }
+    openapi = {
+        (method.upper(), path)
+        for path, operations in app.openapi()["paths"].items()
+        for method in operations
+    }
+    removed = {
+        ("PATCH", PREFIX + "/settings"),
+        ("POST", PREFIX + "/bootstrap-dm"),
+        ("POST", PREFIX + "/members"),
+        ("POST", PREFIX + "/grants"),
+        ("GET", PREFIX + "/entities/{entity_id}/relationships"),
+        ("GET", PREFIX + "/entities/{entity_id}/mentions"),
+        ("PATCH", "/api/grimoire/books/{book_id}"),
+        ("GET", "/api/grimoire/books/{book_id}/chunks"),
+        ("GET", PREFIX + "/search"),
+        ("GET", PREFIX + "/facts"),
+        ("GET", PREFIX + "/sessions/current"),
+        ("POST", PREFIX + "/sessions/{session_id}/events/{event_id}/retract"),
+    }
+    assert len(removed) == 12
+    assert not removed & registered
+    assert not removed & openapi
+    retained = {
+        ("POST", "/api/grimoire/alias-candidates/scan"),
+        ("GET", "/api/grimoire/alias-candidates"),
+        *{
+            ("POST", f"/api/grimoire/alias-candidates/{{candidate_id}}/{action}")
+            for action in ("approve", "reject", "reopen", "execute")
+        },
+        ("GET", PREFIX + "/members"),
+        ("PUT", PREFIX + "/members/{member_id}/character"),
+        ("POST", PREFIX + "/invitations"),
+        ("POST", PREFIX + "/join-links"),
+        ("POST", PREFIX + "/grants/bulk"),
+        ("POST", PREFIX + "/grants/preview"),
+        ("PATCH", PREFIX + "/grants/{grant_id}"),
+        ("DELETE", PREFIX + "/grants/{grant_id}"),
+        ("GET", PREFIX + "/entities/{entity_id}"),
+        ("GET", PREFIX + "/knowledge/search"),
+        ("POST", PREFIX + "/facts/{fact_id}/dispute"),
+        ("GET", PREFIX + "/sessions"),
+        ("PATCH", PREFIX + "/sessions/{session_id}"),
+        ("POST", PREFIX + "/sessions/{session_id}/events"),
+        ("GET", PREFIX + "/sessions/{session_id}/transcript"),
+        ("GET", "/api/grimoire/books/{book_id}/sections"),
+        ("GET", "/api/grimoire/books/{book_id}/read"),
+        ("GET", "/api/grimoire/chunks/{chunk_id}"),
+        ("GET", "/api/grimoire/chunks/{chunk_id}/image"),
+    }
+    assert retained <= registered
+    assert retained <= openapi
+    public = FastAPI()
+    register_public(public)
+    public_paths = public.openapi()["paths"]
+    for path in (
+        "/api/grimoire/search",
+        "/api/grimoire/entities/{entity_id}/relationships",
+        "/api/grimoire/entities/{entity_id}/mentions",
+    ):
+        assert "get" in public_paths[path]
 
 
 def test_campaign_routes_match_renamed_path_param():

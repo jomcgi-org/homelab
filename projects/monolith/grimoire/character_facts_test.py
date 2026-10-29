@@ -76,9 +76,7 @@ def test_accepts_visible_fact_and_replay_preserves_status(harness):
     "viewer",
     ("dm", "player_a", "player_b", "no_character", "outsider", "other_campaign"),
 )
-def test_fact_list_and_search_only_project_owned_and_party_facts(
-    harness, viewer, monkeypatch
-):
+def test_search_only_projects_owned_and_party_facts(harness, viewer, monkeypatch):
     from grimoire import search
     from grimoire.testing.leak_harness import fake_knn
 
@@ -86,29 +84,21 @@ def test_fact_list_and_search_only_project_owned_and_party_facts(
     monkeypatch.setattr(search, "knn_embeddings", fake_knn)
     base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
     with TestClient(h.app()) as client:
-        response = client.get(base + "/facts", headers=h.headers(viewer))
+        expected = {
+            "dm": {"fact_a", "fact_b", "fact_party", "fact_disputed"},
+            "player_a": {"fact_a", "fact_party", "fact_disputed"},
+            "player_b": {"fact_b", "fact_party"},
+            "no_character": set(),
+        }.get(viewer, set())
+        response = client.get(
+            base + "/knowledge/search?q=clue&k=50", headers=h.headers(viewer)
+        )
         h.assert_no_leak(response, viewer)
         assert response.status_code == (
             404 if viewer in ("outsider", "other_campaign") else 200
         )
         if response.status_code != 200:
             return
-        rows = response.json()
-        expected = {
-            "dm": {"fact_a", "fact_b", "fact_party", "fact_disputed"},
-            "player_a": {"fact_a", "fact_party", "fact_disputed"},
-            "player_b": {"fact_b", "fact_party"},
-            "no_character": set(),
-        }[viewer]
-        assert {row["id"] for row in rows} == {h.rows[key].id for key in expected}
-        assert all(
-            set(row) == {"id", "statement", "status", "ownership", "can_dispute"}
-            for row in rows
-        )
-        response = client.get(
-            base + "/knowledge/search?q=clue&k=50", headers=h.headers(viewer)
-        )
-        h.assert_no_leak(response, viewer)
         facts = [row for row in response.json() if row["type"] == "fact"]
         assert {row["id"] for row in facts} == {h.rows[key].id for key in expected}
         assert all(set(row["source"]) == {"fact_id"} for row in facts)
@@ -372,7 +362,7 @@ def test_private_note_text_cannot_reach_dm_through_payload_facts(harness, monkey
     assert not result.rejections
     base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
     with TestClient(h.app()) as client:
-        for path in (base + "/facts", base + "/knowledge/search?q=note&k=50"):
+        for path in (base + "/knowledge/search?q=note&k=50",):
             response = client.get(path, headers=h.headers("dm"))
             assert response.status_code == 200
             h.assert_no_leak(response, "dm")
@@ -723,17 +713,15 @@ def test_retraction_rolls_back_fact_and_vector_together(harness):
     ).all()
 
 
-def test_event_retraction_route_cascades_in_same_commit(harness):
+def test_event_retraction_cascades_in_same_commit(harness):
     h = harness
     fact = write(h, [candidate(h)]).written[0]
     embed_fact(h, fact)
     fact_id = fact.id
-    with TestClient(h.app()) as client:
-        response = client.post(
-            f"/api/grimoire/campaigns/{fact.campaign_id}/sessions/{fact.session_id}/events/{h.rows['event_table'].id}/retract",
-            headers=h.headers("dm"),
-        )
-    assert response.status_code == 200, response.text
+    event = h.rows["event_table"]
+    event.retracted_at = datetime.now(UTC)
+    sync_event_embeddings(h.session, event)
+    h.session.commit()
     with Session(h.session.get_bind()) as fresh:
         assert fresh.get(CharacterFact, fact_id).status == "retracted"
         assert not fresh.exec(
