@@ -4011,6 +4011,11 @@ def _can_start(
     db: Session, control: FactoryControl, task_id: str, start_key: str | None = None
 ) -> dict:
     row = _receipt(db, task_id)
+    if start_key is not None:
+        from factory.orchestration.factory_merged_delivery import dispatch_authorized
+
+        if not dispatch_authorized(db, control, row, task_id, start_key):
+            return {"ok": False, "reason": "merged_verification_fenced"}
     if review_recovery_held(task_id, session=db):
         return {"ok": False, "reason": "review_only_recovery"}
     reason = None

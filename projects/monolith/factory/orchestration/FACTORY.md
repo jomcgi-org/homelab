@@ -1930,7 +1930,7 @@ the graph never holds half of one. Each edit becomes its own plan version under
 the shared cause, applied in dependency order rather than in the order written,
 and an edit may name a dependency by the key its author wrote where the server
 can resolve that to a role-prefixed key without guessing. Review correction is the server's, not the
-planner's: when a review returns `changes_requested` the reconciler appends
+planner's: when an ordinary open-delivery review returns `changes_requested` the reconciler appends
 `correct_<n>` on the model that produced the reviewed head and `review_<n>` on
 the configured independent reviewer, up to `max_review_rounds`. Those keys are
 refused to a planner, and the rounds are counted from the version ledger, so
@@ -1942,6 +1942,43 @@ task-local recovery path at all. The replacement round carries the same reviewed
 head and findings, and the failed round still counts, so a round that keeps
 failing spends the bound instead of looping inside it. A node that escalated is
 deliberately not reopened, because escalation asked for the planner.
+
+Merged-head verification uses a separate route. With
+`FACTORY_MERGED_VERIFY_HANDOFF_ENABLED=true` (default off, no chart activation),
+`factory_merged_delivery.reconcile_merged_delivery` can append one
+`review_merged_<pr>_<head>` node. Its single attempt uses the existing reviewer
+routing and reservations. Graph admission carries `read_only` through the pin;
+the checkout and artifact schema select the immutable merged head. The guest
+prompt prohibits source edits, commits, pushes, merges and deployment. A
+`changes_requested`, failed or ambiguous terminal result stays visible as
+`merged_verify_review_blocked`; it never enters `_insert_review_round` or a
+planner correction on the merged branch. Unknown execution keeps its reservation.
+
+Review reuse authenticates the successful graph run and its immutable model pin
+against the start ledger and server-owned session identity. The approval must
+name the same PR/head and come from a session distinct from every implementation
+session. Wrong identities, non-approvals, ineligible actual dispatch models and
+self-reported model names cannot approve delivery. The ordinary reviewer pool
+and judgment floor apply; a policy-permitted fallback is eligible. Required
+`pr-checks`, delivery identity, rollout and recorded live acceptance still gate
+settlement. PR prose, observed merge and release of a pause or hold are never
+review evidence.
+
+Caller paths: the admitted reconciler invokes merged-delivery reconciliation
+before its paused return; cancellation and observed human ownership drain first.
+The existing `landing_tick` invokes bounded terminal discovery independently of
+merge arming and review publication. That scan selects escalated receipts with
+`owned_pr_merged`, rotates by receipt identity and uses `OBSERVATION_BATCH` (10).
+Only the historical missing-review escalation states can reacquire the same task.
+Each candidate is isolated so a held or unreadable one cannot starve its peers.
+Handoff graph edits and their audit share the control/task transaction and
+expected graph revision. Repeated or competing ticks retain one PR/head node.
+Recovery preserves original runs, costs, ownership, hold-release evidence and
+absolute deadlines, and uses the existing allowance and capacity owner.
+Recording a handoff can precede pause release; dispatch and physical session
+creation still recheck local authority. Human decisions, landing holds,
+cancellation, uncertain execution and exhausted bounds remain fenced. No planner,
+fresh receipt or funding extension is created for this route.
 
 The same loop owns landing recovery. A delivered PR with a merge conflict or
 confirmed queue ejection returns to the same task for bounded assessment and
@@ -2266,7 +2303,7 @@ Later ticks observe the armed pull request:
 
 | What GitHub shows | What landing does |
 |---|---|
-| merged | audits `merged`, then closes the issue |
+| merged | audits `merged`; issue completion waits for required delivery/rollout verification and recorded live acceptance |
 | closed, not merged | audits `merge_arm_refused` and stops |
 | open, head moved off the armed SHA | turns auto-merge back off, audits `merge_arm_refused` with `head_moved` |
 | open, computed merge conflict | disables auto-merge, then requests bounded recovery |

@@ -34,7 +34,11 @@ def authenticated_review(task_id: str, run: dict) -> bool:
     pin = run.get("pin") or {}
     with controls._read_session() as db:
         start = next(
-            (s for s in controls._starts(db, task_id) if s.start_key == run["dispatch_key"]),
+            (
+                s
+                for s in controls._starts(db, task_id)
+                if s.start_key == run["dispatch_key"]
+            ),
             None,
         )
         if not (
@@ -65,7 +69,10 @@ def _authority(db, control, row, task_id: str) -> bool:
         or controls.landing_held(row)
         or controls.review_recovery_held(task_id, session=db)
         or controls._cancellation_evidence(db, row) is not None
-        or row.escalation_json  # An unanswered human decision owns its fence.
+        or (
+            row.escalation_json
+            and json.loads(row.escalation_json).get("resolved") is None
+        )
     ):
         return False
     if row.state == "escalated":
@@ -77,8 +84,73 @@ def _authority(db, control, row, task_id: str) -> bool:
             )
             .order_by(controls.FactoryAudit.id.desc())
         ).first()
-        if not event or json.loads(event.detail_json).get("evidence", {}).get("state") not in _STRANDED:
+        if (
+            not event
+            or json.loads(event.detail_json).get("evidence", {}).get("state")
+            not in _STRANDED
+        ):
             return False
+    return True
+
+
+def dispatch_authorized(db, control, row, task_id: str, start_key: str) -> bool:
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_conductor as conductor,
+    )
+
+    matched = controls._START_KEY.match(start_key)
+    target = review_target(matched.group("node_key")) if matched else None
+    if target is None:
+        return True
+    if not _authority(db, control, row, task_id):
+        return False
+    event = db.exec(
+        select(controls.FactoryAudit)
+        .where(
+            controls.FactoryAudit.task_id == task_id,
+            controls.FactoryAudit.action == "merged_verify_handoff",
+        )
+        .order_by(controls.FactoryAudit.id.desc())
+    ).first()
+    detail = json.loads(event.detail_json) if event else {}
+    task = conductor._task(task_id, session=db)
+    return (
+        (detail.get("pr_number"), detail.get("head_sha")) == target
+        and detail.get("delivery_branch") == conductor.delivery_branch(task)
+        and conductor.delivery_pr_number(task) in (None, target[0])
+    )
+
+
+def _reactivate(db, control, row) -> bool:
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryReceipt, same_work
+    from factory.orchestration.models import SwarmTask
+
+    if row.state == "admitted":
+        return True
+    others = db.exec(
+        select(FactoryReceipt).where(
+            FactoryReceipt.state.in_(("admitted", "uncertain"))
+        )
+    ).all()
+    if (
+        control.state != "enabled"
+        or any(
+            other.task_id != row.task_id and same_work(other, row) for other in others
+        )
+        or not controls.execution_capacity_available(db, control, row)
+    ):
+        return False
+    row.state = "admitted"
+    row.updated_at = controls._now()
+    owned = db.get(SwarmTask, row.task_id)
+    owned.settled_at = None
+    owned.start_state = "factory"
+    owned.start_updated_at = controls._now()
+    controls._audit(
+        db, "factory:reconciler", "merged_verify_resumed", task_id=row.task_id
+    )
     return True
 
 
@@ -90,7 +162,7 @@ def _owned_issue(task: dict) -> bool:
     return not ({"human", "needs-human"} & set(_label_names(issue)))
 
 
-def _handoff(task: dict, policy: dict, pr: dict, dbos=None) -> None:
+def _handoff(task: dict, policy: dict, pr: dict) -> None:
     """Append one read-only review under existing identity, bounds and locks.
 
     A pause permits recording the handoff. Only the ordinary start owner may
@@ -98,7 +170,6 @@ def _handoff(task: dict, policy: dict, pr: dict, dbos=None) -> None:
     """
     from factory.orchestration import factory_conductor as conductor
     from factory.orchestration import factory_controls as controls, graph
-    from factory.orchestration.models import SwarmTask
 
     number, head = pr["number"], pr["head"]["sha"]
     if not re.fullmatch(r"[0-9a-f]{40}", head) or not _owned_issue(task):
@@ -107,7 +178,9 @@ def _handoff(task: dict, policy: dict, pr: dict, dbos=None) -> None:
     snapshot = conductor._decision_snapshot(task["id"], policy)
     existing = next((n for n in snapshot.nodes if n["node_key"] == key), None)
     node = existing or {
-        "op": "add_node", "node_key": key, "kind": "work",
+        "op": "add_node",
+        "node_key": key,
+        "kind": "work",
         "prompt": (
             f"Independently inspect merged PR #{number} at immutable head {head}. "
             "Read-only review: do not reopen implementation, modify source, commit, "
@@ -116,14 +189,20 @@ def _handoff(task: dict, policy: dict, pr: dict, dbos=None) -> None:
             "release are not approval. Preserve outstanding operational acceptance."
         ),
         "model": policy.get("reviewer_model", task["conductor_model"]),
-        "deps": [], "max_cost_usd": policy["turn_budget_usd"],
-        "max_attempts": 1, "side_effects": False,
+        "deps": [],
+        "max_cost_usd": policy["turn_budget_usd"],
+        "max_attempts": 1,
+        "side_effects": False,
         "turn_timeout_seconds": policy["turn_timeout_seconds"],
     }
     projection = conductor.project_decision(
-        snapshot.task, snapshot.policy, None, snapshot,
+        snapshot.task,
+        snapshot.policy,
+        None,
+        snapshot,
         projected_nodes=snapshot.nodes if existing else snapshot.nodes + [node],
-        review_rounds_remaining=0, fan_ins_remaining=0,
+        review_rounds_remaining=0,
+        fan_ins_remaining=0,
     )
     if projection.refusal is not None:
         return
@@ -146,38 +225,38 @@ def _handoff(task: dict, policy: dict, pr: dict, dbos=None) -> None:
             return
         if not existing:
             result = graph.apply_edits(
-                task["id"], author_kind="engine", author=conductor.ACTOR,
-                cause_kind="factory_loop", cause_ref=key,
-                expected_version=snapshot.revision, edits=[node], session=db,
+                task["id"],
+                author_kind="engine",
+                author=conductor.ACTOR,
+                cause_kind="factory_loop",
+                cause_ref=key,
+                expected_version=snapshot.revision,
+                edits=[node],
+                session=db,
             )
             if not result.ok:
                 return
             controls.record_allowance(
-                task["id"], policy, conductor.ACTOR,
-                review_rounds_remaining=0, cause=key, session=db,
+                task["id"],
+                policy,
+                conductor.ACTOR,
+                review_rounds_remaining=0,
+                cause=key,
+                session=db,
             )
             controls._audit(
-                db, conductor.ACTOR, "merged_verify_handoff", task_id=task["id"],
-                pr_number=number, head_sha=head, node_key=key,
+                db,
+                conductor.ACTOR,
+                "merged_verify_handoff",
+                task_id=task["id"],
+                pr_number=number,
+                head_sha=head,
+                node_key=key,
+                delivery_branch=conductor.delivery_branch(live_task),
             )
         # Recovery retains the receipt, task, allowance, runs and original
         # absolute deadline. It never manufactures capacity or releases pauses.
-        if row.state == "escalated" and not row.task_paused:
-            from factory.orchestration.factory_models import FactoryReceipt, same_work
-
-            others = db.exec(select(FactoryReceipt).where(
-                FactoryReceipt.state.in_(("admitted", "uncertain"))
-            )).all()
-            if control.state != "enabled" or any(
-                other.task_id != task["id"] and same_work(other, row) for other in others
-            ) or not controls.execution_capacity_available(db, control, row):
-                return
-            row.state = "admitted"
-            row.updated_at = controls._now()
-            owned = db.get(SwarmTask, task["id"])
-            owned.settled_at = None
-            owned.start_state = "factory"
-            owned.start_updated_at = controls._now()
+        _reactivate(db, control, row)
 
 
 def _drive(task: dict, policy: dict, runs: list[dict], pr: dict) -> None:
@@ -195,7 +274,25 @@ def _drive(task: dict, policy: dict, runs: list[dict], pr: dict) -> None:
             dbos = runtime.init_dbos()
             for run in review_runs:
                 if run["status"] not in graph.TERMINAL_RUN_STATUSES:
-                    conductor._submit_or_reconcile(conductor._task(task["id"]), run, dbos)
+                    conductor._submit_or_reconcile(
+                        conductor._task(task["id"]), run, dbos
+                    )
+        elif _owned_issue(task):
+            with controls._locked_session() as (db, control):
+                row = controls._receipt(db, task["id"])
+                if _authority(
+                    db, control, row, task["id"]
+                ) and not controls._quiescence_refusal(db, task["id"]):
+                    controls.finish_task(
+                        task["id"],
+                        "escalated",
+                        conductor.ACTOR,
+                        session=db,
+                        evidence={
+                            "state": "merged_verify_review_blocked",
+                            "reason": "Immutable merged-head review rejected or lacks authenticated approval; no correction may write to this branch.",
+                        },
+                    )
         return
     _handoff(task, policy, pr)
     if not _owned_issue(task):
@@ -207,8 +304,13 @@ def _drive(task: dict, policy: dict, runs: list[dict], pr: dict) -> None:
     fresh = conductor._task(task["id"])
     nodes = [n for n in graph.load_graph(task["id"]) if n["node_key"] == key]
     conductor._dispatch_ready(
-        fresh, nodes, graph.node_runs(task["id"]), 1,
-        fan_out=False, parallel=1, policy=policy,
+        fresh,
+        nodes,
+        graph.node_runs(task["id"]),
+        1,
+        fan_out=False,
+        parallel=1,
+        policy=policy,
     )
 
 
@@ -222,14 +324,23 @@ def recover_stranded(policy: dict) -> None:
 
     repo = policy["repo"]
     with controls._read_session() as db:
-        observed = select(FactoryAudit.task_id).where(FactoryAudit.action == "owned_pr_merged")
-        query = select(FactoryReceipt).where(
-            FactoryReceipt.repo == repo, FactoryReceipt.state == "escalated",
-            FactoryReceipt.task_id.in_(observed),
-        ).order_by(FactoryReceipt.id)
-        rows = db.exec(query.where(
-            FactoryReceipt.id > _discovery_cursors.get(repo, 0)
-        ).limit(factory_landing.OBSERVATION_BATCH)).all()
+        observed = select(FactoryAudit.task_id).where(
+            FactoryAudit.action == "owned_pr_merged"
+        )
+        query = (
+            select(FactoryReceipt)
+            .where(
+                FactoryReceipt.repo == repo,
+                FactoryReceipt.state == "escalated",
+                FactoryReceipt.task_id.in_(observed),
+            )
+            .order_by(FactoryReceipt.id)
+        )
+        rows = db.exec(
+            query.where(FactoryReceipt.id > _discovery_cursors.get(repo, 0)).limit(
+                factory_landing.OBSERVATION_BATCH
+            )
+        ).all()
         if not rows:
             rows = db.exec(query.limit(factory_landing.OBSERVATION_BATCH)).all()
         _discovery_cursors[repo] = rows[-1].id if rows else 0
@@ -241,7 +352,9 @@ def recover_stranded(policy: dict) -> None:
                     continue
             task = conductor._task(task_id)
             if _owned_issue(task):
-                reconcile_merged_delivery(task, pinned_policy, conductor.graph.node_runs(task_id))
+                reconcile_merged_delivery(
+                    task, pinned_policy, conductor.graph.node_runs(task_id)
+                )
         except (httpx.HTTPError, ValueError):
             logger.exception("Merged verification discovery failed for %s", task_id)
 
@@ -357,6 +470,32 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
         # fenced and allow only deadline escalation, never issue-closed or
         # legacy pause cancellation. The locked helper is inert when unpaused.
         conductor._settle_paused_task(task, policy, runs, merge_unknown=True)
+        return True
+    if enabled():
+        if not _owned_issue(task):
+            return True
+        # No external I/O inside this phase. Recheck mutable authority and
+        # execution after GitHub/status/session authentication and before finish.
+        with controls._locked_session() as (db, control):
+            row = controls._receipt(db, task["id"])
+            fresh = conductor._task(task["id"], session=db)
+            if (
+                _authority(db, control, row, task["id"])
+                and conductor.delivery_identity_matches(fresh, pr)
+                and conductor.delivery_pr_number(fresh) in (None, number)
+                and evidence["head_sha"] == pr["head"]["sha"]
+                and graph.node_runs(task["id"], session=db) == runs
+                and not controls._quiescence_refusal(db, task["id"])
+                and not controls._snapshot(db, row)["limits"]["deadline_expired"]
+                and _reactivate(db, control, row)
+            ):
+                controls.finish_task(
+                    task["id"],
+                    "succeeded",
+                    conductor.ACTOR,
+                    evidence=evidence,
+                    session=db,
+                )
         return True
     controls.finish_task(task["id"], "succeeded", conductor.ACTOR, evidence=evidence)
     return True

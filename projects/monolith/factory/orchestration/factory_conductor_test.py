@@ -100,6 +100,8 @@ def paused_settlement(feedback_db, monkeypatch, request):
     ):
         monkeypatch.setattr(conductor, name, lambda *a, **kw: None)
     # Keep the real deadline backstop, which must never release paused unknown work.
+    landing_tick = factory_landing.landing_tick
+    dispatch_ready = conductor._dispatch_ready
     for module, name in (
         (dependency_gate, "tick"),
         (factory_pr_lifecycle, "reconcile_tick"),
@@ -139,6 +141,8 @@ def paused_settlement(feedback_db, monkeypatch, request):
         cards=cards,
         engine=feedback_db,
         submit_or_reconcile=submit_or_reconcile,
+        landing_tick=landing_tick,
+        dispatch_ready=dispatch_ready,
     )
 
 
@@ -1307,15 +1311,16 @@ def test_paused_merge_never_upgrades_ineligible_review(paused_settlement, bad_re
     assert snapshot["evidence"]["state"] == "merged_review_not_approved"
 
 
-def test_paused_owned_merge_strands_review_without_recovery_handoff(
+def test_disabled_paused_owned_merge_retains_legacy_escalation(
     paused_settlement, monkeypatch
 ):
-    """Characterize the caller-path gap before adding merged-head recovery."""
+    """Staging off preserves the predecessor's real caller-path behavior."""
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import FactoryAudit
     from factory.orchestration.models import SwarmNodeRun
 
     s = paused_settlement
+    monkeypatch.delenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED", raising=False)
     # Keep the objective open and its deadline unexpired: only the external
     # merge can cause this terminal transition, not pause/deadline settlement.
     assert s.issue["state"] == "open"
@@ -1404,6 +1409,475 @@ def test_paused_owned_merge_strands_review_without_recovery_handoff(
     assert conductor.graph.current_version(s.task["id"]) == version
     assert audits() == observed
     assert not s.cards
+
+
+@pytest.fixture
+def merged_handoff(paused_settlement, monkeypatch):
+    from factory.execution.models import AgentSession
+    from factory.orchestration import factory_merged_delivery as merged
+    from sqlmodel import SQLModel
+
+    s = paused_settlement
+    s.engine.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(s.engine, tables=[AgentSession.__table__])
+    monkeypatch.setenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED", "true")
+    merged._discovery_cursors.clear()
+    s.pr.update(state="closed", merged=True)
+    s.review_key = f"review_merged_3_{s.pr['head']['sha']}"
+    from factory.orchestration import factory_controls as controls
+
+    s.before = controls.task_snapshot(s.task["id"])
+    s.policy = s.before["policy"]
+    return s
+
+
+def authenticate_handoff_review(s, run):
+    """Trusted server session attribution, separate from the guest artifact."""
+    from factory.execution.models import AgentSession
+
+    pin = run["pin"]
+    with Session(s.engine) as db, db.begin():
+        db.add(
+            AgentSession(
+                id=run["session_id"],
+                local_session_id=f"factory:{s.task['id']}:{run['node_key']}:{run['attempt']}",
+                workspace="fixture",
+                branch=pin.get("hydration_branch", pin["branch"]),
+                repo=pin["repo"],
+                workflow_id=pin["workflow_id"],
+                node_key=pin["node_key"],
+                node_attempt=pin["attempt"],
+                model=pin["model"],
+                admission_tier="project",
+            )
+        )
+
+
+def test_staged_paused_owned_merge_records_once_without_dispatch_or_accounting_reset(
+    merged_handoff,
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = merged_handoff
+    for _ in range(3):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "admitted" and after["task_paused"]
+    for key in (
+        "id",
+        "task_id",
+        "work_item_id",
+        "starts",
+        "committed_cost_usd",
+        "turns_used",
+        "direction",
+        "cancellation_requested",
+    ):
+        assert after[key] == s.before[key]
+    nodes = conductor.graph.load_graph(s.task["id"])
+    assert len([n for n in nodes if n["node_key"] == s.review_key]) == 1
+    review = next(n for n in nodes if n["node_key"] == s.review_key)
+    assert review["max_attempts"] == 1 and not review["side_effects"]
+    assert len(conductor.graph.node_runs(s.task["id"])) == 2
+    with Session(s.engine) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == "merged_verify_handoff"
+                    )
+                ).all()
+            )
+            == 1
+        )
+
+
+def test_staged_authenticated_approval_reused_and_operational_completion_stays_pending(
+    merged_handoff,
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = merged_handoff
+    run = conductor.graph.node_runs(s.task["id"])[-1]
+    authenticate_handoff_review(s, run)
+    conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "landing"
+    assert after["evidence"]["review_session_id"] == run["session_id"]
+    assert after["evidence"]["reviewer_model"] == run["pin"]["model"]
+    assert after["starts"] == s.before["starts"]
+    assert not any(
+        n["node_key"] == s.review_key for n in conductor.graph.load_graph(s.task["id"])
+    )
+    assert s.issue["state"] == "open"
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "wrong_pr",
+        "wrong_head",
+        "verdict",
+        "same_session",
+        "model",
+        "unattributed",
+        "prose",
+        "pause_release",
+    ],
+)
+def test_staged_invalid_approval_cannot_become_success(
+    merged_handoff, monkeypatch, invalid
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmNodeRun
+
+    s = merged_handoff
+    run = conductor.graph.node_runs(s.task["id"])[-1]
+    if invalid != "unattributed":
+        authenticate_handoff_review(s, run)
+    with Session(s.engine) as db, db.begin():
+        row = db.get(SwarmNodeRun, run["id"])
+        body = json.loads(row.outcome_json)
+        if invalid in ("wrong_pr", "wrong_head", "verdict"):
+            field, value = {
+                "wrong_pr": ("pr_number", 99),
+                "wrong_head": ("head_sha", "d" * 40),
+                "verdict": ("verdict", "changes_requested"),
+            }[invalid]
+            body["value"][field] = value
+            body["artifact"]["value"][field] = value
+            row.outcome_json = json.dumps(body)
+        elif invalid == "same_session":
+            row.session_id = 101
+        elif invalid == "model":
+            pin = json.loads(row.pin_json)
+            pin["model"] = "luna"  # Guest claims of an eligible model do not help.
+            row.pin_json = json.dumps(pin)
+    if invalid in ("prose", "pause_release"):
+        # A valid-looking artifact has no trusted execution when the session
+        # attribution disagrees. Neither PR prose nor resume repairs it.
+        from factory.execution.models import AgentSession
+
+        with Session(s.engine) as db, db.begin():
+            db.get(AgentSession, run["session_id"]).model = "luna"
+        s.pr["body"] += "\nApproved by Opus at this exact head."
+    if invalid == "pause_release":
+        monkeypatch.setattr(conductor, "_dispatch_ready", s.dispatch_ready)
+        assert controls.set_control("resume_task", "operator", task_id=s.task["id"])[
+            "ok"
+        ]
+    conductor.tick()
+    assert controls.task_snapshot(s.task["id"])["state"] != "landing"
+    assert any(
+        n["node_key"] == s.review_key for n in conductor.graph.load_graph(s.task["id"])
+    )
+
+
+@pytest.mark.parametrize("actual_model", ["opus", "luna"])
+def test_staged_real_admission_pins_immutable_read_only_review_and_fallback_provenance(
+    merged_handoff, monkeypatch, actual_model
+):
+    from factory.orchestration import factory_controls as controls, node_workflows
+
+    s = merged_handoff
+    conductor.tick()  # Record while explicitly paused, without dispatch.
+    monkeypatch.setattr(conductor, "_dispatch_ready", s.dispatch_ready)
+    # Exercise routing through the existing owner while controlling only quota.
+    from factory.orchestration import factory_quota_guard
+
+    monkeypatch.setattr(
+        factory_quota_guard,
+        "reviewer_for",
+        lambda *a, **kw: {"model": actual_model, "skipped": []},
+    )
+    monkeypatch.setattr(conductor, "pool_for", lambda *a: ["opus", "luna"])
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    conductor.tick()
+    run = conductor.graph.node_runs(s.task["id"])[-1]
+    assert run["node_key"] == s.review_key and run["status"] == "admitted"
+    pin = run["pin"]
+    assert pin["model"] == actual_model
+    assert pin["read_only"] is True
+    assert pin["branch"] == pin["hydration_branch"] == s.pr["head"]["sha"]
+    assert pin["artifact_schema"]["properties"]["head_sha"] == {
+        "const": s.pr["head"]["sha"]
+    }
+    assert pin["artifact_schema"]["properties"]["pr_number"] == {"const": 3}
+    validated = node_workflows._validate_pin(pin)
+    assert validated["read_only"] is True
+    prompt = node_workflows._node_prompt(
+        pin["prompt"],
+        pin["artifact_path"],
+        pin["artifact_schema"],
+        branch=pin["branch"],
+    )
+    assert "read-only" in prompt and "Commit and push source changes" not in prompt
+    settle_admitted_node(
+        s.task,
+        s.review_key,
+        {
+            "pr_number": 3,
+            "head_sha": s.pr["head"]["sha"],
+            "verdict": "approve",
+            "summary": "Independent immutable-head approval",
+        },
+        head=s.pr["head"]["sha"],
+    )
+    run = conductor.graph.node_runs(s.task["id"])[-1]
+    authenticate_handoff_review(s, run)
+    for _ in range(2):
+        conductor.tick()
+    assert controls.task_snapshot(s.task["id"])["state"] == "landing"
+    assert len(conductor.graph.node_runs(s.task["id"])) == 3
+
+
+def test_staged_terminal_discovery_is_reachable_from_real_landing_tick_and_repeat_safe(
+    merged_handoff, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls, factory_landing
+
+    s = merged_handoff
+    monkeypatch.delenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED")
+    # The predecessor's state, produced through the actual admitted caller.
+    from factory.orchestration.models import SwarmNodeRun
+
+    with Session(s.engine) as db, db.begin():
+        db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.node_key == "review_fix")
+        ).one().head_sha = "d" * 40
+    conductor.tick()
+    terminal = controls.task_snapshot(s.task["id"])
+    assert terminal["state"] == "escalated"
+    assert not controls.conductor_status()["active_tasks"]
+    # Restore the real recovery owner. Its usual settled-delivery scan cannot
+    # see this receipt; no mock supplies the missing caller integration.
+    monkeypatch.setattr(factory_landing, "landing_tick", s.landing_tick)
+    monkeypatch.setenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED", "true")
+    for _ in range(3):
+        conductor.tick()
+    assert any(
+        n["node_key"] == s.review_key for n in conductor.graph.load_graph(s.task["id"])
+    )
+    assert controls.task_snapshot(s.task["id"])["state"] == "escalated"
+    assert controls.set_control("enable", "operator")["ok"]
+    conductor.tick()
+    restored = controls.task_snapshot(s.task["id"])
+    assert restored["state"] == "admitted" and restored["task_paused"]
+    for field in (
+        "id",
+        "task_id",
+        "work_item_id",
+        "starts",
+        "committed_cost_usd",
+        "turns_used",
+        "direction",
+    ):
+        assert restored[field] == terminal[field]
+    assert restored["deadline_at"] == terminal["deadline_at"]
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+
+
+@pytest.mark.parametrize(
+    "fence",
+    [
+        "landing",
+        "human",
+        "needs-human",
+        "cancel",
+        "uncertain",
+        "wrong_owner",
+        "deadline",
+        "bounds",
+        "human_decision",
+    ],
+)
+def test_staged_recovery_preserves_fences(merged_handoff, monkeypatch, fence):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryStart
+
+    s = merged_handoff
+    if fence in ("human", "needs-human"):
+        s.issue["labels"] = [{"name": fence}]
+    elif fence == "cancel":
+        request_task_cancellation(s)
+    elif fence == "wrong_owner":
+        s.pr["head"]["repo"]["full_name"] = "other/repo"
+    elif fence == "deadline":
+        from datetime import timedelta
+
+        s.clock[0] = s.deadline + timedelta(seconds=1)
+    else:
+        with Session(s.engine) as db, db.begin():
+            row = controls._receipt(db, s.task["id"])
+            if fence == "landing":
+                row.direction_json = '{"landing_hold":{"actor":"operator"}}'
+            elif fence == "human_decision":
+                row.escalation_json = (
+                    '{"question":"Explicit human decision", "resolved":null}'
+                )
+            elif fence == "bounds":
+                policy = json.loads(row.policy_json)
+                policy["max_turns_per_task"] = 2
+                policy["max_task_turns_hard"] = 2
+                row.policy_json = json.dumps(policy)
+            elif fence == "uncertain":
+                from factory.orchestration.models import SwarmNodeRun
+
+                review = db.exec(
+                    select(SwarmNodeRun).where(SwarmNodeRun.node_key == "review_fix")
+                ).one()
+                review.status, review.outcome_json = "dispatched", None
+                db.exec(
+                    select(FactoryStart).where(
+                        FactoryStart.start_key == review.dispatch_key
+                    )
+                ).one().status = "uncertain"
+    conductor.tick()
+    assert not any(
+        n["node_key"] == s.review_key for n in conductor.graph.load_graph(s.task["id"])
+    )
+    after = controls.task_snapshot(s.task["id"])
+    assert len(after["starts"]) == 2 and after["committed_cost_usd"] >= 0.5
+    assert after["task_id"] == s.before["task_id"]
+    assert after["state"] != "landing"
+
+
+@pytest.mark.parametrize("boundary", ["pull", "issue", "snapshot", "status"])
+def test_staged_authority_change_during_io_cannot_dispatch_or_settle(
+    merged_handoff, monkeypatch, boundary
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = merged_handoff
+    if boundary == "status":
+        authenticate_handoff_review(s, conductor.graph.node_runs(s.task["id"])[-1])
+    changed = []
+
+    def hold():
+        if not changed:
+            with Session(s.engine) as db, db.begin():
+                controls._receipt(
+                    db, s.task["id"]
+                ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+            changed.append(True)
+
+    read = conductor.github_get
+
+    def reading(repo, path):
+        result = read(repo, path)
+        if (
+            (boundary == "pull" and path.startswith("pulls/"))
+            or (boundary == "issue" and path.startswith("issues/"))
+            or (boundary == "status" and path.endswith("/status"))
+        ):
+            hold()
+        return result
+
+    monkeypatch.setattr(conductor, "github_get", reading)
+    if boundary == "snapshot":
+        snapshot = conductor._decision_snapshot
+
+        def snapshotting(*args, **kwargs):
+            result = snapshot(*args, **kwargs)
+            hold()
+            return result
+
+        monkeypatch.setattr(conductor, "_decision_snapshot", snapshotting)
+    conductor.tick()
+    assert changed
+    assert controls.task_snapshot(s.task["id"])["state"] != "landing"
+    assert len(conductor.graph.node_runs(s.task["id"])) == 2
+    assert not any(
+        n["node_key"] == s.review_key for n in conductor.graph.load_graph(s.task["id"])
+    )
+
+
+def test_staged_competing_handoffs_share_one_durable_graph_identity(
+    merged_handoff, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from factory.orchestration import factory_merged_delivery as merged
+
+    s = merged_handoff
+    boundary = Barrier(2)
+    original = conductor._decision_snapshot
+
+    def snapshot(*args, **kwargs):
+        result = original(*args, **kwargs)
+        boundary.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(conductor, "_decision_snapshot", snapshot)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(merged._handoff, s.task, s.policy, s.pr) for _ in range(2)
+        ]
+        for result in futures:
+            result.result(timeout=20)
+    assert (
+        len(
+            [
+                n
+                for n in conductor.graph.load_graph(s.task["id"])
+                if n["node_key"] == s.review_key
+            ]
+        )
+        == 1
+    )
+    assert len(conductor.graph.node_runs(s.task["id"])) == 2
+
+
+@pytest.mark.parametrize("verdict", ["changes_requested", "escalate", "invalid"])
+def test_staged_immutable_rejection_never_schedules_branch_correction(
+    merged_handoff, monkeypatch, verdict
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = merged_handoff
+    conductor.tick()
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    run_feedback_node(
+        s.task,
+        s.review_key,
+        {
+            "pr_number": 3,
+            "head_sha": s.pr["head"]["sha"],
+            "verdict": verdict,
+            "summary": "Findings remain visible",
+        },
+        head=s.pr["head"]["sha"],
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_insert_review_round",
+        lambda *a, **kw: pytest.fail("Immutable-head correction"),
+    )
+    for _ in range(2):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "escalated"
+    assert after["evidence"]["state"] == "merged_verify_review_blocked"
+    assert not any(
+        n["node_key"].startswith("correct_")
+        for n in conductor.graph.load_graph(s.task["id"])
+    )
+
+
+@pytest.mark.parametrize("state", ["pending", "failure"])
+def test_staged_authenticated_review_waits_for_required_ci(merged_handoff, state):
+    from factory.orchestration import factory_controls as controls
+
+    s = merged_handoff
+    authenticate_handoff_review(s, conductor.graph.node_runs(s.task["id"])[-1])
+    s.checks["statuses"][0]["state"] = state
+    conductor.tick()
+    assert controls.task_snapshot(s.task["id"])["state"] == "admitted"
+    assert s.issue["state"] == "open"
+    assert len(conductor.graph.node_runs(s.task["id"])) == 2
 
 
 @pytest.mark.parametrize("failure", ["pending", "failure", "closure"])

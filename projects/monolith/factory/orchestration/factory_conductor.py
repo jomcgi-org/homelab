@@ -2764,8 +2764,9 @@ def verify_delivery(
     if merged:
         from factory.orchestration import factory_merged_delivery
 
-        if factory_merged_delivery.enabled() and not factory_merged_delivery.authenticated_review(
-            task["id"], review
+        if (
+            factory_merged_delivery.enabled()
+            and not factory_merged_delivery.authenticated_review(task["id"], review)
         ):
             raise IndependentReviewMissing("review execution provenance is missing")
     dependency_prs.verify(task, pr, runs)
@@ -7633,7 +7634,13 @@ def _dispatch_ready(
     limit = min(solo + extra, budget)
     if limit <= 0:
         return False
-    hydration = hydration_branch(task)
+    from factory.orchestration import factory_merged_delivery
+
+    hydration = (
+        task["base_branch"]
+        if all(factory_merged_delivery.review_target(n["node_key"]) for n in ready)
+        else hydration_branch(task)
+    )
     task_id = task["id"]
     # The wave decides which source-writing nodes may start and in what order,
     # so it leads the queue. Everything else keeps its graph order behind it.
@@ -7676,8 +7683,6 @@ def _dispatch_ready(
         )
         if branch is None:
             continue
-        from factory.orchestration import factory_merged_delivery
-
         merged_target = factory_merged_delivery.review_target(node_key)
         if merged_target is not None:
             # The merged branch may have been deleted or moved. Checkout the
@@ -7713,7 +7718,9 @@ def _dispatch_ready(
                 and not node_key.startswith("conductor_")
                 else _schema(node_key)
             ),
-            "hydration_branch": branch_hydration(task, branch, hydration),
+            "hydration_branch": merged_target[1]
+            if merged_target is not None
+            else branch_hydration(task, branch, hydration),
             "retry_context": json.dumps(
                 [r for r in runs if r["node_key"] == node_key], default=str
             )[-MAX_RETRY_CONTEXT_CHARS:],
@@ -7746,7 +7753,9 @@ def _dispatch_ready(
             number, head = merged_target
             context["read_only"] = True
             context["hydration_branch"] = head
-            context["artifact_schema"] = json.loads(json.dumps(context["artifact_schema"]))
+            context["artifact_schema"] = json.loads(
+                json.dumps(context["artifact_schema"])
+            )
             context["artifact_schema"]["x-factory-merged-read-only"] = True
             context["artifact_schema"]["properties"]["pr_number"] = {"const": number}
             context["artifact_schema"]["properties"]["head_sha"] = {"const": head}
