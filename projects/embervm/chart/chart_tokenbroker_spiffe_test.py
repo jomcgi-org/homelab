@@ -63,6 +63,18 @@ def test_spiffe_flag_off_omits_listener_port_and_csi_volume() -> None:
     )
 
 
+def test_github_lane_is_absent_from_rendered_resources() -> None:
+    defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert "githubApp" not in defaults["tokenBroker"]
+    for settings in [[], ["tokenBroker.spiffe.enabled=true"]]:
+        rendered = _render("broker-without-github", settings)
+        deployment = _source_document(rendered, "tokenbroker-deployment.yaml")
+        assert "TOKENBROKER_GRANTS" in deployment
+        assert "GITHUB_APP_" not in rendered
+        assert "github-app" not in rendered
+        assert "github-canary" not in rendered
+
+
 def test_spiffe_flag_on_renders_default_noded_identity_and_tls_port() -> None:
     rendered = _render("broker-test", ["tokenBroker.spiffe.enabled=true"])
     deployment = _source_document(rendered, "tokenbroker-deployment.yaml")

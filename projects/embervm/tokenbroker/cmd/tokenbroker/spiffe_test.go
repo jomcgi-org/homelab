@@ -157,6 +157,32 @@ func TestPlaintextHandlerServesTokenWhenMTLSDisabled(t *testing.T) {
 	}
 }
 
+func TestPlaintextMuxOmitsGitHubGrants(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		listeners listenerConfig
+	}{
+		{"legacy", listenerConfig{}},
+		{"mtls-enabled", listenerConfig{tlsListenAddr: ":8443"}},
+		{"retired", listenerConfig{tlsListenAddr: ":8443", retirePlaintextProtected: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := newServerWithStoredGrant(t).plaintextMux(test.listeners)
+			if health := performRequest(handler, http.MethodGet, "/healthz"); health.Code != http.StatusOK {
+				t.Fatalf("health status = %d, want 200", health.Code)
+			}
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				for _, path := range []string{"/github/grants/", "/github/grants/bosun/token"} {
+					response := performRequest(handler, method, path)
+					if response.Code != http.StatusNotFound {
+						t.Errorf("%s %s = %d, want 404", method, path, response.Code)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestMTLSHandlerAuthorizesConfiguredClient(t *testing.T) {
 	trustDomain := spiffeid.RequireTrustDomainFromString("test.example")
 	caCertificate, caKey := newTestCA(t)
@@ -168,7 +194,7 @@ func TestMTLSHandlerAuthorizesConfiguredClient(t *testing.T) {
 	allowedSource := &staticX509Source{svid: newTestSVID(t, caCertificate, caKey, allowedID, 3), bundle: bundle}
 	disallowedSource := &staticX509Source{svid: newTestSVID(t, caCertificate, caKey, disallowedID, 4), bundle: bundle}
 
-	testServer := httptest.NewUnstartedServer(newServerWithStoredGrant(t).grantsHandler(true, true))
+	testServer := httptest.NewUnstartedServer(newServerWithStoredGrant(t).mtlsMux())
 	testServer.TLS = tlsconfig.MTLSServerConfig(serverSource, serverSource, tlsconfig.AuthorizeOneOf(allowedID))
 	testServer.TLS.Certificates = []tls.Certificate{{
 		Certificate: [][]byte{serverSource.svid.Certificates[0].Raw},
@@ -190,6 +216,22 @@ func TestMTLSHandlerAuthorizesConfiguredClient(t *testing.T) {
 	defer allowedResponse.Body.Close()
 	if allowedResponse.StatusCode != http.StatusOK {
 		t.Fatalf("allowed client status = %d, want %d", allowedResponse.StatusCode, http.StatusOK)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		for _, path := range []string{"/github/grants/", "/github/grants/bosun/token"} {
+			request, err := http.NewRequest(method, testServer.URL+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := allowedClient.Do(request)
+			if err != nil {
+				t.Fatalf("authenticated %s %s failed: %v", method, path, err)
+			}
+			response.Body.Close()
+			if response.StatusCode != http.StatusNotFound {
+				t.Errorf("authenticated %s %s = %d, want 404", method, path, response.StatusCode)
+			}
+		}
 	}
 
 	unauthenticatedClient := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsconfig.TLSClientConfig(
