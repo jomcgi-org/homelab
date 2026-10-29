@@ -339,7 +339,7 @@ def test_optimizer_loader_bounds_windows_at_proven_deployment(monkeypatch):
 
     def rows(_session, sql, params):
         observed.append((sql, params))
-        if sql == retro._OPTIMIZER_OBSERVATIONS:
+        if sql in (retro._OPTIMIZER_BOUNDARY, retro._OPTIMIZER_OBSERVATIONS):
             return [
                 {
                     "note_id": "deployment-example",
@@ -400,7 +400,16 @@ def test_optimizer_loader_holds_saturated_history(monkeypatch):
     monkeypatch.setattr(
         retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
     )
-    monkeypatch.setattr(retro, "_rows", lambda *_: [{}] * 5000)
+
+    def rows(_session, sql, params):
+        if sql == retro._OPTIMIZER_BOUNDARY:
+            return [
+                {"note_id": "deployed", "observed_at": NOW - retro.timedelta(hours=72)}
+            ]
+        assert params["limit"] == retro._OPTIMIZER_OBSERVATION_LIMIT + 1
+        return [{}] * (retro._OPTIMIZER_OBSERVATION_LIMIT + 1)
+
+    monkeypatch.setattr(retro, "_rows", rows)
     loaded = retro._load_optimizer(object(), NOW)
     assert retro.optimizer_evidence(loaded, NOW)["status"] == "UNKNOWN"
     assert "saturated" in loaded["error"]
@@ -427,7 +436,7 @@ def test_optimizer_loader_ignores_deployments_after_completed_window(monkeypatch
     )
 
     def rows(_session, sql, _params):
-        if sql == retro._OPTIMIZER_OBSERVATIONS:
+        if sql in (retro._OPTIMIZER_BOUNDARY, retro._OPTIMIZER_OBSERVATIONS):
             return [
                 {
                     "note_id": "deployed",
@@ -451,3 +460,67 @@ def test_optimizer_loader_ignores_deployments_after_completed_window(monkeypatch
     loaded = retro._load_optimizer(object(), NOW)
     assert loaded["overlapping_revisions"] == []
     assert loaded["post"]["end"] == (boundary + retro.timedelta(hours=72)).isoformat()
+
+
+def test_optimizer_missing_boundary_does_not_scan_poll_history(monkeypatch):
+    monkeypatch.setattr(
+        retro,
+        "_optimizer_github",
+        lambda: {
+            "experiment": {"app": "monolith", "expected_revision": "0.1.0"},
+            "merged_at": (NOW - retro.timedelta(days=30)).isoformat(),
+            "contains_merge": True,
+        },
+    )
+    monkeypatch.setattr(
+        retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
+    )
+
+    def rows(_session, sql, params):
+        assert sql == retro._OPTIMIZER_BOUNDARY
+        return []
+
+    monkeypatch.setattr(retro, "_rows", rows)
+    loaded = retro._load_optimizer(object(), NOW)
+    assert "post" not in loaded
+    assert retro.optimizer_evidence(loaded, NOW)["status"] == "WAIT"
+
+
+def test_optimizer_old_window_coverage_is_independent_of_later_polls(monkeypatch):
+    boundary = NOW - retro.timedelta(days=20)
+    end = boundary + retro.timedelta(hours=72)
+    monkeypatch.setattr(
+        retro,
+        "_optimizer_github",
+        lambda: {
+            "experiment": {
+                "app": "monolith",
+                "expected_revision": "0.1.0",
+                "writeback_commit": "a" * 40,
+            },
+            "merged_at": (boundary - retro.timedelta(days=1)).isoformat(),
+            "contains_merge": True,
+        },
+    )
+    monkeypatch.setattr(
+        retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
+    )
+
+    def rows(_session, sql, params):
+        if sql == retro._OPTIMIZER_BOUNDARY:
+            assert params["revision"] == "0.1.0" and params["writeback"] == "a" * 40
+            return [{"note_id": "deployed", "observed_at": boundary}]
+        if sql == retro._OPTIMIZER_OBSERVATIONS:
+            assert params["since"] == boundary and params["as_of"] == end
+            # Exactly the limit is complete. The extra sentinel detects overflow.
+            return [
+                {"observed_at": boundary, "extra": {"deployed_revision": "0.2.0"}}
+            ] * 5000
+        return [{"attempts": 10}]
+
+    monkeypatch.setattr(retro, "_rows", rows)
+    loaded = retro._load_optimizer(object(), NOW)
+    assert loaded["observation_coverage"]["complete"] is True
+    assert loaded["post"]["end"] == end.isoformat()
+    assert loaded["overlapping_revisions"] == ["0.2.0"]
+    assert retro.optimizer_evidence(loaded, NOW)["status"] == "UNKNOWN"

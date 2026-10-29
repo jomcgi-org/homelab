@@ -313,6 +313,14 @@ The observation records revision provenance, not historical application health.
 The first matching revision observation is the measurement boundary; current
 sync and health must also verify. Compare the immediately preceding 72h with
 `[boundary, boundary + 72h)`, never the overlapping rolling daily digest.
+The reader finds that exact deployment first, then loads only polls inside the
+fixed post-deployment window. `observation_coverage` states the UTC bounds,
+observed row count, limit and completeness. An extra sentinel row detects
+truncation; more than 5,000 polls inside that window holds UNKNOWN. Polls after
+the window cannot exhaust its coverage budget. This repairs collection only:
+an old cohort with insufficient traffic or overlapping deployments remains
+inconclusive, and waiting longer cannot change its admission denominator.
+
 Attempt cohorts use their creation window; terminal outcomes are read as of
 digest collection, allowing attempts near the window's end to finish before
 acceptance. Further deployments during observation make attribution UNKNOWN. Missing
