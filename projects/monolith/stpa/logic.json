@@ -671,6 +671,14 @@
     {
       "item": "a model renaming a finding key to count the same title as fresh yield",
       "reason": "The producer derives cross-run finding identity from the normalized title and counts only confirmed newly created issues. This conservatively matches titles; semantic duplicate detection is outside this check (projects/monolith/factory/orchestration/backlog_refill_producer.py:301, projects/monolith/factory/orchestration/backlog_refill_producer.py:321)."
+    },
+    {
+      "item": "accepting a saved finish grants another execution after the task deadline",
+      "reason": "The expired-lease saved-finish path verifies existing evidence before funding or dispatch. It rechecks the control, complete graph/run identity, quiescence, owned PR current head, CI and independent review under settlement locks. It neither changes deadlines nor admits work (factory/orchestration/factory_conductor.py: _adopt_saved_finish)."
+    },
+    {
+      "item": "recording a draft-only hold renews a task lease or fabricates landing authority",
+      "reason": "An exact operator landing_hold-only amendment records the restrictive typed hold and audit without a funding grant, deadline, budget or graph change. Draft acceptance requires that existing hold; saved free text never creates one, and the hold survives settlement (factory/orchestration/factory_policy_amendment.py: _preview and apply; factory_conductor.py: _adopt_saved_finish)."
     }
   ],
   "open_questions": [

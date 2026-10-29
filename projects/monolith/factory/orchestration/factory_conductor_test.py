@@ -24385,3 +24385,261 @@ def test_memory_sampling_only_occurs_when_read_window_is_emitted(monkeypatch, ca
     assert sample["memory"]["rss_bytes"] == 123
     assert set(sample["rollout_cache_entries"]) == {"ancestry", "files", "recent"}
     assert all(type(value) is int for value in sample["rollout_cache_entries"].values())
+
+
+def _saved_finish_case(monkeypatch):
+    from datetime import datetime, timedelta
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = feedback_task()
+    head = "a" * 40
+    complete_feedback_node(
+        task, policy, "implement_fix", {"pr_number": 3, "head_sha": head}, head=head
+    )
+    complete_feedback_node(
+        task,
+        policy,
+        "review_fix",
+        {"pr_number": 3, "head_sha": head, "verdict": "approve"},
+        head=head,
+        deps=["implement_fix"],
+    )
+    complete_feedback_node(
+        task,
+        policy,
+        "conductor_final",
+        {
+            "action": "finish",
+            "pr_number": 3,
+            "head_sha": head,
+            "reason": "Completed reviewed delivery",
+        },
+    )
+    with controls._locked_session() as (db, _):
+        controls._receipt(db, task["id"]).direction_json = json.dumps(
+            {
+                "landing_hold": {
+                    "actor": "operator",
+                    "reason": "Draft repository delivery only",
+                }
+            }
+        )
+    task = conductor._task(task["id"])
+    pr = {
+        "number": 3,
+        "node_id": "PR_3",
+        "state": "open",
+        "draft": True,
+        "merged": False,
+        "auto_merge": None,
+        "body": "Closes #7",
+        "html_url": "https://github.com/owner/repo/pull/3",
+        "head": {
+            "sha": head,
+            "ref": f"factory/{task['id']}",
+            "repo": {"full_name": "owner/repo"},
+        },
+        "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+    }
+
+    def read(repo, path):
+        if path == "pulls/3":
+            return pr
+        if path == "issues/7":
+            return {"state": "open", "labels": []}
+        if path == f"commits/{head}/status":
+            return {"statuses": [{"context": "pr-checks", "state": "success"}]}
+        pytest.fail(path)
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    from factory.orchestration import factory_landing
+
+    monkeypatch.setattr(factory_landing, "_queued_ids", lambda _: set())
+    before = controls.task_snapshot(task["id"])
+    deadline = datetime.fromisoformat(before["deadline_at"])
+    monkeypatch.setattr(controls, "_now", lambda: deadline + timedelta(seconds=7))
+    return task, policy, pr, before
+
+
+def test_saved_finish_after_deadline_settles_without_execution(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls, factory_funding
+
+    task, policy, pr, before = _saved_finish_case(monkeypatch)
+    monkeypatch.setattr(
+        factory_funding,
+        "reconcile",
+        lambda *a: pytest.fail("new funding must not precede saved finish"),
+    )
+    monkeypatch.setattr(
+        conductor, "_dispatch_ready", lambda *a, **kw: pytest.fail("no new execution")
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    after = controls.task_snapshot(task["id"])
+    assert after["state"] == "succeeded"
+    assert after["evidence"]["state"] == "reviewed_draft"
+    for key in (
+        "turns_used",
+        "planner_turns_used",
+        "committed_cost_usd",
+        "deadline_at",
+        "policy",
+        "direction",
+    ):
+        assert after[key] == before[key]
+    assert controls.can_start(task["id"])["reason"] == "task_not_active"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "paused",
+        "stopped",
+        "cancel",
+        "missing_hold",
+        "head",
+        "ci",
+        "foreign",
+        "review",
+        "uncertain",
+        "live",
+        "graph",
+        "run",
+        "direction",
+    ],
+)
+def test_saved_finish_preserves_fences(feedback_db, monkeypatch, change):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmNodeRun, SwarmPlanVersion
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, policy, pr, before = _saved_finish_case(monkeypatch)
+    original = conductor.verify_delivery
+
+    def changed(*args, **kwargs):
+        evidence = original(*args, **kwargs)
+        with controls._locked_session() as (db, control):
+            row = controls._receipt(db, task["id"])
+            if change == "paused":
+                row.task_paused = True
+            if change == "stopped":
+                control.state = "stopped"
+            if change == "cancel":
+                row.cancellation_requested = True
+            if change == "missing_hold":
+                row.direction_json = "{}"
+            if change == "direction":
+                row.direction_json = json.dumps(
+                    {"landing_hold": {"actor": "operator", "reason": "Changed hold"}}
+                )
+            if change == "uncertain":
+                db.exec(
+                    select(FactoryStart).where(FactoryStart.task_id == task["id"])
+                ).first().status = "uncertain"
+            if change in ("live", "run"):
+                run = db.exec(
+                    select(SwarmNodeRun).where(SwarmNodeRun.task_id == task["id"])
+                ).first()
+                if change == "live":
+                    run.status = "dispatched"
+                else:
+                    run.outcome_json = "{}"
+            if change == "graph":
+                node = db.exec(
+                    select(SwarmPlanVersion)
+                    .where(SwarmPlanVersion.task_id == task["id"])
+                    .order_by(SwarmPlanVersion.version.desc())
+                ).first()
+                node.version += 1
+        if change == "head":
+            pr["head"]["sha"] = "b" * 40
+        if change == "foreign":
+            pr["head"]["repo"]["full_name"] = "other/repo"
+        return evidence
+
+    if change == "ci":
+        read = conductor.github_get
+        monkeypatch.setattr(
+            conductor,
+            "github_get",
+            lambda repo, path: (
+                {"statuses": [{"context": "pr-checks", "state": "pending"}]}
+                if "/status" in path
+                else read(repo, path)
+            ),
+        )
+    elif change == "review":
+        with controls._locked_session() as (db, _):
+            review = db.exec(
+                select(SwarmNodeRun).where(
+                    SwarmNodeRun.task_id == task["id"],
+                    SwarmNodeRun.node_key == "review_fix",
+                )
+            ).one()
+            review.head_sha = "b" * 40
+    else:
+        monkeypatch.setattr(conductor, "verify_delivery", changed)
+    assert conductor._adopt_saved_finish(
+        task, policy, conductor.graph.node_runs(task["id"])
+    )
+    after = controls.task_snapshot(task["id"])
+    assert after["state"] == "admitted"
+    assert after["evidence"] is None
+    assert after["deadline_at"] == before["deadline_at"]
+
+
+def test_saved_finish_is_idempotent(feedback_db, monkeypatch):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy, _, _ = _saved_finish_case(monkeypatch)
+    runs = conductor.graph.node_runs(task["id"])
+    assert conductor._adopt_saved_finish(task, policy, runs)
+    assert conductor._adopt_saved_finish(conductor._task(task["id"]), policy, runs)
+    with controls._read_session() as db:
+        audits = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "saved_finish_adopted",
+            )
+        ).all()
+    assert len(audits) == 1
+
+
+@pytest.mark.parametrize(
+    "change", ["new_revision", "missing_hold", "declared_head", "rejected_review"]
+)
+def test_saved_finish_does_not_reinterpret_old_evidence(
+    feedback_db, monkeypatch, change
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmNodeRun, SwarmPlanVersion
+
+    task, policy, _, _ = _saved_finish_case(monkeypatch)
+    with controls._locked_session() as (db, _):
+        if change == "new_revision":
+            version = db.exec(
+                select(SwarmPlanVersion)
+                .where(SwarmPlanVersion.task_id == task["id"])
+                .order_by(SwarmPlanVersion.version.desc())
+            ).first()
+            version.version += 1
+        elif change == "missing_hold":
+            controls._receipt(db, task["id"]).direction_json = "{}"
+        else:
+            key = "conductor_final" if change == "declared_head" else "review_fix"
+            run = db.exec(
+                select(SwarmNodeRun).where(
+                    SwarmNodeRun.task_id == task["id"], SwarmNodeRun.node_key == key
+                )
+            ).one()
+            body = json.loads(run.outcome_json)
+            body["value"]["head_sha" if change == "declared_head" else "verdict"] = (
+                "b" * 40 if change == "declared_head" else "changes_requested"
+            )
+            run.outcome_json = json.dumps(body)
+    conductor._adopt_saved_finish(
+        conductor._task(task["id"]), policy, conductor.graph.node_runs(task["id"])
+    )
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"

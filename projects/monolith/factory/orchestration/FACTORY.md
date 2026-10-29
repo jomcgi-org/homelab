@@ -3058,3 +3058,23 @@ changed: every card stays on `/factory/escalations` whether it paged or not.
 active cessation, stop supervision or a drain relay, and refine briefs ask a
 minute's scoping question on advisory work. Authority decisions still page;
 the rest, and what the factory approved on its own, arrive once a day.
+
+### Completed finishes after a lease expires
+
+A task deadline prevents new execution. A saved successful final conductor
+`finish` can still settle the same receipt when the complete graph and run
+evidence are unchanged, every start is accounted, and fresh owned-PR CI and
+independent exact-head review pass. Stopped, paused, cancelled, human-owned,
+uncertain and changed deliveries remain fenced. The adoption records its
+original run and revision; it does not dispatch, renew funding or extend a
+deadline. Invalid or temporarily unavailable evidence stays pending.
+
+Draft-only acceptance requires the existing typed `landing_hold`. The exact
+operator policy-amendment preview/apply can add that hold with an overlay of
+only `landing_hold: true`; this restrictive operation preserves the funding
+ledger and deadline, including an expired deadline, and leaves the task paused.
+It does not infer authorization from a PR body or grant landing.
+
+**Why.** A completed result arriving after its start lease is an observation
+to validate, not a request for another paid turn. Recording its draft-only
+restriction must not accidentally refresh that lease.

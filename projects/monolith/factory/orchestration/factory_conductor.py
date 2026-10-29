@@ -6711,6 +6711,136 @@ def _settle_paused_task(
     return closed_landing_hold
 
 
+def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
+    """Reconcile completed evidence before admission of any new paid work.
+
+    A deadline fences starts, not already completed results. No model decision
+    is replayed here: gates, graph edits and funding remain on their old path.
+    Draft acceptance requires an existing typed landing hold; prose cannot
+    create one. A candidate awaiting valid evidence blocks new planning.
+    """
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_refine import task_class_for
+
+    planners = [
+        r
+        for r in runs
+        if r["node_key"].startswith("conductor_")
+        and not r["node_key"].startswith("conductor_funding_")
+    ]
+    if not planners:
+        return False
+    latest = max(planners, key=lambda r: r["id"])
+    decision = _artifact(latest)
+    if latest["status"] != "succeeded" or decision.get("action") != "finish":
+        return False
+    cause = f"factory-decision:{latest['node_key']}:{latest['attempt']}"
+    if _decision_processed(task["id"], cause) or decision.get("gate") is not None:
+        return False
+    revision = graph.current_version(task["id"])
+    nodes = graph.load_graph(task["id"])
+    planner = next((n for n in nodes if n["node_key"] == latest["node_key"]), None)
+    # An old proposal cannot settle work added or discarded after its snapshot.
+    if planner is None or planner["created_in_version"] != revision:
+        return False
+    newest = {r["node_key"]: r for r in sorted(runs, key=lambda r: r["id"])}
+    if any(
+        not n["node_key"].startswith("conductor_")
+        and not n.get("discarded_in_version")
+        and not n.get("cancelled_in_version")
+        and newest.get(n["node_key"], {}).get("status") != "succeeded"
+        for n in nodes
+    ):
+        return True
+    with controls._read_session() as db:
+        receipt = controls._receipt(db, task["id"])
+        receipt_identity = receipt.model_dump() if receipt else None
+    run_digest = controls.digest(json.dumps(runs, sort_keys=True, default=str))
+    try:
+        evidence = verify_delivery(
+            task,
+            decision["pr_number"],
+            runs,
+            pool_for("reviewer", policy),
+            judgment=task_class_for(task["id"]) in JUDGMENT_CLASSES,
+            issue_number=task.get("issue_number"),
+        )
+        if decision.get("head_sha", evidence["head_sha"]) != evidence["head_sha"]:
+            return True
+        with controls._locked_session() as (db, control):
+            graph._lock_task(db, task["id"])
+            fresh = _task(task["id"], session=db)
+            permission = controls._can_start(db, control, task["id"])
+            if not (
+                permission["ok"]
+                or permission["reason"]
+                in {
+                    "task_deadline",
+                    "landing_recovery_deadline",
+                    "funding_lease_due",
+                }
+            ):
+                return True
+            if (
+                fresh != task
+                or controls._receipt(db, task["id"]).model_dump() != receipt_identity
+                or graph.current_version(task["id"], session=db) != revision
+                or controls.digest(
+                    json.dumps(
+                        graph.node_runs(task["id"], session=db),
+                        sort_keys=True,
+                        default=str,
+                    )
+                )
+                != run_digest
+                or controls._quiescence_refusal(db, task["id"])
+                or _landing_recovery_requests(task["id"], session=db)
+            ):
+                return True
+            # Revalidate the full delivery after locking, including current CI,
+            # draft state, operational checklist and independent review.
+            if (
+                verify_delivery(
+                    fresh,
+                    decision["pr_number"],
+                    runs,
+                    pool_for("reviewer", policy),
+                    judgment=task_class_for(task["id"]) in JUDGMENT_CLASSES,
+                    issue_number=task.get("issue_number"),
+                )
+                != evidence
+            ):
+                return True
+            from factory.orchestration.factory_intake_loop import _label_names
+
+            issue = github_get(task["repo"], f"issues/{task['issue_number']}")
+            if issue.get("state") != "open" or "human" in _label_names(issue):
+                return True
+            result = controls.finish_task(
+                task["id"],
+                "succeeded",
+                ACTOR,
+                evidence=evidence,
+                session=db,
+            )
+            if result["ok"]:
+                controls._audit(
+                    db,
+                    ACTOR,
+                    "saved_finish_adopted",
+                    task_id=task["id"],
+                    cause=cause,
+                    run_id=latest["id"],
+                    graph_revision=revision,
+                    head_sha=evidence["head_sha"],
+                )
+        return True
+    except (ValueError, httpx.HTTPError):
+        # Missing/temporarily unreadable evidence never authorizes new work or
+        # loses a completed result. Existing holds remain independently binding.
+        return True
+
+
 def reconcile_task(
     task_id: str, policy: dict, dbos, *, human_owned: bool = False
 ) -> None:
@@ -6885,6 +7015,13 @@ def reconcile_task(
         )
         return
     permission = can_start(task_id)
+    if (
+        not permission["ok"]
+        and permission["reason"]
+        in {"task_deadline", "landing_recovery_deadline", "funding_lease_due"}
+        and _adopt_saved_finish(task, policy, runs)
+    ):
+        return
     if not permission["ok"] and permission["reason"] == "task_paused":
         if not _settle_paused_task(task, policy, runs):
             # Legacy reconciler-pause expiry must not mask terminal facts.
