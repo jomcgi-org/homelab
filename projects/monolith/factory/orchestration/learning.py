@@ -114,6 +114,11 @@ def _turn(db, sid, seq):
         or rows[0]["stop_reason"] is not None
     ):
         raise ValueError("Learning source is missing, incomplete or outside repository")
+    if (
+        not isinstance(rows[0]["result_text"], str)
+        or not rows[0]["result_text"].strip()
+    ):
+        raise ValueError("Learning source has no readable result")
     return rows[0]
 
 
@@ -198,6 +203,7 @@ def complete(db, name, holder):
             if not isinstance(refs, list) or not 1 <= len(refs) <= 3:
                 raise ValueError("Finding requires one to three source turns")
             evidence = []
+            seen = set()
             for ref in refs:
                 if (
                     not isinstance(ref, dict)
@@ -206,6 +212,10 @@ def complete(db, name, holder):
                     or ref["session_id"] == sid
                 ):
                     raise ValueError("Invalid source turn reference")
+                identity = (ref["session_id"], ref["turn_seq"])
+                if identity in seen:
+                    raise ValueError("Duplicate source reference")
+                seen.add(identity)
                 source = _turn(db, ref["session_id"], ref["turn_seq"])
                 observed = source["created_at"]
                 if isinstance(observed, str):
