@@ -2,17 +2,6 @@
 {{- if and .Values.tokenBroker.plaintext.retireProtectedRoutes (not .Values.tokenBroker.spiffe.enabled) }}
 {{- fail "tokenBroker.plaintext.retireProtectedRoutes requires tokenBroker.spiffe.enabled" }}
 {{- end }}
-{{- if .Values.tokenBroker.githubApp.enabled }}
-{{- if not .Values.tokenBroker.spiffe.enabled }}
-{{- fail "tokenBroker.githubApp requires tokenBroker.spiffe.enabled" }}
-{{- end }}
-{{- if not .Values.tokenBroker.spiffe.clientSpiffeIds }}
-{{- fail "tokenBroker.githubApp requires explicit tokenBroker.spiffe.clientSpiffeIds" }}
-{{- end }}
-{{- if not .Values.tokenBroker.githubApp.grants }}
-{{- fail "tokenBroker.githubApp requires explicit grants" }}
-{{- end }}
-{{- end }}
 {{- $spiffeClientIDs := join "," .Values.tokenBroker.spiffe.clientSpiffeIds }}
 {{- if and .Values.tokenBroker.spiffe.enabled (eq (len .Values.tokenBroker.spiffe.clientSpiffeIds) 0) }}
 {{- $spiffeClientIDs = printf "spiffe://%s/ns/%s/sa/%s" .Values.tokenBroker.spiffe.trustDomain .Release.Namespace (include "embervm.noded.serviceAccountName" .) }}
@@ -70,19 +59,6 @@ spec:
             # BROKER_LISTEN_ADDR is the plaintext health, metrics, and login listener.
             - { name: BROKER_LISTEN_ADDR, value: ":8080" }
             - { name: BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES, value: {{ .Values.tokenBroker.plaintext.retireProtectedRoutes | quote }} }
-            {{- if .Values.tokenBroker.githubApp.enabled }}
-            - name: GITHUB_APP_ID
-              value: {{ required "tokenBroker.githubApp.appID is required" .Values.tokenBroker.githubApp.appID | quote }}
-            - name: GITHUB_APP_INSTALLATION_ID
-              value: {{ required "tokenBroker.githubApp.installationID is required" .Values.tokenBroker.githubApp.installationID | quote }}
-            - name: GITHUB_APP_GRANTS
-              value: {{ toJson .Values.tokenBroker.githubApp.grants | quote }}
-            - name: GITHUB_APP_PRIVATE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "embervm.tokenBroker.fullname" . }}-github-app
-                  key: {{ required "tokenBroker.githubApp.onepassword.privateKeyField is required" .Values.tokenBroker.githubApp.onepassword.privateKeyField | quote }}
-            {{- end }}
             {{- if .Values.tokenBroker.spiffe.enabled }}
             # BROKER_TLS_LISTEN_ADDR is the SPIFFE mTLS grants listener.
             - { name: BROKER_TLS_LISTEN_ADDR, value: {{ printf ":%v" .Values.tokenBroker.spiffe.tlsPort | quote }} }

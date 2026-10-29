@@ -53,7 +53,6 @@ type listenerConfig struct {
 	retirePlaintextProtected bool
 }
 type server struct {
-	githubGrants       map[string]githubGrant
 	broker             *broker.Broker
 	store              store.Store
 	adapters           map[string]provider.Adapter
@@ -82,14 +81,11 @@ const (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	runner := run
-	if len(os.Args) == 2 && os.Args[1] == "--github-canary" {
-		runner = runGitHubCanary
-	} else if len(os.Args) != 1 {
+	if len(os.Args) != 1 {
 		logger.Error("unknown token broker command")
 		os.Exit(1)
 	}
-	if err := runner(logger); err != nil {
+	if err := run(logger); err != nil {
 		logger.Error("token broker stopped", "err", err)
 		os.Exit(1)
 	}
@@ -105,10 +101,6 @@ func run(logger *slog.Logger) error {
 	listeners, err := configuredListeners()
 	if err != nil {
 		return err
-	}
-	githubGrants, err := configuredGitHubGrants(listeners)
-	if err != nil {
-		return fmt.Errorf("invalid GitHub App configuration: %w", err)
 	}
 	quotaProviders, err := configuredQuotaProviders()
 	if err != nil {
@@ -165,8 +157,7 @@ func run(logger *slog.Logger) error {
 		quotaProviderSet[provider] = struct{}{}
 	}
 	s := &server{
-		githubGrants: githubGrants,
-		store:        st, adapters: adapters, configs: configMap, logger: logger,
+		store: st, adapters: adapters, configs: configMap, logger: logger,
 		startWaitTimeout: loginStartWaitTimeout, quotaStore: quotaStore,
 		quotaProviders: quotaProviderSet, quotaProviderOrder: quotaProviders,
 		tokenRequests: tokenRequests,
@@ -196,14 +187,9 @@ func run(logger *slog.Logger) error {
 	}
 	defer source.Close()
 
-	mtlsMux := http.NewServeMux()
-	mtlsMux.Handle("/grants/", s.grantsHandler(true, true))
-	mtlsMux.Handle("/github/grants/", s.githubHandler(true))
-	mtlsMux.HandleFunc("/quota", s.quota)
-	mtlsMux.HandleFunc("/quota/", s.quota)
 	mtlsServer := &http.Server{
 		Addr:              listeners.tlsListenAddr,
-		Handler:           mtlsMux,
+		Handler:           s.mtlsMux(),
 		ReadHeaderTimeout: 5 * time.Second,
 		TLSConfig: tlsconfig.MTLSServerConfig(
 			source,
@@ -229,6 +215,14 @@ func waitForListener(ctx context.Context, serverErrors <-chan error) error {
 	}
 }
 
+func (s *server) mtlsMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/grants/", s.grantsHandler(true, true))
+	mux.HandleFunc("/quota", s.quota)
+	mux.HandleFunc("/quota/", s.quota)
+	return mux
+}
+
 func (s *server) plaintextMux(listeners listenerConfig) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
@@ -236,13 +230,11 @@ func (s *server) plaintextMux(listeners listenerConfig) *http.ServeMux {
 	if listeners.retirePlaintextProtected {
 		denied := http.HandlerFunc(s.rejectRetiredPlaintext)
 		mux.Handle("/grants/", denied)
-		mux.Handle("/github/grants/", denied)
 		mux.Handle("/quota", denied)
 		mux.Handle("/quota/", denied)
 		return mux
 	}
 	mux.Handle("/grants/", s.grantsHandler(false, listeners.tlsListenAddr != ""))
-	mux.Handle("/github/grants/", s.githubHandler(false))
 	mux.HandleFunc("/quota", s.quota)
 	mux.HandleFunc("/quota/", s.quota)
 	return mux
