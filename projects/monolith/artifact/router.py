@@ -34,17 +34,12 @@ _ID_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 # withheld to block plaintext/LAN-probe downgrades; `form-action`/`base-uri` stay
 # locked to keep top-window phishing-form posts out. Opening `connect-src`
 # (re)accepts the viewer-side beacon/exfil risk ADR 024 flagged. This risk is
-# re-accepted even though artifact creation is no longer owner-only (it is now a
-# per-server ACL feature, ADR 029, so a trusted collaborator on a granted server
-# can author artifacts): the residual exposure is only that a viewer who opens a
-# shared artifact link could have their in-page activity beaconed out by that
-# artifact's author, the same trust you extend by opening any link a person
-# sends you. It is bounded because (a) authors are ACL-granted, semi-trusted
-# people, (b) artifact URLs are unguessable capability tokens shared by link, not
-# publicly discoverable, and (c) the opaque sandbox origin still denies ANY
-# access to our origin's cookies/storage/DOM (ADR 024 decision 4, non-negotiable,
-# unchanged). See the ADR 024 amendments (2026-06-29 CSP; 2026-07-02 capability
-# URLs + per-server /artifact).
+# retained for existing artifacts after publisher removal (#7029). A viewer
+# opening a shared artifact link can have in-page activity beaconed out by its
+# author. Artifact URLs remain unguessable capability tokens shared by link;
+# the opaque sandbox origin denies access to our origin's cookies/storage/DOM
+# (ADR 024 decision 4). The CSP is unchanged. See the ADR 024 amendments
+# (2026-06-29 CSP; 2026-07-02 capability URLs + per-server /artifact).
 _ARTIFACT_CSP = (
     "sandbox allow-scripts; default-src 'none'; "
     "script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; "

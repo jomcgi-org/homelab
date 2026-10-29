@@ -81,14 +81,24 @@ def test_raw_missing_is_404(client: TestClient):
 
 
 @pytest.mark.parametrize("endpoint", ["raw", "version"])
-@pytest.mark.parametrize("artifact_id", ["..%2f..%2fx", ".", "bad.id", "a" * 65])
+@pytest.mark.parametrize("artifact_id", ["%2e", "bad.id", "a" * 65])
 def test_invalid_id_is_404_without_storage(client, monkeypatch, endpoint, artifact_id):
     def unexpected_read(_artifact_id):
         pytest.fail("invalid artifact id reached storage")
 
     monkeypatch.setattr(s3, "get_artifact", unexpected_read)
     monkeypatch.setattr(s3, "head_artifact", unexpected_read)
-    assert client.get(f"/internal/artifact/{artifact_id}/{endpoint}").status_code == 404
+    response = client.get(f"/internal/artifact/{artifact_id}/{endpoint}")
+    assert response.status_code == 404
+    # Distinguish the handler's rejection from a router miss or URL normalization.
+    assert response.json() == {"detail": "not found"}
+
+
+@pytest.mark.parametrize("endpoint", ["raw", "version"])
+def test_encoded_path_separators_do_not_match_read_routes(client, endpoint):
+    response = client.get(f"/internal/artifact/..%2f..%2fx/{endpoint}")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
 
 
 @pytest.mark.parametrize("endpoint", ["raw", "version"])
