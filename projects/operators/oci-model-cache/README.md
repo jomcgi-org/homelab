@@ -5,6 +5,7 @@ Declare an `hf.co/` reference in a pod's image volume, and the operator copies t
 model to your registry, waits for it to be ready, and lets Kubernetes mount the
 files read-only. Your inference image stays separate from the model weights, and
 application pods do not need a Hugging Face download init container or a model PVC.
+The OCI Model Cache Operator is not deployed anywhere.
 
 The operator manages **cluster-scoped `ModelCache` resources** and runs
 [`hf2oci`](../../../bazel/tools/hf2oci) Jobs to copy weights and configuration
