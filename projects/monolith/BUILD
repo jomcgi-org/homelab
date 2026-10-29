@@ -7957,20 +7957,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_gap_answer_fileless_test",
-    srcs = ["knowledge/gap_answer_fileless_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_store_gap_queries_test",
     srcs = ["knowledge/store_gap_queries_test.py"],
     imports = ["."],
@@ -8224,17 +8210,14 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_interventions_test",
-    srcs = ["knowledge/interventions_test.py"],
+    name = "knowledge_intervention_filing_test",
+    srcs = ["knowledge/intervention_filing_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
         ":pkg_core",
         ":pkg_cyclegroup",
         ":pkg_knowledge",
-        ":swarm_factory_controls",
-        "@pip//fastapi",
-        "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlalchemy",

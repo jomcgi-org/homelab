@@ -24,11 +24,9 @@ from core.db import get_engine
 from shared.embedding import EmbeddingClient
 from sqlmodel import Session
 
-from knowledge.atoms import index_atom
 from knowledge.board import mirror_distress
 from knowledge.burst import create_kg_burst_grant, validate_kg_burst_grant
 from knowledge.disputes import create_dispute
-from knowledge.indexing import index_note_from_raw
 from knowledge.interventions import create_intervention
 from knowledge.models import SCOPE_PATTERN, AgentReportWriteFailure
 from knowledge.notes import resolve_note_body
@@ -43,22 +41,6 @@ from knowledge.retrieval_policy import (
 from knowledge.store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
-
-
-async def _index_atom(session: Session, **kwargs) -> str:
-    """Compatibility seam around the shared atom core for existing callers.
-
-    Retained after the MCP CRUD tools were retired: knowledge/gaps.py imports
-    it for the gap-answer endpoint, so it is shared production code rather
-    than tool-only scaffolding.
-    """
-    return await index_atom(
-        session,
-        **kwargs,
-        _store_factory=KnowledgeStore,
-        _embedding_client_factory=EmbeddingClient,
-        _indexer=index_note_from_raw,
-    )
 
 
 DEFAULT_REPO_SCOPE = os.getenv(
