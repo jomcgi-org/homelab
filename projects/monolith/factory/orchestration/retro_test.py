@@ -591,6 +591,8 @@ def test_optimizer_sql_selects_exact_boundary_before_bounded_history():
             },
         ).fetchall()
         assert [row[0] for row in rows] == ["deployed", "overlap"]
+
+
 # Learning deliberately stays inside this existing workflow/test target.
 import pytest
 from sqlalchemy import text
@@ -856,3 +858,22 @@ def test_learning_prompt_contains_bounded_original_evidence(learning_db):
     assert len(source["excerpt"]) == 2000
     assert "original failure" in learning.prompt(payload)
     assert "omitted" in learning.prompt(payload)
+
+
+def test_learning_rejects_duplicate_source_refs(learning_db):
+    output = _finding()
+    output["findings"][0]["sources"] *= 2
+    with pytest.raises(ValueError, match="Duplicate"):
+        _learn(learning_db, output)
+    assert _learning_jobs(learning_db) == []
+
+
+@pytest.mark.parametrize("result", [None, "", "   "])
+def test_learning_rejects_empty_source(learning_db, result):
+    learning_db.execute(
+        text("UPDATE agent_turns SET result_text=:result WHERE session_id=2"),
+        {"result": result},
+    )
+    with pytest.raises(ValueError, match="readable"):
+        _learn(learning_db, _finding())
+    assert _learning_jobs(learning_db) == []
