@@ -429,11 +429,11 @@ inserts all grants, appends one event per distinct PC with
 `{"reveals": [<per-entity body>, ...]}` in request order, and commits once.
 Failures roll back both grants and events.
 
-On entities and search, DM-only `not_granted_to` means "hide entities that PC
+On the entity list, DM-only `not_granted_to` means "hide entities that PC
 already knows": exclude global entities and any grant scope using a
-correlated grant alias in the shared visibility query. Search chunk hits are
-unaffected. Authorization checks membership, play flag, DM role, then PC
-campaign membership, in that order. With the flag off, the new filters and
+correlated grant alias in the shared visibility query. Knowledge search does
+not accept this filter. Authorization checks membership, play flag, DM role,
+then PC campaign membership, in that order. With the flag off, the new filters and
 bulk route return 404 and existing grant and read behavior is unchanged.
 Live enablement and live audience checks remain in #6610.
 
