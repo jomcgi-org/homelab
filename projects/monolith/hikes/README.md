@@ -49,8 +49,10 @@ before replacing the retained snapshot. The legacy `viable_dates` is ignored.
 
 ## Keep walks and forecasts current
 
-Normal refresh runs through `hikes-scrape-walks`, the weekly Argo CronWorkflow
-calling `hikes.jobs.scrape_walks_handler`. Its scraper fetches WalkHighlands and
+Catalogue refresh runs through `hikes-scrape-walks`, the Argo CronWorkflow
+calling `hikes.jobs.scrape_walks_handler`. The current chart suspends its schedule
+and retains it for authorized manual submission when a refresh is wanted.
+Its scraper fetches WalkHighlands and
 upserts route fields and `scraped_at` while preserving weather rows. The
 `hikes-refresh-forecasts` job refreshes met.no windows every two hours and
 materializes the connector snapshot. Reseeding does not replace either job.
