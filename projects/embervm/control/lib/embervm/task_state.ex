@@ -154,7 +154,7 @@ defmodule Embervm.TaskState do
 
   @doc """
   The set of state NAMES (as strings, matching the durable `tasks.state` column)
-  ranked strictly below `target`. A deferred async append that moves the projection
+  ranked strictly below `target`. A lifecycle append that moves the projection
   to `target` may only do so from one of these, so the projection stays monotone
   under out-of-order/replayed appends. `target` is an atom state.
   """

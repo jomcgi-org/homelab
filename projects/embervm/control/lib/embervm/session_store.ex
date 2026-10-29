@@ -159,8 +159,7 @@ defmodule Embervm.SessionStore do
   @doc """
   Durably stamps the start of an invoke before its worker is spawned. This is a
   synchronous write because the stamp authorizes recovery code to destroy a
-  guest and must survive a control
-  plane restart.
+  guest and must survive a control plane restart.
 
   The optional caller dispatch identity is stored verbatim. When absent, the
   store derives it from the newly allocated start timestamp, so the guest and
