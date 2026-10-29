@@ -877,3 +877,142 @@ def test_learning_rejects_empty_source(learning_db, result):
     with pytest.raises(ValueError, match="readable"):
         _learn(learning_db, _finding())
     assert _learning_jobs(learning_db) == []
+
+
+@pytest.fixture
+def learning_config_db(learning_db):
+    db = learning_db
+    db.execute(text("ALTER TABLE routine_jobs ADD COLUMN locked_at TEXT"))
+    db.execute(
+        text(
+            "CREATE TABLE capacity_reservations (id INTEGER PRIMARY KEY,routine_job_name TEXT,state TEXT)"
+        )
+    )
+    db.execute(text("CREATE TABLE pending_messages (session_id INTEGER,seq INTEGER)"))
+    payload = {
+        "model": "sol",
+        "repo": learning.REPO,
+        "digest": "factory-retro",
+        "prompt": "old instructions",
+        "branch": "main",
+    }
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET routine_kind='qwen-drain',next_run_at='2026-11-01',last_status='ok',payload=:payload WHERE name='factory-retro-daily'"
+        ),
+        {"payload": json.dumps(payload)},
+    )
+    db.commit()
+    return db
+
+
+def test_daily_config_preserves_identity_schedule_history_and_replays(
+    learning_config_db,
+):
+    db = learning_config_db
+    before = dict(
+        db.execute(text("SELECT * FROM routine_jobs WHERE name='factory-retro-daily'"))
+        .mappings()
+        .one()
+    )
+    assert learning.reconcile_daily_payload(db) == "configured"
+    after = dict(
+        db.execute(text("SELECT * FROM routine_jobs WHERE name='factory-retro-daily'"))
+        .mappings()
+        .one()
+    )
+    assert {k: v for k, v in after.items() if k != "payload"} == {
+        k: v for k, v in before.items() if k != "payload"
+    }
+    payload = json.loads(after["payload"])
+    assert payload["model"] == "luna" and payload["learning_stage"] == "evidence"
+    assert payload["learning_activation"]["previous_fields"] == {
+        "model": "sol",
+        "prompt": "old instructions",
+    }
+    assert payload["learning_activation"]["previous_payload_sha256"] == learning._sha(
+        json.loads(before["payload"])
+    )
+    assert "Report-only" in learning.prompt(payload)
+    assert learning.reconcile_daily_payload(db) == "already_configured"
+    assert (
+        db.execute(
+            text("SELECT payload FROM routine_jobs WHERE name='factory-retro-daily'")
+        ).scalar()
+        == after["payload"]
+    )
+    db.rollback()
+    assert (
+        db.execute(
+            text("SELECT payload FROM routine_jobs WHERE name='factory-retro-daily'")
+        ).scalar()
+        == before["payload"]
+    )
+
+
+@pytest.mark.parametrize(
+    "fence",
+    [
+        "locked",
+        "unknown",
+        "disabled",
+        "missing",
+        "cadence",
+        "active_permit",
+        "pending",
+        "running",
+        "custom_model",
+    ],
+)
+def test_daily_config_refuses_unsafe_or_custom_rows(
+    learning_config_db, monkeypatch, fence
+):
+    db = learning_config_db
+    if fence == "locked":
+        db.execute(text("UPDATE routine_jobs SET locked_by='owner'"))
+    if fence == "unknown":
+        db.execute(
+            text("UPDATE routine_jobs SET last_status='invocation_outcome_unknown'")
+        )
+    if fence == "disabled":
+        monkeypatch.setenv("FACTORY_LEARNING_HANDOFF_ENABLED", "false")
+    if fence == "missing":
+        db.execute(text("DELETE FROM routine_jobs"))
+    if fence == "cadence":
+        db.execute(text("UPDATE routine_jobs SET interval_secs=3600"))
+    if fence == "active_permit":
+        db.execute(
+            text(
+                "INSERT INTO capacity_reservations VALUES (1,'factory-retro-daily','reserved')"
+            )
+        )
+    if fence == "pending":
+        db.execute(text("INSERT INTO pending_messages VALUES (1,2)"))
+    if fence == "running":
+        db.execute(text("UPDATE agent_sessions SET status='running' WHERE id=1"))
+    if fence == "custom_model":
+        payload = json.loads(
+            db.execute(text("SELECT payload FROM routine_jobs")).scalar()
+        )
+        payload["model"] = "astra"
+        db.execute(
+            text("UPDATE routine_jobs SET payload=:payload"),
+            {"payload": json.dumps(payload)},
+        )
+    before = db.execute(text("SELECT payload FROM routine_jobs")).all()
+    assert learning.reconcile_daily_payload(db) not in {
+        "configured",
+        "already_configured",
+    }
+    assert db.execute(text("SELECT payload FROM routine_jobs")).all() == before
+
+
+def test_daily_config_ignores_settled_historical_failure(learning_config_db):
+    db = learning_config_db
+    db.execute(
+        text(
+            "INSERT INTO agent_sessions VALUES (0,:repo,'sol','old:qwen-drain:factory-retro-daily','old','qwen-drain','warn')"
+        ),
+        {"repo": learning.REPO},
+    )
+    assert learning.reconcile_daily_payload(db) == "configured"

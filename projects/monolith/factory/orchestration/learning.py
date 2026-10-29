@@ -310,3 +310,95 @@ def complete(db, name, holder):
         text(f"UPDATE {jobs} SET payload={value} WHERE name=:name"),
         {"name": name, "payload": json.dumps(payload)},
     )
+
+
+def reconcile_daily_payload(db):
+    """Reconcile only the approved existing daily job under the admission pool lock.
+
+    Caller owns the transaction. Never insert, rearm, unlock or alter scheduling.
+    The existing feature flag is the opt-in; unknown execution defers conversion.
+    """
+    if not enabled():
+        return "disabled"
+    jobs = _table(db, "claude_agent", "routine_jobs")
+    lock = "" if db.get_bind().dialect.name == "sqlite" else " FOR UPDATE"
+    rows = _rows(
+        db,
+        f"SELECT * FROM {jobs} WHERE name=:name{lock}",
+        {"name": "factory-retro-daily"},
+    )
+    if not rows:
+        return "missing"
+    row = rows[0]
+    try:
+        payload = _json(row["payload"]) or {}
+    except (TypeError, ValueError):
+        return "unsupported_payload"
+    if not isinstance(payload, dict):
+        return "unsupported_payload"
+    if payload.get("learning_stage") == "evidence":
+        try:
+            validate_payload(payload)
+        except ValueError:
+            return "conflicting_opt_in"
+        return "already_configured"
+    if (
+        row["routine_kind"] != "qwen-drain"
+        or row["interval_secs"] != 86400
+        or row["next_run_at"] is None
+        or row["locked_by"] is not None
+        or row["locked_at"] is not None
+        or row["last_status"] != "ok"
+        or payload.get("model") != "sol"
+        or payload.get("repo") != REPO
+        or payload.get("digest") != "factory-retro"
+        or "learning_stage" in payload
+        or "learning_activation" in payload
+        or not isinstance(payload.get("prompt"), str)
+        or not 0 < len(payload["prompt"].encode()) <= 64000
+    ):
+        return "held_or_customized"
+    permits = _table(db, "agent_sessions", "capacity_reservations")
+    sessions = _table(db, "agent_sessions", "agent_sessions")
+    pending = _table(db, "agent_sessions", "pending_messages")
+    if _rows(
+        db,
+        f"SELECT id FROM {permits} WHERE routine_job_name=:name AND state!='settled' LIMIT 1",
+        {"name": row["name"]},
+    ):
+        return "active_permit"
+    latest = _rows(
+        db,
+        f"SELECT status FROM {sessions} WHERE node_key='qwen-drain' AND local_session_id=workflow_id||:suffix ORDER BY id DESC LIMIT 1",
+        {"suffix": ":qwen-drain:" + row["name"]},
+    )
+    if not latest or latest[0]["status"] != "completed":
+        return "unsettled_session"
+    if _rows(
+        db,
+        f"SELECT p.session_id FROM {pending} p JOIN {sessions} s ON s.id=p.session_id WHERE s.node_key='qwen-drain' AND s.local_session_id=s.workflow_id||:suffix LIMIT 1",
+        {"suffix": ":qwen-drain:" + row["name"]},
+    ):
+        return "pending_turn"
+    updated = {
+        **payload,
+        "model": "luna",
+        "learning_stage": "evidence",
+        "prompt": "Report bounded evidence for the existing factory learning program.",
+        "learning_activation": {
+            "version": 1,
+            "previous_payload_sha256": _sha(payload),
+            "previous_fields": {"model": payload["model"], "prompt": payload["prompt"]},
+            "configured_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    value = (
+        ":payload"
+        if db.get_bind().dialect.name == "sqlite"
+        else "CAST(:payload AS JSONB)"
+    )
+    db.execute(
+        text(f"UPDATE {jobs} SET payload={value} WHERE name=:name"),
+        {"name": row["name"], "payload": json.dumps(updated)},
+    )
+    return "configured"

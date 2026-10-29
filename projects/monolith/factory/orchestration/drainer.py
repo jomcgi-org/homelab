@@ -321,6 +321,13 @@ def claim_drainer_job(
                 return None
         lock_pool(session)
         adopt_existing(session)
+        from factory.orchestration import learning
+
+        if learning.enabled() and "qwen-drain" in remaining_kinds:
+            set_attributes(
+                span,
+                {"drain.learning_config": learning.reconcile_daily_payload(session)},
+            )
         while remaining_kinds:
             # Keep the pool lock while rolling back a refused job's lease.
             # Another worker cannot spend the same allowance or freshness turn.

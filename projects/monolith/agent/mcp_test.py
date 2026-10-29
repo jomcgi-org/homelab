@@ -351,3 +351,37 @@ async def test_completed_raw_recovery_requires_standing_operator(
             await tool.run({**args, "mode": "apply"})
     finally:
         reset_current_principal(token)
+
+
+@pytest.mark.asyncio
+async def test_daily_learning_metadata_omits_original_prompt(monkeypatch):
+    from agent import mcp as module
+
+    monkeypatch.setattr(
+        module.routine_jobs,
+        "list_jobs",
+        lambda **kwargs: [
+            {
+                "name": "factory-retro-daily",
+                "payload": {
+                    "model": "luna",
+                    "learning_stage": "evidence",
+                    "prompt": "PRIVATE",
+                    "learning_activation": {
+                        "previous_fields": {"prompt": "OLD PRIVATE"}
+                    },
+                },
+            }
+        ],
+    )
+    from core.mcp_app import mcp
+
+    data = await module.monolith_agent_list_routine_jobs()
+    import json
+
+    assert data["jobs"][0]["learning_configuration"] == {
+        "model": "luna",
+        "stage": "evidence",
+        "reconciled": True,
+    }
+    assert "PRIVATE" not in json.dumps(data)

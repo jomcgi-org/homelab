@@ -338,10 +338,13 @@ merges a PR, bypasses review or creates a second scheduler.
 ## Report-only factory learning handoff
 
 `agents.drainer.learningHandoffEnabled` defaults off. It adds no scheduler and
-changes no existing job payload. Opt-in requires a separately approved values
-change plus editing the existing `factory-retro-daily` job to `model: luna`,
-`repo: jomcgi-org/homelab`, `digest: factory-retro`, and
-`learning_stage: evidence`. Preserve its interval, human owner and #6781 program.
+changes no existing job payload. When enabled, the existing drainer reconciles the idle `factory-retro-daily`
+job from Sol to `model: luna` and `learning_stage: evidence` under its normal
+admission lock. The existing repository and digest must match; its identity,
+86400-second interval, next run, history and #6781 owner remain unchanged.
+The previous payload hash and replaced fields are retained in
+`learning_activation`. Missing, customized, locked, unknown, active-permit or
+pending-turn states defer conversion. No job is created or triggered.
 Do not reset the inconclusive historical experiment or enable public writers.
 
 The existing digest supplies source session and turn identities. A successful
