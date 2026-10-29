@@ -15,9 +15,15 @@ helm_chart(
 py_test(
     name = "chart_render_test",
     srcs = ["chart_render_test.py"],
-    data = [":chart", "@multitool//tools/helm"],
+    data = [
+        ":chart",
+        "@multitool//tools/helm",
+    ],
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
-    deps = ["@pip//pytest", "@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 helm_admissibility_render(
