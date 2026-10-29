@@ -3090,7 +3090,8 @@ starts. Recording a hold alone retains its separate restrictive semantics.
 
 ### Explicit progress continuation of a recovered artifact
 
-`factory_continue_recovery` is a standing-human preview/apply control for one
+The `progress_continuation` mode of `factory_amend_policy` is a standing-human
+preview/apply control for one
 paused recovered task and its current native-reviewed PR head. It records a
 separate authorization bound to the original recovery audit, graph, policy,
 funding, accounting and artifact. Apply explicitly resumes that same task under
