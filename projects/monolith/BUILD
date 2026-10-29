@@ -8535,17 +8535,6 @@ py_test(
     ],
 )
 
-py_test(
-    name = "ember_public_durability_test",
-    srcs = ["ember_public/durability_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//httpx",
-        "@pip//pytest",
-    ],
-)
-
 # Hand-registered (ember_public is gazelle-excluded): the /api/health component
 # registration for the Codex latch. This file had no target until 2026-07-28,
 # so nothing in it ran; gazelle cannot catch that here because the whole

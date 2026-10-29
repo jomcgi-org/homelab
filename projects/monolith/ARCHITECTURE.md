@@ -2106,8 +2106,9 @@ when the backend is unhealthy or unreachable.
 (see: /projects/monolith/frontend/src/routes/public/health/+server.js)
 
 The public tier checks its database and stars data. The private tier retains the
-Codex session probe and configured Ember durability check for production agent
-execution. The live public demo latches and combined hourly demo CronWorkflow
+Codex session probe for production agent execution. #4338 built an Ember
+durability consumer that was never armed; #7058 removes it with the control-plane
+detector. The live public demo latches and combined hourly demo CronWorkflow
 are retired. **Why.** Recorded Firecracker replays explain the VM lifecycle
 without coupling public-site health to an exhibit workload. Codex remains the
 one automatically scheduled agent probe; Spark is manual-only.
