@@ -95,8 +95,8 @@ artifact. Images are built amd64-only with apko in CI. A
 merge to `main` publishes the chart and writes its new version back to the
 repository. Production runs on the GKE hub, where Kargo promotes new chart
 versions to the `monolith` and `monolith-public` ArgoCD Applications. The home
-deployment is dormant, and its pinned revision remains a revert record rather
-than the production source of truth. See
+deployment was retired in #6914; `deploy/application.yaml` remains only as
+publication metadata for chart-version write-back. See
 [Platform architecture: GitOps and delivery](../platform/ARCHITECTURE.md#4-gitops-and-delivery)
 for the current pipeline.
 

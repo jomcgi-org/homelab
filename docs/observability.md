@@ -178,8 +178,9 @@ Each check is cached for 60 seconds per process, bounded to 10 seconds with a
 5-second Postgres statement timeout, and never raises.
 
 Not covered: Kubernetes health, ArgoCD state, network-policy denials, and the
-log-based conditions drafted as disabled trigger specs in #6511 (egress-proxy
-request denied, EmberVM control-plane errors, Kargo promotion failed).
+log-based conditions (egress-proxy request denied, EmberVM control-plane
+errors, Kargo promotion failed). #6511 drafted those as disabled trigger specs,
+which were removed under the one-trigger policy; #7003 tracks alerting on them.
 Container restarts in `monolith-public` are posted by the monolith's pod
 restart watcher, and chart lag is the advisory `cd` component.
 
