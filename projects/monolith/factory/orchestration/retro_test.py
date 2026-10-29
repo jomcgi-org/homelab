@@ -931,6 +931,7 @@ def test_daily_config_preserves_identity_schedule_history_and_replays(
         "model": "sol",
         "prompt": "old instructions",
         "repo": learning.REPO,
+        "branch": "main",
     }
     assert payload["learning_activation"]["previous_payload_sha256"] == learning._sha(
         json.loads(before["payload"])
@@ -1072,3 +1073,25 @@ def test_daily_config_fences_operator_edits_after_preview(
 def test_daily_config_requires_reviewed_hash(learning_config_db, monkeypatch):
     monkeypatch.delenv("FACTORY_LEARNING_DAILY_PAYLOAD_SHA256")
     assert learning.reconcile_daily_payload(learning_config_db) == "unreviewed_payload"
+
+
+def test_daily_config_refuses_custom_default_branch(learning_config_db, monkeypatch):
+    db = learning_config_db
+    payload = json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
+    del payload["branch"]
+    db.execute(
+        text("UPDATE routine_jobs SET payload=:payload"),
+        {"payload": json.dumps(payload)},
+    )
+    monkeypatch.setenv("FACTORY_LEARNING_DAILY_PAYLOAD_SHA256", learning._sha(payload))
+    assert (
+        learning.reconcile_daily_payload(db, default_branch="staging")
+        == "held_or_customized"
+    )
+    assert learning.reconcile_daily_payload(db, default_branch="main") == "configured"
+    result = json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
+    assert result["branch"] == "main"
+    assert result["learning_activation"]["previous_absent_fields"] == [
+        "branch",
+        "learning_stage",
+    ]

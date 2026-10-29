@@ -324,11 +324,14 @@ def claim_drainer_job(
         from factory.orchestration import learning
 
         if learning.enabled() and "qwen-drain" in remaining_kinds:
+            learning_defaults = agent_config.load_drainer_settings()
             set_attributes(
                 span,
                 {
                     "drain.learning_config": learning.reconcile_daily_payload(
-                        session, default_repo=agent_config.load_drainer_settings().repo
+                        session,
+                        default_repo=learning_defaults.repo,
+                        default_branch=learning_defaults.branch,
                     )
                 },
             )
