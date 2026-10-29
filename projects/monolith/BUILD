@@ -2602,6 +2602,8 @@ py_test(
 
 py_test(
     name = "home_cluster_snapshot_migration_test",
+    size = "large",
+    timeout = "moderate",
     srcs = ["home/cluster_snapshot_migration_test.py"],
     data = [
         "hikes/seed/walks_seed.sql",
@@ -2610,9 +2612,7 @@ py_test(
     ],
     env = {"PYTEST_ADDOPTS": "-p shared.testing.plugin"},
     imports = ["."],
-    size = "large",
     tags = ["bdd"],
-    timeout = "moderate",
     deps = [
         ":monolith_backend",
         ":shared_testing",
