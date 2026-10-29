@@ -14,8 +14,9 @@ Scans two sources of in-flight work, ranks them by how close they are to
 **follow-through**: surface the things Joe started and has not finished, not
 a generic backlog of everything that could ever be done.
 
-Run interactively with `/daily-digest` when you want to check on
-outstanding work.
+For an interactive check on outstanding work, ask for the daily-digest
+procedure or name `docs/runbooks/daily-digest.md`. Joe's local Claude Code
+command is `/daily-digest`; this repository does not install it.
 
 ## Sources
 

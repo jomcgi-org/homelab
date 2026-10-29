@@ -240,6 +240,6 @@ Written per decision via `put-eval <event_id> <base64-payload>` to
 
 Pattern/prompt/weight/threshold edits ship with the MONOLITH image: the merged
 PR's chart bump rolls them out. A flagged label correction takes effect when a
-human runs `monolith-chat-trust-pardon`. The next `/improve-safeguards` run's
+human runs `monolith-chat-trust-pardon`. The next improve-safeguards procedure run's
 before/after aggregates (especially the false-positive lockout rate) are the
 verdict on whether the change worked.

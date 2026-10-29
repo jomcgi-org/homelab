@@ -24,6 +24,10 @@ One row per entry in this directory.
 
 ### Improve loops (explicit)
 
+Ask for these procedures by name or read the linked runbook when explicitly
+requested. The slash commands are Joe's local Claude Code commands; this
+repository does not install them.
+
 | Runbook | When |
 |---------|------|
 | [improve-ambient/](improve-ambient/runbook.md) | `/improve-ambient`; a directory holding `runbook.md` and `scripts/improve_ambient_tool.py` |
