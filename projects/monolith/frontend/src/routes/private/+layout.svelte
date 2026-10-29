@@ -56,11 +56,12 @@
      own their scroll containers. The shared palette follows data-theme. */
   .back-to-dashboard {
     position: fixed;
-    top: 1.1rem;
+    top: 8px;
     left: 1.2rem;
     z-index: 1000;
     font-family: var(--font-code);
     font-size: 13px;
+    line-height: 1.3;
     font-weight: 500;
     letter-spacing: 0.01em;
     color: var(--ink-2);

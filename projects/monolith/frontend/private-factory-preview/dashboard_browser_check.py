@@ -206,6 +206,10 @@ def main():
                                 assert child_result["backInk"] == root["ink"], (
                                     child_result
                                 )
+                                child_result["backClearsContent"] = page.evaluate(
+                                    """() => document.querySelector('.back-to-dashboard').getBoundingClientRect().bottom < document.querySelector('.spine').getBoundingClientRect().top"""
+                                )
+                                assert child_result["backClearsContent"], child_result
                         if child == "qwen":
                             assert child_result["bodyOverflow"] == "hidden", (
                                 child_result
