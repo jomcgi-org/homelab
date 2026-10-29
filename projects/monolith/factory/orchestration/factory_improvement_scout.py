@@ -574,4 +574,3 @@ def reconcile(task, policy, nodes, runs, expected_version):
         _finish(
             task_id, f"scout_invalid_context:{type(exc).__name__}", attempt=bool(runs)
         )
-
