@@ -351,7 +351,12 @@ def main():
                           for (const el of document.querySelectorAll('[data-original-style]'))
                             el.setAttribute('style', el.dataset.originalStyle);
                         }""")
-                        actions(page, view, snapshot)
+                        if scenario == "populated":
+                            actions(page, view, snapshot)
+                        else:
+                            expect(page.locator("form")).to_have_count(0)
+                            page.locator(".event-summary").click()
+                            snapshot("tracking-history")
                         # A real scroll must retain the mobile index at the top.
                         if width == 390:
                             page.evaluate("window.scrollTo(0, 400)")

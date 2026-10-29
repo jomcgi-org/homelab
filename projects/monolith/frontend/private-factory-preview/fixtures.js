@@ -273,7 +273,19 @@ export function fixtureData(view, scenario = "populated") {
       itemId,
       document: {
         item: trackingItem(),
-        events: [],
+        events: [
+          {
+            version: 1,
+            op: "tracking_create",
+            author_kind: "operator",
+            author: "synthetic-operator@example.test",
+            created_at: at,
+            change_json: JSON.stringify({
+              execution_mode: "tracking_only",
+              state: "open",
+            }),
+          },
+        ],
         receipts: [],
         edges_in: [],
         edges_out: [],

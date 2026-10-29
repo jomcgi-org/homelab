@@ -83,6 +83,9 @@ test("tracking detail has source and owner without factory controls", async () =
   expect(document.querySelector("form")).toBeNull();
   expect(document.querySelector('[aria-label="Receipts"]')).toBeNull();
   expect(document.querySelector('[aria-label="Work item edges"]')).toBeNull();
+  expect(document.querySelector(".event-summary").textContent).toContain(
+    "tracking_create",
+  );
 });
 
 test("board shows tracking alongside factory work without synthetic execution", async () => {
