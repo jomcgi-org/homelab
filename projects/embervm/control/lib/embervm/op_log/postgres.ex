@@ -1104,8 +1104,8 @@ defmodule Embervm.OpLog.Postgres do
     # row it reads), mirroring Embervm.OpLog.SQLite. A collision errors the
     # whole append (Postgrex.rollback discards the ops row too) and names the
     # EXISTING holder, terminal holders included. A holder equal to this op's
-    # own session_id is the adopt-and-backfill repair racing a late-draining
-    # original append, which ON CONFLICT DO NOTHING used to absorb benignly.
+    # own session_id is a repeated record for the same session. Accept it as
+    # an idempotent no-op and preserve the binding.
     idempotency_key = Map.get(payload, :idempotency_key)
 
     case existing_session_for_idempotency_key(conn, op.principal, idempotency_key) do
@@ -1121,7 +1121,7 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   defp do_insert_session_created(conn, op, payload, idempotency_key) do
-    # Repeated session_created repairs preserve the existing ownership row.
+    # Repeated session_created records preserve the existing ownership row.
     sql = """
     INSERT INTO sessions
       (session_id, tenant, principal, workload, state, node_id, vm_id, volume_node_id,

@@ -418,11 +418,10 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
-# Pins the two ADR-014-style control-plane gates (#5230) to their chart keys:
-# EMBERVM_PLACEMENT_RETRY (dispatcher.placementRetry) and
-# EMBERVM_ASYNC_LIFECYCLE_WRITES (asyncLifecycleWrites) must always render,
-# defaulting "false" and flipping via --set alone. See
-# chart_control_env_gate_test.py.
+# Pins surviving control-plane gates (#5230) to their chart keys, defaulting
+# "false" and flipping via --set alone. The retired async lifecycle environment
+# variable must never render, even when its obsolete chart key is supplied.
+# See chart_control_env_gate_test.py.
 py_test(
     name = "chart_control_env_gate_test",
     srcs = ["chart_control_env_gate_test.py"],

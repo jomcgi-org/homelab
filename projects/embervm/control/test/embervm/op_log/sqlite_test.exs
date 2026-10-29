@@ -921,7 +921,7 @@ defmodule Embervm.OpLog.SQLiteTest do
     :ok = GenServer.stop(server2)
   end
 
-  # -- monotonic lifecycle-projection guard (ADR embervm/014 decision 2) -----
+  # -- monotonic lifecycle-projection guard for late records and replay -----
 
   defp append_task_op(server, kind, task_id, ts, payload \\ %{}) do
     {:ok, _} =
@@ -959,7 +959,7 @@ defmodule Embervm.OpLog.SQLiteTest do
       expires_at: 9_999
     })
 
-    # A DEFERRED async :assigned lands late (out of order relative to :succeeded).
+    # A stale :assigned record lands after :succeeded.
     append_task_op(server, :assigned, "task-x", 104)
 
     # Projection did NOT regress: the monotonic guard made the late append a no-op.
@@ -996,8 +996,8 @@ defmodule Embervm.OpLog.SQLiteTest do
        %{path: path} do
     server = start_server(path)
 
-    # This is exactly the rebuild-replay order the reviewer asked to pin: an out-of-
-    # order async append at the tail must not undo the terminal projection.
+    # Historical replay can contain a stale assignment after the terminal edge.
+    # The late record must preserve the terminal projection.
     append_task_op(server, :submitted, "task-z", 100, %{idempotency_key: nil, expires_at: nil})
     append_task_op(server, :assigned, "task-z", 101)
     append_task_op(server, :started, "task-z", 102)
@@ -1019,14 +1019,14 @@ defmodule Embervm.OpLog.SQLiteTest do
     :ok = GenServer.stop(server2)
   end
 
-  # -- attempt-aliasing epoch guard (ADR embervm/014 decision 2, async gate) --
+  # -- attempt-aliasing epoch guard for late records and replay -------------
 
   test "attempt-aliasing: a stale :assigned from a prior attempt does NOT re-assign a task retried back to queued",
        %{path: path} do
     server = start_server(path)
 
     append_task_op(server, :submitted, "task-a", 100, %{idempotency_key: nil, expires_at: nil})
-    # Attempt 1 (epoch 1) is dispatched: its deferred :assigned/:started land and
+    # Attempt 1 (epoch 1) is dispatched: its :assigned/:started records land and
     # advance the row to running (attempt column still 0).
     append_task_op(server, :assigned, "task-a", 101, %{epoch: 1})
     append_task_op(server, :started, "task-a", 102, %{epoch: 1})
@@ -1037,8 +1037,8 @@ defmodule Embervm.OpLog.SQLiteTest do
     append_task_op(server, :retried, "task-a", 104)
     assert task_state(server, "task-a") == "queued"
 
-    # The DEFERRED attempt-1 :assigned finally lands (epoch 1). queued -> assigned is
-    # FORWARD in the state-rank order, so the rank guard alone would let it through;
+    # A stale attempt-1 :assigned lands after the retry (epoch 1). Assigning from
+    # queued is forward in the state-rank order, so the rank guard would admit it;
     # the EPOCH guard drops it because the row has already retried to attempt 1
     # (1 is not < 1). Without this guard the task would be re-assigned to attempt 1's
     # worker, which no longer exists.

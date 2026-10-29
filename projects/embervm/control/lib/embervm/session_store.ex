@@ -286,9 +286,11 @@ defmodule Embervm.SessionStore do
 
   @doc """
   Re-drive the durable `session_created` append from a surviving ETS row.
-  This repair API appends synchronously and preserves the original ownership
-  fields. INSERT OR IGNORE keeps repeated repairs idempotent. An unknown
-  session returns `{:error, {:not_found, session_id}}`.
+  This helper has no production caller; tests invoke it directly. Production
+  reconciliation destroys rowless session VMs and never calls this helper.
+  A direct call appends synchronously and preserves the original ownership
+  fields. INSERT OR IGNORE keeps repeated calls idempotent. An unknown session
+  returns `{:error, {:not_found, session_id}}`.
   """
   @spec backfill_created(GenServer.server(), String.t()) :: :ok | {:error, term()}
   def backfill_created(store \\ __MODULE__, session_id) do
@@ -619,7 +621,7 @@ defmodule Embervm.SessionStore do
       {:ok, session} ->
         # Reconstruct the session_created op from the surviving ETS row and append it
         # synchronously. The projection is INSERT OR IGNORE, so this is idempotent
-        # when a repair races another append or runs twice.
+        # when a direct call repeats an existing append or runs twice.
         op = %Op{
           kind: :session_created,
           tenant: session.tenant,

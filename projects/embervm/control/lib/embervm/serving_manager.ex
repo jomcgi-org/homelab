@@ -1502,7 +1502,7 @@ defmodule Embervm.ServingManager do
 
   # Direction 2: serving_vms carry no serving instance id, so a reported VM is an
   # orphan only when no ServingStore row claims its vm_id. Serving lifecycle writes
-  # are synchronous, so unlike sessions this has no async-write discriminator.
+  # are synchronous.
   defp destroy_orphan_serving_vms(state, facts, _live_vms) do
     for fact <- facts, vm <- Map.get(fact, :serving_vms, []) || [], reduce: state do
       acc ->

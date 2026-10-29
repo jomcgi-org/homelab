@@ -669,7 +669,7 @@ defmodule Embervm.SessionStoreTest do
     assert SessionStore.counts(store, "wl-ncd") == %{live: 0, banked: 0}
   end
 
-  # -- synchronous ownership and repair -----------------------------------
+  # -- synchronous ownership and direct backfill helper calls ----------------
 
   defp durable_session_created_count(op_log, session_id) do
     {:ok, ops} = SQLite.read_from(op_log, 0)
@@ -697,14 +697,12 @@ defmodule Embervm.SessionStoreTest do
     assert durable_session_created_count(op_log, created.session_id) == 1
   end
 
-  test "backfill_created re-drives a lost session_created append from the surviving ETS row", %{
+  test "direct backfill_created call preserves an already-durable session_created row", %{
     path: path
   } do
-    # This covers the IDEMPOTENCY edge: a re-drive of an ALREADY-durable create must
-    # not double the projected row. The complementary CREATES-WHEN-ABSENT edge (the
-    # durable row genuinely missing, which is the case the reconciler actually repairs)
-    # is the next test, which uses a drop-first op-log double to model the lost write
-    # deterministically.
+    # These tests call the helper directly; it has no production caller.
+    # Repeating an already-durable create must preserve the projected row.
+    # The next test uses a drop-first op-log double to exercise a missing row.
     {op_log, store} = start_pair(path)
     {:ok, created} = create(store, vm_id: "vm-bf")
 
@@ -741,7 +739,7 @@ defmodule Embervm.SessionStoreTest do
     def load_sessions(op_log), do: SQLite.load_sessions(op_log)
   end
 
-  test "backfill_created CREATES the durable session_created when it is genuinely absent (faulty backend acknowledgement)",
+  test "direct backfill_created call persists a missing session_created after a faulty backend acknowledgement",
        %{path: path} do
     # Owned by this test process, so it is auto-deleted when the test ends (no on_exit:
     # the table is already gone by the time on_exit's separate process would run).
@@ -769,11 +767,13 @@ defmodule Embervm.SessionStoreTest do
     assert {:ok, []} = SQLite.load_sessions(op_log)
     assert durable_session_created_count(op_log, created.session_id) == 0
 
-    # The reconciler's adopt-and-backfill repair re-drives the create from the ETS row.
+    # Only this explicit helper call re-drives the create from the ETS row.
+    # Production has no caller: without this call, a control-plane restart loses
+    # the row and reconciliation destroys the node's rowless session VM.
     :ok = SessionStore.backfill_created(store, created.session_id)
 
-    # Now the durable row EXISTS (0 -> 1) and matches the surviving ETS row: a rebuild
-    # would reproduce the session rather than orphaning its live VM.
+    # After the direct call, one durable row matches the surviving ETS row and
+    # a fresh store can rebuild it.
     assert durable_session_created_count(op_log, created.session_id) == 1
     {:ok, [row]} = SQLite.load_sessions(op_log)
     assert row.session_id == created.session_id
