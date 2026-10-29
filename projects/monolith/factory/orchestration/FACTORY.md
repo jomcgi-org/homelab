@@ -2159,9 +2159,11 @@ server re-reads the PR and checks active branch ownership. If a successor task
 has adopted it, that task owns readiness and the old settlement does nothing.
 
 The paced sweep on that tick examines at most 20 open PRs from a persisted page
-cursor. It never mutates a non-`factory/` head. An unowned factory PR is closed when one
-of its closing issues is closed, or when that issue has another open factory PR
-whose exact branch is owned by a running receipt. The comment names the
+cursor. It never mutates a non-`factory/` head. An unowned factory PR is closed only
+when every closing-keyword reference is closed or has another open factory PR
+whose exact branch is owned by a running receipt. A historical reference such as
+`closed #5851` cannot retire delivery for another open, uncovered objective.
+This requirement is checked again immediately before the close. The comment names the
 survivor when one exists and otherwise says explicitly that the issue is
 already closed. The survivor is not modified. A prepared audit, a hidden
 comment marker, fresh PR and owner reads, and the `factory_pr_retired` audit
