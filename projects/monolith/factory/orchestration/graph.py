@@ -62,6 +62,7 @@ _CONTEXT_FIELDS = frozenset(
         "task_deadline_at",
         "effort",
         "closing_instruction",
+        "read_only",
         "browser_evidence_review",
         "capture_evidence_ttl_seconds",
     )
@@ -1469,6 +1470,8 @@ def admit_dispatch(
                 return refuse("invalid_execution_context")
             context_fields = context_fields | {"read_only"}
         if not isinstance(context, dict) or set(context) - context_fields:
+            return refuse("invalid_execution_context")
+        if "read_only" in context and type(context["read_only"]) is not bool:
             return refuse("invalid_execution_context")
         try:
             context = json.loads(dumps(context))

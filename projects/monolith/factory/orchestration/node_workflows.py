@@ -245,6 +245,7 @@ def _node_prompt(
         )
         or schema.get("x-factory-scout-read-only") is True
         or schema.get("x-factory-evidence-acceptance") is True
+        or schema.get("x-factory-merged-read-only") is True
     )
     evidence_only = schema.get("x-factory-evidence-continuation") is not None
     working = (
