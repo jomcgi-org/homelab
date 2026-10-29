@@ -3981,11 +3981,38 @@ def progress_recovery(database, recovered_amendment, monkeypatch):
         task = db.get(SwarmTask, "task")
         task.repo = "org/repo"
         task.base_branch = "main"
+        db.add_all(
+            [
+                SwarmNodeRun(
+                    task_id="task",
+                    node_key="implement_saved",
+                    attempt=1,
+                    status="succeeded",
+                    session_id=1,
+                    cost_usd=0.1,
+                    head_sha=head,
+                    outcome_json=json.dumps(
+                        {"artifact": {"pr_number": 3, "head_sha": head}}
+                    ),
+                ),
+                AgentSession(
+                    id=2,
+                    local_session_id="factory:task:review_fix:1",
+                    workspace="guest",
+                    branch="factory/task",
+                    model="astra",
+                    node_key="review_fix",
+                    node_attempt=1,
+                ),
+            ]
+        )
         db.add(
             SwarmNodeRun(
                 task_id="task",
                 node_key="review_fix",
                 attempt=1,
+                session_id=2,
+                pin_json=json.dumps({"model": "astra"}),
                 status="succeeded",
                 head_sha=head,
                 model="astra",
@@ -4152,10 +4179,23 @@ def test_progress_new_review_renews_once_then_repeated_failure_stops(
         }
         with Session(database) as db, db.begin():
             db.add(
+                AgentSession(
+                    id=3 + i,
+                    local_session_id=f"factory:task:review_next_{i}:1",
+                    workspace="guest",
+                    branch="factory/task",
+                    model="astra",
+                    node_key=f"review_next_{i}",
+                    node_attempt=1,
+                )
+            )
+            db.add(
                 SwarmNodeRun(
                     task_id="task",
                     node_key=f"review_next_{i}",
                     attempt=1,
+                    session_id=3 + i,
+                    pin_json=json.dumps({"model": "astra"}),
                     status="succeeded",
                     head_sha=head,
                     model="astra",
@@ -4217,10 +4257,23 @@ def test_progress_renewal_does_not_clear_later_restrictions(
         else:
             db.exec(select(FactoryStart)).first().status = "uncertain"
         db.add(
+            AgentSession(
+                id=3,
+                local_session_id="factory:task:review_later:1",
+                workspace="guest",
+                branch="factory/task",
+                model="astra",
+                node_key="review_later",
+                node_attempt=1,
+            )
+        )
+        db.add(
             SwarmNodeRun(
                 task_id="task",
                 node_key="review_later",
                 attempt=1,
+                session_id=3,
+                pin_json=json.dumps({"model": "astra"}),
                 status="succeeded",
                 model="astra",
                 cost_usd=0.1,
@@ -4238,6 +4291,103 @@ def test_progress_renewal_does_not_clear_later_restrictions(
             )
         )
     assert not progress.renew("task")
+    with Session(database) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == progress.LEASE)
+                ).all()
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "same_session",
+        "missing_session",
+        "foreign_session",
+        "wrong_model",
+        "missing_implementation",
+        "implementation_session_missing",
+    ],
+)
+def test_progress_requires_native_independent_review(
+    database, progress_recovery, fault
+):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    args, _ = progress_recovery
+    with Session(database) as db, db.begin():
+        review = db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.node_key == "review_fix")
+        ).one()
+        implementation = db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.node_key == "implement_saved")
+        ).one()
+        if fault == "same_session":
+            review.session_id = 1
+        elif fault == "missing_session":
+            review.session_id = None
+        elif fault == "foreign_session":
+            db.get(AgentSession, 2).local_session_id = "factory:other:review_fix:1"
+        elif fault == "wrong_model":
+            review.pin_json = json.dumps({"model": "spark"})
+        elif fault == "missing_implementation":
+            implementation.status = "failed"
+        else:
+            implementation.session_id = None
+    with pytest.raises(
+        ValueError, match="progress_(independent_review|review_provenance)_missing"
+    ):
+        progress.preview(**args)
+
+
+@pytest.mark.parametrize("lane", ["allowed_models", "model_pools"])
+def test_progress_refuses_non_subscription_execution_lane(
+    database, progress_recovery, lane
+):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    args, _ = progress_recovery
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        policy = json.loads(row.policy_json)
+        if lane == "allowed_models":
+            policy["allowed_models"].append("muse")
+        else:
+            policy["model_pools"] = {"implement": ["muse", "astra"]}
+        row.policy_json = json.dumps(policy)
+    with pytest.raises(ValueError, match="progress_subscription_evidence_stale"):
+        progress.preview(**args)
+
+
+def test_progress_failed_latest_review_returns_to_normal_reconciliation(
+    database, progress_recovery
+):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    args, _ = progress_recovery
+    p = progress.preview(**args)
+    progress.apply(
+        **args,
+        actor="operator",
+        request_key="progress",
+        expected_preview_sha256=p["preview_sha256"],
+    )
+    with Session(database) as db, db.begin():
+        db.add(
+            SwarmNodeRun(
+                task_id="task",
+                node_key="review_failed",
+                attempt=1,
+                status="failed",
+                model="astra",
+                cost_usd=0.1,
+            )
+        )
+    assert progress.renew("task") is False
     with Session(database) as db:
         assert (
             len(

@@ -26,17 +26,48 @@ def _review(db, task_id):
     from factory.orchestration import factory_conductor as conductor
 
     runs = graph.node_runs(task_id, session=db)
-    reviews = [
-        r
-        for r in runs
-        if r["node_key"].startswith("review_") and r["status"] == "succeeded"
-    ]
+    reviews = [r for r in runs if r["node_key"].startswith("review_")]
     if not reviews:
         raise ValueError("progress_review_missing")
     review = max(reviews, key=lambda r: r["id"])
+    if review["status"] != "succeeded":
+        raise ValueError("progress_review_not_succeeded")
     artifact = conductor._artifact(review)
     if artifact.get("verdict") not in {"approve", "changes_requested"}:
         raise ValueError("progress_review_invalid")
+    row = controls._receipt(db, task_id)
+    policy = funding.effective_policy(db, row)
+    implementers = [
+        r
+        for r in runs
+        if conductor._is_implementation(r["node_key"])
+        and r["status"] == "succeeded"
+        and conductor._artifact(r).get("pr_number") == artifact.get("pr_number")
+    ]
+    allowed = model_pool.pool_for("reviewer", policy)
+    if row.task_class in conductor.JUDGMENT_CLASSES:
+        allowed = [model for model in allowed if model in conductor.JUDGMENT_MODELS]
+    reviewer_model = review.get("pin", {}).get("model")
+    if (
+        not implementers
+        or not review.get("session_id")
+        or any(
+            not r.get("session_id") or r["session_id"] == review["session_id"]
+            for r in implementers
+        )
+        or reviewer_model not in allowed
+        or reviewer_model not in policy["allowed_models"]
+        or review.get("head_sha") != artifact.get("head_sha")
+    ):
+        raise ValueError("progress_independent_review_missing")
+    session = db.get(AgentSession, review["session_id"])
+    if (
+        session is None
+        or session.local_session_id
+        != f"factory:{task_id}:{review['node_key']}:{review['attempt']}"
+        or session.model != reviewer_model
+    ):
+        raise ValueError("progress_review_provenance_missing")
     return review, artifact, runs
 
 
@@ -50,6 +81,13 @@ def _observe(receipt_id):
         task = conductor._task(row.task_id, session=db)
         review, artifact, _ = _review(db, row.task_id)
         policy = funding.effective_policy(db, row)
+        revision = graph.current_version(row.task_id, session=db)
+        node_models = [n["model"] for n in graph.load_graph(row.task_id, session=db)]
+    issue = conductor.github_get(task["repo"], f"issues/{task['issue_number']}")
+    if issue.get("state") != "open" or "human" in {
+        label["name"].lower() for label in issue.get("labels", [])
+    }:
+        raise ValueError("progress_human_or_closed_work")
     evidence = conductor._review_recovery_evidence(
         task, review, expected_verdict=artifact["verdict"]
     )
@@ -59,12 +97,17 @@ def _observe(receipt_id):
     quota = provider_quota.summarise(raw.get("providers", {}))
     if raw.get("available") is not True:
         raise ValueError("progress_quota_unavailable")
-    for role, field in (
-        ("conductor", "conductor_model"),
-        ("worker", "worker_model"),
-        ("reviewer", "reviewer_model"),
-    ):
-        model = policy.get(field)
+    # Admission can select any allowed model, not just the scalar defaults.
+    # Cover pools and existing node pins too; unknown/API-only lanes refuse.
+    models = set(policy["allowed_models"])
+    models.update(
+        policy.get(field)
+        for field in ("conductor_model", "worker_model", "reviewer_model")
+    )
+    for pool in policy.get("model_pools", {}).values():
+        models.update(pool)
+    models.update(node_models)
+    for model in models:
         if not model:
             raise ValueError("progress_model_pin_missing")
         provider = model_pool.QUOTA_PROVIDERS.get(model_pool.family_for(model))
@@ -80,7 +123,10 @@ def _observe(receipt_id):
             for w in view["windows"]
         ):
             raise ValueError("progress_subscription_unavailable")
-        if not model_pool.availability(model, quota, role)[0]:
+        if any(
+            not model_pool.availability(model, quota, role)[0]
+            for role in ("conductor", "worker", "reviewer")
+        ):
             raise ValueError("progress_subscription_unavailable")
     return {
         "review_id": review["id"],
@@ -88,6 +134,7 @@ def _observe(receipt_id):
         "evidence": evidence,
         "quota": quota,
         "policy": policy,
+        "graph_revision": revision,
         "observed_at": controls._now().isoformat(),
     }
 
@@ -109,7 +156,10 @@ def _preview(
         raise ValueError("progress_receipt_not_eligible")
     graph._lock_task(db, row.task_id)
     policy = funding.effective_policy(db, row)
-    if policy != observed["policy"]:
+    if (
+        policy != observed["policy"]
+        or graph.current_version(row.task_id, session=db) != observed["graph_revision"]
+    ):
         raise ValueError("progress_policy_changed")
     item = db.get(WorkItem, row.work_item_id) if row.work_item_id else None
     if item and (
@@ -375,17 +425,22 @@ def _replay(db, actor, request):
 
 def renew(task_id):
     """Called only after native execution reconciliation, before new starts."""
-    with controls._read_session() as db:
-        row = controls._receipt(db, task_id)
-        authorization = funding.latest(db, task_id, ACTION)
-        last = funding.latest(db, task_id, LEASE)
-        if not authorization or not last or row.task_paused or row.state != "admitted":
-            return False
-        review, artifact, _ = _review(db, task_id)
-        if review["id"] == last["review_id"]:
-            return False
-        receipt_id = row.id
     try:
+        with controls._read_session() as db:
+            row = controls._receipt(db, task_id)
+            authorization = funding.latest(db, task_id, ACTION)
+            last = funding.latest(db, task_id, LEASE)
+            if (
+                not authorization
+                or not last
+                or row.task_paused
+                or row.state != "admitted"
+            ):
+                return False
+            review, artifact, _ = _review(db, task_id)
+            if review["id"] == last["review_id"]:
+                return False
+            receipt_id = row.id
         observed = _observe(receipt_id)
         with controls._locked_session() as (db, control):
             proposal = _preview(
