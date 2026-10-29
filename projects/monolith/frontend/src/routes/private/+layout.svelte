@@ -33,6 +33,18 @@
   });
 </script>
 
+<svelte:head>
+  <!-- The back link can be the only sheet surface on a fresh child load.
+       Restore the same preference as SchemeToggle before it is painted. -->
+  <script>
+    try {
+      var t = localStorage.getItem("td-theme");
+      if (t === "light" || t === "dark")
+        document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
+</svelte:head>
+
 {#if showBack}
   <a class="back-to-dashboard td-chrome" href="/">&larr; dashboard</a>
 {/if}

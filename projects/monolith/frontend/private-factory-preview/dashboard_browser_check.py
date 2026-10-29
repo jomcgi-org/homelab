@@ -31,6 +31,7 @@ def measure(page):
         ink: css.getPropertyValue('--ink').trim(), sheet: css.getPropertyValue('--sheet').trim(),
         scheme: document.documentElement.dataset.theme,
         backLinks: document.querySelectorAll('.back-to-dashboard').length,
+        backInk: document.querySelector('.back-to-dashboard') ? getComputedStyle(document.querySelector('.back-to-dashboard')).getPropertyValue('--ink').trim() : null,
         schemeControls: document.querySelectorAll('.scheme').length,
         containers: [...main.querySelectorAll('.grid,.launcher-grid,.edition,.chat-log')].map(el => ({
           name: el.className, client: el.clientWidth, scroll: el.scrollWidth
@@ -201,6 +202,10 @@ def main():
                             assert child_result["sheet"] == (
                                 "#181a20" if scheme == "light" else "#ffffff"
                             ), child_result
+                            if child == "updates":
+                                assert child_result["backInk"] == root["ink"], (
+                                    child_result
+                                )
                         if child == "qwen":
                             assert child_result["bodyOverflow"] == "hidden", (
                                 child_result
@@ -232,6 +237,7 @@ def main():
                             "sheet",
                             "backLinks",
                             "schemeControls",
+                            "backInk",
                         ):
                             assert fresh[field] == child_result[field], (
                                 field,
