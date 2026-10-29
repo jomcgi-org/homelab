@@ -659,10 +659,3 @@ tool-use reliability) is model-intrinsic and carries over to local hardware. The
 lens (median wall-time, cost, cost-per-solve) is the real time and money to rent the model
 via OpenRouter, versus the Claude anchor rows. Remote wall-time reflects a typical cloud
 request, not local GPU throughput.
-
-## Probing the live qwen lane
-
-`probe/` is a separate CLI that runs the same tasks through the monolith's agent-session
-API on the in-cluster qwen and pi lane, recording wall time, diff, verifier result and a
-SigNoz span breakdown. It measures the lane, not the model, and is the harness for the
-#5051 efficiency loop. See [`probe/README.md`](probe/README.md).
