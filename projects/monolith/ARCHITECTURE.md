@@ -366,45 +366,6 @@ The planner is called back only for a named deviation: no plan applied yet, a no
 that failed or escalated with no runnable retry, review rounds spent, a fan-in
 the engine could not open, or a settled graph with no verified delivery.
 
-The proposed-decision preview is staged behind
-`swarm.factoryPlannerPreviewEnabled=false`, which renders
-`FACTORY_PLANNER_PREVIEW_ENABLED=false`. `planner_preview.py` is an unregistered
-server-side read adapter over the shared submission projection. It adds no
-HTTP route, MCP tool or guest catalogue entry. The private MCP surface serves
-standing humans and the pruned agents tier lacks delegated task identity
-verification (`projects/mcp/ARCHITECTURE.md`, `docs/security.md`). The production
-binding verifier therefore returns no binding even with the flag on. Operator
-tools keep their existing `_refuse` and `factory.access.is_operator` floor.
-
-The adapter takes a schema-valid `plan` or `add_node` decision, using the real
-decision/edit schema and bounds, plus an exact integer `expected_revision`.
-It resolves identity from the verified request principal and a server binding
-verifier, never from caller task, receipt or node IDs. A delegated workload
-binding must name a non-terminal `conductor_<n>` run of that same admitted,
-unpaused, uncancelled task. Missing or ambiguous bindings refuse. The database
-checks the run and task before evaluation. A unique insert into
-`swarm.factory_planner_preview` reserves ordinal 1 or 2 for that run. Every
-enabled, bound, schema-valid call reaching the revision check consumes a slot,
-including stale revisions, refused projections and retries. A third call
-refuses `preview_limit_reached` without evaluating. This ledger is the preview's
-only write: graph versions, starts, receipts, allowance/refusal audits, funding
-overlays and decisions stay unchanged. Results are advisory; submission repeats
-current-state validation and accounting. The enabled prompt asks for at most two
-previews, then a feasible smaller decision, authorized funding request or pause,
-with measured needed/allowed turns and USD and reserve-aware spare figures.
-
-**Why.** Deterministic envelope accounting belongs inside the planner's own turn
-so an over-envelope proposal can be resized before a rejected submission spends
-another round. Preview and submission share one projection owner. Advisory
-results cannot authorize a later submission. Fail-closed task binding preserves
-operator authority while delegated identity is unavailable, and two durable
-slots bound evaluation across retries and concurrent calls. Repository delivery
-leaves the flag off. Binding provisioning, authorized enablement with a live
-in-turn preview, and the 72-hour rejected-run/cost comparison remain live checks
-on #6650. Its reported baseline for 2026-09-28 through 2026-10-01 is 11
-`envelope_exceeded` refusals and $10.17; savings count only eliminated rejection
-or replan work.
-
 An attempt stop crosses the factory/session boundary through public APIs.
 `swarm.factory_attempt_stop` owns task authority, run/start checks, idempotency
 and stop audits. `agent_sessions.factory_stop` owns session/permit identity,
