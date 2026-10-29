@@ -4,7 +4,7 @@ AI-powered Discord bot with embeddings, vision, web search, and channel summaris
 
 ## Overview
 
-Responds to messages using the configured LLM provider (Meta Spark in the hub overlay), with context from the knowledge graph. Supports channel summarisation, multimodal inputs (images via vision), and owner-gated artifact generation via the `/artifact <prompt>` command (goose-backed sessions).
+Responds to messages using configured external LLM provider APIs, with context from the knowledge graph. Supports channel summarisation, multimodal inputs (images via vision), and owner-gated artifact generation via the `/artifact <prompt>` command (goose-backed sessions).
 
 | Module           | Description                                                                      |
 | ---------------- | -------------------------------------------------------------------------------- |
