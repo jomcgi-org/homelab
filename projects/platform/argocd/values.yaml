@@ -43,13 +43,16 @@ argo-cd:
   # The 9.5 chart line supplies matching 3.3 CRDs; keep its patch image current.
   global:
     image:
+      repository: quay.io/argoproj/argocd
       tag: v3.3.18
   # Keep unrelated image and license changes outside this controller repair.
   redis:
     image:
+      repository: ecr-public.aws.com/docker/library/redis
       tag: 7.2.11-alpine
   dex:
     image:
+      repository: ghcr.io/dexidp/dex
       tag: v2.44.0
   configs:
     cm:
