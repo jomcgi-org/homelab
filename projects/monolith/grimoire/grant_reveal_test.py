@@ -327,7 +327,7 @@ def test_scope_and_partial_detail_changes_emit_current_projection(
 
 
 @pytest.mark.parametrize("silent", [False, True])
-def test_retract_identity_and_original_unchanged(harness, silent):
+def test_retract_identity_and_update_original_history(harness, silent):
     h = harness
     h.prepare("play")
     remove_grant(h, "grant_partial")

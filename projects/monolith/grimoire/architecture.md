@@ -420,8 +420,10 @@ projections contain only `id`, `entity_type`, `name`, and `revealed_details`;
 full projections include typed detail and JSON-encoded datetimes. Name-only
 bodies carry no projection. Deleting a grant writes the identity keys with
 the previous scope plus `retracted: true` and `silent: false`. A silent delete
-stores exactly `{"retracted": true, "silent": true}`. Original reveal rows
-and their retraction timestamps remain unchanged.
+stores exactly `{"retracted": true, "silent": true}`. Earlier matching reveal
+entries are retracted. Grouped rows record `retracted_entity_ids` and set
+`retracted_at` once all their entries are retracted; single-entity rows set
+`retracted_at` directly.
 
 The DM-only, play-gated bulk grant route accepts 1 to 50 unique entity/PC
 pairs sharing one entity or one PC. It validates every item before writes,
