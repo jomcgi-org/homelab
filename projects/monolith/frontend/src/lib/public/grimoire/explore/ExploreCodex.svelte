@@ -112,7 +112,7 @@
   }
 
   function swatch(entityType) {
-    return `background: ${typeVar(entityType, "var(--grim-text-faint)")}`;
+    return `background: ${typeVar(entityType, "var(--ink-2)")}`;
   }
 
   // Entity art (when the focus carries an image_chunk_id, added in Task 1) is
@@ -175,7 +175,7 @@
       {:else}
         <div
           class="monogram"
-          style={`--mono: ${typeVar(entity.entity_type, "var(--grim-text-faint)")}`}
+          style={`--mono: ${typeVar(entity.entity_type, "var(--ink-2)")}`}
           aria-hidden="true"
         >
           {monogram}
@@ -200,7 +200,7 @@
                   {#if p.pre}<span class="rel-word">{p.pre}</span>{/if}<button
                     type="button"
                     class="rel-peer"
-                    style={`--peer: ${typeVar(r.peer.entity_type, "var(--grim-text-faint)")}`}
+                    style={`--peer: ${typeVar(r.peer.entity_type, "var(--ink-2)")}`}
                     onclick={() => onselect?.(r.peer.id)}>{p.peer}</button
                   >{#if p.post}<span class="rel-word">{p.post}</span>{/if}
                 </p>
@@ -236,9 +236,9 @@
     right: 0;
     bottom: 0;
     width: min(360px, 92%);
-    background: color-mix(in srgb, var(--grim-surface) 94%, transparent);
-    backdrop-filter: blur(12px);
-    border-left: 1px solid var(--grim-line);
+    background: color-mix(in srgb, var(--sheet) 94%, transparent);
+
+    border-left: 1px solid var(--stroke);
     transform: translateX(100%);
     transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
     padding: 24px 22px 32px;
@@ -260,26 +260,26 @@
     top: 13px;
     right: 15px;
     background: none;
-    border: 1px solid var(--grim-line);
-    border-radius: 6px;
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     width: 27px;
     height: 27px;
     cursor: pointer;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 15px;
     line-height: 1;
   }
 
   .close:hover {
-    color: var(--grim-ink);
-    border-color: var(--grim-accent);
+    color: var(--ink);
+    border-color: var(--accent-ink);
   }
 
   .eyebrow {
     font-size: 10px;
     letter-spacing: 0.2em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-weight: 600;
     margin: 0;
   }
@@ -301,23 +301,23 @@
     font-size: 1.5rem;
     line-height: 1.15;
     margin: 6px 0 0;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .sw {
     width: 9px;
     height: 9px;
-    border-radius: 50%;
+    border-radius: 0;
     flex: none;
   }
 
   .art {
     margin-top: 14px;
     aspect-ratio: 3 / 2;
-    border-radius: 9px;
+    border-radius: 0;
     overflow: hidden;
-    border: 1px solid var(--grim-line-soft);
-    background: var(--grim-surface-2);
+    border: 1px solid var(--line);
+    background: var(--band);
   }
 
   .art img {
@@ -330,16 +330,16 @@
   .monogram {
     margin-top: 14px;
     aspect-ratio: 3 / 2;
-    border-radius: 9px;
+    border-radius: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 4rem;
     font-weight: 600;
     color: var(--mono);
-    background: color-mix(in srgb, var(--mono) 12%, var(--grim-surface-2));
-    border: 1px solid color-mix(in srgb, var(--mono) 28%, var(--grim-line-soft));
+    background: color-mix(in srgb, var(--mono) 12%, var(--band));
+    border: 1px solid color-mix(in srgb, var(--mono) 28%, var(--line));
   }
 
   .detail-wrap {
@@ -365,7 +365,7 @@
 
   .section-head {
     margin: 22px 0 8px;
-    border-bottom: 1px solid var(--grim-line-soft);
+    border-bottom: 1px solid var(--line);
     padding-bottom: 7px;
   }
 
@@ -376,11 +376,11 @@
   }
 
   .rel-type-label {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 10px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     margin: 0 0 2px;
   }
 
@@ -389,14 +389,14 @@
   .rel-line {
     margin: 0;
     padding: 5px 0;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 14.5px;
     line-height: 1.4;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .rel-word {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .rel-peer {
@@ -407,16 +407,16 @@
     cursor: pointer;
     font-family: inherit;
     font-size: inherit;
-    color: var(--grim-ink);
+    color: var(--ink);
     text-decoration: underline;
-    text-decoration-color: var(--peer, var(--grim-line));
+    text-decoration-color: var(--peer, var(--stroke));
     text-decoration-thickness: 2px;
     text-underline-offset: 2px;
   }
 
   .rel-peer:hover,
   .rel-peer:focus-visible {
-    color: var(--grim-accent);
+    color: var(--accent-ink);
   }
 
   .mention-list {
@@ -435,14 +435,14 @@
     padding: 10px 12px;
     text-decoration: none;
     color: inherit;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line-soft);
-    border-radius: 7px;
+    background: var(--sheet);
+    border: 1px solid var(--line);
+    border-radius: 0;
   }
 
   .mention:hover {
-    background: var(--grim-surface-2);
-    border-color: var(--grim-line);
+    background: var(--band);
+    border-color: var(--stroke);
   }
 
   .mention-preview {
@@ -452,7 +452,7 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
     font-size: 12.5px;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .status-error {
@@ -463,13 +463,8 @@
   .skeleton {
     margin-top: 16px;
     height: 220px;
-    border-radius: 8px;
-    background: linear-gradient(
-      90deg,
-      var(--grim-surface-2) 25%,
-      transparent 37%,
-      var(--grim-surface-2) 63%
-    );
+    border-radius: 0;
+    background: var(--band);
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;
   }
