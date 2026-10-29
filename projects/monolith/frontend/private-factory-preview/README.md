@@ -47,3 +47,18 @@ replay versus refusal, busy/error feedback, query-state toggling, relationship
 add/remove and persisted scheme selection against the opposite system scheme.
 Screenshots require visual review. CI evidence is linked from the PR, expires
 after 14 days and must be regenerated if the PR head changes.
+
+## Non-factory task integration (#7400)
+
+This preview covers factory delivery only. The tracking-only MCP implementation
+owns the non-factory task contract. Integrate it here only when that contract is
+available: render its explicit source and owner, label manual/external records
+as tracking only, and route updates to its tracking endpoint. Never synthesize a
+factory receipt, admission, execution status or decision control from a tracked
+record. Missing owner/source data must read as unknown, not as factory ownership.
+
+The continuation adds 200% computed-text captures at both widths and schemes.
+Decision tests cover replacement on the same receipt, duplicate taps, accepted
+but stale lists and immutable request replay after remount. Session storage keeps
+request identity within the tab; it does not grant authorization or bypass the
+server's decision and idempotency checks.

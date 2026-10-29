@@ -44,7 +44,7 @@
   let notice = $state(null);
   let now = $state(Date.now());
   let noteBox = $state(null);
-  // The receipt whose close is armed, or null. Closing is the one escape
+  // The exact receipt and decision whose close is armed, or null. Closing is the one escape
   // another button cannot undo, so it is asked about once before it is sent.
   let confirming = $state(null);
   // A definitive refusal completed one durable request. The next click is a
@@ -60,7 +60,7 @@
   // armed confirmation, and the second press must never land on a different
   // issue from the first.
   const current = $derived(
-    pending.find((row) => row.receipt_id === confirming) ??
+    pending.find((row) => contextKey(row) === confirming) ??
       pending[cursor] ??
       null,
   );
@@ -102,7 +102,7 @@
       // arming never outlives the issue it was about.
       if (
         confirming !== null &&
-        !openOnes(escalations).some((row) => row.receipt_id === confirming)
+        !openOnes(escalations).some((row) => contextKey(row) === confirming)
       ) {
         confirming = null;
       }
@@ -121,6 +121,13 @@
 
   async function send(item, body, label) {
     if (!item || busy) return;
+    if (
+      unavailable ||
+      !pending.some((row) => contextKey(row) === contextKey(item))
+    ) {
+      failure = "Refresh this decision before acting.";
+      return;
+    }
     if (!body.decision_id) {
       failure =
         "the decision card has no exact identity; refresh before acting";
@@ -130,14 +137,42 @@
     failure = null;
     notice = null;
     try {
+      // Keep one immutable request across navigation and uncertain responses.
+      // A changed note or action must never create a second effect while the
+      // first outcome is unknown. Only a definitive refusal permits a new key.
+      const storageKey = `factory-decision:${contextKey(item)}`;
+      const previous = JSON.parse(sessionStorage.getItem(storageKey) ?? "null");
+      if (
+        previous?.status === "accepted" &&
+        (previous.body.action !== "chat" ||
+          (body.action === "chat" && body.note === previous.body.note))
+      ) {
+        notice = `Decision recorded for #${item.issue_number}. Waiting for the board to update.`;
+        await refresh();
+        return;
+      }
+      const attempt =
+        previous?.status === "refused" || previous?.status === "accepted"
+          ? previous.attempt + 1
+          : (previous?.attempt ?? requestAttempts[item.receipt_id] ?? 0);
       const requestBody = {
         ...body,
-        request_key: await decisionRequestKey(
-          item.receipt_id,
-          body,
-          requestAttempts[item.receipt_id] ?? 0,
-        ),
+        request_key: await decisionRequestKey(item.receipt_id, body, attempt),
       };
+      if (
+        previous?.status === "pending" &&
+        JSON.stringify(previous.body) !== JSON.stringify(requestBody)
+      ) {
+        failure =
+          "The previous response is uncertain. Restore the same action and note to check its result; do not send a different decision.";
+        return;
+      }
+      const record = (status) =>
+        sessionStorage.setItem(
+          storageKey,
+          JSON.stringify({ body: requestBody, attempt, status }),
+        );
+      record("pending");
       const response = await fetch(
         `/factory/escalations/decisions/${item.receipt_id}`,
         {
@@ -153,6 +188,7 @@
           result.reason ??
           `the decision failed (${response.status})`;
         if (response.status >= 400 && response.status < 500) {
+          record("refused");
           requestAttempts = {
             ...requestAttempts,
             [item.receipt_id]: (requestAttempts[item.receipt_id] ?? 0) + 1,
@@ -160,13 +196,15 @@
         }
         return;
       }
-      if (result.ok === false) {
+      if (result.ok !== true) {
         failure = result.reason ?? "the decision outcome is unknown";
         // The durable result says external effects may have occurred. Re-read
         // the server-owned list before leaving that warning on screen.
         await refresh();
         return;
       }
+      record("accepted");
+      notice = `Decision recorded for #${item.issue_number}.`;
       // A chat the lane could not take still posted the question, so the
       // difference between "asked and scheduled" and "asked and nothing will
       // answer" has to reach the operator rather than reading as success.
@@ -183,7 +221,8 @@
       await refresh();
       cursor = Math.min(cursor, Math.max(openOnes(escalations).length - 1, 0));
     } catch {
-      failure = "the decision could not be sent";
+      failure =
+        "the decision could not be sent or confirmed. Its outcome is unknown; retry only the same action and note to check it.";
     } finally {
       busy = null;
     }
@@ -226,8 +265,8 @@
       failure = "a brief is running on this issue; decide when it settles";
       return;
     }
-    if (needsConfirm(option) && confirming !== item.receipt_id) {
-      confirming = item.receipt_id;
+    if (needsConfirm(option) && confirming !== contextKey(item)) {
+      confirming = contextKey(item);
       failure = null;
       notice = null;
       return;
@@ -241,7 +280,7 @@
   }
 
   function armed(item, option) {
-    return needsConfirm(option) && confirming === item.receipt_id;
+    return needsConfirm(option) && confirming === contextKey(item);
   }
 
   function chat(item) {
@@ -261,7 +300,15 @@
   }
 
   function onKey(event) {
-    if (event.metaKey || event.ctrlKey || event.altKey || typing(event)) return;
+    if (
+      busy ||
+      event.repeat ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      typing(event)
+    )
+      return;
     if (event.key === "j" || event.key === "k") {
       cursor = moveCursor(cursor, event.key === "j" ? 1 : -1, pending.length);
       confirming = null;
@@ -326,7 +373,7 @@
   <section class="stats edition" aria-label="Escalation state">
     <div>
       <span class="k">open</span>
-      <span class="v num">{pending.length}</span>
+      <span class="v num">{unavailable ? "unknown" : pending.length}</span>
     </div>
     <div>
       <span class="k">decided</span>
@@ -352,7 +399,7 @@
 
   <section aria-label="Open escalations" aria-busy={busy !== null}>
     <p class="sec-label">/ Waiting on you</p>
-    {#if !pending.length}
+    {#if !pending.length && !unavailable}
       <p class="none">Nothing is waiting. The lane decides the rest itself.</p>
     {/if}
     {#each pending as item, index (item.receipt_id)}
@@ -379,10 +426,14 @@
         </header>
 
         <div class="body ed-body">
-          {#if item.summary}
-            <p class="outcome">{item.summary}</p>
-          {/if}
+          <p class="code">Owner: you · Next: choose an option</p>
           <p class="question">{item.question}</p>
+          {#if item.summary}
+            <details class="decision-context">
+              <summary>Why this needs a decision</summary>
+              <p class="outcome">{item.summary}</p>
+            </details>
+          {/if}
           {#each item.chat as asked, i (i)}
             <p class="asked code">
               asked {relativeTime(asked.asked_at, now)}: {asked.note}
@@ -398,7 +449,12 @@
           {#if index === cursor || contexts[contextKey(item)]}
             {@const context = contexts[contextKey(item)]}
             {@const error = contextErrors[contextKey(item)]}
-            <section class="context" aria-label="context">
+            <details
+              class="context"
+              aria-label="context"
+              open={!!expanded[item.receipt_id]}
+            >
+              <summary>Task context and evidence</summary>
               {#if context?.rows}
                 {#each context.rows as row (row.key)}
                   <details class="ctx-row" open={!!expanded[item.receipt_id]}>
@@ -420,7 +476,7 @@
               {:else}
                 <p class="context-state">context loading</p>
               {/if}
-            </section>
+            </details>
           {/if}
 
           <div class="options">
@@ -428,7 +484,7 @@
               <button
                 class="option"
                 class:primary={i === 0}
-                disabled={busy !== null || item.briefing}
+                disabled={busy !== null || unavailable || item.briefing}
                 onclick={() => decide(item, option)}
               >
                 <span class="hotkey code">{HOTKEYS[i] ?? ""}</span>
@@ -448,7 +504,7 @@
                 <button
                   class="escape-btn"
                   class:armed={armed(item, way)}
-                  disabled={busy !== null || item.briefing}
+                  disabled={busy !== null || unavailable || item.briefing}
                   onclick={() => escapeWith(item, way)}
                 >
                   <span class="hotkey code">{escapeHotkey(way)}</span>
@@ -459,8 +515,11 @@
                 </button>
               {/each}
             </div>
-            {#if confirming === item.receipt_id}
+            {#if confirming === contextKey(item)}
               <p class="confirm code" role="status">{confirmLine(item)}</p>
+              <button class="escape-btn" onclick={() => (confirming = null)}
+                >Cancel close</button
+              >
             {/if}
           {/if}
 
@@ -479,7 +538,7 @@
               ></textarea>
               <button
                 class="option chat-button"
-                disabled={busy !== null}
+                disabled={busy !== null || unavailable}
                 onclick={() => chat(item)}
               >
                 <span class="hotkey code">c</span>
@@ -546,6 +605,14 @@
   textarea:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: 3px;
+  }
+
+  .decision-context summary,
+  .context > summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
   }
 
   .stats {

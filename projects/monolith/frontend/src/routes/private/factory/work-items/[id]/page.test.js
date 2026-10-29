@@ -83,6 +83,26 @@ afterEach(() => {
 });
 
 describe("work item page", () => {
+  test("polling marks stale data unavailable and clears the warning on recovery", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockRejectedValueOnce(new Error("offline"))
+        .mockResolvedValue({ ok: true, json: async () => fixture() }),
+    );
+    const target = renderPage({ itemId: "100001", document: fixture() });
+    await tick();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(target.querySelector(".warn-line").textContent).toContain(
+      "unavailable",
+    );
+    expect(target.querySelector(".item-title")).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(target.querySelector(".warn-line")).toBeNull();
+  });
+
   test("renders identity, all edge directions, receipts, and the add control", () => {
     const target = renderPage({ itemId: "100001", document: fixture() });
 
