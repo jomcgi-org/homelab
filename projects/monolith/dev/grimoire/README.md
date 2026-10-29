@@ -102,11 +102,11 @@ are uploaded from `BUILDBUDDY_ARTIFACTS_DIRECTORY/grimoire`, including on failur
 Root runners give the disposable PostgreSQL
 directory and process to the system `postgres` account.
 
-The launcher warms the client hook with the running Vite server and waits for
-its dependency scan and optimized files to finish before announcing readiness.
-Each launch owns a fresh cache, including the telemetry imports that SvelteKit's
-route-only scan otherwise discovers after the first page opens. Startup errors
-fail the launcher; browser assertions and interaction deadlines are unchanged.
+The launcher transforms the factory markdown renderer
+(`src/lib/public/factory/markdown.js`) with the running Vite server and waits for
+the dependency scan and optimized files to finish before announcing readiness.
+Each launch owns a fresh cache. A broken client import fails startup without
+publishing readiness; browser assertions and interaction deadlines are unchanged.
 
 This starts the whole table, exercises three separate browser contexts, saves
 evidence to `/tmp/grimoire-rehearsal`, and stops. `--output /path` changes the

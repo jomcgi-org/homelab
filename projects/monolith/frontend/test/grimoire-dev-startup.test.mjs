@@ -46,7 +46,7 @@ for (let attempt = 1; attempt <= 3; attempt += 1) {
         "--port",
         String(port),
       ],
-      { cwd: root, env: { ...process.env, VITE_GRIMOIRE_LOCAL: "true" } },
+      { cwd: root },
     );
     let output = "";
     child.stdout.on("data", (data) => {
