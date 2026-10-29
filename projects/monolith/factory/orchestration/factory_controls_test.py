@@ -5799,7 +5799,9 @@ def test_operator_pages_match_browser_contract(
         "lanes",
         "review_routing",
     ):
-        assert result[key] == board[key]
+        assert result[key] == (
+            {**board[key], "auto_merge": False} if key == "policy" else board[key]
+        )
     assert (
         result["source_timestamps"]["control_updated_at"] == board["control_updated_at"]
     )
@@ -6198,3 +6200,231 @@ def test_operator_audit_history_hydration_is_bounded(db, policy, monkeypatch, ac
         assert large[:2] == small[:2]
         if action.startswith("decision_"):
             assert large[2]["pagination"] == small[2]["pagination"]
+
+
+@pytest.mark.parametrize(
+    "receipt_state",
+    ["admitted", "uncertain", "queued", "escalated", "landing", "succeeded"],
+)
+def test_merge_control_changes_only_flag_and_control_metadata(
+    db, policy, receipt_state, monkeypatch
+):
+    from factory.orchestration import backlog_refill
+
+    task = admitted(policy)
+    grant(task)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, task)
+        row.state = receipt_state
+        row.task_paused = True
+        row.direction_json = dumps({"landing_hold": {"reason": "security"}})
+    monkeypatch.setattr(
+        backlog_refill, "reset", lambda *_: pytest.fail("merge control reset refill")
+    )
+    models = (
+        FactoryReceipt,
+        FactoryStart,
+        SwarmTask,
+        FactoryReviewVerdict,
+        WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
+    )
+
+    def snapshot():
+        with Session(db) as session:
+            return {
+                model.__name__: [
+                    row.model_dump() for row in session.exec(select(model)).all()
+                ]
+                for model in models
+            }
+
+    before_work = snapshot()
+    with Session(db) as session:
+        row = session.get(FactoryControl, "factory")
+        before = row.model_dump()
+        before_policy = json.loads(row.policy_json)
+        audit_count = len(session.exec(select(FactoryAudit)).all())
+    result = controls.request_control(
+        "enable_auto_merge",
+        "operator",
+        request_key="merge-on",
+        expected_version=before["version"],
+    )
+    assert result["ok"] and result["auto_merge"] is True
+    assert snapshot() == before_work
+    with Session(db) as session:
+        row = session.get(FactoryControl, "factory")
+        assert json.loads(row.policy_json) == {**before_policy, "auto_merge": True}
+        assert (
+            row.state == before["state"]
+            and row.admitted_count == before["admitted_count"]
+        )
+        assert row.version == before["version"] + 1
+        audits = session.exec(select(FactoryAudit).order_by(FactoryAudit.id)).all()[
+            audit_count:
+        ]
+        assert [item.action for item in audits] == ["set_auto_merge", "control_request"]
+    off = controls.request_control(
+        "disable_auto_merge",
+        "operator",
+        request_key="merge-off",
+        expected_version=result["version"],
+    )
+    assert off["ok"] and off["auto_merge"] is False
+    assert snapshot() == before_work
+    # A lost response replay never restores the old setting after a later command.
+    assert (
+        controls.request_control(
+            "enable_auto_merge",
+            "operator",
+            request_key="merge-on",
+            expected_version=before["version"],
+        )
+        == result
+    )
+    with Session(db) as session:
+        assert (
+            json.loads(session.get(FactoryControl, "factory").policy_json)["auto_merge"]
+            is False
+        )
+
+
+def test_merge_control_stale_version_and_key_conflict(db, policy):
+    admitted(policy)
+    version = controls.status()["version"]
+    controls.set_control("pause_admissions", "other-operator")
+    result = controls.request_control(
+        "enable_auto_merge", "operator", request_key="stale", expected_version=version
+    )
+    assert result["reason"] == "control_version_changed"
+    conflict = controls.request_control(
+        "enable_auto_merge",
+        "operator",
+        request_key="stale",
+        expected_version=version + 1,
+    )
+    assert conflict["reason"] == "conflicting_control_request"
+    with Session(db) as session:
+        assert (
+            json.loads(session.get(FactoryControl, "factory").policy_json)["auto_merge"]
+            is False
+        )
+
+
+def test_merge_control_concurrent_duplicate_applies_once(db, policy):
+    admitted(policy)
+    version = controls.status()["version"]
+
+    def enable():
+        return controls.request_control(
+            "enable_auto_merge", "operator", request_key="one", expected_version=version
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: enable(), range(2)))
+    assert results[0] == results[1] and results[0]["ok"]
+    with Session(db) as session:
+        assert session.get(FactoryControl, "factory").version == version + 1
+        assert (
+            len(
+                session.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == "set_auto_merge")
+                ).all()
+            )
+            == 1
+        )
+    unchanged = controls.request_control(
+        "enable_auto_merge",
+        "operator",
+        request_key="already-on",
+        expected_version=version + 1,
+    )
+    assert unchanged["ok"] and not unchanged["changed"]
+    assert unchanged["version"] == version + 1
+
+
+def test_merge_control_concurrent_policy_change_is_not_overwritten(db, policy):
+    controls.set_control("configure", "operator", policy=policy)
+    version = controls.status()["version"]
+    entered, release, attempting = Event(), Event(), Event()
+
+    def policy_writer():
+        with controls._locked_session() as (session, control):
+            updated = json.loads(control.policy_json)
+            updated["max_parallel_nodes"] = 2
+            control.policy_json = dumps(updated)
+            control.version += 1
+            entered.set()
+            assert release.wait(5)
+
+    def enable():
+        attempting.set()
+        return controls.request_control(
+            "enable_auto_merge",
+            "operator",
+            request_key="concurrent",
+            expected_version=version,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer = pool.submit(policy_writer)
+        assert entered.wait(5)
+        reader = pool.submit(enable)
+        assert attempting.wait(5)
+        release.set()
+        writer.result()
+        result = reader.result()
+    assert result["reason"] == "control_version_changed"
+    with Session(db) as session:
+        stored = json.loads(session.get(FactoryControl, "factory").policy_json)
+        assert stored["max_parallel_nodes"] == 2 and stored["auto_merge"] is False
+
+
+@pytest.mark.parametrize("action", ["enable_auto_merge", "disable_auto_merge"])
+@pytest.mark.parametrize("state", ["disabled", "paused", "stopped"])
+def test_merge_control_preserves_admissions_state(db, policy, action, state):
+    controls.set_control("configure", "operator", policy=policy)
+    with Session(db) as session, session.begin():
+        session.get(FactoryControl, "factory").state = state
+    version = controls.status()["version"]
+    result = controls.request_control(
+        action, "operator", request_key="state", expected_version=version
+    )
+    assert result["state"] == state
+    assert result["ok"] == (state != "stopped")
+    if state == "stopped":
+        assert result["reason"] == "stopped" and result["version"] == version
+
+
+@pytest.mark.parametrize("landing_mode", ["none", "merge_queue", None])
+def test_merge_control_validates_inherited_repo_landing(db, policy, landing_mode):
+    entry = {} if landing_mode is None else {"landing": landing_mode}
+    controls.set_control(
+        "configure", "operator", policy={**policy, "repos": {"owner/repo": entry}}
+    )
+    with Session(db) as session:
+        row = session.get(FactoryControl, "factory")
+        before, version = row.policy_json, row.version
+    result = controls.request_control(
+        "enable_auto_merge",
+        "operator",
+        request_key="repo-mode",
+        expected_version=version,
+    )
+    with Session(db) as session:
+        row = session.get(FactoryControl, "factory")
+        if landing_mode == "none":
+            assert result["reason"] == "incompatible_repo_landing_policy"
+            assert row.policy_json == before and row.version == version
+        else:
+            assert result["ok"] and result["auto_merge"]
+            assert json.loads(row.policy_json) == {
+                **json.loads(before),
+                "auto_merge": True,
+            }
+            assert (
+                controls.repos_map(json.loads(row.policy_json))["owner/repo"]["landing"]
+                == "merge_queue"
+            )

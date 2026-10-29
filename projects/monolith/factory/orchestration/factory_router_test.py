@@ -572,3 +572,24 @@ def test_improvement_source_refusal_is_observable(monkeypatch):
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "improvement_source_disabled"
+
+
+@pytest.mark.parametrize("action", ["enable_auto_merge", "disable_auto_merge"])
+def test_http_merge_control_uses_versioned_owner(monkeypatch, action):
+    calls = []
+    monkeypatch.setattr(
+        factory_controls,
+        "request_control",
+        lambda *a, **kw: calls.append((a, kw)) or {"ok": True},
+    )
+    response = operator_client("operator:joe").post(
+        "/api/swarm/factory/control",
+        json={"action": action, "request_key": "merge-control", "expected_version": 9},
+    )
+    assert response.status_code == 200
+    assert calls == [
+        (
+            (action, "operator:joe"),
+            {"request_key": "merge-control", "expected_version": 9, "task_id": None},
+        )
+    ]

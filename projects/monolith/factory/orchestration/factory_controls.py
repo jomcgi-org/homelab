@@ -3879,6 +3879,8 @@ def request_control(
     """
     if action not in (
         "enable",
+        "enable_auto_merge",
+        "disable_auto_merge",
         "pause_admissions",
         "pause_task",
         "resume_task",
@@ -3935,6 +3937,47 @@ def request_control(
                 "state": control.state,
                 "version": control.version,
             }
+        elif action in ("enable_auto_merge", "disable_auto_merge"):
+            # A landing-only setting is not a policy-generation transition.
+            # Never call configure: it retires receipts and resets refill.
+            policy = json.loads(control.policy_json or "{}")
+            reason = "stopped" if control.state == "stopped" else None
+            if not isinstance(policy, dict) or not policy.get("repo"):
+                reason = reason or "not_configured"
+            previous_auto_merge = (
+                auto_merge_enabled(policy) if isinstance(policy, dict) else False
+            )
+            desired = action == "enable_auto_merge"
+            if reason is None:
+                try:
+                    # A sparse primary repo inherits the global flag. An
+                    # explicit landing:none must not become an invalid policy.
+                    repos_map({**policy, "auto_merge": desired})
+                except ValueError:
+                    reason = "incompatible_repo_landing_policy"
+            changed = reason is None and previous_auto_merge != desired
+            if changed:
+                policy["auto_merge"] = desired
+                control.policy_json = dumps(policy)
+                control.version += 1
+                control.actor = actor
+                control.updated_at = _now()
+            result = {
+                "ok": reason is None,
+                "reason": reason,
+                "state": control.state,
+                "version": control.version,
+                "auto_merge": desired if reason is None else previous_auto_merge,
+                "changed": changed,
+            }
+            _audit(
+                db,
+                actor,
+                "set_auto_merge",
+                previous=previous_auto_merge,
+                requested=desired,
+                **result,
+            )
         elif action == "cancel_receipt":
             result = _cancel_queued_receipt(db, receipt_id, actor)
         else:

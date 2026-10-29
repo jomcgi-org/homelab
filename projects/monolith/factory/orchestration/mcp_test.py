@@ -882,7 +882,10 @@ def test_request_knowledge_maintenance_is_staged_off(monkeypatch):
     assert result["knowledge"] == {"status": "disabled"}
 
 
-def test_control_attributes_authenticated_actor_and_preserves_owner_result(monkeypatch):
+@pytest.mark.parametrize("action", ["stop", "enable_auto_merge", "disable_auto_merge"])
+def test_control_attributes_authenticated_actor_and_preserves_owner_result(
+    monkeypatch, action
+):
     calls = []
     acknowledgement = {
         "ok": True,
@@ -901,7 +904,7 @@ def test_control_attributes_authenticated_actor_and_preserves_owner_result(monke
     result = _as(
         _principal(),
         lambda: mcp.factory_control(
-            "stop",
+            action,
             "stop",
             3,
         ),
@@ -909,7 +912,7 @@ def test_control_attributes_authenticated_actor_and_preserves_owner_result(monke
     assert result == acknowledgement
     assert calls == [
         (
-            "stop",
+            action,
             "joe",
             {
                 "request_key": "stop",
@@ -1195,7 +1198,9 @@ def test_mcp_client_lists_and_calls_controls_with_schema_validation(monkeypatch)
             } <= tools.keys()
             assert "actor" not in tools["factory_control"].inputSchema["properties"]
             schema = tools["factory_control"].inputSchema["properties"]
-            assert "cancel_task" in schema["action"]["enum"]
+            assert {"cancel_task", "enable_auto_merge", "disable_auto_merge"} <= set(
+                schema["action"]["enum"]
+            )
             assert "cancellation_reason" in schema
             reason_schema = schema["cancellation_reason"]
             string_schema = next(
