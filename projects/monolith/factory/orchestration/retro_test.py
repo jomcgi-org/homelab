@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timezone
 
 from factory.orchestration import retro
@@ -524,3 +525,69 @@ def test_optimizer_old_window_coverage_is_independent_of_later_polls(monkeypatch
     assert loaded["post"]["end"] == end.isoformat()
     assert loaded["overlapping_revisions"] == ["0.2.0"]
     assert retro.optimizer_evidence(loaded, NOW)["status"] == "UNKNOWN"
+
+
+def test_optimizer_sql_selects_exact_boundary_before_bounded_history():
+    # SQLite supports the JSON extraction and named bounds used by these two
+    # SELECTs, so exercise the SQL rather than only mocking its result shape.
+    with sqlite3.connect(":memory:") as db:
+        db.execute("ATTACH DATABASE ':memory:' AS knowledge")
+        db.execute("""CREATE TABLE knowledge.notes (
+            note_id TEXT, observed_at TEXT, status TEXT, extra TEXT,
+            source TEXT, scope TEXT, verification_state TEXT, deleted_at TEXT
+        )""")
+        boundary = NOW - retro.timedelta(days=20)
+        merged = boundary - retro.timedelta(hours=1)
+        end = boundary + retro.timedelta(hours=72)
+        identity = {
+            "app": "monolith",
+            "newest_freight_version": "0.1.0",
+            "requested_revision": "0.1.0",
+            "deployed_revision": "0.1.0",
+            "writeback_commit": "a" * 40,
+        }
+
+        def insert(note_id, observed_at, extra, verified="verified"):
+            db.execute(
+                "INSERT INTO knowledge.notes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    note_id,
+                    observed_at.isoformat(),
+                    "complete",
+                    json.dumps(extra),
+                    "deployment-observation",
+                    "environment:homelab",
+                    verified,
+                    None,
+                ),
+            )
+
+        insert("wrong-writeback", merged, {**identity, "writeback_commit": "b" * 40})
+        insert("unverified", merged, identity, "unverified")
+        insert("deployed", boundary, identity)
+        insert(
+            "overlap",
+            boundary + retro.timedelta(hours=1),
+            {**identity, "deployed_revision": "0.2.0"},
+        )
+        for index in range(5001):
+            insert(f"later-{index}", end, identity)
+        params = {
+            "since": merged.isoformat(),
+            "as_of": NOW.isoformat(),
+            "app": "monolith",
+            "revision": "0.1.0",
+            "writeback": "a" * 40,
+        }
+        rows = db.execute(retro._OPTIMIZER_BOUNDARY, params).fetchall()
+        assert [row[0] for row in rows] == ["deployed"]
+        rows = db.execute(
+            retro._OPTIMIZER_OBSERVATIONS,
+            {
+                "since": boundary.isoformat(),
+                "as_of": end.isoformat(),
+                "app": "monolith",
+                "limit": retro._OPTIMIZER_OBSERVATION_LIMIT + 1,
+            },
+        ).fetchall()
+        assert [row[0] for row in rows] == ["deployed", "overlap"]
