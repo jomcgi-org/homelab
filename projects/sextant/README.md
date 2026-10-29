@@ -3,6 +3,7 @@
 Generates type-safe Go state machines for Kubernetes operators from a YAML
 spec. Invalid state transitions become **compile errors**, and transition
 signatures force **idempotency keys** to be obtained before state changes.
+sextant is not deployed anywhere.
 
 The [OCI Model Cache operator](../operators/oci-model-cache/) runs on a
 sextant-generated state machine — its spec is
