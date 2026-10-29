@@ -743,7 +743,10 @@ def _operator_view(
         return {
             "ok": True,
             "state": control.state,
-            "policy": shape_policy(policy),
+            "policy": {
+                **(shape_policy(policy) or {}),
+                "auto_merge": controls.auto_merge_enabled(policy),
+            },
             "version": control.version,
             "actor": control.actor,
             "control_updated_at": iso_or_str(control.updated_at),
@@ -1345,6 +1348,8 @@ def _request_control(
 async def factory_control(
     action: Literal[
         "enable",
+        "enable_auto_merge",
+        "disable_auto_merge",
         "pause_admissions",
         "pause_task",
         "resume_task",
@@ -1376,6 +1381,13 @@ async def factory_control(
     after a lost response. An acknowledgement describes that command's outcome,
     not current state: read status again after a replay or version conflict.
 
+    enable_auto_merge and disable_auto_merge change only the global merge
+    setting. They preserve generation, admissions state, active/uncertain work,
+    budgets, receipt holds and refill/breaker history. Enabling does not grant
+    landing authority: exact-head scoped authorization, independent review,
+    repository policy and protected CI/queue gates remain mandatory. Disabling
+    stops new arming; it does not promise to dequeue already authorized PRs.
+
     pause_admissions stops admitting new tasks. Existing tasks keep running.
     enable resumes admissions under the existing policy. pause_task fences new
     starts for the exact active task_id without stopping its running workers.
@@ -1396,8 +1408,8 @@ async def factory_control(
     The issue, labels and PR stay unchanged. Normal intake cooldown still applies.
     Only pause_task, resume_task and cancel_task take task_id, and only
     cancel_receipt takes receipt_id. These controls do not
-    alter priorities, task direction, policy or budgets and need no
-    conductor turn.
+    alter priorities, task direction or budgets and need no conductor turn.
+    Only the two auto_merge actions change a policy setting.
     """
     principal = current_principal()
     refusal = _refuse(principal)
