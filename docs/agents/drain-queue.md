@@ -338,7 +338,10 @@ merges a PR, bypasses review or creates a second scheduler.
 ## Report-only factory learning handoff
 
 `agents.drainer.learningHandoffEnabled` defaults off and adds no scheduler.
-When enabled, the existing drainer reconciles the idle `factory-retro-daily`
+After reading `learning_configuration.payload_sha256` on the existing routine
+list, pin that reviewed value in `agents.drainer.learningDailyPayloadSha256`.
+An empty pin or changed payload defers reconciliation; never guess the hash.
+When enabled and the pin matches, the drainer reconciles the idle `factory-retro-daily`
 job from Sol to `model: luna` and `learning_stage: evidence` under its normal
 admission lock. The existing repository and digest must match; its identity,
 86400-second interval, next run, history and #6781 owner remain unchanged.

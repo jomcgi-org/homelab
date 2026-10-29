@@ -205,6 +205,8 @@ agents:
   drainer:
     # Report-only Luna to Astra handoff; existing daily job needs explicit opt-in.
     learningHandoffEnabled: false
+    # Pin the reviewed existing daily payload before reconciliation may replace it.
+    learningDailyPayloadSha256: ""
     # Master kill switch. The CronWorkflow stays unsuspended and safely gets a
     # disabled response until a follow-up production values PR turns this on,
     # following the values-versus-template rollout rule.
