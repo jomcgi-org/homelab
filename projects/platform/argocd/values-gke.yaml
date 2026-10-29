@@ -54,7 +54,33 @@ argo-cd:
         cpu: 100m
         memory: 128Mi
   configs:
+    # Chart 9 removes prior defaults. Preserve hub behavior explicitly.
+    cm:
+      server.rbac.log.enforce.enable: "false"
+      timeout.reconciliation: "180s"
+      timeout.reconciliation.jitter: "0s"
     params:
+      application.namespaces: ""
+      applicationsetcontroller.enable.progressive.syncs: "false"
+      applicationsetcontroller.namespaces: ""
+      applicationsetcontroller.policy: "sync"
+      controller.ignore.normalizer.jq.timeout: "1s"
+      controller.operation.processors: "10"
+      controller.repo.server.timeout.seconds: "60"
+      controller.self.heal.timeout.seconds: "5"
+      controller.status.processors: "20"
+      controller.sync.timeout.seconds: "0"
+      hydrator.enabled: "false"
+      otlp.address: ""
+      reposerver.parallelism.limit: "0"
+      server.basehref: "/"
+      server.disable.auth: "false"
+      server.enable.gzip: "true"
+      server.enable.proxy.extension: "false"
+      server.insecure: "false"
+      server.rootpath: ""
+      server.staticassets: "/shared/app"
+      server.x.frame.options: "sameorigin"
       reposerver.repo.cache.expiration: "10m"
 
 cfIngress:
