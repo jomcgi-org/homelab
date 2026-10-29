@@ -36,6 +36,28 @@ helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml
   artifacts. The EmberVM Go protobuf targets are the pattern (#7066).
 - Image push happens only in CI on merge to main.
 
+## Delivery mechanics
+
+These commands are for the role that owns implementation or landing.
+Factory workers use the assigned branch and return their role's artifact;
+they do not launch their own planner, review or landing sequence.
+
+- For standalone edits, use a dedicated branch and worktree, or a new branch
+  through connected GitHub tools. Keep the assigned branch for factory work.
+- Run `ci` before pushing when available, otherwise use PR CI. Read failed
+  logs before retrying. Never push to a merged branch.
+- The landing owner checks required CI and independent approval against the
+  current PR head. Review guidance: `docs/agents/review.md`.
+- `homelab pr land <n>` follows merge, chart writeback and rollout. Otherwise,
+  `gh pr merge <n> --auto` enters the merge queue; pass no strategy flag.
+  Rebase only for conflicts or CI's branch writeback, not because main moved.
+- Queue entries can have `autoMergeRequest: null`; inspect
+  `mergeQueueEntry{state}`. Read an ejection's failure before re-enqueueing.
+- For deployable changes, wait for chart writeback and call
+  `verify_deployment` with the expected revision until terminal. Without it,
+  verify ArgoCD Synced/Healthy, the new pod image and a responding service.
+  Docs need no rollout.
+
 ## Gotchas
 
 - **For `monolith`, `monolith-agents`, `monolith-public`, `embervm` and

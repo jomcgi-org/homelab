@@ -4,6 +4,9 @@ Deliver an authorized feature through merge and, when applicable, verified
 rollout under `AGENTS.md` "Merge authority". Joe's local Claude Code command
 is `/ship "<feature>"`; this repository does not install it.
 
+This guide is for an end-to-end delivery owner. Factory workers follow their
+assigned role and result contract; factory prompts schedule the work.
+
 ## Work to completion
 
 - Read the request and existing issue. Infer routine details from the repo,
@@ -15,9 +18,10 @@ is `/ship "<feature>"`; this repository does not install it.
 - Keep one PR when the change is coherent. Split independently deliverable
   work when that improves throughput. Delegate independent implementation
   tasks when useful; give each agent its scope, acceptance and constraints.
-- Implement and validate the behaviour in the same change. Follow the root
-  delivery loop: proportionate checks, one independent review of the full
-  diff, required CI, merge queue, and live verification where needed.
+- Implement and validate the behaviour in the same change. Meet the root
+  delivery outcomes with proportionate checks, independent review, required
+  CI, merge queue and live verification where needed. Choose the sequence
+  appropriate to the task.
 - Fix in-scope failures yourself. Read failure evidence before retrying.
   Escalate a specific unresolved decision once; continue unrelated work.
 - Close the issue when its acceptance criteria are met. If rollout or
