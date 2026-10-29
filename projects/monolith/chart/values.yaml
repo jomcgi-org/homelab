@@ -203,6 +203,8 @@ agents:
     # started elsewhere, post only turns that need a human by default.
     channelNotify: "needs-input"
   drainer:
+    # Report-only Luna to Astra handoff; existing daily job needs explicit opt-in.
+    learningHandoffEnabled: false
     # Master kill switch. The CronWorkflow stays unsuspended and safely gets a
     # disabled response until a follow-up production values PR turns this on,
     # following the values-versus-template rollout rule.

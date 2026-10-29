@@ -273,3 +273,25 @@ def test_completed_raw_recovery_opt_in_does_not_schedule_work(values, tmp_path):
     after = _render_documents(*values, override)
     assert _backend_env(after) == env | {"KG_COMPLETED_RAW_RECOVERY_ENABLED": "true"}
     assert _cronworkflows(before) == _cronworkflows(after)
+
+
+@pytest.mark.parametrize("values", [DEPLOY, GKE])
+def test_learning_handoff_is_explicit_and_does_not_add_scheduler(values, tmp_path):
+    baseline = _render_documents(values)
+    override = tmp_path / "learning.yaml"
+    override.write_text("agents:\n  drainer:\n    learningHandoffEnabled: true\n")
+    opted = _render_documents(values, override)
+
+    def flags(documents):
+        return [
+            env["value"]
+            for doc in documents
+            if doc.get("kind") == "Deployment"
+            for container in doc["spec"]["template"]["spec"]["containers"]
+            for env in container.get("env", [])
+            if env.get("name") == "FACTORY_LEARNING_HANDOFF_ENABLED"
+        ]
+
+    assert flags(baseline) and set(flags(baseline)) == {"false"}
+    assert set(flags(opted)) == {"true"}
+    assert _cronworkflows(baseline) == _cronworkflows(opted)

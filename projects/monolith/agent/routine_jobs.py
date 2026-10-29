@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from contextlib import nullcontext
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import bindparam, text
 from sqlmodel import Session
@@ -434,6 +434,7 @@ def complete_job(
     deregister: bool = False,
     preserve_repo_freshness: bool = False,
     defer_seconds: int | None = None,
+    transaction_finalize: Callable[[Session], None] | None = None,
 ) -> bool:
     """Mark a job complete.
 
@@ -500,6 +501,8 @@ def complete_job(
             sql,
             params,
         )
+        if result.rowcount and transaction_finalize is not None:
+            transaction_finalize(session)
         if result.rowcount and deregister:
             retention = (
                 f"AND NOT {_repo_freshness_sql('candidate', sqlite=sqlite)}"

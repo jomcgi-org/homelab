@@ -334,3 +334,36 @@ ledger amounts are observed as of digest collection, not reconstructed historica
 balances. These operational measurements do not establish the seven-day CI and
 revert evidence required for mature outcomes. No verdict writes factory policy,
 merges a PR, bypasses review or creates a second scheduler.
+
+## Report-only factory learning handoff
+
+`agents.drainer.learningHandoffEnabled` defaults off. It adds no scheduler and
+changes no existing job payload. Opt-in requires a separately approved values
+change plus editing the existing `factory-retro-daily` job to `model: luna`,
+`repo: jomcgi-org/homelab`, `digest: factory-retro`, and
+`learning_stage: evidence`. Preserve its interval, human owner and #6781 program.
+Do not reset the inconclusive historical experiment or enable public writers.
+
+The existing digest supplies source session and turn identities. A successful
+Luna result can propose one finding with at most three recent source turns. The
+completion transaction verifies the original turns and pins their hashes, then
+registers at most one outstanding one-shot Astra evaluation in the existing
+queue. Source hashes, finding signature and claimed code SHA form the retained
+dedupe identity. Repeated identical evidence never re-arms that job; unresolved
+or unknown evaluations block new candidates. Both stages use existing subscription
+admission and drain model limits without new quota allowances.
+
+Astra corroborates and deduplicates, then records a recommendation and exact
+existing issue/PR numbers. These links remain explicitly model-reported until a
+human verifies them. The prompt requests report-only behavior; this flag does
+not create a new tool-capability sandbox. No automatic issue posting, factory
+admission, fix execution, release or experimental acceptance follows. The human
+owner reviews the lineage, assigns bounded work to its existing issue/PR, and
+uses independent review, CI and subsequent measured outcome before closing it.
+
+Activation acceptance: one ordinary daily pass must retain its source hashes,
+queue no more than one evaluator, retain the evaluation session/verdict, and
+suppress the same evidence on replay. Empty evidence produces no evaluator.
+Malformed, missing, stale or foreign sources fail closed. Roll back by disabling
+the flag; do not trigger or unlock retained unknown jobs. A pending evaluation
+encountering the disabled flag is rejected before a guest session starts.

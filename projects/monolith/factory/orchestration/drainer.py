@@ -972,6 +972,13 @@ def finish_drainer_job(
     # finish_job, not on the replayable job span.
     with tracer.start_as_current_span("drain.finish_job") as span:
         if expected_holder is not None:
+            from factory.orchestration import learning
+
+            options = {}
+            if status == "ok" and learning.enabled():
+                options["transaction_finalize"] = lambda db: learning.complete(
+                    db, name, expected_holder
+                )
             completed = complete_job(
                 name,
                 status=status,
@@ -980,6 +987,7 @@ def finish_drainer_job(
                 deregister=deregister,
                 preserve_repo_freshness=True,
                 defer_seconds=defer_seconds,
+                **options,
             )
             if not completed:
                 raise RuntimeError("routine job claim ownership changed")
@@ -1520,6 +1528,15 @@ def _job_model(payload: object, *, strict: bool = False) -> str:
             payload = json.loads(payload)
         except ValueError:
             payload = None
+    if isinstance(payload, dict) and "learning_stage" in payload:
+        from factory.orchestration import learning
+
+        try:
+            learning.validate_payload(payload)
+        except ValueError as exc:
+            if strict:
+                raise MalformedPayload(str(exc)) from exc
+            return DRAIN_MODEL
     model = payload.get("model", DRAIN_MODEL) if isinstance(payload, dict) else None
     if model is None:
         model = DRAIN_MODEL
@@ -1532,6 +1549,13 @@ def _job_model(payload: object, *, strict: bool = False) -> str:
 
 def _job_prompt(payload: dict, prompt: str) -> str:
     """Append a server-built evidence digest when the job asks for one."""
+    if isinstance(payload, dict) and "learning_stage" in payload:
+        from factory.orchestration import learning
+
+        try:
+            prompt = learning.prompt(payload)
+        except ValueError as exc:
+            raise MalformedPayload(str(exc)) from exc
     digest = payload.get("digest") if isinstance(payload, dict) else None
     if digest is None:
         return prompt
