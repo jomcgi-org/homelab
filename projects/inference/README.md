@@ -60,8 +60,14 @@ security settings. Both value stacks remain registered for schema
 admissibility checks. Disabling embeddings leaves only the optional pull
 secret integration.
 
-After a separately authorized merge, an operator must verify the chart-version
-write-back and inference
-Application rollout, absence of retired resources, embeddings readiness and
-an existing consumer's health. Repository renders alone do not establish live
-acceptance.
+The inference Application deploys from Git `HEAD`, without an OCI chart
+publication or chart-version write-back. After a separately authorized merge,
+call `verify_deployment` for `inference` without `expected_revision`. Require
+`verified`, Synced/Healthy state, no ArgoCD error conditions, and
+`reconciled_at` at least five minutes after the merge.
+
+After that rollout, confirm the retired generative Service, bench NodePort and
+NInfer HTTPRoute/Deployment are absent. Verify that `inference-embeddings` is
+ready with endpoints and its intended CPU-only pod configuration, answers
+`/health`, and serves an existing in-cluster embeddings consumer successfully.
+Repository renders alone do not establish live acceptance.
