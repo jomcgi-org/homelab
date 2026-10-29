@@ -542,7 +542,8 @@ if args_path:
 assert "--provider" in sys.argv
 assert sys.argv[sys.argv.index("--provider") + 1] == "openai-completions"
 assert sys.argv[sys.argv.index("--model") + 1] == "muse-spark-1.3-contributor"
-for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
+assert "--no-context-files" not in sys.argv
+for flag in ("--no-extensions", "--no-skills", "--no-prompt-templates"):
     assert flag in sys.argv
 assert sys.argv[sys.argv.index("--extension") + 1] == "/usr/share/ember-pi/extensions/web-research.ts"
 assert "--tools" not in sys.argv
@@ -9385,14 +9386,8 @@ sys.exit(1)
     assert "Parsed events:" in error_msg or "error" in error_msg
 
 
-def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
-    """pi must be launched with the context budget pinned down.
-
-    Pi uses a bounded local per-session window. These flags keep that
-    budget available to the task. Losing any of them fails SILENTLY: the turn
-    still succeeds, it just spends the window on discovered context or a default
-    prompt instead of the task, and the answers quietly get worse.
-    """
+def test_pi_argv_loads_repo_guidance_with_the_callers_role(tmp_path, monkeypatch):
+    """Native repo instructions must coexist with the assigned role prompt."""
     monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
     manager = _pi_manager(tmp_path, monkeypatch)
     manager.turn("hello", model="spark", system_prompt="CALLER-MARKER")
@@ -9408,18 +9403,20 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     assert "in-cluster services are not" in system_prompt
     assert "only in-cluster service you can reach" not in system_prompt
 
-    # Discovery of every kind is off: context files (AGENTS.md/CLAUDE.md),
-    # extensions, skills and prompt templates all inject tokens we did not
-    # choose, and AGENTS.md discovery alone can dwarf the prompt.
+    # Pi appends native AGENTS.md context even with --system-prompt. Do not
+    # suppress shared repo guidance when launching from the hydrated checkout.
+    assert "--no-context-files" not in argv
+
+    # Keep runtime extension, skill and prompt-template discovery separate from
+    # repository instructions. Only the image-owned extensions are loaded.
     for flag in (
-        "--no-context-files",
         "--no-extensions",
         "--no-skills",
         "--no-prompt-templates",
     ):
-        assert flag in argv, "missing %s: model context budget is unguarded" % flag
+        assert flag in argv, "unexpected discovery enabled: %s" % flag
 
-    # Explicitly load the trusted extension while all discovery stays off.
+    # Explicitly load the trusted extension.
     assert "--extension" in argv
     assert argv[argv.index("--extension") + 1] == shim.PI_WEB_RESEARCH_EXTENSION
     manager._close_process()

@@ -729,6 +729,16 @@ but off in every deployment and has never served a hydration: the shim's
 mirror attempt is denied at the egress proxy and falls through to the direct
 clone.
 
+**Why.** Repo-backed Claude, Codex and Pi workers use their native `AGENTS.md`
+loaders from the hydrated checkout. Root and ancestor guidance loads at startup;
+workers read scoped guidance when their assigned work enters that subtree.
+Pi keeps context loading enabled alongside its factory system prompt, while
+extension, skill and prompt-template discovery stay disabled. This keeps shared
+repository guidance versioned with the checkout. Factory prompts and pinned
+contracts still own roles, scope, tool limits and sequencing. The shim does not
+copy instructions into `CLAUDE.md` or inject a second copy into the prompt.
+(see: /projects/embervm/runtimes/claude/shim.py, /AGENTS.md)
+
 A sequential Firecracker dirty-page diff bank path exists and is dormant.
 The merge-at-bank step now attempts Linux `FICLONE` for the temporary copy of
 the previous full and falls back to a byte copy on ext4 or across filesystems.
