@@ -8,6 +8,8 @@ import pytest
 from pydantic import ValidationError
 
 EXPECTED_TOOLS = {
+    "monolith_agent_preview_completed_raw_recovery",
+    "monolith_agent_apply_completed_raw_recovery",
     "monolith_agent_acquire_lock",
     "monolith_agent_extend_lock",
     "monolith_agent_release_lock",
@@ -41,9 +43,9 @@ async def test_all_agent_tools_registered():
     assert "monolith_agent_check_orphan_jobs" not in registered
 
 
-def test_expected_tool_count_is_eighteen():
+def test_expected_tool_count_is_twenty():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
-    assert len(EXPECTED_TOOLS) == 18
+    assert len(EXPECTED_TOOLS) == 20
 
 
 def test_admission_api_import_does_not_require_private_operator_module(monkeypatch):
@@ -302,5 +304,50 @@ async def test_registered_recovery_tools_cannot_fall_back_to_trigger(
             with pytest.raises(ValidationError):
                 await tool.run(bad)
         assert calls == []
+    finally:
+        reset_current_principal(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["preview", "apply"])
+@pytest.mark.parametrize("authorized", [False, True])
+async def test_completed_raw_recovery_requires_standing_operator(
+    monkeypatch, mode, authorized
+):
+    from auth.api import Authority, Principal, PrincipalKind
+    from auth.dependencies import reset_current_principal, set_current_principal
+    from agent import mcp, routine_reconciliation
+
+    calls = []
+    monkeypatch.setattr(
+        routine_reconciliation,
+        "recover_completed_raw",
+        lambda **kwargs: calls.append(kwargs) or {"ok": True},
+    )
+    token = set_current_principal(
+        Principal(
+            subject="operator",
+            actor=(),
+            scope=(),
+            groups=("operators",),
+            email=None,
+            kind=PrincipalKind("human"),
+            authority=Authority("standing" if authorized else "delegated"),
+        )
+    )
+    args = {"job_name": "kg:raw", "session_id": 1, "permit_id": 2}
+    if mode == "apply":
+        args.update(expected_state_sha256="a" * 64, reconciliation_key="one")
+    try:
+        tool = next(
+            t
+            for t in await mcp.mcp.list_tools()
+            if t.name == f"monolith_agent_{mode}_completed_raw_recovery"
+        )
+        assert set(tool.parameters["required"]) == set(args)
+        await tool.run(args)
+        assert len(calls) == int(authorized)
+        with pytest.raises(ValidationError):
+            await tool.run({**args, "mode": "apply"})
     finally:
         reset_current_principal(token)

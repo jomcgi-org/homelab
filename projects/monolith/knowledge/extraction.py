@@ -1484,12 +1484,14 @@ def apply_extraction(
     *,
     correction: bool = False,
     transaction_guard: Callable[[Session], None] | None = None,
+    transaction_finalize: Callable[[Session, dict], None] | None = None,
 ) -> dict:
     """Validate output, then guard and atomically apply its knowledge changes.
 
     The optional caller guard must raise on lost ownership and retain its lock
     in this session. It runs after preparation releases the original transaction,
-    before the authoritative reread and all writes.
+    before the authoritative reread and all writes. A finalizer may record caller
+    completion in the same transaction; it must not commit or perform network I/O.
     """
     raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
     if raw is None:
@@ -1897,18 +1899,22 @@ def apply_extraction(
                     ):
                         disputed_note.verification_state = prior_state
                         session.add(disputed_note)
+        result = {
+            "raw_id": raw_id,
+            "atoms": note_ids,
+            "rejected": rejected,
+            "dispute": dispute_state,
+            "doc_drift": len(valid_doc_drift),
+            "docfix_jobs": docfix_jobs,
+            "failed": False,
+            "replayed": False,
+        }
+        if transaction_finalize is not None:
+            session.flush()
+            transaction_finalize(session, result)
         session.commit()
     except Exception:
         session.rollback()
         raise
 
-    return {
-        "raw_id": raw_id,
-        "atoms": note_ids,
-        "rejected": rejected,
-        "dispute": dispute_state,
-        "doc_drift": len(valid_doc_drift),
-        "docfix_jobs": docfix_jobs,
-        "failed": False,
-        "replayed": False,
-    }
+    return result

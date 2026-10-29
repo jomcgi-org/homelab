@@ -520,3 +520,63 @@ async def monolith_chat_trust_pardon(
     ledger row yet.
     """
     return await asyncio.to_thread(chat_api.pardon_user, guild_id, user_id, pardoned_by)
+
+
+async def _recover_completed_raw(recovery: dict) -> dict:
+    principal = current_principal()
+    refusal = operator_access_error(principal)
+    if refusal:
+        return {"ok": False, "error": refusal}
+    from agent.routine_reconciliation import recover_completed_raw
+
+    return await asyncio.to_thread(
+        recover_completed_raw, actor=principal.subject, recovery=recovery
+    )
+
+
+@mcp.tool
+async def monolith_agent_preview_completed_raw_recovery(
+    job_name: str,
+    session_id: Annotated[int, Field(strict=True, gt=0)],
+    permit_id: Annotated[int, Field(strict=True, gt=0)],
+) -> dict:
+    """Preview one locked, completed raw KG result as a standing human operator.
+
+    No raw content is returned. Does not apply, unlock, invoke or schedule work.
+    Error, unknown, already-applied and ambiguous ownership remain fenced.
+    """
+    return await _recover_completed_raw(
+        {
+            "mode": "preview",
+            "job_name": job_name,
+            "session_id": session_id,
+            "permit_id": permit_id,
+        }
+    )
+
+
+@mcp.tool
+async def monolith_agent_apply_completed_raw_recovery(
+    job_name: str,
+    session_id: Annotated[int, Field(strict=True, gt=0)],
+    permit_id: Annotated[int, Field(strict=True, gt=0)],
+    expected_state_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
+    reconciliation_key: str,
+) -> dict:
+    """Apply one previewed saved raw KG result as a standing human operator.
+
+    Requires the default-off completedRawRecoveryEnabled deployment gate.
+    Revalidates exact original-result and ownership identity, then atomically
+    validates/applies extraction, completes its lease and records a receipt.
+    Never invokes a model, rearms a job or changes execution/cost history.
+    """
+    return await _recover_completed_raw(
+        {
+            "mode": "apply",
+            "job_name": job_name,
+            "session_id": session_id,
+            "permit_id": permit_id,
+            "expected_state_sha256": expected_state_sha256,
+            "reconciliation_key": reconciliation_key,
+        }
+    )

@@ -931,3 +931,259 @@ def recovered_review_original_outcome(
         return before["reservation_outcome"]
     except (KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError("malformed_review_recomputation") from exc
+
+
+def _completed_raw_state(db, job_name, session_id, permit_id):
+    """Fail closed on any ambiguity; completion is not inferred from lease age."""
+    state = read_reconciliation_state(db, job_name, session_id)
+    siblings = _rows(
+        db,
+        f"SELECT id FROM {_table(db, 'agent_sessions', 'capacity_reservations')} WHERE routine_job_name=:name AND state!='settled' ORDER BY id LIMIT 1",
+        {"name": job_name},
+    )
+    workflow = state["workflow"]
+    expected_prefix = f"luna-drainer:{state['workflow_id']}:"
+    holder = state["locked_by"] or ""
+    if (
+        not job_name.startswith("kg:")
+        or state["routine_kind"] != KG_NODE_KEY
+        or state["node_key"] != KG_NODE_KEY
+        or state["session_status"] != "completed"
+        or state["latest_terminal_reason"] != "completed"
+        or state["latest_stop_reason"] is not None
+        or state["latest_turn_seq"] != 1
+        or state["latest_routine_session_id"] != session_id
+        or state["pending"]
+        or state["active_reservation_ids"]
+        or siblings
+        or state["reservation_count"] != 1
+        or state["reservation_id"] != permit_id
+        or state["reservation_state"] != "settled"
+        or state["reservation_outcome"] != "completed"
+        or state["reservation_tier"] != "kg"
+        or state["reservation_job_name"] != job_name
+        or state["reservation_session_id"] != session_id
+        or state["reservation_local_session_id"] != state["local_session_id"]
+        or state["local_session_id"]
+        != f"{state['workflow_id']}:{KG_NODE_KEY}:{job_name}"
+        or len(workflow) != 1
+        or workflow[0]["name"] != "drain_cycle"
+        or workflow[0]["status"] not in {"SUCCESS", "ERROR", "CANCELLED"}
+        or not holder.startswith(expected_prefix)
+        or not holder[len(expected_prefix) :].isdigit()
+        or state["locked_at"] is None
+        or state["job_status"] is not None
+        or state["provenance_count"]
+        or state["extraction_passes"] not in {None, 0}
+        or state["binding_session_ids"]
+        != ([] if state["guest_id"] is None else [session_id])
+    ):
+        raise ValueError("Completed raw ownership or application evidence is ambiguous")
+    raw = _rows(
+        db,
+        f"SELECT source,extra FROM {_table(db, 'knowledge', 'raw_inputs')} WHERE raw_id=:raw",
+        {"raw": job_name[3:]},
+    )[0]
+    extra = _payload(raw["extra"] or {})
+    if raw["source"] not in {"ember-session", "codex-session", "agent-report"} or any(
+        k in extra for k in ("note_id", "dispute_id")
+    ):
+        raise ValueError("Recovery is limited to ordinary session/report extraction")
+    turn = _rows(
+        db,
+        f"SELECT result_text FROM {_table(db, 'agent_sessions', 'agent_turns')} WHERE session_id=:id AND seq=1",
+        {"id": session_id},
+    )[0]
+    output = turn["result_text"]
+    if (
+        not isinstance(output, str)
+        or not output.strip()
+        or len(output.encode()) > 256_000
+    ):
+        raise ValueError("Saved extraction result is missing or exceeds recovery bound")
+    return state, output
+
+
+class _CompletedReplay(Exception):
+    def __init__(self, result):
+        self.result = result
+
+
+def _completed_receipt(db, key, request):
+    previous = db.get(RoutineReconciliation, key) if key is not None else None
+    if previous is None:
+        return None
+    if previous.request_sha256 != _sha(request):
+        raise ValueError("Recovery key conflicts with recorded request")
+    return json.loads(previous.result_json)
+
+
+def recover_completed_raw(*, actor: str, recovery: dict) -> dict:
+    """Preview/apply one saved result, without invoking a model or rearming a job.
+
+    Default-off operator operation. The preview digest binds the original turn,
+    raw input, lease, workflow, permit and extraction version. The normal writer
+    validates saved output; its transaction also completes the lease and records
+    a durable idempotency receipt. No timeout or missing provenance proves that
+    an attempt did not execute. Error, unknown, multi-turn and already-applied
+    states require a different disposition and remain fenced.
+    """
+    import os
+    from knowledge.api import apply_extraction
+
+    if not isinstance(recovery, dict) or recovery.get("mode") not in {
+        "preview",
+        "apply",
+    }:
+        raise ValueError("Recovery requires preview or apply")
+    keys = {"mode", "job_name", "session_id", "permit_id"}
+    if recovery["mode"] == "apply":
+        keys |= {"reconciliation_key", "expected_state_sha256"}
+    if set(recovery) != keys or any(
+        type(recovery[k]) is not int or recovery[k] <= 0
+        for k in ("session_id", "permit_id")
+    ):
+        raise ValueError("Exact recovery fields and positive IDs required")
+    _identifier(recovery["job_name"], "job name")
+    request = {**recovery, "actor": _identifier(actor, "actor")}
+    key = recovery.get("reconciliation_key")
+    if recovery["mode"] == "apply":
+        _identifier(key, "reconciliation key")
+        _digest(recovery["expected_state_sha256"])
+    enabled = (
+        os.environ.get("KG_COMPLETED_RAW_RECOVERY_ENABLED", "false").lower() == "true"
+    )
+    with Session(get_engine()) as db:
+        receipt = _completed_receipt(db, key, request)
+        if receipt is not None:
+            return receipt
+        try:
+            state, output = _completed_raw_state(
+                db, recovery["job_name"], recovery["session_id"], recovery["permit_id"]
+            )
+        except ValueError:
+            db.rollback()
+            receipt = _completed_receipt(db, key, request)
+            if receipt is not None:
+                return receipt
+            raise
+        if recovery["mode"] == "preview":
+            return {
+                "enabled": enabled,
+                "expected_state_sha256": state["state_sha256"],
+                "job_name": recovery["job_name"],
+                "session_id": recovery["session_id"],
+                "permit_id": recovery["permit_id"],
+                "result_sha256": _sha(output),
+                "extraction_version": EXTRACTION_VERSION,
+            }
+        if not enabled:
+            raise ValueError("Completed raw recovery is disabled")
+        if state["state_sha256"] != recovery["expected_state_sha256"]:
+            raise ValueError("Expected completed-result state changed")
+        before = state
+
+        def guard(session):
+            lock_capacity_pool(session)
+            receipt = _completed_receipt(session, key, request)
+            if receipt is not None:
+                raise _CompletedReplay(receipt)
+            lock_cessation_session(session, recovery["session_id"])
+            lock = " FOR UPDATE" if session.bind.dialect.name != "sqlite" else ""
+            session.execute(
+                text(
+                    f"SELECT name FROM {_table(session, 'claude_agent', 'routine_jobs')} WHERE name=:name{lock}"
+                ),
+                {"name": recovery["job_name"]},
+            ).one()
+            session.execute(
+                text(
+                    f"SELECT id FROM {_table(session, 'knowledge', 'raw_inputs')} WHERE raw_id=:raw{lock}"
+                ),
+                {"raw": recovery["job_name"][3:]},
+            ).one()
+            current, saved = _completed_raw_state(
+                session,
+                recovery["job_name"],
+                recovery["session_id"],
+                recovery["permit_id"],
+            )
+            if current != before or saved != output:
+                raise ValueError(
+                    "Completed-result ownership changed during preparation"
+                )
+
+        result = {
+            "job_name": recovery["job_name"],
+            "session_id": recovery["session_id"],
+            "permit_id": recovery["permit_id"],
+            "reconciliation_key": key,
+            "result_sha256": _sha(output),
+            "extraction_version": EXTRACTION_VERSION,
+            "original_outcome": "completed",
+            "rearmed": False,
+        }
+
+        def finalize(session, applied):
+            if applied.get("failed") or applied.get("replayed"):
+                raise ValueError("Saved result was not newly validated and applied")
+            jobs = _table(session, "claude_agent", "routine_jobs")
+            session.execute(
+                text(
+                    f"UPDATE {jobs} SET locked_by=NULL,locked_at=NULL,next_run_at=NULL,last_run_at=:now,last_status='reconciled_completed',last_summary=:summary WHERE name=:name"
+                ),
+                {
+                    "now": datetime.now(timezone.utc),
+                    "summary": f"Saved session {recovery['session_id']} applied by recovery {key}",
+                    "name": recovery["job_name"],
+                },
+            )
+            session.flush()
+            after = read_reconciliation_state(
+                session, recovery["job_name"], recovery["session_id"]
+            )
+            for field in (
+                "turns_sha256",
+                "payload_sha256",
+                "session_sha256",
+                "reservation_state",
+                "reservation_id",
+            ):
+                if after[field] != before[field]:
+                    raise ValueError("Recovery changed protected execution history")
+            result["atoms"] = len(applied["atoms"])
+            result["rejected"] = len(applied["rejected"])
+            session.add(
+                RoutineReconciliation(
+                    reconciliation_key=key,
+                    request_sha256=_sha(request),
+                    actor=actor,
+                    job_name=recovery["job_name"],
+                    session_id=recovery["session_id"],
+                    unknown_turn_seq=1,
+                    disposition="retain_applied",
+                    evidence_json=_json(
+                        {"request": request, "before": before, "after": after}
+                    ),
+                    result_json=_json(result),
+                )
+            )
+            session.flush()
+
+        try:
+            applied = apply_extraction(
+                db,
+                recovery["job_name"][3:],
+                output,
+                transaction_guard=guard,
+                transaction_finalize=finalize,
+            )
+        except _CompletedReplay as replay:
+            return replay.result
+        if applied.get("replayed"):
+            db.rollback()
+            receipt = _completed_receipt(db, key, request)
+            if receipt is not None:
+                return receipt
+            raise ValueError("Application appeared without this recovery receipt")
+        return result

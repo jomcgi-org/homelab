@@ -539,6 +539,8 @@ spec:
             - name: EMBERVM_CREATE_OUTCOME_LATCH_ENABLED
               value: {{ .Values.healthAlerts.recordCreateOutcomes | quote }}
             {{- if .Values.knowledge.enabled }}
+            - name: KG_COMPLETED_RAW_RECOVERY_ENABLED
+              value: {{ .Values.knowledge.completedRawRecoveryEnabled | quote }}
             - name: KG_FEED_SINCE
               value: {{ .Values.knowledge.feeds.emberSessions.since | quote }}
             - name: KNOWLEDGE_DEFAULT_REPO_SCOPE

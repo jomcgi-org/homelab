@@ -258,3 +258,18 @@ def test_grimoire_workflows_reference_existing_s3_secret(values):
                 "name": "monolith-r2-s3",
                 "key": key,
             }
+
+
+@pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
+def test_completed_raw_recovery_opt_in_does_not_schedule_work(values, tmp_path):
+    override = tmp_path / "recovery.yaml"
+    override.write_text("knowledge:\n  enabled: true\n")
+    before = _render_documents(*values, override)
+    env = _backend_env(before)
+    assert env["KG_COMPLETED_RAW_RECOVERY_ENABLED"] == "false"
+    override.write_text(
+        "knowledge:\n  enabled: true\n  completedRawRecoveryEnabled: true\n"
+    )
+    after = _render_documents(*values, override)
+    assert _backend_env(after) == env | {"KG_COMPLETED_RAW_RECOVERY_ENABLED": "true"}
+    assert _cronworkflows(before) == _cronworkflows(after)
