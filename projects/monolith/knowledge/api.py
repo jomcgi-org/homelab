@@ -277,6 +277,7 @@ def apply_extraction(
     *,
     correction: bool = False,
     transaction_guard: Callable[[Session], None] | None = None,
+    transaction_finalize: Callable[[Session, dict], None] | None = None,
 ) -> dict:
     from knowledge.extraction import apply_extraction as _apply_extraction
 
@@ -286,6 +287,7 @@ def apply_extraction(
         result_text,
         correction=correction,
         transaction_guard=transaction_guard,
+        transaction_finalize=transaction_finalize,
     )
 
 

@@ -1447,6 +1447,8 @@ onepassword:
   itemPath: ""
 
 knowledge:
+  # Operator-only application of exact saved results, never automatic retries.
+  completedRawRecoveryEnabled: false
   enabled: false
   publishFacts:
     enabled: false

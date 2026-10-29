@@ -1581,6 +1581,20 @@ The fact allowance counts every selected member, including failures and
 unsupported sources. Prepared claim revisions cannot be selected again while
 their outcomes remain unresolved. Fewer-attempted revisions precede retries.
 
+**Why saved-result recovery is separate.** A completed raw extraction may retain
+its routine lease when the parent workflow stops before applying the saved result.
+The default-off `knowledge.completedRawRecoveryEnabled` gate permits a standing
+operator to preview and apply that exact result through the dedicated
+`monolith_agent_*_completed_raw_recovery` tools. Preview binds the stored turn,
+raw input, lease owner, terminal workflow, settled permit and extraction version.
+Apply rechecks them under ownership locks and uses the normal validating writer.
+Its knowledge writes, job completion and durable recovery receipt commit together.
+A replay returns the same receipt even after the routine row disappears. No model
+is invoked, no job is rearmed, and execution/cost history is unchanged. Unknown,
+error, multi-turn, dispute, already-applied or ambiguous states stay fenced; they
+are not evidence of a missing result. The gate and exact operator action are
+separate from deploying this supported path. Refs #6659.
+
 **Why explicit review recomputation.** Node loss can leave a prepared review
 batch with an unknown model result indefinitely. Automatic reconciliation keeps
 that uncertainty fenced. A standing human operator may instead use

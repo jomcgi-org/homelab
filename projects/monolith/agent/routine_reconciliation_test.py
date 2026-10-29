@@ -2855,3 +2855,334 @@ def test_recovered_review_redispatch_settles_only_exact_audited_attempt(
                 db.get(AgentSession, preview["session_id"]).ember_session_id == "guest"
             )
             assert supervision._prepare(preview["permit_id"]) is None
+
+
+@pytest.fixture
+def completed_raw(database, monkeypatch):
+    from knowledge.models import (
+        RawInput,
+        AtomRawProvenance,
+        Note,
+        Chunk,
+        NoteLink,
+        Dispute,
+    )
+    from knowledge.entities import Entity, NoteEntity
+
+    held_request, _ = held(database)
+    name, sid = held_request["job_name"], held_request["session_id"]
+    database = database.execution_options(
+        schema_translate_map={
+            "agent_sessions": None,
+            "claude_agent": None,
+            "knowledge": None,
+        }
+    )
+    monkeypatch.setattr(reconciliation, "get_engine", lambda: database)
+    with Session(database) as db:
+        db.execute(text("DROP TABLE raw_inputs"))
+        db.execute(text("DROP TABLE atom_raw_provenance"))
+        db.commit()
+    SQLModel.metadata.create_all(
+        database,
+        tables=[
+            m.__table__
+            for m in (
+                RawInput,
+                AtomRawProvenance,
+                Note,
+                Chunk,
+                NoteLink,
+                Dispute,
+                Entity,
+                NoteEntity,
+            )
+        ],
+    )
+    with Session(database) as db:
+        db.add(
+            RawInput(
+                raw_id="raw",
+                path="raws/raw.md",
+                source="ember-session",
+                content_hash="content",
+                extra={"scope": "repo:jomcgi-org/homelab"},
+            )
+        )
+        agent = db.get(AgentSession, sid)
+        agent.status = "completed"
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == sid)).one()
+        turn.stop_reason = None
+        turn.terminal_reason = "completed"
+        turn.result_text = '```json\n{"assertions":[],"dispute_resolution":null,"doc_drift":[],"notes":"saved"}\n```'
+        db.execute(
+            text(
+                "UPDATE routine_jobs SET last_status=NULL,locked_by='luna-drainer:cycle:0',locked_at='old-time',next_run_at='old-due' WHERE name=:name"
+            ),
+            {"name": name},
+        )
+        permit = AgentCapacityReservation(
+            local_session_id=agent.local_session_id,
+            pending_seq=1,
+            session_id=sid,
+            tier="kg",
+            routine_job_name=name,
+            state="settled",
+            outcome="completed",
+        )
+        db.add(permit)
+        db.commit()
+        pid = permit.id
+    monkeypatch.setenv("KG_COMPLETED_RAW_RECOVERY_ENABLED", "true")
+    # Empty saved output needs no embeddings, but constructing the existing
+    # client must not depend on a developer's model endpoint configuration.
+    monkeypatch.setattr("knowledge.extraction.EmbeddingClient", lambda: object())
+    return database, {
+        "mode": "preview",
+        "job_name": name,
+        "session_id": sid,
+        "permit_id": pid,
+    }
+
+
+def _completed_apply(request, preview):
+    return {
+        **request,
+        "mode": "apply",
+        "reconciliation_key": "saved-result-1",
+        "expected_state_sha256": preview["expected_state_sha256"],
+    }
+
+
+def test_completed_raw_applies_original_result_and_replays_receipt(completed_raw):
+    from knowledge.models import RawInput, AtomRawProvenance
+
+    engine, request = completed_raw
+    preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
+    apply = _completed_apply(request, preview)
+    result = reconciliation.recover_completed_raw(actor="operator", recovery=apply)
+    assert result["rearmed"] is False and result["atoms"] == 0
+    with Session(engine) as db:
+        raw = db.exec(select(RawInput)).one()
+        assert raw.extra["extraction_passes"] == 1
+        assert len(db.exec(select(AtomRawProvenance)).all()) == 1
+        job = (
+            db.execute(text("SELECT * FROM routine_jobs WHERE name='kg:raw'"))
+            .mappings()
+            .one()
+        )
+        assert job["last_status"] == "reconciled_completed"
+        assert job["locked_by"] is None and job["next_run_at"] is None
+        turn = db.exec(select(AgentTurn)).one()
+        assert (
+            turn.terminal_reason == "completed"
+            and '"notes":"saved"' in turn.result_text
+        )
+        db.execute(text("DELETE FROM routine_jobs WHERE name='kg:raw'"))
+        db.commit()
+    assert (
+        reconciliation.recover_completed_raw(actor="operator", recovery=apply) == result
+    )
+    with pytest.raises(ValueError, match="conflicts"):
+        reconciliation.recover_completed_raw(actor="other", recovery=apply)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "UPDATE agent_sessions SET status='failed'",
+        "UPDATE agent_turns SET terminal_reason='error'",
+        "UPDATE routine_jobs SET locked_by='another-owner'",
+        "UPDATE workflow_status SET status='PENDING'",
+        "UPDATE capacity_reservations SET state='uncertain'",
+    ],
+)
+def test_completed_raw_refuses_ambiguous_ownership(completed_raw, sql):
+    engine, request = completed_raw
+    with Session(engine) as db:
+        db.execute(text(sql))
+        db.commit()
+    with pytest.raises(ValueError, match="ambiguous"):
+        reconciliation.recover_completed_raw(actor="operator", recovery=request)
+
+
+def test_completed_raw_changed_result_and_disabled_apply_stay_fenced(
+    completed_raw, monkeypatch
+):
+    engine, request = completed_raw
+    preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
+    apply = _completed_apply(request, preview)
+    monkeypatch.setenv("KG_COMPLETED_RAW_RECOVERY_ENABLED", "false")
+    with pytest.raises(ValueError, match="disabled"):
+        reconciliation.recover_completed_raw(actor="operator", recovery=apply)
+    monkeypatch.setenv("KG_COMPLETED_RAW_RECOVERY_ENABLED", "true")
+    with Session(engine) as db:
+        db.execute(text("UPDATE agent_turns SET result_text='changed'"))
+        db.commit()
+    with pytest.raises(ValueError, match="state changed"):
+        reconciliation.recover_completed_raw(actor="operator", recovery=apply)
+
+
+def test_completed_raw_failure_rolls_back_application_and_lease(
+    completed_raw, monkeypatch
+):
+    from knowledge.models import RawInput, AtomRawProvenance
+
+    engine, request = completed_raw
+    preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
+    original = reconciliation.read_reconciliation_state
+
+    def fail_after_application(db, *args):
+        state = original(db, *args)
+        if state["extraction_passes"] == 1:
+            raise ValueError("injected finalization failure")
+        return state
+
+    monkeypatch.setattr(
+        reconciliation, "read_reconciliation_state", fail_after_application
+    )
+    with pytest.raises(ValueError, match="injected"):
+        reconciliation.recover_completed_raw(
+            actor="operator", recovery=_completed_apply(request, preview)
+        )
+    with Session(engine) as db:
+        assert db.exec(select(AtomRawProvenance)).all() == []
+        assert "extraction_passes" not in db.exec(select(RawInput)).one().extra
+        assert (
+            db.execute(
+                text("SELECT locked_by FROM routine_jobs WHERE name='kg:raw'")
+            ).scalar_one()
+            == "luna-drainer:cycle:0"
+        )
+        assert db.exec(select(RoutineReconciliation)).all() == []
+
+
+def test_completed_raw_rejects_unbound_sibling_permit(completed_raw):
+    engine, request = completed_raw
+    with Session(engine) as db:
+        db.add(
+            AgentCapacityReservation(
+                local_session_id="new-attempt",
+                pending_seq=1,
+                session_id=None,
+                tier="kg",
+                routine_job_name=request["job_name"],
+                state="reserved",
+            )
+        )
+        db.commit()
+    with pytest.raises(ValueError, match="ambiguous"):
+        reconciliation.recover_completed_raw(actor="operator", recovery=request)
+
+
+def test_completed_raw_rejects_contradictory_settled_permit(completed_raw):
+    engine, request = completed_raw
+    with Session(engine) as db:
+        permit = db.get(AgentCapacityReservation, request["permit_id"])
+        permit.outcome = "delivery_error"
+        db.commit()
+    with pytest.raises(ValueError, match="ambiguous"):
+        reconciliation.recover_completed_raw(actor="operator", recovery=request)
+
+
+def test_completed_raw_concurrent_same_key_returns_one_receipt(
+    completed_raw, monkeypatch
+):
+    from threading import Barrier, local
+
+    engine, request = completed_raw
+    preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
+    apply = _completed_apply(request, preview)
+    barrier, seen = Barrier(2), local()
+    original = reconciliation._completed_raw_state
+
+    def overlap(*args):
+        state = original(*args)
+        if not getattr(seen, "read", False):
+            seen.read = True
+            barrier.wait(timeout=10)
+        return state
+
+    monkeypatch.setattr(reconciliation, "_completed_raw_state", overlap)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(
+                reconciliation.recover_completed_raw, actor="operator", recovery=apply
+            )
+            for _ in range(2)
+        ]
+        results = [f.result(timeout=20) for f in futures]
+    assert results[0] == results[1]
+    with Session(engine) as db:
+        assert len(db.exec(select(RoutineReconciliation)).all()) == 1
+
+
+def test_completed_raw_nonempty_application_rolls_back_with_receipt_failure(
+    completed_raw, monkeypatch
+):
+    from knowledge.models import Note, Chunk, AtomRawProvenance, RawInput
+
+    engine, request = completed_raw
+
+    class Embedder:
+        async def embed(self, text):
+            return [0.0] * 1024
+
+        async def embed_batch(self, texts):
+            return [[0.0] * 1024 for _ in texts]
+
+    monkeypatch.setattr("knowledge.extraction.EmbeddingClient", Embedder)
+    monkeypatch.setattr("knowledge.atoms.EmbeddingClient", Embedder)
+    monkeypatch.setattr(
+        "knowledge.store.KnowledgeStore.search_notes_with_context",
+        lambda *args, **kwargs: [],
+    )
+    output = {
+        "assertions": [
+            {
+                "title": "Monolith retries extraction",
+                "body": "When extraction fails, Monolith retries the work.",
+                "scope": "repo:jomcgi-org/homelab",
+                "verification_state": "unverified",
+                "confidence": 0.8,
+                "edges": {},
+            }
+        ],
+        "dispute_resolution": None,
+        "doc_drift": [],
+        "notes": "saved",
+    }
+    with Session(engine) as db:
+        db.exec(select(AgentTurn)).one().result_text = (
+            "```json\n" + json.dumps(output) + "\n```"
+        )
+        db.commit()
+    preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
+    original = reconciliation.read_reconciliation_state
+    saw_atoms = []
+
+    def fail_after_atoms(db, *args):
+        state = original(db, *args)
+        if state["extraction_passes"] == 1:
+            assert len(db.exec(select(Note)).all()) == 1
+            assert len(db.exec(select(Chunk)).all()) >= 1
+            saw_atoms.append(True)
+            raise ValueError("receipt failure after atoms")
+        return state
+
+    monkeypatch.setattr(reconciliation, "read_reconciliation_state", fail_after_atoms)
+    with pytest.raises(ValueError, match="receipt failure"):
+        reconciliation.recover_completed_raw(
+            actor="operator", recovery=_completed_apply(request, preview)
+        )
+    assert saw_atoms == [True]
+    with Session(engine) as db:
+        for model in (Note, Chunk, AtomRawProvenance, RoutineReconciliation):
+            assert db.exec(select(model)).all() == []
+        assert "extraction_passes" not in db.exec(select(RawInput)).one().extra
+        assert (
+            db.execute(
+                text("SELECT locked_by FROM routine_jobs WHERE name='kg:raw'")
+            ).scalar_one()
+            == "luna-drainer:cycle:0"
+        )
