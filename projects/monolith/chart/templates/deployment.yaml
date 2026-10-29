@@ -231,6 +231,8 @@ spec:
             # legacy persisted value and does not name the execution model.
             - name: DRAINER_ENABLED
               value: {{ .enabled | quote }}
+            - name: FACTORY_LEARNING_HANDOFF_ENABLED
+              value: {{ .learningHandoffEnabled | default false | quote }}
             - name: DRAINER_NOTIFY_FAILURES
               value: {{ .notifyFailures | quote }}
             - name: DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED

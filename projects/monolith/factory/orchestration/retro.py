@@ -1083,7 +1083,7 @@ FROM swarm.factory_review_verdict
 WHERE reviewed_at >= :since
 """
 _TURNS = """
-SELECT s.local_session_id, t.seq, t.list_cost_usd, t.terminal_reason, t.stop_reason,
+SELECT s.id AS session_id, s.local_session_id, t.seq, t.list_cost_usd, t.terminal_reason, t.stop_reason,
        t.permission_denials, t.usage_json, left(t.result_text, 300) AS result_head
 FROM agent_sessions.agent_turns t
 JOIN agent_sessions.agent_sessions s ON s.id = t.session_id
@@ -1232,4 +1232,18 @@ def build_factory_retro_prompt(instructions: str) -> str:
 
     with Session(get_engine()) as session:
         data = load_retro_data(session)
-    return f"{instructions.strip()}\n\n{build_retro_digest(data)}"
+    from factory.orchestration import learning
+
+    references = ""
+    if learning.enabled():
+        sources = [
+            {
+                key: row.get(key)
+                for key in ("session_id", "seq", "local_session_id", "result_head")
+            }
+            for row in data["turns"]
+            if row.get("session_id") is not None
+        ]
+        sources.sort(key=lambda row: (row["session_id"], row["seq"]), reverse=True)
+        references = "\n\nBounded source turn references:\n" + json.dumps(sources[:32])
+    return f"{instructions.strip()}{references}\n\n{build_retro_digest(data)}"

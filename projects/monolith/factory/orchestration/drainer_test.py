@@ -4867,3 +4867,43 @@ def test_a_sol_job_reserves_sol_and_defers_on_its_own_provider(
     with Session(admission_database) as db:
         reservations = db.exec(select(AgentCapacityReservation)).all()
         assert [r.model for r in reservations] == [model]
+
+
+def test_learning_stage_model_and_prompt_gates(monkeypatch):
+    payload = {
+        "model": "luna",
+        "repo": "jomcgi-org/homelab",
+        "digest": "factory-retro",
+        "learning_stage": "evidence",
+    }
+    monkeypatch.delenv("FACTORY_LEARNING_HANDOFF_ENABLED", raising=False)
+    with pytest.raises(drainer.MalformedPayload, match="disabled"):
+        drainer._job_model(payload, strict=True)
+    monkeypatch.setenv("FACTORY_LEARNING_HANDOFF_ENABLED", "true")
+    assert drainer._job_model(payload, strict=True) == "luna"
+    monkeypatch.setattr(drainer, "build_retro_prompt", lambda text: text + "\nDIGEST")
+    assert drainer._job_prompt(payload, "ignored").endswith("DIGEST")
+    assert "Report-only" in drainer._job_prompt(payload, "ignored")
+    with pytest.raises(drainer.MalformedPayload, match="model"):
+        drainer._job_model({**payload, "model": "astra"}, strict=True)
+
+
+def test_learning_completion_uses_existing_atomic_step(monkeypatch):
+    from agent import api
+    from factory.orchestration import learning
+
+    calls = []
+    monkeypatch.setenv("FACTORY_LEARNING_HANDOFF_ENABLED", "true")
+    monkeypatch.setattr(
+        learning, "complete", lambda db, name, holder: calls.append((db, name, holder))
+    )
+
+    def complete(name, **kwargs):
+        kwargs["transaction_finalize"]("transaction")
+        return True
+
+    monkeypatch.setattr(api, "complete_job", complete)
+    assert drainer.finish_drainer_job.__wrapped__(
+        "factory-retro-daily", "ok", "done", expected_holder="luna-drainer:w:0"
+    )
+    assert calls == [("transaction", "factory-retro-daily", "luna-drainer:w:0")]

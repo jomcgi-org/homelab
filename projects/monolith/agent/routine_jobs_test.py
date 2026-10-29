@@ -626,3 +626,31 @@ def test_stale_claim_owner_cannot_mutate_reassigned_job(freshness_engine, mutati
             )
             == before
         )
+
+
+def test_completion_finalizer_is_atomic_and_fenced(freshness_engine):
+    _queue_freshness_job(freshness_engine, "owned", locked_by="holder")
+    calls = []
+
+    def fail(db):
+        calls.append(True)
+        db.execute(text("UPDATE routine_jobs SET payload='changed' WHERE name='owned'"))
+        raise ValueError("reject")
+
+    assert not routine_jobs.complete_job(
+        "owned", "ok", expected_holder="other", transaction_finalize=fail
+    )
+    assert calls == []
+    with pytest.raises(ValueError, match="reject"):
+        routine_jobs.complete_job(
+            "owned", "ok", expected_holder="holder", transaction_finalize=fail
+        )
+    with Session(freshness_engine) as db:
+        row = db.execute(
+            text(
+                "SELECT locked_by,last_status,payload FROM routine_jobs WHERE name='owned'"
+            )
+        ).one()
+        assert row.locked_by == "holder"
+        assert row.last_status is None
+        assert row.payload != "changed"
