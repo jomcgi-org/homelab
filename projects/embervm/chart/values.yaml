@@ -246,19 +246,6 @@ opLog:
 # until dev has exercised it under the conformance harness.
 nodeConfirmedDestroy: false
 
-# Async lifecycle op-log appends (ADR embervm/014 decision 2, GitHub issue
-# #5230). Read once at boot by Embervm.Application.async_lifecycle_writes_enabled/0
-# (control/lib/embervm/application.ex) as EMBERVM_ASYNC_LIFECYCLE_WRITES. False
-# (the default) keeps today's write-through ordering: the boot/wake lifecycle
-# appends (:assigned/:started on dispatch, session_created/session_relit on
-# session boot/wake) block the hot-path caller before the instance is handed
-# back. True defers those four appends to Embervm.AsyncWriter after in-memory
-# state advances (a lost write is repaired by adoption backfill); metering,
-# :submitted, destruction, and bank ops are never deferred regardless. This key
-# exists so the gate flips via a values-only deploy, the same surface its
-# sibling nodeConfirmedDestroy above has had all along.
-asyncLifecycleWrites: false
-
 # Flush exact unfinished invokes on control-plane restart before idle parking.
 # Default off for staged rollout; recovery evidence is never fabricated.
 restartFlushInflightInvokes: false

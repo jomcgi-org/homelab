@@ -129,10 +129,8 @@ defmodule Embervm.TaskState do
 
   # The lifecycle-forward rank: a monotone partial order over the states along the
   # normal progression queued -> assigned -> running -> {terminal or the retry
-  # branch}. It exists so the op-log projection can apply a DEFERRED, possibly
-  # out-of-order async lifecycle append (:assigned/:started under
-  # EMBERVM_ASYNC_LIFECYCLE_WRITES, ADR embervm/014 decision 2) MONOTONICALLY: an
-  # append that targets a state advances the durable projection only from a
+  # branch}. The op-log projection applies lifecycle appends monotonically:
+  # an append advances the durable projection only from a
   # strictly-lower-ranked state, so a stale late-arriving :assigned cannot regress a
   # row that already ran or terminalized, while a legitimate forward jump (queued ->
   # running when the :assigned append was lost) still applies. failed_retryable and

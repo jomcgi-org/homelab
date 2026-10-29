@@ -133,14 +133,6 @@ spec:
             # on 2026-08-22 after the dev drill passed (see deploy/values.yaml).
             - name: EMBERVM_NODE_CONFIRMED_DESTROY
               value: {{ if .Values.nodeConfirmedDestroy }}"true"{{ else }}"false"{{ end }}
-            # Async lifecycle op-log appends (ADR embervm/014 decision 2,
-            # GitHub issue #5230): true defers the boot/wake lifecycle appends
-            # (:assigned/:started, session_created/session_relit) to
-            # Embervm.AsyncWriter off the hot path; false (the default) keeps
-            # today's write-through ordering. Rendered beside its sibling gate
-            # above so both ADR-014 ordering gates flip via values only.
-            - name: EMBERVM_ASYNC_LIFECYCLE_WRITES
-              value: {{ if .Values.asyncLifecycleWrites }}"true"{{ else }}"false"{{ end }}
             - name: EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES
               value: {{ if .Values.restartFlushInflightInvokes }}"true"{{ else }}"false"{{ end }}
             # Drain only the sessions on the draining brick instance, not every

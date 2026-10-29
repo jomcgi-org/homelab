@@ -46,26 +46,6 @@ defmodule Embervm.SessionManagerTest do
     end
   end
 
-  # A stub op-log whose append/2 blocks until the test sends :go, so a test can hold
-  # one async write "in flight" (pending) while it runs a reconcile pass, modelling
-  # the writer-stalled-between-RPC-and-append window the adopt-and-backfill repair
-  # guards. Only append/2 is exercised (AsyncWriter calls nothing else).
-  defmodule BlockingOpLog do
-    def append(_server, op) do
-      case op.payload do
-        %{block_to: waiter} when is_pid(waiter) ->
-          send(waiter, {:appending, op.session_id, self()})
-
-          receive do
-            :go -> {:ok, 1}
-          end
-
-        _ ->
-          {:ok, 1}
-      end
-    end
-  end
-
   defmodule UnavailableInvokeOpLog do
     def load_residency_intents(server), do: Embervm.OpLog.SQLite.load_residency_intents(server)
     def load_sessions(server), do: Embervm.OpLog.SQLite.load_sessions(server)
@@ -197,12 +177,6 @@ defmodule Embervm.SessionManagerTest do
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
     manager_op_log = Keyword.get(opts, :op_log, op_log)
 
-    # A shared AsyncWriter (ADR embervm/014 decision 2), threaded into BOTH the store
-    # and the manager so an async-gated stack defers appends through the same writer
-    # the manager's adopt-and-backfill discriminator queries. Off by default.
-    async = Keyword.get(opts, :async_lifecycle_writes, false)
-    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
-
     # Optional store clock: the manager clock is fixed at 5_000_000, so a test that
     # exercises the stuck-in-destroying alarm passes store_clock: fn -> 0 end to make
     # a row's updated_at precede now and the elapsed compare positive.
@@ -217,9 +191,8 @@ defmodule Embervm.SessionManagerTest do
         [
           name: nil,
           op_log: op_log,
-          op_log_mod: Keyword.get(opts, :store_op_log_mod, SQLite),
-          async_writer: writer,
-          async_lifecycle_writes: async
+          op_log_mod: Keyword.get(opts, :store_op_log_mod, SQLite)
+
         ] ++
           store_clock_opts
       )
@@ -290,8 +263,6 @@ defmodule Embervm.SessionManagerTest do
         expected_instances_fun: Keyword.get(opts, :expected_instances_fun,
           fn -> %{"node-4" => %{configured_id: "node-4"}} end),
         session_opts: session_opts,
-        async_writer: writer,
-        async_lifecycle_writes: async,
         restart_flush_inflight_invokes: Keyword.get(opts, :restart_flush_inflight_invokes, false),
         metering: Keyword.get(opts, :metering, Embervm.Metering),
         op_log: manager_op_log,
@@ -326,7 +297,6 @@ defmodule Embervm.SessionManagerTest do
       mgr_opts: mgr_opts,
       store: store,
       op_log: op_log,
-      writer: writer,
       cap_table: cap_table,
       cat_table: cat_table,
       inflight_table: inflight_table,
@@ -7608,7 +7578,6 @@ defmodule Embervm.SessionManagerTest do
     assert hits == 0
   end
 
-
   test "gated: reconcile destroys an orphan reported session VM with no CP row" do
     parent = self()
 
@@ -7631,116 +7600,30 @@ defmodule Embervm.SessionManagerTest do
     assert :error = SessionStore.get(ctx.store, "s-orphan")
   end
 
-  test "gated async: reconcile ADOPTS a rowless reported VM with a pending async write, not destroy" do
+  test "gated: unconfirmed rowless cleanup is retried without creating ownership" do
     parent = self()
+    {:ok, confirmation} = Agent.start_link(fn -> false end)
 
-    # Async gate ON (so the discriminator is live) + node-confirmed-destroy ON (so the
-    # Direction-2 pass runs at all). destroy_fun records any destroy so we can assert
-    # it is NEVER called for the adopted VM.
     ctx =
       start_stack(
-        async_lifecycle_writes: true,
+
         node_confirmed_destroy: true,
         destroy_fun: fn _ch, vm ->
-          send(parent, {:destroyed, vm})
-          {:ok, %{teardown_confirmed: true}}
-        end
-      )
-
-    # Hold one async write in flight for vm-race: enqueue a blocking append through
-    # the shared writer so AsyncWriter.pending?(writer, "vm-race") is true across the
-    # reconcile. This models the writer stalled between RPC success and the
-    # session_created append landing.
-    op = %Embervm.OpLog.Op{
-      kind: :session_created,
-      tenant: "t",
-      session_id: "s-race",
-      ts: 0,
-      payload: %{block_to: parent}
-    }
-
-    Embervm.AsyncWriter.enqueue(ctx.writer, %{
-      op: op,
-      op_log_mod: BlockingOpLog,
-      op_log: :ignored,
-      vm_id: "vm-race"
-    })
-
-    # Wait until the writer has entered the (blocked) append: the vm is now pending.
-    assert_receive {:appending, "s-race", appender}
-    assert Embervm.AsyncWriter.pending?(ctx.writer, "vm-race")
-
-    # The node reports the live VM but the CP has no row (its create append is the one
-    # stalled above). The reconcile must ADOPT (skip destroy), not orphan-destroy it.
-    report_session_vm(ctx, "s-race", "wl-race", "vm-race")
-    :ok = SessionManager.reconcile(ctx.mgr)
-
-    refute_received {:destroyed, "vm-race"}
-
-    # Release the stalled append; the write completes normally afterward.
-    send(appender, :go)
-  end
-
-  test "gated async off the discriminator: a truly rowless VM with NO pending write is still destroyed" do
-    parent = self()
-
-    # Async gate ON but NO pending write for vm-orphan2: the discriminator returns
-    # false, so PR 1's orphan-destroy still fires (adopt-and-backfill only spares a
-    # VM with a write actually in flight).
-    ctx =
-      start_stack(
-        async_lifecycle_writes: true,
-        node_confirmed_destroy: true,
-        destroy_fun: fn _ch, vm ->
-          send(parent, {:destroyed, vm})
-          {:ok, %{teardown_confirmed: true}}
+          confirmed = Agent.get(confirmation, & &1)
+          send(parent, {:destroy_attempt, vm, confirmed})
+          {:ok, %{teardown_confirmed: confirmed}}
         end
       )
 
     report_session_vm(ctx, "s-orphan2", "wl-orphan2", "vm-orphan2")
     :ok = SessionManager.reconcile(ctx.mgr)
 
-    assert_received {:destroyed, "vm-orphan2"}
+    assert_received {:destroy_attempt, "vm-orphan2", false}
     assert :error = SessionStore.get(ctx.store, "s-orphan2")
-  end
-
-  test "gated async: a rowless report whose vm a LIVE row owns is adopted+backfilled, not destroyed" do
-    parent = self()
-
-    ctx =
-      start_stack(
-        async_lifecycle_writes: true,
-        node_confirmed_destroy: true,
-        destroy_fun: fn _ch, vm ->
-          send(parent, {:destroyed, vm})
-          {:ok, %{teardown_confirmed: true}}
-        end
-      )
-
-    # A live session row owns vm-owned (created here so its ETS row + durable create
-    # exist). The node reports a DIFFERENT session_id but the SAME vm: the report's
-    # session_id resolves to :error, yet the vm is owned by a live row -> the
-    # discriminator picks the backfill arm and re-drives session_created (idempotent),
-    # never destroying the legitimately-owned VM.
-    {:ok, owned} =
-      SessionStore.create(ctx.store, %{
-        tenant: "homelab",
-        principal: "p1",
-        workload: "wl-owned",
-        node_id: "node-4",
-        vm_id: "vm-owned",
-        base_snapshot_ref: "base@sha256:abc",
-        base_digest: "sha256:abc",
-        expires_at: 9_999_999
-      })
-
-    report_session_vm(ctx, "s-report-mismatch", "wl-owned", "vm-owned")
+    Agent.update(confirmation, fn _ -> true end)
     :ok = SessionManager.reconcile(ctx.mgr)
-
-    refute_received {:destroyed, "vm-owned"}
-    # The owning row is intact and non-terminal (never destroyed).
-    {:ok, still} = SessionStore.get(ctx.store, owned.session_id)
-    refute still.state in [:destroyed, :failed, :expired, :evicted]
+    assert_received {:destroy_attempt, "vm-orphan2", true}
+    assert :error = SessionStore.get(ctx.store, "s-orphan2")
   end
 
   test "gated: reconcile never destroys a primed-pool VM" do

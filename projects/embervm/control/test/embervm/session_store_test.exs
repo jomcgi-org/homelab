@@ -11,6 +11,45 @@ defmodule Embervm.SessionStoreTest do
   alias Embervm.OpLog.SQLite
   alias Embervm.SessionStore
 
+  defmodule RelightOpLog do
+    def load_sessions({log, _reject}), do: SQLite.load_sessions(log)
+    def load_residency_intents({log, _reject}), do: SQLite.load_residency_intents(log)
+    def append({log, reject}, op) do
+      if op.kind == :session_relit and Agent.get(reject, & &1),
+        do: {:error, :injected_write_failure},
+        else: SQLite.append(log, op)
+    end
+  end
+
+  test "relight append failure preserves state, residency and counts until a durable retry", %{path: path} do
+    {:ok, log} = SQLite.start_link(path: path, name: nil)
+    {:ok, reject} = Agent.start_link(fn -> true end)
+    {:ok, store} = SessionStore.start_link(name: nil, op_log: {log, reject}, op_log_mod: RelightOpLog)
+    {:ok, created} = create(store)
+    id = created.session_id
+    assert {:ok, _} = SessionStore.mark(store, id, :bank)
+    assert {:ok, _} = SessionStore.transition(store, id, :bank_ready, :session_banked,
+      %{snapshot_ref: "snap", generation: 1}, %{})
+    assert {:ok, before} = SessionStore.mark(store, id, :relight)
+    counts = SessionStore.counts(store, "wl-a")
+    residency = SessionStore.residency(store, id)
+    payload = %{snapshot_ref: "snap", generation: 1, node_id: "node-new", vm_id: "vm-new"}
+    updates = %{node_id: "node-new", vm_id: "vm-new"}
+    assert {:error, :injected_write_failure} = SessionStore.transition(store, id,
+      :relight_ready, :session_relit, payload, updates)
+    assert {:ok, ^before} = SessionStore.get(store, id)
+    assert SessionStore.counts(store, "wl-a") == counts
+    assert SessionStore.residency(store, id) == residency
+    assert {:ok, ops} = SQLite.read_from(log, 0)
+    refute Enum.any?(ops, &(&1.kind == :session_relit))
+    Agent.update(reject, fn _ -> false end)
+    assert {:ok, %{state: :running, node_id: "node-new", vm_id: "vm-new"}} =
+      SessionStore.transition(store, id, :relight_ready, :session_relit, payload, updates)
+    assert SessionStore.residency(store, id) == {:ok, {"node-new", "vm-new"}}
+    assert {:ok, ops} = SQLite.read_from(log, 0)
+    assert Enum.map(ops, & &1.kind) == [:session_created, :session_banked, :session_relit]
+  end
+
   setup do
     path =
       Path.join(
@@ -630,27 +669,24 @@ defmodule Embervm.SessionStoreTest do
     assert SessionStore.counts(store, "wl-ncd") == %{live: 0, banked: 0}
   end
 
-  # -- async lifecycle writes (ADR embervm/014 decision 2) -------------------
+  # -- synchronous ownership and repair -----------------------------------
 
   defp durable_session_created_count(op_log, session_id) do
     {:ok, ops} = SQLite.read_from(op_log, 0)
     ops |> Enum.filter(&(&1.session_id == session_id and &1.kind == :session_created)) |> length()
   end
 
-  test "gate ON: session create remains write-through because it establishes ownership", %{
+  test "session create is write-through because it establishes ownership", %{
     path: path
   } do
     {:ok, op_log} = SQLite.start_link(path: path, name: nil)
-    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
 
     {:ok, store} =
       SessionStore.start_link(
         op_log: op_log,
         name: nil,
         clock: sequential_clock(),
-        id_fun: sequential_id_fun(),
-        async_writer: writer,
-        async_lifecycle_writes: true
+        id_fun: sequential_id_fun()
       )
 
     {:ok, created} = create(store, vm_id: "vm-async")
@@ -659,28 +695,6 @@ defmodule Embervm.SessionStoreTest do
     assert is_binary(created.token)
     assert {:ok, %{state: :running}} = SessionStore.get(store, created.session_id)
     assert durable_session_created_count(op_log, created.session_id) == 1
-    refute Embervm.AsyncWriter.pending?(writer, "vm-async")
-  end
-
-  test "gate OFF: create is write-through (durable append synchronous, writer untouched)", %{path: path} do
-    {:ok, op_log} = SQLite.start_link(path: path, name: nil)
-    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
-
-    {:ok, store} =
-      SessionStore.start_link(
-        op_log: op_log,
-        name: nil,
-        clock: sequential_clock(),
-        id_fun: sequential_id_fun(),
-        async_writer: writer,
-        async_lifecycle_writes: false
-      )
-
-    {:ok, created} = create(store, vm_id: "vm-sync")
-
-    # No drain: the append is already durable, and the writer was never used.
-    assert durable_session_created_count(op_log, created.session_id) == 1
-    refute Embervm.AsyncWriter.pending?(writer, "vm-sync")
   end
 
   test "backfill_created re-drives a lost session_created append from the surviving ETS row", %{
@@ -711,11 +725,8 @@ defmodule Embervm.SessionStoreTest do
 
   # An op-log double that delegates to a real SQLite backend but SWALLOWS the FIRST
   # :session_created append (returns {:ok, 0} as if durable, without persisting),
-  # modelling an async lifecycle write that was lost before it reached disk while the
-  # caller still saw success and minted its ETS row. The "already dropped one?" state
-  # lives in a test-owned public ETS table, so the drop is deterministic with ZERO
-  # timing dependence (killing the AsyncWriter mid-flight to lose the write would be
-  # flaky, which is exactly the failure mode this suite is trying to shed).
+  # modelling a faulty backend acknowledgement. A test-owned counter makes
+  # the lost durable write deterministic.
   defmodule DropFirstCreateOpLog do
     def append(op_log, %{kind: :session_created} = op) do
       case :ets.update_counter(:sessionstore_drop_first, :created, {2, 1}, {:created, 0}) do
@@ -730,7 +741,7 @@ defmodule Embervm.SessionStoreTest do
     def load_sessions(op_log), do: SQLite.load_sessions(op_log)
   end
 
-  test "backfill_created CREATES the durable session_created when it is genuinely absent (lost async write)",
+  test "backfill_created CREATES the durable session_created when it is genuinely absent (faulty backend acknowledgement)",
        %{path: path} do
     # Owned by this test process, so it is auto-deleted when the test ends (no on_exit:
     # the table is already gone by the time on_exit's separate process would run).
