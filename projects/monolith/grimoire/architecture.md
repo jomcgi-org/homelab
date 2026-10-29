@@ -652,7 +652,7 @@ assignment route. Creation adds no sheet version. The existing draft,
 submission and DM approval flow is unchanged. The DM-only members list
 includes each assigned character's name. Lobby campaign entries include only
 the caller's own `player_character_id` and `character_name`, both null when
-unassigned. A session screen remains follow-up work.
+unassigned.
 
 **Why.** Character-owned sheets and grants survive seating changes without
 moving knowledge between accounts. Campaign-scoped roles let a DM seat their

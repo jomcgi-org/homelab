@@ -810,8 +810,9 @@ expensive fresh-VM node attempt. The accepted cost is that a codex failure
 raised after `turn/start` may already have run tool calls under
 `danger-full-access`, and the retry re-delivers the same message to the same
 live thread, so a partially effectful turn can replay up to the ladder's bound.
-A header-based control-plane retry remains open (see Direction) for callers
-that do not go through the monolith transport.
+A header-based control-plane retry for callers outside the monolith transport
+closed not planned (#6185). The closing note says the monolith ladder covers
+the only caller that meaningfully hits transient 422s.
 
 **Why snapshot anywhere uses the between-turns safe point (#6256).** A provider
 stream can run for twelve hours, so waiting for it makes routine rollouts take

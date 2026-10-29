@@ -159,7 +159,8 @@ This is a delivery slice of #5788, not the complete conductor interface.
   This repository slice does not enable it or any new mutation adapter.
 - Standalone conductor conversations and private external-chat transcripts
   remain outside the receipt-level contract. Broader conversation continuity
-  remains #5787; planner context handoff remains #5849.
+  (#5787) and planner context handoff (#5849) closed not planned; continuity
+  enablement and live validation are #6561.
 - Existing lower-level agent session tools are not conductor conversations.
 
 The targeted tests cover the operation owners and an in-process FastMCP
@@ -169,12 +170,16 @@ external client. Then use an explicitly approved issue/control action to
 check its durable acknowledgement and retry. An in-process test does not
 establish gateway publication, account permissions or voice-client support.
 
-Conductor rescope: this is repository-only staged delivery. Operational
-acceptance remains on #5789, including a legitimate external operator bearer,
-deployed replay and stale-version checks while the model is unavailable, an
-unreachable-worker global stop trial, and live reconciliation proof that cost,
-start records and capacity holds survive cancellation, replacement and retry.
-The issue remains open until those checks are complete.
+Conductor rescope: this was repository-only staged delivery. Its live checklist
+named a legitimate external operator bearer, deployed replay and stale-version
+checks while the model is unavailable, an unreachable-worker global stop trial,
+and live reconciliation proof that cost, start records and capacity holds
+survive cancellation, replacement and retry. #5789 closed on 2026-09-30. Its
+closing comment reports read-only evidence: production flags on, gateway 401s
+for anonymous and invalid bearers, and attributed stop and decision audit rows.
+It records none of the checklist drills as run, says the stop trial and cost
+check are unverified and unplanned, and asks for a specific bug if an incident
+shows a gap. No open issue owns these checks.
 
 ## Prepare bounded validation
 

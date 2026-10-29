@@ -517,7 +517,7 @@
       "from": "console-caller",
       "to": "pg-primary",
       "maturity": "built",
-      "evidence": "projects/monolith/knowledge/router.py:283"
+      "evidence": "projects/monolith/knowledge/router.py:365"
     },
     {
       "key": "mcp.report-knowledge",
@@ -526,7 +526,7 @@
       "from": "mcp-caller",
       "to": "pg-primary",
       "maturity": "built",
-      "evidence": "projects/monolith/knowledge/mcp.py:222"
+      "evidence": "projects/monolith/knowledge/mcp.py:478"
     },
     {
       "key": "kg-feed.export",
@@ -535,7 +535,7 @@
       "from": "kg-feed",
       "to": "pg-primary",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/execution/kg_feed.py:231"
+      "evidence": "projects/monolith/factory/execution/kg_feed.py:328"
     },
     {
       "key": "kg-drainer.dispatch",
@@ -544,7 +544,7 @@
       "from": "kg-drainer",
       "to": "agent-runner",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/orchestration/drainer.py:404"
+      "evidence": "projects/monolith/factory/orchestration/drainer.py:538"
     },
     {
       "key": "backup-checker.publish",
