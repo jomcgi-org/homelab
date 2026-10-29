@@ -377,6 +377,46 @@ unknown-outcome marker, cost, receipt and binding; it does not retry the turn.
 The invoke terminal path releases the exact receipt it fenced, then runs completion cleanup. A receipt inside its acceptance window with nothing committed stays fenced.
 (see: /projects/monolith/factory/execution/result_receipts.py)
 
+### Merged-head verification
+
+With `FACTORY_MERGED_VERIFY_HANDOFF_ENABLED=true` (default off, no chart
+activation), `factory_merged_delivery.reconcile_merged_delivery` can append one
+`review_merged_<pr>_<head>` node. Its single attempt uses existing reviewer
+routing and reservations. Graph admission accepts `read_only` only for this
+flag-gated merged-head caller; unrelated callers retain their existing admission
+rules. The checkout and artifact schema select the immutable merged head. The
+guest cannot edit source, commit, push, merge or deploy. A rejected, failed or
+ambiguous terminal result stays visible as `merged_verify_review_blocked` and
+cannot enter source-writing correction. Unknown execution retains its fence.
+
+Review reuse authenticates the successful graph run and immutable model pin
+against the start ledger and server-owned session identity. Approval must name
+the same PR/head and come from a session distinct from every implementation
+session. Wrong identities, non-approvals, ineligible actual dispatch models and
+self-reported model names cannot approve delivery. The existing reviewer pool
+and judgment floor apply, including permitted fallback. Required `pr-checks`,
+delivery identity, rollout and recorded live acceptance still gate settlement.
+PR prose, merge observation and pause or hold release grant no review evidence.
+
+The admitted reconciler invokes this route before its paused return;
+cancellation and observed human ownership drain first. The existing landing
+tick separately discovers escalated receipts with `owned_pr_merged`, rotating
+by receipt identity within `OBSERVATION_BATCH` (10). Only historical
+missing-review escalation states can reacquire the same task. Candidate errors
+cannot starve peers, and scan errors leave other landing work reachable.
+Handoff graph edits and audits share the control/task transaction and expected
+graph revision. Repeated ticks retain one PR/head node.
+
+This staged exception to ordinary re-admission retains the original task,
+runs, accounting, ownership, hold-release evidence, allowances and absolute
+deadline. It uses existing capacity, creates no planner or funding extension,
+and cannot override human decisions, landing holds, cancellation or unresolved
+execution. A task pause can retain a handoff while preventing dispatch. Physical
+session creation rechecks authority. Quiescent deadline expiry fails the task
+and releases capacity, including after handoff or verification I/O. An allowance
+refusal retains missing-review escalation. An expired escalated receipt remains
+settled and cannot reacquire capacity.
+
 ### Landing
 
 For an unheld, settled delivery requiring an explicit operator decision,

@@ -456,6 +456,21 @@ rollout alone does not satisfy that removal condition.
 
 ### Factory acceptance
 
+**Why.** `FACTORY_MERGED_VERIFY_HANDOFF_ENABLED` stages owned-merged-PR
+verification through the existing graph/review owner. It defaults off, with no
+chart activation. Merge observation and pause release grant no approval. Reuse
+requires an independent successful exact-head graph run, immutable dispatch pin,
+matching start ledger and server-owned session. Otherwise one read-only review
+inspects the immutable merged head without reopening implementation.
+
+Landing discovers historical missing-review escalations in bounded rotating
+passes. Recovery retains ownership, runs, costs, allowance bounds and absolute
+deadlines. Human decisions, landing holds, cancellation and unresolved execution
+remain fences. Quiescent deadline expiry releases capacity; an allowance refusal
+retains escalation. Required CI, delivery/rollout proof and outstanding live
+acceptance remain separate gates. See
+[merged-head verification](factory/orchestration/FACTORY.md#merged-head-verification).
+
 Repository delivery and operational acceptance are separate. These rows move from
 section 11 unchanged, including their owners, holds and unresolved live checks.
 The linked issues own current acceptance; a closed repository issue alone proves no rollout.
