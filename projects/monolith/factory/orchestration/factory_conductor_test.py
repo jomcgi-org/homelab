@@ -11280,32 +11280,23 @@ def test_planner_prompt_names_only_the_judgment_floor(feedback_db):
     assert floor not in machine
 
 
-def test_planner_preview_prompt_disabled_matches_unset_rendering(
-    feedback_db, monkeypatch
+@pytest.mark.parametrize("legacy_flag", [None, "false", "true"])
+def test_retired_planner_preview_instruction_is_absent(
+    feedback_db, monkeypatch, legacy_flag
 ):
     task, _policy = feedback_task()
     monkeypatch.delenv("FACTORY_PLANNER_PREVIEW_ENABLED", raising=False)
     unset = conductor.planner_prompt(task, [], [])
-    monkeypatch.setenv("FACTORY_PLANNER_PREVIEW_ENABLED", "false")
-    assert conductor.planner_prompt(task, [], []).encode() == unset.encode()
-    assert "at most two previews" not in unset
-
-
-def test_planner_preview_prompt_enabled_names_bound_and_measured_fallback(
-    feedback_db, monkeypatch
-):
-    task, _policy = feedback_task()
-    monkeypatch.setenv("FACTORY_PLANNER_PREVIEW_ENABLED", "true")
+    if legacy_flag is not None:
+        monkeypatch.setenv("FACTORY_PLANNER_PREVIEW_ENABLED", legacy_flag)
     prompt = conductor.planner_prompt(task, [], [])
+    assert prompt.encode() == unset.encode()
     for text in (
-        "exact expected_revision",
+        "task-bound planner adapter",
         "at most two previews per planner turn",
-        "submission repeats all current-state checks",
         "second preview still does not fit",
-        "request_funding where funding is available, or pause",
-        "needed versus allowed turns, plus spare_turns",
     ):
-        assert text in prompt
+        assert text not in prompt
     # Dollars are accounting only (#7161): no dollar shortfall is cited.
     assert "spare_usd" not in prompt
     assert prompt.startswith(conductor._PLANNER_CHARTER)
