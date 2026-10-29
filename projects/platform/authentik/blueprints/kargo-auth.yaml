@@ -5,7 +5,7 @@ metadata:
     blueprints.goauthentik.io/description: |
       OAuth2 provider and application for the Kargo UI at
       private.jomcgi.dev/app/kargo. Kargo runs the OIDC flow itself rather than
-      Envoy Gateway doing it, so unlike the dev and preview lanes there is no
+      Envoy Gateway doing it, so unlike the preview lane there is no
       SecurityPolicy involved and no client secret anywhere.
 entries:
   # ── 1. The provider Kargo authenticates against ──────────────────────────
@@ -16,8 +16,8 @@ entries:
   # static credential.
   #
   # So there is NO client_secret here, no `!Env` lookup, and no 1Password item.
-  # dev-auth.yaml needs all three because Envoy Gateway runs that flow as a
-  # confidential client; Kargo runs its own and does not.
+  # The preview lane uses a confidential client because Envoy Gateway runs
+  # that flow; Kargo runs its own public-client flow.
   #
   # That also sidesteps the `!Env [KEY]` trap those lanes document: a
   # one-element sequence raises IndexError inside authentik's tag constructor,

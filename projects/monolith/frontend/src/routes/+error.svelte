@@ -87,7 +87,7 @@
           {/if}
           <div class="ed-foot">
             <!-- Relative, NOT https://jomcgi.dev/. This page renders on every host
-                 that serves the bundle (private.jomcgi.dev, dev.jomcgi.dev), and an
+                 that serves the bundle (including private.jomcgi.dev), and an
                  absolute production URL sent people off the environment they were
                  actually using. `/` redirects to /public/. -->
             <a href="/">← back to solid ground</a>

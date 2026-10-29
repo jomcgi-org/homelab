@@ -16,11 +16,12 @@ was invisible to it. That stale pin failed twice in one night (#4728): once
 leaving a safety gate inert because the pinned chart had no `if` to read the
 value the overlay set, and once withholding a feature because the template
 lived in a newer chart. embervm-dev reached six chart versions behind
-production the same way.
+production the same way. The obsolete monolith-dev input was retired in #7034;
+future monolith dev work starts fresh under #7004.
 
 THE PROJECT NAME IS NEVER THE WORKLOAD'S NAME. A Kargo Project owns a NAMESPACE
-of the same name, and `monolith`, `monolith-dev`, `embervm` and `embervm-dev`
-all already exist holding live workloads. Adopting one would be the same class
+of the same name. `monolith`, `embervm` and `embervm-dev` hold workloads;
+historically `monolith-dev` did too. Adopting one would be the same class
 of collision that cost this repo three incidents in one evening: a name that
 looks descriptive and is already someone's identity. Hence `kargo-<workload>`.
 */}}

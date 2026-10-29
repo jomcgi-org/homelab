@@ -199,8 +199,6 @@ def test_all_checked_in_environment_overlays_keep_spiffe_default_off() -> None:
         _chart_dir() / "values.yaml",
         projects / "monolith/deploy/values.yaml",
         projects / "monolith/deploy/values-gke.yaml",
-        projects / "monolith/dev/deploy/values.yaml",
-        projects / "monolith/dev/deploy/values-recovery-gke.yaml",
     ]
     for path in paths:
         values = yaml.safe_load(path.read_text())

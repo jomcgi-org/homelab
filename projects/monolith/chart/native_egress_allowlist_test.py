@@ -42,13 +42,13 @@ def _gke_values() -> Path:
 
 
 def _dev_values() -> Path:
-    return _env("DEV_VALUES", _chart_dir().parent / "dev" / "deploy" / "values.yaml")
+    return _env("DEV_VALUES", _chart_dir().parent / "chart" / "testdata" / "isolated-values.yaml")
 
 
-def _recovery_gke_values() -> Path:
+def _fresh_database_values() -> Path:
     return _env(
-        "RECOVERY_GKE_VALUES",
-        _chart_dir().parent / "dev" / "deploy" / "values-recovery-gke.yaml",
+        "FRESH_DATABASE_VALUES",
+        _chart_dir().parent / "chart" / "testdata" / "fresh-database-values.yaml",
     )
 
 
@@ -232,14 +232,14 @@ def test_shipped_overlays_render_only_their_supported_egress_policy():
             [_chart_dir() / "values.yaml", _deploy_values()],
         ),
         (
-            "monolith-dev",
-            "monolith-dev",
+            "test-monolith",
+            "test-monolith",
             [_chart_dir() / "values.yaml", _deploy_values(), _dev_values()],
         ),
         (
-            "monolith-dev",
-            "monolith-dev",
-            [_chart_dir() / "values.yaml", _recovery_gke_values()],
+            "test-monolith",
+            "test-monolith",
+            [_chart_dir() / "values.yaml", _fresh_database_values()],
         ),
     ]
     for release, namespace, values in disabled_cases:
@@ -270,7 +270,7 @@ def test_stats_exporter_is_absent_from_values_and_rendered_workloads(profile):
     if profile == "dev":
         values.append(_dev_values())
     if profile == "recovery":
-        values.append(_recovery_gke_values())
+        values.append(_fresh_database_values())
 
     for path in values:
         config = yaml.safe_load(path.read_text())
@@ -305,20 +305,20 @@ def test_stats_exporter_is_absent_from_values_and_rendered_workloads(profile):
         assert retired not in rendered
 
 
-def test_dev_overlay_retargets_only_its_embervm_dependencies():
+def test_isolated_overlay_retargets_only_its_embervm_dependencies():
     docs = _render(
-        "monolith-dev",
-        "monolith-dev",
+        "test-monolith",
+        "test-monolith",
         [_chart_dir() / "values.yaml", _deploy_values(), _dev_values()],
         _native_enabled(),
     )
-    policy = _native_policy(docs, "monolith-dev")
+    policy = _native_policy(docs, "test-monolith")
     assert _native_endpoint_rules(policy) == _expected_endpoints(
-        "monolith-dev", "monolith-dev", "embervm-dev"
+        "test-monolith", "test-monolith", "test-ember"
     )
     assert (
         policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/instance"]
-        == "monolith-dev"
+        == "test-monolith"
     )
 
 

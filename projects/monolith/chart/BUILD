@@ -130,8 +130,8 @@ py_test(
         "values.yaml",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
-        "//projects/monolith/dev/deploy:deploy_values",
-        "//projects/monolith/dev/deploy:recovery_gke_values",
+        "//projects/monolith/chart/testdata:isolated_values",
+        "//projects/monolith/chart/testdata:fresh_database_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -155,8 +155,8 @@ py_test(
         "values.yaml",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
-        "//projects/monolith/dev/deploy:deploy_values",
-        "//projects/monolith/dev/deploy:recovery_gke_values",
+        "//projects/monolith/chart/testdata:isolated_values",
+        "//projects/monolith/chart/testdata:fresh_database_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -177,7 +177,7 @@ py_test(
         "values.yaml",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
-        "//projects/monolith/dev/deploy:deploy_values",
+        "//projects/monolith/chart/testdata:isolated_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -187,7 +187,7 @@ py_test(
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
-        "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
+        "DEV_VALUES": "$(rootpath //projects/monolith/chart/testdata:isolated_values)",
         "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
     },
     deps = [
@@ -207,9 +207,8 @@ py_test(
         "//projects/monolith/deploy:application",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
-        "//projects/monolith/dev/deploy:application",
-        "//projects/monolith/dev/deploy:deploy_values",
-        "//projects/monolith/dev/deploy:recovery_gke_values",
+        "//projects/monolith/chart/testdata:isolated_values",
+        "//projects/monolith/chart/testdata:fresh_database_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -220,11 +219,10 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
         "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
-        "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
-        "RECOVERY_GKE_VALUES": "$(rootpath //projects/monolith/dev/deploy:recovery_gke_values)",
-        # The Applications, so releaseName is read from where it is DECLARED.
+        "DEV_VALUES": "$(rootpath //projects/monolith/chart/testdata:isolated_values)",
+        "FRESH_DATABASE_VALUES": "$(rootpath //projects/monolith/chart/testdata:fresh_database_values)",
+        # Production releaseName is read from its registered Application.
         "PROD_APPLICATION": "$(rootpath //projects/monolith/deploy:application)",
-        "DEV_APPLICATION": "$(rootpath //projects/monolith/dev/deploy:application)",
     },
     deps = [
         "@pip//pytest",
@@ -240,7 +238,7 @@ py_test(
         "Chart.yaml",
         "values.yaml",
         "//projects/monolith/deploy:deploy_values",
-        "//projects/monolith/dev/deploy:deploy_values",
+        "//projects/monolith/chart/testdata:isolated_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -249,7 +247,7 @@ py_test(
     ]),
     env = {
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
-        "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
+        "DEV_VALUES": "$(rootpath //projects/monolith/chart/testdata:isolated_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = ["@pip//pyyaml"],
@@ -408,8 +406,8 @@ py_test(
         "values.yaml",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
-        "//projects/monolith/dev/deploy:deploy_values",
-        "//projects/monolith/dev/deploy:recovery_gke_values",
+        "//projects/monolith/chart/testdata:isolated_values",
+        "//projects/monolith/chart/testdata:fresh_database_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -420,8 +418,8 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
         "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
-        "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
-        "RECOVERY_GKE_VALUES": "$(rootpath //projects/monolith/dev/deploy:recovery_gke_values)",
+        "DEV_VALUES": "$(rootpath //projects/monolith/chart/testdata:isolated_values)",
+        "FRESH_DATABASE_VALUES": "$(rootpath //projects/monolith/chart/testdata:fresh_database_values)",
     },
     deps = [
         "@pip//pytest",

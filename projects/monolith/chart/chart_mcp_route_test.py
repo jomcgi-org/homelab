@@ -15,17 +15,17 @@ MONOLITH = CHART.parent
 OVERLAYS = (
     "deploy/values.yaml",
     "deploy/values-gke.yaml",
-    "dev/deploy/values.yaml",
-    "dev/deploy/values-recovery-gke.yaml",
+    "chart/testdata/isolated-values.yaml",
+    "chart/testdata/fresh-database-values.yaml",
 )
-# Match the valueFiles ordering in the prod and dev Applications. The GKE
-# rendering used by the chart BUILD is checked separately from those chains.
+# Production Application ordering and synthetic chart isolation cases.
+# The GKE rendering used by the chart BUILD is checked separately.
 RENDER_CASES = [
     pytest.param((), id="chart-defaults"),
     *(pytest.param((overlay,), id=overlay) for overlay in OVERLAYS),
     pytest.param(("deploy/values.yaml",), id="production-application"),
     pytest.param(
-        ("deploy/values.yaml", "dev/deploy/values.yaml"), id="dev-application"
+        ("deploy/values.yaml", "chart/testdata/isolated-values.yaml"), id="isolated-chart"
     ),
     pytest.param(("deploy/values.yaml", "deploy/values-gke.yaml"), id="production-gke"),
 ]

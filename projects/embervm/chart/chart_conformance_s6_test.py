@@ -193,17 +193,17 @@ def test_s6_on_refuses_to_render_without_s6_resources() -> None:
     assert "conformance.s6.resources is required" in result.stderr
 
 
-@pytest.mark.parametrize(
-    "settings", [[], ["conformance.s6.enabled=true"]], ids=["committed", "s6-on"]
-)
-def test_recovery_preset_renders_no_runner(settings: list[str]) -> None:
+
+
+@pytest.mark.parametrize("s6", ["false", "true"])
+def test_disabled_conformance_has_no_runner_even_with_s6_on(s6: str) -> None:
     rendered = _render(
-        "embervm-dev",
-        [_chart_dir() / "values.yaml", Path(os.environ["RECOVERY_VALUES"])],
-        settings,
+        "embervm-dev", _dev_values(),
+        ["conformance.enabled=false", f"conformance.s6.enabled={s6}"],
     )
     assert _runner_pod(rendered) is None
     assert "S6_TLC_" not in rendered
+    assert any(doc.get("kind") == "Deployment" for doc in yaml.safe_load_all(rendered) if doc)
 
 
 def test_production_namespace_refuses_runner_with_s6_on() -> None:
@@ -218,7 +218,7 @@ def test_production_namespace_refuses_runner_with_s6_on() -> None:
 
 def test_s6_stays_off_in_every_committed_values_file() -> None:
     assert _chart_values()["conformance"]["s6"]["enabled"] is False
-    for key in ("DEV_VALUES", "RECOVERY_VALUES"):
+    for key in ("DEV_VALUES",):
         values = yaml.safe_load(Path(os.environ[key]).read_text())
         assert values["conformance"]["s6"]["enabled"] is False
     for key in ("PROD_VALUES", "DEV_GKE_VALUES"):

@@ -1,11 +1,12 @@
-# Inactive preparation for the isolated factory recovery proof (#4322).
+# Historical preparation for the isolated factory recovery proof (#4322).
 # The chart only loads blueprints/*.yaml, so this dev/ file is not applied.
-# Activation must verify unused identities, the exact server version and the
-# dev token accept/reject matrix under the delegated operational review.
+# The associated Monolith/Ember recovery profiles were retired in #7034.
+# This retained input is historical; future monolith dev work starts fresh
+# under #7004. It authorizes no activation or account/credential operation.
 #
 # The broker authenticates kg-agent-recovery-sa with its own app password.
-# Mint that password for this user and store it in the dedicated 1Password item
-# embervm-authentik-recovery-agent, field app-password. This blueprint contains
+# Its proposed 1Password item was embervm-authentik-recovery-agent, field
+# app-password. This blueprint contains
 # no password and does not create one. Do not copy a production broker grant.
 version: 1
 metadata:
@@ -13,7 +14,7 @@ metadata:
   labels:
     blueprints.goauthentik.io/description: |
       Dedicated service account, application gate and audience for the
-      inactive Monolith/Ember GKE recovery profile.
+      historical Monolith/Ember GKE recovery profile retired in #7034.
 entries:
   - model: authentik_core.group
     id: recovery-agents

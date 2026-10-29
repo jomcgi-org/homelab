@@ -1672,8 +1672,8 @@ agentSessions:
   #
   # A consumer values file that OMITS agentSessions renders fine, because
   # chart defaults merge (verified against both deploy/values.yaml and
-  # dev/deploy/values.yaml). The one shape that breaks the template is an
-  # explicit null override, `agentSessions:` with no body, which gives
+  # chart/testdata/isolated-values.yaml). An explicit null override,
+  # `agentSessions:` with no body, gives
   # "nil pointer evaluating interface {}.piWorkload".
   piWorkload: ""
   # Shared execution permits (agent_sessions/admission.py). The code defaults
@@ -2215,25 +2215,18 @@ cfIngress:
     #
     # That is correct for production and WRONG anywhere the hostname is not
     # production's: an unauthenticated path on another host is a hole, and
-    # GitHub is not delivering there anyway. True here, false in dev.
+    # GitHub is not delivering there anyway. Disable this on any isolated chart render.
     githubWebhook:
       enabled: true
     authentik:
-      # authentik derives the OIDC issuer from the APPLICATION SLUG, not the
-      # provider name, so these two must track the slug in
-      # projects/platform/authentik/blueprints/dev-auth.yaml. Renaming the
-      # application silently breaks token validation.
-      issuer: "https://auth.jomcgi.dev/application/o/dev/"
-      jwksUri: "https://auth.jomcgi.dev/application/o/dev/jwks/"
-      # Pinned in Git in the blueprint too, because it is not a secret and this
-      # policy has to name it.
-      clientID: dev-monolith
-      # The provider's secret reaches this namespace through its OWN 1Password
-      # item, deliberately not authentik's, so this namespace never receives
-      # authentik's secret key and bootstrap credentials to read one value.
-      clientSecretName: dev-oidc-client
+      # Set these explicitly when selecting auth: authentik. No private-tier
+      # provider or client Secret is provisioned by the chart defaults.
+      issuer: ""
+      jwksUri: ""
+      clientID: ""
+      clientSecretName: ""
       onepassword:
-        itemPath: "vaults/k8s-homelab/items/dev-oidc"
+        itemPath: ""
       # Group NAMES (not ids) from authentik's default profile scope mapping.
       # Renaming a group in authentik stops matching here, and the symptom is a
       # 403 after a completely successful login.

@@ -400,11 +400,13 @@ RuntimeDefault`). The private monolith applies that context to its backend,
 progress-ingest and frontend containers. Each gets
 a separate writable `/tmp` `emptyDir`, owned through pod `fsGroup: 65532`;
 the remainder of each root filesystem is read-only. No admission policy
-enforces any of it. Kyverno runs two `ClusterPolicy` objects, both `Audit`
-(`kubectl get clusterpolicies`):
-`require-resource-requests`, scoped to the `monolith` and `monolith-public`
-namespaces, and `clone-monolith-workflows-secrets`, which copies Secrets
-into the job namespace. The OTel injection policy is disabled. Nothing is
+enforces any of it. The repository defines `require-resource-requests` in
+`Audit` mode, scoped to the `monolith` and `monolith-public` namespaces. The
+separate generate policy `clone-production-monolith-workflow-secrets` copies
+production Secrets into the job namespace with synchronization on each source
+Secret. It has no Audit validation mode. #7034 renames that policy when removing
+the retired monolith-dev clone rule; this records repository configuration and
+does not claim a live migration. The OTel injection policy is disabled. Nothing is
 rejected at admission, and no check flags a new exception: the repo's
 `no-privileged` and `no-host-network` Semgrep rules were removed (#4777).
 

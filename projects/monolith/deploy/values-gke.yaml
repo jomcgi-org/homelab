@@ -235,8 +235,7 @@ chat:
 # Kubernetes NetworkPolicy has no additive audit mode. Keep the native app
 # egress policy off until GKE network-policy logs cover a representative live
 # window, including periodic leader jobs and the secret-backed ICAL feed.
-# Populate the API and DNS addresses from the live hub in the enabling change;
-# the addresses in the inactive recovery profile are revalidation hints only.
+# Populate the API and DNS addresses from the live hub in the enabling change.
 networkPolicy:
   egress:
     enabled: false
