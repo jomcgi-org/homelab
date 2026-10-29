@@ -2528,3 +2528,39 @@ def test_refinement_batch_requires_standing_operator_before_any_read(monkeypatch
     assert calls[0] == (([7249], "briefs"), {})
     assert calls[1][1]["request_key"] == "key"
     assert calls[1][1]["expected_preview_sha256"] == "a" * 64
+
+
+def test_progress_continuation_requires_standing_human_and_preview(monkeypatch):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    calls = []
+    monkeypatch.setattr(
+        progress, "apply", lambda *a, **kw: calls.append((a, kw)) or {"ok": True}
+    )
+
+    async def invoke():
+        return await mcp.factory_continue_recovery(
+            "apply", 927, 7436, "a" * 40, "Continue saved work", "request", "b" * 64
+        )
+
+    assert _as(_principal(), invoke)["ok"]
+    assert calls[0][1]["actor"] == "joe"
+    calls.clear()
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(principal, invoke)["ok"]
+    assert calls == []
+
+    async def unpreviewed():
+        return await mcp.factory_continue_recovery(
+            "apply", 927, 7436, "a" * 40, "Continue saved work"
+        )
+
+    assert (
+        _as(_principal(), unpreviewed)["reason"]
+        == "progress_requires_preview_and_request_key"
+    )
+    assert calls == []

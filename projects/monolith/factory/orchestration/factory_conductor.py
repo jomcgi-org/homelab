@@ -6680,6 +6680,15 @@ def _settle_paused_task(
             return True
         # Retain an existing open question and its choices on repeated ticks.
         previous = snapshot.get("escalation") or {}
+        from factory.orchestration import factory_pause
+
+        if factory_pause.is_card(previous) and previous.get("options") == [
+            factory_pause.STOP
+        ]:
+            # This typed stop-only card is already an actionable restriction,
+            # not a planner's two-to-four-option escalation. Keep it and its
+            # pause owner; expiry is not authority to invent a continue choice.
+            return True
         decision = (
             previous
             if previous.get("resolved") is None and previous.get("question")
@@ -7029,6 +7038,12 @@ def reconcile_task(
             parallel=parallel,
             policy=policy,
         )
+        return
+    from factory.orchestration import factory_progress_continuation
+
+    if factory_progress_continuation.renew(task_id):
+        # Reload the task's effective policy on the next tick. Never dispatch
+        # with the policy snapshot from before this audited lease renewal.
         return
     permission = can_start(task_id)
     if (

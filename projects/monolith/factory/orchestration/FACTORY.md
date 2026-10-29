@@ -3087,3 +3087,25 @@ the funding deadline and review date, even if the funding lease already expired.
 Changing the timeout is refused. The recovery grant and its independent work-turn
 ceiling remain unchanged: changing a policy cap does not authorize more recovery
 starts. Recording a hold alone retains its separate restrictive semantics.
+
+### Explicit progress continuation of a recovered artifact
+
+`factory_continue_recovery` is a standing-human preview/apply control for one
+paused recovered task and its current native-reviewed PR head. It records a
+separate authorization bound to the original recovery audit, graph, policy,
+funding, accounting and artifact. Apply explicitly resumes that same task under
+a two-hour lease; it does not restart it, clear landing/security holds, change
+cash fields, or authorize another receipt. The original recovery audit remains
+unchanged. Existing tasks never acquire this authority implicitly.
+
+The native reconciler may renew only after a distinct reviewed head with green
+CI, fresh subscription evidence for the pinned model roles and confirmed
+quiescence. It records that evidence and permits the next correction/review
+pair plus planner decisions within another finite lease. An unchanged head,
+repeated failed reviews, failed execution, uncertain work, an operator pause,
+or changed authority prevents renewal. Ordinary admission and independent
+review remain mandatory. No lease authorizes paid overage or global policy
+changes; absence of fresh subscription observations is a refusal, not capacity.
+
+Typed automatic stop-only cards remain paused at deadline. They are not
+reinterpreted as planner decisions or given an invented continue option.
