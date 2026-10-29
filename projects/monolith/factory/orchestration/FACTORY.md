@@ -96,6 +96,9 @@ KG admission needs at least one fresh permitting grant observation. Exhausted ac
 
 The `human` issue label declares human ownership over `agent-ready`, task class and allowlisting, excludes both lanes and queued admission, and survives label removal. The optional `intake` block defaults to `enabled: false`, `max_per_day: 5`, `cooldown_hours: 24`, `refine_enabled: false`. `close_enabled` with `max_closes_per_day` (default 3) gates whether a refine verdict may close.
 
+Once `20261112000000_factory_daily_admission_limit_1000` is applied, the homelab
+daily admission cap is 1000; rollout is pending.
+
 An open `blocks` edge excludes its blocked receipt from sweeps and final admission. Sweeps refresh four minutes after a completed idle sweep, staging one observation per open `agent-ready` issue. [#7459](https://github.com/jomcgi-org/homelab/issues/7459) holds staged acceptance.
 
 Intake admits at most one issue per lane per tick and at most `max_per_day` deliveries over a rolling 24 hours. An issue with a `succeeded` receipt in any generation is excluded as `delivered`. Operator-posted receipts take a separate linked-PR path, and local-authority work items are a second source.
