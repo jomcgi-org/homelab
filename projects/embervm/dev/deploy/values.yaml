@@ -159,9 +159,6 @@ noded:
 #
 # Everything below is disabled for SIZE, not for safety. Dev exercises lifecycle
 # with one small task-class workload rather than the production fleet.
-bazelQueryWorkload:
-  enabled: false
-
 # The website snapshotter (ADR embervm/035), off in dev. It also has no egress
 # lane here: dev inherits egress.enabled false, so even enabled it could not
 # reach a frontend.
@@ -370,8 +367,6 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/runtime-pi/rootfs.ext4
   scratchPostgres:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/scratch-postgres/rootfs.ext4
-  bazelQuery:
-    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/bazel-query/rootfs.ext4
   # MANDATORY even though dev does not run the shotter workload: the Workload CR
   # and the base BUILDER are gated separately, so a path left at the inherited
   # production value is UNBACKED inside the container (only nvmeRoot is mounted)
@@ -430,10 +425,6 @@ runtimeClaude:
 # scratchPostgres belongs in this list too, but its entry lives with its
 # `enabled: false` in the workload block above: one key, both settings. Do not
 # re-add a `scratchPostgres:` block here.
-
-bazelQuery:
-  guestImage:
-    repository: ""
 
 # Empty repository skips the shotter base builder entirely. Disabling the
 # Workload CR above turns off the cheap switch; this is the expensive one, and

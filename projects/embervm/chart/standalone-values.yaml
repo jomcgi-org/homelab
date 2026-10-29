@@ -97,9 +97,6 @@ sandboxWorkloads:
   sandboxJavascript:
     enabled: false
 
-bazelQueryWorkload:
-  enabled: false
-
 shotterWorkload:
   enabled: false
 
@@ -154,10 +151,6 @@ runtimeClaude:
     repository: ""
 
 runtimePi:
-  guestImage:
-    repository: ""
-
-bazelQuery:
   guestImage:
     repository: ""
 

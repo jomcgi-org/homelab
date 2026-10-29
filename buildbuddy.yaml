@@ -312,6 +312,20 @@ actions:
             commit_format_drift "style: generate Go build graph" "${new_build_files[@]}"
           }
 
+          # Regenerate image indexes before any Bazel query analyzes them. A
+          # deleted runtime otherwise leaves dangling labels that prevent the
+          # later formatter from ever running. This pure shell generator needs
+          # no Bazel graph. The normal format stage validates and writes back
+          # its changes after the required tests and image build pass.
+          AUTHOR="$(git log -1 --format='%an')"
+          if [ "$ON_MAIN" = false ] &&
+             [ "${GIT_PR_NUMBER:-0}" != "0" ] &&
+             [ -n "${GIT_BRANCH:-}" ] &&
+             [[ ! "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] &&
+             [ "$AUTHOR" != "ci-format-bot" ]; then
+            ./bazel/images/generate-push-all.sh
+          fi
+
           if [ "$ON_MAIN" = false ]; then
             prepare_go_build_graph
           fi

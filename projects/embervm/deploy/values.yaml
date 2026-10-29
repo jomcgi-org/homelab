@@ -458,10 +458,6 @@ scratchPostgres:
 demoPostgres:
   enabled: false
 
-# Live public demos are replaced by baked Firecracker replays.
-bazelQueryWorkload:
-  enabled: false
-
 # ~1s sweeper tick makes the idle bank visibly prompt (default is 30s, which
 # would leave the demo VM "awake" for up to half a minute after its 1s idle
 # window elapses). Wake cap raised 10 -> 30/min: with a 1s idle bank every demo

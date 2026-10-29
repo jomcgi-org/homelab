@@ -305,8 +305,6 @@ Input: (dict "ctx" $ctx "name" $name).
 {{- $ctx.Values.pingWorkload.memMib -}}
 {{- else if eq $name "scratchPostgres" -}}
 {{- min ($ctx.Values.scratchPostgres.memMib | int) ($ctx.Values.demoPostgres.memMib | int) -}}
-{{- else if eq $name "bazelQuery" -}}
-{{- $ctx.Values.bazelQueryWorkload.memMib -}}
 {{- else if eq $name "shotter" -}}
 {{- $ctx.Values.shotterWorkload.memMib -}}
 {{- end -}}
