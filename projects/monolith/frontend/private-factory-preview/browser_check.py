@@ -299,7 +299,7 @@ def main():
                 "populated",
                 "empty",
                 "unavailable",
-                *(("missing",) if view == "item" else ()),
+                *(("missing", "tracking") if view == "item" else ()),
             ):
                 context = browser.new_context(
                     viewport={"width": width, "height": 844 if width == 390 else 900},
@@ -394,7 +394,7 @@ def main():
                             "reducedMotion": motion,
                         }
                     )
-                    if scenario == "populated":
+                    if scenario in ("populated", "tracking"):
                         # Double computed text sizes, rather than zooming the
                         # screenshot, to exercise actual wrapping and controls.
                         page.evaluate("""() => {

@@ -2,6 +2,7 @@
   import { Button } from "@homelab/design-system/components";
   import { onMount } from "svelte";
   import FactorySheet from "../../FactorySheet.svelte";
+  import TrackingItem from "../../TrackingItem.svelte";
   import {
     relativeTime,
     edgeRows,
@@ -251,6 +252,9 @@
   {/if}
 
   {#if document}
+    {#if document.item.execution_mode === "tracking_only"}
+      <TrackingItem item={document.item} detail />
+    {:else}
     <header class="item-header edition">
       <div class="ed-lead">
         <h2 class="item-id">
@@ -465,6 +469,7 @@
       </section>
     {/if}
 
+    {/if}
     <section class="edition item-section" aria-label="Event history">
       <h2 class="sec-label">/ Events</h2>
       {#if !eventHistory.length}

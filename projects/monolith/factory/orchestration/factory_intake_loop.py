@@ -346,6 +346,7 @@ def _local_candidates(
             select(WorkItem)
             .where(
                 WorkItem.authority == "local",
+                WorkItem.execution_mode == "factory",
                 WorkItem.state.in_(("ready", "open")),
                 WorkItem.github_repo == repo,
             )
@@ -354,6 +355,7 @@ def _local_candidates(
         unnumbered_items = db.exec(
             select(WorkItem).where(
                 WorkItem.authority == "local",
+                WorkItem.execution_mode == "factory",
                 WorkItem.state.in_(("ready", "open")),
                 WorkItem.github_issue_number.is_(None),
             )
