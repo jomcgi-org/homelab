@@ -210,11 +210,14 @@ def test_factory_read_models_include_work_item_evidence_and_context_404(
         assert detail.json()["edges_in"][0]["kind"] == "parent"
         assert detail.json()["events"][0]["op"] == "test"
         listed = client.get(
-            "/api/agents/factory/work-items?state=ready&authority=local", headers=headers
+            "/api/agents/factory/work-items?state=ready&authority=local",
+            headers=headers,
         ).json()["work_items"]
         assert [item["id"] for item in listed] == [child_id]
         assert (
-            client.get("/api/agents/factory/work-items/999999", headers=headers).status_code
+            client.get(
+                "/api/agents/factory/work-items/999999", headers=headers
+            ).status_code
             == 404
         )
         context = client.get(f"/api/agents/factory/escalations/{receipt_id}/context")

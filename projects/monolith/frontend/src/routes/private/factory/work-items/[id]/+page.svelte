@@ -155,238 +155,261 @@
     {#if document.item.execution_mode === "tracking_only"}
       <TrackingItem item={document.item} detail />
     {:else}
-    <header class="item-header edition">
-      <div class="ed-lead">
-        <h2 class="item-id">
-          work item <code>{document.item.id}</code>
-          {#if document.item.github_issue_number}
-            <a
-              href={document.item.source_ref}
-              class="issue-link code"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              #{document.item.github_issue_number}
-            </a>
-          {/if}
-        </h2>
-        <ul class="item-meta divided">
-          <li class="state code">{document.item.state}</li>
-          <li class="authority code">{document.item.authority}</li>
-          <li class="trust code">{document.item.trust}</li>
-          <li class="task-class code">{document.item.task_class}</li>
-          {#each document.item.labels as label}
-            <li class="label">{label}</li>
+      <header class="item-header edition">
+        <div class="ed-lead">
+          <h2 class="item-id">
+            work item <code>{document.item.id}</code>
+            {#if document.item.github_issue_number}
+              <a
+                href={document.item.source_ref}
+                class="issue-link code"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                #{document.item.github_issue_number}
+              </a>
+            {/if}
+          </h2>
+          <ul class="item-meta divided">
+            <li class="state code">{document.item.state}</li>
+            <li class="authority code">{document.item.authority}</li>
+            <li class="trust code">{document.item.trust}</li>
+            <li class="task-class code">{document.item.task_class}</li>
+            {#each document.item.labels as label}
+              <li class="label">{label}</li>
+            {/each}
+          </ul>
+          <h3 class="item-title">{document.item.title}</h3>
+        </div>
+      </header>
+
+      <section class="edition item-section" aria-label="Work item edges">
+        <p class="sec-label">/ Blocked by</p>
+        {#if !edges.blocked_by?.length}
+          <p class="none">none</p>
+        {:else}
+          {#each edges.blocked_by as edge}
+            <div class="edge-line">
+              <a
+                href="/factory/work-items/{edge.from_id}"
+                class="edge-link code"
+              >
+                work item {edge.from_id}
+              </a>
+              <span class="tag code">{edge.source}</span>
+              <Button
+                variant="secondary"
+                class="remove-btn"
+                aria-label="remove edge"
+                disabled={busy !== null}
+                onclick={() => deleteEdge(edge.id)}
+              >
+                x
+              </Button>
+            </div>
           {/each}
-        </ul>
-        <h3 class="item-title">{document.item.title}</h3>
-      </div>
-    </header>
+        {/if}
 
-    <section class="edition item-section" aria-label="Work item edges">
-      <p class="sec-label">/ Blocked by</p>
-      {#if !edges.blocked_by?.length}
-        <p class="none">none</p>
-      {:else}
-        {#each edges.blocked_by as edge}
-          <div class="edge-line">
-            <a href="/factory/work-items/{edge.from_id}" class="edge-link code">
-              work item {edge.from_id}
-            </a>
-            <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label="remove edge"
-              disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
-            >
-              x
-            </Button>
-          </div>
-        {/each}
-      {/if}
-
-      <p class="sec-label">/ Blocks</p>
-      {#if !edges.blocks?.length}
-        <p class="none">none</p>
-      {:else}
-        {#each edges.blocks as edge}
-          <div class="edge-line">
-            <a href="/factory/work-items/{edge.to_id}" class="edge-link code">
-              work item {edge.to_id}
-            </a>
-            <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label="remove edge"
-              disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
-            >
-              x
-            </Button>
-          </div>
-        {/each}
-      {/if}
-
-      <p class="sec-label">/ Parent</p>
-      {#if !edges.parent?.length}
-        <p class="none">none</p>
-      {:else}
-        {#each edges.parent as edge}
-          <div class="edge-line">
-            <a href="/factory/work-items/{edge.from_id}" class="edge-link code">
-              work item {edge.from_id}
-            </a>
-            <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label="remove edge"
-              disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
-            >
-              x
-            </Button>
-          </div>
-        {/each}
-      {/if}
-
-      <p class="sec-label">/ Children</p>
-      {#if !edges.children?.length}
-        <p class="none">none</p>
-      {:else}
-        {#each edges.children as edge}
-          <div class="edge-line">
-            <a href="/factory/work-items/{edge.to_id}" class="edge-link code">
-              work item {edge.to_id}
-            </a>
-            <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label="remove edge"
-              disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
-            >
-              x
-            </Button>
-          </div>
-        {/each}
-      {/if}
-
-      <p class="sec-label">/ Supersedes</p>
-      {#if !edges.supersedes?.length}
-        <p class="none">none</p>
-      {:else}
-        {#each edges.supersedes as edge}
-          <div class="edge-line">
-            <a href="/factory/work-items/{edge.to_id}" class="edge-link code">
-              work item {edge.to_id}
-            </a>
-            <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label="remove edge"
-              disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
-            >
-              x
-            </Button>
-          </div>
-        {/each}
-      {/if}
-
-      <p class="sec-label">/ Superseded by</p>
-      {#if !edges.superseded_by?.length}
-        <p class="none">none</p>
-      {:else}
-        {#each edges.superseded_by as edge}
-          <div class="edge-line">
-            <a href="/factory/work-items/{edge.from_id}" class="edge-link code">
-              work item {edge.from_id}
-            </a>
-            <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label="remove edge"
-              disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
-            >
-              x
-            </Button>
-          </div>
-        {/each}
-      {/if}
-    </section>
-
-    <form
-      class="add-form"
-      onsubmit={async (e) => {
-        e.preventDefault();
-        const form = e.target;
-        const [kind, direction] = form.direction.value.split("|");
-        const other = form.other.value.trim();
-        const parsed = parseOther(other);
-        if (!parsed) {
-          addFormError = "Enter work item id or #issue";
-          return;
-        }
-        addFormError = null;
-        const otherValue =
-          parsed.type === "issue" ? `#${parsed.number}` : parsed.id;
-        if (await addEdge(kind, direction, otherValue)) {
-          form.other.value = "";
-        }
-      }}
-    >
-      <label>
-        <span class="label-text">Kind and direction</span>
-        <select name="direction" disabled={busy !== null}>
-          {#each EDGE_DIRECTIONS as [kind, direction]}
-            <option value={`${kind}|${direction}`}>
-              {directionLabel(kind, direction)}
-            </option>
+        <p class="sec-label">/ Blocks</p>
+        {#if !edges.blocks?.length}
+          <p class="none">none</p>
+        {:else}
+          {#each edges.blocks as edge}
+            <div class="edge-line">
+              <a href="/factory/work-items/{edge.to_id}" class="edge-link code">
+                work item {edge.to_id}
+              </a>
+              <span class="tag code">{edge.source}</span>
+              <Button
+                variant="secondary"
+                class="remove-btn"
+                aria-label="remove edge"
+                disabled={busy !== null}
+                onclick={() => deleteEdge(edge.id)}
+              >
+                x
+              </Button>
+            </div>
           {/each}
-        </select>
-      </label>
-      <label>
-        <span class="label-text">Work item id or #issue</span>
-        <input
-          name="other"
-          type="text"
-          placeholder="work item id or #issue"
-          disabled={busy !== null}
-          onkeydown={(e) => {
-            if (e.key === "Escape") {
-              e.currentTarget.value = "";
-            }
-          }}
-        />
-      </label>
-      <Button
-        type="submit"
-        variant="secondary"
-        class="submit-btn"
-        disabled={busy !== null}
+        {/if}
+
+        <p class="sec-label">/ Parent</p>
+        {#if !edges.parent?.length}
+          <p class="none">none</p>
+        {:else}
+          {#each edges.parent as edge}
+            <div class="edge-line">
+              <a
+                href="/factory/work-items/{edge.from_id}"
+                class="edge-link code"
+              >
+                work item {edge.from_id}
+              </a>
+              <span class="tag code">{edge.source}</span>
+              <Button
+                variant="secondary"
+                class="remove-btn"
+                aria-label="remove edge"
+                disabled={busy !== null}
+                onclick={() => deleteEdge(edge.id)}
+              >
+                x
+              </Button>
+            </div>
+          {/each}
+        {/if}
+
+        <p class="sec-label">/ Children</p>
+        {#if !edges.children?.length}
+          <p class="none">none</p>
+        {:else}
+          {#each edges.children as edge}
+            <div class="edge-line">
+              <a href="/factory/work-items/{edge.to_id}" class="edge-link code">
+                work item {edge.to_id}
+              </a>
+              <span class="tag code">{edge.source}</span>
+              <Button
+                variant="secondary"
+                class="remove-btn"
+                aria-label="remove edge"
+                disabled={busy !== null}
+                onclick={() => deleteEdge(edge.id)}
+              >
+                x
+              </Button>
+            </div>
+          {/each}
+        {/if}
+
+        <p class="sec-label">/ Supersedes</p>
+        {#if !edges.supersedes?.length}
+          <p class="none">none</p>
+        {:else}
+          {#each edges.supersedes as edge}
+            <div class="edge-line">
+              <a href="/factory/work-items/{edge.to_id}" class="edge-link code">
+                work item {edge.to_id}
+              </a>
+              <span class="tag code">{edge.source}</span>
+              <Button
+                variant="secondary"
+                class="remove-btn"
+                aria-label="remove edge"
+                disabled={busy !== null}
+                onclick={() => deleteEdge(edge.id)}
+              >
+                x
+              </Button>
+            </div>
+          {/each}
+        {/if}
+
+        <p class="sec-label">/ Superseded by</p>
+        {#if !edges.superseded_by?.length}
+          <p class="none">none</p>
+        {:else}
+          {#each edges.superseded_by as edge}
+            <div class="edge-line">
+              <a
+                href="/factory/work-items/{edge.from_id}"
+                class="edge-link code"
+              >
+                work item {edge.from_id}
+              </a>
+              <span class="tag code">{edge.source}</span>
+              <Button
+                variant="secondary"
+                class="remove-btn"
+                aria-label="remove edge"
+                disabled={busy !== null}
+                onclick={() => deleteEdge(edge.id)}
+              >
+                x
+              </Button>
+            </div>
+          {/each}
+        {/if}
+      </section>
+
+      <form
+        class="add-form"
+        onsubmit={async (e) => {
+          e.preventDefault();
+          const form = e.target;
+          const [kind, direction] = form.direction.value.split("|");
+          const other = form.other.value.trim();
+          const parsed = parseOther(other);
+          if (!parsed) {
+            addFormError = "Enter work item id or #issue";
+            return;
+          }
+          addFormError = null;
+          const otherValue =
+            parsed.type === "issue" ? `#${parsed.number}` : parsed.id;
+          if (await addEdge(kind, direction, otherValue)) {
+            form.other.value = "";
+          }
+        }}
       >
-        add
-      </Button>
-    </form>
-    {#if addFormError}
-      <p class="warn-line" role="alert">{addFormError}</p>
-    {/if}
+        <label>
+          <span class="label-text">Kind and direction</span>
+          <select name="direction" disabled={busy !== null}>
+            {#each EDGE_DIRECTIONS as [kind, direction]}
+              <option value={`${kind}|${direction}`}>
+                {directionLabel(kind, direction)}
+              </option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          <span class="label-text">Work item id or #issue</span>
+          <input
+            name="other"
+            type="text"
+            placeholder="work item id or #issue"
+            disabled={busy !== null}
+            onkeydown={(e) => {
+              if (e.key === "Escape") {
+                e.currentTarget.value = "";
+              }
+            }}
+          />
+        </label>
+        <Button
+          type="submit"
+          variant="secondary"
+          class="submit-btn"
+          disabled={busy !== null}
+        >
+          add
+        </Button>
+      </form>
+      {#if addFormError}
+        <p class="warn-line" role="alert">{addFormError}</p>
+      {/if}
 
-    {#if document.receipts?.length}
-      <section class="edition item-section" aria-label="Receipts">
-        <p class="sec-label">/ Receipts</p>
-        {#each document.receipts as receipt}
-          {#if receipt.state === "escalated"}
-            <p class="receipt-line">
-              <a href="/factory/escalations">
+      {#if document.receipts?.length}
+        <section class="edition item-section" aria-label="Receipts">
+          <p class="sec-label">/ Receipts</p>
+          {#each document.receipts as receipt}
+            {#if receipt.state === "escalated"}
+              <p class="receipt-line">
+                <a href="/factory/escalations">
+                  receipt <code class="code">{receipt.id}</code> gen
+                  <code class="code">{receipt.generation}</code>
+                  <span>{receipt.task_class}</span>
+                  <span class="state code">{receipt.state}</span>
+                  <span
+                    >{relativeTime(
+                      new Date(receipt.created_at).getTime(),
+                      now,
+                    )}</span
+                  >
+                </a>
+              </p>
+            {:else}
+              <p class="receipt-line">
                 receipt <code class="code">{receipt.id}</code> gen
                 <code class="code">{receipt.generation}</code>
                 <span>{receipt.task_class}</span>
@@ -397,26 +420,11 @@
                     now,
                   )}</span
                 >
-              </a>
-            </p>
-          {:else}
-            <p class="receipt-line">
-              receipt <code class="code">{receipt.id}</code> gen
-              <code class="code">{receipt.generation}</code>
-              <span>{receipt.task_class}</span>
-              <span class="state code">{receipt.state}</span>
-              <span
-                >{relativeTime(
-                  new Date(receipt.created_at).getTime(),
-                  now,
-                )}</span
-              >
-            </p>
-          {/if}
-        {/each}
-      </section>
-    {/if}
-
+              </p>
+            {/if}
+          {/each}
+        </section>
+      {/if}
     {/if}
     <section class="edition item-section" aria-label="Event history">
       <p class="sec-label">/ Events</p>

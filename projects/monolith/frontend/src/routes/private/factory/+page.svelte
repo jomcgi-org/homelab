@@ -170,7 +170,11 @@
     {#each board?.tracking_items ?? [] as item (item.id)}
       <TrackingItem {item} />
     {:else}
-      <p>{unavailable ? "Tracking records unavailable." : "No tracking records in this read."}</p>
+      <p>
+        {unavailable
+          ? "Tracking records unavailable."
+          : "No tracking records in this read."}
+      </p>
     {/each}
   </section>
 
