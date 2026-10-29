@@ -2162,13 +2162,10 @@ stars:
         memory: 3Gi
         ephemeral-storage: 5Gi
 
-# goosecracker artifact store (ADR 024). The full monolith writes agent-built
-# HTML to s3://<bucket>/<id>/index.html (reusing the shared SeaweedFS S3
-# endpoint/creds from the stars block) and returns the artifact URL on
-# publicBase. The bucket auto-creates on first write.
+# Existing artifact HTML is read from s3://<bucket>/<id>/index.html, reusing
+# the shared R2 S3 endpoint/creds from the stars block.
 artifact:
   bucket: "artifacts"
-  publicBase: "https://jomcgi.dev"
 
 # imgproxy URL signing for the private frontend (grimoire reader images).
 # Reuses the trips-imgproxy-signing 1Password item so signatures validate

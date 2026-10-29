@@ -6,19 +6,20 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from artifact import s3
-from artifact.router import read_router, write_router
+from artifact import register, register_public, s3
+from artifact.router import _ARTIFACT_CSP
 
 
-@pytest.fixture
-def client(monkeypatch) -> TestClient:
+@pytest.fixture(params=[register, register_public], ids=["full", "public"])
+def client(monkeypatch, request) -> TestClient:
     # In-memory artifact store keyed by id, so the handlers exercise their real
     # logic while S3 is faked (the router lazy-imports `artifact.s3`).
-    store: dict[str, bytes] = {}
-
-    def fake_put(artifact_id: str, html: bytes) -> str:
-        store[artifact_id] = html
-        return f"etag-{len(html)}"
+    store = {
+        "demo": b"<h1>hello</h1>",
+        "my-demo_1": b"<p>x</p>",
+        "a" * 64: b"<p>max id</p>",
+        "a": b"<p>min id</p>",
+    }
 
     def fake_get(artifact_id: str):
         if artifact_id not in store:
@@ -30,58 +31,30 @@ def client(monkeypatch) -> TestClient:
             return None
         return f"etag-{len(store[artifact_id])}"
 
-    monkeypatch.setattr(s3, "put_artifact", fake_put)
     monkeypatch.setattr(s3, "get_artifact", fake_get)
     monkeypatch.setattr(s3, "head_artifact", fake_head)
-    monkeypatch.setenv("ARTIFACT_PUBLIC_BASE", "https://jomcgi.dev")
 
     app = FastAPI()
-    app.include_router(write_router)
-    app.include_router(read_router)
+    request.param(app)
     return TestClient(app)
 
 
-def test_publish_assigns_id_and_returns_url(client: TestClient):
+def test_publish_is_not_mounted(client: TestClient):
     resp = client.post("/internal/artifact", json={"html": "<h1>hi</h1>"})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body.get("id")
-    assert body.get("url") == f"https://jomcgi.dev/artifact/{body.get('id')}"
-    assert body.get("version")
-
-
-def test_publish_honours_supplied_id(client: TestClient):
-    resp = client.post(
-        "/internal/artifact", json={"id": "my-demo_1", "html": "<p>x</p>"}
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json().get("id") == "my-demo_1"
-
-
-def test_publish_rejects_invalid_id(client: TestClient):
-    resp = client.post(
-        "/internal/artifact", json={"id": "../etc/passwd", "html": "<p>x</p>"}
-    )
-    assert resp.status_code == 422
-
-
-def test_publish_rejects_empty_html(client: TestClient):
-    resp = client.post("/internal/artifact", json={"html": ""})
-    assert resp.status_code == 422
-
-
-def test_publish_rejects_oversized_html(client: TestClient):
-    big = "x" * (2 * 1024 * 1024 + 1)
-    resp = client.post("/internal/artifact", json={"html": big})
-    assert resp.status_code == 413
+    assert resp.status_code == 404
+    paths = client.get("/openapi.json").json()["paths"]
+    assert set(paths) == {
+        "/internal/artifact/{artifact_id}/raw",
+        "/internal/artifact/{artifact_id}/version",
+    }
+    assert all(set(operations) == {"get"} for operations in paths.values())
 
 
 def test_raw_serves_html_with_sandboxed_csp(client: TestClient):
-    client.post("/internal/artifact", json={"id": "demo", "html": "<h1>hello</h1>"})
     resp = client.get("/internal/artifact/demo/raw")
     assert resp.status_code == 200
     assert resp.text == "<h1>hello</h1>"
-    assert resp.headers["content-type"].startswith("text/html")
+    assert resp.headers["content-type"] == "text/html; charset=utf-8"
     csp = resp.headers["content-security-policy"]
     # The artifact tier security invariant (ADR 024 decision 4 + 2026-06-29
     # amendment): the opaque-origin sandbox is the boundary that protects our
@@ -92,22 +65,43 @@ def test_raw_serves_html_with_sandboxed_csp(client: TestClient):
     assert "default-src 'none'" in csp
     assert "connect-src https:" in csp  # live data / API refresh allowed
     assert "http:" not in csp  # https only: no plaintext / LAN-probe downgrade
+    assert csp == _ARTIFACT_CSP
+    assert "script-src 'unsafe-inline' https:" in csp
+    assert "style-src 'unsafe-inline' https:" in csp
+    assert "img-src data: blob: https:" in csp
+    assert "font-src data: https:" in csp
+    assert "form-action 'none'" in csp
+    assert "base-uri 'none'" in csp
     assert resp.headers["cache-control"] == "no-store"
+    assert resp.headers["x-content-type-options"] == "nosniff"
 
 
 def test_raw_missing_is_404(client: TestClient):
     assert client.get("/internal/artifact/nope/raw").status_code == 404
 
 
-def test_raw_invalid_id_is_404(client: TestClient):
-    assert client.get("/internal/artifact/..%2f..%2fx/raw").status_code == 404
+@pytest.mark.parametrize("endpoint", ["raw", "version"])
+@pytest.mark.parametrize("artifact_id", ["..%2f..%2fx", ".", "bad.id", "a" * 65])
+def test_invalid_id_is_404_without_storage(client, monkeypatch, endpoint, artifact_id):
+    def unexpected_read(_artifact_id):
+        pytest.fail("invalid artifact id reached storage")
+
+    monkeypatch.setattr(s3, "get_artifact", unexpected_read)
+    monkeypatch.setattr(s3, "head_artifact", unexpected_read)
+    assert client.get(f"/internal/artifact/{artifact_id}/{endpoint}").status_code == 404
+
+
+@pytest.mark.parametrize("endpoint", ["raw", "version"])
+@pytest.mark.parametrize("artifact_id", ["my-demo_1", "a", "a" * 64])
+def test_valid_id_reads_stored_artifact(client, endpoint, artifact_id):
+    assert client.get(f"/internal/artifact/{artifact_id}/{endpoint}").status_code == 200
 
 
 def test_version_returns_etag(client: TestClient):
-    client.post("/internal/artifact", json={"id": "demo", "html": "<h1>hello</h1>"})
     resp = client.get("/internal/artifact/demo/version")
     assert resp.status_code == 200
     assert resp.json() == {"version": "etag-14"}
+    assert resp.headers["content-type"] == "application/json"
     assert resp.headers["cache-control"] == "no-store"
 
 
