@@ -704,7 +704,7 @@ does not answer an existing operator card or re-admit an escalated receipt.
 
 `FACTORY_WORK_ITEM_POINTER_ENABLED` and `FACTORY_WORK_ITEM_BASE_URL` enable one GitHub comment per GitHub-sourced work item, linking its durable factory record. It is display-only and never read back. The sync excludes `tracking_only` work items. A tracking source URL is only a reference, including when it points to a GitHub issue.
 
-The board and work-item browser reads require the existing verified Access operator email. Tracking detail shows source, owner, recorded status and event history without factory receipts, relationship forms or execution controls.
+The board and work-item browser reads require exactly one nonempty verified Access email. The `FACTORY_OPERATOR_EMAILS` allowlist narrows controls only; readers Access admits retain board, escalation and work-item visibility (#6002). Tracking detail shows source, owner, recorded status and event history without factory receipts, relationship forms or execution controls.
 
 ### Conductor-owned reversible gates
 

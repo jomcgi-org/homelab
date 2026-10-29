@@ -29,12 +29,21 @@ describe("agents /private/factory load", () => {
       fetch: fetchMock,
       url: new URL("https://private.jomcgi.dev/factory?task=t-1"),
       untrack: (fn) => fn(),
+      request: new Request("https://private.jomcgi.dev/factory", {
+        headers: {
+          "x-auth-email": "viewer@example.test",
+          "cf-access-authenticated-user-email": "forged@example.test",
+        },
+      }),
     });
 
     expect(result).toEqual({ board, task: "t-1", error: false });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://backend/api/agents/factory?task=t-1",
-      expect.anything(),
+      {
+        headers: { "X-Auth-Email": "viewer@example.test" },
+        signal: expect.any(AbortSignal),
+      },
     );
   });
 
