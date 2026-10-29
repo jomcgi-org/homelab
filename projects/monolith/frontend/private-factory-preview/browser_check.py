@@ -394,6 +394,10 @@ def main():
                             "reducedMotion": motion,
                         }
                     )
+                    if scenario == "tracking" and width == 390:
+                        assert page.locator(".tracking-item .spec > div").first.evaluate(
+                            "el => getComputedStyle(el).gridTemplateColumns.split(' ').length === 1"
+                        ), "mobile tracking fields must stack for enlarged text"
                     if scenario in ("populated", "tracking"):
                         # Double computed text sizes, rather than zooming the
                         # screenshot, to exercise actual wrapping and controls.

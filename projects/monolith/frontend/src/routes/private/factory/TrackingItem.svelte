@@ -78,6 +78,12 @@
     grid-template-columns: minmax(5em, 1fr) minmax(0, 3fr);
     gap: 0.75em;
   }
+  @media (max-width: 40rem) {
+    .spec div {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.25em;
+    }
+  }
   dd {
     margin: 0;
   }
