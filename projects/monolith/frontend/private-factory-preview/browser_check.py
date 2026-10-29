@@ -8,6 +8,7 @@ import importlib.metadata
 import itertools
 import json
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -113,6 +114,18 @@ def capture(page, output, records, commit, view, scenario, scheme, state="base")
         assert control["width"] >= 43, f"{name}: narrow control {control}"
 
 
+def wait_for_fixture(page, predicate):
+    # Playwright's wait_for_function evaluates expression strings inside the
+    # page. The fixture deliberately forbids unsafe-eval. CDP evaluation of
+    # an explicit function preserves CSP and also works with the frozen clock.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if page.evaluate(predicate):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"Fixture condition did not settle: {predicate}")
+
+
 def actions(page, view, snapshot):
     if view == "board":
         button = page.locator(".panel.admitted .panel-head")
@@ -143,8 +156,8 @@ def actions(page, view, snapshot):
         page.clock.fast_forward(20000)
         expect(page.locator(".panel").nth(1).locator(".confirm")).to_be_visible()
         page.keyboard.press("x")
-        page.wait_for_function(
-            "window.__privateFixture.requests.some(r=>r.method==='POST')"
+        wait_for_fixture(
+            page, "() => window.__privateFixture.requests.some(r=>r.method==='POST')"
         )
         expect(page.locator('[aria-label="Open escalations"]')).to_have_attribute(
             "aria-busy", "false"
@@ -189,18 +202,27 @@ def actions(page, view, snapshot):
             )
             == before
         )
+        expect(page.locator('[aria-label="Open escalations"]')).to_have_attribute(
+            "aria-busy", "false"
+        )
         # Only a new server-owned decision permits another action.
         page.evaluate("""() => {
           window.__privateFixture.escalations[0].decision_id = 'decision:' + 'f'.repeat(64);
+          window.__privateFixture.escalations[0].title = 'Synthetic replacement decision';
           window.__privateFixture.hold = true;
         }""")
         page.clock.fast_forward(20000)
+        expect(page.locator(".panel .title").first).to_have_text(
+            "Synthetic replacement decision"
+        )
         page.locator(".option").first.click()
         expect(page.locator('[aria-label="Open escalations"]')).to_have_attribute(
             "aria-busy", "true"
         )
         expect(page.locator(".option").first).to_be_disabled()
-        page.wait_for_function("typeof window.__privateFixture.release === 'function'")
+        wait_for_fixture(
+            page, "() => typeof window.__privateFixture.release === 'function'"
+        )
         page.evaluate("window.__privateFixture.release()")
         expect(page.locator('[aria-label="Open escalations"]')).to_have_attribute(
             "aria-busy", "false"
@@ -294,7 +316,7 @@ def main():
                         + "?"
                         + urlencode({"view": view, "scenario": scenario})
                     )
-                    page.wait_for_function("window.__privateFixture?.ready")
+                    wait_for_fixture(page, "() => window.__privateFixture?.ready")
                     page.evaluate("document.fonts.ready")
                     expect(page.locator("main.td.sheet")).to_be_visible()
                     snapshot = lambda state="base": capture(
