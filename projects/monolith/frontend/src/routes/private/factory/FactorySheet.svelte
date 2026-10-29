@@ -99,7 +99,7 @@
       position: sticky;
       top: 0;
       z-index: 4;
-      margin: 0 -1em 1.5rem;
+      margin: 0 -1rem 1.5rem;
       background: var(--sheet);
     }
     .factory-sheet .index.strip {

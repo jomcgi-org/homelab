@@ -24,7 +24,8 @@
   // svelte-ignore state_referenced_locally
   let document = $state(data.document ?? null);
   const missing = $derived(data.missing ?? false);
-  const unavailable = $derived(data.error ?? false);
+  // svelte-ignore state_referenced_locally
+  let unavailable = $state(data.error ?? false);
   let busy = $state(null);
   let failure = $state(null);
   let notice = $state(null);
@@ -41,9 +42,10 @@
       const response = await fetch(`/factory/work-items/${data.itemId}`);
       if (!response.ok) throw new Error("unavailable");
       document = await response.json();
+      unavailable = false;
       now = Date.now();
     } catch {
-      // Polling errors don't change the displayed state, just keep retrying
+      unavailable = true;
     }
   }
 
@@ -546,6 +548,7 @@
     background: var(--band);
   }
   .add-form label {
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
@@ -638,7 +641,7 @@
 
   @media (max-width: 40em) {
     .add-form {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 </style>

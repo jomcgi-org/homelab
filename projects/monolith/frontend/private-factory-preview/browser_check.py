@@ -178,7 +178,23 @@ def actions(page, view, snapshot):
             "window.__privateFixture.requests.filter(r=>r.method==='POST').slice(-4).map(r=>r.body.request_key)"
         )
         assert keys[0] == keys[1] == keys[2] and keys[3] != keys[2], keys
-        page.evaluate("window.__privateFixture.hold=true")
+        before = page.evaluate(
+            "window.__privateFixture.requests.filter(r=>r.method==='POST').length"
+        )
+        page.locator(".option").first.click()
+        expect(page.locator('[role="status"]')).to_contain_text("Decision recorded")
+        assert (
+            page.evaluate(
+                "window.__privateFixture.requests.filter(r=>r.method==='POST').length"
+            )
+            == before
+        )
+        # Only a new server-owned decision permits another action.
+        page.evaluate("""() => {
+          window.__privateFixture.escalations[0].decision_id = 'decision:' + 'f'.repeat(64);
+          window.__privateFixture.hold = true;
+        }""")
+        page.clock.fast_forward(20000)
         page.locator(".option").first.click()
         expect(page.locator('[aria-label="Open escalations"]')).to_have_attribute(
             "aria-busy", "true"
@@ -293,6 +309,26 @@ def main():
                     )
                     snapshot()
                     if scenario == "populated":
+                        # Double computed text sizes, rather than zooming the
+                        # screenshot, to exercise actual wrapping and controls.
+                        page.evaluate("""() => {
+                          for (const el of document.querySelectorAll('main *, .chrome *')) {
+                            const css = getComputedStyle(el);
+                            el.dataset.originalStyle = el.getAttribute('style') ?? '';
+                            el.dataset.doubleFont = String(parseFloat(css.fontSize) * 2);
+                            el.dataset.doubleLine = String(parseFloat(css.lineHeight) * 2);
+                          }
+                          for (const el of document.querySelectorAll('[data-double-font]')) {
+                            el.style.fontSize = el.dataset.doubleFont + 'px';
+                            if (Number.isFinite(Number(el.dataset.doubleLine)))
+                              el.style.lineHeight = el.dataset.doubleLine + 'px';
+                          }
+                        }""")
+                        snapshot("text-200")
+                        page.evaluate("""() => {
+                          for (const el of document.querySelectorAll('[data-original-style]'))
+                            el.setAttribute('style', el.dataset.originalStyle);
+                        }""")
                         actions(page, view, snapshot)
                         # A real scroll must retain the mobile index at the top.
                         if width == 390:

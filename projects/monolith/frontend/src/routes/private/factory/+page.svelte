@@ -146,94 +146,115 @@
 <FactorySheet className="factory-page" view="factory" {waiting}>
   <h1 class="sr-only">Factory</h1>
 
-  <section class="stats edition" aria-label="Factory state">
-    <div>
-      <span class="k">state</span>
-      <span class={`v state-${stateWord}`}>{stateWord}</span>
-    </div>
-    <div>
-      <span class="k">in flight</span>
-      <span class="v num">{active.length}</span>
-    </div>
-    <div>
-      <span class="k">queued</span>
-      <span class="v num">{queued.length}</span>
-    </div>
-    <div>
-      <span class="k">plans</span>
-      <span class="v">{policy?.conductor_model ?? "–"}</span>
-    </div>
-    <div>
-      <span class="k">builds</span>
-      <span class="v">{policy?.worker_model ?? "–"}</span>
-    </div>
-    <div>
-      <span class="k">reviews</span>
-      <span class="v">{policy?.reviewer_model ?? "–"}</span>
-    </div>
-    <div>
-      <span class="k">intake</span>
-      <span class="v"
-        >{intake?.policy?.enabled
-          ? `${intake.admitted_today}/${intake.max_per_day} today`
-          : "off"}</span
-      >
-    </div>
-    <div>
-      <span class="k">problem issues</span>
-      <span class="v"
-        >{problemIssues?.status === "on"
-          ? `${problemIssues.writes_started_today}/${problemIssues.max_per_24_hours} writes / 24h`
-          : "off"}</span
-      >
+  <section class="edition next-step" aria-label="Next action">
+    <div class="ed-lead">
+      <h2>
+        {unavailable
+          ? "Board unavailable"
+          : waiting
+            ? `${waiting} decisions need you`
+            : "Factory delivery"}
+      </h2>
+      <p>
+        {unavailable
+          ? "Showing the last read. Current work may have changed."
+          : "Choose a task for its context, owner and next step."}
+      </p>
+      <a href="/factory/escalations">Review decisions</a>
     </div>
   </section>
 
-  <p class="policy-line">
-    {#if policy}
-      <span
-        >generation {policy.generation} · {laneLine} · {money(
-          policy.task_budget_usd,
-        )} and up to {policy.max_task_turns_hard} starts per task · {policy.max_parallel_nodes ??
-          1} in parallel · policy v{board.version}</span
+  <details class="diagnostics">
+    <summary>Factory status and limits</summary>
+    <section class="stats edition" aria-label="Factory state">
+      <div>
+        <span class="k">state</span>
+        <span class={`v state-${stateWord}`}>{stateWord}</span>
+      </div>
+      <div>
+        <span class="k">in flight</span>
+        <span class="v num">{active.length}</span>
+      </div>
+      <div>
+        <span class="k">queued</span>
+        <span class="v num">{queued.length}</span>
+      </div>
+      <div>
+        <span class="k">plans</span>
+        <span class="v">{policy?.conductor_model ?? "–"}</span>
+      </div>
+      <div>
+        <span class="k">builds</span>
+        <span class="v">{policy?.worker_model ?? "–"}</span>
+      </div>
+      <div>
+        <span class="k">reviews</span>
+        <span class="v">{policy?.reviewer_model ?? "–"}</span>
+      </div>
+      <div>
+        <span class="k">intake</span>
+        <span class="v"
+          >{intake?.policy?.enabled
+            ? `${intake.admitted_today}/${intake.max_per_day} today`
+            : "off"}</span
+        >
+      </div>
+      <div>
+        <span class="k">problem issues</span>
+        <span class="v"
+          >{problemIssues?.status === "on"
+            ? `${problemIssues.writes_started_today}/${problemIssues.max_per_24_hours} writes / 24h`
+            : "off"}</span
+        >
+      </div>
+    </section>
+
+    <p class="policy-line">
+      {#if policy}
+        <span
+          >generation {policy.generation} · {laneLine} · {money(
+            policy.task_budget_usd,
+          )} and up to {policy.max_task_turns_hard} starts per task · {policy.max_parallel_nodes ??
+            1} in parallel · policy v{board.version}</span
+        >
+      {/if}
+      {#if routingLine}
+        <span class="guard">{routingLine}</span>
+      {/if}
+      {#if intake?.policy?.enabled && intakeSeen}
+        <span
+          >last intake {intake.last_admitted
+            ? `admitted #${intake.last_admitted.detail?.issue_number ?? "?"}`
+            : "found nothing"} at {new Date(
+            intakeSeen,
+          ).toLocaleTimeString()}</span
+        >
+      {/if}
+      {#if problemIssues?.last_event}
+        <span
+          >problem issues {problemIssues.last_event.action.replaceAll("_", " ")} at
+          {new Date(
+            problemIssues.last_event.created_at,
+          ).toLocaleTimeString()}</span
+        >
+      {/if}
+      {#if board && board.ok === false}
+        <span class="warn">factory {board.reason ?? "not ready"}</span>
+      {/if}
+      {#if unavailable}
+        <span class="warn">board unavailable, showing the last read</span>
+      {/if}
+      <a class="talk" href={conductorHref(null, board)}
+        >Talk to the conductor ({conductorModel(null, board)})</a
       >
-    {/if}
-    {#if routingLine}
-      <span class="guard">{routingLine}</span>
-    {/if}
-    {#if intake?.policy?.enabled && intakeSeen}
-      <span
-        >last intake {intake.last_admitted
-          ? `admitted #${intake.last_admitted.detail?.issue_number ?? "?"}`
-          : "found nothing"} at {new Date(
-          intakeSeen,
-        ).toLocaleTimeString()}</span
-      >
-    {/if}
-    {#if problemIssues?.last_event}
-      <span
-        >problem issues {problemIssues.last_event.action.replaceAll("_", " ")} at
-        {new Date(
-          problemIssues.last_event.created_at,
-        ).toLocaleTimeString()}</span
-      >
-    {/if}
-    {#if board && board.ok === false}
-      <span class="warn">factory {board.reason ?? "not ready"}</span>
-    {/if}
-    {#if unavailable}
-      <span class="warn">board unavailable, showing the last read</span>
-    {/if}
-    <a class="talk" href={conductorHref(null, board)}
-      >Talk to the conductor ({conductorModel(null, board)})</a
-    >
-  </p>
+    </p>
+  </details>
 
   <section>
     <p class="sec-label">
       / In flight <span class="num">{active.length}</span>
     </p>
-    {#if active.length === 0}
+    {#if active.length === 0 && !unavailable}
       <p class="none">Nothing in flight.</p>
     {/if}
     {#each active as receipt (receipt.id)}
@@ -243,7 +264,7 @@
 
   <section>
     <p class="sec-label">/ Queue <span class="num">{queued.length}</span></p>
-    {#if queued.length === 0}
+    {#if queued.length === 0 && !unavailable}
       <p class="none">Queue is empty. The next issue in the policy feeds it.</p>
     {/if}
     {#each queued as receipt (receipt.id)}
@@ -253,7 +274,7 @@
 
   <section>
     <p class="sec-label">/ Recent <span class="num">{recent.length}</span></p>
-    {#if recent.length === 0}
+    {#if recent.length === 0 && !unavailable}
       <p class="none">No finished tasks yet.</p>
     {/if}
     {#each recent as receipt (receipt.id)}
@@ -280,6 +301,31 @@
     </button>
     <dl class="spec">
       <div class="row">
+        <dt class="label">owner</dt>
+        <dd class="value">
+          {receipt.escalation_open
+            ? "You: review the decision"
+            : receipt.task_id
+              ? "Factory"
+              : "Not assigned"}
+        </dd>
+      </div>
+      <div class="row">
+        <dt class="label">next</dt>
+        <dd class="value">
+          {#if receipt.escalation_open}<a href="/factory/escalations"
+              >Review decision</a
+            >
+          {:else if receipt.work_item_id}<a
+              href="/factory/work-items/{receipt.work_item_id}"
+              >Open task context</a
+            >
+          {:else if inFlight}Open this task for progress
+          {:else if receipt.task_id}Open this task for its outcome
+          {:else}Waiting for a factory slot{/if}
+        </dd>
+      </div>
+      <div class="row">
         <dt class="label">phase</dt>
         <dd class="value">
           <span
@@ -291,7 +337,7 @@
             >{/if}
         </dd>
       </div>
-      {#if receipt.task_id}
+      {#if receipt.task_id && open}
         <div class="row">
           <dt class="label">starts</dt>
           <dd class="value meter">
@@ -329,7 +375,7 @@
         </div>
       {/if}
     </dl>
-    {#if receipt.nodes?.length}
+    {#if receipt.nodes?.length && open}
       {@render dag(receipt)}
     {/if}
     {#if open}
@@ -462,6 +508,13 @@
   }
 
   /* Eight values form complete rows on both phone and desktop. */
+  .diagnostics > summary,
+  .next-step a {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
   .stats {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -729,6 +782,13 @@
   }
 
   @media (min-width: 900px) {
+    .diagnostics > summary,
+    .next-step a {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+    }
+
     .stats {
       grid-template-columns: repeat(4, minmax(0, 1fr));
     }

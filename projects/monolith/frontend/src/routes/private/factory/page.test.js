@@ -201,7 +201,7 @@ describe("factory board page", () => {
     expect(fetchMock).toHaveBeenCalledWith("/factory");
   });
 
-  test("renders the state strip, the three sections, and the plan", () => {
+  test("keeps diagnostics collapsed until a task is opened", async () => {
     const target = renderPage({ board: board(), task: null, error: false });
 
     expect(target.querySelector("main.td.sheet.factory-page")).not.toBeNull();
@@ -223,6 +223,10 @@ describe("factory board page", () => {
       "1/1 delivery \u00b7 0/2 advisory",
     );
 
+    expect(target.querySelector(".diagnostics").open).toBe(false);
+    expect(target.querySelector(".panel.admitted .dag")).toBeNull();
+    target.querySelector(".panel.admitted .panel-head").click();
+    await tick();
     const ranks = target.querySelectorAll(".panel.admitted .dag .rank");
     expect(ranks).toHaveLength(3);
     expect(target.querySelector(".node.running").textContent).toContain(
@@ -289,7 +293,7 @@ describe("factory board page", () => {
     const planning = receipt({ turns_used: 2, planner_turns_used: 5 });
     const target = renderPage({
       board: board({ active: [planning] }),
-      task: null,
+      task: "t-1",
       error: false,
     });
     expect(target.querySelector(".panel.admitted .spec").textContent).toContain(
@@ -304,7 +308,7 @@ describe("factory board page", () => {
     const fresh = receipt({ committed_cost_usd: 0, turns_used: 0 });
     const target = renderPage({
       board: board({ active: [fresh] }),
-      task: null,
+      task: "t-1",
       error: false,
     });
     expect(target.querySelector(".panel.admitted .spec").textContent).toContain(

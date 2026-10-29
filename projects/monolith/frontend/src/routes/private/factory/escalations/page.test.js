@@ -161,6 +161,7 @@ afterEach(() => {
     unmount(component);
     target.remove();
   }
+  sessionStorage.clear();
   vi.unstubAllGlobals();
 });
 
@@ -221,6 +222,129 @@ describe("escalations page", () => {
     expect(posts).toHaveLength(1);
     expect(posts[0][0]).toBe("/factory/escalations/decisions/3");
     expect(JSON.parse(posts[0][1].body).decision_id).toBe(first.decision_id);
+  });
+
+  test("a replacement decision cannot inherit an armed close", async () => {
+    vi.useFakeTimers();
+    const first = escalation();
+    const replacement = escalation({
+      decision_id: `decision:${"b".repeat(64)}`,
+    });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ escalations: [replacement] }),
+    }));
+    stubFetch(fetchMock);
+    const target = renderPage({ escalations: [first], error: false });
+    await tick();
+    target.querySelector(".escape-btn").click();
+    await tick();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(target.querySelector(".confirm")).toBeNull();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
+    await tick();
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(0);
+    expect(target.querySelector(".confirm")).not.toBeNull();
+    vi.useRealTimers();
+  });
+
+  test("unavailable is not an empty board", () => {
+    const target = renderPage({ escalations: [], error: true });
+    expect(target.textContent).not.toContain("Nothing is waiting");
+    expect(target.querySelector(".stats").textContent).toContain("unknown");
+  });
+
+  test("an uncertain request cannot change action after remount", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("network"));
+    stubFetch(fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+    await tick();
+    target.querySelector(".option").click();
+    await settle();
+    const other = renderPage({ escalations: [escalation()], error: false });
+    await tick();
+    other.querySelectorAll(".option")[1].click();
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(other.querySelector('[role="alert"]').textContent).toContain(
+      "previous response is uncertain",
+    );
+    other.querySelector(".option").click();
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][1].body).toBe(
+      fetchMock.mock.calls[0][1].body,
+    );
+  });
+
+  test("accepted decisions cannot be submitted twice while polling lags", async () => {
+    const fetchMock = vi.fn(async (_, init) => ({
+      ok: true,
+      json: async () =>
+        init?.method === "POST"
+          ? { ok: true }
+          : { escalations: [escalation()] },
+    }));
+    stubFetch(fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+    await tick();
+    target.querySelector(".option").click();
+    target.querySelector(".option").click();
+    await settle();
+    target.querySelector(".option").click();
+    await settle();
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(1);
+    expect(target.querySelector('[role="status"]').textContent).toContain(
+      "Decision recorded",
+    );
+  });
+
+  test("a confirmed chat without a queued brief still permits a decision", async () => {
+    const fetchMock = vi.fn(async (_, init) => ({
+      ok: true,
+      json: async () =>
+        init?.method === "POST"
+          ? { ok: true, requeued: false, blocked_by: "capacity" }
+          : { escalations: [escalation()] },
+    }));
+    stubFetch(fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+    await tick();
+    const note = target.querySelector("textarea");
+    note.value = "Explain the scope";
+    note.dispatchEvent(new Event("input"));
+    target.querySelector(".chat-button").click();
+    await settle();
+    target.querySelector(".option").click();
+    await settle();
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(2);
+  });
+
+  test("missing success evidence stays uncertain", async () => {
+    const fetchMock = vi.fn(async (_, init) => ({
+      ok: true,
+      json: async () =>
+        init?.method === "POST" ? {} : { escalations: [escalation()] },
+    }));
+    stubFetch(fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+    await tick();
+    target.querySelector(".option").click();
+    await settle();
+    expect(target.querySelector('[role="alert"]').textContent).toContain(
+      "outcome is unknown",
+    );
+    target.querySelectorAll(".option")[1].click();
+    await settle();
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(1);
   });
 
   test("renders a delivery escalation beside a refine one", () => {
