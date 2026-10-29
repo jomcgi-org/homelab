@@ -126,6 +126,41 @@ def _open_decision(
         )
 
 
+def test_unused_operator_routes_are_not_registered():
+    from factory.orchestration.factory_router import router as factory_router
+
+    app = FastAPI()
+    app.include_router(swarm_router.router)
+    app.include_router(factory_router)
+    registrations = {
+        (method, path)
+        for path, operations in app.openapi()["paths"].items()
+        for method in operations
+    }
+    removed = {
+        ("get", "/api/swarm/factory/work-items"),
+        ("get", "/api/swarm/factory/work-items/{item_id}"),
+        ("get", "/api/swarm/factory/attempt-stop"),
+        ("get", "/api/swarm/factory/escalations"),
+        ("post", "/api/swarm/factory/issues"),
+        ("put", "/api/swarm/promote-session"),
+        ("post", "/api/swarm/runs/{workflow_id}/budget"),
+    }
+    retained = {
+        ("get", "/api/swarm/factory"),
+        ("post", "/api/swarm/factory/control"),
+        ("post", "/api/swarm/factory/decisions/{receipt_id}"),
+        ("post", "/api/swarm/factory/synthetics"),
+        ("get", "/api/swarm/factory/improvements/context"),
+        ("post", "/api/swarm/factory/improvements"),
+        ("post", "/api/swarm/runs"),
+        ("get", "/api/swarm/runs/{workflow_id}"),
+        ("post", "/api/swarm/runs/{workflow_id}/cancel"),
+    }
+    assert registrations.isdisjoint(removed)
+    assert retained <= registrations
+
+
 def test_disabled_returns_503(monkeypatch):
     monkeypatch.setenv("SWARM_ENABLED", "false")
     response = client().post(
@@ -622,59 +657,6 @@ def test_hard_stuck_status_cancels_local_task_and_rekicks(monkeypatch, start_eng
     assert len(scheduled) == 1
 
 
-def test_promote_session_carries_model(monkeypatch):
-    captured = []
-    row = type(
-        "Row",
-        (),
-        {"id": 7, "repo": "jomcgi/homelab", "branch": "main", "model": "qwen"},
-    )()
-    turn = type("Turn", (), {"prompt": "fix"})()
-
-    class Result:
-        def first(self):
-            return turn
-
-    class FakeSession:
-        def __init__(self, _engine):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def get(self, _model, _session_id):
-            return row
-
-        def exec(self, _statement):
-            return Result()
-
-    monkeypatch.setattr("core.db.get_engine", lambda: object())
-    monkeypatch.setattr("sqlmodel.Session", FakeSession)
-    monkeypatch.setattr(
-        swarm_router,
-        "start_run",
-        lambda request: captured.append(request) or {"workflow_id": "wf-promoted"},
-    )
-    monkeypatch.setattr("factory.orchestration.models.mint_task_id", lambda: "task-1")
-    monkeypatch.setattr(
-        "factory.orchestration.models.create_task", lambda *args, **kwargs: None
-    )
-    monkeypatch.setattr(
-        "factory.orchestration.models.append_plan_version", lambda *args, **kwargs: None
-    )
-
-    response = client().put(
-        "/api/swarm/promote-session",
-        json={"session_id": 7},
-    )
-
-    assert response.status_code == 200
-    assert captured[0].model == "qwen"
-
-
 def test_follower_serves_run_reads_from_the_read_client(monkeypatch):
     """The read surfaces must answer on a replica that never launched DBOS.
 
@@ -945,136 +927,6 @@ def test_decide_run_returns_422_with_allowed_options(decision_api, decision_engi
     assert response.status_code == 422
     assert "approve" in response.json()["detail"]
     assert "send_back" in response.json()["detail"]
-
-
-def test_raise_budget_must_exceed_current_effective(monkeypatch, decision_engine):
-    monkeypatch.setenv("SWARM_ENABLED", "true")
-    existing_raise = {"from": 1.0, "to": 2.0, "actor_subject": "first"}
-
-    class FakeDBOS:
-        def __init__(self):
-            self.stored = {
-                "plan": {"budget_usd": 1.0},
-                "budget_raises": [existing_raise],
-            }
-
-        def retrieve_workflow(self, workflow_id):
-            return SimpleNamespace(
-                get_status=lambda: SimpleNamespace(attributes=dict(self.stored))
-            )
-
-        async def update_workflow_attributes_async(self, workflow_id, values):
-            self.stored = dict(values)
-
-    dbos = FakeDBOS()
-    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: dbos)
-    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
-    monkeypatch.setattr(
-        swarm_router,
-        "_compose_run_view",
-        lambda _dbos, workflow_id: {
-            "workflow_id": workflow_id,
-            "plan": {"budget_usd": 1.0},
-        },
-    )
-
-    response = client().post("/api/swarm/runs/wf-1/budget", json={"budget_usd": 2.0})
-
-    assert response.status_code == 400
-    assert "must exceed current $2.00" in response.json()["detail"]
-    assert dbos.stored["budget_raises"] == [existing_raise]
-
-
-@pytest.mark.parametrize(
-    ("headers", "expected_actor", "expected_authority"),
-    [
-        (
-            {"X-Auth-Email": "alice@example.com"},
-            "alice@example.com",
-            "cloudflare-access",
-        ),
-        ({}, "operator", "anonymous"),
-        # Nothing validates or strips the Cloudflare header, so it is not an
-        # identity (#6036): a caller that sets it is still anonymous.
-        (
-            {"Cf-Access-Authenticated-User-Email": "forged@example.com"},
-            "operator",
-            "anonymous",
-        ),
-    ],
-)
-def test_raise_budget_appends_history_and_resolves_budget_decision(
-    monkeypatch,
-    decision_engine,
-    headers,
-    expected_actor,
-    expected_authority,
-):
-    monkeypatch.setenv("SWARM_ENABLED", "true")
-    existing_raise = {
-        "from": 1.0,
-        "to": 2.0,
-        "actor_subject": "first@example.com",
-        "actor_authority": "cloudflare-access",
-        "at": "2026-08-22T12:00:00+00:00",
-    }
-
-    class FakeDBOS:
-        def __init__(self):
-            self.stored = {
-                "plan": {"budget_usd": 1.0},
-                "budget_raises": [existing_raise],
-                "unrelated": "preserved",
-            }
-
-        def retrieve_workflow(self, workflow_id):
-            return SimpleNamespace(
-                get_status=lambda: SimpleNamespace(attributes=dict(self.stored))
-            )
-
-        async def update_workflow_attributes_async(self, workflow_id, values):
-            self.stored = dict(values)
-
-    dbos = FakeDBOS()
-    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: dbos)
-    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
-    monkeypatch.setattr(
-        swarm_router,
-        "_compose_run_view",
-        lambda _dbos, workflow_id: {
-            "workflow_id": workflow_id,
-            "plan": {"budget_usd": 1.0},
-        },
-    )
-    _open_decision(
-        decision_engine,
-        node_key="review",
-        kind="budget",
-        options=["raise", "stop"],
-    )
-
-    response = client().post(
-        "/api/swarm/runs/wf-1/budget",
-        headers=headers,
-        json={"budget_usd": 3.0},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["budget_usd"] == 3.0
-    assert response.json()["actor"] == expected_actor
-    assert dbos.stored["plan"] == {"budget_usd": 1.0}
-    assert dbos.stored["unrelated"] == "preserved"
-    assert dbos.stored["budget_raises"][0] == existing_raise
-    latest = dbos.stored["budget_raises"][1]
-    assert latest["from"] == 2.0
-    assert latest["to"] == 3.0
-    assert latest["actor_subject"] == expected_actor
-    assert latest["actor_authority"] == expected_authority
-    with Session(decision_engine) as session:
-        row = session.get(SwarmDecision, 1)
-        assert row.decision == "raise"
-        assert row.actor_subject == expected_actor
-        assert row.actor_authority == expected_authority
 
 
 def test_cancel_reaps_after_dbos_cancel(monkeypatch):

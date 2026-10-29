@@ -17,7 +17,6 @@ from framework import log_task_exception
 import shared.inference
 from factory.orchestration.runtime import running_app_version
 from factory.orchestration import config, runtime
-from factory.orchestration.budget import effective_budget
 from factory.orchestration.compare_router import router as compare_router
 from factory.orchestration.compare_router import compare_stats
 from factory.execution.rationale import parse_rationale
@@ -112,24 +111,9 @@ _IN_PROGRESS_STATES = {
 }
 
 
-class PromoteSessionRequest(BaseModel):
-    session_id: int
-
-
-class PromoteSessionResponse(BaseModel):
-    workflow_id: str
-
-
 class DecisionRequest(BaseModel):
     decision: str
     note: str | None = Field(default=None, max_length=2000)
-
-
-class BudgetRaiseRequest(BaseModel):
-    budget_usd: float = Field(gt=0)
-
-
-_BUDGET_RAISE_LOCK = asyncio.Lock()
 
 
 def _dbos():
@@ -276,36 +260,6 @@ def _record_decision_sync(
             actor_authority,
         )
         return store.decision_response(row, idempotent)
-
-
-def _workflow_attributes(dbos, workflow_id: str) -> dict:
-    handle = dbos.retrieve_workflow(workflow_id)
-    status = handle.get_status() if hasattr(handle, "get_status") else handle
-    attributes = getattr(status, "attributes", None)
-    return attributes if isinstance(attributes, dict) else {}
-
-
-def _resolve_budget_decision_sync(
-    workflow_id: str, actor_subject: str, actor_authority: str
-) -> None:
-    """Resolve the run's open budget decision after its ceiling is raised."""
-    from core.db import get_engine
-    from sqlmodel import Session
-    from factory.orchestration import store
-
-    with Session(get_engine()) as session:
-        for row in store.list_open_decisions(session, workflow_id):
-            if row.kind != "budget":
-                continue
-            store.record_decision(
-                session,
-                workflow_id,
-                row.node_key,
-                "raise",
-                None,
-                actor_subject,
-                actor_authority,
-            )
 
 
 @router.post("/runs")
@@ -1059,59 +1013,6 @@ async def task_start_status(task_id: str) -> StartStatusResponse:
     return _start_status_response(snapshot)
 
 
-@router.put("/promote-session", response_model=PromoteSessionResponse)
-def promote_session(request: Request, body: PromoteSessionRequest):
-    from factory.execution.models import AgentSession, AgentTurn, PendingMessage
-    from core.db import get_engine
-    from sqlmodel import Session, select
-    from factory.orchestration import models
-
-    with Session(get_engine()) as db:
-        row = db.get(AgentSession, body.session_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="Agent session not found")
-        turn = db.exec(
-            select(AgentTurn)
-            .where(AgentTurn.session_id == row.id)
-            .order_by(AgentTurn.seq)
-        ).first()
-        pending = db.exec(
-            select(PendingMessage)
-            .where(PendingMessage.session_id == row.id)
-            .order_by(PendingMessage.seq)
-        ).first()
-        task = (
-            turn.prompt if turn else pending.message_text if pending else ""
-        ).strip()
-        if not task:
-            raise HTTPException(status_code=400, detail="session has no task text")
-        repo, branch, model = row.repo, row.branch, row.model or "luna"
-    if not repo or not branch:
-        raise HTTPException(status_code=400, detail="session has no repo and branch")
-    result = start_run(RunRequest(task=task, repo=repo, branch=branch, model=model))
-    task_id = models.mint_task_id()
-    models.create_task(
-        task_id,
-        task,
-        repo,
-        branch,
-        shared.inference.META_SPARK_MODEL,
-        None,
-        workflow_id=result["workflow_id"],
-    )
-    models.append_plan_version(
-        task_id,
-        1,
-        "grow_from_session",
-        "user",
-        verified_email(request) or "operator",
-        json.dumps({"from_session_id": body.session_id}),
-        "promotion",
-        stated_reason="user promoted session to run",
-    )
-    return PromoteSessionResponse(workflow_id=result["workflow_id"])
-
-
 @router.get("/runs/{workflow_id}")
 def get_run(workflow_id: str) -> dict:
     return _compose_run_view(_dbos_read(), workflow_id)
@@ -1234,73 +1135,4 @@ async def cancel_run(workflow_id: str, request: Request) -> dict:
         "workflow_id": workflow_id,
         "cancelled": True,
         "guest_sessions": guest_sessions,
-    }
-
-
-@router.post("/runs/{workflow_id}/budget")
-async def raise_budget(
-    workflow_id: str, body: BudgetRaiseRequest, request: Request
-) -> dict:
-    """Raise the budget ceiling for a run and release its budget boundary."""
-    dbos = _dbos()
-    header_actor = verified_email(request)
-    actor_subject = header_actor or "operator"
-    actor_authority = "cloudflare-access" if header_actor else "anonymous"
-
-    # This endpoint is served only by the DBOS leader. Serialize its
-    # read-modify-write so simultaneous raises cannot discard one another.
-    async with _BUDGET_RAISE_LOCK:
-        run = await asyncio.to_thread(_compose_run_view, dbos, workflow_id)
-        plan = run.get("plan") or {}
-        if plan.get("budget_usd") is None:
-            raise HTTPException(status_code=400, detail="run has no pinned budget")
-
-        attributes = await asyncio.to_thread(_workflow_attributes, dbos, workflow_id)
-        current_effective = effective_budget(plan, attributes)
-        if current_effective is None:
-            raise HTTPException(status_code=400, detail="run has no pinned budget")
-        if body.budget_usd <= current_effective:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"new budget ${body.budget_usd:.2f} must exceed current "
-                    f"${current_effective:.2f}"
-                ),
-            )
-
-        budget_raises = attributes.get("budget_raises", [])
-        if not isinstance(budget_raises, list):
-            budget_raises = []
-        raised_at = datetime.now(timezone.utc).isoformat()
-        new_raise = {
-            "from": current_effective,
-            "to": body.budget_usd,
-            "actor_subject": actor_subject,
-            "actor_authority": actor_authority,
-            "at": raised_at,
-        }
-        await merge_workflow_attributes(
-            dbos,
-            workflow_id,
-            {"budget_raises": [*budget_raises, new_raise]},
-        )
-        try:
-            await asyncio.to_thread(
-                _resolve_budget_decision_sync,
-                workflow_id,
-                actor_subject,
-                actor_authority,
-            )
-        except Exception:  # noqa: BLE001 - the persisted raise is authoritative
-            logger.warning(
-                "failed to resolve budget decision for workflow %s",
-                workflow_id,
-                exc_info=True,
-            )
-
-    return {
-        "workflow_id": workflow_id,
-        "budget_usd": body.budget_usd,
-        "actor": actor_subject,
-        "raised_at": raised_at,
     }

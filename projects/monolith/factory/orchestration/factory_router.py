@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlmodel import Session
 
 from auth.api import Principal
-from core.db import get_session
 from factory.access import operator
 from goosecracker.api import REPO_CATALOG
 
@@ -100,55 +98,6 @@ def factory_status(principal: Principal = Depends(operator)) -> dict:
             receipt["graph"] = graph.load_graph(receipt["task_id"])
             receipt["node_runs"] = graph.node_runs(receipt["task_id"])
     return result
-
-
-@router.get("/work-items")
-def factory_work_items(
-    state: str | None = None,
-    authority: str | None = None,
-    limit: int = 50,
-    session: Session = Depends(get_session),
-    principal: Principal = Depends(operator),
-) -> dict:
-    """List durable work items for the private factory surface."""
-    from factory.orchestration.work_items import list_work_items
-
-    return {
-        "work_items": list_work_items(
-            session, state=state, authority=authority, limit=limit
-        )
-    }
-
-
-@router.get("/work-items/{item_id}")
-def factory_work_item(
-    item_id: int,
-    session: Session = Depends(get_session),
-    principal: Principal = Depends(operator),
-) -> dict:
-    """Read one durable work item with edges and recent events."""
-    from factory.orchestration.work_items import work_item_document
-
-    document = work_item_document(session, item_id)
-    if document is None:
-        raise HTTPException(404, "work item not found")
-    return document
-
-
-@router.get("/attempt-stop")
-def attempt_stop_preview(
-    task_id: str,
-    node_key: str,
-    attempt: int,
-    session_id: int,
-    principal: Principal = Depends(operator),
-) -> dict:
-    from factory.orchestration.factory_attempt_stop import read_attempt_stop
-
-    try:
-        return read_attempt_stop(task_id, node_key, attempt, session_id)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/control")
@@ -258,17 +207,6 @@ def factory_control(
     return result
 
 
-@router.get("/escalations")
-def factory_escalations(principal: Principal = Depends(operator)) -> dict:
-    """Every escalation the lane has raised, open ones first."""
-    from factory.orchestration.factory_controls import escalations, status
-
-    state = status()
-    if not state.get("ok"):
-        return {"ok": False, "reason": state.get("reason"), "escalations": []}
-    return {"ok": True, "escalations": escalations(state["receipts"])}
-
-
 @router.post("/decisions/{receipt_id}")
 def factory_decision(
     receipt_id: int,
@@ -306,10 +244,10 @@ def factory_decision(
     return with_request_knowledge(result, principal.subject, body.request_key)
 
 
-@router.post("/issues")
 def factory_receipt(
-    body: ReceiptRequest, principal: Principal = Depends(operator)
+    body: ReceiptRequest, principal: Principal
 ) -> dict:
+    """Validate and receive MCP issue submissions, without an HTTP registration."""
     from factory.orchestration.factory_conductor import github_get
     from factory.orchestration.factory_intake import receive_issue
 
