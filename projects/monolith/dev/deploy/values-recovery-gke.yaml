@@ -144,8 +144,6 @@ onepassword:
 imgproxySigning:
   enabled: false
 
-frontend:
-  otelCollectorUrl: ""
 tailnet:
   enabled: false
 cfIngress:

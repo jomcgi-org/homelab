@@ -62,7 +62,7 @@ argo-cd:
       #
       # Do NOT reintroduce these as a startswith("OTEL_") match if injection ever
       # returns: charts define their own OTEL vars (monolith sets
-      # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and OTEL_COLLECTOR_HTTP_URL), and a
+      # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT), and a
       # prefix match would strip those from the live side and manufacture a fresh
       # diff.
       #

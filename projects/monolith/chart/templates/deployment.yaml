@@ -994,10 +994,6 @@ spec:
             {{- end }}
             - name: AGENT_SESSION_STOP_CONTROL_ENABLED
               value: {{ .Values.agents.sessions.stopControlEnabled | quote }}
-            {{- if .Values.frontend.otelCollectorUrl }}
-            - name: OTEL_COLLECTOR_HTTP_URL
-              value: {{ .Values.frontend.otelCollectorUrl | quote }}
-            {{- end }}
             {{- if .Values.imgproxySigning.enabled }}
             # HMAC secret for signing /img imgproxy URLs (grimoire reader
             # illustrations). Optional: a missing Secret degrades to unsigned

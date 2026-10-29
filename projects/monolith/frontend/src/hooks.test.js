@@ -34,13 +34,17 @@ describe("reroute", () => {
     );
   });
 
-  it("leaves /otel/* alone on subdomain hosts so browser spans reach the proxy", () => {
-    expect(
-      reroute({ url: url("public.jomcgi.dev", "/otel/v1/traces") }),
-    ).toBeUndefined();
-    expect(
-      reroute({ url: url("private.jomcgi.dev", "/otel/v1/traces") }),
-    ).toBeUndefined();
+  it.each([
+    ["private.jomcgi.dev", "/private"],
+    ["friends.jomcgi.dev", "/friends"],
+    ["jomcgi.dev", "/public"],
+    ["localhost", "/public"],
+    ["127.0.0.1", "/public"],
+  ])("routes the retired telemetry path normally on %s", (host, prefix) => {
+    for (const path of ["/otel/v1/traces", "/ordinary-missing-path"]) {
+      expect(reroute({ url: url(host, path) })).toBe(`${prefix}${path}`);
+      expect(reroute({ url: url(host, `${prefix}${path}`) })).toBeUndefined();
+    }
   });
 
   it("leaves already-prefixed paths alone", () => {
@@ -59,12 +63,6 @@ describe("reroute", () => {
     expect(reroute({ url: url("jomcgi.dev", "/private/notes") })).toBe(
       "/public/private/notes",
     );
-  });
-
-  it("leaves /otel/* alone on the apex so browser spans reach the proxy", () => {
-    expect(
-      reroute({ url: url("jomcgi.dev", "/otel/v1/traces") }),
-    ).toBeUndefined();
   });
 
   it("no longer special-cases the retired notes chat BFF paths", () => {
@@ -127,6 +125,5 @@ describe("local public previews", () => {
     expect(reroute({ url: url(host, "/private/notes") })).toBe(
       "/public/private/notes",
     );
-    expect(reroute({ url: url(host, "/otel/v1/traces") })).toBeUndefined();
   });
 });
