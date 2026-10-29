@@ -10,8 +10,7 @@ the private-tier production probe path that outlived them:
 - ``synthetic_router`` is the ``/internal/ember/*`` trigger surface the
   ``ember-codex-session-synthetic`` and ``ember-spark-session-synthetic``
   CronWorkflows POST to (see ``app/jobs_main.py``);
-- ``health`` folds the Codex latch into ``/api/health`` and ``durability``
-  reads the EmberVM control plane's durability surface.
+- ``health`` folds the Codex latch into ``/api/health``.
 
 The package keeps its historical name so the ``ember_public`` domain label,
 image fan-out and health component names stay stable. It is composed into the

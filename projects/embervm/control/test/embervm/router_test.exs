@@ -1186,7 +1186,7 @@ defmodule Embervm.RouterTest do
     end)
 
     System.put_env("EMBERVM_DURABILITY_HEALTH", "1")
-    Application.put_env(:embervm, :durability, RetiredDurability)
+    Application.put_env(:embervm, :durability, Embervm.RouterTest.RetiredDurability)
     Application.put_env(:embervm, :store_probe, StoreProbeOk)
 
     # A valid management identity reaches the router. The old injected healthy
