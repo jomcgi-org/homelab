@@ -2172,7 +2172,7 @@ ignores it. This is repository-only staged delivery, with live acceptance still
 tracked on #7028.
 
 **Why.** Process liveness alone stayed green through downstream failures, while
-alert-only maintenance failures could remain unread for days (ADR embervm/031).
+alert-only maintenance failures could remain unread for days.
 Composite checks therefore classify immediate serving failures as fatal and
 slower debt as advisory, rather than making every degraded dependency trigger a
 rollback. Healthy-only edge caching prevents an old green result from hiding an
