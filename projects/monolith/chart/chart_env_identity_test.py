@@ -1006,7 +1006,6 @@ _BACKEND_SHARED_ENV = _SHARED_ENV + [
     "STARS_CLIMATOLOGY_S3_KEY",
     "CHAT_BLOB_S3_BUCKET",
     "ARTIFACTS_S3_BUCKET",
-    "ARTIFACT_PUBLIC_BASE",
 ]
 _GRIMOIRE_OWN_ENV = [
     "EMBEDDING_URL",
@@ -1104,7 +1103,7 @@ def test_shared_s3_default_preserves_complete_projection():
     assert by_name["STARS_CLIMATOLOGY_S3_KEY"].get("value") == "climatology.json"
     assert by_name["CHAT_BLOB_S3_BUCKET"].get("value") == "chat"
     assert by_name["ARTIFACTS_S3_BUCKET"].get("value") == "artifacts"
-    assert by_name["ARTIFACT_PUBLIC_BASE"].get("value") == "https://jomcgi.dev"
+    assert "ARTIFACT_PUBLIC_BASE" not in by_name
     grid = dict(_cron_containers(rendered)).get("stars-load-grid")
     assert grid is not None, "default .s3 job must render under the forced jobs image"
     grid_names = [item["name"] for item in grid]
