@@ -191,9 +191,7 @@ def test_private_app_chat_routes_and_openapi():
     paths = app.openapi()["paths"]
     routes = list(iter_route_contexts(app.routes))
     registered = {
-        (route.path, method)
-        for route in routes
-        for method in (route.methods or ())
+        (route.path, method) for route in routes for method in (route.methods or ())
     }
     for path in ("/api/chat/explore", "/api/chat/cluster"):
         assert (path, "POST") in registered
