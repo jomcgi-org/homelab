@@ -11,7 +11,6 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from auth.api import Authority, Principal, PrincipalKind, get_principal
 from core.db import get_session
 from factory.orchestration import factory_controls
 from factory.orchestration.factory_models import (
@@ -22,7 +21,6 @@ from factory.orchestration.factory_models import (
     WorkItemEdge,
     WorkItemEvent,
 )
-from factory.orchestration.factory_router import router
 from factory.orchestration.models import SwarmTask
 import factory.orchestration.work_items as work_items
 from factory.orchestration.work_items import (
@@ -461,105 +459,7 @@ def test_source_ordered_sweep_cannot_overwrite_newer_snapshot(db):
         assert item.state == "ready"
 
 
-def operator_client(db):
-    app = FastAPI()
-    app.include_router(router)
-
-    def session_override():
-        with Session(db) as session:
-            yield session
-
-    app.dependency_overrides[get_session] = session_override
-    app.dependency_overrides[get_principal] = lambda: Principal(
-        subject="operator:test",
-        actor=(),
-        scope=(),
-        groups=("operators",),
-        email=None,
-        kind=PrincipalKind.HUMAN,
-        authority=Authority.STANDING,
-    )
-    return TestClient(app)
-
-
-def test_work_item_routes_require_a_standing_operator(db):
-    app = FastAPI()
-    app.include_router(router)
-
-    def session_override():
-        with Session(db) as session:
-            yield session
-
-    app.dependency_overrides[get_session] = session_override
-    app.dependency_overrides[get_principal] = lambda: Principal(
-        subject="anonymous",
-        actor=(),
-        scope=(),
-        groups=(),
-        email=None,
-        kind=PrincipalKind.HUMAN,
-        authority=Authority.ANONYMOUS,
-    )
-    client = TestClient(app)
-    assert client.get("/api/swarm/factory/work-items").status_code == 403
-    assert client.get("/api/swarm/factory/work-items/1").status_code == 403
-
-
-def test_work_item_routes_get_list_filter_clamp_and_404(db):
-    with Session(db) as session:
-        rows = [
-            WorkItem(
-                title=f"item {index}",
-                state="ready" if index % 2 else "open",
-                source_kind="factory",
-                trust="trusted",
-                authority="local" if index % 3 else "github",
-            )
-            for index in range(205)
-        ]
-        session.add_all(rows)
-        session.commit()
-        item_id = rows[1].id
-    client = operator_client(db)
-    detail = client.get(f"/api/swarm/factory/work-items/{item_id}")
-    assert detail.status_code == 200
-    assert detail.json()["item"]["labels"] == []
-    assert client.get("/api/swarm/factory/work-items/999999").status_code == 404
-    assert (
-        len(client.get("/api/swarm/factory/work-items?limit=999").json()["work_items"])
-        == 200
-    )
-    filtered = client.get(
-        "/api/swarm/factory/work-items?state=ready&authority=local&limit=999"
-    ).json()["work_items"]
-    assert filtered
-    assert all(
-        row["state"] == "ready" and row["authority"] == "local" for row in filtered
-    )
-
-
-def test_operator_work_item_reads_use_full_extracted_documents(db):
-    with Session(db) as session:
-        parent = local_item(session, title="parent")
-        child = local_item(session, title="child")
-        add_edge(session, parent.id, child.id, "parent", **op_kwargs())
-        session.commit()
-        child_id = child.id
-
-    operator = operator_client(db)
-
-    operator_detail = operator.get(f"/api/swarm/factory/work-items/{child_id}")
-    assert operator_detail.status_code == 200
-    assert operator_detail.json()["edges_in"][0]["kind"] == "parent"
-
-    operator_list = operator.get("/api/swarm/factory/work-items").json()
-    assert {item["title"] for item in operator_list["work_items"]} == {
-        "parent",
-        "child",
-    }
-
-
-def test_operator_and_browser_routes_serve_the_same_work_item_document(db):
+def test_browser_routes_serve_the_full_work_item_document(db):
     from factory.execution.router import router as agents_router
 
     with Session(db) as session:
@@ -610,16 +510,15 @@ def test_operator_and_browser_routes_serve_the_same_work_item_document(db):
 
     browser_app.dependency_overrides[get_session] = session_override
     browser = TestClient(browser_app)
-    operator = operator_client(db)
     try:
-        via_operator = operator.get(f"/api/swarm/factory/work-items/{item_id}").json()
         via_browser = browser.get(f"/api/agents/factory/work-items/{item_id}").json()
-        assert via_operator == via_browser
-        assert [receipt["id"] for receipt in via_operator["receipts"]] == [
+        with Session(db) as session:
+            assert via_browser == work_items.work_item_document(session, item_id)
+        assert [receipt["id"] for receipt in via_browser["receipts"]] == [
             newer_id,
             older_id,
         ]
-        assert via_operator["receipts"][0] == {
+        assert via_browser["receipts"][0] == {
             "id": newer_id,
             "generation": 1,
             "task_class": "bug-fix",
@@ -627,9 +526,9 @@ def test_operator_and_browser_routes_serve_the_same_work_item_document(db):
             "created_at": newer_created_at,
             "task_id": None,
         }
-        assert (
-            operator.get("/api/swarm/factory/work-items?state=ready").json()
-            == browser.get("/api/agents/factory/work-items?state=ready").json()
-        )
+        with Session(db) as session:
+            assert browser.get("/api/agents/factory/work-items?state=ready").json() == {
+                "work_items": work_items.list_work_items(session, state="ready")
+            }
     finally:
         browser_app.dependency_overrides.clear()

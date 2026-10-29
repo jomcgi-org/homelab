@@ -1257,8 +1257,8 @@ def _submit_issue(
     )
     from factory.orchestration.factory_router import ReceiptRequest, factory_receipt
 
-    # Reuse the HTTP adapter's repository eligibility and issue validation,
-    # which ultimately calls the same durable intake owner as the scheduler.
+    # Reuse repository eligibility and issue validation from the intake helper,
+    # which calls the same durable intake owner as the scheduler.
     try:
         if repo not in REPO_CATALOG:
             raise HTTPException(422, "repository is not available to the executor")

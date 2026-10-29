@@ -610,17 +610,9 @@ def running(attempt, monkeypatch):
 
 
 def preview(s):
-    response = s.client.get(
-        "/api/swarm/factory/attempt-stop",
-        params={
-            "task_id": s.task_id,
-            "node_key": s.pin["node_key"],
-            "attempt": 1,
-            "session_id": s.sid,
-        },
-    )
-    assert response.status_code == 200, response.text
-    return response.json()
+    from factory.orchestration.factory_attempt_stop import read_attempt_stop
+
+    return read_attempt_stop(s.task_id, s.pin["node_key"], 1, s.sid)
 
 
 def request_body(s, *, key="operator-stop-original"):

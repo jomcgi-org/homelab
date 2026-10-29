@@ -86,18 +86,6 @@ def test_factory_controls_require_verified_standing_operator(authority, kind, gr
     )
     assert response.status_code == 403
     assert (
-        client.get(
-            "/api/swarm/factory/attempt-stop",
-            params={
-                "task_id": "task",
-                "node_key": "node",
-                "attempt": 1,
-                "session_id": 1,
-            },
-        ).status_code
-        == 403
-    )
-    assert (
         client.post(
             "/api/swarm/factory/control",
             json={
@@ -337,7 +325,7 @@ def test_http_stale_control_refusal_is_durable_after_version_advances(receipt_db
         assert len(records) == 1
 
 
-def test_issue_endpoint_links_receipt_to_fetched_work_item(receipt_db, monkeypatch):
+def test_mcp_intake_helper_links_receipt_to_fetched_work_item(receipt_db, monkeypatch):
     from factory.orchestration import factory_conductor
 
     issue = {
@@ -353,11 +341,19 @@ def test_issue_endpoint_links_receipt_to_fetched_work_item(receipt_db, monkeypat
     monkeypatch.setattr(factory_router, "REPO_CATALOG", {"owner/repo": {}})
     monkeypatch.setattr(factory_conductor, "github_get", lambda *_args: issue)
     monkeypatch.setattr(factory_conductor, "github_list", lambda *_args: [])
-    response = operator_client().post(
-        "/api/swarm/factory/issues",
-        json={"repo": "owner/repo", "issue_number": 12},
+    result = factory_router.factory_receipt(
+        factory_router.ReceiptRequest(repo="owner/repo", issue_number=12),
+        Principal(
+            subject="operator:test",
+            actor=(),
+            scope=(),
+            groups=("operators",),
+            email=None,
+            kind=PrincipalKind.HUMAN,
+            authority=Authority.STANDING,
+        ),
     )
-    assert response.status_code == 200
+    assert result["ok"]
     with Session(receipt_db) as session:
         receipt = session.exec(select(FactoryReceipt)).one()
         assert receipt.work_item_id == session.exec(select(WorkItem.id)).one()
@@ -397,7 +393,6 @@ def test_decisions_require_verified_standing_operator(authority, kind, groups):
         ).status_code
         == 403
     )
-    assert client.get("/api/swarm/factory/escalations").status_code == 403
 
 
 @pytest.mark.parametrize(
