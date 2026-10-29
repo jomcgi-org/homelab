@@ -2024,9 +2024,18 @@ could roll production back or prune an Application. Joe accepted this on
 2026-10-01 (#6475): the operators group holds only Joe and his agents, every
 lever is reversible through GitOps (re-sync, promote forward, or lower a pin),
 and a second tier would add an authentik group and token path for one operator.
-Attribution is the compensating control: #6476 stamps the calling principal
-into the Promotion and the ArgoCD operation. Revisit if the operators group
-gains a member who is not Joe or one of his agents.
+Attribution is the compensating control (#6476, staged in the repository and
+not yet verified live). Each tool reads the verified request subject from
+`current_principal()` when it is invoked, never from a tool argument. A sync
+records that subject as `.operation.initiatedBy.username`. A Promotion carries
+it in the `monolith.jomcgi.dev/requested-by` annotation, beside whatever actor
+annotations Kargo's webhook adds. Both success log lines name the subject,
+authority, target and flags. A call without a bearer, reachable only with
+`MCP_GROUP_POLICY_ENFORCED` off, is recorded as `anonymous`. This is a label,
+not Kubernetes impersonation: the API server and Kargo still authenticate the
+monolith ServiceAccount. A shared token yields one shared subject, so callers
+sharing a token are indistinguishable. Revisit if the operators group gains a
+member who is not Joe or one of his agents.
 (see: /projects/monolith/core/mcp_policy.py)
 (see: /projects/monolith/cluster/mcp.py)
 (tracks: #6475, #6476)
