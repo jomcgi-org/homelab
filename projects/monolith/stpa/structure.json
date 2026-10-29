@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "15550c9",
+  "commit": "970f6df81",
   "nodes": [
     {
       "key": "console-caller",

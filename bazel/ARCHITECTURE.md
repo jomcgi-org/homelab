@@ -186,7 +186,7 @@ has the full text.
 
 | ADR | Decision | Status | Disposition |
 |---|---|---|---|
-| tooling/001 | Distribute developer tools as a multi-arch OCI image pulled by `crane export`; no local Bazel; all execution remote | Implemented. `bazel/helm/render.sh` and `bazel/helm/lint.sh` remain; the unused per-Application live diff was removed in #7081. `check-application-drift.sh` remains the operational drift check. Claude-in-cluster convergence is unbuilt (#3914, #3915, #3916) | deleted |
+| tooling/001 | Distribute developer tools as a multi-arch OCI image pulled by `crane export`; no local Bazel; all execution remote | Implemented. `bazel/helm/render.sh` and `bazel/helm/lint.sh` remain; the unused per-Application live diff was removed in #7081. `check-application-drift.sh` remains the operational drift check. #3915 (remaining image tools) and #3916 (live diff) completed; #3914 closed not planned because EmberVM guests superseded Claude agent pods from the tools image | deleted |
 | tooling/002 | Copier template that scaffolds a new service | Draft, never executed; the current recipe is to copy `projects/monolith/deploy/` (#3918) | deleted |
 | tooling/003 | Generate the `homelab` CLI and Claude skills from the FastAPI OpenAPI spec | Deprecated; `tools/cli` stays hand-written | deleted |
 | tooling/004 | Scale the custom `bazel/ocaml` ruleset rather than adopt obazl: ppx first, a locked opam universe, dune translation, per-arch native toolchains | Superseded; the ruleset was removed in #6913 after #4777 left it purposeless | deleted |

@@ -153,10 +153,13 @@ This is a delivery slice of #5788, not the complete conductor interface.
   exact-attempt stopping outside the existing receipt decision flow are not
   exposed by these tools. `capabilities` reports these missing owners
   explicitly. Direction is supported only through an exact pending decision.
-- Exact-attempt stop remains on its existing HTTP owner and remains default-off
-  behind `FACTORY_STOP_SUPERVISION_ENABLED=false`. It is not an MCP operation.
-- The factory reconciler remains default-off under `swarm.factoryEnabled=false`.
-  This repository slice does not enable it or any new mutation adapter.
+- Exact-attempt stop remains on its existing HTTP owner. It is not an MCP
+  operation. Chart defaults keep it off with
+  `FACTORY_STOP_SUPERVISION_ENABLED=false`; the hub overlay
+  (`deploy/values-gke.yaml`) turns it on.
+- The factory reconciler defaults off under `swarm.factoryEnabled=false` in
+  chart values, and the hub overlay turns it on. This repository slice changed
+  neither flag and enables no new mutation adapter.
 - Standalone conductor conversations and private external-chat transcripts
   remain outside the receipt-level contract. Broader conversation continuity
   (#5787) and planner context handoff (#5849) closed not planned; continuity
@@ -177,9 +180,15 @@ and live reconciliation proof that cost, start records and capacity holds
 survive cancellation, replacement and retry. #5789 closed on 2026-09-30. Its
 closing comment reports read-only evidence: production flags on, gateway 401s
 for anonymous and invalid bearers, and attributed stop and decision audit rows.
-It records none of the checklist drills as run, says the stop trial and cost
-check are unverified and unplanned, and asks for a specific bug if an incident
-shows a gap. No open issue owns these checks.
+It records none of the checklist drills as run. Open #5788 owns the matching
+post-deploy checks above: operators-group OAuth discovery and tool listing
+through Context Forge with a legitimate bearer, submit retry returning one
+durable receipt with exact decision-reply acknowledgements, and status, pause
+and stop while the model is busy or unavailable. No open issue owns the
+stale-version check, the unreachable-worker stop trial or the cost, start
+record and capacity hold reconciliation. The closing comment calls the stop
+trial and cost preservation unverified and unplanned, and asks for a specific
+bug if an incident shows a gap.
 
 ## Prepare bounded validation
 
