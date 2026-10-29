@@ -1020,12 +1020,8 @@ defmodule Embervm.OpLog.Postgres do
     end
   end
 
-  # Monotonic advance for the deferred async lifecycle appends (ADR embervm/014
-  # decision 2), mirroring Embervm.OpLog.SQLite: SET only from a strictly-lower-
-  # ranked state (Embervm.TaskState.states_below/1), so a late/out-of-order async
-  # :assigned/:started append cannot regress a row that already ran or terminalized,
-  # while a legitimate forward jump still applies. Inert under the gate off. See the
-  # SQLite backend for the full rationale.
+  # Match SQLite: late and historical lifecycle records cannot regress state
+  # or cross a retry epoch.
   defp project(conn, %Op{kind: :assigned} = op, _seq) do
     advance_task_state(conn, op.task_id, :assigned, op.ts, epoch_of(op))
   end
@@ -1125,9 +1121,7 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   defp do_insert_session_created(conn, op, payload, idempotency_key) do
-    # ON CONFLICT DO NOTHING: idempotent on session_id so the adopt-and-backfill
-    # repair can re-append session_created for a lost async write without a clash
-    # (mirrors the SQLite backend's INSERT OR IGNORE), ADR embervm/014 decision 2.
+    # Repeated session_created repairs preserve the existing ownership row.
     sql = """
     INSERT INTO sessions
       (session_id, tenant, principal, workload, state, node_id, vm_id, volume_node_id,
@@ -1232,9 +1226,7 @@ defmodule Embervm.OpLog.Postgres do
     ])
   end
 
-  # Guarded against terminal states so a deferred async relit append cannot
-  # resurrect a since-destroyed session (mirrors the SQLite backend), ADR
-  # embervm/014 decision 2. Inert under the gate off.
+  # A late or replayed relight cannot resurrect a terminal session.
   defp project(conn, %Op{kind: :session_relit} = op, _seq) do
     exec(
       conn,
@@ -1972,12 +1964,12 @@ defmodule Embervm.OpLog.Postgres do
     exec(conn, "UPDATE tasks SET state=$1, updated_at=$2 WHERE task_id=$3", [state, ts, task_id])
   end
 
-  # Monotonic advance for a deferred async lifecycle append: SET `to_state` only
+  # Monotonic advance for a lifecycle append: SET `to_state` only
   # when the row ranks strictly below it in the lifecycle partial order AND the
   # row's retry count is still below the op's issue-time attempt (see
   # Embervm.OpLog.SQLite.advance_task_state/5 for the full attempt-aliasing
   # rationale and Embervm.TaskState.states_below/1 for the rank order). `epoch` nil
-  # (sync write-through, or a pre-epoch op) runs only the rank guard, unchanged.
+  # (a pre-epoch op) runs only the rank guard, unchanged.
   defp advance_task_state(conn, task_id, to_state, ts, epoch \\ nil) do
     below = Embervm.TaskState.states_below(to_state)
     # $1 to_state, $2 ts, $3 task_id, then $4.. for the state-in list.
@@ -1997,7 +1989,7 @@ defmodule Embervm.OpLog.Postgres do
     )
   end
 
-  # The dispatch attempt (1-based) a deferred async :assigned/:started op was issued
+  # The dispatch attempt (1-based) an :assigned/:started op was issued
   # under, from the op payload (atom key on a fresh append, string key if ever
   # re-projected from durable JSON). nil when absent. Mirrors Embervm.OpLog.SQLite.
   defp epoch_of(%Op{payload: payload}) when is_map(payload) do

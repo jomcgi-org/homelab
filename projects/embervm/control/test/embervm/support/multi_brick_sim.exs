@@ -609,15 +609,12 @@ defmodule Embervm.MultiBrickSim do
 
     path = Path.join(System.tmp_dir!(), "embervm_msim_#{suffix}.db")
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
-    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
 
     {:ok, store} =
       SessionStore.start_link(
         name: nil,
         op_log: op_log,
-        op_log_mod: SQLite,
-        async_writer: writer,
-        async_lifecycle_writes: false
+        op_log_mod: SQLite
       )
 
     registry = :"msim_reg_#{suffix}"
@@ -705,8 +702,6 @@ defmodule Embervm.MultiBrickSim do
         delete_session_volume_fun: fn _ch, _req -> {:ok, %{}} end,
         expected_instances_fun: fn -> %{} end,
         session_opts: session_opts,
-        async_writer: writer,
-        async_lifecycle_writes: false,
         op_log: op_log,
         op_log_mod: SQLite,
         tenant: "homelab",

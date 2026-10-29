@@ -1068,19 +1068,9 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  # :assigned/:started advance the projection MONOTONICALLY along the task-lifecycle
-  # partial order (queued < assigned < running < terminal), never as an
-  # unconditional SET. Under EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014
-  # decision 2) these appends are deferred through Embervm.AsyncWriter, so an append
-  # can arrive out of order relative to a later synchronous op: a stale :assigned
-  # landing AFTER :succeeded, or a :started landing after its own :assigned was lost.
-  # advance_task_state SETs the target state only from a STRICTLY-LOWER-ranked state
-  # (Embervm.TaskState.forward_rank/1), so a stale late append against an equal-or-
-  # higher-ranked row is the no-op the FSM already treats it as, while a legitimate
-  # forward jump (queued -> running when :assigned was lost) still applies. The
-  # durable projection therefore converges to the same terminal state on BOTH the
-  # live write-through path and a full oplog rebuild-replay, regardless of async
-  # append order. Inert under the gate off (appends always arrive in rank order).
+  # Lifecycle projection remains monotonic for late records and historical replay.
+  # A stale assigned/started op cannot regress a terminal row; epoch guards
+  # also reject records belonging to an earlier dispatch attempt.
   defp project(conn, %Op{kind: :assigned} = op, _seq) do
     advance_task_state(conn, op.task_id, :assigned, op.ts, epoch_of(op))
   end
@@ -1202,11 +1192,7 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   defp do_insert_session_created(conn, op, payload, idempotency_key) do
-    # INSERT OR IGNORE: idempotent on session_id so the adopt-and-backfill repair
-    # (session_manager Direction-2, ADR embervm/014) can re-append session_created
-    # for a lost async write without a primary-key clash if the original append
-    # later drains. A row already present (created before, or a backfill that won
-    # the race) is authoritative and left untouched.
+    # Repeated session_created repairs preserve the existing ownership row.
     sql = """
     INSERT OR IGNORE INTO sessions
       (session_id, tenant, principal, workload, state, node_id, vm_id, volume_node_id,
@@ -1345,11 +1331,7 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- Sqlite3.release(conn, stmt), do: :ok
   end
 
-  # session_relit: restored to a live VM from its banked snapshot; back to running.
-  # Guarded against terminal states so a deferred async relit append (ADR embervm/014
-  # decision 2) that lands after the session was later destroyed/expired/failed
-  # cannot resurrect it to running; a live (running/banked/relighting) row still
-  # advances. Inert under the gate off (relit always lands from banked/relighting).
+  # A late or replayed relight cannot resurrect a terminal session.
   defp project(conn, %Op{kind: :session_relit} = op, _seq) do
     sql =
       "UPDATE sessions SET state='running', node_id=?, vm_id=?, updated_at=? WHERE session_id=? AND state NOT IN ('destroyed','expired','evicted','failed')"
@@ -2479,28 +2461,28 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  # Monotonic advance for a deferred async lifecycle append (see the :assigned/
+  # Monotonic advance for a lifecycle append (see the :assigned/
   # :started projections): SET `to_state` (an atom) only when the row's current
   # state ranks STRICTLY BELOW it in the task-lifecycle partial order
   # (Embervm.TaskState.states_below/1). A late append against a row that already
   # ran/terminalized (equal or higher rank) matches no row and is a harmless no-op,
-  # so an out-of-order async append can never regress the durable state; a
+  # so an out-of-order append can never regress the durable state; a
   # legitimate forward jump (queued -> running when :assigned was lost) still
   # applies. Same guard, same outcome on the live path and on rebuild-replay.
   #
   # `epoch` is the SECOND, ORTHOGONAL half of the guard: the state-rank test alone
   # cannot catch an ATTEMPT-ALIASED stale append, because queued -> assigned is
   # FORWARD in the rank order regardless of which dispatch attempt issued it. A task
-  # that was assigned under attempt N (deferred :assigned enqueued), then failed and
+  # that was assigned under attempt N (:assigned recorded), then failed and
   # `:retried` (back to queued, attempt N+1) awaiting a fresh dispatch, would have
   # that stale attempt-N :assigned land against the now-queued row and re-assign it
-  # to a worker that no longer exists. So the deferred op carries the 1-based attempt
+  # to a worker that no longer exists. So an epoch-tagged op carries the 1-based attempt
   # it was issued under, and we additionally require the row's retry count (the
   # 0-based `attempt` column) to still be BELOW that epoch: `attempt < epoch`. A
   # stale attempt-N append (epoch N) against a row already retried to attempt N (SQL
   # attempt column N, i.e. not < N) matches no row and is dropped; the current
   # attempt's append (epoch N+1 against SQL attempt N) still applies. `epoch` is nil
-  # for the write-through (gate-off) path and every pre-epoch op, in which case only
+  # for historical pre-epoch ops, in which case only
   # the rank guard runs and behaviour is exactly as before.
   defp advance_task_state(conn, task_id, to_state, ts, epoch \\ nil) do
     below = Embervm.TaskState.states_below(to_state)
@@ -2524,10 +2506,9 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  # The dispatch attempt (1-based) a deferred async :assigned/:started op was issued
+  # The dispatch attempt (1-based) an :assigned/:started op was issued
   # under, read from the op payload (atom key on a fresh append, string key if ever
-  # re-projected from durable JSON). nil when absent (sync write-through path, or an
-  # op appended before the epoch tag existed): the caller then applies only the
+  # re-projected from durable JSON). nil for historical records written before the epoch tag existed: the caller then applies only the
   # state-rank guard, unchanged.
   defp epoch_of(%Op{payload: payload}) when is_map(payload) do
     Map.get(payload, :epoch) || Map.get(payload, "epoch")

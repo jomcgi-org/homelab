@@ -1095,18 +1095,14 @@ against them.
     mechanics. The scalar details are carried by the storage and
     control-plane sections.
 
-**Why.** Worker runtime state changed faster than synchronous durable writes
-could support, while stale reports could otherwise resurrect destroyed VMs or
-regress a generation (ADR embervm/014). The optional async path avoids keeping
-Postgres on four boot and wake appends, but the reference deployment currently
-keeps `asyncLifecycleWrites: false`, so those appends remain write-through
-(see: /projects/embervm/deploy/values.yaml and
-/projects/embervm/chart/values.yaml). Vocabulary-only conformance was also
+**Why.** Lifecycle appends remain synchronous: the durable write succeeds
+before ETS advances or ownership is acknowledged. The unarmed async lifecycle
+implementation was removed under #7059, superseding embervm/014 decision 2.
+Worker-authoritative state and node-confirmed destruction remain unchanged.
+Forward-only projection guards preserve terminal and generation protections
+for late records and historical replay. Vocabulary-only conformance remains
 insufficient because a modeled action can exist in an enum and never be emitted
-(ADR embervm/034). Worker-authoritative runtime state, forward-only
-reconciliation, and model-checked invariants support the async path's late
-durable records while keeping enforcement fail-closed and warmth discardable
-(ADR embervm/006, ADR embervm/014).
+(ADR embervm/034).
 
 ---
 
@@ -2432,6 +2428,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Retire unarmed async lifecycle writes; preserve placement retry and its separate dev-stage work | section 5, embervm/014 decision 2 superseded | #7059 | repository removal implemented; PR left unmerged for independent review |
 | Brick scale-down couples durable archive acknowledgement with one brick per node (Joe, 2026-10-10) | section 7 | #6533 | single repository gate default-off; staged enable and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | built and staged; dev arming then production after a dev soak (#6965) |
@@ -2460,7 +2457,7 @@ has the full text.
 | embervm/011 | Vendor-bound warmth, single-writer fencing, CP-sequenced rollouts | Accepted; stateful Longhorn withdrawn by 025; sole-issuer rule amended by 017, 018, 040 | deleted |
 | embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA not planned (#3862) | deleted |
 | embervm/013 | Classes are reuse semantics, substrates are lanes; brick sizing; bricks everywhere | Accepted, Built | deleted |
-| embervm/014 | Worker-authoritative state, async writes, node-confirmed destruction | Draft, Built (`adoption.tla`); metering clause amended by 020 | deleted |
+| embervm/014 | Worker-authoritative state and node-confirmed destruction; decision 2 async writes retired by #7059 | Built (`adoption.tla`); decision 2 superseded by synchronous lifecycle appends (#7059); metering clause amended by 020 | deleted |
 | embervm/015 | Isolated high-throughput lane with data-plane placement | Draft; not planned ([#3864](https://github.com/jomcgi-org/homelab/issues/3864) closed, its #6132 reuse and evidence gate is the reopen criterion); fail-closed lease withdrawn by 020 | deleted |
 | embervm/016 | Kubernetes scheduling contract: the pod is the ABI, priority projection, session ladder | Accepted; kwok drills never built; placement loop superseded by 020, ladder amended by 025, 027, 029 | deleted |
 | embervm/017 | Bounded auto-heal of the checkpoint-abort quarantine | Accepted, Built (`generation_issuance.tla`) | deleted |

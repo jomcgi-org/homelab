@@ -127,15 +127,6 @@ defmodule Embervm.Application do
       # with the other dependency-free ETS owners at the head of the chain.
       Embervm.LineageFence,
       op_log_child_spec(),
-      # The async lifecycle-write queue (ADR embervm/014 decision 2), gated by
-      # EMBERVM_ASYNC_LIFECYCLE_WRITES. Placed AFTER the op-log (it appends through
-      # it) and BEFORE TaskStore/SessionStore/SessionManager (they enqueue their
-      # off-hot-path :assigned/:started and session_relit appends
-      # here). Owns no ETS and effectively never crashes, so leading the stores in
-      # the rest_for_one chain costs nothing; it drains on graceful shutdown so a CP
-      # roll loses no pending append. Started unconditionally: with the gate OFF it
-      # receives no work (the stores keep write-through ordering), so it is inert.
-      Embervm.AsyncWriter,
       # Platform KEK custodian (ADR embervm/036). It depends only on the op-log,
       # loads its two small durable epoch facts at boot, and remains inert when no
       # root is configured.
@@ -156,14 +147,10 @@ defmodule Embervm.Application do
        ttl_ms: spec_trace_ttl_ms()},
       # TaskStore fires on_metered after a :succeeded/:failed op with usage lands,
       # so Embervm.Metering charges the quota cache off the same durable write.
-      # async_writer + async_lifecycle_writes wire the gated off-hot-path append of
-      # :assigned/:started (dispatch); OFF (default) keeps write-through ordering.
       {Embervm.TaskStore,
        [
          op_log_mod: op_log_mod(),
-         on_metered: &Embervm.Metering.on_metered/1,
-         async_writer: Embervm.AsyncWriter,
-         async_lifecycle_writes: async_lifecycle_writes_enabled()
+         on_metered: &Embervm.Metering.on_metered/1
        ]},
       # Finch (the shared HTTP pool, TLS-pinned to the K8s CA in-cluster) before
       # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
@@ -250,9 +237,7 @@ defmodule Embervm.Application do
       {Embervm.SessionStore,
        [
          op_log_mod: op_log_mod(),
-         on_metered: &Embervm.Metering.on_metered/1,
-         async_writer: Embervm.AsyncWriter,
-         async_lifecycle_writes: async_lifecycle_writes_enabled()
+         on_metered: &Embervm.Metering.on_metered/1
        ]},
       # The dispatcher (Task 11): the heart of R0. Owns the per-workload fair
       # queues, the primed-VM inventory, the enforcement caps, and drives queued
@@ -1169,12 +1154,7 @@ defmodule Embervm.Application do
       pressure_retry_interval_ms: session_pressure_retry_interval_ms(),
       pressure_wait_bound_ms: session_pressure_wait_bound_ms(),
       residency_restore_limit: residency_positive_limit("EMBERVM_RESIDENCY_RESTORE_LIMIT", 2),
-      # The Direction-2 adopt-and-backfill discriminator asks AsyncWriter whether a
-      # rowless reported VM has a write in flight (ADR embervm/014 decision 2), so it
-      # needs both the gate and the writer reference.
-      async_lifecycle_writes: async_lifecycle_writes_enabled(),
-      restart_flush_inflight_invokes: restart_flush_inflight_invokes_enabled(),
-      async_writer: Embervm.AsyncWriter
+      restart_flush_inflight_invokes: restart_flush_inflight_invokes_enabled()
     ] ++ wake_opts()
   end
 
@@ -1242,25 +1222,6 @@ defmodule Embervm.Application do
 
   defp cross_node_rejoin_enabled do
     case trimmed_env("EMBERVM_CROSS_NODE_REJOIN") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
-  # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2). UNSET or
-  # "0"/"false"/"" (the chart and reference-deployment setting) => the
-  # boot/wake lifecycle appends (:assigned/:started on dispatch and
-  # session_relit on session wake) stay write-through: the
-  # durable oplog append blocks the hot-path caller
-  # before the instance is handed back. "1"/"true" => those three
-  # appends are deferred to Embervm.AsyncWriter AFTER the in-memory state is advanced
-  # (RPC already succeeded), taking the durable write off the hot path; a lost write
-  # (CP crash before the async append) is repaired by the adoption backfill. Metering,
-  # :submitted, session_created, destruction, and bank ops are NEVER deferred. Wired here so it flips
-  # via a deploy values env change, no code change: the chart's `asyncLifecycleWrites`
-  # key (chart/values.yaml) renders this variable in deployment.yaml.
-  defp async_lifecycle_writes_enabled do
-    case trimmed_env("EMBERVM_ASYNC_LIFECYCLE_WRITES") do
       v when v in ["1", "true", "TRUE", "True"] -> true
       _ -> false
     end
