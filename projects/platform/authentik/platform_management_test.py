@@ -109,7 +109,9 @@ def test_management_render_contract_and_keyof_creation_order(management, link, h
             if entry.get("id"):
                 created.add(entry["id"])
 
-        directory = "optional" if name == "grimoire-link-enrollment.yaml" else "blueprints"
+        directory = (
+            "optional" if name == "grimoire-link-enrollment.yaml" else "blueprints"
+        )
         expected = yaml.load((CHART / directory / name).read_text(), Loader=Loader)
         mapping = {
             "grimoire-auth.yaml": GRIMOIRE_MAPPING,
@@ -130,7 +132,9 @@ def test_management_render_contract_and_keyof_creation_order(management, link, h
         assert parsed == expected, name
 
     grimoire = yaml.load(data["grimoire-auth.yaml"], Loader=Loader)
-    gate = next(entry for entry in grimoire["entries"] if entry.get("id") == "human-access")
+    gate = next(
+        entry for entry in grimoire["entries"] if entry.get("id") == "human-access"
+    )
     assert gate["attrs"]["expression"] == (
         'return request.user.is_active and request.user.type != "service_account" and bool(request.user.email)\n'
     )
@@ -143,7 +147,9 @@ def test_retired_configuration_and_sources_are_absent():
     assert values["platformManagement"]["enabled"] is True
     assert values["grimoireLinkEnrollment"]["enabled"] is False
     names = {variable["name"] for variable in values["authentik"]["global"]["env"]}
-    assert names.isdisjoint({"PLATFORM_AUTH_API_URL", "PLATFORM_AUTH_ENROLLMENT_ISSUER"})
+    assert names.isdisjoint(
+        {"PLATFORM_AUTH_API_URL", "PLATFORM_AUTH_ENROLLMENT_ISSUER"}
+    )
     assert not (CHART / "optional/platform-enrollment.yaml").exists()
     assert not (CHART / "optional/platform-profile.yaml").exists()
     template = (CHART / "templates/blueprints-configmap.yaml").read_text()
@@ -176,7 +182,11 @@ def test_management_claim_values(user_type):
                 "groups": ["operators", "family"],
             },
         ),
-        ("mcp-auth.yaml", "platform-management-profile", {"platform_user_type": user_type}),
+        (
+            "mcp-auth.yaml",
+            "platform-management-profile",
+            {"platform_user_type": user_type},
+        ),
     ):
         mapping = next(
             entry
@@ -184,6 +194,8 @@ def test_management_claim_values(user_type):
             if entry.get("id") == identity
         )
         context = {}
-        source = "def claims(request):\n" + textwrap.indent(mapping["attrs"]["expression"], "    ")
+        source = "def claims(request):\n" + textwrap.indent(
+            mapping["attrs"]["expression"], "    "
+        )
         exec(source, context)  # noqa: S102 - Trusted checked-in mapping under test.
         assert context["claims"](request) == expected
