@@ -322,3 +322,18 @@ def test_production_learning_activation_preserves_all_other_controls(tmp_path):
         assert env[key] == "false"
     assert env["KG_FACT_REVIEW_MAX_DAILY"] == "20000"
     assert _cronworkflows(before) == _cronworkflows(after)
+
+
+def test_daily_learning_hash_is_empty_until_explicitly_pinned(tmp_path):
+    before = _render_documents(DEPLOY, GKE)
+    env = _backend_env(before)
+    assert env["FACTORY_LEARNING_DAILY_PAYLOAD_SHA256"] == ""
+    override = tmp_path / "pin.yaml"
+    override.write_text(
+        'agents:\n  drainer:\n    learningDailyPayloadSha256: "' + "a" * 64 + '"\n'
+    )
+    after = _render_documents(DEPLOY, GKE, override)
+    assert _backend_env(after) == env | {
+        "FACTORY_LEARNING_DAILY_PAYLOAD_SHA256": "a" * 64
+    }
+    assert _cronworkflows(before) == _cronworkflows(after)
