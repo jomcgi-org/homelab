@@ -97,6 +97,7 @@
       if (!response.ok) throw new Error("escalations unavailable");
       const body = await response.json();
       escalations = body.escalations ?? [];
+      restorePending(openOnes(escalations));
       unavailable = false;
       now = Date.now();
       // An armed close whose card the refresh took away is disarmed, so the
@@ -357,8 +358,9 @@
     return send(item, body, "checking previous result");
   }
 
-  onMount(() => {
-    for (const item of pending) {
+  function restorePending(items) {
+    for (const item of items) {
+      if (requestRecords[contextKey(item)]) continue;
       try {
         const saved = JSON.parse(
           sessionStorage.getItem(`factory-decision:${contextKey(item)}`) ??
@@ -376,6 +378,10 @@
           "Previous request state is unavailable. Refresh before acting.";
       }
     }
+  }
+
+  onMount(() => {
+    restorePending(pending);
     const timer = setInterval(() => {
       if (document.visibilityState === "visible" && !busy) refresh();
     }, POLL_MS);

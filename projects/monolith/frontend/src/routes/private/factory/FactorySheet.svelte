@@ -117,6 +117,8 @@
       margin: 0;
     }
     .factory-sheet .index-list {
+      min-width: 0;
+      width: 100%;
       flex-wrap: wrap;
       gap: 0;
     }
