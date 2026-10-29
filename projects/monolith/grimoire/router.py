@@ -2259,30 +2259,6 @@ def _aggregate_dm_rows(
     return aggregated, order
 
 
-def _project_neighbor(
-    session: Session, campaign_id: str, viewer: Viewer, neighbor_id: str
-) -> dict[str, Any] | None:
-    """Projects a relationship neighbor in "relationship" context.
-
-    Returns None when the neighbor is not visible to the viewer at all
-    (ungranted and not global), so the caller can drop the edge entirely.
-    A name_only grant still yields a recognition stub (not None) because
-    context="relationship" tells project_entity() this is neighbor listing,
-    not direct lookup. Never loads typed detail: neighbor listings stay
-    spine-level like the list endpoint.
-    """
-    rows = session.exec(
-        visible_entities_query(campaign_id, viewer).where(Entity.id == neighbor_id)
-    ).all()
-    if not rows:
-        return None
-    if viewer == "dm":
-        aggregated, order = _aggregate_dm_rows(rows, context="relationship")
-        return aggregated[order[0]]
-    entity, grant = rows[0]
-    return project_entity(entity, None, grant, viewer, context="relationship")
-
-
 def _parse_offset(cursor: str | None) -> int:
     """Decode the opaque entity-list cursor (a stringified offset). A missing or
     malformed cursor starts from the top rather than erroring, so a stale cursor

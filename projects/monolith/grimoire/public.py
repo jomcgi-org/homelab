@@ -441,7 +441,7 @@ def search_public(session: Session, q: str) -> dict[str, Any]:
     """Name + lore search over the whole corpus, no grants.
 
     Public search is name-only, not the private tier's vector/kNN search
-    (search.search_campaign): that path calls out to the embedding inference
+    (search.search_knowledge): that path calls out to the embedding inference
     service via knowledge.api.get_embedding_client, and nothing in the public
     tier today (the public knowledge router included) reaches that service
     from the public network path. Rather than wire a new cross-tier

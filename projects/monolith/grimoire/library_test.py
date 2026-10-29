@@ -21,7 +21,6 @@ from grimoire.models import AppUser, CampaignMember
 from grimoire.access import (
     get_authenticated_email,
     get_game_creator_email,
-    get_grimoire_operator_email,
 )
 from grimoire.extract import current_extraction_key
 from grimoire.models import (
@@ -66,7 +65,6 @@ def client_fixture(session):
 
     app.dependency_overrides[get_authenticated_email] = authenticated_email
     app.dependency_overrides[get_game_creator_email] = authenticated_email
-    app.dependency_overrides[get_grimoire_operator_email] = authenticated_email
     yield TestClient(app)
     app.dependency_overrides.clear()
 

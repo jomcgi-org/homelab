@@ -245,16 +245,16 @@ omit other members' author ids and other characters' audience ids.
 the server-side roller (#6611), and utterance ingest (#6618). It locks and
 refreshes the game-session row, refuses ended sessions, validates the audience
 against that campaign, and allocates `max(seq) + 1` inside the caller's
-transaction. The helper flushes; the caller commits or rolls back. Retractions
-retain the row and sequence, lock the event row, and are idempotent, including
-after the session ends.
+transaction. The helper flushes; the caller commits or rolls back. Grant
+updates and deletes lock matching reveal rows and retract the affected reveal
+history when play is enabled. Rows and sequence numbers are retained.
 
 **Why.** A Postgres sequence consumes numbers on rollback and would leave gaps.
 Locking the existing session row serializes writers within one session while
 other sessions can append independently. Allocation and insertion roll back
 together. The unique index also rejects a writer that bypasses serialization.
 
-The six play HTTP routes require `GRIMOIRE_PLAY_ENABLED` to equal the lowercase
+The play HTTP routes require `GRIMOIRE_PLAY_ENABLED` to equal the lowercase
 string `true`, read on each request before identity and membership checks.
 `grimoire.play.enabled` defaults to false in the chart; deployment values stay
 off. Existing session creation and status updates are unaffected. Campaign
@@ -263,7 +263,8 @@ members may list sessions and poll events. DMs may append every kind except
 audience. HTTP utterances are refused for every caller because #6618 owns
 ingest. Generic event writes refuse `roll` for every caller with 403 because
 only the server-side roller may produce trusted roll bodies.
-DMs may retract any event; players may retract only their authored actions.
+There is no generic event-retraction HTTP endpoint. DMs change reveal history
+through the grant update and delete endpoints.
 
 `POST /campaigns/{campaign_id}/sessions/{session_id}/rolls` rolls on the server
 and appends a `roll` event with the authenticated member as author. Its body
@@ -629,8 +630,8 @@ Recipients must accept in their lobby before any campaign data becomes
 available. Decline, cancellation and membership revocation are durable;
 re-inviting creates a fresh invitation ID so an old acceptance cannot be
 replayed. Ownership controls invitations and membership removal; the existing
-DM role continues to control gameplay. The old direct provisioning endpoint is
-an operator repair path and is not exposed through the friend UI.
+DM role continues to control gameplay. Membership admission uses accepted
+invitations or campaign join links; the direct provisioning endpoint is removed.
 
 The campaign DM assigns characters with
 `PUT /campaigns/{campaign_id}/members/{member_id}/character`: supply either

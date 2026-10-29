@@ -115,14 +115,12 @@ def _resolve_entity_hit(
     viewer: Viewer,
     entity_id: str,
     distance: float,
-    not_granted_to: str | None = None,
 ) -> dict[str, Any] | None:
     """Sync: apply the visibility predicate/projection to one entity hit.
 
     Builds on visible_entities_query()/project_entity() scoped to a single
-    entity_id, the same helpers and pattern router.py's _project_neighbor
-    uses, so the grant predicate lives in exactly one place. Returns None
-    when the entity does not exist, is not visible to the viewer at all
+    entity_id, keeping the grant predicate in the shared visibility helpers.
+    Returns None when the entity does not exist, is not visible to the viewer at all
     (ungranted, non-global), or is a name_only grant (dropped in lookup
     context per spec #3.3).
 
@@ -133,9 +131,7 @@ def _resolve_entity_hit(
     module to wire the endpoint, so importing back would be circular).
     """
     rows = session.exec(
-        visible_entities_query(
-            campaign_id, viewer, not_granted_to=not_granted_to
-        ).where(Entity.id == entity_id)
+        visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
     ).all()
     if not rows:
         return None
