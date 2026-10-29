@@ -9,8 +9,8 @@
 #
 # Safe to re-run: every INSERT ends with ON CONFLICT (uuid) DO NOTHING, so a
 # second run preserves existing rows. Run only after the hikes schema has been
-# applied (i.e. the hikes.walks table exists); the weekly scrape job keeps the
-# corpus fresh thereafter.
+# applied (i.e. the hikes.walks table exists). Catalogue refresh uses the
+# manual-only hikes-scrape-walks job; forecasts have their own periodic job.
 #
 # Usage:
 #   ./seed-prod.sh                 # uses the defaults below
