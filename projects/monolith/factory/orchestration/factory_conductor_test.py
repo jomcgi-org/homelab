@@ -1307,6 +1307,105 @@ def test_paused_merge_never_upgrades_ineligible_review(paused_settlement, bad_re
     assert snapshot["evidence"]["state"] == "merged_review_not_approved"
 
 
+def test_paused_owned_merge_strands_review_without_recovery_handoff(
+    paused_settlement, monkeypatch
+):
+    """Characterize the caller-path gap before adding merged-head recovery."""
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.models import SwarmNodeRun
+
+    s = paused_settlement
+    # Keep the objective open and its deadline unexpired: only the external
+    # merge can cause this terminal transition, not pause/deadline settlement.
+    assert s.issue["state"] == "open"
+    assert s.clock[0] < s.deadline
+    with Session(s.engine) as db, db.begin():
+        review = db.exec(
+            select(SwarmNodeRun).where(
+                SwarmNodeRun.task_id == s.task["id"],
+                SwarmNodeRun.node_key == "review_fix",
+            )
+        ).one()
+        review.head_sha = "c" * 40  # Approval is for a different immutable head.
+
+    before = controls.task_snapshot(s.task["id"])
+    runs = conductor.graph.node_runs(s.task["id"])
+    version = conductor.graph.current_version(s.task["id"])
+    nodes = conductor.graph.load_graph(s.task["id"])
+    assert before["task_paused"]
+    assert before["committed_cost_usd"] == 0.5
+    assert len(before["starts"]) == len(runs) == 2
+
+    def audits():
+        with Session(s.engine) as db:
+            return [
+                (row.id, row.action, row.detail_json)
+                for row in db.exec(
+                    select(FactoryAudit)
+                    .where(FactoryAudit.task_id == s.task["id"])
+                    .order_by(FactoryAudit.id)
+                ).all()
+            ]
+
+    history = audits()
+
+    def no_handoff(*args, **kwargs):
+        pytest.fail("Externally merged task unexpectedly scheduled verification")
+
+    # Fail at graph/model boundaries as well as checking durable state. The
+    # fixture supplies fake GitHub reads and prevents physical worker dispatch.
+    monkeypatch.setattr(conductor, "_insert_review_round", no_handoff)
+    monkeypatch.setattr(conductor, "_add_planner_with_manifest", no_handoff)
+    monkeypatch.setattr(conductor, "_submit_or_reconcile", no_handoff)
+    s.pr.update(state="closed", merged=True)
+    conductor.tick()
+    settled = controls.task_snapshot(s.task["id"])
+    assert settled["state"] == "escalated"
+    assert settled["evidence"]["state"] == "merged_review_not_approved"
+    assert "operator follow-up required" in settled["evidence"]["reason"]
+    for field in (
+        "id",
+        "task_id",
+        "work_item_id",
+        "repo",
+        "issue_number",
+        "starts",
+        "committed_cost_usd",
+        "turns_used",
+        "direction",
+        "cancellation_requested",
+    ):
+        assert settled[field] == before[field]
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    assert conductor.graph.load_graph(s.task["id"]) == nodes
+    assert conductor.graph.current_version(s.task["id"]) == version
+    observed = audits()
+    assert observed[: len(history)] == history  # Retain the operator pause audit.
+    merge = [
+        json.loads(detail)
+        for _, action, detail in observed
+        if action == "owned_pr_merged"
+    ]
+    assert len(merge) == 1
+    assert merge[0]["pr_number"] == 3
+    assert merge[0]["head_sha"] == s.pr["head"]["sha"]
+    assert merge[0]["armed_by_factory"] is False
+    assert any(action == "merged_delivery_waiting" for _, action, _ in observed)
+    assert not s.cards
+
+    # Once terminal, subsequent normal ticks leave this receipt stranded. They
+    # neither create a review-only node nor reset its historical paid attempts.
+    for _ in range(2):
+        conductor.tick()
+    assert controls.task_snapshot(s.task["id"]) == settled
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    assert conductor.graph.load_graph(s.task["id"]) == nodes
+    assert conductor.graph.current_version(s.task["id"]) == version
+    assert audits() == observed
+    assert not s.cards
+
+
 @pytest.mark.parametrize("failure", ["pending", "failure", "closure"])
 @pytest.mark.parametrize("expired", [False, True])
 @pytest.mark.parametrize(
