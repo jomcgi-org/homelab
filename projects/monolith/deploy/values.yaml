@@ -143,6 +143,8 @@ cfIngress:
 knowledge:
   enabled: true
   factReview:
+    # Approved bounded source coverage; existing review quotas stay unchanged.
+    coverageEnabled: true
     # Catch-up allowance. Actual coverage is reported separately from retries;
     # bounded batches retain an independent evidence verdict for each fact.
     enabled: true
@@ -313,6 +315,8 @@ swarm:
 # switches.
 agents:
   drainer:
+    # Requires the existing factory-retro-daily payload opt-in; adds no scheduler.
+    learningHandoffEnabled: true
     enabled: true
     # Accommodate the 20,000-review catch-up allowance plus the former 2,000
     # extraction/audit allowance. This is a shared ceiling, not a reservation.

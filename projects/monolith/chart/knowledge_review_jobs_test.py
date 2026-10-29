@@ -77,12 +77,15 @@ def _backend_env(documents: list[dict]) -> dict[str, str | None]:
 
 
 @pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
-def test_source_coverage_is_default_off_with_reachable_opt_in(values, tmp_path):
+def test_source_coverage_defaults_and_production_opt_in(values, tmp_path):
     before = _render_documents(*values)
     env = _backend_env(before)
-    assert env.get("KG_FACT_REVIEW_COVERAGE_ENABLED", "false") == "false"
+    expected = "true" if DEPLOY in values else "false"
+    assert env.get("KG_FACT_REVIEW_COVERAGE_ENABLED", "false") == expected
     domain = tmp_path / "knowledge.yaml"
-    domain.write_text("knowledge:\n  enabled: true\n")
+    domain.write_text(
+        "knowledge:\n  enabled: true\n  factReview:\n    coverageEnabled: false\n"
+    )
     before = _render_documents(*values, domain)
     env = _backend_env(before)
     assert env["KG_FACT_REVIEW_COVERAGE_ENABLED"] == "false"
@@ -292,6 +295,30 @@ def test_learning_handoff_is_explicit_and_does_not_add_scheduler(values, tmp_pat
             if env.get("name") == "FACTORY_LEARNING_HANDOFF_ENABLED"
         ]
 
-    assert flags(baseline) and set(flags(baseline)) == {"false"}
+    assert flags(baseline) and set(flags(baseline)) == {
+        "true" if values == DEPLOY else "false"
+    }
     assert set(flags(opted)) == {"true"}
     assert _cronworkflows(baseline) == _cronworkflows(opted)
+
+
+def test_production_learning_activation_preserves_all_other_controls(tmp_path):
+    before_values = tmp_path / "before.yaml"
+    before_values.write_text(
+        "knowledge:\n  factReview:\n    coverageEnabled: false\nagents:\n  drainer:\n    learningHandoffEnabled: false\n"
+    )
+    before = _render_documents(DEPLOY, GKE, before_values)
+    after = _render_documents(DEPLOY, GKE)
+    env = _backend_env(after)
+    assert env == _backend_env(before) | {
+        "KG_FACT_REVIEW_COVERAGE_ENABLED": "true",
+        "FACTORY_LEARNING_HANDOFF_ENABLED": "true",
+    }
+    for key in (
+        "KG_COMPLETED_RAW_RECOVERY_ENABLED",
+        "KG_AUDIT_CLARITY_REPAIRS_ENABLED",
+        "KG_AUDIT_ISSUES_ENABLED",
+    ):
+        assert env[key] == "false"
+    assert env["KG_FACT_REVIEW_MAX_DAILY"] == "20000"
+    assert _cronworkflows(before) == _cronworkflows(after)
