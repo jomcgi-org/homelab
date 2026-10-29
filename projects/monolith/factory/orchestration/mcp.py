@@ -1605,9 +1605,9 @@ async def factory_continue_recovery(
 
     Human preview/apply only. Binds the original recovery, task, native review,
     exact owned PR head, policy, graph and accounting. Apply explicitly resumes
-    this same task under a two-hour execution lease; it neither restarts work
+    this same task under a two-hour execution lease. It neither restarts work
     nor transfers review approval. Later native renewals require a distinct
-    reviewed head, fresh subscription quota and quiescence; repeated failures
+    reviewed head, fresh subscription quota and quiescence. Repeated failures
     or absent progress cannot renew. Landing and other holds remain in force.
     Existing dollar fields, receipt generation and unrelated work never change.
     Use a stable request key to reconcile a lost response.
