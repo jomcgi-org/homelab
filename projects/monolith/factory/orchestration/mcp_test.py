@@ -1669,7 +1669,19 @@ def test_permit_diagnostics_wire_schema_rejects_invalid_ids(monkeypatch):
     _as(_principal(), exercise)
 
 
-def test_landing_release_requires_human_operator_and_reviewed_preview(monkeypatch):
+@pytest.mark.parametrize(
+    "scope",
+    [
+        None,
+        {
+            "classification": "private_internal_reversible",
+            "evidence": "Inspected exact diff",
+        },
+    ],
+)
+def test_landing_release_requires_human_operator_and_reviewed_preview(
+    monkeypatch, scope
+):
     from factory.orchestration import factory_landing_release as releases
 
     calls = []
@@ -1688,10 +1700,12 @@ def test_landing_release_requires_human_operator_and_reviewed_preview(monkeypatc
             reason="Joe authorized this reviewed delivery",
             request_key="one",
             expected_preview_sha256="b" * 64,
+            scope=scope,
         )
 
     assert _as(_principal(), invoke)["ok"]
     assert calls[0][1]["actor"] == "joe"
+    assert calls[0][1].get("scope") == scope
     calls.clear()
     for principal in (
         _principal(groups=()),

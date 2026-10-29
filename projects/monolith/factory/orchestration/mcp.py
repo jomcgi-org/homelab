@@ -1585,6 +1585,7 @@ async def factory_release_landing_hold(
     expected_preview_sha256: Annotated[
         str | None, Field(pattern=r"^[0-9a-f]{64}$")
     ] = None,
+    scope: dict | None = None,
 ) -> dict:
     """Preview a hold release or head refresh as a standing human operator.
 
@@ -1601,6 +1602,15 @@ async def factory_release_landing_hold(
     acknowledged without inventing their missing review evidence. Restricted
     review-only recovery holds cannot be released here. Read factory state
     again after application, because a replay is an acknowledgement only.
+
+    To authorize automatic landing of an already settled, unheld delivery,
+    provide scope with exactly classification="private_internal_reversible"
+    and evidence describing the operator's verified scope assessment at this
+    head. Public-facing, security-boundary or destructive changes do not qualify.
+    This explicit scoped mode never releases a hold or resumes execution.
+    Legacy releases remain historical authority and do not become scoped grants.
+    Independent exact-head review, required CI and the global merge switch still
+    apply. Scope is an operator attestation, not an automatic code classifier.
     """
     principal = current_principal()
     refusal = _refuse(principal)
@@ -1611,8 +1621,11 @@ async def factory_release_landing_hold(
         from factory.orchestration import factory_landing_release as releases
 
         try:
+            scoped = {"scope": scope} if scope is not None else {}
             if operation == "preview":
-                return releases.preview(receipt_id, pr_number, head_sha, reason)
+                return releases.preview(
+                    receipt_id, pr_number, head_sha, reason, **scoped
+                )
             if not request_key or not expected_preview_sha256:
                 return {
                     "ok": False,
@@ -1626,6 +1639,7 @@ async def factory_release_landing_hold(
                 actor=principal.subject,
                 request_key=request_key,
                 expected_preview_sha256=expected_preview_sha256,
+                **scoped,
             )
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}

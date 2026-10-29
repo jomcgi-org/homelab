@@ -17,6 +17,75 @@ from factory.orchestration import factory_controls as controls, graph
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
 ACTION = "operator_landing_hold_released"
+SCOPE_ACTION = "operator_scoped_landing_authorized"
+
+
+def _scope(value):
+    """An operator's explicit assessment, never an automatic classifier."""
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"classification", "evidence"}
+        or value.get("classification") != "private_internal_reversible"
+    ):
+        raise ValueError("landing_scope_not_private_internal_reversible")
+    return {
+        "classification": value["classification"],
+        "evidence": controls._text(value.get("evidence"), "scope evidence", 4000),
+    }
+
+
+def scoped_refusal(db, row, pr_number, head_sha):
+    """Require the exact operator-audited grant; old releases are not grants."""
+    if row is None or row.task_paused or row.cancellation_requested:
+        return "landing_receipt_unavailable"
+    if row.state not in ("succeeded", "landing") or controls.landing_held(row):
+        return "landing_receipt_held"
+    if controls.review_recovery_held(row.task_id, session=db):
+        return "review_only_recovery"
+    try:
+        grant = json.loads(row.direction_json or "{}").get("landing_authorization")
+        if (
+            not isinstance(grant, dict)
+            or type(grant.get("schema_version")) is not int
+            or grant.get("schema_version") != 1
+        ):
+            return "scoped_landing_authorization_missing"
+        if any(
+            grant.get(key) != value
+            for key, value in {
+                "receipt_id": row.id,
+                "task_id": row.task_id,
+                "repo": row.repo,
+                "pr_number": pr_number,
+                "head_sha": head_sha,
+            }.items()
+        ):
+            return "scoped_landing_authorization_identity_changed"
+        if _scope(grant.get("scope")) != grant["scope"]:
+            return "scoped_landing_authorization_scope_changed"
+        for event in db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == row.task_id,
+                FactoryAudit.action == SCOPE_ACTION,
+            )
+        ).all():
+            detail = json.loads(event.detail_json)
+            request = detail.get("request", {})
+            result = detail.get("result", {})
+            if (
+                event.actor == grant.get("actor")
+                and request.get("request_key") == grant.get("request_key")
+                and request.get("receipt_id") == row.id
+                and request.get("pr_number") == pr_number
+                and request.get("head_sha") == head_sha
+                and request.get("scope") == grant["scope"]
+                and result.get("ok") is True
+                and result.get("landing_authorization") == grant
+            ):
+                return None
+    except (AttributeError, TypeError, ValueError):
+        return "scoped_landing_authorization_invalid"
+    return "scoped_landing_authorization_unaudited"
 
 
 def _pull(receipt_id, pr_number, head_sha):
@@ -65,11 +134,13 @@ def _refreshable(db, row, pr_number, head_sha):
     return False
 
 
-def _preview(db, control, receipt_id, pr_number, head_sha, reason, pull):
+def _preview(db, control, receipt_id, pr_number, head_sha, reason, pull, scope=None):
     from factory.orchestration import factory_conductor as conductor
     from factory.orchestration.factory_decisions import decision_in_flight
 
     reason = controls._text(reason, "reason", 4000)
+    if scope is not None:
+        scope = _scope(scope)
     row = db.get(FactoryReceipt, receipt_id)
     if (
         row is None
@@ -78,11 +149,21 @@ def _preview(db, control, receipt_id, pr_number, head_sha, reason, pull):
         or row.cancellation_requested
         or control.state not in ("enabled", "paused")
         or (
-            not controls.landing_held(row)
+            scope is None
+            and not controls.landing_held(row)
             and not _refreshable(db, row, pr_number, head_sha)
         )
     ):
         raise ValueError("landing_release_requires_held_receipt")
+    if scope is not None and (
+        controls.landing_held(row)
+        or row.task_paused
+        or row.state not in ("succeeded", "landing")
+        or pull.get("state") != "open"
+        or pull.get("merged")
+        or pull.get("draft")
+    ):
+        raise ValueError("scoped_landing_requires_unheld_settled_delivery")
     if controls.review_recovery_held(row.task_id, session=db):
         raise ValueError("review_only_recovery")
     refusal = controls._quiescence_refusal(db, row.task_id)
@@ -126,7 +207,9 @@ def _preview(db, control, receipt_id, pr_number, head_sha, reason, pull):
     ):
         raise ValueError("landing_release_branch_owned_elsewhere")
     result = {
-        "operation": "release" if controls.landing_held(row) else "refresh",
+        "operation": "authorize"
+        if scope is not None
+        else ("release" if controls.landing_held(row) else "refresh"),
         "receipt_id": row.id,
         "task_id": row.task_id,
         "repo": row.repo,
@@ -149,20 +232,24 @@ def _preview(db, control, receipt_id, pr_number, head_sha, reason, pull):
         "reason": reason,
         "delivery_accepted": False,
     }
+    if scope is not None:
+        result["scope"] = scope
     result["preview_sha256"] = hashlib.sha256(dumps(result).encode()).hexdigest()
     return result
 
 
-def preview(receipt_id, pr_number, head_sha, reason):
+def preview(receipt_id, pr_number, head_sha, reason, *, scope=None):
     pull = _pull(receipt_id, pr_number, head_sha)
     with controls._locked_session() as (db, control):
-        return _preview(db, control, receipt_id, pr_number, head_sha, reason, pull)
+        return _preview(
+            db, control, receipt_id, pr_number, head_sha, reason, pull, scope
+        )
 
 
 def _replay(db, actor, request):
     for raw in db.exec(
         select(FactoryAudit.detail_json).where(
-            FactoryAudit.action == ACTION, FactoryAudit.actor == actor
+            FactoryAudit.action.in_((ACTION, SCOPE_ACTION)), FactoryAudit.actor == actor
         )
     ).all():
         previous = json.loads(raw)
@@ -202,6 +289,7 @@ def apply(
     actor,
     request_key,
     expected_preview_sha256,
+    scope=None,
 ):
     actor = controls._text(actor, "actor")
     request = {
@@ -212,6 +300,8 @@ def apply(
         "request_key": controls._text(request_key, "request_key"),
         "expected_preview_sha256": expected_preview_sha256,
     }
+    if scope is not None:
+        request["scope"] = _scope(scope)
     with controls._read_session() as db:
         replay = _replay(db, actor, request)
         if replay is not None:
@@ -221,11 +311,13 @@ def apply(
         replay = _replay(db, actor, request)
         if replay is not None:
             return replay
-        proposal = _preview(db, control, receipt_id, pr_number, head_sha, reason, pull)
+        proposal = _preview(
+            db, control, receipt_id, pr_number, head_sha, reason, pull, scope
+        )
         if proposal["preview_sha256"] != expected_preview_sha256:
             raise ValueError("landing_release_preview_changed")
         row = db.get(FactoryReceipt, receipt_id)
-        direction = json.loads(row.direction_json)
+        direction = json.loads(row.direction_json or "{}")
         prior_hold = direction.get("landing_hold")
         prior_authorization = direction.get("landing_authorization")
         direction["landing_authorization"] = {
@@ -236,6 +328,14 @@ def apply(
             "reason": proposal["reason"],
             "authorized_at": controls._now().isoformat(),
         }
+        if scope is not None:
+            direction["landing_authorization"].update(
+                schema_version=1,
+                receipt_id=row.id,
+                task_id=row.task_id,
+                repo=row.repo,
+                scope=proposal["scope"],
+            )
         row.direction_json = dumps(direction)
         release = {"ok": True, "pending": False, "reason": None}
         if proposal["operation"] == "release":
@@ -262,10 +362,12 @@ def apply(
             "delivery_accepted": False,
             "preview_sha256": proposal["preview_sha256"],
         }
+        if scope is not None:
+            result["landing_authorization"] = direction["landing_authorization"]
         controls._audit(
             db,
             actor,
-            ACTION,
+            SCOPE_ACTION if scope is not None else ACTION,
             task_id=row.task_id,
             request=request,
             result=result,
