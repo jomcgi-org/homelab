@@ -929,6 +929,7 @@ def test_daily_config_preserves_identity_schedule_history_and_replays(
     assert payload["learning_activation"]["previous_fields"] == {
         "model": "sol",
         "prompt": "old instructions",
+        "repo": learning.REPO,
     }
     assert payload["learning_activation"]["previous_payload_sha256"] == learning._sha(
         json.loads(before["payload"])
@@ -1016,3 +1017,28 @@ def test_daily_config_ignores_settled_historical_failure(learning_config_db):
         {"repo": learning.REPO},
     )
     assert learning.reconcile_daily_payload(db) == "configured"
+
+
+def test_daily_config_pins_only_verified_default_repository(learning_config_db):
+    db = learning_config_db
+    payload = json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
+    del payload["repo"]
+    db.execute(
+        text("UPDATE routine_jobs SET payload=:payload"),
+        {"payload": json.dumps(payload)},
+    )
+    assert (
+        learning.reconcile_daily_payload(db, default_repo="other/repo")
+        == "held_or_customized"
+    )
+    assert (
+        learning.reconcile_daily_payload(db, default_repo=learning.REPO) == "configured"
+    )
+    configured = json.loads(
+        db.execute(text("SELECT payload FROM routine_jobs")).scalar()
+    )
+    assert configured["repo"] == learning.REPO
+    assert configured["learning_activation"]["previous_absent_fields"] == [
+        "repo",
+        "learning_stage",
+    ]

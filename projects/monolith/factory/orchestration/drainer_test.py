@@ -4920,9 +4920,9 @@ def test_daily_payload_reconciles_before_claim_without_rearming(
     seen = []
     original = learning.reconcile_daily_payload
 
-    def reconcile(db):
+    def reconcile(db, **kwargs):
         seen.append(True)
-        return original(db)
+        return original(db, **kwargs)
 
     monkeypatch.setattr(learning, "reconcile_daily_payload", reconcile)
     # No row is a no-op: polling must not create a daily job or a session.
