@@ -1,82 +1,64 @@
 # AGENTS.md
 
-Build and run this homelab autonomously. Maximise useful work shipped against
-Joe's goals, including improvements to the factory itself.
+Build and run this homelab autonomously against Joe's goals, including
+improving the factory itself. Choose simple reversible approaches, resolve
+routine design choices and repair in-scope failures without asking permission.
 
-The GKE hub (`homelab-hub`) is the only cluster. Services live in
-`projects/<name>/` with their Helm `chart/` and GitOps `deploy/`.
-Bazel builds the repo; ArgoCD deploys it. The factory chooses models.
+The GKE hub (`homelab-hub`) is the only cluster. Services live under
+`projects/<name>/`; Bazel builds them and ArgoCD deploys their Helm charts.
 
 ## Merge authority
 
 An explicit request, accepted issue/spec, established goal or standing
 maintenance policy authorizes implementation, review, merge and rollout.
-Do not wait for routine human review or a separate "merge" instruction.
-Choose the simplest reversible approach within that authority and proceed.
-Resolve ordinary design choices yourself; record material assumptions in the PR.
+Routine human review or a separate "merge" instruction is unnecessary.
+Existing approval covers the same action and scope.
 
-The factory owns eligible intake, refinement, implementation, review, landing
-and recovery within its configured limits. Unblock failed checks, repair
-regressions and improve its prompts, policies and tooling through this repo.
-Prefer finishing existing work; parallelize independent work when useful.
-A constrained worker hands off to an authorized dispatcher for actions outside
-its allowlist.
+Escalate only conflicting goals, a constraint or budget exception, unapproved
+destructive work, or an explicit human-owned decision/hold. Name the decision
+and the rule requiring it. Keep independent work moving.
 
-Escalate only conflicting goals, an exception to a constraint or budget,
-unapproved destructive work, or an explicit human ownership/approval hold.
-Name the decision and the rule requiring it. Existing approval covers the
-same action and scope. Keep independent work moving while one item is blocked.
-Never bypass a gate, expand your own permissions or clear a hold to make progress.
+## Factory roles
 
-## Delivery
+Factory prompts and pinned task contracts decide roles, models, action order,
+tools and handoffs. A factory agent completes its assigned role and returns
+the required artifact. The factory owns sequencing, retries, review and landing;
+workers do not each start a second delivery workflow.
 
-1. Inspect the relevant code and scoped `AGENTS.md`. Use a dedicated branch
-   and worktree, or a new branch through connected GitHub tools.
-2. Implement the smallest complete change. Track outstanding work in GitHub
-   Issues; use `agent-ready` when the task can be picked up alone.
-3. Run `ci` before pushing when available; otherwise use PR CI. Add tests
-   for changed behaviour and concrete failure cases. Docs and mechanical
-   edits need proportionate checks, without invented test or planning phases.
-4. Review the complete diff once with an independent agent
-   ([review guide](docs/agents/review.md)), fix blocking findings and satisfy
-   required checks on the current head. Record scope and validation in the PR.
-5. Land with `homelab pr land <n>`, or `gh pr merge <n> --auto` and follow
-   the merge queue. Pass no strategy flag. Rebase only for conflicts or to
-   incorporate CI's branch writeback, never just because main moved.
-6. For deployable changes, verify the rollout with `verify_deployment` until
-   terminal. Without it, confirm ArgoCD Synced/Healthy, the new pod image and
-   a responding service. Report the PR and actual result; docs need no rollout.
+Repository authority applies through the owner of each action. An implementer
+can deliver a PR while an authorized landing owner merges and verifies it.
+Follow the assigned branch, scope and tool limits; broad autonomy never expands
+a restricted worker's permissions. End-to-end delivery owners carry eligible
+work through to completion without a routine handoff to Joe.
 
-Read failed logs before retrying. Change the hypothesis when evidence disproves
-it; do not loop on the same failed action. Verify another agent's completion
-claims against the diff and checks. Never push to a merged branch.
+## Delivery outcomes
+
+Claims need evidence: required checks and independent review must cover the
+current PR head before landing through the merge queue. Changed behaviour
+needs proportionate validation; docs need no invented test or planning phases.
+Deployment claims need a verified live rollout. Role completion, merged code
+and operational acceptance are distinct; report the actual state.
+
+GitHub Issues track outstanding work. Domain `ARCHITECTURE.md` files record
+decisions. Read failure evidence before retrying and confirm inherited claims
+against current code, checks or live state.
 
 ## Boundaries
 
-- GitOps only: cluster access is read-only. Change manifests in Git; no
-  mutating `kubectl`, `helm install` or `helm uninstall`.
-- Use PRs and the merge queue. Preserve branch protection, required CI,
-  independent review, factory admission/ownership controls and worker limits.
-- CI owns chart version increases, deployment pin advances and image pushes.
-  Wait for chart writeback before diagnosing a rollout; lowering a pin is
-  the revert lever.
-- Keep secrets in the 1Password Operator. Internet traffic goes through
-  Cloudflare. Preserve authentication and public/private data boundaries.
-- `human` means human-owned; `needs-human` requests a decision. Do not
-  compete with human-owned work or change `human` without explicit handoff.
-  Removing it does not resume an admitted receipt; re-admission is required.
-- Use Conventional Commits. Keep prose concise and follow `docs/writing.md`.
+- GitOps: cluster access is read-only; manifests change through PRs.
+- Preserve required CI, independent review, merge queue, admission controls,
+  ownership and task limits. Never bypass gates or clear explicit holds.
+- CI owns chart version increases, deployment pin advances and image pushes;
+  lowering a deployment pin remains the revert lever.
+- Secrets use the 1Password Operator; internet traffic uses Cloudflare.
+  Preserve authentication and public/private data boundaries.
+- `human` means human-owned; `needs-human` requests a decision. Explicit
+  handoff is required to change human ownership; removing the label does not
+  resume an admitted receipt.
+- Use Conventional Commits and concise prose per `docs/writing.md`.
 
-## Commands
+## Commands and gotchas
 
-`ci` runs changed-file lint, selective generation and affected remote tests.
-Use it rather than bare Bazel. Never filter away its output; confirm tests
-actually ran. Setup and generation details: [reference](docs/agents/reference.md#commands).
-
-## Gotchas
-
-Read [build and deployment gotchas](docs/agents/reference.md#gotchas) when
-changing those paths. Scoped instructions live beside their code. Consult the
-[task-specific index](docs/agents/reference.md#where-to-look-next) only as needed.
-Use available KG/production evidence to shorten investigations, verify it
-against current code and live state, and record durable findings.
+Use scoped `AGENTS.md` files and the [task-specific reference](docs/agents/reference.md)
+when relevant. `ci` is the local validation entry point; PR CI covers guests
+without it. Operational commands belong to the role that owns that action.
