@@ -3655,3 +3655,117 @@ def test_refinement_batch_cannot_replace_in_flight_batch(
         db.add(FactoryReceipt(**previous))
     with pytest.raises(ValueError):
         batch.preview([7251], "next batch")
+
+
+@pytest.fixture
+def scoped_delivery(database, held_delivery):
+    pull, direction = held_delivery
+    pull["draft"] = False
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.state = "succeeded"
+        row.task_paused = False
+        row.direction_json = json.dumps(
+            {k: v for k, v in direction.items() if k != "landing_hold"}
+        )
+    return pull
+
+
+def test_scoped_landing_grant_preview_apply_replay(database, scoped_delivery):
+    from factory.orchestration import factory_landing_release as releases
+
+    scope = {
+        "classification": "private_internal_reversible",
+        "evidence": "Operator inspected exact diff and deployment boundary.",
+    }
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Land reviewed change", scope=scope
+    )
+    assert proposal["operation"] == "authorize"
+    with Session(database) as db:
+        assert releases.scoped_refusal(db, db.get(FactoryReceipt, 838), 7170, "a" * 40)
+    args = dict(
+        actor="operator",
+        request_key="scoped",
+        expected_preview_sha256=proposal["preview_sha256"],
+        scope=scope,
+    )
+    result = releases.apply(838, 7170, "a" * 40, "Land reviewed change", **args)
+    assert result["ok"] and not result["delivery_accepted"]
+    assert releases.apply(838, 7170, "a" * 40, "Land reviewed change", **args) == result
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert row.state == "succeeded" and not row.task_paused
+        assert releases.scoped_refusal(db, row, 7170, "a" * 40) is None
+        assert releases.scoped_refusal(db, row, 7170, "b" * 40)
+        assert json.loads(row.direction_json)["conductor_gates"]
+        assert db.get(SwarmTask, "task").budget_usd == 50
+        assert db.exec(select(FactoryStart)).one().cost_usd == 4
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == releases.SCOPE_ACTION
+                    )
+                ).all()
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize(
+    "classification", ["public", "security", "destructive", "private", ""]
+)
+def test_scoped_landing_rejects_other_scope(database, scoped_delivery, classification):
+    from factory.orchestration import factory_landing_release as releases
+
+    with pytest.raises(
+        ValueError, match="landing_scope_not_private_internal_reversible"
+    ):
+        releases.preview(
+            838,
+            7170,
+            "a" * 40,
+            "reason",
+            scope={"classification": classification, "evidence": "evidence"},
+        )
+
+
+@pytest.mark.parametrize("change", ["hold", "paused", "head", "scope"])
+def test_scoped_landing_apply_rechecks_preview(database, scoped_delivery, change):
+    from factory.orchestration import factory_landing_release as releases
+
+    scope = {
+        "classification": "private_internal_reversible",
+        "evidence": "Exact diff assessment",
+    }
+    proposal = releases.preview(838, 7170, "a" * 40, "reason", scope=scope)
+    if change in ("hold", "paused"):
+        with Session(database) as db, db.begin():
+            row = db.get(FactoryReceipt, 838)
+            if change == "hold":
+                direction = json.loads(row.direction_json)
+                direction["landing_hold"] = {"reason": "security review"}
+                row.direction_json = json.dumps(direction)
+            else:
+                row.task_paused = True
+    elif change == "head":
+        scoped_delivery["head"]["sha"] = "b" * 40
+    else:
+        scope["evidence"] = "Different assessment"
+    with pytest.raises(ValueError):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "reason",
+            actor="operator",
+            request_key="scoped",
+            expected_preview_sha256=proposal["preview_sha256"],
+            scope=scope,
+        )
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert "landing_authorization" not in json.loads(row.direction_json)
+        if change == "hold":
+            assert controls.landing_held(row)

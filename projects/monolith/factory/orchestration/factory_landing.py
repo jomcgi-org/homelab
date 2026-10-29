@@ -721,12 +721,69 @@ def _arm(repo: str, item: dict) -> None:
         if not isinstance(node_id, str) or not node_id:
             _refuse(item, "pull request has no node id")
             return
+        from factory import review_publisher
+        from factory.orchestration import factory_landing_release as releases
+        from factory.orchestration.factory_controls import (
+            _receipt,
+            repo_auto_merge_enabled,
+        )
+
+        with _read_session() as db:
+            refusal = releases.scoped_refusal(
+                db, _receipt(db, item["task_id"]), number, head
+            )
+        if refusal:
+            _scope_wait(item, refusal)
+            return
+        # Publication can be disabled; independent current-head review cannot.
+        evidence = review_publisher.collect(item["task_id"])
+        if not isinstance(evidence, review_publisher.ReviewEvidence) or (
+            evidence.repo,
+            evidence.pr_number,
+            evidence.head_sha,
+        ) != (repo, number, head):
+            _scope_wait(item, "current_independent_review_missing")
+            return
         from factory.orchestration.factory_controls import _locked_session
 
         with _locked_session() as (db, _control):
-            if held(item["task_id"], session=db):
-                return
-            github_graphql(_ARM_AUTO_MERGE, {"pullRequestId": node_id})
+            refusal = releases.scoped_refusal(
+                db, _receipt(db, item["task_id"]), number, head
+            )
+            if _control.state != "enabled" or not repo_auto_merge_enabled(
+                json.loads(_control.policy_json or "{}"), repo
+            ):
+                refusal = "automatic_landing_disabled"
+            if not refusal:
+                current = github_get(repo, f"pulls/{number}")
+                from factory.orchestration import factory_conductor as conductor
+                from factory.orchestration.models import SwarmTask
+
+                row = _receipt(db, item["task_id"])
+                task = db.get(SwarmTask, item["task_id"]).model_dump()
+                direction = json.loads(row.direction_json or "{}")
+                task.update(
+                    {
+                        key: direction[key]
+                        for key in ("delivery_branch", "delivery_adoption")
+                        if key in direction
+                    }
+                )
+                if (
+                    (current.get("head") or {}).get("sha") != head
+                    or current.get("state") != "open"
+                    or current.get("draft")
+                    or current.get("merged")
+                    or current.get("node_id") != node_id
+                    or current.get("number") != number
+                    or not conductor.delivery_identity_matches(task, current)
+                ):
+                    refusal = "scoped_landing_authorization_identity_changed"
+            if not refusal:
+                github_graphql(_ARM_AUTO_MERGE, {"pullRequestId": node_id})
+        if refusal:
+            _scope_wait(item, refusal)
+            return
     except GraphQLRefused as exc:
         # A refused arming is final for this task. Retrying a mutation GitHub
         # has already declined would spend the request budget to be declined
@@ -762,6 +819,65 @@ def _disarm(repo: str, pr: dict) -> bool:
     except (GraphQLRefused, httpx.HTTPError, ValueError):
         logger.warning("factory landing could not disarm pull request", exc_info=True)
         return False
+    return True
+
+
+def _scope_wait(item: dict, reason: str) -> None:
+    # Missing authority is a wait for an explicit grant, not permission to
+    # erase an unrelated permanent refusal. Existing refusal handling is intact.
+    item["refused"] = True
+    _record(
+        item["task_id"],
+        "landing_authorization_wait",
+        reason=reason,
+        pr_number=item["pr_number"],
+    )
+
+
+def _fence_ungranted_queue_entry(repo: str, item: dict, pr: dict | None = None) -> bool:
+    """Observe bounded known deliveries before policy/paused/refusal filters."""
+    from factory import review_publisher
+    from factory.orchestration import factory_landing_release as releases
+    from factory.orchestration.factory_controls import _receipt
+
+    try:
+        pr = pr if pr is not None else github_get(repo, f"pulls/{item['pr_number']}")
+        if pr.get("merged") or pr.get("state") != "open":
+            return False
+        node_id = pr.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("ungranted holder has no node id")
+        queued = node_id in _queued_ids([node_id])
+        if pr.get("auto_merge") is None and not queued:
+            return False
+        head = (pr.get("head") or {}).get("sha")
+        with _read_session() as db:
+            refusal = releases.scoped_refusal(
+                db, _receipt(db, item["task_id"]), item["pr_number"], head
+            )
+        if not refusal:
+            evidence = review_publisher.collect(item["task_id"])
+            if not isinstance(evidence, review_publisher.ReviewEvidence) or (
+                evidence.repo,
+                evidence.pr_number,
+                evidence.head_sha,
+            ) != (repo, item["pr_number"], head):
+                refusal = "current_independent_review_missing"
+        if not refusal:
+            return False
+        if pr.get("auto_merge") is not None and not _disarm(repo, pr):
+            return True
+        if queued:
+            github_graphql(_DEQUEUE_PULL_REQUEST, {"pullRequestId": node_id})
+            if node_id in _queued_ids([node_id]):
+                raise ValueError("ungranted delivery remains queued")
+        if holding(item) and head != item["head_sha"]:
+            _refuse(item, "head_moved", armed_head_sha=item["head_sha"], head_sha=head)
+        else:
+            _scope_wait(item, refusal)
+    except (httpx.HTTPError, ValueError) as exc:
+        _error(item["task_id"], "scoped_landing", exc)
+        item["refused"] = True
     return True
 
 
@@ -961,6 +1077,8 @@ def _observe(repo: str, item: dict) -> None:
         # delivery goes back to a human rather than to the queue.
         _disarm(repo, pr)
         _refuse(item, "head_moved", armed_head_sha=item["head_sha"], head_sha=head)
+        return
+    if _fence_ungranted_queue_entry(repo, item, pr):
         return
     if pr.get("mergeable") is False:
         try:
@@ -1309,6 +1427,7 @@ def landing_tick(policy: dict) -> None:
             item
             for item in _deliveries(policy, include_refused=True, rotate=True)
             if not _enforce_landing_hold(policy["repo"], item)
+            and not _fence_ungranted_queue_entry(policy["repo"], item)
             and (not item.get("paused") or item.get("owned_merge_observed"))
         ]
         repo = policy["repo"]

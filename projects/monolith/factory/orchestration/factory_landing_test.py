@@ -77,6 +77,24 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(landing, "_now", lambda: NOW)
     monkeypatch.setattr(controls, "_now", lambda: NOW)
     monkeypatch.setattr(landing, "_notify_stuck", lambda *_args: None)
+    from factory import review_publisher
+
+    def reviewed(task_id):
+        with Session(engine) as session:
+            number, head = landing._delivery_prs(session, [task_id])[task_id]
+        return review_publisher.ReviewEvidence(
+            task_id=task_id,
+            repo="owner/repo",
+            pr_number=number,
+            branch=f"factory/{task_id}",
+            head_sha=head,
+            review_run_id=1,
+            review_session_id=2,
+            policy_version=0,
+            details_url="https://example.test/review",
+        )
+
+    monkeypatch.setattr(review_publisher, "collect", reviewed)
     yield engine
     engine.dispose()
 
@@ -144,6 +162,58 @@ def delivered(
                             if evidence
                             else {"state": "advisory_comment"}
                         ),
+                    }
+                ),
+            )
+        )
+        session.commit()
+
+    authorize_delivery(db, task_id, pr_number, head)
+
+
+def authorize_delivery(db, task_id, pr_number, head):
+    """Model an explicit operator grant, separately from review settlement."""
+    from factory.orchestration import factory_landing_release as releases
+
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
+        ).one()
+        scope = {
+            "classification": "private_internal_reversible",
+            "evidence": "Operator inspected exact diff",
+        }
+        grant = {
+            "schema_version": 1,
+            "receipt_id": row.id,
+            "task_id": task_id,
+            "repo": row.repo,
+            "pr_number": pr_number,
+            "head_sha": head,
+            "scope": scope,
+            "actor": "operator",
+            "request_key": f"grant-{task_id}-{head}",
+            "reason": "Authorized private/internal scope",
+            "authorized_at": NOW.isoformat(),
+        }
+        direction = json.loads(row.direction_json or "{}")
+        direction["landing_authorization"] = grant
+        row.direction_json = json.dumps(direction)
+        session.add(
+            FactoryAudit(
+                actor="operator",
+                action=releases.SCOPE_ACTION,
+                task_id=task_id,
+                detail_json=json.dumps(
+                    {
+                        "request": {
+                            "request_key": grant["request_key"],
+                            "receipt_id": row.id,
+                            "pr_number": pr_number,
+                            "head_sha": head,
+                            "scope": scope,
+                        },
+                        "result": {"ok": True, "landing_authorization": grant},
                     }
                 ),
             )
@@ -525,6 +595,7 @@ def test_review_canary_publishes_while_merge_remains_disabled(db, monkeypatch):
     from factory import review_publisher
 
     delivered(db, "t-1", 11, 3)
+    github(monkeypatch, pulls={3: pull(3)})
     monkeypatch.setattr(review_publisher, "enabled", lambda: True)
     evidence = review_publisher.ReviewEvidence(
         task_id="t-1",
@@ -665,7 +736,9 @@ def test_landing_defers_every_waiting_delivery_while_one_is_armed(db, monkeypatc
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
     delivered(db, "t-3", 13, 5)
-    calls = github(monkeypatch, pulls={3: pull(3), 4: pull(4), 5: pull(5)})
+    calls = github(
+        monkeypatch, pulls={3: pull(3), 4: pull(4, task_id="t-2"), 5: pull(5)}
+    )
     landing.landing_tick(POLICY)
     assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
     # The merge queue ejects everything behind a failed candidate, so exactly
@@ -735,7 +808,7 @@ def test_an_issue_already_closed_is_recorded_without_being_rewritten(db, monkeyp
 def test_a_merge_frees_the_arming_slot_in_the_same_tick(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
-    pulls = {3: pull(3), 4: pull(4)}
+    pulls = {3: pull(3), 4: pull(4, task_id="t-2")}
     calls = github(
         monkeypatch, pulls=pulls, issues={11: {"number": 11, "state": "closed"}}
     )
@@ -793,7 +866,7 @@ def test_a_closed_unmerged_pull_request_stops_the_landing(db, monkeypatch):
 def test_ejection_requests_assessment_and_releases_holder(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
-    pulls = {3: pull(3), 4: pull(4)}
+    pulls = {3: pull(3), 4: pull(4, task_id="t-2")}
     calls = github(monkeypatch, pulls=pulls)
     landing.landing_tick(POLICY)
     pulls[3]["auto_merge"] = None
@@ -1112,7 +1185,7 @@ def test_started_queued_recovery_requires_round_before_settlement(
 def test_conflict_disarms_holder_and_advances_next_delivery(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
-    pulls = {3: pull(3), 4: pull(4)}
+    pulls = {3: pull(3), 4: pull(4, task_id="t-2")}
     calls = github(monkeypatch, pulls=pulls)
     landing.landing_tick(POLICY)
     pulls[3]["mergeable"] = False
@@ -1132,7 +1205,7 @@ def test_conflict_disarms_holder_and_advances_next_delivery(db, monkeypatch):
 def test_failed_conflict_disarm_keeps_slot_until_retry_succeeds(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
-    pulls = {3: pull(3), 4: pull(4)}
+    pulls = {3: pull(3), 4: pull(4, task_id="t-2")}
     github(monkeypatch, pulls=pulls)
     landing.landing_tick(POLICY)
     pulls[3]["mergeable"] = False
@@ -1216,6 +1289,9 @@ def test_a_corrected_merge_conflict_rearms_at_the_newly_approved_head(db, monkey
     pulls[3] = pull(3, head=corrected_head)
 
     landing.landing_tick(POLICY)
+    assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
+    authorize_delivery(db, "t-1", 3, corrected_head)
+    landing.landing_tick(POLICY)
 
     assert calls["graphql"] == [
         {"pullRequestId": "PR_3"},
@@ -1262,6 +1338,9 @@ def test_historical_refusal_is_recovered_once_and_rearmed_after_review(db, monke
         },
     )["ok"]
     pulls[3] = pull(3, head=new_head)
+    landing.landing_tick(POLICY)
+    assert calls["graphql"] == []
+    authorize_delivery(db, "t-1", 3, new_head)
     landing.landing_tick(POLICY)
     assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
     assert audits(db, "merge_armed", "t-1")[-1]["head_sha"] == new_head
@@ -1416,7 +1495,7 @@ def test_a_burst_of_newer_settlements_never_evicts_an_armed_delivery(db, monkeyp
 def test_a_terminal_delivery_leaves_the_batch(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
-    pulls = {3: pull(3, merged=True), 4: pull(4)}
+    pulls = {3: pull(3, merged=True), 4: pull(4, task_id="t-2")}
     calls = github(
         monkeypatch,
         pulls=pulls,
@@ -1428,6 +1507,7 @@ def test_a_terminal_delivery_leaves_the_batch(db, monkeypatch):
     landing.landing_tick(POLICY)
     # The landed delivery is not read again; only the one still working is.
     assert [suffix for suffix in calls["get"][reads:]] == [
+        "pulls/4",
         "issues/12",
         "pulls/4",
         "pulls/4",
@@ -1500,7 +1580,7 @@ def test_a_read_outage_is_audited_by_shape_and_carries_no_response_body(
     monkeypatch.setattr(landing, "github_list", lambda *_args: [])
     landing.landing_tick(POLICY)
     assert audits(db, "landing_error", "t-1") == [
-        {"stage": "human_ownership", "error": "HTTPStatusError", "status": 403}
+        {"stage": "scoped_landing", "error": "HTTPStatusError", "status": 403}
     ]
     # The next tick retries rather than giving up, and the throttle keeps the
     # audit to one row an hour while the outage lasts.
@@ -1587,7 +1667,7 @@ def test_a_repeatable_action_is_never_written_through_the_once_only_fence():
 def test_queued_holder_without_auto_merge_is_not_ejected(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
-    pulls = {3: pull(3), 4: pull(4)}
+    pulls = {3: pull(3), 4: pull(4, task_id="t-2")}
     calls = github(monkeypatch, pulls=pulls, issues={11: {"state": "closed"}})
     landing.landing_tick(POLICY)
     pulls[3].update(auto_merge=None, queue_entry={"id": "MQ_3"})
@@ -1616,7 +1696,7 @@ def test_external_queue_entry_holds_the_lane(db, monkeypatch):
 def test_unreadable_queue_membership_never_releases_slot(db, monkeypatch, armed):
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
-    pulls = {3: pull(3), 4: pull(4)}
+    pulls = {3: pull(3), 4: pull(4, task_id="t-2")}
     calls = github(monkeypatch, pulls=pulls)
     if armed:
         landing.landing_tick(POLICY)
@@ -1682,7 +1762,10 @@ def test_capacity_blocked_recovery_does_not_block_another_ready_pr(db, monkeypat
         row.state = "admitted"
         session.add(row)
         session.commit()
-    calls = github(monkeypatch, pulls={3: {**pull(3), "mergeable": False}, 4: pull(4)})
+    calls = github(
+        monkeypatch,
+        pulls={3: {**pull(3), "mergeable": False}, 4: pull(4, task_id="t-2")},
+    )
     landing.landing_tick(POLICY)
     assert receipt_state(db, "t-1") == "succeeded"
     assert calls["graphql"] == [{"pullRequestId": "PR_4"}]
@@ -1713,10 +1796,13 @@ def test_historical_changed_head_is_skipped_once_without_blocking_next_refusal(
         )
     calls = github(
         monkeypatch,
-        pulls={3: pull(3, head="d" * 40), 4: {**pull(4), "mergeable": False}},
+        pulls={
+            3: pull(3, head="d" * 40),
+            4: {**pull(4, task_id="t-2"), "mergeable": False},
+        },
     )
     landing.landing_tick(POLICY)
-    assert calls["get"][:2] == ["issues/11", "pulls/3"]
+    assert calls["get"][:2] == ["pulls/3", "pulls/4"]
     assert audits(db, "landing_recovery_skipped", "t-1")[0]["reason"] == "head_moved"
     landing.landing_tick(POLICY)
     assert "pulls/4" in calls["get"]
@@ -2723,10 +2809,9 @@ def test_paused_merged_delivery_is_not_settled_or_rearmed(db, monkeypatch):
         row = session.exec(select(FactoryReceipt)).one()
         row.task_paused = True
         session.commit()
-    monkeypatch.setattr(
-        landing, "github_get", lambda *_: pytest.fail("paused delivery mutated")
-    )
+    calls = github(monkeypatch, pulls={3: pull(3)})
     landing.landing_tick(POLICY)
+    assert not calls["graphql"] and not calls["write"]
     assert receipt_state(db, "t-1") == "landing"
     assert audits(db, "merged") == []
 
@@ -2966,3 +3051,179 @@ def test_historical_conflict_refusal_cannot_accept_wrong_merged_head(
     assert receipt_state(db, "t-1") == "landing"
     assert audits(db, "rollout_verified") == audits(db, "issue_closed") == []
     assert calls["write"] == calls["graphql"] == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing",
+        "legacy",
+        "receipt_id",
+        "task_id",
+        "repo",
+        "pr_number",
+        "head_sha",
+        "actor",
+        "unaudited",
+        "public",
+        "security",
+        "destructive",
+        "empty_evidence",
+        "bool_version",
+    ],
+)
+def test_scoped_grant_fails_closed(db, monkeypatch, change):
+    from factory.orchestration import factory_landing_release as releases
+
+    delivered(db, "t-1", 11, 3)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-1")
+        direction = json.loads(row.direction_json)
+        grant = direction["landing_authorization"]
+        if change == "missing":
+            direction.clear()
+        elif change == "legacy":
+            grant.pop("schema_version")
+        elif change == "unaudited":
+            for event in session.exec(
+                select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+            ).all():
+                session.delete(event)
+        elif change in ("public", "security", "destructive"):
+            grant["scope"]["classification"] = change
+        elif change == "empty_evidence":
+            grant["scope"]["evidence"] = ""
+        elif change == "bool_version":
+            grant["schema_version"] = True
+        else:
+            grant[change] = 99 if change in ("receipt_id", "pr_number") else "foreign"
+        row.direction_json = json.dumps(direction)
+    calls = github(monkeypatch, pulls={3: pull(3)})
+    landing.landing_tick(POLICY)
+    assert not audits(db, "merge_armed")
+    assert not audits(db, "merge_arm_refused")
+    assert audits(db, "landing_authorization_wait")
+    assert calls["graphql"] == []
+    # An explicit replacement grant can proceed without erasing old refusals.
+    authorize_delivery(db, "t-1", 3, HEAD)
+    landing.landing_tick(POLICY)
+    assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
+
+
+@pytest.mark.parametrize("publication", [False, True])
+def test_scoped_grant_never_substitutes_for_independent_review(
+    db, monkeypatch, publication
+):
+    from factory import review_publisher
+
+    delivered(db, "t-1", 11, 3)
+    calls = github(monkeypatch, pulls={3: pull(3)})
+    monkeypatch.setattr(review_publisher, "enabled", lambda: publication)
+    monkeypatch.setattr(
+        review_publisher,
+        "collect",
+        lambda task: review_publisher.Refusal(task, "review_not_independent"),
+    )
+    landing.landing_tick(POLICY)
+    assert not audits(db, "merge_armed")
+    assert calls["graphql"] == []
+
+
+@pytest.mark.parametrize("race", ["head", "base", "draft", "grant", "hold", "policy"])
+def test_scoped_landing_rechecks_after_review_collection(db, monkeypatch, race):
+    from factory import review_publisher
+
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: pull(3)}
+    calls = github(monkeypatch, pulls=pulls)
+    collect = review_publisher.collect
+
+    def changed(task):
+        evidence = collect(task)
+        if race == "head":
+            pulls[3]["head"]["sha"] = "c" * 40
+        elif race == "base":
+            pulls[3]["base"]["ref"] = "other"
+        elif race == "draft":
+            pulls[3]["draft"] = True
+        else:
+            with Session(db) as session, session.begin():
+                row = controls._receipt(session, task)
+                direction = json.loads(row.direction_json)
+                if race == "grant":
+                    direction.pop("landing_authorization")
+                elif race == "hold":
+                    direction["landing_hold"] = {"reason": "security review"}
+                else:
+                    session.get(FactoryControl, "factory").policy_json = json.dumps(
+                        {**POLICY, "auto_merge": False}
+                    )
+                row.direction_json = json.dumps(direction)
+        return evidence
+
+    monkeypatch.setattr(review_publisher, "collect", changed)
+    landing.landing_tick(POLICY)
+    assert not audits(db, "merge_armed")
+    assert calls["graphql"] == []
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_ungranted_existing_holder_is_fenced(db, monkeypatch, queued):
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: pull(3)}
+    calls = github(monkeypatch, pulls=pulls)
+    landing.landing_tick(POLICY)
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "t-1").direction_json = "{}"
+    if queued:
+        pulls[3]["auto_merge"] = None
+        pulls[3]["queue_entry"] = {"id": "MQ_3"}
+    landing.landing_tick(POLICY)
+    assert pulls[3]["auto_merge"] is None
+    assert not pulls[3].get("queue_entry")
+    assert len(audits(db, "merge_armed")) == 1
+    assert audits(db, "landing_authorization_wait")
+
+
+@pytest.mark.parametrize(
+    "state", ["external", "refused", "paused", "disabled", "stale"]
+)
+def test_scope_cleanup_precedes_landing_filters(db, monkeypatch, state):
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: {**pull(3), "queue_entry": {"id": "MQ_3"}}}
+    calls = github(monkeypatch, pulls=pulls)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-1")
+        if state != "stale":
+            row.direction_json = "{}"
+        if state == "paused":
+            row.task_paused = True
+    if state == "refused":
+        landing._refuse({"task_id": "t-1", "pr_number": 3}, "FORBIDDEN")
+    if state == "stale":
+        pulls[3]["head"]["sha"] = "c" * 40
+    policy = {**POLICY, "auto_merge": state != "disabled"}
+    landing.landing_tick(policy)
+    assert pulls[3]["queue_entry"] is None
+    assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
+    assert not audits(db, "merge_armed")
+
+
+def test_scope_cleanup_confirms_dequeue(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: {**pull(3), "queue_entry": {"id": "MQ_3"}}}
+    github(monkeypatch, pulls=pulls)
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "t-1").direction_json = "{}"
+    graphql = landing.github_graphql
+
+    def stuck(query, variables):
+        if query == landing._DEQUEUE_PULL_REQUEST:
+            return {}
+        return graphql(query, variables)
+
+    monkeypatch.setattr(landing, "github_graphql", stuck)
+    landing.landing_tick(POLICY)
+    assert audits(db, "landing_error")[0]["stage"] == "scoped_landing"
+    assert not audits(db, "landing_authorization_wait")
+    assert not audits(db, "merge_armed")
