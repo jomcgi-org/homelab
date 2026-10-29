@@ -5808,12 +5808,12 @@ class PiProcess:
             + compose_system_prompt(
                 system_prompt, agent_mcp_configured=agent_mcp_configured
             ),
-            "--no-context-files",
+            # Load the checkout's AGENTS.md through Pi's native context loader,
+            # including when the caller supplies a role-specific system prompt.
             "--no-extensions",
             "--no-skills",
             "--no-prompt-templates",
-            # Discovery remains disabled, while this image-owned extension is
-            # explicitly trusted and loaded on every Pi spawn.
+            # Executable extensions remain image-owned and explicitly loaded.
             "--extension",
             PI_WEB_RESEARCH_EXTENSION,
             # Do not pass --tools here. Pi treats it as a complete allowlist,
