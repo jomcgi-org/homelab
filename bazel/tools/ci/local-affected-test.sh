@@ -8,7 +8,6 @@ query_args=(
 )
 test_args=(
 	"${query_args[@]}"
-	--test_tag_filters=-external,-future
 )
 
 workspace="${BUILD_WORKSPACE_DIRECTORY:-}"

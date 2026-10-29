@@ -295,7 +295,6 @@ cmd_test() {
 	local -a test_flags=(
 		--config=ci
 		--deleted_packages=bazel/tools/python
-		--test_tag_filters=-external,-future
 	)
 	local -a remote_args=()
 	if [[ ${#targets[@]} -eq 0 ]]; then

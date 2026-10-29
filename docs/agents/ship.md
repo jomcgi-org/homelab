@@ -35,10 +35,11 @@ assigned role and result contract; factory prompts schedule the work.
   moving a trust boundary, or reversing a decision. Record the rationale
   in a `**Why.**` paragraph; link unbuilt work from Direction to its issue.
 - **Tests:** cover changed behaviour and failure paths. BDD is useful for
-  user-visible flows; a separate specification PR is optional. Existing
-  `future = True` BDD tests are excluded from required `pr-checks`; the
-  informational future-feature action is disabled. Do not count those tests
-  as validation until they are enabled and actually run.
+  user-visible flows; a separate specification PR is optional. Use
+  `bdd_test(...)` with `@covers_*` markers from `shared/testing/markers.py`.
+  Demonstrate the failure on the implementation branch, then make the specs
+  pass before merging. Ordinary BDD targets run in required `pr-checks`;
+  the unused future lane was retired in #7088.
 - **Safety model:** if the system has `STPA.md`, update it using
   `docs/agents/stpa.md` when changing control actions, feedback/freshness,
   RBAC, deletion/retention or autonomous actions. Additive UI, copy, docs

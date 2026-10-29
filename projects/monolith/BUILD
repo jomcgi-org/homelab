@@ -8766,9 +8766,9 @@ py_test(
         "app/bdd_completeness_test.py",
     ],
     # The data glob hoovers up EVERY domain's tests, so each one needs an
-    # explicit --ignore below or pytest collects and runs it here. A `future`
-    # tag does not help: that tags the dedicated bdd_test target, while this is
-    # a separate py_test that picks the file up by glob.
+    # explicit --ignore below or pytest collects and runs it here. Tags on a
+    # dedicated bdd_test target do not affect this separate py_test that picks
+    # the file up by glob.
     data = glob(["*/tests/*_test.py"]),
     env = {"PYTEST_ADDOPTS": "--import-mode=importlib --ignore=projects/monolith/home/tests --ignore=projects/monolith/chat/tests --ignore=projects/monolith/knowledge/tests --ignore=projects/monolith/scheduler/tests --ignore=projects/monolith/agent/tests --ignore=projects/monolith/goosecracker/tests --ignore=projects/monolith/moving/tests --ignore=projects/monolith/shotter/tests"},
     imports = ["."],
