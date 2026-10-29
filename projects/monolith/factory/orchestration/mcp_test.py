@@ -2539,8 +2539,13 @@ def test_progress_continuation_requires_standing_human_and_preview(monkeypatch):
     )
 
     async def invoke():
-        return await mcp.factory_continue_recovery(
-            "apply", 927, 7436, "a" * 40, "Continue saved work", "request", "b" * 64
+        return await mcp.factory_amend_policy(
+            "apply",
+            927,
+            {"progress_continuation": {"pr_number": 7436, "head_sha": "a" * 40}},
+            "Continue saved work",
+            "request",
+            "b" * 64,
         )
 
     assert _as(_principal(), invoke)["ok"]
@@ -2555,8 +2560,11 @@ def test_progress_continuation_requires_standing_human_and_preview(monkeypatch):
     assert calls == []
 
     async def unpreviewed():
-        return await mcp.factory_continue_recovery(
-            "apply", 927, 7436, "a" * 40, "Continue saved work"
+        return await mcp.factory_amend_policy(
+            "apply",
+            927,
+            {"progress_continuation": {"pr_number": 7436, "head_sha": "a" * 40}},
+            "Continue saved work",
         )
 
     assert (
@@ -2564,3 +2572,28 @@ def test_progress_continuation_requires_standing_human_and_preview(monkeypatch):
         == "progress_requires_preview_and_request_key"
     )
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "overlay",
+    [
+        {"progress_continuation": {"pr_number": 7436}},
+        {
+            "progress_continuation": {"pr_number": 7436, "head_sha": "a" * 40},
+            "task_budget_usd": 500,
+        },
+    ],
+)
+def test_progress_mode_cannot_mix_policy_or_omit_identity(monkeypatch, overlay):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    monkeypatch.setattr(
+        progress, "preview", lambda *a: pytest.fail("Invalid mode reached continuation")
+    )
+
+    async def invoke():
+        return await mcp.factory_amend_policy(
+            "preview", 927, overlay, "Continue saved work"
+        )
+
+    assert _as(_principal(), invoke)["reason"] == "progress_exact_target_required"

@@ -1439,6 +1439,30 @@ def _amend_policy(
     from factory.orchestration import factory_policy_amendment as amendments
 
     try:
+        if "progress_continuation" in overlay:
+            from factory.orchestration import factory_progress_continuation as progress
+
+            target = overlay["progress_continuation"]
+            if (
+                set(overlay) != {"progress_continuation"}
+                or not isinstance(target, dict)
+                or set(target) != {"pr_number", "head_sha"}
+            ):
+                raise ValueError("progress_exact_target_required")
+            args = (receipt_id, target["pr_number"], target["head_sha"], direction)
+            if operation == "preview":
+                return progress.preview(*args)
+            if not request_key or not expected_preview_sha256:
+                return {
+                    "ok": False,
+                    "reason": "progress_requires_preview_and_request_key",
+                }
+            return progress.apply(
+                *args,
+                actor=actor,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
         if operation == "preview":
             return amendments.preview(receipt_id, overlay, direction)
         if not request_key or not expected_preview_sha256:
@@ -1453,6 +1477,8 @@ def _amend_policy(
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
+    except httpx.HTTPError:
+        return {"ok": False, "reason": "progress_observation_unavailable"}
 
 
 @mcp.tool
@@ -1467,6 +1493,13 @@ async def factory_amend_policy(
     ] = None,
 ) -> dict:
     """Preview or apply an exact receipt policy amendment as a human.
+
+    A dedicated progress_continuation overlay with exactly pr_number and
+    head_sha authorizes continuing one paused recovered artifact. This mode
+    explicitly resumes the same task under a two-hour lease. Native renewal
+    requires a new independent reviewed head, CI, fresh subscription evidence,
+    quiescence and no repeated failures. Holds and accounting remain intact.
+    It cannot be combined with ordinary policy fields or renew other receipts.
 
     Preview first. Apply requires its digest, identical arguments and a fresh
     request key. Replay that key after a lost response. Changes in control,
@@ -1587,62 +1620,6 @@ async def factory_recover_expired_task(
             return {"ok": False, "reason": "task_recovery_github_read_failed"}
 
     return await asyncio.to_thread(recover)
-
-
-@mcp.tool
-async def factory_continue_recovery(
-    operation: Literal["preview", "apply"],
-    receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
-    pr_number: Annotated[MCPInteger, Field(gt=0)],
-    head_sha: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")],
-    direction: Annotated[str, Field(min_length=1, max_length=4000)],
-    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
-    expected_preview_sha256: Annotated[
-        str | None, Field(pattern=r"^[0-9a-f]{64}$")
-    ] = None,
-) -> dict:
-    """Authorize progress-based continuation of one paused recovered artifact.
-
-    Human preview/apply only. Binds the original recovery, task, native review,
-    exact owned PR head, policy, graph and accounting. Apply explicitly resumes
-    this same task under a two-hour execution lease. It neither restarts work
-    nor transfers review approval. Later native renewals require a distinct
-    reviewed head, fresh subscription quota and quiescence. Repeated failures
-    or absent progress cannot renew. Landing and other holds remain in force.
-    Existing dollar fields, receipt generation and unrelated work never change.
-    Use a stable request key to reconcile a lost response.
-    """
-    principal = current_principal()
-    refusal = _refuse(principal)
-    if refusal is not None:
-        return refusal
-
-    def continue_recovery():
-        from factory.orchestration import factory_progress_continuation as continuation
-
-        try:
-            if operation == "preview":
-                return continuation.preview(receipt_id, pr_number, head_sha, direction)
-            if not request_key or not expected_preview_sha256:
-                return {
-                    "ok": False,
-                    "reason": "progress_requires_preview_and_request_key",
-                }
-            return continuation.apply(
-                receipt_id,
-                pr_number,
-                head_sha,
-                direction,
-                actor=principal.subject,
-                request_key=request_key,
-                expected_preview_sha256=expected_preview_sha256,
-            )
-        except ValueError as exc:
-            return {"ok": False, "reason": str(exc)}
-        except httpx.HTTPError:
-            return {"ok": False, "reason": "progress_observation_unavailable"}
-
-    return await asyncio.to_thread(continue_recovery)
 
 
 @mcp.tool

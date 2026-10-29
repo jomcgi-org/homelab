@@ -3,6 +3,7 @@
 from datetime import timedelta
 import hashlib
 import json
+import re
 
 from sqlmodel import select
 
@@ -287,7 +288,14 @@ def _preview(
     return result
 
 
+def _target(pr_number, head_sha):
+    controls._integer(pr_number, "pr_number", 1, 2**31 - 1)
+    if not isinstance(head_sha, str) or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
+        raise ValueError("progress_head_invalid")
+
+
 def preview(receipt_id, pr_number, head_sha, direction):
+    _target(pr_number, head_sha)
     observed = _observe(receipt_id)
     with controls._locked_session() as (db, control):
         return _preview(
@@ -352,6 +360,7 @@ def apply(
     request_key,
     expected_preview_sha256,
 ):
+    _target(pr_number, head_sha)
     request = {
         "receipt_id": receipt_id,
         "pr_number": pr_number,
