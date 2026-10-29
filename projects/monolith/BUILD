@@ -4977,6 +4977,26 @@ py_test(
     ],
 )
 
+py_test(
+    name = "swarm_tracking_test",
+    srcs = ["factory/orchestration/tracking_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//pydantic",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "swarm_tracking_postgres_test",
+    srcs = ["factory/orchestration/tracking_postgres_test.py"],
+)
+
 # Hand-registered (factory is gazelle-excluded): raw-body HMAC authentication,
 # trust admission, durable replay fencing, safe retries and local authority.
 py_test(

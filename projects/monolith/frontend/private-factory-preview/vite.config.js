@@ -27,7 +27,7 @@ export default defineConfig({
             this.error(`Non-fixture module: ${id}`);
           if (
             /src\/routes\/private\//.test(id) &&
-            !/\/private\/(?:\+layout\.svelte|factory\/(?:FactorySheet\.svelte|\+page\.svelte|factory-view\.js|execution\/(?:run-history|run-lexicon|dag)\.js|escalations\/(?:\+page\.svelte|escalations-view\.js)|work-items\/\[id\]\/(?:\+page\.svelte|work-item-view\.js)))(?:\?|$)/.test(
+            !/\/private\/(?:\+layout\.svelte|factory\/(?:FactorySheet\.svelte|TrackingItem\.svelte|tracking-view\.js|\+page\.svelte|factory-view\.js|execution\/(?:run-history|run-lexicon|dag)\.js|escalations\/(?:\+page\.svelte|escalations-view\.js)|work-items\/\[id\]\/(?:\+page\.svelte|work-item-view\.js)))(?:\?|$)/.test(
               id,
             )
           )

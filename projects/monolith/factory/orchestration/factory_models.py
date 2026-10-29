@@ -17,6 +17,7 @@ from sqlalchemy import (
     Index,
     Integer,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
@@ -294,6 +295,29 @@ class WorkItem(SQLModel, table=True):
     __tablename__ = "work_item"
     __table_args__ = (
         CheckConstraint(
+            "execution_mode IN ('factory','tracking_only')",
+            name="work_item_execution_mode_check",
+        ),
+        CheckConstraint(
+            "execution_mode = 'factory' OR (authority = 'local' AND "
+            "source_kind = 'mcp' AND source_ref IS NOT NULL AND "
+            "github_repo IS NULL AND github_issue_number IS NULL AND "
+            "github_pointer_comment_id IS NULL AND "
+            "tracking_kind IS NOT NULL AND tracking_kind IN ('manual','external') "
+            "AND owner IS NOT NULL AND "
+            "length(owner) BETWEEN 1 AND 256 AND tracking_version >= 1 AND "
+            "(state <> 'done' OR (completion_evidence IS NOT NULL AND "
+            "length(completion_evidence) > 0 AND completed_at IS NOT NULL)))",
+            name="work_item_tracking_check",
+        ),
+        Index(
+            "work_item_tracking_source_key",
+            "source_ref",
+            unique=True,
+            postgresql_where=text("execution_mode = 'tracking_only'"),
+            sqlite_where=text("execution_mode = 'tracking_only'"),
+        ),
+        CheckConstraint(
             "state IN ('open','ready','deferred','needs_human','active','done','closed')",
             name="work_item_state_check",
         ),
@@ -337,6 +361,14 @@ class WorkItem(SQLModel, table=True):
         default=None, primary_key=True, sa_type=_BIGINT, nullable=False
     )
     title: str
+    execution_mode: str = Field(default="factory", nullable=False)
+    tracking_kind: str | None = Field(default=None)
+    owner: str | None = Field(default=None)
+    blocker: str = Field(default="")
+    next_action: str = Field(default="")
+    completion_evidence: str | None = Field(default=None)
+    completed_at: datetime | None = Field(default=None)
+    tracking_version: int = Field(default=0, nullable=False)
     body: str = Field(default="")
     state: str
     close_reason: str | None = Field(default=None)
@@ -359,6 +391,23 @@ class WorkItem(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     closed_at: datetime | None = Field(default=None)
+
+
+class TrackingRequest(SQLModel, table=True):
+    """Immutable operator-scoped request/result committed with a tracking event."""
+
+    __tablename__ = "tracking_request"
+    __table_args__ = (
+        UniqueConstraint("actor", "request_key", name="tracking_request_key"),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True, sa_type=_BIGINT)
+    actor: str
+    request_key: str
+    payload_json: str
+    result_json: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class WorkItemEdge(SQLModel, table=True):

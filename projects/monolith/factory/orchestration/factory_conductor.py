@@ -7861,7 +7861,15 @@ def reserve_node(
 
     with Session(get_engine()) as db:
         with _locked_session(db):
-            from factory.orchestration.factory_controls import task_snapshot
+            from factory.orchestration.factory_controls import (
+                _receipt,
+                receipt_is_executable,
+                task_snapshot,
+            )
+
+            receipt = _receipt(db, task_id)
+            if receipt is not None and not receipt_is_executable(db, receipt):
+                return ReservationResult(False, "work_item_not_executable")
 
             # This immutable context is derived from the receipt under its lock.
             existing = next(

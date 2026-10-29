@@ -1248,6 +1248,7 @@ def _public_work_items(db: Session, snapshotted_at: str) -> dict[int, dict]:
         select(WorkItem)
         .where(
             WorkItem.source_kind == "github",
+            WorkItem.execution_mode == "factory",
             WorkItem.github_repo.is_not(None),
             WorkItem.github_issue_number.is_not(None),
         )
@@ -1302,7 +1303,7 @@ def _board_task_ids(db: Session) -> tuple[set[str], dict[int, str]]:
     mirrors its split rather than inventing one: passing a task id that turns
     out not to be on the board only costs a plan read that nothing renders.
     """
-    from factory.orchestration.factory_models import FactoryReceipt
+    from factory.orchestration.factory_models import FactoryReceipt, WorkItem
     from factory.private_view import ACTIVE_STATES, QUEUED_STATES, RECENT_LIMIT
 
     rows = db.exec(
@@ -1311,7 +1312,17 @@ def _board_task_ids(db: Session) -> tuple[set[str], dict[int, str]]:
             FactoryReceipt.state,
             FactoryReceipt.task_id,
             FactoryReceipt.body,
-        ).order_by(FactoryReceipt.id)
+        )
+        .where(
+            (FactoryReceipt.work_item_id.is_(None))
+            | select(WorkItem.id)
+            .where(
+                WorkItem.id == FactoryReceipt.work_item_id,
+                WorkItem.execution_mode == "factory",
+            )
+            .exists()
+        )
+        .order_by(FactoryReceipt.id)
     ).all()
     live = [row for row in rows if row.state in ACTIVE_STATES]
     recent = sorted(
@@ -1424,6 +1435,10 @@ _LEDGER_OUTCOMES = text(
                ) AS finished_at
         FROM swarm.factory_receipt r
         WHERE r.state IN ('succeeded', 'failed', 'escalated')
+          AND (r.work_item_id IS NULL OR EXISTS (
+              SELECT 1 FROM swarm.work_item w WHERE w.id = r.work_item_id
+              AND w.execution_mode = 'factory'
+          ))
     )
     SELECT
         COUNT(*) FILTER (WHERE state = 'succeeded') AS landed,
@@ -1478,6 +1493,10 @@ def build_public_snapshot(
     work_items = _public_work_items(session, snapshotted_at)
     task_ids, bodies = _board_task_ids(session)
     board = build_factory_view(session=session, plan_tasks=task_ids)
+    # The private board may contain old or mislinked receipts. Only the
+    # executable identities selected above contribute public cards or events.
+    for bucket in ("active", "queued", "recent"):
+        board[bucket] = [card for card in board.get(bucket, []) if card["id"] in bodies]
     policy = shape_policy(board.get("policy"), _raw_policy(session))
 
     if not board.get("ok"):

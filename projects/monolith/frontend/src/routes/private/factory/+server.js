@@ -4,11 +4,12 @@
 // optional task query asks the backend to load one finished task's plan.
 const API_BASE = process.env.API_BASE;
 
-export async function GET({ url }) {
+export async function GET({ url, request }) {
   try {
     const task = url.searchParams.get("task");
     const query = task ? `?task=${encodeURIComponent(task)}` : "";
     const response = await fetch(`${API_BASE}/api/agents/factory${query}`, {
+      headers: { "X-Auth-Email": request?.headers.get("x-auth-email") ?? "" },
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {

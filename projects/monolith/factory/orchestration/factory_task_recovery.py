@@ -37,6 +37,8 @@ def _issue(receipt_id):
 
 
 def _capacity(db, control, row):
+    if not controls.receipt_is_executable(db, row):
+        raise ValueError("work_item_not_executable")
     policy = json.loads(control.policy_json)
     if (
         control.state != "enabled"

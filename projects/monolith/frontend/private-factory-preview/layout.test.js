@@ -35,7 +35,7 @@ for (const view of Object.keys(routes)) {
     "populated",
     "empty",
     "unavailable",
-    ...(view === "item" ? ["missing"] : []),
+    ...(view === "item" ? ["missing", "tracking"] : []),
   ]) {
     test(`${view} ${scenario}: one sheet/chrome with real tier layouts`, async () => {
       await render(view, scenario);
@@ -73,6 +73,28 @@ for (const view of Object.keys(routes)) {
     expect(localStorage.getItem("td-theme")).toBe("light");
   });
 }
+
+test("tracking detail has source and owner without factory controls", async () => {
+  await render("item", "tracking");
+  expect(document.body.textContent).toContain("tracking only");
+  expect(document.body.textContent).toContain(
+    "Synthetic human and external coordination owner",
+  );
+  expect(document.querySelector("form")).toBeNull();
+  expect(document.querySelector('[aria-label="Receipts"]')).toBeNull();
+  expect(document.querySelector('[aria-label="Work item edges"]')).toBeNull();
+});
+
+test("board shows tracking alongside factory work without synthetic execution", async () => {
+  await render("board");
+  const rows = document.querySelectorAll('[aria-label="Tracking-only work"]');
+  expect(rows).toHaveLength(2);
+  expect(rows[1].textContent).toContain("Recorded external completion");
+  for (const row of rows) {
+    expect(row.querySelector("button,form,[role=progressbar]")).toBeNull();
+    expect(row.textContent).not.toContain("receipt");
+  }
+});
 
 test.each([
   "/factory/execution",

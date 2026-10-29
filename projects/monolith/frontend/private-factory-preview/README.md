@@ -50,12 +50,13 @@ after 14 days and must be regenerated if the PR head changes.
 
 ## Non-factory task integration (#7400)
 
-This preview covers factory delivery only. The tracking-only MCP implementation
-owns the non-factory task contract. Integrate it here only when that contract is
-available: render its explicit source and owner, label manual/external records
-as tracking only, and route updates to its tracking endpoint. Never synthesize a
-factory receipt, admission, execution status or decision control from a tracked
-record. Missing owner/source data must read as unknown, not as factory ownership.
+The board fixtures include manual/external tracking rows alongside factory
+delivery. The tracking detail scenario renders the production tracking branch:
+explicit source and owner, tracking-only status, completion evidence and no
+factory receipt, admission, execution progress, relationship or decision
+controls. Recording mutations remain MCP-only. Missing owner/source data reads
+as unknown, not as factory ownership. Long source/owner text is included in the
+mobile/desktop, light/dark and enlarged-text checks.
 
 The continuation adds 200% computed-text captures at both widths and schemes.
 Decision tests cover replacement on the same receipt, duplicate taps, accepted

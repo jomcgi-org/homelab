@@ -522,6 +522,8 @@ def transition(
     if to_state not in _STATES:
         raise WorkItemError(f"unknown work item state {to_state}")
     item = _lock_item(db, item_id)
+    if item.execution_mode == "tracking_only":
+        raise WorkItemError("tracking changes require the versioned tracking API")
     if to_state not in _TRANSITIONS[item.state]:
         raise WorkItemError(f"illegal work item transition {item.state} -> {to_state}")
     if to_state == "closed" and close_reason not in _CLOSE_REASONS:
@@ -594,6 +596,8 @@ def add_edge(
     if from_id == to_id:
         raise WorkItemError("work item edge cannot reference itself")
     items = _lock_items(db, from_id, to_id)
+    if any(item.execution_mode == "tracking_only" for item in items.values()):
+        raise WorkItemError("tracking records cannot acquire factory relationships")
     existing = db.exec(
         select(WorkItemEdge).where(
             WorkItemEdge.from_id == from_id,
@@ -710,7 +714,11 @@ def is_admissible(db: Session, item_id: int) -> bool:
     item = db.exec(select(WorkItem).where(WorkItem.id == item_id)).one_or_none()
     if item is None:
         return False
-    return item.state == "ready" and not open_blockers(db, item_id)
+    return (
+        item.execution_mode == "factory"
+        and item.state == "ready"
+        and not open_blockers(db, item_id)
+    )
 
 
 def _work_item_document(db: Session, item: WorkItem) -> dict:

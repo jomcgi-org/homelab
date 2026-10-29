@@ -16,16 +16,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import httpx
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
+import httpx
 from auth.api import Principal, current_principal
 from core.clock import iso_or_str
 from core.mcp_app import mcp
 from pydantic import BeforeValidator, Field
 
 from factory.access import OPERATOR_GROUP, OPERATOR_REQUIRED, is_operator
+from factory.orchestration import tracking
 
 # Cloud sessions (claude.ai and Claude Code) hold no factory receipt, so an
 # empty active list means "nothing the factory admitted", never "nothing is
@@ -72,6 +73,89 @@ def _exact_integer(value: object) -> int:
 
 
 MCPInteger = Annotated[int, BeforeValidator(_exact_integer)]
+
+
+async def _tracking_call(function, *args, **kwargs) -> dict:
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from core.db import get_engine
+
+    try:
+        return await asyncio.to_thread(function, get_engine(), *args, **kwargs)
+    except tracking.TrackingError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool
+async def factory_tracking_create(body: tracking.Create) -> dict:
+    """Record private manual/external work as a standing human operator.
+
+    Source and owner are immutable descriptive metadata. HTTPS source links
+    are never fetched. No receipt, execution, external write or notification.
+    Retry the identical request_key and body to reconcile an uncertain save.
+    """
+    return await _tracking_call(tracking.record, current_principal().subject, body)
+
+
+@mcp.tool
+async def factory_tracking_read(item_id: Annotated[MCPInteger, Field(ge=1)]) -> dict:
+    """Read a private tracking record and its last 20 attributable events."""
+    return await _tracking_call(tracking.read, item_id)
+
+
+@mcp.tool
+async def factory_tracking_list(
+    state: tracking.State | None = None,
+    tracking_kind: Literal["manual", "external"] | None = None,
+    limit: Annotated[MCPInteger, Field(ge=1, le=100)] = 20,
+    cursor: Annotated[str, Field(max_length=100)] | None = None,
+) -> dict:
+    """List private tracking records newest ID first, using the returned cursor."""
+    return await _tracking_call(
+        tracking.listing,
+        state=state,
+        tracking_kind=tracking_kind,
+        limit=limit,
+        cursor=cursor,
+    )
+
+
+@mcp.tool
+async def factory_tracking_update(
+    item_id: Annotated[MCPInteger, Field(ge=1)],
+    body: tracking.Change,
+) -> dict:
+    """Record a version-checked change, or reopen done/closed work to open.
+
+    Source, owner, execution mode and authority cannot change. Reopen retains
+    previous completion evidence. A stale version refuses the whole request.
+    """
+    return await _tracking_call(
+        tracking.record, current_principal().subject, body, item_id=item_id
+    )
+
+
+@mcp.tool
+async def factory_tracking_complete(
+    item_id: Annotated[MCPInteger, Field(ge=1)],
+    body: tracking.Change,
+) -> dict:
+    """Record external completion evidence, never factory accepted delivery.
+
+    Supply state=done, completion_evidence, expected_version and request_key.
+    Exact retries return the original recorded result after later updates too.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    if body.state != "done" or not body.completion_evidence:
+        return {"ok": False, "error": "completion requires done and evidence"}
+    return await _tracking_call(
+        tracking.record, principal.subject, body, item_id=item_id
+    )
 
 
 def _refuse(principal: Principal) -> dict | None:
