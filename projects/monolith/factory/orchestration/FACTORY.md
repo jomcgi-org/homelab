@@ -3078,3 +3078,12 @@ It does not infer authorization from a PR body or grant landing.
 **Why.** A completed result arriving after its start lease is an observation
 to validate, not a request for another paid turn. Recording its draft-only
 restriction must not accidentally refresh that lease.
+
+
+For an operator-recovered task, ordinary policy amendments validate the existing
+absolute recovery deadline rather than the original task creation time. Their
+preview binds the current recovery and funding audit records; applying preserves
+the funding deadline and review date, even if the funding lease already expired.
+Changing the timeout is refused. The recovery grant and its independent work-turn
+ceiling remain unchanged: changing a policy cap does not authorize more recovery
+starts. Recording a hold alone retains its separate restrictive semantics.
