@@ -7,11 +7,18 @@ import { mount } from "svelte";
 import App from "./App.svelte";
 import { fixture, navigate } from "./state.svelte.js";
 import { payloads } from "./fixtures.js";
+import { createExecutionFixture } from "./execution-fixtures.js";
+
+const execution = createExecutionFixture();
+window.__executionFixture = execution;
+window.EventSource = execution.EventSource;
 
 // Only this known production browser request has a synthetic endpoint.
 // Never fall through to network fetch; the CSP also denies all connections.
 window.__fixtureUnexpectedFetches = [];
-window.fetch = async (input) => {
+window.fetch = async (input, options) => {
+  if (["execution", "drain"].includes(fixture.view))
+    return execution.fetch(input, options);
   if (
     !["/slop/factory/search-index", "/slop/factory/data/board"].includes(input)
   ) {

@@ -325,12 +325,12 @@
     flex: 0 0 auto;
     overflow: hidden;
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: 0;
     background: var(--panel-bg);
   }
   .surface-card.front {
     border-color: var(--text);
-    box-shadow: 0 0 0 1px var(--text);
+    box-shadow: none;
   }
   .surface-card.receded {
     opacity: 0.5;
@@ -355,7 +355,7 @@
     max-width: min(52%, 520px);
     overflow: hidden;
     padding: 3px 6px;
-    border-radius: 3px;
+    border-radius: 0;
     color: var(--muted);
     background: var(--page-bg);
     font: var(--size-meta) var(--font-mono);
@@ -377,7 +377,7 @@
     justify-content: center;
     padding: 0;
     border: 0;
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--muted);
     background: transparent;
   }
@@ -420,12 +420,12 @@
     gap: 6px;
     padding: 3px 7px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-pill);
+    border-radius: 0;
   }
   .vm-dot {
     width: 6px;
     height: 6px;
-    border-radius: var(--radius-circle);
+    border-radius: 0;
     background: var(--dot-idle);
   }
   .vm-dot.awake {
@@ -558,8 +558,8 @@
       display: none;
       border-top: 1px solid var(--line-strong);
       border-left: 0;
-      border-radius: 8px 8px 0 0;
-      box-shadow: var(--panel-shadow);
+      border-radius: 0;
+      box-shadow: none;
     }
     .wire.open {
       display: flex;

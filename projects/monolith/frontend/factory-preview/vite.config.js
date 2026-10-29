@@ -13,10 +13,18 @@ export default defineConfig({
       name: "factory-fixture-only-module-graph",
       generateBundle() {
         for (const id of this.getModuleIds()) {
+          const source = id.split("?")[0];
+          const privateModule =
+            /src\/lib\/private\/|src\/routes\/private\//.test(id);
+          const allowedPrivate =
+            /src\/lib\/private\/dashboard-theme\.css$|src\/routes\/private\/\+layout\.svelte$|src\/routes\/private\/factory\/factory-view\.js$|src\/routes\/private\/factory\/execution\/[^?]+\.(svelte|js|css)$/.test(
+              source,
+            );
           if (
-            /src\/lib\/(server|private)\/|src\/routes\/(private|friends)\/|\+page\.server\.|posts-manifest\.json/.test(
+            /src\/lib\/server\/|src\/routes\/friends\/|\+(?:page\.server|server)\.|posts-manifest\.json/.test(
               id,
-            )
+            ) ||
+            (privateModule && !allowedPrivate)
           ) {
             this.error(
               `Server module or non-fixture data entered preview: ${id}`,
@@ -49,6 +57,7 @@ export default defineConfig({
       { find: "$lib", replacement: here("../src/lib") },
       { find: "$app/state", replacement: here("./state.svelte.js") },
       { find: "$app/navigation", replacement: here("./navigation.js") },
+      { find: "$app/stores", replacement: here("./execution-stores.js") },
     ],
   },
   build: {
