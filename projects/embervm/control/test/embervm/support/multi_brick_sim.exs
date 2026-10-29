@@ -787,7 +787,6 @@ defmodule Embervm.MultiBrickSim do
         disp_name: disp_name,
         task_store: task_store,
         store: store,
-        writer: writer,
         op_log: op_log,
         path: path,
         registry_pid: registry_pid,
