@@ -310,6 +310,88 @@ def test_running_owner_is_named_and_survivor_is_never_closed(db, github):
     assert audit_details(db, "factory_pr_retired")[-1]["survivor_pr_number"] == 20
 
 
+@pytest.mark.parametrize("objective_state", ["open", "unknown", None])
+@pytest.mark.parametrize("history_first", [True, False])
+def test_accepted_delivery_with_closed_history_keeps_unfinished_objective(
+    db, github, objective_state, history_first
+):
+    accepted = pull(7394, 7025)
+    history = "Archive the one-off baseline contract on closed #5851."
+    accepted["body"] = "\n\n".join(
+        [history, "Closes #7025"] if history_first else ["Closes #7025", history]
+    )
+    task_receipt(db, "t-7394", 7025, "succeeded")
+    api = github(
+        Github(
+            [accepted],
+            {5851: {"state": "closed"}, 7025: {"state": objective_state}},
+        )
+    )
+
+    lifecycle._retire_pull(REPO, accepted)
+
+    assert api.pulls[7394]["state"] == "open"
+    assert not api.writes
+    assert not audit_details(db, "factory_pr_retired")
+
+
+def test_all_closing_issues_closed_still_retires(db, github):
+    stale = pull(41, 7)
+    stale["body"] += "\nFixes #8"
+    api = github(Github([stale], {7: {"state": "closed"}, 8: {"state": "closed"}}))
+
+    lifecycle._retire_pull(REPO, stale)
+
+    assert api.pulls[41]["state"] == "closed"
+    assert audit_details(db, "factory_pr_retired")[-1]["issue_number"] == 7
+
+
+@pytest.mark.parametrize("remaining_state", ["open", "closed"])
+def test_successor_must_not_discard_another_unfinished_objective(
+    db, github, remaining_state
+):
+    old = pull(42, 7, "factory/old")
+    old["body"] += "\nCloses #8"
+    new = pull(43, 7, "factory/new")
+    task_receipt(db, "new", 7, "admitted", branch="factory/new", pr_number=43)
+    api = github(
+        Github([old, new], {7: {"state": "open"}, 8: {"state": remaining_state}})
+    )
+
+    lifecycle._retire_pull(REPO, old)
+
+    assert api.pulls[43]["state"] == "open"
+    if remaining_state == "closed":
+        assert api.pulls[42]["state"] == "closed"
+        assert audit_details(db, "factory_pr_retired")[-1]["survivor_pr_number"] == 43
+    else:
+        assert api.pulls[42]["state"] == "open"
+        assert not api.writes
+        assert not audit_details(db, "factory_pr_retired")
+
+
+def test_reopened_objective_blocks_final_retirement_revalidation(db, github):
+    stale = pull(44, 7)
+    stale["body"] += "\nCloses #8"
+
+    class ReopeningGithub(Github):
+        def write(self, repo, path, payload, *, method="POST"):
+            result = super().write(repo, path, payload, method=method)
+            if path.endswith("/comments"):
+                self.issues[8]["state"] = "open"
+            return result
+
+    api = github(
+        ReopeningGithub([stale], {7: {"state": "closed"}, 8: {"state": "closed"}})
+    )
+
+    lifecycle._retire_pull(REPO, stale)
+
+    assert api.pulls[44]["state"] == "open"
+    assert not any(method == "PATCH" for method, _, _ in api.writes)
+    assert not audit_details(db, "factory_pr_retired")
+
+
 def test_survivor_retirement_names_the_shared_closing_issue(db, github):
     old = pull(21, 7, "factory/old")
     new = pull(22, 99, "factory/new")

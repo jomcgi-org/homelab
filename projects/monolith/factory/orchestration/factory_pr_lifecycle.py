@@ -73,7 +73,7 @@ def github_graphql(query: str, variables: dict) -> dict:
 
 
 def closing_issue_numbers(body: object, repo: str) -> list[int]:
-    """Same-repository issues this body asks GitHub to close on merge."""
+    """Same-repository closing-keyword references, not retirement authority."""
     if not isinstance(body, str):
         return []
     reference = (
@@ -286,6 +286,11 @@ def _retirement_reason(
         if "human" in _label_names(issue):
             return None
         found = _successor(repo, issue_number, number)
+        # Keywords can also occur in historical prose, such as "closed #5851".
+        # A closed reference cannot retire another unfinished objective: every
+        # reference must be closed or covered by a verified running successor.
+        if issue.get("state") != "closed" and found is None:
+            return None
         if found is not None and survivor is None:
             survivor, survivor_row = found
             survivor_issue = issue_number
