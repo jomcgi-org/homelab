@@ -282,7 +282,8 @@ def test_generic_private_oidc_uses_explicit_configuration(renders):
 
 
 @pytest.mark.parametrize(
-    "field", ["issuer", "jwksUri", "clientID", "clientSecretName", "onepassword.itemPath"]
+    "field",
+    ["issuer", "jwksUri", "clientID", "clientSecretName", "onepassword.itemPath"],
 )
 @pytest.mark.parametrize("empty", ["", None])
 def test_private_oidc_rejects_missing_configuration(tmp_path, field, empty):
@@ -298,7 +299,8 @@ def test_private_oidc_rejects_missing_configuration(tmp_path, field, empty):
     )
 
     with pytest.raises(
-        RuntimeError, match=rf"cfIngress\.private\.authentik\.{re.escape(field)} is required"
+        RuntimeError,
+        match=rf"cfIngress\.private\.authentik\.{re.escape(field)} is required",
     ):
         _render("monolith-test", [Path(os.environ["DEV_VALUES"]), override])
 
@@ -311,7 +313,9 @@ def test_private_oidc_requires_configuration_only_when_enabled(tmp_path):
     ):
         _render("monolith-test", [override])
 
-    override.write_text("cfIngress:\n  private:\n    enabled: false\n    auth: authentik\n")
+    override.write_text(
+        "cfIngress:\n  private:\n    enabled: false\n    auth: authentik\n"
+    )
     rendered = _render("monolith-test", [override])
     assert not any(
         name == "monolith-test-private-authentik" for _, name, _ in _docs(rendered)
