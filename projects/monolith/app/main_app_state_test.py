@@ -184,6 +184,8 @@ class TestLifespanAppStateBotAssignment:
                 assert app.state.bot is None, (
                     "app.state.bot should be None when no DISCORD_BOT_TOKEN is set"
                 )
+
+
 def test_private_app_chat_routes_and_openapi():
     """The composed app retains chat clients and omits the retired import API."""
     paths = app.openapi()["paths"]
@@ -191,7 +193,7 @@ def test_private_app_chat_routes_and_openapi():
     registered = {
         (route.path, method)
         for route in routes
-        for method in route.methods
+        for method in (route.methods or ())
     }
     for path in ("/api/chat/explore", "/api/chat/cluster"):
         assert (path, "POST") in registered
