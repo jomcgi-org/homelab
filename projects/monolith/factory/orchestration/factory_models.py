@@ -84,6 +84,7 @@ class FactoryReceipt(SQLModel, table=True):
             "issue_number",
             "generation",
             "task_class",
+            "recurrence_key",
             name="factory_receipt_repo_issue_generation_class_key",
         ),
         UniqueConstraint("task_id", name="factory_receipt_task_id_key"),
@@ -114,6 +115,8 @@ class FactoryReceipt(SQLModel, table=True):
     url: str
     actor: str
     task_class: str = Field(default=DEFAULT_TASK_CLASS)
+    # Empty for ordinary intake. Only the trusted refill producer mints runs.
+    recurrence_key: str = Field(default="")
     # Admission pins the quality route separately from the original class.
     # A null value identifies receipts admitted before feedback routing.
     routing_tier: str | None = Field(default=None)

@@ -1092,6 +1092,10 @@ def _budget_evidence(task_id: str) -> dict:
 
 
 def _schema(node_key: str) -> dict:
+    if node_key == "backlog_refill_collect_1":
+        from factory.orchestration.backlog_refill import SCHEMA
+
+        return SCHEMA
     if node_key in {"scout_collect_1", "scout_review_1"}:
         from factory.orchestration.factory_improvement_scout import schema
 
@@ -1491,6 +1495,11 @@ def _add(
         )
     )
     scouting = key in {"scout_collect_1", "scout_review_1"}
+    refilling = key == "backlog_refill_collect_1"
+    if refilling:
+        from factory.orchestration.backlog_refill import READ_ONLY_BOUNDARY
+
+        boundary = READ_ONLY_BOUNDARY
     if scouting:
         from factory.orchestration.factory_improvement_scout import (
             boundary as scout_boundary,
@@ -1535,7 +1544,10 @@ def _add(
         effort=effort,
         deps=deps,
         max_cost_usd=max_cost_usd,
-        side_effects=not review and not scouting and not task.get("dependency_review"),
+        side_effects=not review
+        and not scouting
+        and not refilling
+        and not task.get("dependency_review"),
         max_attempts=policy["max_attempts"] if max_attempts is None else max_attempts,
         turn_timeout_seconds=(
             policy["turn_timeout_seconds"]
@@ -5941,6 +5953,11 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
     # DBOS 2.29. get_workflow_status is the supported nullable lookup.
     state = dbos.get_workflow_status(key)
     if state is None:
+        if pin["node_key"] == "backlog_refill_collect_1":
+            from factory.orchestration.backlog_refill import dispatch_allowed
+
+            if not dispatch_allowed(task["id"]):
+                return None
         if pin["node_key"] in {"scout_collect_1", "scout_review_1"}:
             from factory.orchestration.factory_improvement_scout import dispatch_allowed
 
@@ -6823,6 +6840,50 @@ def reconcile_task(
         if task.get("task_paused"):
             _expire_reconciler_pause(task_id, held_only=True)
         return
+    from factory.orchestration import backlog_refill_worker
+
+    if backlog_refill_worker.receipt(task_id) is not None:
+        # Outcome/issue reconciliation remains reachable while admissions are
+        # paused or refill is disabled. Physical dispatch has its own fence.
+        permission = can_start(task_id)
+        paused = not permission["ok"] and permission["reason"] == "task_paused"
+        if paused:
+            from factory.orchestration.factory_controls import (
+                paused_settlement_snapshot,
+            )
+
+            snapshot = paused_settlement_snapshot(task_id)
+            if not snapshot["ok"] or not snapshot["limits"]["deadline_expired"]:
+                return
+        if paused or (not permission["ok"] and permission["reason"] == "task_deadline"):
+            # No graph attempt is active at this boundary. finish_task still
+            # refuses unresolved factory starts; publication intents retain
+            # their ledger fence and reconcile read-only in maintenance.
+            finish_task(
+                task_id,
+                "failed",
+                ACTOR,
+                evidence={
+                    "state": "task_deadline",
+                    "reason": "Absolute refill deadline elapsed; no new dispatch or publication is authorized.",
+                },
+                paused_trigger="deadline" if paused else None,
+            )
+            return
+        nodes = graph.load_graph(task_id)
+        backlog_refill_worker.reconcile(
+            task, policy, nodes, runs, graph.current_version(task_id)
+        )
+        _dispatch_ready(
+            task,
+            graph.load_graph(task_id),
+            runs,
+            1,
+            fan_out=False,
+            parallel=parallel,
+            policy=policy,
+        )
+        return
     permission = can_start(task_id)
     if not permission["ok"] and permission["reason"] == "task_paused":
         if not _settle_paused_task(task, policy, runs):
@@ -7587,6 +7648,12 @@ def _dispatch_ready(
         if dispatched >= limit:
             break
         node_key = node["node_key"]
+        refilling = node_key == "backlog_refill_collect_1"
+        if refilling:
+            from factory.orchestration.backlog_refill import dispatch_allowed
+
+            if not dispatch_allowed(task_id):
+                continue
         scouting = node_key in {"scout_collect_1", "scout_review_1"}
         if scouting:
             from factory.orchestration.factory_improvement_scout import dispatch_allowed
@@ -7616,6 +7683,7 @@ def _dispatch_ready(
             if policy is not None
             and not node_key.startswith(("review_", "implement_browser_capture_"))
             and not scouting
+            and not refilling
             else None
         )
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
@@ -7652,7 +7720,7 @@ def _dispatch_ready(
             # Refinement briefs do not deliver a PR or check its body.
             "closing_instruction": (
                 ""
-                if node_key.startswith("refine_") or scouting
+                if node_key.startswith("refine_") or scouting or refilling
                 else _closing_instruction(task, review=node_key.startswith("review_"))
             ),
         }
@@ -7660,6 +7728,9 @@ def _dispatch_ready(
         if scouting:
             context["read_only"] = True
             reviewer = "sol"  # Exact subscription model; no quota/provider fallback.
+        if refilling:
+            context["read_only"] = True
+            reviewer = node["model"]  # Pin the granted refill model, no fallback.
         if node_key.startswith("implement_browser_capture_"):
             if node.get("model") != "luna":
                 raise ValueError("capture node has non-Luna routing")
@@ -8795,6 +8866,12 @@ def _tick(checkpoint) -> None:
     checkpoint("reverts")
     revert_tick(snapshot["policy"])
     checkpoint("problem_issues")
+    try:
+        from factory.orchestration.backlog_refill_worker import tick as refill_tick
+
+        refill_tick(snapshot["policy"])
+    except Exception:  # publication reconciliation cannot stop other tasks
+        logger.exception("factory refill reconciliation failed")
     try:
         from factory.orchestration.factory_problem_issues import problem_issues_tick
 

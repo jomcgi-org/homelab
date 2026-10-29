@@ -88,6 +88,7 @@ _POLICY_KEYS = {
     "progress_watchdog",
     "auto_merge",
     "repos",
+    "backlog_refill",
 }
 _OPTIONAL_POLICY_KEYS = {
     "reviewer_model",
@@ -105,6 +106,7 @@ _OPTIONAL_POLICY_KEYS = {
     "progress_watchdog",
     "auto_merge",
     "repos",
+    "backlog_refill",
 }
 
 
@@ -721,6 +723,14 @@ def validate_policy(policy: dict) -> dict:
     if not isinstance(models, list) or not 1 <= len(models) <= 16:
         raise ValueError("invalid allowed_models")
     result["allowed_models"] = sorted({_text(m, "model", 128) for m in models})
+    from factory.orchestration.backlog_refill_policy import normalize as refill_policy
+
+    # Keep omission sparse in stored policy; normalize only for reads/comparison.
+    refill = refill_policy(result)
+    if "backlog_refill" in policy:
+        result["backlog_refill"] = {
+            key: refill[key] for key in policy["backlog_refill"]
+        }
     if policy["conductor_model"] not in result["allowed_models"]:
         raise ValueError("conductor model is not allowed")
     if result["reviewer_model"] not in result["allowed_models"]:
@@ -1340,6 +1350,9 @@ def _policy_for_generation_comparison(policy: dict) -> dict:
     generation while work is active.
     """
     comparable = dict(policy)
+    from factory.orchestration.backlog_refill_policy import normalize as refill_policy
+
+    comparable["backlog_refill"] = refill_policy(comparable)
     comparable["problem_issues"] = problem_issues_policy(comparable)
     comparable["progress_watchdog"] = progress_watchdog_policy(comparable)
     # Newly defaulted intake fields must not turn a legacy no-op configure
@@ -1515,6 +1528,16 @@ def admission_eligible(
     the policy allowlist; an intake receipt qualifies the same way, or by
     intake authorship while intake is enabled.
     """
+    if actor == "factory:backlog-refill":
+        from factory.orchestration.backlog_refill_policy import normalize
+
+        return bool(
+            normalize(policy)["enabled"]
+            and not intake_policy(policy)["refinement_batch"]
+            and issue_number == 7366
+            and task_class == "advisory-diagnosis"
+            and (repo is None or repo == policy["repo"])
+        )
     if issue_number in set(policy.get("issue_numbers") or ()):
         return True
     if actor == "factory:improvement-scout":
@@ -3144,6 +3167,7 @@ def conductor_status(*, session: Session | None = None) -> dict:
 
 def status(*, session: Session | None = None) -> dict:
     from factory.orchestration.factory_landing import rollout_waits
+    from factory.orchestration.backlog_refill import state as refill_state
 
     with _read_session(session) as db:
         control = db.exec(
@@ -3168,6 +3192,7 @@ def status(*, session: Session | None = None) -> dict:
             "policy": policy,
             "intake": intake_state(policy, session=db),
             "problem_issues": problem_issues_state(policy, session=db),
+            "backlog_refill": refill_state(policy, session=db),
             "lanes": lane_usage(
                 policy, receipts, unresolved_task_ids=unresolved_start_task_ids(db)
             ),
@@ -3659,6 +3684,11 @@ def set_control(
                         ),
                     )
                     control.policy_json = dumps(configured)
+                    from factory.orchestration.backlog_refill import (
+                        reset as reset_refill,
+                    )
+
+                    reset_refill(db, configured)
                     # Configuration does not change execution authority: enabled
                     # work continues, paused admissions stay paused, and initial
                     # configuration remains disabled until an explicit enable.

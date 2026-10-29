@@ -2,11 +2,11 @@
 
 Operational and agent procedures that are **explicit-only**.
 
-Unlike the job procedures in `docs/agents/` (each listed with its trigger in `AGENTS.md`), runbooks are **not** selected by
+Unlike the job procedures in `docs/agents/` (each listed with its trigger in `docs/agents/reference.md`), runbooks are **not** selected by
 description matching. Open one only when:
 
 1. Joe asks for that procedure by name or intent,
-2. a "Where to look next" row in `AGENTS.md` names the file, or
+2. a "Where to look next" row in `docs/agents/reference.md` names the file, or
 3. a task spec or routine prompt names it.
 
 ## Index
@@ -43,7 +43,7 @@ repository does not install them.
 | [apko.md](apko.md) | apko.yaml + `apko_image` (locks via pre-commit / script) |
 
 Bazel and CI debugging live in `docs/agents/ci-triage.md` and the Commands
-section of `AGENTS.md`. Local Claude Code and Codex session collection is
+section of [`docs/agents/reference.md`](../agents/reference.md#commands). Local Claude Code and Codex session collection is
 documented in [`tools/session_collector/README.md`](../../tools/session_collector/README.md).
 
 ## Format

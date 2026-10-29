@@ -163,6 +163,7 @@ def get_issue_receipt(
                 FactoryReceipt.issue_number == issue_number,
                 FactoryReceipt.generation == generation,
                 FactoryReceipt.task_class == task_class,
+                FactoryReceipt.recurrence_key == "",
             )
         ).one_or_none()
         return (
@@ -227,6 +228,7 @@ def receive_issue(
                 FactoryReceipt.issue_number == issue_number,
                 FactoryReceipt.generation == generation,
                 FactoryReceipt.task_class == task_class,
+                FactoryReceipt.recurrence_key == "",
             )
         ).first()
         if existing is not None:
@@ -396,7 +398,9 @@ def open_lanes(policy: dict, rows, lanes=LANES, *, unresolved_task_ids=None) -> 
 
 def _eligible_clause(policy: dict):
     """The SQL twin of admission_eligible for the queued-receipt query."""
-    eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
+    eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"]) & (
+        FactoryReceipt.actor != "factory:backlog-refill"
+    )
     intake = intake_policy(policy)
     if intake["enabled"]:
         # Intake receipts are not in the operator allowlist by construction.
@@ -415,6 +419,17 @@ def _eligible_clause(policy: dict):
     from factory.orchestration.factory_controls import problem_issues_policy
 
     block = problem_issues_policy(policy)
+    from factory.orchestration.backlog_refill_policy import normalize as refill_policy
+
+    if refill_policy(policy)["enabled"] and not intake["refinement_batch"]:
+        eligible = or_(
+            eligible,
+            (FactoryReceipt.actor == "factory:backlog-refill")
+            & (FactoryReceipt.issue_number == 7366)
+            & (FactoryReceipt.task_class == "advisory-diagnosis")
+            & (FactoryReceipt.recurrence_key != "")
+            & (FactoryReceipt.repo == policy["repo"]),
+        )
     scout = block["improvement_scout"]
     if block["enabled"] and block["sources"]["quota_improvement"] and scout["enabled"]:
         eligible = or_(

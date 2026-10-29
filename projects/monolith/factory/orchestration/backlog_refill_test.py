@@ -1,0 +1,1262 @@
+"""Default-off refill, durable starts, recurrence and publication with fake I/O."""
+
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+
+import httpx
+import pytest
+from core.jsonio import dumps
+from sqlalchemy import event
+from sqlmodel import Session, SQLModel, create_engine, select
+
+from factory.orchestration import backlog_refill as refill
+from factory.orchestration import backlog_refill_producer as writer
+from factory.orchestration import factory_controls as controls
+from factory.orchestration import factory_intake_loop as intake
+from factory.orchestration.backlog_refill_policy import DEFAULTS, normalize
+from factory.orchestration.factory_models import (
+    FactoryAudit,
+    FactoryClassTier,
+    FactoryControl,
+    FactoryReceipt,
+    FactoryReviewVerdict,
+    FactoryStart,
+    WorkItem,
+    WorkItemEdge,
+    WorkItemEvent,
+)
+from factory.orchestration.models import SwarmNodeRun, SwarmTask
+
+NOW = datetime(2026, 10, 29, 12, tzinfo=UTC)
+
+
+@pytest.fixture
+def world(tmp_path, monkeypatch):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'refill.db'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+
+    @event.listens_for(engine, "connect")
+    def foreign_keys(connection, _record):
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                SwarmTask,
+                SwarmNodeRun,
+                FactoryAudit,
+                FactoryControl,
+                FactoryReceipt,
+                FactoryStart,
+                FactoryClassTier,
+                FactoryReviewVerdict,
+                WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
+            )
+        ],
+    )
+    clock = [NOW]
+    monkeypatch.setattr(controls, "get_engine", lambda: engine)
+    monkeypatch.setattr(controls, "_now", lambda: clock[0])
+    monkeypatch.setattr(intake, "_now", lambda: clock[0])
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    policy = controls.validate_policy(
+        {
+            "repo": "jomcgi-org/homelab",
+            "issue_numbers": [1],
+            "generation": 0,
+            "max_tasks": {"delivery": 2, "advisory": 2},
+            "max_turns_per_task": 3,
+            "task_budget_usd": 5.0,
+            "turn_budget_usd": 2.0,
+            "allowed_models": ["opus", "astra"],
+            "conductor_model": "opus",
+            "worker_model": "opus",
+            "base_branch": "main",
+            "turn_timeout_seconds": 60,
+            "max_attempts": 2,
+            "task_timeout_seconds": 3600,
+            "intake": {"enabled": True},
+            "backlog_refill": {"enabled": True},
+        }
+    )
+    with Session(engine) as db:
+        db.add(
+            FactoryControl(
+                id="factory",
+                actor="test",
+                state="enabled",
+                policy_json=dumps(policy),
+            )
+        )
+        db.commit()
+    yield engine, policy, clock
+    engine.dispose()
+
+
+def update(world, **changes):
+    engine, policy, _clock = world
+    policy.update(changes)
+    with Session(engine) as db:
+        row = db.get(FactoryControl, "factory")
+        row.policy_json = dumps(policy)
+        db.commit()
+
+
+def complete(world, start, *, success=True, new_issues=0, summary="test run"):
+    engine, _policy, _clock = world
+    with Session(engine) as db:
+        db.get(FactoryReceipt, start["receipt_id"]).state = (
+            "succeeded" if success else "failed"
+        )
+        db.commit()
+    refill.settle(
+        start["run_id"], success=success, new_issues=new_issues, summary=summary
+    )
+
+
+def admit(world, start):
+    engine, policy, clock = world
+    task_id = "t-" + start["run_id"]
+    with Session(engine) as db:
+        db.add(
+            SwarmTask(
+                id=task_id,
+                task_text="inventory",
+                repo=policy["repo"],
+                conductor_model="opus",
+                created_at=clock[0],
+            )
+        )
+        db.flush()
+        row = db.get(FactoryReceipt, start["receipt_id"])
+        row.state, row.task_id, row.policy_json = "admitted", task_id, dumps(policy)
+        db.commit()
+    return task_id
+
+
+def publication_start(world):
+    start = refill.observe(world[1], eligible=0, complete=True)
+    admit(world, start)
+    return start
+
+
+def test_omitted_legacy_and_recorded_defaults(world):
+    _engine, policy, _clock = world
+    legacy = {key: value for key, value in policy.items() if key != "backlog_refill"}
+    legacy["allowed_models"] = ["opus"]
+    assert normalize(legacy) == DEFAULTS
+    assert "backlog_refill" not in controls.validate_policy(legacy)
+    off = controls.validate_policy({**legacy, "backlog_refill": {"enabled": False}})
+    assert normalize(controls.validate_policy(off))["enabled"] is False
+    assert controls._policy_for_generation_comparison(
+        legacy
+    ) == controls._policy_for_generation_comparison({**legacy, "backlog_refill": {}})
+    assert normalize(policy)["max_per_24_hours"] == 24
+    assert refill.observe(legacy, eligible=0, complete=True)["reason"] == "disabled"
+    with controls._read_session() as db:
+        assert not refill._events(db, "started")
+
+
+def test_charter_ownership_and_blocking_follow_the_linked_work_item(world):
+    engine, policy, _clock = world
+    with Session(engine) as db:
+        charter = WorkItem(
+            title="Inventory charter",
+            state="open",
+            source_kind="github",
+            trust="trusted",
+            authority="github",
+            github_repo=policy["repo"],
+            github_issue_number=refill.CHARTER,
+            labels=["human"],
+        )
+        blocker = WorkItem(
+            title="Blocker",
+            state="open",
+            source_kind="factory",
+            trust="trusted",
+        )
+        db.add_all([charter, blocker])
+        db.commit()
+        charter_id, blocker_id = charter.id, blocker.id
+    assert (
+        refill.observe(policy, eligible=24, complete=True)["reason"]
+        == "charter_human_owned"
+    )
+    with Session(engine) as db:
+        db.get(WorkItem, charter_id).labels = []
+        db.add(WorkItemEdge(from_id=blocker_id, to_id=charter_id, kind="blocks"))
+        db.commit()
+    assert (
+        refill.observe(policy, eligible=24, complete=True)["reason"]
+        == "charter_blocked"
+    )
+    with Session(engine) as db:
+        blocker = db.get(WorkItem, blocker_id)
+        blocker.state, blocker.close_reason = "closed", "completed"
+        db.commit()
+    start = refill.observe(policy, eligible=24, complete=True)
+    assert start["ok"]
+    with Session(engine) as db:
+        assert db.get(FactoryReceipt, start["receipt_id"]).work_item_id == charter_id
+
+
+def test_omitted_board_does_not_read_refill_ledger(world, monkeypatch):
+    _engine, policy, _clock = world
+    legacy = {key: value for key, value in policy.items() if key != "backlog_refill"}
+
+    def forbidden(*_args):
+        raise AssertionError("omitted refill must not add status SQL reads")
+
+    monkeypatch.setattr(refill, "_ledger", forbidden)
+    assert refill.state(legacy)["status"] == "off"
+
+
+@pytest.mark.parametrize(
+    "key,values",
+    [
+        ("min_eligible", [0, 1001, True, "25"]),
+        ("cooldown_minutes", [0, 1441, False, 1.5]),
+        ("min_new_issues", [-1, 101, True]),
+        ("breaker_consecutive_low_yield", [0, 11, True]),
+        ("max_per_24_hours", [0, 25, 48, True]),
+        ("enabled", [1, None]),
+        ("model", ["sol", None]),
+        ("effort", ["unknown", [], None]),
+        ("labels", [[], ["bug"], None]),
+        ("unknown", [True]),
+    ],
+)
+def test_invalid_policy(world, key, values):
+    _engine, policy, _clock = world
+    for value in values:
+        with pytest.raises(ValueError):
+            normalize({**policy, "backlog_refill": {key: value}})
+
+
+@pytest.mark.parametrize(
+    "key,low,high",
+    [
+        ("min_eligible", 1, 1000),
+        ("cooldown_minutes", 1, 1440),
+        ("min_new_issues", 0, 100),
+        ("breaker_consecutive_low_yield", 1, 10),
+        ("max_per_24_hours", 1, 24),
+    ],
+)
+def test_valid_edges(world, key, low, high):
+    for value in (low, high):
+        assert normalize({**world[1], "backlog_refill": {key: value}})[key] == value
+
+
+def test_floor_concurrent_ticks_and_restart(world):
+    _engine, policy, _clock = world
+    assert refill.observe(policy, eligible=25, complete=True)["reason"] == "above_floor"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                lambda _: refill.observe(policy, eligible=24, complete=True), range(2)
+            )
+        )
+    assert sum(result["ok"] for result in results) == 1
+    assert refill.observe(policy, eligible=0, complete=True)["reason"] == "in_flight"
+    with controls._read_session() as db:
+        assert len(refill._events(db, "started")) == 1
+    assert refill.state(policy)["status"] == "in flight"
+
+
+@pytest.mark.parametrize("control_state", ["paused", "stopped", "disabled"])
+def test_admission_disabled(world, control_state):
+    engine, policy, _clock = world
+    with Session(engine) as db:
+        db.get(FactoryControl, "factory").state = control_state
+        db.commit()
+    assert (
+        refill.observe(policy, eligible=0, complete=True)["reason"]
+        == "admission_disabled"
+    )
+
+
+def test_unknown_coverage_and_capacity(world):
+    _engine, policy, _clock = world
+    assert (
+        refill.observe(policy, eligible=0, complete=False)["reason"]
+        == "unknown_coverage"
+    )
+    assert (
+        refill.observe(
+            policy, eligible=0, complete=True, observed_at=NOW - timedelta(minutes=5)
+        )["reason"]
+        == "unknown_coverage"
+    )
+    assert (
+        refill.observe(policy, eligible=0, complete=True, lanes=("delivery",))["reason"]
+        == "advisory_capacity"
+    )
+
+
+def test_cooldown_settlement_and_unchanged_reset(world):
+    engine, policy, clock = world
+    start = refill.observe(policy, eligible=0, complete=True)
+    complete(world, start)
+    assert refill.observe(policy, eligible=0, complete=True)["reason"] == "cooldown"
+    clock[0] += timedelta(minutes=15)
+    second = refill.observe(policy, eligible=0, complete=True)
+    assert second["ok"] and second["run_id"] != start["run_id"]
+    with controls._locked_session() as (db, _control):
+        refill.reset(db, policy)
+    assert refill.observe(policy, eligible=0, complete=True)["reason"] == "in_flight"
+    with Session(engine) as db:
+        assert len(db.exec(select(FactoryReceipt)).all()) == 2
+
+
+def test_low_yields_once_productive_reset_and_failure_interleaving(world):
+    _engine, policy, clock = world
+    for success, count in (
+        (True, 0),
+        (False, 0),
+        (True, 3),
+        (True, 0),
+        (True, 0),
+        (False, 0),
+    ):
+        start = refill.observe(policy, eligible=24, complete=True)
+        assert start["ok"]
+        complete(
+            world, start, success=success, new_issues=count, summary=f"yield={count}"
+        )
+        complete(world, start, success=success, new_issues=count)
+        clock[0] += timedelta(minutes=15)
+    assert refill.observe(policy, eligible=24, complete=True)["reason"] == "breaker"
+    state = refill.state(policy)
+    assert len(state["breaker"]["runs"]) == 3
+    assert state["status"] == "breaker open"
+    with controls._read_session() as db:
+        assert len(refill._events(db, "completed")) == 6
+        assert len(refill._events(db, "low_yield")) == 5
+
+
+@pytest.mark.parametrize(
+    "successes", [(True, True, False), (True, False, True), (False, True, False)]
+)
+@pytest.mark.parametrize("new_issues", [0, 2])
+def test_failed_runs_count_toward_low_yield_breaker(world, successes, new_issues):
+    _engine, policy, clock = world
+    for success in successes:
+        start = refill.observe(policy, eligible=0, complete=True)
+        assert start["ok"]
+        complete(world, start, success=success, new_issues=new_issues)
+        clock[0] += timedelta(minutes=61)
+    assert refill.state(policy)["breaker"]["reason"] == "low_yield"
+    assert refill.observe(policy, eligible=0, complete=True)["reason"] == "breaker"
+
+
+@pytest.mark.parametrize("threshold", [1, 4, 10])
+def test_interleaved_low_yield_uses_configured_breaker_count(world, threshold):
+    _engine, policy, clock = world
+    update(
+        world,
+        backlog_refill={"enabled": True, "breaker_consecutive_low_yield": threshold},
+    )
+    for index in range(threshold):
+        start = refill.observe(policy, eligible=0, complete=True)
+        assert start["ok"]
+        complete(world, start, success=index % 3 != 2, new_issues=2)
+        state = refill.state(policy)
+        if index + 1 < threshold:
+            assert state["status"] == "armed"
+        clock[0] += timedelta(minutes=61)
+    assert state["breaker"]["reason"] == "low_yield"
+    assert len(state["breaker"]["runs"]) == threshold
+    assert refill.observe(policy, eligible=0, complete=True)["reason"] == "breaker"
+
+
+def test_productive_failure_resets_yield_but_not_failure_streak(world):
+    _engine, policy, clock = world
+    for success, count in ((True, 0), (True, 0), (False, 3), (True, 0), (False, 3)):
+        start = refill.observe(policy, eligible=0, complete=True)
+        assert start["ok"]
+        complete(world, start, success=success, new_issues=count)
+        assert refill.state(policy)["status"] == "armed"
+        clock[0] += timedelta(minutes=61)
+    start = refill.observe(policy, eligible=0, complete=True)
+    assert start["ok"]
+    complete(world, start, success=False, new_issues=3)
+    assert refill.state(policy)["breaker"]["reason"] == "failed_runs"
+
+
+def test_two_consecutive_failures_and_explicit_repost(world):
+    _engine, policy, clock = world
+    for success in (False, True, False, False):
+        start = refill.observe(policy, eligible=0, complete=True)
+        assert start["ok"]
+        complete(world, start, success=success, new_issues=3 if success else 0)
+        clock[0] += timedelta(minutes=15)
+    assert refill.state(policy)["breaker"]["reason"] == "failed_runs"
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert refill.state(policy)["status"] == "armed"
+    assert refill.state(policy)["starts_last_24_hours"] == 4
+
+
+def test_daily_cap_counts_ambiguous_intents_and_rolling_boundary(world):
+    _engine, policy, clock = world
+    update(world, backlog_refill={**policy["backlog_refill"], "max_per_24_hours": 1})
+    start = refill.observe(policy, eligible=0, complete=True)
+    assert refill.state(policy)["starts_last_24_hours"] == 1
+    clock[0] += timedelta(hours=1)
+    assert refill.observe(policy, eligible=0, complete=True)["reason"] == "in_flight"
+    complete(world, start, new_issues=3)
+    assert refill.observe(policy, eligible=0, complete=True)["reason"] == "daily_cap"
+    assert refill.state(policy)["breaker"] is None
+    assert refill.state(policy)["status"] == "rate limited"
+    clock[0] = NOW + timedelta(hours=24)
+    assert refill.observe(policy, eligible=0, complete=True)["ok"]
+
+
+@pytest.fixture
+def github(world, monkeypatch):
+    issues = []
+    calls = []
+
+    def discover(_repo, marker, _block):
+        return [item["number"] for item in issues if marker in item["body"]], False
+
+    def create(_repo, payload):
+        calls.append(payload)
+        result = {**payload, "number": len(issues) + 100}
+        issues.append(result)
+        return result
+
+    monkeypatch.setattr(writer.producer, "_discover", discover)
+    monkeypatch.setattr(writer.producer, "github_write", create)
+    return issues, calls
+
+
+def test_skip_and_collection_reads_are_bounded_and_scoped(world, github):
+    from factory.orchestration import backlog_refill_worker as worker
+
+    engine, policy, _clock = world
+    start = publication_start(world)
+    value = {"summary": "inventory", "findings": []}
+    writer.collection(start["run_id"], value)
+    with controls._locked_session() as (db, _control):
+        detail = refill._detail(refill._events(db, "started")[0])
+        refill.record(db, "skipped", repo=policy["repo"], reason="above_floor")
+        for number in range(10):
+            refill.record(
+                db, "skipped", repo=f"other/repo-{number}", reason="in_flight"
+            )
+            refill.record(
+                db,
+                "collection",
+                run_id=f"other-{number}",
+                collection={"summary": "other inventory", "findings": []},
+            )
+
+    queries = []
+
+    def bounded(_conn, _cursor, statement, parameters, _context, _many):
+        if statement.startswith("SELECT") and any(
+            refill.PREFIX + action in parameters for action in ("skipped", "collection")
+        ):
+            queries.append(statement)
+            assert "LIMIT" in statement
+            assert "detail_json LIKE" in statement
+
+    event.listen(engine, "before_cursor_execute", bounded)
+    try:
+        with controls._locked_session() as (db, _control):
+            refill._skip(db, policy["repo"], "above_floor")
+        writer.collection(start["run_id"], value)
+        assert writer.advance(detail)["success"]
+        with Session(engine) as db:
+            db.get(FactoryReceipt, start["receipt_id"]).state = "succeeded"
+            db.commit()
+        worker.tick(policy)
+        assert refill.state(policy)["in_flight"] == []
+    finally:
+        event.remove(engine, "before_cursor_execute", bounded)
+    assert len(queries) == 5
+    with controls._read_session() as db:
+        assert len(refill._events(db, "skipped")) == 11
+        assert len(refill._events(db, "collection")) == 11
+
+
+def test_multi_finding_summary_and_breaker_replay(world, github):
+    _engine, policy, _clock = world
+    start = publication_start(world)
+    with controls._read_session() as db:
+        detail = refill._detail(refill._events(db, "started")[0])
+    value = {
+        "summary": "| Project | Evidence |\n| project | source |",
+        "findings": [
+            {
+                "key": f"path:function{i}",
+                "title": f"factory: finding {i}",
+                "body": "Reproduce with path/command. Acceptance: regression test.",
+            }
+            for i in range(3)
+        ],
+    }
+    writer.collection(start["run_id"], value)
+    writer.collection(start["run_id"], value)
+    for _ in range(4):
+        outcome = writer.advance(detail)
+    assert outcome["new_issues"] == 3
+    assert writer.advance(detail) == outcome
+    issues, calls = github
+    assert len(calls) == 4
+    assert calls[-1]["labels"] == ["needs-human"]
+    assert all(
+        f"<!-- factory-refill:{start['run_id']} -->" in item["body"] for item in issues
+    )
+    opening = {
+        "repo": policy["repo"],
+        "runs": [{"run_id": start["run_id"], "summary": "summary"}],
+        "opening_id": "one",
+        "reason": "low_yield",
+    }
+    writer.breaker(opening)
+    writer.breaker(opening)
+    assert len(calls) == 5
+    assert calls[-1]["title"] == "factory: backlog refill breaker open"
+
+
+def test_distinct_new_yield_and_rejected_write(world, github, monkeypatch):
+    _engine, policy, _clock = world
+    start = publication_start(world)
+    item = writer.output(
+        policy["repo"],
+        start["run_id"],
+        "finding",
+        "same",
+        "factory: existing",
+        "body",
+        ["agent-ready"],
+    )
+    assert writer.publish(item)["status"] == "created"
+    replay = writer.output(
+        policy["repo"],
+        "two",
+        "finding",
+        "renamed-key",
+        "factory: existing",
+        "body",
+        ["agent-ready"],
+    )
+    assert writer.publish(replay)["status"] == "existing"
+    request = httpx.Request("POST", "https://api.github.com/test")
+
+    def rejected(*_args):
+        response = httpx.Response(422, request=request)
+        raise httpx.HTTPStatusError("rejected", request=request, response=response)
+
+    monkeypatch.setattr(writer.producer, "github_write", rejected)
+    other = writer.output(
+        policy["repo"],
+        start["run_id"],
+        "finding",
+        "other",
+        "factory: other",
+        "body",
+        ["agent-ready"],
+    )
+    assert writer.publish(other)["status"] == "rejected"
+    assert writer.publish(other)["status"] == "rejected"
+    assert len(github[1]) == 1
+
+
+def test_uncertain_write_survives_disable_and_reconciles(world, github, monkeypatch):
+    _engine, policy, clock = world
+    create = writer.producer.github_write
+
+    def lost(*args):
+        create(*args)
+        raise TimeoutError("response lost")
+
+    monkeypatch.setattr(writer.producer, "github_write", lost)
+    start = publication_start(world)
+    item = writer.output(
+        policy["repo"],
+        start["run_id"],
+        "finding",
+        "key",
+        "factory: test",
+        "body",
+        ["agent-ready"],
+    )
+    assert writer.publish(item) is None
+    update(world, backlog_refill={**policy["backlog_refill"], "enabled": False})
+    clock[0] += timedelta(minutes=2)
+    assert writer.publish(item)["status"] == "created"
+    assert len(github[1]) == 1
+    assert refill.state(policy)["status"] == "off"
+
+
+def test_crash_before_post_and_bounded_unknown_reconciliation(
+    world, github, monkeypatch
+):
+    _engine, policy, clock = world
+
+    def crash(*_args):
+        raise TimeoutError("no proof of dispatch")
+
+    monkeypatch.setattr(writer.producer, "github_write", crash)
+    start = publication_start(world)
+    item = writer.output(
+        policy["repo"],
+        start["run_id"],
+        "finding",
+        "key",
+        "factory: test",
+        "body",
+        ["agent-ready"],
+    )
+    writer.publish(item)
+    for index in range(20):
+        clock[0] += timedelta(hours=1)
+        assert writer.publish(item)["status"] == (
+            "uncertain" if index < 5 else "quarantined"
+        )
+    assert not github[1]
+    with controls._read_session() as db:
+        assert writer._last(db, item["output_id"])["reads"] == 6
+
+
+def test_backend_to_board_projection(world, monkeypatch):
+    from factory import private_view
+    from factory.orchestration import factory_landing
+
+    _engine, policy, _clock = world
+    monkeypatch.setattr(controls, "review_routing_view", lambda *_a, **_k: {})
+    monkeypatch.setattr(private_view, "_session_summaries", lambda *_a: {})
+    monkeypatch.setattr(factory_landing, "rollout_waits", lambda *_a, **_k: [])
+    # Real status -> private board projection, with no task/graph hydration.
+    with Session(world[0]) as db:
+        board = private_view.build_factory_view(session=db)
+    assert board["backlog_refill"]["status"] == "armed"
+    refill.observe(policy, eligible=0, complete=True)
+    with Session(world[0]) as db:
+        board = private_view.build_factory_view(session=db)
+    assert board["backlog_refill"]["status"] == "in flight"
+
+
+def test_real_intake_count_precedes_capacity_and_excludes_other_candidates(
+    world, monkeypatch
+):
+    from factory.orchestration import work_items
+
+    engine, policy, _clock = world
+    monkeypatch.setattr(work_items, "get_engine", lambda: engine)
+    repo = policy["repo"]
+
+    def issue(number, labels=("agent-ready",), **extra):
+        return {
+            "number": number,
+            "title": f"factory: issue {number}",
+            "body": "body",
+            "html_url": f"https://github.com/{repo}/issues/{number}",
+            "state": "open",
+            "assignees": [],
+            "labels": list(labels),
+            "created_at": NOW.isoformat(),
+            **extra,
+        }
+
+    issues = [issue(number) for number in range(10, 34)]
+    issues += [
+        issue(100, labels=("agent-ready", "human")),
+        issue(101, assignees=[{"login": "owner"}]),
+        issue(102, labels=("agent-ready", "needs-human")),
+        issue(103, labels=("needs-thought",)),
+        issue(104),
+        issue(105),
+        issue(106, pull_request={}),
+    ]
+    # Prior delivery is excluded, and a linked PR owns #104.
+    with Session(engine) as db:
+        db.add(
+            FactoryReceipt(
+                repo=repo,
+                issue_number=105,
+                actor="test",
+                state="succeeded",
+                title="delivered",
+                body="",
+                url=f"https://github.com/{repo}/issues/105",
+            )
+        )
+        # Fill delivery capacity while advisory remains open. These rows must not
+        # make the 24 surviving delivery issues disappear from the refill count.
+        db.add_all(
+            [
+                FactoryReceipt(
+                    repo=repo,
+                    issue_number=number,
+                    actor="test",
+                    state="admitted",
+                    title="busy",
+                    body="",
+                    url=f"https://github.com/{repo}/issues/{number}",
+                )
+                for number in (200, 201)
+            ]
+        )
+        db.commit()
+    calls = []
+
+    def pages(slug, endpoint, **_kwargs):
+        calls.append((slug, endpoint))
+        return (
+            issues
+            if endpoint == "issues"
+            else [{"number": 500, "title": "owns #104", "body": ""}]
+        ), False
+
+    observed = []
+    monkeypatch.setattr(intake, "_pages", pages)
+    monkeypatch.setattr(
+        refill, "observe", lambda _policy, **kwargs: observed.append(kwargs)
+    )
+    intake.intake_tick(policy, generation=policy["generation"])
+    assert calls == [(repo, "issues"), (repo, "pulls")]
+    assert observed[0]["eligible"] == 24
+    assert observed[0]["complete"] is True
+
+
+def test_refinement_batch_cannot_start_refill(world, monkeypatch):
+    from factory.orchestration import work_items
+
+    engine, policy, _clock = world
+    update(
+        world,
+        issue_numbers=[],
+        intake={"enabled": True, "refine_enabled": True, "refinement_batch": [300]},
+    )
+    monkeypatch.setattr(work_items, "get_engine", lambda: engine)
+    issues = [
+        {
+            "number": number,
+            "title": f"factory: issue {number}",
+            "body": "body",
+            "html_url": f"https://github.com/{policy['repo']}/issues/{number}",
+            "state": "open",
+            "assignees": [],
+            "labels": ["agent-ready"],
+            "created_at": NOW.isoformat(),
+        }
+        for number in range(10, 40)
+    ]
+    monkeypatch.setattr(
+        intake,
+        "_pages",
+        lambda _repo, endpoint, **_kw: (issues if endpoint == "issues" else [], False),
+    )
+    assert intake.intake_tick(policy, generation=policy["generation"]) == []
+    with controls._read_session() as db:
+        assert not refill._events(db, "started")
+    assert (
+        refill.observe(policy, eligible=0, complete=True)["reason"]
+        == "refinement_batch"
+    )
+
+
+def test_refinement_batch_fences_previously_queued_refill(world):
+    from factory.orchestration.factory_intake import _eligible_clause
+
+    _engine, policy, _clock = world
+    start = refill.observe(policy, eligible=0, complete=True)
+    update(
+        world,
+        intake={"enabled": True, "refine_enabled": True, "refinement_batch": [300]},
+    )
+    assert not controls.admission_eligible(
+        policy,
+        refill.CHARTER,
+        refill.ACTOR,
+        task_class="advisory-diagnosis",
+        repo=policy["repo"],
+    )
+    with controls._read_session() as db:
+        assert not db.exec(
+            select(FactoryReceipt).where(
+                FactoryReceipt.id == start["receipt_id"], _eligible_clause(policy)
+            )
+        ).all()
+    update(world, intake={"enabled": True, "refine_enabled": True})
+    assert controls.admission_eligible(
+        policy,
+        refill.CHARTER,
+        refill.ACTOR,
+        task_class="advisory-diagnosis",
+        repo=policy["repo"],
+    )
+    with controls._read_session() as db:
+        assert (
+            db.exec(
+                select(FactoryReceipt).where(
+                    FactoryReceipt.id == start["receipt_id"], _eligible_clause(policy)
+                )
+            )
+            .one()
+            .id
+            == start["receipt_id"]
+        )
+    assert refill.observe(policy, eligible=0, complete=True)["reason"] == "in_flight"
+
+
+def test_non_due_intake_ticks_do_not_observe_refill(world, monkeypatch):
+    engine, policy, clock = world
+    monkeypatch.setattr(intake, "_pages", lambda *_a, **_kw: ([], False))
+    observed = []
+    monkeypatch.setattr(
+        refill, "observe", lambda _policy, **kwargs: observed.append(kwargs)
+    )
+    intake.intake_tick(policy, generation=policy["generation"])
+    assert len(observed) == 1 and observed[0]["complete"]
+    with Session(engine) as db:
+        swept = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "intake_swept")
+        ).one()
+        clock[0] = intake.aware(swept.created_at) + timedelta(seconds=15)
+    assert not intake._listing_due(clock[0])
+    intake.intake_tick(policy, generation=policy["generation"])
+    assert len(observed) == 1
+
+
+@pytest.mark.parametrize("failure", ["partial", "error"])
+def test_intake_unknown_listing_cannot_trigger_refill(world, monkeypatch, failure):
+    _engine, policy, _clock = world
+
+    def pages(_repo, endpoint, **_kwargs):
+        if failure == "error":
+            raise TimeoutError("listing failed")
+        return [], endpoint == "issues"
+
+    observed = []
+    monkeypatch.setattr(intake, "_pages", pages)
+    monkeypatch.setattr(
+        refill, "observe", lambda _policy, **kwargs: observed.append(kwargs)
+    )
+    intake.intake_tick(policy, generation=policy["generation"])
+    assert observed and observed[0]["complete"] is False
+
+
+def test_worker_graph_uses_one_pinned_read_only_node(world, monkeypatch):
+    from types import SimpleNamespace
+
+    from factory.orchestration import backlog_refill_worker as worker
+    from factory.orchestration import factory_conductor as conductor
+
+    engine, policy, _clock = world
+    start = refill.observe(policy, eligible=0, complete=True)
+    with Session(engine) as db:
+        db.add(
+            SwarmTask(
+                id="t-refill",
+                task_text="inventory",
+                repo=policy["repo"],
+                conductor_model="opus",
+                created_at=NOW,
+            )
+        )
+        db.flush()
+        row = db.get(FactoryReceipt, start["receipt_id"])
+        row.task_id, row.state = "t-refill", "admitted"
+        row.policy_json = dumps(policy)
+        db.commit()
+    added = []
+
+    def add(*args, **kwargs):
+        added.append((args, kwargs))
+        return SimpleNamespace(ok=True)
+
+    monkeypatch.setattr(conductor, "_add", add)
+    monkeypatch.setattr(conductor, "_record_allowance", lambda *_args: None)
+    worker.reconcile({"id": "t-refill"}, policy, [], [], 7)
+    assert len(added) == 1
+    args, kwargs = added[0]
+    assert args[2] == refill.NODE and args[5] == "astra"
+    assert kwargs["max_attempts"] == 1 and kwargs["effort"] == "high"
+    assert conductor._schema(refill.NODE)["x-factory-scout-read-only"] is True
+    worker.reconcile({"id": "t-refill"}, policy, [{"node_key": refill.NODE}], [], 8)
+    assert len(added) == 1
+    assert refill.dispatch_allowed("t-refill", "conductor_funding_1") is False
+    assert refill.dispatch_allowed("t-refill", refill.NODE, 2) is False
+    from factory.orchestration.api import factory_session_allowed
+
+    with Session(engine) as db:
+        db.add(
+            SwarmNodeRun(
+                task_id="t-refill",
+                node_key=refill.NODE,
+                attempt=1,
+                status="admitted",
+                model="astra",
+                pin_json=dumps(
+                    {
+                        "task_id": "t-refill",
+                        "node_key": refill.NODE,
+                        "attempt": 1,
+                        "model": "astra",
+                    }
+                ),
+            )
+        )
+        db.commit()
+    identity = f"factory:t-refill:{refill.NODE}:1"
+    assert factory_session_allowed(identity)
+    assert not factory_session_allowed("factory:t-refill:conductor_funding_1:1")
+    assert not factory_session_allowed(f"factory:t-refill:{refill.NODE}:2")
+    with Session(engine) as db:
+        run = db.exec(select(SwarmNodeRun)).one()
+        run.model = "opus"
+        db.commit()
+    assert not factory_session_allowed(identity)
+
+
+@pytest.mark.parametrize(
+    "expired,disable_on_expiry", [(False, False), (True, False), (True, True)]
+)
+@pytest.mark.parametrize(
+    "pause_source,unresolved",
+    [
+        (None, False),
+        ("operator", False),
+        ("refusal", False),
+        ("operator", True),
+        ("refusal", True),
+    ],
+)
+def test_conductor_dispatch_and_expired_never_dispatched_refill(
+    world, monkeypatch, expired, pause_source, unresolved, disable_on_expiry
+):
+    from types import SimpleNamespace
+
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_merged_delivery as merged
+
+    engine, policy, clock = world
+    start = refill.observe(policy, eligible=24, complete=True)
+    with Session(engine) as db:
+        db.add(
+            SwarmTask(
+                id="t-refill",
+                task_text="inventory",
+                repo=policy["repo"],
+                conductor_model="opus",
+                created_at=clock[0],
+            )
+        )
+        db.flush()
+        row = db.get(FactoryReceipt, start["receipt_id"])
+        row.task_id, row.state = "t-refill", "admitted"
+        row.policy_json = dumps(policy)
+        if unresolved:
+            db.add(
+                FactoryStart(
+                    task_id="t-refill",
+                    start_key="unknown-refill",
+                    actor=refill.ACTOR,
+                    model="astra",
+                    max_cost_usd=2,
+                    status="uncertain",
+                )
+            )
+        db.commit()
+    if pause_source == "operator":
+        assert controls.set_control("pause_task", "operator", task_id="t-refill")["ok"]
+    elif pause_source == "refusal":
+        conductor._pause_refusal({"id": "t-refill"}, "dispatch_refused: test refusal")
+    if pause_source:
+        assert controls.can_start("t-refill")["reason"] == "task_paused"
+    if expired:
+        if disable_on_expiry:
+            update(
+                world,
+                generation=policy["generation"] + 1,
+                backlog_refill={"enabled": False},
+            )
+        clock[0] += timedelta(seconds=policy["task_timeout_seconds"])
+    monkeypatch.setattr(
+        conductor, "_consume_intervention_notifications", lambda *_: None
+    )
+    monkeypatch.setattr(conductor, "_task", lambda *_: {"id": "t-refill"})
+    monkeypatch.setattr(conductor.graph, "node_runs", lambda *_: [])
+    monkeypatch.setattr(conductor.graph, "load_graph", lambda *_: [])
+    monkeypatch.setattr(conductor.graph, "current_version", lambda *_: 0)
+    monkeypatch.setattr(merged, "reconcile_merged_delivery", lambda *_: False)
+    monkeypatch.setattr(conductor, "_add", lambda *_a, **_k: SimpleNamespace(ok=True))
+    monkeypatch.setattr(conductor, "_record_allowance", lambda *_: None)
+    dispatched = []
+
+    # Keep the real dispatch signature: omitting fan_out must fail here just
+    # as it does in production, without touching the model transport.
+    def dispatch(task, nodes, runs, slots, *, fan_out, parallel, policy):
+        dispatched.append((fan_out, slots))
+
+    monkeypatch.setattr(conductor, "_dispatch_ready", dispatch)
+    conductor.reconcile_task("t-refill", policy, object())
+    if unresolved:
+        from factory.orchestration import backlog_refill_worker as worker
+
+        worker.tick(policy)
+        assert refill.state(policy)["in_flight"] == [start["run_id"]]
+        assert dispatched == []
+        with Session(engine) as db:
+            assert db.get(FactoryReceipt, start["receipt_id"]).state == "admitted"
+            db.exec(select(FactoryStart)).one().status = "failed"
+            db.commit()
+        conductor.reconcile_task("t-refill", policy, object())
+    with Session(engine) as db:
+        row = db.get(FactoryReceipt, start["receipt_id"])
+        assert row.state == ("failed" if expired else "admitted")
+    assert dispatched == ([] if expired or pause_source else [(False, 1)])
+    if expired:
+        from factory.orchestration import backlog_refill_worker as worker
+
+        worker.tick(policy)
+        assert refill.state(policy)["in_flight"] == []
+        update(world, backlog_refill={"enabled": True})
+        assert refill.observe(policy, eligible=24, complete=True)["ok"]
+
+
+def test_cancelled_run_retains_uncertain_output_fence(world, github, monkeypatch):
+    from factory.orchestration import backlog_refill_worker as worker
+
+    engine, policy, clock = world
+    start = publication_start(world)
+    with controls._read_session() as db:
+        detail = refill._detail(refill._events(db, "started")[0])
+    writer.collection(
+        start["run_id"],
+        {
+            "summary": "inventory",
+            "findings": [
+                {
+                    "key": "key",
+                    "title": "factory: test",
+                    "body": "command and acceptance",
+                }
+            ],
+        },
+    )
+
+    def lost(*_args):
+        raise TimeoutError("ambiguous POST")
+
+    monkeypatch.setattr(writer.producer, "github_write", lost)
+    assert writer.advance(detail) is None
+    with Session(engine) as db:
+        db.get(FactoryReceipt, start["receipt_id"]).state = "cancelled"
+        db.commit()
+    update(world, backlog_refill={"enabled": False})
+    clock[0] += timedelta(minutes=2)
+    worker.tick(policy)
+    with controls._read_session() as db:
+        assert not refill._events(db, "completed")
+    assert refill.state(policy)["in_flight"] == [start["run_id"]]
+
+
+@pytest.mark.parametrize("change", ["pause", "cancel", "expire", "generation"])
+def test_publication_rechecks_owner_after_discovery(world, github, monkeypatch, change):
+    engine, policy, clock = world
+    start = publication_start(world)
+    item = writer.output(
+        policy["repo"],
+        start["run_id"],
+        "finding",
+        "race",
+        "factory: discovery race",
+        "evidence",
+        ["agent-ready"],
+    )
+    discover = writer.producer._discover
+
+    def race(*args):
+        if change == "expire":
+            clock[0] += timedelta(seconds=policy["task_timeout_seconds"])
+        elif change == "generation":
+            update(world, generation=1)
+        else:
+            with Session(engine) as db:
+                row = db.get(FactoryReceipt, start["receipt_id"])
+                if change == "pause":
+                    row.task_paused = True
+                else:
+                    row.cancellation_requested = True
+                db.commit()
+        return discover(*args)
+
+    monkeypatch.setattr(writer.producer, "_discover", race)
+    assert writer.publish(item) is None
+    assert not github[1]
+    with controls._read_session() as db:
+        assert writer._last(db, item["output_id"]) is None
+
+
+def test_exhausted_publication_releases_run_and_late_reconciliation_is_read_only(
+    world, github, monkeypatch
+):
+    from factory.orchestration import backlog_refill_worker as worker
+
+    engine, policy, clock = world
+    start = publication_start(world)
+    with controls._read_session() as db:
+        detail = refill._detail(
+            refill.latest_event(db, "started", run_id=start["run_id"])
+        )
+    findings = [
+        {"key": key, "title": f"factory: {key}", "body": "evidence"}
+        for key in ("ambiguous", "healthy")
+    ]
+    writer.collection(start["run_id"], {"summary": "inventory", "findings": findings})
+    create = writer.producer.github_write
+    attempts = []
+
+    def write(repo, payload):
+        attempts.append(payload)
+        if payload["title"] == "factory: ambiguous":
+            raise TimeoutError("POST outcome unknown")
+        return create(repo, payload)
+
+    monkeypatch.setattr(writer.producer, "github_write", write)
+    block = controls.problem_issues_policy({})
+    monkeypatch.setattr(
+        controls,
+        "problem_issues_policy",
+        lambda _policy: {**block, "retry_minutes": [1] * 6},
+    )
+    assert writer.advance(detail) is None
+    for _ in range(6):
+        clock[0] += timedelta(minutes=1)
+        writer.advance(detail)
+    outcome = writer.advance(detail)
+    assert outcome["inconclusive"] and outcome["new_issues"] == 1
+    assert len(attempts) == 3  # Ambiguous finding, healthy finding, summary.
+    with Session(engine) as db:
+        db.get(FactoryReceipt, start["receipt_id"]).state = "failed"
+        db.commit()
+    refill.settle(start["run_id"], **outcome)
+    assert refill.state(policy)["in_flight"] == []
+    assert refill.state(policy)["breaker"] is None
+    clock[0] = NOW + timedelta(minutes=15)
+    next_start = publication_start(world)
+    replay = writer.output(
+        policy["repo"],
+        next_start["run_id"],
+        "finding",
+        "new-model-key",
+        "factory: ambiguous",
+        "evidence",
+        ["agent-ready"],
+    )
+    assert writer.publish(replay)["status"] == "quarantined"
+    assert len(attempts) == 3
+    # An operator reset/disable cannot erase the original no-repost fence.
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    update(world, backlog_refill={"enabled": False})
+    github[0].append({**attempts[0], "number": 999})
+    clock[0] += timedelta(hours=24)
+    worker.tick(policy)
+    with controls._read_session() as db:
+        original = writer.output(
+            policy["repo"],
+            start["run_id"],
+            "finding",
+            "ambiguous",
+            "factory: ambiguous",
+            "evidence",
+            ["agent-ready"],
+        )
+        reconciled = writer._last(db, original["output_id"])
+        assert reconciled["status"] == "created" and reconciled["issue_number"] == 999
+    worker.tick(policy)
+    assert len(attempts) == 3
+
+
+@pytest.mark.parametrize("interruption", ["generation", "pause"])
+def test_policy_interruption_does_not_trip_failure_or_yield_breaker(
+    world, interruption
+):
+    from factory.orchestration import backlog_refill_worker as worker
+
+    engine, policy, clock = world
+    for _ in range(3):
+        start = refill.observe(policy, eligible=0, complete=True)
+        assert start["ok"]
+        if interruption == "pause":
+            admit(world, start)
+        with Session(engine) as db:
+            row = db.get(FactoryReceipt, start["receipt_id"])
+            row.state = "cancelled" if interruption == "generation" else "failed"
+            row.task_paused = interruption == "pause"
+            db.commit()
+        if interruption == "generation":
+            update(world, generation=policy["generation"] + 1)
+        worker.tick(policy)
+        clock[0] += timedelta(minutes=15)
+    assert refill.state(policy)["breaker"] is None
+    assert refill.state(policy)["status"] == "armed"
+    with controls._read_session() as db:
+        assert all(
+            refill._detail(row)["inconclusive"]
+            for row in refill._events(db, "completed")
+        )
+
+
+def test_transport_fence_does_not_load_audit_history(world, monkeypatch):
+    start = publication_start(world)
+    monkeypatch.setattr(
+        refill, "_events", lambda *_: pytest.fail("unbounded audit read")
+    )
+    assert refill.dispatch_allowed("t-" + start["run_id"])
+
+
+def test_receipt_identity_cannot_match_numeric_prefix(world):
+    from factory.orchestration import backlog_refill_worker as worker
+
+    engine, policy, _clock = world
+    with Session(engine) as db:
+        # Allocate the next receipt as 12 without relying on SQLite row order.
+        db.add(
+            FactoryReceipt(
+                id=11,
+                repo=policy["repo"],
+                issue_number=11,
+                title="other",
+                body="",
+                url="",
+                actor="test",
+                state="succeeded",
+            )
+        )
+        db.commit()
+    start = publication_start(world)
+    assert start["receipt_id"] == 12
+    with controls._locked_session() as (db, _control):
+        detail = refill._detail(
+            refill.latest_event(db, "started", run_id=start["run_id"])
+        )
+        refill.record(
+            db,
+            "started",
+            **{
+                **detail,
+                "receipt_id": 123,
+                "run_id": "other-run",
+                "policy_digest": "other-policy",
+            },
+        )
+    task_id = "t-" + start["run_id"]
+    assert worker.receipt(task_id)["start"]["run_id"] == start["run_id"]
+    assert refill.dispatch_allowed(task_id)
