@@ -60,13 +60,13 @@ passing through the autoformat author guard.
 
 Application images use apko (`bazel/tools/oci/apko_image.bzl`) over Wolfi packages, non-root uid 65532, from an `apko.yaml` plus a committed `apko.lock.json`. Two other shapes remain: `go_image` with a distroless base and `py3_image` with an Ubuntu or custom base. Every macro emits `{name}.push` (collected into the generated `//bazel/images:push_all` multirun), `{name}.info` (an `OciImageInfo` that `helm_images_values` deep-merges into the chart's `values.yaml` at package time, which is why no values file ever hand-pins a `@sha256:` digest), and for apko a `{name}_lock_test` that fails when the lock's config checksum no longer matches the YAML.
 
-**Image architectures.** `apko_image` defaults `arm64 = True`; callers pass `False` except `projects/embervm/noded/image`, which builds an amd64 plus arm64 index through `multiarch_tars`. `go_image` and `py3_image` build one image, selecting Linux for the caller's CPU through their existing platform transitions. Linux CI selects amd64. The default distroless base contains only amd64; another CPU requires a matching custom base. The Ubuntu `python_base` retains amd64 and arm64 for the separate, build-only `//projects/monolith:domain_images` dual-arch targets. Re-adding an apko arch is `arm64 = True` plus `multiarch_tars`; `arm64 = False` needs concrete per-arch `tars`. Combining `arm64 = False` with `multiarch_tars` fails to push a layer blob at push time, so PR CI stays green and main's deploy is what breaks.
+**Image architectures.** `apko_image` defaults `arm64 = True`; callers pass `False` except `projects/embervm/noded/image`, which builds an amd64 plus arm64 index through `multiarch_tars`. `go_image` and `py3_image` build one image, selecting Linux for the caller's CPU through their existing platform transitions. Linux CI selects amd64. The default distroless base contains only amd64; another CPU requires a matching custom base. The Ubuntu `python_base` retains its existing amd64 and arm64 registrations. Re-adding an apko arch is `arm64 = True` plus `multiarch_tars`; `arm64 = False` needs concrete per-arch `tars`. Combining `arm64 = False` with `multiarch_tars` fails to push a layer blob at push time, so PR CI stays green and main's deploy is what breaks.
 
 **Why.** No caller used the Go or Python multi-platform branches (#7081).
 Removing them preserves the single-platform image, load, push and digest
 targets. Python's unused `multiarch_tars` argument is removed; concrete layers
-belong in `tars`. The Ubuntu arm64 base remains because the domain-image macro
-consumes it independently of those removed branches.
+belong in `tars`. The build-only per-domain image scaffold was retired under
+#7026; shared Python base platform registrations are unchanged.
 
 Digests are reproducible: `.bazelrc` pins `SOURCE_DATE_EPOCH` to a constant so apko stops stamping a wall-clock `created` time, and `--stamp` is applied only by the push job, never by `--config=ci`, because a stamped graph turns every image's digest rule into a cache miss. On main, `bazel/images/push/push-changed.sh` builds everything, reads each image's content digest from `//bazel/images/digests:manifest`, and pushes only what the registry does not already hold; PR branches `bazel build` the images and push nothing.
 
