@@ -1,3 +1,4 @@
+  # Keep the existing platform-profile object identity for management (#7075).
   - model: authentik_providers_oauth2.scopemapping
     id: platform-profile
     identifiers:
