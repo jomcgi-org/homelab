@@ -73,6 +73,16 @@
     min-height: 2.75rem;
     align-items: center;
   }
+  .factory-sheet :global(a),
+  .factory-sheet :global(summary) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .factory-sheet :global(a) {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+  }
   .factory-sheet :global(button) {
     max-width: 100%;
     border-radius: 0;

@@ -261,17 +261,28 @@ describe("escalations page", () => {
     stubFetch(fetchMock);
     const target = renderPage({ escalations: [escalation()], error: false });
     await tick();
+    const note = target.querySelector("textarea");
+    note.value = "Preserve this exact note";
+    note.dispatchEvent(new Event("input", { bubbles: true }));
     target.querySelector(".option").click();
     await settle();
     const other = renderPage({ escalations: [escalation()], error: false });
     await tick();
+    expect(other.querySelector("textarea").value).toBe(
+      "Preserve this exact note",
+    );
+    expect(other.textContent).toContain(
+      "Previous request awaiting confirmation",
+    );
     other.querySelectorAll(".option")[1].click();
     await settle();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(other.querySelector('[role="alert"]').textContent).toContain(
       "previous response is uncertain",
     );
-    other.querySelector(".option").click();
+    [...other.querySelectorAll("button")]
+      .find((button) => button.textContent.includes("Check previous result"))
+      .click();
     await settle();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[1][1].body).toBe(
@@ -316,7 +327,7 @@ describe("escalations page", () => {
     await tick();
     const note = target.querySelector("textarea");
     note.value = "Explain the scope";
-    note.dispatchEvent(new Event("input"));
+    note.dispatchEvent(new Event("input", { bubbles: true }));
     target.querySelector(".chat-button").click();
     await settle();
     target.querySelector(".option").click();
@@ -345,6 +356,27 @@ describe("escalations page", () => {
     expect(
       fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
     ).toHaveLength(1);
+  });
+
+  test("touch selection opens another card's context and note without a write", async () => {
+    const fetchMock = vi.fn();
+    const contexts = stubFetch(fetchMock);
+    const target = renderPage({
+      escalations: [
+        escalation(),
+        escalation({ receipt_id: 4, issue_number: 6003 }),
+      ],
+      error: false,
+    });
+    await tick();
+    target.querySelector(".context-select").click();
+    await tick();
+    expect(target.querySelector("textarea").id).toBe("note-4");
+    expect(contexts).toHaveBeenCalledWith(
+      "/factory/escalations/context/4",
+      undefined,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test("renders a delivery escalation beside a refine one", () => {

@@ -40,7 +40,7 @@ def measurements(page):
       const main = document.querySelector('main.td.sheet');
       const content = main.querySelector('.content');
       const spine = main.querySelector('.spine');
-      const controls = [...main.querySelectorAll('button,input,select,textarea')]
+      const controls = [...main.querySelectorAll('button,input,select,textarea,summary,a')]
         .filter(el => el.checkVisibility()).map(el => {
           const box = el.getBoundingClientRect(), css = getComputedStyle(el);
           return {tag: el.tagName, label: el.getAttribute('aria-label') || el.textContent.trim().slice(0,70),
