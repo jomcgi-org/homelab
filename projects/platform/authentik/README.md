@@ -54,8 +54,10 @@ The browser lanes use their own policy bindings; the agent lane is bound to
 `kg-agents`.
 
 Grimoire's provider and invitation-required enrollment flow are included by
-default. `grimoireLinkEnrollment` and `platformEnrollment` gate additional
-enrollment flows; `platformManagement` adds protected profile claims.
+default. `grimoireLinkEnrollment` gates the separate campaign-link flow;
+`platformManagement` is enabled by default and adds protected profile claims.
+The optional platform enrollment flow was retired in #7075. Its former shared
+Grimoire profile mapping remains management-owned with the same object identity.
 authentik serves discovery per application at
 `/application/o/<slug>/.well-known/openid-configuration`. Ember's browser SSO
 remains intentionally unconfigured under ADR 032.
