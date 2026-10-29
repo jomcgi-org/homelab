@@ -92,7 +92,12 @@ def _preview(db, control, receipt_id, overlay, direction):
         if task.created_at.tzinfo is None
         else task.created_at
     )
-    if created + timedelta(seconds=amended["task_timeout_seconds"]) <= controls._now():
+    hold_only = overlay == {"landing_hold": True}
+    if (
+        not hold_only
+        and created + timedelta(seconds=amended["task_timeout_seconds"])
+        <= controls._now()
+    ):
         raise ValueError("amendment_task_deadline_expired")
     objective = funding.objective_for_receipt(db, row)
     spent = controls._accounting(starts)
@@ -103,7 +108,10 @@ def _preview(db, control, receipt_id, overlay, direction):
         "expected_version": control.version,
         "expected_revision": revision,
         "previous_policy": policy,
-        "policy_overlay": {
+        "hold_only": hold_only,
+        "policy_overlay": {}
+        if hold_only
+        else {
             key: amended[key] for key in FIELDS if amended.get(key) != policy.get(key)
         },
         "direction": direction,
@@ -171,46 +179,49 @@ def apply(
                 },
             )
             row.direction_json = dumps(previous_direction)
-        policy = {**proposal["previous_policy"], **proposal["policy_overlay"]}
-        # Preserve any earlier funding overlay when writing its next revision.
-        existing = funding.amendment(db, row.task_id)
-        combined = {
-            **(existing or {}).get("policy_overlay", {}),
-            "task_budget_usd": policy["task_budget_usd"],
-            **proposal["policy_overlay"],
-        }
-        created = (
-            task.created_at.replace(tzinfo=timezone.utc)
-            if task.created_at.tzinfo is None
-            else task.created_at
-        )
-        task_deadline = created + timedelta(seconds=policy["task_timeout_seconds"])
-        if proposal["pending_funding_request_id"] is not None:
+        # A restrictive hold is not funding or execution authority. In
+        # particular, never refresh an expired lease while recording it.
+        if not proposal["hold_only"]:
+            policy = {**proposal["previous_policy"], **proposal["policy_overlay"]}
+            # Preserve any earlier funding overlay when writing its next revision.
+            existing = funding.amendment(db, row.task_id)
+            combined = {
+                **(existing or {}).get("policy_overlay", {}),
+                "task_budget_usd": policy["task_budget_usd"],
+                **proposal["policy_overlay"],
+            }
+            created = (
+                task.created_at.replace(tzinfo=timezone.utc)
+                if task.created_at.tzinfo is None
+                else task.created_at
+            )
+            task_deadline = created + timedelta(seconds=policy["task_timeout_seconds"])
+            if proposal["pending_funding_request_id"] is not None:
+                controls._audit(
+                    db,
+                    actor,
+                    "funding_review_settled",
+                    task_id=row.task_id,
+                    request_id=proposal["pending_funding_request_id"],
+                    outcome="superseded_by_operator_amendment",
+                )
             controls._audit(
                 db,
                 actor,
-                "funding_review_settled",
+                "funding_granted",
                 task_id=row.task_id,
-                request_id=proposal["pending_funding_request_id"],
-                outcome="superseded_by_operator_amendment",
+                grant_kind="exact_operator_amendment",
+                source_receipt_id=row.id,
+                policy_overlay=combined,
+                reason="Operator applied the reviewed exact-receipt policy preview.",
+                next_plan=direction,
+                deadline_at=task_deadline.isoformat(),
+                review_due_at=task_deadline.isoformat(),
+                objective=proposal["objective"],
             )
-        controls._audit(
-            db,
-            actor,
-            "funding_granted",
-            task_id=row.task_id,
-            grant_kind="exact_operator_amendment",
-            source_receipt_id=row.id,
-            policy_overlay=combined,
-            reason="Operator applied the reviewed exact-receipt policy preview.",
-            next_plan=direction,
-            deadline_at=task_deadline.isoformat(),
-            review_due_at=task_deadline.isoformat(),
-            objective=proposal["objective"],
-        )
-        # Graph budgeting already consumes funding_granted. Keep the task's
-        # displayed envelope coherent without changing any existing node pin.
-        task.budget_usd = policy["task_budget_usd"]
+            # Graph budgeting already consumes funding_granted. Keep the task's
+            # displayed envelope coherent without changing any existing node pin.
+            task.budget_usd = policy["task_budget_usd"]
         control.version += 1
         control.updated_at = controls._now()
         control.actor = actor

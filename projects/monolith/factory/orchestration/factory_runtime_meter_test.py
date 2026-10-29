@@ -3769,3 +3769,45 @@ def test_scoped_landing_apply_rechecks_preview(database, scoped_delivery, change
         assert "landing_authorization" not in json.loads(row.direction_json)
         if change == "hold":
             assert controls.landing_held(row)
+
+
+def test_landing_hold_only_preserves_expired_lease_and_funding(database, monkeypatch):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_funding_limits as funding
+
+    paused(database)
+    with Session(database) as db, db.begin():
+        controls._audit(
+            db,
+            "factory",
+            "funding_granted",
+            task_id="task",
+            policy_overlay={},
+            deadline_at="2020-01-01T00:00:00+00:00",
+            review_due_at="2020-01-01T00:00:00+00:00",
+        )
+        original = funding.amendment(db, "task")
+    before = controls.task_snapshot("task")
+    overlay = {"landing_hold": True}
+    direction = "Preserve explicitly authorized draft-only repository delivery."
+    proposal = amendments.preview(838, overlay, direction)
+    args = dict(
+        actor="operator",
+        request_key="hold-only",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    applied = amendments.apply(838, overlay, direction, **args)
+    assert amendments.apply(838, overlay, direction, **args) == applied
+    after = controls.task_snapshot("task")
+    assert after["direction"]["landing_hold"]["request_key"] == "hold-only"
+    assert after["task_paused"]
+    for key in (
+        "policy",
+        "deadline_at",
+        "turns_used",
+        "planner_turns_used",
+        "committed_cost_usd",
+    ):
+        assert after[key] == before[key]
+    with Session(database) as db:
+        assert funding.amendment(db, "task") == original
