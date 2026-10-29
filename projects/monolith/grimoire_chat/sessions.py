@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
+from core.clock import utc_now
 from grimoire_chat import limits
 from grimoire_chat.models import ChatMessage, ChatSession
 
@@ -32,10 +33,6 @@ logger = logging.getLogger(__name__)
 # with chat_public (one public-tier salt). No default: empty salt is acceptable
 # for dev/test; production injects one.
 IP_HASH_SALT = os.environ.get("CHAT_PUBLIC_IP_HASH_SALT", "")
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _as_utc(dt: datetime | None) -> datetime | None:
@@ -112,7 +109,7 @@ def load_active_session(db: Session, session_id: str | None) -> ChatSession | No
     ).one_or_none()
     if session is None or session.status != "active":
         return None
-    if _is_expired(session, _utcnow()):
+    if _is_expired(session, utc_now()):
         session.status = "expired"
         db.add(session)
         db.commit()
@@ -122,7 +119,7 @@ def load_active_session(db: Session, session_id: str | None) -> ChatSession | No
 
 def touch(db: Session, session: ChatSession) -> None:
     """Bump last_seen_at so an actively-used session keeps its TTL fresh."""
-    session.last_seen_at = _utcnow()
+    session.last_seen_at = utc_now()
     db.add(session)
     db.commit()
 
@@ -199,7 +196,7 @@ def set_counters(
     """
     session.turn_count = turn_count
     session.total_tokens = total_tokens
-    session.last_seen_at = _utcnow()
+    session.last_seen_at = utc_now()
     db.add(session)
     db.commit()
 
@@ -217,7 +214,7 @@ def record_turn(
     """
     session.turn_count += 1
     session.total_tokens += tokens
-    session.last_seen_at = _utcnow()
+    session.last_seen_at = utc_now()
     db.add(session)
     db.commit()
 
@@ -278,7 +275,7 @@ async def compact_if_needed(
 
     new_summary = await summarize(summary, older)
     session.rolling_summary = new_summary
-    session.last_seen_at = _utcnow()
+    session.last_seen_at = utc_now()
     db.add(session)
     db.commit()
     logger.info(

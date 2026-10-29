@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session
 
+from core.clock import utc_now
 from observability.factory_goals import FactoryGoalIssue
 from observability.merged_prs import MergedPR, is_agent_authored, parse_title
 
@@ -25,10 +26,6 @@ _MUTABLE_FIELDS = (
 )
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def upsert_and_prune(
     session: Session,
     pulls: list[dict],
@@ -37,7 +34,7 @@ def upsert_and_prune(
     snapshotted_at: datetime | None = None,
 ) -> tuple[int, int]:
     """Batch-upsert fetched pulls and delete snapshots older than ``cutoff``."""
-    snapshot_time = snapshotted_at or _utc_now()
+    snapshot_time = snapshotted_at or utc_now()
     rows = []
     for pull in pulls:
         merged_at = pull["merged_at"]
@@ -91,7 +88,7 @@ def upsert_goal_issues(
     snapshotted_at: datetime | None = None,
 ) -> tuple[int, int]:
     """Replace resolved issue snapshots and prune unlinked or unresolved rows."""
-    snapshot_time = snapshotted_at or _utc_now()
+    snapshot_time = snapshotted_at or utc_now()
     rows = [
         {**issue, "snapshotted_at": snapshot_time}
         for issue in issues

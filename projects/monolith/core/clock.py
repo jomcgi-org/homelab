@@ -33,3 +33,7 @@ def iso_or_str(value: object) -> str | None:
     if isinstance(value, datetime):
         return aware_iso(value)
     return None if value is None else str(value)
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)

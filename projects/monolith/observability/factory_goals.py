@@ -17,8 +17,8 @@ public tier on plain SQL over granted tables.
 from __future__ import annotations
 
 import re
-from core.clock import as_utc, iso_z
-from datetime import datetime, timezone
+from core.clock import as_utc, iso_z, utc_now
+from datetime import datetime
 
 from sqlalchemy import Column, DateTime, Integer, JSON
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
@@ -33,10 +33,6 @@ MAX_STATEMENT_CHARS = 280
 _ISSUE_REF_RE = re.compile(r"#(\d+)")
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 class FactoryGoal(SQLModel, table=True):
     __tablename__ = "factory_goals"
     __table_args__ = {"schema": "observability", "extend_existing": True}
@@ -46,7 +42,7 @@ class FactoryGoal(SQLModel, table=True):
     issue_numbers: list[int] = Field(default_factory=list, sa_column=Column(_INT_ARRAY))
     declared_by: str
     declared_at: datetime = Field(
-        default_factory=_utc_now,
+        default_factory=utc_now,
         sa_type=DateTime(timezone=True),
     )
     active: bool = True
@@ -119,7 +115,7 @@ def score_goals(
     issues: list[dict] | None = None,
 ) -> list[dict]:
     """Score declared goals against merged PRs, newest declaration first."""
-    now_utc = as_utc(now) or _utc_now()
+    now_utc = as_utc(now) or utc_now()
     issues_by_number = {row["number"]: row for row in issues or []}
     scored = []
     for goal in goals:

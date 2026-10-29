@@ -8,11 +8,11 @@ import hashlib
 import os
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 from uuid import uuid4
 
-from core.clock import aware
+from core.clock import aware, utc_now
 from auth.api import Principal
 from core.db import get_session
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -85,10 +85,6 @@ def _body_token(body: Any) -> str:
     return body["token"]
 
 
-def _now():
-    return datetime.now(timezone.utc)
-
-
 def _digest(token: str) -> str:
     if not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token):
         raise HTTPException(404, "Invitation not found.")
@@ -139,7 +135,7 @@ def _token_row(session: Session, token: str, *, lock=False) -> CampaignJoinLink:
 def _pending(row: CampaignJoinLink):
     if row.status != "pending":
         raise HTTPException(409, "This invitation is no longer available.")
-    if aware(row.expires_at) <= _now():
+    if aware(row.expires_at) <= utc_now():
         raise HTTPException(410, "This invitation has expired. Ask for a new link.")
 
 
@@ -152,7 +148,7 @@ def _view(session: Session, row: CampaignJoinLink) -> LinkView:
         invitee_email=row.invitee_email,
         expires_at=aware(row.expires_at),
         status="expired"
-        if row.status == "pending" and aware(row.expires_at) <= _now()
+        if row.status == "pending" and aware(row.expires_at) <= utc_now()
         else row.status,
         enrollment_cleanup_pending=row.status == "revoked"
         and row.enrollment_id is not None,
@@ -204,7 +200,7 @@ def issue_link(
             CampaignJoinLink.campaign_id == campaign_id,
             CampaignJoinLink.invitee_email == email,
             CampaignJoinLink.status == "pending",
-            CampaignJoinLink.expires_at > _now(),
+            CampaignJoinLink.expires_at > utc_now(),
         )
     ).first()
     if pending:
@@ -221,7 +217,7 @@ def issue_link(
         invitee_email=email,
         issued_by_id=owner.id,
         token_digest=_digest(token),
-        expires_at=_now() + TTL,
+        expires_at=utc_now() + TTL,
         enrollment_allowed=recipient is None,
         enrollment_username=f"grimoire-{hashlib.sha256(email.encode()).hexdigest()}",
     )

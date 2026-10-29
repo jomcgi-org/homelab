@@ -41,13 +41,13 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
 from sqlalchemy import text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session
 
+from core.clock import utc_now
 from grimoire_chat.models import ChatResponseCache
 
 logger = logging.getLogger(__name__)
@@ -100,10 +100,6 @@ class CacheKey:
 _watermark_lock = threading.Lock()
 _watermark_value: str | None = None
 _watermark_deadline: float = 0.0
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def normalize_message(message: str) -> str:
@@ -233,7 +229,7 @@ def store(db: Session, key: CacheKey, response_text: str, touched: list[dict]) -
         notes_watermark=key.notes_watermark,
         response_text=response_text,
         touched=list(touched),
-        created_at=_utcnow(),
+        created_at=utc_now(),
         hit_count=0,
     )
     stmt = stmt.on_conflict_do_update(
