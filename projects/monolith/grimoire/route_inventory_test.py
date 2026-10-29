@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 
-from grimoire import join_links, register_public, search
+from grimoire import join_links, register, register_public, search
 from grimoire.models import CampaignJoinLink
 from grimoire.testing.leak_harness import (
     PNG_BYTES,
@@ -394,8 +394,9 @@ def test_route_inventory(harness):
     assert_inventory(harness.app())
 
 
-def test_retired_private_routes_absent_and_supported_neighbors_remain(harness):
-    app = harness.app()  # Uses grimoire.register, the production private mount.
+def test_retired_private_routes_absent_and_supported_neighbors_remain():
+    app = FastAPI()
+    register(app)
     registered = {
         (method, context.path)
         for context in iter_route_contexts(app.routes)

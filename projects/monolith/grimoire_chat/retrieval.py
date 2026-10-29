@@ -10,7 +10,7 @@ from a different model returns garbage. The Grimoire corpus is embedded with
 ``voyage-4-nano`` (the ``EmbeddingClient`` default, see grimoire.ingest/extract,
 which store ``embed_client.model`` on every ``grimoire.embedding`` row). We embed
 the live query with the SAME client factory the private Grimoire search uses,
-``knowledge.api.get_embedding_client`` (grimoire.search.search_campaign's embed
+``knowledge.api.get_embedding_client`` (grimoire.search.search_knowledge's embed
 path), so the query vector is produced by the same model. As belt-and-braces we
 ALSO pass that model to ``grimoire.search.knn_embeddings``, which restricts the
 cosine search to rows stored under it, so a future second embedding model in the

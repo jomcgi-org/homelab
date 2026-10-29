@@ -10,6 +10,7 @@ from auth.api import (
     Principal,
     PrincipalKind,
     auth_error_handler,
+    get_principal,
 )
 from auth.errors import AuthError
 from auth.verifier import TokenResolver
@@ -84,6 +85,7 @@ def client_fixture(session, monkeypatch):
     # Only cryptographic verification is replaced. Email projection, operator
     # role, campaign, object, and character authorization execute unchanged.
     app.dependency_overrides[get_authenticated_identity] = trusted_test_identity
+    app.dependency_overrides[get_principal] = trusted_test_identity
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -569,6 +571,12 @@ def test_campaign_creation_never_mints_global_corpus_authority(session, client):
     )
     session.add(Book(id="global-book", display_name="Original"))
     session.commit()
+
+    allowed_operator = client.post(
+        "/api/grimoire/alias-candidates/scan",
+        headers=_auth(OPERATOR_EMAIL),
+    )
+    assert allowed_operator.status_code == 200
 
     denied_player = client.post(
         "/api/grimoire/alias-candidates/scan",

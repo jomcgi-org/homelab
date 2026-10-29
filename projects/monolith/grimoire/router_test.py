@@ -72,7 +72,7 @@ def _create_character(client, campaign_id, character_name="Elowen"):
 
 def _seed_entity(session, entity_id, name="Strahd", entity_type="npc"):
     """Insert an Entity row directly (there is no create-entity route: entities
-    come from the extraction pipeline). Grants FK entity_id, so create_grant now
+    come from the extraction pipeline). Grants FK entity_id, so bulk grant creation
     requires the target to exist."""
     session.add(Entity(id=entity_id, entity_type=entity_type, name=name))
     session.commit()

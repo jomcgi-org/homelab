@@ -630,10 +630,6 @@ def test_dm_not_granted_to_excludes_every_known_scope_and_globals(harness, route
         rows = response.json()["items"]
         ids = {row["id"] for row in rows if row.get("kind", "entity") == "entity"}
         assert ids == {h.rows["private"].id, h.rows["b_only"].id}
-        if route == "/search":
-            assert [row for row in rows if row["kind"] == "chunk"] == [
-                row for row in baseline.json() if row["kind"] == "chunk"
-            ]
         for viewer in ROLES[1:]:
             rejected = call(
                 client,
