@@ -3089,8 +3089,10 @@ Kargo history and guarded promotion tool remain the deployment authority.
 ## Factory evolution follows delivery authority
 
 The [evolution contract](../../docs/agents/evolution.md) gives agents a standing
-mandate to improve delivery against Joe's goals. Factory prompts own the action
-sequence. Existing goals, issues, receipts and audit events retain state.
+mandate to prioritize continuous self-improvement and useful delivery velocity
+against Joe's goals. Factory prompts own the action sequence. The factory may
+add, adjust or remove its own budgets and workflow policies through their owning
+interfaces. Existing goals, issues, receipts and audit events retain state.
 
 **Why.** Prompt and tooling changes need a baseline, a success measure and a
 bounded evaluation so the factory can retain useful changes and retire failed

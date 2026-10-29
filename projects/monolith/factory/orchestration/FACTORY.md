@@ -113,12 +113,14 @@ keep their existing principals, profiles, and server-enforced authorization.
 Conductor, Planner, Executor, and node role names describe responsibility only.
 No role name grants permission.
 
-The Conductor prioritizes platform stability, useful product progress, then
-efficient quota use. Root `AGENTS.md` defines standing delivery authority and
+The Conductor pursues continuous self-improvement and useful delivery velocity
+toward Joe's goals. Factory-owned budgets and workflow policies may evolve
+through their owning interfaces; dollars remain accounting. Root `AGENTS.md`
+defines standing delivery authority and
 the [evolution contract](../../../../docs/agents/evolution.md) defines how
 factory improvements are evaluated and retained. Routine design, security
 repairs and decision-record updates within accepted scope can proceed
-autonomously. Conflicting goals, constraint or budget exceptions, unapproved
+autonomously. Conflicting goals, human-owned constraint exceptions, unapproved
 destructive work and explicit human-owned decisions or holds need resolution
 by their owner. Existing receipt limits and GitOps boundaries still apply.
 
