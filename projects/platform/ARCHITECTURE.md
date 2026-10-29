@@ -126,7 +126,7 @@ The root carries an `ignoreDifferences` entry per promoted Application plus `Res
 
 **Per-PR preview environments do not exist.** ADR platform/005 (label-gated ApplicationSet previews with copy-on-write CNPG clones) is Draft and unbuilt: no `ApplicationSet` exists on either cluster, and the hub has no second lane at all. Its tracking issues #3882 to #3887 were closed not planned.
 
-(see: `projects/gke-cluster/root/root-application.yaml`, `projects/gke-cluster/hub-root-application.yaml`, `projects/gke-apps/`, `projects/platform/kargo/values.yaml`, `projects/platform/kargo/README.md`, `bazel/helm/README.md`, `AGENTS.md` "Git and PRs", ADR platform/009, ADR platform/011, ADR platform/014)
+(see: `projects/gke-cluster/root/root-application.yaml`, `projects/gke-cluster/hub-root-application.yaml`, `projects/gke-apps/`, `projects/platform/kargo/values.yaml`, `projects/platform/kargo/README.md`, `bazel/helm/README.md`, `docs/agents/reference.md` "Delivery mechanics", ADR platform/009, ADR platform/011, ADR platform/014)
 
 **Why.** Branch-side chart bumps caused duplicate versions, merge conflicts, and
 merged changes that never deployed when a bump was lost (ADR platform/009, ADR
@@ -171,7 +171,7 @@ remain on #7002; configuration and failure semantics are in
 
 **Longhorn**, the home cluster's block storage, was retired with the home configuration in #6914; the hub's PVCs use GKE's `standard-rwo` storage class.
 
-**atlas-operator** applies each service's database migrations from its ConfigMap on the hub. The ConfigMap carries the entire migration history, and ArgoCD applies it as a single object with a 256 KiB last-applied-configuration annotation ceiling (see: root `AGENTS.md`, Gotchas, "Keep bulk data out of chart/migrations/*.sql").
+**atlas-operator** applies each service's database migrations from its ConfigMap on the hub. The ConfigMap carries the entire migration history, and ArgoCD applies it as a single object with a 256 KiB last-applied-configuration annotation ceiling (see: `docs/agents/reference.md`, "Gotchas", "Keep bulk data out of chart/migrations/*.sql").
 
 (see: `projects/platform/cloudnative-pg/`, `projects/monolith/deploy/values-gke.yaml`, `projects/platform/authentik/values-gke.yaml`, `projects/embervm/deploy/values-gke.yaml`, `projects/platform/atlas-operator/`)
 

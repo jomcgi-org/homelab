@@ -1,6 +1,6 @@
 # STPA Control Analysis: monolith
 
-_logic @ e7905ea1c · security @ 5f9363262_
+_logic @ 15550c9 · security @ 5f9363262_
 
 _Auto-generated STPA safety model: unsafe states this system can reach and control actions that get it there. Single or multiple lenses: logic (mission failure), security (deliberate attack), governance (data safety)._
 
@@ -30,6 +30,7 @@ flowchart TD
   subgraph control_plane["control_plane"]
     agent-runner["Agent session runner (claim-lease over all replicas)"]
     bot["Discord bot (leader singleton)"]
+    factory-refill["Queue-driven backlog refill controller (default-off)"]
     health-alerts["Leader-owned health transition notifier"]
     kg-drainer["DBOS-scheduled routine drainer (qwen-drain, kg-drain)"]
     kg-feed["Leader-owned Ember session to knowledge raw exporter"]
@@ -40,6 +41,7 @@ flowchart TD
   subgraph enforcement["enforcement"]
     acl["Feature ACL (grant cache)"]
     principal-mw["Principal middleware (bearer auth, cached JWKS)"]
+    refill-producer["Trusted refill artifact and issue producer"]
     shotter-validate["Shotter URL/host allowlist (2nd layer)"]
   end
   subgraph publish["publish"]
@@ -53,6 +55,7 @@ flowchart TD
     shotter-tool["Shotter screenshot MCP tool"]
   end
   subgraph store["store"]
+    github-issues["GitHub repository issues"]
     postgres["Postgres (per-domain schemas)"]
   end
   bot -- "acl.check" --> acl
@@ -60,6 +63,9 @@ flowchart TD
   bot -- "agent.submit" --> agent-runner
   console-caller -- "console.submit" --> agent-runner
   docs-manifest-gen -- "docs.publish" --> public-frontend
+  factory-refill -- "factory-refill.dispatch" --> agent-runner
+  factory-refill -- "factory-refill.reserve" --> postgres
+  factory-refill -- "factory-refill.settle" --> postgres
   health-alerts -- "health-alerts.notify" --> outbox
   kg-drainer -- "kg-drainer.dispatch" --> agent-runner
   kg-feed -- "kg-feed.export" --> pg-primary
@@ -72,22 +78,29 @@ flowchart TD
   outbox -- "outbox.post" --> bot
   public-api -- "public.health" --> postgres
   console-caller -- "raws.create" --> pg-primary
+  refill-producer -- "refill-producer.collect" --> postgres
+  refill-producer -- "refill-producer.publish" --> github-issues
   mcp-caller -- "sandbox.run" --> sandbox-tool
   scheduler-api -- "scheduler.trigger" --> postgres
   mcp-caller -- "shotter.capture" --> shotter-tool
   shotter-tool -- "shotter.dispatch" --> embervm-shotter
   shotter-tool -- "shotter.validate" --> shotter-validate
   leader-elector -- "singletons.start" --> bot
+  agent-runner -. "Structured report-only inventory artifact" .-> refill-producer
   backup-health -. "Healthy, known failure or unknown backup advisory result" .-> health-alerts
   embervm-sandbox -. "stdout/stderr/exit_code/files for the run (Idempotency-Key from language+code only)" .-> sandbox-tool
   embervm-shotter -. "captured PNG + render metadata (random per-call Idempotency-Key)" .-> shotter-tool
+  github-issues -. "Complete fresh eligible issue count from the existing intake sweep" .-> factory-refill
+  github-issues -. "Issue number and exact output marker discovery" .-> refill-producer
   postgres -. "feature grant rows (30s cached)" .-> acl
   postgres -. "claimed_by_replica + claimed_at lease row" .-> agent-runner
+  postgres -. "Live policy, receipt ownership, starts, settlements and breaker state" .-> factory-refill
   postgres -. "Durable last-announced health state and reminder timestamp" .-> health-alerts
   postgres -. "lease heartbeat freshness" .-> leader-elector
   postgres -. "disputed flag + verification_state on search/get_note results" .-> mcp-caller
   postgres -. "observability topology/stats snapshots" .-> public-api
   public-frontend -. "SSR/API proxy" .-> public-api
+  refill-producer -. "Confirmed new findings and inconclusive publication state" .-> factory-refill
   shotter-tool -. "stored URL + stored flag (_meta) for the captured PNG" .-> mcp-caller
 ```
 
@@ -146,6 +159,9 @@ flowchart TD
 | `chatpublic.write` | physical | Write a bounded chat_public row to the primary as public_writer | `public-binary` → `pg-primary` | built | projects/monolith-public/chart/values.yaml:82 |
 | `console.submit` | logical | Start or continue an agent session from the private console | `console-caller` → `agent-runner` | built | projects/monolith/factory/execution/router.py:544 |
 | `docs.publish` | logical | Copy an allowlisted repo doc's full body into the public docs/posts manifest | `docs-manifest-gen` → `public-frontend` | built | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
+| `factory-refill.dispatch` | logical | Dispatch the pinned read-only inventory node under receipt authority | `factory-refill` → `agent-runner` | built | projects/monolith/factory/orchestration/backlog_refill.py:414 |
+| `factory-refill.reserve` | logical | Reserve one inventory receipt from fresh eligible backlog evidence | `factory-refill` → `postgres` | built | projects/monolith/factory/orchestration/backlog_refill.py:180 |
+| `factory-refill.settle` | logical | Settle yield once and update conclusive-run breaker streaks | `factory-refill` → `postgres` | built | projects/monolith/factory/orchestration/backlog_refill.py:298 |
 | `frontend.proxy` | physical | Proxy SSR/API calls from the frontend to the public backend, in-cluster only | `frontend-ssr` → `public-binary` | built | projects/monolith-public/chart/templates/httproute-public.yaml:33 |
 | `grant.public-reader` | physical | Grant public_reader SELECT on a schema/view | `migrations` → `pg-replica` | built | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
 | `health-alerts.notify` | logical | Enqueue a health transition or six-hour reminder | `health-alerts` → `outbox` | built | projects/monolith/factory/health_alerts.py:137 |
@@ -161,6 +177,8 @@ flowchart TD
 | `outbox.post` | logical | Drain and post a queued Discord message/edit/reaction | `outbox` → `bot` | built | projects/monolith/chat/outbox.py:146 |
 | `public.health` | logical | Probe the public database as public_reader (SELECT 1) | `public-api` → `postgres` | built | projects/monolith/framework/core.py:322 |
 | `raws.create` | logical | Generic raw-input capture (POST /api/knowledge/raws) | `console-caller` → `pg-primary` | built | projects/monolith/knowledge/router.py:283 |
+| `refill-producer.collect` | logical | Validate and store a bounded inventory artifact | `refill-producer` → `postgres` | built | projects/monolith/factory/orchestration/backlog_refill_producer.py:260 |
+| `refill-producer.publish` | logical | Commit an output intent and post one finding, summary or breaker issue | `refill-producer` → `github-issues` | built | projects/monolith/factory/orchestration/backlog_refill_producer.py:150 |
 | `route.public` | physical | Route the public hostname to the frontend SSR (no direct backend route) | `cf-ingress` → `frontend-ssr` | built | projects/monolith-public/chart/templates/httproute-public.yaml:13 |
 | `sandbox.run` | logical | Run short code in a per-language zero-egress guest | `mcp-caller` → `sandbox-tool` | built | projects/monolith/sandbox/mcp.py:14 |
 | `scheduler.trigger` | logical | Mark a job for immediate run | `scheduler-api` → `postgres` | built | projects/monolith/scheduler/service.py:35 |
@@ -178,9 +196,9 @@ flowchart TD
 <details>
 <summary>Maturity detail</summary>
 
-- **Built:** framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/ingest_queue.py ingest_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (agent_sessions/kg_feed.py), a daily-capped DBOS drainer (swarm/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py). The shared CNPG backup checker publishes bounded observations through one precreated ConfigMap, the private monolith evaluates their freshness and 36-hour backup age as advisory health, and its leader queues transitions through the existing durable Discord outbox.
+- **Built:** framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/ingest_queue.py ingest_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (agent_sessions/kg_feed.py), a daily-capped DBOS drainer (swarm/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py). The shared CNPG backup checker publishes bounded observations through one precreated ConfigMap, the private monolith evaluates their freshness and 36-hour backup age as advisory health, and its leader queues transitions through the existing durable Discord outbox. The default-off backlog refill controller reserves advisory inventory work from fresh intake counts, validates the artifact, publishes through durable per-output intents and records conclusive yield separately from interrupted or uncertain runs.
 - **Designed-only:** Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet.
-- **Note:** Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update.
+- **Note:** Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update. Focused #7376 refill analysis against 15550c9 with the accompanying repair diff; this feature remains omitted from shipped policy and its live drills remain open on #7376.
 </details>
 
 ### Losses
@@ -259,15 +277,20 @@ flowchart TD
 | `triggered-by-header.unauthorized-source` | physical | `cf-ingress` → `agent-runner`: X-Auth-Email identity header | unauthorized-source | The header is forwarded by several allowlisted in-cluster senders behind a default-deny ingress NetworkPolicy, but the policy narrows WHO can reach the pod, not whether the value each of those senders sends is itself verified; the only current consumer records it as attribution with no authorization decision resting on it, so the gap is dormant rather than exploitable today, but nothing in the code enforces that boundary if a future authorization check starts keying on the header directly instead of verifying the underlying JWT | low | header-authz-drift | projects/monolith/factory/execution/router.py:546 |
 
 <details>
-<summary><b>Not UCAs</b>: 20 examined and rejected</summary>
+<summary><b>Not UCAs</b>: 27 examined and rejected</summary>
 
 - **Luna claiming verification_state=verified with no evidence array**: apply_extraction force-downgrades to unverified server-side whenever assertion.evidence is empty, regardless of what the model claimed (projects/monolith/knowledge/extraction.py:364)
+- **a lost GitHub POST response causing either a duplicate POST or a permanently fenced refill run**: An intent commits before POST and is never resent. Six read-only attempts quarantine only the output; the run can settle inconclusive while one due original output per maintenance tick continues daily marker reconciliation, including while disabled (projects/monolith/factory/orchestration/backlog_refill_producer.py:150, projects/monolith/factory/orchestration/backlog_refill_producer.py:112, projects/monolith/factory/orchestration/backlog_refill_producer.py:321).
+- **a model renaming a finding key to count the same title as fresh yield**: The producer derives cross-run finding identity from the normalized title and counts only confirmed newly created issues. This conservatively matches titles; semantic duplicate detection is outside this check (projects/monolith/factory/orchestration/backlog_refill_producer.py:301, projects/monolith/factory/orchestration/backlog_refill_producer.py:321).
 - **a new cluster with no successful base backup being reported healthy because its creation age is small**: A false has_successful_backup with a null successful-backup timestamp always produces a known failure, including age zero; successful backups become failures strictly after 129600 seconds, recomputed between checker runs (projects/monolith/factory/ops_health.py:703).
+- **a refill worker broadening its task into a second delivery workflow**: The worker receives one read-only inventory node and a structured artifact contract. Transport checks bind the receipt, generation, policy digest, node, attempt and model; only the trusted producer can publish the artifact (projects/monolith/factory/orchestration/backlog_refill_worker.py:25, projects/monolith/factory/orchestration/backlog_refill.py:414, projects/monolith/factory/orchestration/backlog_refill_producer.py:260).
 - **a rendered public doc linking out to a non-public repository document**: buildPathIndex only maps allowlisted manifest paths to slugs; a link to anything else is stripped to plain text rather than left live (projects/monolith/frontend/src/lib/server/docs.js:9)
 - **a repeat POST of the same shotter.capture request colliding across two unrelated captures**: Fixed: the Idempotency-Key is now a random per-call nonce, so it only buys transport-retry safety within one call and cannot collapse two distinct captures of the same URL onto one cached result (projects/monolith/shotter/client.py:82)
 - **a repo doc outside the seven PUBLIC_PROJECTS directories reaching the docs manifest**: The generator indexes only exact path matches built from a fixed PUBLIC_PROJECTS x DOC_KINDS product, not a directory walk, so nothing else in the repo, including ADRs and nested READMEs, is reachable through this generator regardless of what git ls-files returns (projects/monolith/knowledge/tools/gen_docs_manifest.py:49)
+- **a rolling daily refill limit becoming a permanent human reset gate**: The limit counts all starts in the rolling 24-hour window, including unresolved starts, and automatically permits another reservation when the window has room; it does not open a breaker (projects/monolith/factory/orchestration/backlog_refill.py:180).
 - **a single missed leadership heartbeat**: Bounded by 2s renew inside the 5s TTL, and any error resolves to follower fail-safe (projects/monolith/core/leadership.py:29)
 - **an absent, malformed, future-dated or failed-export observation falsely clearing a backup alert**: evaluate_cnpg_backups validates target identity and timestamps, rejects observations over 7200 seconds old, and requires successful export for every healthy target; decide skips unknown before changing the durable state (projects/monolith/factory/ops_health.py:664, projects/monolith/factory/health_alerts.py:110).
+- **an owner pause, cancellation or deadline change during discovery authorizing a new issue POST**: The producer rechecks the owning admitted receipt, pause/cancellation state, generation, policy and deadline under the control lock immediately before committing the intent, after discovery I/O (projects/monolith/factory/orchestration/backlog_refill_producer.py:68, projects/monolith/factory/orchestration/backlog_refill_producer.py:150).
 - **an ungated docs/posts draft (no public key, or public: false) reaching the public site**: Fails closed: _declared_public_value returns None for an ungated file and it is skipped, and a strict literal-match check on the public key raises rather than guessing (projects/monolith/knowledge/tools/gen_posts_manifest.py:64)
 - **apply_extraction re-running on a raw that already extracted successfully**: Guarded by an early replayed-check keyed on (raw_fk, gardener_version, non-failed provenance) that returns before writing any atom (projects/monolith/knowledge/extraction.py:326)
 - **backup degradation restarting monolith or making public health fail**: The check is registered only as private advisory health and liveness stays /healthz; composition tests assert private health HTTP 200, unchanged kubelet liveness and no public backup component (projects/monolith/factory/module.py:174, projects/monolith/factory/module_test.py:72).
@@ -275,7 +298,9 @@ flowchart TD
 - **one unreadable target masking a known failed backup on another target**: The checker records each target independently and the evaluator returns known failures before unknowns; the 120-second job deadline bounds at most four targets (projects/platform/otel-collector/files/backup_check.py:206, projects/monolith/factory/ops_health.py:722, projects/platform/otel-collector/templates/backup-check.yaml:147).
 - **outbox at-least-once duplicate on crash between post and mark**: Bounded and mostly idempotent: reactions/edits resolve missing targets, a duplicate notify is a rare nuisance (projects/monolith/chat/outbox.py:135)
 - **public_reader denied on a private schema**: Not a hazard but the enforced control: DB permission denies the read; asserted by projects/monolith/public_reader_grants_test.py:44
+- **refill starting from a stale or incomplete low-backlog observation**: Omission is inert. Enabled starts require complete evidence within the discovery refresh window, current policy, ordinary capacity, charter ownership and cooldown; an existing unsettled run prevents another reservation (projects/monolith/factory/orchestration/backlog_refill.py:180).
 - **report_distress's Discord notification failing without the reporting agent knowing**: notify() failure is caught and reflected honestly in the returned status (recorded vs notified), and the underlying enqueue reuses the durable at-least-once outbox row already covered by the existing outbox non_uca (projects/monolith/knowledge/mcp.py:446)
+- **routine cancellation or a paused task deadline poisoning the refill failure streak**: Terminal interrupted runs settle inconclusive after unresolved execution drains. Inconclusive outcomes neither advance nor reset failure or low-yield streaks; conclusive settlements are recorded once (projects/monolith/factory/orchestration/backlog_refill_worker.py:88, projects/monolith/factory/orchestration/backlog_refill.py:298).
 - **scheduler.trigger submits the wrong execution path**: Bounded by run-now looking up the CronWorkflow whose `replaces` annotation names the requested job and creating a one-off Workflow from its `workflowSpec`; `ARGO_JOBS` only suppresses legacy registry metadata, including for suspended entries (projects/monolith/scheduler/service.py:53)
 - **shotter.capture exceeding its render budget**: Bounded by the nested timeout chain (Context Forge 60s > client read 55s > workload 50s > guest handler 45s > CDP navigate), converted into a ToolTimeout rather than an indefinite hold (projects/monolith/shotter/client.py:96)
 - **the kg daily-cap deferral calling both finish_drainer_job and defer_drainer_job for the same one-shot job**: complete_job's NULL next_run_at write for a one-shot row (interval_secs IS NULL) is immediately overwritten by defer_job's later write in the same call sequence, so the job still re-arms at +3600s despite the double write (projects/monolith/factory/orchestration/drainer.py:407)
@@ -287,6 +312,7 @@ flowchart TD
 
 - #5568's claude-session/codex-session producers are not yet shipped, but EXTRACTABLE_SOURCES already accepts those source labels via the generic POST /api/knowledge/raws endpoint today; will that producer route through the same unredacted shared boundary, or call agent_sessions.redact.redact_text itself the way kg_feed.py does?
 - #7002: verify fresh successful-backup timestamps, scheduled checker completion, metric/advisory arrival, runtime ConfigMap preservation and effective additive RBAC on the hub; live Cluster/RBAC reads and Honeycomb queries were unavailable to this activation session. Checker-absence notifications remain outside the current advisory contract.
+- Default-off refill live acceptance remains on #7376: verify ordinary intake, inventory outputs, a restart and ambiguous-write drill, breaker reset, rolling-limit recovery and disable reconciliation before enablement.
 - Does any workload other than shotter and the six sandbox languages share the same EmberVM Idempotency-Key-from-request-parameters pattern, and if so does its key cover every parameter that affects the result?
 - How should the native ingress successor cover Context Forge and direct-mount callers after #5816 removed the inert Cilium ingress template?
 - In production, can a chat message handler (LLM summarizer) exceed the 30s message-lock TTL under load and trip lock.reclaim.wrong-timing, or is processing reliably shorter?

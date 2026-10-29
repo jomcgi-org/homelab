@@ -38,6 +38,7 @@
   const policy = $derived(board?.policy ?? null);
   const intake = $derived(board?.intake ?? null);
   const problemIssues = $derived(board?.problem_issues ?? null);
+  const backlogRefill = $derived(board?.backlog_refill ?? null);
   const lanes = $derived(board?.lanes ?? null);
   const routing = $derived(board?.review_routing ?? null);
   // Only worth a word when review is not on the model the policy asked for,
@@ -205,6 +206,15 @@
           >{problemIssues?.status === "on"
             ? `${problemIssues.writes_started_today}/${problemIssues.max_per_24_hours} writes / 24h`
             : "off"}</span
+        >
+      </div>
+      <div>
+        <span class="k">backlog refill</span>
+        <span class="v"
+          >{backlogRefill?.status ?? "off"}{#if backlogRefill?.enabled}
+            · {backlogRefill.starts_last_24_hours}/{backlogRefill.max_per_24_hours}
+            starts / 24h
+          {/if}</span
         >
       </div>
     </section>

@@ -323,6 +323,7 @@ def _local_candidates(
     generation: int,
     room: dict[str, bool],
     cooldown_cutoff: datetime,
+    eligible: set | None = None,
 ) -> tuple[list[dict], dict[str, int], int]:
     """Build candidates from authoritative local rows without a GitHub read."""
     excluded = {reason: 0 for reason in _EXCLUSION_REASONS}
@@ -450,6 +451,8 @@ def _local_candidates(
             RANK_LABELS[label_rank] if label_rank < len(RANK_LABELS) else "oldest"
         )
         lane = lane_for(task_class)
+        if eligible is not None and delivery and "agent-ready" in labels:
+            eligible.add((repo, number))
         if not room.get(lane):
             excluded["lane_full"] += 1
             continue
@@ -565,6 +568,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             excluded[reason] += 1
 
         candidates = []
+        eligible = set()
+        local_errors = False
         cooldown_cutoff = now - timedelta(hours=intake["cooldown_hours"])
         local_listed = 0
         for slug in repos:
@@ -580,6 +585,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     generation=generation,
                     room=room,
                     cooldown_cutoff=cooldown_cutoff,
+                    eligible=eligible,
                 )
                 for candidate in local_candidates:
                     candidate["repo"] = slug
@@ -588,6 +594,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     excluded[reason] += count
                 local_listed += listed
             except Exception as exc:  # noqa: BLE001 - GitHub intake must still run
+                local_errors = True
                 _throttled(
                     "local_intake_error",
                     {"error": type(exc).__name__, "repo": slug},
@@ -929,9 +936,6 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     else "oldest"
                 )
                 lane = lane_for(task_class)
-                if not room.get(lane):
-                    exclude("lane_full")
-                    continue
                 if handoff.enabled():
                     # Finished repository work with only live checks left is
                     # delivered, whatever generation re-read its labels (#6288).
@@ -941,6 +945,11 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     if handed_off is not None:
                         exclude(handed_off)
                         continue
+                if delivery and "agent-ready" in labels:
+                    eligible.add((slug, number))
+                if not room.get(lane):
+                    exclude("lane_full")
+                    continue
                 candidates.append(
                     {
                         "issue": item,
@@ -999,6 +1008,19 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     **({"truncated": True} if truncated else {}),
                 }
             )
+            if listing_due:
+                _refill_observation(
+                    policy,
+                    eligible,
+                    not (
+                        truncated
+                        or read_failed
+                        or local_errors
+                        or excluded.get("delivery_check_deferred")
+                    ),
+                    lanes,
+                    now,
+                )
             return []
 
         # One per lane, in lane-blind rank order, so the delivery lane keeps
@@ -1162,10 +1184,35 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     ),
                 }
             )
+        if listing_due:
+            _refill_observation(
+                policy,
+                eligible,
+                not (
+                    truncated
+                    or read_failed
+                    or local_errors
+                    or excluded.get("delivery_check_deferred")
+                ),
+                lanes,
+                now,
+            )
         return received_all
     except Exception:  # noqa: BLE001 - intake is optional and never stops the lane
         logger.exception("factory autonomous intake failed")
         return []
+
+
+def _refill_observation(policy, eligible, complete, lanes, observed_at):
+    from factory.orchestration.backlog_refill import observe
+
+    observe(
+        policy,
+        eligible=sum(repo == policy["repo"] for repo, _ in eligible),
+        complete=complete,
+        lanes=lanes,
+        observed_at=observed_at,
+    )
 
 
 # Re-exported so a caller reading the loop finds the board's view of it here.

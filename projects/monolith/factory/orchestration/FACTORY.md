@@ -998,6 +998,83 @@ no attempt in flight, no success, and the node absent from the conductor's
 ready set settles `refine_failed` there and then, naming the limit it hit.
 Idling instead held the advisory slot and its reservation for ever (#6045).
 
+### Queue-driven backlog refill
+
+The optional top-level `backlog_refill` block is omitted from shipped policy.
+Omission and `enabled: false` start nothing. Repository defaults are:
+
+```json
+{
+  "backlog_refill": {
+    "enabled": false,
+    "min_eligible": 25,
+    "cooldown_minutes": 15,
+    "min_new_issues": 3,
+    "breaker_consecutive_low_yield": 3,
+    "max_per_24_hours": 24,
+    "model": "astra",
+    "effort": "high"
+  }
+}
+```
+
+The recorded decision on #7376 sets the daily default and upper bound to 24.
+The illustrative 48 in the original issue is superseded. The floor accepts
+1..1000, cooldown 1..1440 minutes, yield 0..100, low-yield breaker 1..10 and
+daily starts 1..24. An enabled or explicitly selected model must belong to
+`allowed_models`. Unknown keys and invalid types are rejected.
+
+The intake sweep supplies its own filtered agent-ready issue count before
+lane capacity filtering. Advisory and PR candidates are excluded. Incomplete,
+failed or stale discovery cannot establish a low backlog. A selected refinement
+batch suspends refill starts and admission. Below the floor,
+one durable intent and advisory receipt reserve the run before dispatch.
+Normal admission, task budgets, quota and transport controls still apply.
+The existing sweep pacing is unchanged; there is no calendar schedule.
+Settlement, fresh intake evidence and the cooldown permit another run.
+
+The worker performs #7366's report-only inventory and function-level dead-code
+delta. It returns an artifact with findings and both tables. The trusted
+producer creates agent-ready finding issues and one needs-human inventory
+summary; these labels are fixed. Every output has a run marker and a separate
+stable output marker. Finding identity derives from the normalized title, so
+renaming the model's key cannot count the same title as fresh yield. This is
+conservative title matching. It does not detect rephrased duplicates.
+
+A pre-write intent commits before POST. Immediately before that commit, the
+producer rechecks the owning receipt, pause/cancellation state, generation,
+policy and deadline under the control lock, after discovery I/O. An uncertain
+write receives six read-only reconciliation attempts. If it remains unknown,
+only that output is quarantined: it can never be posted again, while the run
+settles inconclusive and later inventories can proceed. Maintenance reads one
+due original quarantined output per tick, with a 24-hour interval per output;
+positive marker discovery resolves it without another POST. Reset, cancellation
+and disable retain the intent and allow read-only reconciliation.
+
+Reaching `breaker_consecutive_low_yield` consecutive conclusive runs (default
+3) below `min_new_issues`, or two consecutive failed runs, opens the breaker.
+Failed runs count toward low yield too. A yield at or above the minimum resets
+the low-yield streak; any successful run resets the failure streak. Interrupted
+runs and unresolved publication are inconclusive and do not advance or reset
+either streak. Paused tasks can settle at their deadline once execution is
+quiescent; unresolved dispatches retain their run fence. Every breaker opening
+owns one needs-human issue titled `factory: backlog refill breaker open`, with
+its triggering summaries. Re-posting policy resets the breaker and streaks,
+including an unchanged post, while retaining output intents and rolling start
+accounting.
+
+The daily-start limit pauses starts until the rolling 24-hour window has room.
+It resumes without a policy re-post. The board shows off, armed, in flight,
+rate limited or breaker open, plus the rolling start count.
+
+This is a repository-only, default-off implementation. Operational acceptance
+remains on #7376: verify the omitted-policy rollout and ordinary intake; after
+the #7359 lane drains, observe below/at-floor scheduling in advisory capacity;
+verify inventory outputs, markers and yield; exercise a staged restart and
+uncertain-outcome drill; then exercise each breaker, rolling-limit recovery,
+reset and disable path. Live enablement remains outside this default-off
+landing.
+
 ### Exact-event problem issues
 
 The optional top-level `problem_issues` policy block turns three demonstrated

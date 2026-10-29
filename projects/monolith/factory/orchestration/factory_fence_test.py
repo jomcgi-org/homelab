@@ -28,6 +28,10 @@ def test_pending_execution_rechecks_current_stop(monkeypatch):
         "factory.orchestration.factory_improvement_fence.transport_allowed",
         lambda *args: True,
     )
+    monkeypatch.setattr(
+        "factory.orchestration.backlog_refill.dispatch_allowed",
+        lambda *args, **kwargs: True,
+    )
     assert factory_session_allowed("factory:t-1:work:1")
     state["ok"] = False
     assert not factory_session_allowed("factory:t-1:work:1")

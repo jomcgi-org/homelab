@@ -1463,6 +1463,8 @@ py_library(
 py_library(
     name = "swarm_factory_controls",
     srcs = [
+        "factory/orchestration/backlog_refill.py",
+        "factory/orchestration/backlog_refill_policy.py",
         "factory/execution/__init__.py",
         "factory/execution/broker_client.py",
         "factory/execution/provider_quota.py",
@@ -9539,6 +9541,20 @@ py_test(
     deps = [
         ":pkg_auth",
         ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "backlog_refill_test",
+    srcs = ["factory/orchestration/backlog_refill_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",

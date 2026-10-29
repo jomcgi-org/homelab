@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "e7905ea1c",
+  "commit": "15550c9",
   "nodes": [
     {
       "key": "console-caller",
@@ -258,6 +258,30 @@
       "layer": "data",
       "maturity": "built",
       "evidence": "projects/platform/otel-collector/templates/backup-check.yaml:83"
+    },
+    {
+      "key": "factory-refill",
+      "label": "Queue-driven backlog refill controller (default-off)",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill.py:180"
+    },
+    {
+      "key": "refill-producer",
+      "label": "Trusted refill artifact and issue producer",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill_producer.py:150"
+    },
+    {
+      "key": "github-issues",
+      "label": "GitHub repository issues",
+      "view": "logical",
+      "layer": "store",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill_producer.py:150"
     }
   ],
   "control_actions": [
@@ -548,6 +572,51 @@
       "to": "outbox",
       "maturity": "built",
       "evidence": "projects/monolith/factory/health_alerts.py:137"
+    },
+    {
+      "key": "factory-refill.reserve",
+      "label": "Reserve one inventory receipt from fresh eligible backlog evidence",
+      "view": "logical",
+      "from": "factory-refill",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill.py:180"
+    },
+    {
+      "key": "factory-refill.dispatch",
+      "label": "Dispatch the pinned read-only inventory node under receipt authority",
+      "view": "logical",
+      "from": "factory-refill",
+      "to": "agent-runner",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill.py:414"
+    },
+    {
+      "key": "refill-producer.collect",
+      "label": "Validate and store a bounded inventory artifact",
+      "view": "logical",
+      "from": "refill-producer",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill_producer.py:260"
+    },
+    {
+      "key": "refill-producer.publish",
+      "label": "Commit an output intent and post one finding, summary or breaker issue",
+      "view": "logical",
+      "from": "refill-producer",
+      "to": "github-issues",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill_producer.py:150"
+    },
+    {
+      "key": "factory-refill.settle",
+      "label": "Settle yield once and update conclusive-run breaker streaks",
+      "view": "logical",
+      "from": "factory-refill",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill.py:298"
     }
   ],
   "feedback": [
@@ -634,6 +703,36 @@
       "from": "postgres",
       "to": "health-alerts",
       "signal": "Durable last-announced health state and reminder timestamp"
+    },
+    {
+      "view": "logical",
+      "from": "github-issues",
+      "to": "factory-refill",
+      "signal": "Complete fresh eligible issue count from the existing intake sweep"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "factory-refill",
+      "signal": "Live policy, receipt ownership, starts, settlements and breaker state"
+    },
+    {
+      "view": "logical",
+      "from": "agent-runner",
+      "to": "refill-producer",
+      "signal": "Structured report-only inventory artifact"
+    },
+    {
+      "view": "logical",
+      "from": "github-issues",
+      "to": "refill-producer",
+      "signal": "Issue number and exact output marker discovery"
+    },
+    {
+      "view": "logical",
+      "from": "refill-producer",
+      "to": "factory-refill",
+      "signal": "Confirmed new findings and inconclusive publication state"
     }
   ]
 }

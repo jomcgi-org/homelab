@@ -86,9 +86,12 @@ def factory_session_allowed(local_session_id: str | None) -> bool:
     # Task-wide live transport fence: even an accidental generic funding node
     # cannot escape a scout's fixed two-node/model subscription contract.
     from factory.orchestration.factory_improvement_fence import transport_allowed
+    from factory.orchestration.backlog_refill import dispatch_allowed as refill_allowed
 
     try:
-        return transport_allowed(fields[1], fields[2], int(fields[3]))
+        return transport_allowed(
+            fields[1], fields[2], int(fields[3])
+        ) and refill_allowed(fields[1], fields[2], int(fields[3]), physical=True)
     except Exception:  # unavailable evidence must not start speculative work
         return False
 

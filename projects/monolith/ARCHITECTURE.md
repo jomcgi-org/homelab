@@ -301,6 +301,19 @@ security/004).
 
 ## 4. Agents
 
+**Why.** The queue is the signal for optional backlog refill (#7376). Reusing
+the intake sweep's filtered issue count keeps ownership, blocking dependencies
+and receipt history aligned with admission. Default-off policy and durable
+advisory receipts bound inventory execution. The trusted producer rechecks
+receipt authority after discovery and commits an intent before each issue
+POST. An ambiguous write retains its duplicate-post fence; after six reads it
+is quarantined independently of run settlement and reconciled daily. Temporary
+rolling limits resume automatically, while interrupted runs remain neutral to
+yield and failure streaks. Finding titles provide server-owned duplicate
+identity. Shared JSON encoding keeps the audit contract aligned with factory
+controls. Live enablement, output and breaker drills remain on #7376.
+(see: /projects/monolith/factory/orchestration/FACTORY.md)
+
 **Why.** Factory outcome comparisons use receipt cohorts and count every attempt
 through an explicit as-of bound. A positive requires successful delivery CI and
 a completed seven-day clean revert scan. Missing evidence stays unknown or
@@ -2269,6 +2282,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Optional queue-driven inventory refill, default-off with durable advisory execution and bounded issue publication | section 4, recorded Conductor rescope and cap decision | #7376 | repository-only; operational checklist remains on the issue; no shipped policy enablement |
 | Admit agent-ready security findings under existing ownership and eligibility fences | Joe's 2026-10-28 decision, section 4 | [#7372](https://github.com/jomcgi-org/homelab/issues/7372) | repository-only staged delivery; guarded migration, rollout and natural-sweep acceptance remain |
 | Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
 | Release execution capacity for quiescent paused or landing-held tasks while retaining ownership and durable authorized resume intent | section 4; Joe's 2026-10-18 decision | #7163 | repository implementation staged; separately authorized rollout and live capacity, ownership and reacquisition checks remain |

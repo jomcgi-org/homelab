@@ -9,7 +9,9 @@ The hard bans apply to everything written in this repo, including commit
 messages and PR bodies. The voice rules apply to any prose a human will
 read. "Know the reader" is about matching the register to the audience.
 Site copy and posts speak in first person about Joe's work, so the
-self-praise and self-rating rules bite hardest there.
+self-praise and self-rating rules bite hardest there. For site copy and CV
+prose, audit facts and flag unsupported claims, but offer at most one draft:
+Joe writes the final wording.
 
 ## Know the reader
 
