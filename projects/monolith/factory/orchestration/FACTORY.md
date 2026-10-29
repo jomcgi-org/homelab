@@ -2215,8 +2215,8 @@ approved head and has no computed merge conflict. Exactly one factory pull
 request is armed at a time, because
 this repository merges through the GitHub merge queue and an ejection cascades
 across every candidate behind the one that failed. The holder is read from the
-lane's own audits and from GitHub: before arming anything, up to five pages
-of 50 open pull requests are listed and any pull request on a `factory/` branch with
+lane's own audits and from GitHub: before arming anything, up to ten pages
+of 25 open pull requests are listed and any pull request on a `factory/` branch with
 auto-merge or a merge queue entry already set counts, so a pull request an operator armed by hand is
 not raced. A holder check that cannot be read or exhausts ten full 25-row pages arms nothing,
 because not knowing
