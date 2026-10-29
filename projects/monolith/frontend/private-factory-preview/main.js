@@ -2,7 +2,7 @@
 // Import it here too: a fixture must not conceal inherited cascade defects.
 import "../src/lib/public/styles/design-system.css";
 import "../factory-preview/fonts.css";
-import { mount, unmount } from "svelte";
+import { mount, tick } from "svelte";
 import App from "./App.svelte";
 import {
   board,
@@ -161,17 +161,14 @@ document.addEventListener(
   },
   true,
 );
-let instance = mount(App, {
+const instance = mount(App, {
   target: document.getElementById("app"),
   props: { view, data: fixtureData(view, scenario) },
 });
 state.navigate = async (next) => {
   if (!Object.hasOwn(routes, next)) throw new Error("Unknown synthetic view");
-  await unmount(instance);
   setRoute(next);
-  instance = mount(App, {
-    target: document.getElementById("app"),
-    props: { view: next, data: fixtureData(next, scenario) },
-  });
+  instance.navigate(next, fixtureData(next, scenario));
+  await tick();
 };
 state.ready = true;

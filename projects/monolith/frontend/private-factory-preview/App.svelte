@@ -8,6 +8,13 @@
   import Updates from "../src/routes/private/updates/+page.svelte";
   import Qwen from "../src/routes/private/qwen/+page.svelte";
   let { view, data } = $props();
+
+  // Match client routing: retain the root/private layouts while replacing
+  // only the active page. Styles already loaded remain in the document.
+  export function navigate(nextView, nextData) {
+    view = nextView;
+    data = nextData;
+  }
 </script>
 
 <Root
