@@ -15,9 +15,6 @@ defmodule Embervm.Router do
     * `GET  /v1/nodes`                 read-only node health + dispatcher snapshot
       (operational introspection: capacity facts, inventory, denials).
     * `GET  /v1/capacity`              read-only capacity and demand tiers.
-    * `GET  /v1/health/durability`     both ADR 031 durability tiers (#4338):
-      tier 1 export-failure streaks + tier 2 gc-manifests stall. 200 ok /
-      503 not-ok / 404 while dark.
     * `GET  /v1/health/store`          latest artifact-store TLS probe result.
     * `GET  /healthz`                  unauthenticated readiness.
     * `GET  /livez`                    unauthenticated liveness.
@@ -133,15 +130,6 @@ defmodule Embervm.Router do
   # it defaults false in every environment.
   get "/v1/conformance/trace-window" do
     handle_conformance_trace_window(conn)
-  end
-
-  # GET /v1/health/durability (#4338, ADR embervm/031): both durability tiers
-  # as one machine-readable surface. 200 when both tiers read ok, 503 with the
-  # SAME report body otherwise (unknown/missing data is never green), and 404
-  # while the detector is dark (durabilityHealth.enabled unset), so a suspended
-  # detector neither reads healthy nor pages anybody.
-  get "/v1/health/durability" do
-    handle_durability(conn)
   end
 
   get "/v1/health/store" do
@@ -832,41 +820,6 @@ defmodule Embervm.Router do
     error -> {:error, error}
   catch
     kind, reason -> {:error, {kind, reason}}
-  end
-
-  # The durability module resolves from app env (the :durability key) so a
-  # request test can inject a fake without the supervised process, mirroring
-  # the :authenticator seam. A dead/unavailable evaluator is a durability
-  # UNKNOWN (503 with the same body shape), never a 500 crash and never green.
-  defp handle_durability(conn) do
-    mod = Application.get_env(:embervm, :durability, Embervm.Durability)
-
-    case try_durability_snapshot(mod) do
-      :suspended ->
-        # Dark landing: the detector ships suspend:true and flips on only after
-        # live verification (#4338 standing rule), so an unset gate reads as an
-        # absent route.
-        send_json(conn, 404, %{error: "not found"})
-
-      {:error, reason} ->
-        send_json(conn, 503, %{
-          ok: false,
-          error: "durability evaluation failed",
-          detail: inspect(reason)
-        })
-
-      report when is_map(report) ->
-        status = if report.ok, do: 200, else: 503
-        send_json(conn, status, json_nullify(report))
-    end
-  end
-
-  defp try_durability_snapshot(mod) do
-    mod.snapshot()
-  catch
-    :exit, reason -> {:error, reason}
-  rescue
-    e -> {:error, e}
   end
 
   defp handle_store_health(conn) do

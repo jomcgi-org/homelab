@@ -1612,20 +1612,6 @@ healthAlerts:
       - namespace: loom
         cluster: loom-pg
 
-# ember-durability health component (#4338, ADR embervm/031): a FATAL-tier
-# /api/health component reading the EmberVM control plane's durability surface
-# (GET /v1/health/durability): tier 1 sustained artifact-export failure
-# streaks, tier 2 gc-manifests age past 24h + sweep interval. Both tiers end
-# in the health surface, so this is registered under register_health (never
-# advisory). DARK by default per the standing rule that a health-affecting
-# detector flips on only after live verification: empty URL means nothing is
-# registered and this block renders no env. To arm, set this to the CP service
-# URL with the /v1/health/durability path (the monolith SA is already on the
-# embervm auth allow-list) AFTER verifying the detector against live fleet
-# facts; clearing it is the entire rollback lever.
-emberDurability:
-  url: ""
-
 chat:
   enabled: false
   # Pause Discord attention classification and automatic message triggers.

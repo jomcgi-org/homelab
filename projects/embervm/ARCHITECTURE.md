@@ -1200,12 +1200,13 @@ never stores or witnesses anything that scales with the fleet.
   immediately if that exporter module is missing, and the Linux release-boot
   smoke exercises this configured path without requiring a live collector.
   Production delivery and stability checks remain outstanding on #6258.
-- **Health surface tiers** (ADR embervm/031): `/health` latches unhealthy
-  immediately on a sustained artifact-export failure streak (tier 1, a user's
-  data at risk now) and only after more than 24 h without a completed warmth
-  GC sweep, measured as the age of the newest `gc-manifests/` object (tier 2,
-  maintenance debt with days of runway). Both end in the health surface;
-  Discord alerts are a companion signal, not the record.
+- **Health surface tiers** (historical embervm/031): #4338 built a detector
+  for sustained artifact-export failure streaks and warmth-GC manifest age.
+  It was never armed. #7058 removes the detector, its HTTP route and its
+  monolith consumer. The store trust probe, readiness and liveness remain.
+  **Why.** Joe's 2026-10-28 decision removes the unused detector and corrects
+  the claim that its latch protected health. Artifact export, warmth GC and
+  their manifests retain their existing behavior.
 
 **Decided direction:**
 
@@ -2477,7 +2478,7 @@ has the full text.
 | embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, not planned (#4182); Phase 0 measured on #4182 | deleted |
 | embervm/029 | Parked sessions count as disk, not against `concurrency.cap` | Accepted, Built | deleted |
 | embervm/030 | Lineage decoupled from session generation; the 6 h cap is a convergence bound | Accepted, Built | deleted |
-| embervm/031 | Health signals classified by time-to-impact, both tiers latch `/health` | Accepted, Built (#4338) | deleted |
+| embervm/031 | Historical export-failure and GC-age detector, never armed | Built (#4338), removed (#7058) | deleted |
 | embervm/032 | Actor / principal / permission split, authentik SSO for the management surface | Draft, Decided direction; SPIFFE seam resolved by 041 | deleted |
 | embervm/033 | Substrate threat model as the conformance frame, per-principal encryption at rest, tuple-authorized restore | Accepted, Built and armed; customer KMS mode and digest-verified manifests open (#4691) | deleted |
 | embervm/034 | Conformance harness: two lanes, two tiers, anti-vacuity, Freight override | Accepted; SpecTrace runs in dev, harness Planned (#4761, #4763) | deleted |

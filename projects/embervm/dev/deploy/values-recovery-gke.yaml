@@ -293,9 +293,6 @@ warmthS3Gc:
   sessionWorkspaceTtlMs: ''
   groupSetTtlMs: ''
   intervalMs: ''
-durabilityHealth:
-  enabled: ''
-  expectedNodes: []
 rootfsReclaim:
   enabled: ''
 envelopeRewrap:

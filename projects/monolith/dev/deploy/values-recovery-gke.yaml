@@ -96,8 +96,6 @@ tokenBroker:
     serverId: "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
 sandbox:
   workloadPrefix: "sandbox-dev-"
-emberDurability:
-  url: ""
 
 # Planned dedicated Authentik provider identity. It must be provisioned and
 # joined to the dev broker's principal before activation. No public ingress

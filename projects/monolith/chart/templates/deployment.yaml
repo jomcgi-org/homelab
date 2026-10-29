@@ -122,14 +122,6 @@ spec:
             - name: EMBERVM_URL
               value: {{ .Values.semgrep.embervmUrl | quote }}
             {{- end }}
-            {{- if .Values.emberDurability.url }}
-            # ember-durability health component (#4338): the CP durability
-            # surface (GET /v1/health/durability) folded into /api/health as a
-            # FATAL-tier component. Empty (the default) keeps it dark: nothing
-            # registers and no env renders.
-            - name: EMBER_DURABILITY_HEALTH_URL
-              value: {{ .Values.emberDurability.url | quote }}
-            {{- end }}
             {{- if or .Values.tokenBroker.url .Values.tokenBroker.spiffe.enabled }}
             # OAuth token broker (ADR 048): the agent surface proxies its
             # device-code login flow so a login can run from a chat.

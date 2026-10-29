@@ -1171,6 +1171,35 @@ defmodule Embervm.RouterTest do
     assert resp.body =~ "store: degraded probe unavailable:"
   end
 
+  test "legacy durability configuration cannot restore the removed route" do
+    saved_env = System.get_env("EMBERVM_DURABILITY_HEALTH")
+    saved_seam = Application.fetch_env(:embervm, :durability)
+    on_exit(fn ->
+      if saved_env,
+        do: System.put_env("EMBERVM_DURABILITY_HEALTH", saved_env),
+        else: System.delete_env("EMBERVM_DURABILITY_HEALTH")
+
+      case saved_seam do
+        {:ok, value} -> Application.put_env(:embervm, :durability, value)
+        :error -> Application.delete_env(:embervm, :durability)
+      end
+    end)
+
+    System.put_env("EMBERVM_DURABILITY_HEALTH", "1")
+    Application.put_env(:embervm, :durability, RetiredDurability)
+    Application.put_env(:embervm, :store_probe, StoreProbeOk)
+
+    # A valid management identity reaches the router. The old injected healthy
+    # detector would return 200 here, even when its supervised instance was dark.
+    assert req(:get, "/v1/health/durability", auth("good")).status == 404
+    assert req(:get, "/v1/health/store", auth("good")).status == 200
+    assert json(req(:get, "/v1/health/store", auth("good")).body)["state"] == "ok"
+  end
+
+  defmodule RetiredDurability do
+    def snapshot, do: %{ok: true}
+  end
+
   test "/v1/health/store is authenticated and returns the current observation" do
     Application.put_env(:embervm, :store_probe, StoreProbeDegraded)
     assert req(:get, "/v1/health/store").status == 401

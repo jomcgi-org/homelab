@@ -6,7 +6,6 @@ exhibits were retired (#6913), so there is no ``register_public``.
 """
 
 import ember_public as _domain
-from ember_public.durability import build_durability_health
 from ember_public.health import (
     EMBER_CODEX_STALENESS_S,
     synthetic_probe_health,
@@ -14,20 +13,10 @@ from ember_public.health import (
 
 from framework import Module as _Module
 
-# The ember-durability component (#4338, ADR embervm/031): a FATAL-tier check
-# reading the CP's /v1/health/durability surface (export-failure streaks +
-# gc-manifest stall), never an advisory: both durability tiers end in the
-# health surface. Dark while EMBER_DURABILITY_HEALTH_URL is unset, per the
-# standing rule that a health-affecting detector lands suspend:true and flips
-# on only after live verification; the flip is a values/env change only.
-_DURABILITY_CHECK = build_durability_health()
-
-
 MODULE = _Module(
     name="ember_public",
     register=_domain.register,
     register_health={
         "ember_codex": synthetic_probe_health("codex", EMBER_CODEX_STALENESS_S),
-        **({"ember-durability": _DURABILITY_CHECK} if _DURABILITY_CHECK else {}),
     },
 )
