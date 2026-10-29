@@ -232,7 +232,6 @@ filegroup(
         "//projects/loom/deploy:repo_docs",
         "//projects/mcp/context-forge-gateway/deploy:repo_docs",
         "//projects/model-bench:repo_docs",
-        "//projects/model-bench/probe:repo_docs",
         "//projects/monolith/auth:repo_docs",
         "//projects/monolith/deploy:repo_docs",
         "//projects/monolith/dev/deploy:repo_docs",
