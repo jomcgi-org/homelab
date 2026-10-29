@@ -379,7 +379,9 @@ async def test_daily_learning_metadata_omits_original_prompt(monkeypatch):
     data = await module.monolith_agent_list_routine_jobs()
     import json
 
-    assert data["jobs"][0]["learning_configuration"] == {
+    metadata = data["jobs"][0]["learning_configuration"]
+    assert len(metadata.pop("payload_sha256")) == 64
+    assert metadata == {
         "model": "luna",
         "stage": "evidence",
         "reconciled": True,

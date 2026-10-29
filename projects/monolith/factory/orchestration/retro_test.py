@@ -880,7 +880,7 @@ def test_learning_rejects_empty_source(learning_db, result):
 
 
 @pytest.fixture
-def learning_config_db(learning_db):
+def learning_config_db(learning_db, monkeypatch):
     db = learning_db
     db.execute(text("ALTER TABLE routine_jobs ADD COLUMN locked_at TEXT"))
     db.execute(
@@ -903,6 +903,7 @@ def learning_config_db(learning_db):
         {"payload": json.dumps(payload)},
     )
     db.commit()
+    monkeypatch.setenv("FACTORY_LEARNING_DAILY_PAYLOAD_SHA256", learning._sha(payload))
     return db
 
 
@@ -1019,10 +1020,13 @@ def test_daily_config_ignores_settled_historical_failure(learning_config_db):
     assert learning.reconcile_daily_payload(db) == "configured"
 
 
-def test_daily_config_pins_only_verified_default_repository(learning_config_db):
+def test_daily_config_pins_only_verified_default_repository(
+    learning_config_db, monkeypatch
+):
     db = learning_config_db
     payload = json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
     del payload["repo"]
+    monkeypatch.setenv("FACTORY_LEARNING_DAILY_PAYLOAD_SHA256", learning._sha(payload))
     db.execute(
         text("UPDATE routine_jobs SET payload=:payload"),
         {"payload": json.dumps(payload)},
@@ -1042,3 +1046,29 @@ def test_daily_config_pins_only_verified_default_repository(learning_config_db):
         "repo",
         "learning_stage",
     ]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("prompt", "operator changed instructions"), ("branch", "private-branch")],
+)
+def test_daily_config_fences_operator_edits_after_preview(
+    learning_config_db, field, value
+):
+    db = learning_config_db
+    payload = json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
+    payload[field] = value
+    db.execute(
+        text("UPDATE routine_jobs SET payload=:payload"),
+        {"payload": json.dumps(payload)},
+    )
+    assert learning.reconcile_daily_payload(db) == "unreviewed_payload"
+    assert (
+        json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
+        == payload
+    )
+
+
+def test_daily_config_requires_reviewed_hash(learning_config_db, monkeypatch):
+    monkeypatch.delenv("FACTORY_LEARNING_DAILY_PAYLOAD_SHA256")
+    assert learning.reconcile_daily_payload(learning_config_db) == "unreviewed_payload"

@@ -231,6 +231,8 @@ spec:
             # legacy persisted value and does not name the execution model.
             - name: DRAINER_ENABLED
               value: {{ .enabled | quote }}
+            - name: FACTORY_LEARNING_DAILY_PAYLOAD_SHA256
+              value: {{ .learningDailyPayloadSha256 | default "" | quote }}
             - name: FACTORY_LEARNING_HANDOFF_ENABLED
               value: {{ .learningHandoffEnabled | default false | quote }}
             - name: DRAINER_NOTIFY_FAILURES

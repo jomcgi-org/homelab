@@ -22,6 +22,7 @@ underscores; FastMCP's wire identifiers use the dashed form
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -231,7 +232,14 @@ async def monolith_agent_list_routine_jobs(
             if row.get("name") == "factory-retro-daily":
                 payload = row.get("payload")
                 if isinstance(payload, dict):
+                    import hashlib
+
                     projected["learning_configuration"] = {
+                        "payload_sha256": hashlib.sha256(
+                            json.dumps(
+                                payload, sort_keys=True, separators=(",", ":")
+                            ).encode()
+                        ).hexdigest(),
                         "model": payload.get("model")
                         if payload.get("model") in {"sol", "luna", "astra"}
                         else None,

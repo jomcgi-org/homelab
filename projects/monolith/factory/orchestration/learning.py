@@ -342,6 +342,9 @@ def reconcile_daily_payload(db, *, default_repo=None):
         except ValueError:
             return "conflicting_opt_in"
         return "already_configured"
+    expected = os.environ.get("FACTORY_LEARNING_DAILY_PAYLOAD_SHA256", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected) or _sha(payload) != expected:
+        return "unreviewed_payload"
     if (
         row["routine_kind"] != "qwen-drain"
         or row["interval_secs"] != 86400
@@ -350,6 +353,7 @@ def reconcile_daily_payload(db, *, default_repo=None):
         or row["locked_at"] is not None
         or row["last_status"] != "ok"
         or payload.get("model") != "sol"
+        or payload.get("branch", "main") != "main"
         or payload.get("repo", default_repo) != REPO
         or payload.get("digest") != "factory-retro"
         or "learning_stage" in payload
