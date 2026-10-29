@@ -1,4 +1,5 @@
--- Read-only lifecycle export for factory/baseline.py.
+-- Read-only lifecycle export from the retired baseline procedure (#7025).
+-- Historical contract: https://github.com/jomcgi-org/homelab/issues/5851#issuecomment-6484399792
 -- Required psql variables are window_start and window_end, both RFC3339 UTC.
 -- The query emits one compact JSON object per line. It does not create tables.
 WITH cohort AS (
