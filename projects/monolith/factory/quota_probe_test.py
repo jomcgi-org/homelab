@@ -14,6 +14,8 @@ from factory.execution.models import (
     PendingMessage,
     AgentTurn,
     AgentResultReceipt,
+    AgentCapacityPool,
+    ProbeObservation,
 )
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -54,6 +56,8 @@ def db(tmp_path, monkeypatch):
                 PendingMessage,
                 AgentTurn,
                 AgentResultReceipt,
+                AgentCapacityPool,
+                ProbeObservation,
             )
         ],
     )
@@ -702,6 +706,7 @@ def test_probe_status_pagination_and_missing_session(db):
             FactoryAudit(
                 actor=probe.ACTOR,
                 action="quota_probe_started",
+                created_at=NOW - timedelta(hours=2),
                 detail_json=json.dumps({"session_key": probe.PREFIX + "missing"}),
             )
         )
@@ -771,3 +776,247 @@ def test_probe_status_unknown_outcome_without_guest_remains_blocking(db):
     result = probe.probe_status()
     assert result["unresolved_probe_present"] is True
     assert result["blocking_sessions"][0]["unknown_outcome"] is True
+
+
+def settled_probe(engine):
+    import json
+
+    with Session(engine) as db:
+        agent = AgentSession(
+            local_session_id=probe.PREFIX + "settled",
+            workspace="<guest>",
+            branch="main",
+            status="failed",
+            admission_tier="probe",
+            model="haiku",
+        )
+        db.add(agent)
+        db.flush()
+        turn = AgentTurn(
+            session_id=agent.id,
+            seq=1,
+            prompt="OK",
+            result_text="unknown invocation",
+            terminal_reason="error",
+            stop_reason="invocation_outcome_unknown",
+            usage_json=json.dumps(
+                {
+                    "recovery": {
+                        "dispatch_count": 1,
+                        "claim_owner": "owner",
+                        "last_dispatch_at": NOW.isoformat(),
+                    }
+                }
+            ),
+        )
+        permit = AgentCapacityReservation(
+            session_id=agent.id,
+            local_session_id=agent.local_session_id,
+            pending_seq=1,
+            tier="probe",
+            state="settled",
+            outcome="no_guest_bound",
+            owner="owner",
+            settled_at=NOW,
+        )
+        db.add_all([turn, permit])
+        db.flush()
+        db.add(
+            ProbeObservation(
+                permit_id=permit.id,
+                identity_sha256="a" * 64,
+                reason="no_guest_bound",
+                checked_at=NOW,
+                settled_at=NOW,
+            )
+        )
+        db.add(
+            FactoryAudit(
+                actor="factory:quota-probe",
+                action="quota_probe_started",
+                created_at=NOW - timedelta(hours=2),
+                detail_json=json.dumps(
+                    {"session_key": agent.local_session_id, "model": "haiku"}
+                ),
+            )
+        )
+        ids = agent.id, 1, permit.id
+        db.commit()
+        return ids
+
+
+def test_settled_probe_resolution_preserves_history_and_allows_normal_claim(db):
+    from factory import probe_reconciliation as recovery
+
+    ids = settled_probe(db)
+    assert probe.claim(payload(observed=False)) is None
+    before = recovery.preview(*ids, "Reconcile proven undelivered probe")
+    result = recovery.apply(
+        "operator",
+        *ids,
+        "Reconcile proven undelivered probe",
+        "stable",
+        before["preview_sha256"],
+    )
+    assert (
+        result["resolved"]
+        and not result["dispatched"]
+        and not result["quota_refreshed"]
+    )
+    assert (
+        recovery.apply(
+            "operator",
+            *ids,
+            "Reconcile proven undelivered probe",
+            "stable",
+            before["preview_sha256"],
+        )
+        == result
+    )
+    with Session(db) as session:
+        assert (
+            session.exec(select(AgentTurn)).one().stop_reason
+            == "invocation_outcome_unknown"
+        )
+        assert session.get(AgentCapacityReservation, ids[2]).outcome == "no_guest_bound"
+        assert session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == recovery.ACTION)
+        ).one()
+    assert not probe.probe_status()["unresolved_probe_present"]
+    assert probe.claim(payload(observed=False))
+    assert probe.claim(payload(observed=False)) is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("ember_session_id", "guest"),
+        ("workflow_id", "workflow"),
+        ("prior_cli_session_id", "old-cli"),
+        ("ember_lineage_id", "lineage"),
+        ("result_receipt_fence_id", "receipt"),
+        ("guest_cleanup_id", "cleanup"),
+        ("status", "running"),
+        ("admission_tier", "interactive"),
+    ],
+)
+def test_probe_resolution_refuses_binding_or_execution(db, field, value):
+    from factory import probe_reconciliation as recovery
+
+    ids = settled_probe(db)
+    with Session(db) as session:
+        agent = session.get(AgentSession, ids[0])
+        setattr(agent, field, value)
+        session.add(agent)
+        session.commit()
+    with pytest.raises(ValueError):
+        recovery.preview(*ids, "reason")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "uncertain",
+        "owner",
+        "observation",
+        "pending",
+        "later_turn",
+        "partial",
+        "extra_permit",
+    ],
+)
+def test_probe_resolution_revalidates_after_preview(db, mutation):
+    import json
+    from factory import probe_reconciliation as recovery
+
+    ids = settled_probe(db)
+    p = recovery.preview(*ids, "reason")
+    with Session(db) as session:
+        permit = session.get(AgentCapacityReservation, ids[2])
+        if mutation == "uncertain":
+            permit.state = "uncertain"
+        elif mutation == "owner":
+            permit.owner = "other"
+        elif mutation == "observation":
+            session.get(ProbeObservation, ids[2]).guest_id = "guest"
+        elif mutation == "pending":
+            session.add(PendingMessage(session_id=ids[0], seq=2, message_text="new"))
+        elif mutation == "later_turn":
+            session.add(
+                AgentTurn(session_id=ids[0], seq=2, prompt="new", result_text="done")
+            )
+        elif mutation == "partial":
+            turn = session.exec(select(AgentTurn)).one()
+            usage = json.loads(turn.usage_json)
+            usage["recovery"]["partial_text"] = "output"
+            turn.usage_json = json.dumps(usage)
+        elif mutation == "extra_permit":
+            session.add(
+                AgentCapacityReservation(
+                    session_id=ids[0],
+                    local_session_id=permit.local_session_id,
+                    pending_seq=2,
+                    tier="probe",
+                    state="settled",
+                )
+            )
+        session.add(permit)
+        session.commit()
+    with pytest.raises(ValueError):
+        recovery.apply("operator", *ids, "reason", "key", p["preview_sha256"])
+    assert probe.claim(payload(observed=False)) is None
+
+
+def test_probe_resolution_stale_version_replay_conflict_and_changed_proof(db):
+    from factory import probe_reconciliation as recovery
+
+    ids = settled_probe(db)
+    p = recovery.preview(*ids, "reason")
+    with Session(db) as session:
+        control = session.get(FactoryControl, "factory")
+        control.version += 1
+        session.add(control)
+        session.commit()
+    with pytest.raises(ValueError, match="preview_changed"):
+        recovery.apply("operator", *ids, "reason", "key", p["preview_sha256"])
+    p = recovery.preview(*ids, "reason")
+    recovery.apply("operator", *ids, "reason", "key", p["preview_sha256"])
+    with pytest.raises(ValueError, match="request_conflict"):
+        recovery.apply("operator", *ids, "different", "key", p["preview_sha256"])
+    with Session(db) as session:
+        session.get(ProbeObservation, ids[2]).identity_sha256 = "b" * 64
+        session.commit()
+    assert probe.claim(payload(observed=False)) is None
+
+
+def test_probe_resolution_refuses_any_result_receipt_and_missing_origin(db):
+    from factory import probe_reconciliation as recovery
+
+    ids = settled_probe(db)
+    with Session(db) as session:
+        local = session.get(AgentSession, ids[0]).local_session_id
+        session.add(
+            AgentResultReceipt(
+                id="receipt",
+                token_sha256="b" * 64,
+                session_id=ids[0],
+                local_session_id=local,
+                seq=1,
+                dispatch_count=1,
+                claim_owner="owner",
+                guest_id="guest",
+                request_sha256="a" * 64,
+                created_at=NOW,
+                accept_until=NOW,
+                retain_until=NOW,
+            )
+        )
+        session.commit()
+    with pytest.raises(ValueError, match="delivery_or_pending"):
+        recovery.preview(*ids, "reason")
+    with Session(db) as session:
+        session.delete(session.get(AgentResultReceipt, "receipt"))
+        session.delete(session.exec(select(FactoryAudit)).one())
+        session.commit()
+    with pytest.raises(ValueError, match="origin_invalid"):
+        recovery.preview(*ids, "reason")

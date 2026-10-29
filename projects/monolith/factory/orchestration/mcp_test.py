@@ -2597,3 +2597,54 @@ def test_progress_mode_cannot_mix_policy_or_omit_identity(monkeypatch, overlay):
         )
 
     assert _as(_principal(), invoke)["reason"] == "progress_exact_target_required"
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_probe_reconciliation_requires_standing_operator(monkeypatch, principal):
+    from factory import probe_reconciliation
+
+    def forbidden(*a, **kw):
+        raise AssertionError("unauthorized")
+
+    monkeypatch.setattr(probe_reconciliation, "preview", forbidden)
+    assert (
+        _as(
+            principal,
+            lambda: mcp.factory_reconcile_quota_probe(
+                "preview", 6463, 1, 3339, "reason"
+            ),
+        )["error"]
+        == mcp.OPERATOR_REQUIRED
+    )
+
+
+def test_probe_reconciliation_adapter_binds_actor_and_requires_preview(monkeypatch):
+    from factory import probe_reconciliation
+
+    calls = []
+    monkeypatch.setattr(
+        probe_reconciliation, "apply", lambda *args: calls.append(args) or {"ok": True}
+    )
+    p = _principal()
+    assert (
+        _as(
+            p,
+            lambda: mcp.factory_reconcile_quota_probe("apply", 6463, 1, 3339, "reason"),
+        )["reason"]
+        == "probe_preview_required"
+    )
+    assert not calls
+    assert _as(
+        p,
+        lambda: mcp.factory_reconcile_quota_probe(
+            "apply", 6463, 1, 3339, "reason", "key", "digest"
+        ),
+    )["ok"]
+    assert calls == [(p.subject, 6463, 1, 3339, "reason", "key", "digest")]
