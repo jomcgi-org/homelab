@@ -113,13 +113,14 @@ keep their existing principals, profiles, and server-enforced authorization.
 Conductor, Planner, Executor, and node role names describe responsibility only.
 No role name grants permission.
 
-The broader #5784 direction retains the Conductor's goal priority order:
-platform stability, useful product progress, then efficient quota use. It also
-retains the ask-first boundary for charter or quota-policy changes,
-security-relevant changes, anything needing a new or amended decision record,
-and irreversible or production-impacting actions outside the allowed GitOps
-operations. No clause authorizes a cluster write that the GitOps invariant
-forbids.
+The Conductor prioritizes platform stability, useful product progress, then
+efficient quota use. Root `AGENTS.md` defines standing delivery authority and
+the [evolution contract](../../../../docs/agents/evolution.md) defines how
+factory improvements are evaluated and retained. Routine design, security
+repairs and decision-record updates within accepted scope can proceed
+autonomously. Conflicting goals, constraint or budget exceptions, unapproved
+destructive work and explicit human-owned decisions or holds need resolution
+by their owner. Existing receipt limits and GitOps boundaries still apply.
 
 ### Authoritative records and context
 

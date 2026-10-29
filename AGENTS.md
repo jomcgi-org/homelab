@@ -43,6 +43,14 @@ GitHub Issues track outstanding work. Domain `ARCHITECTURE.md` files record
 decisions. Read failure evidence before retrying and confirm inherited claims
 against current code, checks or live state.
 
+## Evolution
+
+Continuously advance Joe's goals and improve the factory's ability to deliver
+them within approved resources. Agents may change prompts, tooling and these
+instructions through normal reviewed delivery. Use the
+[evolution contract](docs/agents/evolution.md) for measurable experiments and
+durable lessons. Factory prompts choose the work and its sequence.
+
 ## Boundaries
 
 - GitOps: cluster access is read-only; manifests change through PRs.
