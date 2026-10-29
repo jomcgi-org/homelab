@@ -5116,6 +5116,12 @@ bdd_test(
     srcs = ["factory/orchestration/factory_daily_admission_limit_postgres_test.py"],
 )
 
+# The 1000-admission migration preserves operator caps and pinned receipts.
+bdd_test(
+    name = "swarm_factory_daily_admission_limit_1000_postgres_test",
+    srcs = ["factory/orchestration/factory_daily_admission_limit_1000_postgres_test.py"],
+)
+
 # Only the new-admission implementation pool changes in this guarded migration.
 bdd_test(
     name = "swarm_factory_implement_sol_first_postgres_test",
