@@ -144,7 +144,7 @@ The repo-docs and public docs manifests are genrule outputs, not committed files
 
 Claude PreToolUse hooks (`bazel/tools/hooks/`, wired in `.claude/settings.json`, each with an `sh_test`). Blocking: `prefer-bb-remote.sh`, `check-ci-pipe-mask.sh`, `block-kubectl-mutate.sh` (kubectl write verbs, `--dry-run` aside), `pretooluse-write-edit.sh` (writes under `docs/plans/` are refused; plans live in GitHub Issues), and `check-public-reader-grant.sh` (a `CREATE TABLE` in a public-served schema must carry a `public_reader` grant or an explicit override comment). Advisory: `check-em-dash.sh`, `check-large-migration-sql.sh` (the migrations ConfigMap's 256 KiB annotation cap), `check-constant-change-test-grep.sh` (grep the tests before changing a numeric constant), and `check-adr-architecture-sync.sh` (editing a covered config or build tree reminds you that the domain's `ARCHITECTURE.md` is the source of truth).
 
-Git hooks (`bazel/tools/git/`, installed by pre-commit): `protect-main.sh` refuses commits on main, `check-commit-msg-ascii.sh` is the commit-msg check, `check-stale-pr.sh` blocks pushes to a branch whose PR is closed or merged, `post-rewrite-format.sh` runs selective lint after a rebase, and `pre-push-ci-test.sh` as above.
+Git hooks (`bazel/tools/git/`, installed by pre-commit): `protect-main.sh` refuses commits on main, `check-commit-msg-ascii.sh` is the commit-msg check, `post-rewrite-format.sh` runs selective lint after a rebase, and `pre-push-ci-test.sh` as above. `check-stale-pr.sh` lives in the same directory but is a Claude Bash hook registered in `.claude/settings.json`; it blocks pushes to a branch whose PR is closed or merged.
 
 (see: `bazel/tools/hooks/`, `bazel/tools/git/`, `.claude/settings.json`)
 
@@ -166,13 +166,66 @@ The repo used to carry its own layer: `semgrep_test` / `semgrep_target_test` / `
 
 Both are build-time-only toolchains for EmberVM, vendored prebuilt rather than built. `bazel/erlang` fetches the hex.pm OTP build compiled for the executor's Ubuntu 22.04 (so crypto links the executor's libssl with no provisioning), Elixir, and the hex dependency tarballs as `http_file`s that the `mix_*.sh` drivers unpack into `deps/` as path deps, so mix never contacts hex.pm; the deployed control plane gets its OTP from Wolfi. `bazel/tla` fetches `tla2tools.jar` (v1.7.4, the last tag whose asset is immutable) and a Temurin 21 JRE for the TLC checks over `projects/embervm/specs`, with `tlc.sh` reporting INCOMPLETE rather than PASS when `stopAfter` truncates a run.
 
-Their suites are genrules, not test rules, tagged `verification` so `affected-targets.sh` selects them by tag (#5538); they never appear in the `Executed N out of M` count, and a failure surfaces as a build failure. Nothing stops the next such genrule being added untagged (#5626).
+Their suites are genrules, not test rules, tagged `verification` so `affected-targets.sh` selects them by tag (#5538); they never appear in the `Executed N out of M` count, and a failure surfaces as a build failure. `verification_genrule_guard.py` rejects untagged suite-shaped names (`tlc_*`, `*_smoke`, `*_test`) before selection, including in new packages. Other names remain outside its heuristic.
 
 (see: `bazel/erlang/repositories.bzl`, `bazel/tla/repositories.bzl`, `projects/embervm/control/BUILD`, `projects/embervm/specs/BUILD`)
 
 **Why.** Prebuilt OTP and a vendored JRE were chosen over hermetic rules_erlang and rules_java toolchains because the executor is a known Ubuntu 22.04 image and nothing deployed depends on either artifact; the cost is a pin that moves by hand. The suites stayed genrules rather than test rules because the mix and TLC drivers own their own process lifecycle, and a tag is the cheapest way to make the affected-target walk see them.
 
 ---
+
+## CI runner history
+
+These measurements were recorded in `buildbuddy.yaml` before the shared-runner
+extraction for #7455, at baseline `c7bdbb11bce5d6d10b131e0f948d9c3aa43a2b01`.
+They explain earlier decisions; they are not measurements of today's runner.
+
+- In the seven days through 2026-08-09, the separate Format check, Test and Push
+  images actions each ran about 747 times, with cold rates of 20%, 56% and 62%.
+  The comments attributed 99% of CI_RUNNER downloads to cold snapshot restores.
+  Consolidating into `pr-checks` reused one workspace. #4824 recorded that action
+  names partition snapshot keys even with identical images and resources; a
+  separate deploy action had required a second main test run to seed snapshots.
+- Invocation `e687c0c6` executed 75 of 21,988 actions; 68 were local apko actions,
+  spanning 04:10:49 to 04:16:13 in an execution phase from 04:10:45 to 04:16:15.
+  This supported eight runner CPUs for `no-remote-exec` image builds. Resource
+  platform properties also affect snapshot keys. The shared local values and
+  warning now live in `tools/ci/runner-resources.env`; YAML remains static and
+  parity-tested, including the emitted local `bb remote` arguments.
+- Unlimited history replaced deploy's manual unshallow fetch. Chart versions
+  walk conventional commits since the last version change; a shallow graft can
+  make that range empty. The recorded cold-fetch increase was about 152 MB
+  (12 MB to 164 MB for 12,000 commits with `blob:none`). This was a historical
+  cost estimate, not a current clone-size assertion.
+- Main deploy `1e63fee7` reached the former one-hour limit after all 14 image
+  push children succeeded, before chart publication and version writeback.
+  The recorded wide-rebuild estimate was 10 minutes of tests, 55 minutes of
+  image work and 15 minutes of publication/formatting. The shared two-hour
+  ceiling avoids splitting stages into separate snapshot namespaces.
+- The 120 GB reservation originated at `db9ea2ce0` in July 2026 for earlier
+  action shapes. Between-stage `df` samples understate peak use inside builds;
+  snapshot transfer cost follows stored contents, not reserved capacity.
+  Through 2026-08-28, cold restores accounted for 2.7 TB of 4.5 TB over six
+  days (61%), with 161 restores of 15 to 20 GB. A cold VM reported 38 GB used
+  before steps. Candidate `76ac21dd` refuted #5397's download-cache hypothesis:
+  runner HOME was `/home/buildbuddy/workspace/.home`, its Bazel cache was
+  187 MB and `/var/lib/docker` was 4 KB; 19 GB was in the workspace.
+- Candidate `9e29fc49` (#5401) measured 15 GB in `output-base/external`, 7.8 GB
+  in `execroot/_main`, 6.8 GB in `sandbox/sandbox_stash`, and 30 GB in the
+  workspace, unchanged between start and finish. The then-estimated benefit
+  of removing the stash was 23% of workspace contents, about 100 GB/day.
+  `--noreuse_sandbox_directories` stops new stash accumulation; the EXIT trap
+  removes only the old stash, never active sandbox directories. Cleanup errors
+  are deliberately non-fatal. `workspace_breakdown` remains diagnostic.
+
+The current shared interfaces preserve caller base resolution. Workflow stage 1
+fetches once and freezes a merge-base SHA, then passes it to `ratchets.sh base
+head` and `local-affected-test.sh resolved-base`. A positional affected-test base
+disables ref fetching. Local `ci ratchet` resolves its own merge base; local
+`ci test` embeds the same affected-test script, retains BuildBuddy patch cleanup
+and fetches an `origin/*` base. Explicit targets bypass selection. Both guards
+and selectors fail closed. Reachability remains a separate workflow stage.
+Hook-versus-CI duplication remains intentional for fast feedback.
 
 ## Direction
 

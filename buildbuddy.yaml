@@ -1,179 +1,35 @@
 actions:
-  # pr-checks is the ONLY action in the workflow: the gating status check on a
-  # PR, the full gate for merge-queue candidates, and main's deploy. Tests,
-  # image builds, the pre-merge missed-chart-bump guard, formatting, and the
-  # main-only publish all run on one runner.
-  #
-  # Why one action and not four: 99% of this repo's CI_RUNNER download is cold
-  # starts, a VM snapshot restored out of the cache at spin-up. Cold rate tracks
-  # workspace size, not run count: "Format check", "Test" and "Push images" each
-  # ran ~747 times in the 7 days to 2026-08-09 with cold rates of 20%, 56% and
-  # 62%, because each kept its OWN bazel output_base warm and the big ones are
-  # likelier to be evicted AND dearer to restore. One shared workspace is
-  # touched every time instead of a third of the time.
-  #
-  # Why one action and not two (#4824): a runner snapshot's key includes the
-  # action name, so pr-checks and deploy occupied disjoint namespaces despite
-  # identical container_image and resource_requests. The tests-only main seed
-  # worked around that at the cost of a second test run. Folding deploy into
-  # pr-checks lets one main run test, publish, and refresh the single fallback
-  # snapshot used by later PR runs.
-  #
-  # REQUIRED status check. Renaming it breaks the GitHub ruleset, which matches
-  # by exact name; change both together or every PR blocks.
+  # One required runner for PRs, queue and main. History: bazel/ARCHITECTURE.md#ci-runner-history
   - name: "pr-checks"
     container_image: "ubuntu-24.04"
     max_retries: 1
     resource_requests:
-      # 8, not 6, because the images apko builds are `no-remote-exec`
-      # (rules_apko sets it), so they run HERE rather than on RBE and their
-      # concurrency is capped by this number, not by --jobs=80. They own the
-      # critical path of a cold run: in invocation e687c0c6 only 75 of 21988
-      # actions executed and 68 of those were apko, spanning 04:10:49 to
-      # 04:16:13 of a 04:10:45 to 04:16:15 execution phase.
-      #
-      # Raising this INVALIDATES EVERY EXISTING SNAPSHOT for the action:
-      # resource_requests becomes the EstimatedCPU / EstimatedMemory /
-      # EstimatedFreeDisk / EstimatedComputeUnits platform properties
-      # (workflow service createActionForWorkflow), and the snapshot key hashes
-      # the platform properties. So change it deliberately and rarely, never as
-      # iterative tuning: each edit costs one cold run on every active branch.
+      # Keep static values in parity with bazel/tools/ci/runner-resources.env.
       cpu: "8"
       memory: "10GB"
       disk: "120GB"
-    # Full history. 0 means unlimited; the runner otherwise fetches --depth=1
-    # (ci_runner.go, `fetchDepth := 1`).
-    #
-    # The main-only publish derives every chart version from a walk over the
-    # conventional commits since the commit that last set that version
-    # (chart-version.sh). In a shallow clone that walk is not merely short, it
-    # is EMPTY: at the graft boundary every file reads as newly added, so the
-    # `-S"version: X"` search matches the boundary commit itself, and at depth 1
-    # that is HEAD, whose exclusive HEAD..HEAD range contains nothing. Every
-    # chart then computes "no bump needed" and either silently skips its deploy
-    # or fails the action outright. A bounded depth only trades a stuck version
-    # for a wrong one.
-    #
-    # A runner snapshot persists the clone, so every run in this shared
-    # namespace must use the same depth. Full history also matches the
-    # assumption made by check-commit-msg-ascii.sh and other history logic.
-    #
-    # Cost is a cold-fetch-only ~152MB (12M -> 164M for this repo's 12k commits
-    # under the default blob:none filter), and the snapshot carries it after.
-    # This replaces a hand-rolled `git fetch --unshallow` that used to live in
-    # deploy's steps: the runner does the same thing, including the
-    # sticky-depth check, and does it fatally rather than with a warning.
+    # Full history for chart-version and commit guards; see CI runner history.
     git_fetch_depth: 0
-    # Explicit wall clock, sized for a 14-image cold rebuild plus publish.
-    # This moved from the former deploy action with the publish stages.
-    #
-    # Main's deploy for 1e63fee7 was killed at the platform's one-hour default
-    # after all 14 image.push children had succeeded, but before chart publish
-    # and version write-back. A wide rebuild is roughly 10 minutes of tests,
-    # 55 minutes of image work, and 15 minutes of publish and formatting. Two
-    # hours leaves headroom around that load-bearing sequence. Publish steps
-    # are idempotent, so a retry after truncation converges.
-    #
-    # This ceiling also applies to PR and merge-queue runs because BuildBuddy
-    # has no per-stage timeout. Splitting the stages would recreate the
-    # snapshot namespace problem this consolidation removes.
+    # Shared two-hour ceiling; historical timeout evidence is in CI runner history.
     timeout: "2h"
     triggers:
       pull_request:
         branches:
           - "*"
         merge_with_base: false
-      # Merge queue. GitHub pushes each queued candidate to a temporary
-      # gh-readonly-queue/<base>/pr-<n>-<sha> branch and waits for the REQUIRED
-      # checks to report on it. Those arrive as PUSH events, not pull_request
-      # ones, so without this trigger the queue would wait forever on a check
-      # that never runs, which blocks every merge in the repo. A BuildBuddy
-      # branch pattern's `*` matches across `/`, so one entry covers every base.
-      #
-      # Scoped to the queue prefix deliberately: a bare "*" here would run
-      # pr-checks on every push to every feature branch, on top of the
-      # pull_request run, which is the opposite of why the queue is being
-      # enabled.
-      #
-      # `main` is here to gate and publish, not merely to seed. The same action
-      # runs the full tests before its main-only deploy stages, then saves the
-      # continuously refreshed default-branch snapshot that new branches use.
+      # Queue candidates arrive as pushes; keep the wildcard trigger.
       push:
         branches:
           - "gh-readonly-queue/*"
           - "main"
     steps:
       - run: |
-          # errexit is LOAD-BEARING. A BuildBuddy step is one shell script and
-          # the action's status is the LAST command's, so without -e a failing
-          # `bazel test` followed by a passing image build reports GREEN. That
-          # was structurally impossible while these were separate actions.
-          # -u catches a typo'd variable rather than expanding it to empty and
-          # silently skipping a guard, so optional secrets use ${VAR:-}.
+          # Any failed stage must stop this single workflow shell.
           set -eu
 
-          # Disk high-water sampling. `disk: 120GB` above was set in 2026-07
-          # (db9ea2ce0) for actions that no longer exist in that shape, and
-          # nothing has measured what this runner actually uses since.
-          # Costs nothing: no bytes, no cache traffic, two lines of log.
-          #
-          # These are BETWEEN-STAGE samples, so they UNDERSTATE the true peak,
-          # which happens inside a bazel build. Read the minimum "Avail" across
-          # runs as an upper bound on free space, not as the exact headroom, and
-          # do not shrink the reservation to a number these samples only just
-          # clear. Snapshot restore cost tracks workspace CONTENT, not this
-          # reservation, so shrinking it saves no download bytes either way.
-          # Composition sampling, added 2026-08-28. `df` gives the total but not
-          # what is in it, and nothing has ever measured that. It is the number
-          # that matters now: over the 6 days to 2026-08-28 cold runner
-          # restores were 2.7 TB of the group's 4.5 TB, 161 of them at 15 to
-          # 20 GB each, and a cold pr-checks VM reports 38G used before it runs
-          # a single step. Cutting the restore unit is worth more than any
-          # remaining test-tree or affected-targets work.
-          #
-          # The first named suspect is REFUTED, and this is what refuted it.
-          # #5397 guessed the raw download cache, `content_addressable/`, which
-          # nothing GCs. Candidate 76ac21dd answered in one run: HOME on a
-          # runner is /home/buildbuddy/workspace/.home, and the whole bazel
-          # cache under it is 187M. /var/lib/docker is 4.0K. All 19G is inside
-          # /home/buildbuddy/workspace, and a guessed path list cannot say
-          # where, so this walks the tree to depth 3 instead of naming paths.
-          #
-          # Costs no cache traffic: du reads metadata, uploads nothing.
+          # Between-stage samples understate peaks; see CI runner history.
 
           # ---- snapshot hygiene ------------------------------------------
-          # Drop bazel's reusable-sandbox stash before the runner snapshots
-          # this VM. `common --reuse_sandbox_directories` (preset.bazelrc)
-          # keeps emptied sandbox directories around so a later LOCAL action
-          # skips the mkdir and symlink work. On this repo local execution is
-          # only the `no-remote-exec` apko actions, everything else is on RBE,
-          # and the stash holds no input and no output: it is scratch that a
-          # cold start pays for and cannot use.
-          #
-          # Measured on candidate 9e29fc49 (#5401's depth-3 probe), identical
-          # at the start and the end of the run:
-          #
-          #    15G  output-base/external          the honest closure
-          #   7.8G  output-base/execroot/_main    what makes a warm run warm
-          #   6.8G  output-base/sandbox/sandbox_stash
-          #    30G  /home/buildbuddy/workspace
-          #
-          # Cold restores were 61% of the whole group's download traffic over
-          # the 6 days to 2026-08-28, 161 of them at a uniform 15 to 20 GB, so
-          # 23% off the workspace is worth about 100 GB/day across every lane
-          # at once. Nothing is re-fetched to replace it: the next run just
-          # creates sandbox directories the ordinary way.
-          #
-          # `common:ci --noreuse_sandbox_directories` (.bazelrc) is what stops
-          # the stash being populated. It cannot reclaim what an earlier
-          # snapshot already banked, and every branch inherits main's, so this
-          # removes the directory itself. Only `sandbox_stash`, never the whole
-          # `sandbox` tree, which is where live per-action sandboxes go.
-          #
-          # An EXIT trap, not a last line, so every exit path applies the same
-          # snapshot hygiene. rm ignores errors so it can never turn a green
-          # run red; if the runner layout ever moves, the WORKSPACE lines the
-          # probe prints are what will show it.
           trap 'rm -rf /home/buildbuddy/workspace/output-base/sandbox/sandbox_stash 2>/dev/null || true' EXIT
 
           workspace_breakdown() {
@@ -188,24 +44,12 @@ actions:
 
           echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
 
-          # Authenticate Docker Hub so rules_oci base-image manifest fetches
-          # (ubuntu, osgeo/gdal, python_base, ...) are not subject to the
-          # anonymous ~100-pull/6h quota, which 429s and aborts the build.
+          # Authenticate manifest fetches when the existing optional secret exists.
           if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
             echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${DOCKERHUB_USERNAME:-}" --password-stdin
           fi
 
           # ---- 0. classify the run -----------------------------------------
-          # Every privileged or mutating stage below keys off this one
-          # decision. GIT_BRANCH and GIT_REPO_DEFAULT_BRANCH are set by the
-          # workflow service; comparing them keeps this correct if the default
-          # branch is renamed.
-          #
-          # GIT_PR_NUMBER closes a routing ambiguity. On a pull_request event
-          # GIT_BRANCH is the PR's HEAD branch, so a PR opened from a fork's own
-          # `main` would match a branch-name-only test. The workflow service
-          # formats that variable with %d, so a push is exactly "0" and any PR
-          # is non-zero. A fork's push fires the fork's webhooks, not this one.
           ON_MAIN=false
           SKIP_MAIN_PUBLISH=false
           if [ -n "${GIT_BRANCH:-}" ] &&
@@ -225,27 +69,12 @@ actions:
           fi
 
           # ---- 1. central BUILD ratchet -----------------------------------
-          # Compare semantic entries, not totals, so deleting one legacy entry
-          # cannot pay for a new gazelle exclusion or named-package glob. The
-          # checker fails closed when the base ref is unavailable and tells the
-          # author to move new package ownership into a package-local BUILD.
           base_ref="origin/${GIT_REPO_DEFAULT_BRANCH:-main}"
           git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}" --quiet
           base_ref="$(git merge-base "$base_ref" HEAD)"
 
-          # Suite-shaped genrules are not Bazel tests. Scan every BUILD and
-          # BUILD.bazel file before affected-target selection so a newly added
-          # package cannot omit the verification tag and silently miss CI.
-          # The repository-local AST guard has no scanner artifact dependency.
-          # It reports the number of BUILD files parsed and fails closed on
-          # syntax errors, so zero scan coverage cannot pass silently.
-          python3 ./bazel/tools/ci/verification_genrule_guard.py .
-
-          python3 ./bazel/tools/ci/central_build_ratchet.py "$base_ref" HEAD
-
-          python3 ./bazel/tools/ci/chart_version_guard.py "$base_ref" HEAD
-
-          python3 ./bazel/tools/ci/source_ratchet.py "$base_ref" HEAD
+          # Shared ordered guards stop at the first failure.
+          ./bazel/tools/ci/ratchets.sh "$base_ref" HEAD
 
           commit_format_drift() {
             format_commit_subject="$1"
@@ -253,21 +82,16 @@ actions:
             if git diff --exit-code && [ "$#" -eq 0 ]; then
               echo "All files formatted correctly"
             elif [ "$ON_MAIN" = true ]; then
-              # Main is read-only after publish. Never send an unreviewed
-              # formatting commit directly to the default branch.
+              # Main stays read-only after publish.
               echo "ERROR: Code not formatted or BUILD files out of sync."
               echo "Run 'ci lint' and 'ci regen' on a PR branch; its Format stage auto-commits BUILD changes."
               git --no-pager diff
               exit 1
             else
-              # Auto-commit the drift. The push makes a new head, which runs a
-              # fresh pr-checks; this one is finished either way.
+              # Push drift only on writable PR refs; require checks on the new head.
               echo "Auto-committing formatting fixes..."
               current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-              # A merge-queue candidate lives on a read-only ref, so the push
-              # below would be rejected with an opaque error. Drift here means
-              # the PR's own pr-checks run never committed it (or main moved
-              # under it); say so and fail, which ejects the PR from the queue.
+              # Queue refs are read-only; repair drift on the PR branch.
               case "${GIT_BRANCH:-$current_branch}" in
                 gh-readonly-queue/*)
                   echo "Format drift on merge-queue candidate ${GIT_BRANCH:-$current_branch}; commit it on the PR branch and re-enqueue."
@@ -285,19 +109,13 @@ actions:
               git commit -m "$format_commit_subject"
               git push origin HEAD:"$current_branch"
               echo "Pushed to $current_branch; the new head runs the full pipeline."
-              # Fail THIS run. It reports on the OLD head, and with a merge
-              # queue a green status on the old head lets auto-merge enqueue
-              # it before the push above is seen, merging WITHOUT the
-              # formatting commit (#5089 merged that way and left main
-              # drifted, failing every queue candidate after it). Red on the
-              # superseded head is cosmetic; the new head runs green.
+              # Fail the superseded head; only the new head can pass the gate.
               exit 1
             fi
           }
 
           prepare_go_build_graph() {
-            # Use the repository's pinned Go/proto generator before compiling
-            # new imports. The full multi-language formatter remains below.
+            # Prepare Go/proto registrations before any graph analysis.
             if [ -n "$(git ls-files --others --exclude-standard -- \
               ':(glob)**/BUILD' ':(glob)**/BUILD.bazel')" ]; then
               echo "Untracked BUILD files precede CI generation; a clean checkout is required."
@@ -312,11 +130,7 @@ actions:
             commit_format_drift "style: generate Go build graph" "${new_build_files[@]}"
           }
 
-          # Regenerate image indexes before any Bazel query analyzes them. A
-          # deleted runtime otherwise leaves dangling labels that prevent the
-          # later formatter from ever running. This pure shell generator needs
-          # no Bazel graph. The normal format stage validates and writes back
-          # its changes after the required tests and image build pass.
+          # Regenerate image indexes before any Bazel query analyzes them.
           AUTHOR="$(git log -1 --format='%an')"
           if [ "$ON_MAIN" = false ] &&
              [ "${GIT_PR_NUMBER:-0}" != "0" ] &&
@@ -331,86 +145,30 @@ actions:
           fi
 
           # ---- 1b. tracked Python test reachability -----------------------
-          # This is intentionally outside affected-target selection. A deleted
-          # registration or a newly unowned test file must fail even when the
-          # remaining graph has no dependency edge through which to select it.
-          # The checker asks Bazel for the evaluated srcs graph, so macros and
-          # globs count while comments, data, and unrelated deps do not.
           python3 ./bazel/tools/ci/test_source_reachability.py
 
           # ---- 2. tests ---------------------------------------------------
-          # The PR run uses affected-targets to query a global test-only
-          # dependency universe, making PR feedback cheap. The queue candidate on
-          # gh-readonly-queue/* runs the full //... as the exact gate. This
-          # fallback set (BUILD files, dependency locks, bazel/ tooling,
-          # deleted files) is handled by affected-targets.sh and triggers
-          # //... when the graph shape changes.
-          #
-          # Local ci test and PRs both use affected targets. The queue candidate
-          # is the sole authoritative full //... gate.
           if [[ "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] || [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
             bazel test //... --config=ci --deleted_packages=bazel/tools/python
           else
-            targets_file=$(mktemp)
-            ./bazel/tools/ci/affected-targets.sh "$base_ref" HEAD -- --config=ci --deleted_packages=bazel/tools/python > "$targets_file"
-            target_count=$(grep -c . "$targets_file" || true)
-            if [ "$target_count" -eq 0 ]; then
-              echo "No Bazel targets affected by this PR; skipping bazel test (the queue candidate runs //...)"
-            else
-              echo "Running bazel test on $target_count affected targets"
-              set +e
-              bazel test --config=ci --deleted_packages=bazel/tools/python --target_pattern_file="$targets_file"
-              rc=$?
-              set -e
-              if [ "$rc" -eq 4 ]; then
-                echo "affected subset has no test targets; build succeeded"
-              elif [ "$rc" -ne 0 ]; then
-                exit "$rc"
-              fi
-            fi
+            ./bazel/tools/ci/local-affected-test.sh "$base_ref"
           fi
 
           # ---- 3. deploy on main, prove images everywhere else ------------
-          # The tests above gate every publish. Publishing is
-          # deliberately before the final format check: formatter tool failures
-          # have no bearing on whether tested images are correct, so they must
-          # not stop a good build from shipping. The format result remains fatal
-          # after publish, which still exposes drift on main.
-          #
-          # Credential isolation is unchanged by this routing gate: BuildBuddy
-          # injects secrets for every trusted event, including same-repo events
-          # and collaborator fork PRs, and executes the YAML from the pushed
-          # branch. pr-checks already received GHCR_TOKEN. ON_MAIN only routes
-          # this PR-controlled script: PR events set GIT_BRANCH to the head ref
-          # and GIT_PR_NUMBER non-zero, while push events never set a PR number.
           if [ "$ON_MAIN" = true ] && [ "$SKIP_MAIN_PUBLISH" = false ]; then
-            # push.sh.tpl decides per chart whether to publish and skips a
-            # version already present in the registry, so retries are
-            # idempotent. Each chart records its computed version under
-            # .chart-version-records; one write-back commit lands all records
-            # after the concurrent image and chart work finishes.
-            #
-            # push-changed.sh builds images with layers left in CAS, reads each
-            # content digest, and runs only pushes whose content is absent. It
-            # then publishes charts after their images, avoiding the large
-            # runfiles download caused by `bazel run //bazel/images:push_all`.
+            # Publish changed images before chart versions are written back.
             ./bazel/images/push/push-changed.sh
 
             echo "DISK pr-checks after publish:"; df -h /
 
-            # The owner token satisfies main's existing ruleset bypass for the
-            # generated chart-version commit. BuildBuddy's runner identity
-            # cannot bypass the required `pr-checks` status on its own.
+            # Keep the existing authenticated chart-writeback path on main only.
             git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi-org/homelab.git"
             ./bazel/helm/write-back-versions.sh .chart-version-records --record-publication
           elif [ "$ON_MAIN" = false ]; then
-            # PR and merge-queue branches publish nothing. This build proves
-            # the images while --remote_download_minimal leaves layers in CAS.
+            # PR and queue prove image builds without publishing.
             bazel build //bazel/images:push_all --config=ci
 
-            # Hard-fails on newly introduced duplicate env var names within a
-            # container. The API server collapses duplicates on apply, which
-            # otherwise leaves ArgoCD in a permanent phantom-OutOfSync state.
+            # Reject newly duplicated container environment names.
             ./bazel/helm/ci-diff-manifests.sh
           else
             echo "Skipping publish for the chart-version write-back: $COMMIT_SUBJECT"
@@ -420,99 +178,55 @@ actions:
           echo "DISK pr-checks after images:"; df -h /
 
           # ---- 4. format, generators, drift -------------------------------
-          # The chart-version write-back already ran its mutating stage. Tests
-          # above still run to keep the main snapshot fresh, but another format
-          # or publish would only create a loop or repeat expensive work.
           if [ "$ON_MAIN" = true ] && [ "$SKIP_MAIN_PUBLISH" = true ]; then
             echo "Skipping format for generated main commit."
           else
-            # The ci-format-bot guard skips THIS STAGE ONLY, never the run. The
-            # old standalone action could `exit 0` here because that ended only
-            # the format check; doing the same now would skip the tests, and the
-            # bot's commit is frequently the head that ends up merged.
+            # Format-bot heads skip formatting only; tests still gate them.
             AUTHOR="$(git log -1 --format='%an')"
             if [ "$AUTHOR" = "ci-format-bot" ] &&
                [ "$(git log -1 --format=%s)" = "style: auto-format" ]; then
               echo "HEAD is the ci-format-bot commit; formatting just ran, going straight to tests."
             else
-              # :run_generators runs every committed doc/config generator, so
-              # drift is auto-committed below rather than hard-failing. Single
-              # source of truth for the list: run-generators.sh, which local
-              # pre-commit also uses. The repo-docs and public docs manifests
-              # are genrule outputs (#6446) and never committed.
+              # Run all formatters before source generation and drift writeback.
               bazel run //bazel/tools/format:format --config=ci
 
-              # Pinned source generation runs in its own Bazel invocation,
-              # after every parallel formatter has finished. Only the two
-              # seeded Go stubs are copied; git add -u below remains sufficient.
+              # Copy only the pinned generated Go stubs into tracked sources.
               bazel run //projects/embervm/proto/embervm/node/v1:update_go_stubs --config=ci
 
               # Validate grep-based generate scripts against bazel query
               ./bazel/images/validate-generate-scripts.sh
 
-              # Enforce linear, non-duplicated Atlas migration versions. A
-              # duplicate version or a migration added below the current head
-              # wedges the WHOLE migration pipeline at apply time; atlas migrate
-              # validate does not catch either.
+              # Enforce linear, unique Atlas migration versions.
               ./bazel/tools/format/check-migration-ordering.sh
 
-              # Wrangler Pages (Cloudflare) fails with error 8000111 when commits
-              # in the deployed branch contain non-ASCII characters.
+              # Enforce ASCII commit messages for Cloudflare compatibility.
               ./bazel/tools/git/check-commit-msg-ascii.sh --all origin/main
 
-              # Hook scripts referenced from .claude/settings.json must exist and
-              # be executable; a 644 script exits 126 in sessions, enforcing
-              # nothing.
+              # Hook scripts must exist and be executable.
               ./bazel/tools/hooks/validate-hooks-executable.sh
 
-              # The root README's structural claims must stay real. Runs on the
-              # full checkout (a sandboxed bazel test cannot list projects/* on
-              # RBE); the pure logic is pinned by a bazel test.
+              # Validate root README structural claims against the working tree.
               python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
 
-              # References to the retired ADR tree are forbidden. Decision
-              # rationale now lives in each domain's ARCHITECTURE.md. Check the
-              # working tree because CI clones with --depth=1.
+              # Check working-tree links, including on full-history clones.
               python3 ./bazel/tools/format/doc_links/check_doc_links.py
 
-              # Two Helm invariants that fail silently and deploy the wrong
-              # thing: a vendored charts/*.tgz gone stale against its file://
-              # source (the tarball is what bazel ships, so the source fix never
-              # deploys), and a chart pinning a bazel-built image by its
-              # build-timestamped tag (push-changed.sh skips content-identical
-              # images, so that tag is often never pushed: ImagePullBackOff).
-              # Read-only here on purpose: sync-helm-deps.sh needs the helm CLI,
-              # which this runner does not have. Sync locally with ci regen
-              # for chart metadata changes, or run the script directly for
-              # library-template-only edits. Pure logic pinned by a bazel test.
+              # Check vendored Helm dependencies and Bazel image tag invariants.
               python3 ./bazel/tools/format/helm_deps/check_helm_deps.py
 
               commit_format_drift "style: auto-format"
             fi
           fi
 
-          # Read-only generated-source acceptance also runs on ci-format-bot
-          # heads and chart writebacks. A drifted PR exits above after pushing;
-          # its fresh head must pass these checks. Main and queue still cannot
-          # push repairs. Explicit labels leave per-target Linux evidence.
-          # --remote_download_outputs=toplevel overrides --config=ci's
-          # --remote_download_minimal for this build only, so the two generated
-          # stubs are on disk for :check_go_stubs. Without it a remote-cache
-          # hit leaves its runfiles dangling and the check fails on a
-          # ci-format-bot or queue head (#6961). Same fix as
-          # bazel/images/push/push-changed.sh's digest manifest build.
+          # Check generated sources on every head, including bot and queue heads.
+          # Download stubs even on cache hits so the runfiles check sees them.
           bazel build --config=ci --remote_download_outputs=toplevel \
             //projects/embervm/proto/embervm/node/v1:node_go_src \
             //projects/embervm/proto/embervm/node/v1:nodev1
           bazel test --config=ci //bazel/helm/gazelle:gazelle_test
           bazel run //projects/embervm/proto/embervm/node/v1:check_go_stubs --config=ci
 
-          # Advisory STPA freshness. The checker reads the commit-stamp header
-          # emitted by docs/agents/stpa.md BLOCK A and compares only covered
-          # system files, excluding the generated STPA artifacts themselves.
-          # Capture its status through `||` so stale findings, incomplete git
-          # history, malformed metadata, and checker errors can never mask or
-          # block any of the existing fatal format checks above.
+          # STPA freshness remains advisory, including checker errors.
           stpa_freshness_rc=0
           python3 ./bazel/tools/format/check_stpa_freshness.py || stpa_freshness_rc=$?
           case "$stpa_freshness_rc" in
@@ -522,9 +236,6 @@ actions:
           esac
 
           # ---- 6. pnpm frozen-lockfile validation -----------------------
-          # Keep this after every bazel invocation. pnpm materializes a root
-          # node_modules directory, which is not excluded by .bazelignore and
-          # must not change the workspace Bazel analyses earlier in this run.
           git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}" --quiet
           if git diff --name-only \
             "origin/${GIT_REPO_DEFAULT_BRANCH:-main}" HEAD -- \
@@ -537,7 +248,6 @@ actions:
           fi
 
           # Browser evidence runs after Bazel, since pnpm materializes node_modules.
-          # Uploads include failure reports through BuildBuddy's artifacts directory.
           if git diff --name-only "$base_ref" HEAD -- \
             projects/monolith/grimoire/ projects/monolith/frontend/ \
             projects/monolith/dev/grimoire/ bazel/requirements/ pnpm-lock.yaml \
@@ -548,7 +258,4 @@ actions:
           echo "DISK pr-checks end:"; df -h /
           workspace_breakdown "pr-checks end"
 
-  # Historical note: "Push images", the last separate publish action, ran in
-  # parallel with Test until 2026-08-09. Publishing now lives in pr-checks'
-  # ON_MAIN stage; PR and merge-queue branches prove image builds and publish
-  # nothing.
+  # Separate publish-action history is recorded in bazel/ARCHITECTURE.md#ci-runner-history.
