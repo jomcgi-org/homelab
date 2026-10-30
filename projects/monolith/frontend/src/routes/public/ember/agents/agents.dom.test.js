@@ -12,6 +12,12 @@ import { sessionRestoreMs } from "$lib/public/fcstory/metrics.js";
 import source from "$lib/public/agentstory/AgentScrollStory.svelte?raw";
 import styles from "$lib/public/agentstory/agentstory.css?raw";
 
+// The ships page mounted by the shared route harness imports MapLibre's
+// worker URL, which the Bazel test sandbox cannot resolve.
+vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
+  default: "/test-worker.js",
+}));
+
 vi.mock(
   "$app/state",
   () => import("../../../../../test/profile-page.svelte.js"),
