@@ -1,6 +1,5 @@
 <script>
   import "$lib/public/styles/technical-drawing.css";
-  import SchemePreference from "$lib/public/components/SchemePreference.svelte";
   import Trail from "$lib/public/components/Trail.svelte";
   import {
     facetHref,
@@ -48,7 +47,6 @@
   />
 </svelte:head>
 
-<SchemePreference />
 <main class="td sheet updates-page">
   <div class="frame">
     <h1 class="sr-only">Product updates</h1>

@@ -42,15 +42,15 @@
   });
 </script>
 
-<!-- Fresh child pages need preference restoration even without a toggle. -->
-<SchemePreference />
-
 {#snippet backLink()}
   <a class="back-to-dashboard td-chrome" href="/">&larr; dashboard</a>
 {/snippet}
 
-{#if showBack}{@render backLink()}{/if}
-{@render children()}
+<!-- Own preference restoration for every child page, including its toggles. -->
+<SchemePreference>
+  {#if showBack}{@render backLink()}{/if}
+  {@render children()}
+</SchemePreference>
 
 <style>
   /* Token-only chrome must not match body:has(.td): full-screen children

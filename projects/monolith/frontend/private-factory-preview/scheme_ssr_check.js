@@ -23,34 +23,38 @@ try {
   const { default: App } = await server.ssrLoadModule(
     "/private-factory-preview/App.svelte",
   );
-  const { fixtureData } = await server.ssrLoadModule(
+  const { default: SchemeToggle } = await server.ssrLoadModule(
+    "/src/lib/public/components/SchemeToggle.svelte",
+  );
+  const { fixtureData, routes } = await server.ssrLoadModule(
     "/private-factory-preview/fixtures.js",
   );
   const { page } = await server.ssrLoadModule(
     "/private-factory-preview/state.js",
   );
   const records = [];
-  for (const [view, path, count] of [
-    ["legacy", "/ordinary", 1],
-    ["updates", "/updates", 2],
-    ["board", "/factory", 2],
+  // Render independent documents repeatedly so context cannot leak across SSR
+  // requests. Public toggles must still bootstrap after a private layout render.
+  for (const [view, path] of [
+    ["public-toggle", "/public"],
+    ...Object.entries(routes),
+    ["public-toggle", "/public"],
   ]) {
     page.set({
       url: new URL(`https://private.example.test${path}`),
       data: {},
       error: null,
     });
-    const result = render(App, {
-      props: { view, data: view === "legacy" ? {} : fixtureData(view) },
-    });
+    const result =
+      view === "public-toggle"
+        ? render(SchemeToggle)
+        : render(App, { props: { view, data: fixtureData(view) } });
     const scripts = [
       ...result.head.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g),
     ]
       .map((match) => match[1])
       .filter((script) => script.includes('localStorage.getItem("td-theme")'));
-    // Reusing the component shares source, not head deduplication. Each consumer
-    // emits an idempotent script; keep the layout's script for toggle-free pages.
-    assert.equal(scripts.length, count, `${view}: SSR preference scripts`);
+    assert.equal(scripts.length, 1, `${view}: SSR preference scripts`);
     assert.ok(!result.body.includes('localStorage.getItem("td-theme")'));
     if (process.argv[2])
       writeFileSync(
