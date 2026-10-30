@@ -171,9 +171,11 @@ def _events(db, key: str, task_id: str, application=None) -> dict[str, dict]:
     for row in rows:
         detail = json.loads(row.detail_json)
         if detail.get("delivery_key") == key:
-            if row.action.startswith("rollback_window_"):
-                if detail.get("application") != application:
-                    continue
+            if (
+                row.action.startswith("rollback_window_")
+                and detail.get("application") != application
+            ):
+                continue
             result[row.action] = detail
     return result
 
@@ -284,6 +286,8 @@ def reserve(
         if judged["verdict"] != "rollout_failed":
             return {"state": "unknown"}
         evidence = judged["failure"]
+        if delivery.get("source_checked") is not True:
+            return {"state": "source_unknown"}
         receipt = controls._receipt(db, delivery["task_id"])
         if (
             receipt is None
