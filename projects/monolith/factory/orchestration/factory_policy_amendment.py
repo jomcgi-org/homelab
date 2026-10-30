@@ -16,7 +16,7 @@ from factory.execution.models import AgentSession, PendingMessage
 from factory.orchestration import factory_controls as controls, graph
 from factory.orchestration import factory_funding_limits as funding
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
-from factory.orchestration.models import SwarmNodeRun
+from factory.orchestration.models import SwarmNodeRun, SwarmPlanNode
 
 FIELDS = frozenset(
     {
@@ -32,11 +32,120 @@ FIELDS = frozenset(
 ACTION = "operator_policy_amendment"
 
 
+def _model_restriction_preview(
+    db, control, row, task, policy, removed, direction, starts, runs
+):
+    if (
+        not isinstance(removed, list)
+        or not 1 <= len(removed) <= 16
+        or any(not isinstance(m, str) or m != m.strip() or not m for m in removed)
+        or len(set(removed)) != len(removed)
+        or not set(removed) <= set(policy["allowed_models"])
+    ):
+        raise ValueError("model_restriction_requires_existing_models")
+    if (
+        controls._quiescence_refusal(db, row.task_id)
+        or db.exec(
+            select(PendingMessage.id)
+            .join(AgentSession)
+            .where(
+                AgentSession.local_session_id.startswith(
+                    f"factory:{row.task_id}:", autoescape=True
+                ),
+            )
+        ).first()
+        is not None
+    ):
+        raise ValueError("amendment_unresolved_execution")
+    nodes = db.exec(
+        select(SwarmPlanNode)
+        .where(SwarmPlanNode.task_id == row.task_id)
+        .order_by(SwarmPlanNode.id)
+    ).all()
+    pending = funding.pending(db, row.task_id)
+    used = {
+        policy.get("conductor_model"),
+        policy.get("worker_model"),
+        policy.get("reviewer_model"),
+        policy.get("backlog_refill", {}).get("model"),
+        task.conductor_model,
+        task.start_model,
+        *(node["model"] for node in graph.load_graph(row.task_id, session=db)),
+    }
+    if policy.get("backlog_refill", {}).get("enabled"):
+        from factory.orchestration.backlog_refill_policy import normalize
+
+        used.add(normalize(policy)["model"])
+    if pending:
+        used.add(funding.review_model(pending))
+    if set(removed) & used:
+        raise ValueError("model_restriction_model_in_use")
+    # Validate the restriction itself. Full policy normalization sorts the
+    # allowlist and fills defaults, which would change unrelated pinned fields.
+    amended = funding.restrict_models(policy, removed)
+    if not amended["allowed_models"] or any(
+        not pool for pool in amended.get("model_pools", {}).values()
+    ):
+        raise ValueError("model_restriction_empty_pool")
+    prior = json.loads(row.direction_json or "{}").get("model_restriction", {})
+    result = {
+        "receipt_id": row.id,
+        "task_id": row.task_id,
+        "expected_version": control.version,
+        "control_state": control.state,
+        "expected_revision": graph.current_version(row.task_id, session=db),
+        "restriction_only": True,
+        "removed_models": sorted(set(removed) | set(prior.get("removed_models", []))),
+        "previous_policy": policy,
+        "policy_overlay": {
+            key: amended[key]
+            for key in ("allowed_models", "model_pools")
+            if amended.get(key) != policy.get(key)
+        },
+        "direction": direction,
+        "stays_paused": True,
+        "accounting": controls._accounting(starts),
+        "pending_funding_request": pending,
+        "authority_binding": {
+            action: funding.latest(db, row.task_id, action)
+            for action in (
+                "funding_granted",
+                controls.TASK_RECOVERY_ACTION,
+                "progress_continuation_authorized",
+                "progress_continuation_lease",
+                "landing_recovery_requested",
+                "landing_recovery_started",
+            )
+        },
+        "state_sha256": hashlib.sha256(
+            dumps(
+                {
+                    "receipt": row.model_dump(mode="json"),
+                    "task": task.model_dump(mode="json"),
+                    "nodes": [node.model_dump(mode="json") for node in nodes],
+                    "starts": [
+                        start.model_dump(mode="json")
+                        for start in sorted(starts, key=lambda r: r.id)
+                    ],
+                    "runs": [
+                        run.model_dump(mode="json")
+                        for run in sorted(runs, key=lambda r: r.id)
+                    ],
+                }
+            ).encode()
+        ).hexdigest(),
+    }
+    result["preview_sha256"] = hashlib.sha256(dumps(result).encode()).hexdigest()
+    return result
+
+
 def _preview(db, control, receipt_id, overlay, direction):
     if (
         not isinstance(overlay, dict)
         or not overlay
-        or not set(overlay) <= FIELDS | {"landing_hold", "nonrenewable_recovery"}
+        or not set(overlay)
+        <= FIELDS | {"landing_hold", "nonrenewable_recovery", "remove_models"}
+        or ("remove_models" in overlay and set(overlay) != {"remove_models"})
     ):
         raise ValueError("unsupported_policy_amendment")
     if "landing_hold" in overlay and overlay["landing_hold"] is not True:
@@ -85,6 +194,18 @@ def _preview(db, control, receipt_id, overlay, direction):
     if decision_in_flight(db, row.id):
         raise ValueError("amendment_decision_in_flight")
     policy = funding.effective_policy(db, row)
+    if "remove_models" in overlay:
+        return _model_restriction_preview(
+            db,
+            control,
+            row,
+            task,
+            policy,
+            overlay["remove_models"],
+            direction,
+            starts,
+            runs,
+        )
     amended = controls.validate_policy(
         {**policy, **{k: v for k, v in overlay.items() if k in FIELDS}}
     )
@@ -193,9 +314,18 @@ def apply(
                 },
             )
             row.direction_json = dumps(previous_direction)
-        # A restrictive hold is not funding or execution authority. In
-        # particular, never refresh an expired lease while recording it.
-        if not proposal["hold_only"]:
+        # Holds and model restrictions grant no funding or execution authority.
+        # Never refresh an expired lease while recording either restriction.
+        if proposal.get("restriction_only"):
+            previous_direction = json.loads(row.direction_json or "{}")
+            previous_direction["model_restriction"] = {
+                "removed_models": proposal["removed_models"],
+                "actor": actor,
+                "request_key": request_key,
+                "reason": direction,
+            }
+            row.direction_json = dumps(previous_direction)
+        elif not proposal["hold_only"]:
             policy = {**proposal["previous_policy"], **proposal["policy_overlay"]}
             # Preserve any earlier funding overlay when writing its next revision.
             existing = funding.amendment(db, row.task_id)
@@ -257,6 +387,12 @@ def apply(
             "preview_sha256": proposal["preview_sha256"],
         }
         controls._audit(
-            db, actor, ACTION, task_id=row.task_id, request=request, result=result
+            db,
+            actor,
+            ACTION,
+            task_id=row.task_id,
+            request=request,
+            result=result,
+            **({"proposal": proposal} if proposal.get("restriction_only") else {}),
         )
         return result

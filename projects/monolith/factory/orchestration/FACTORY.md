@@ -3088,6 +3088,23 @@ Changing the timeout is refused. The recovery grant and its independent work-tur
 ceiling remain unchanged: changing a policy cap does not authorize more recovery
 starts. Recording a hold alone retains its separate restrictive semantics.
 
+### Restrict receipt model choices
+
+`factory_amend_policy` accepts a separate `{"remove_models": ["spark"]}` overlay
+to remove unused models from one paused, quiescent receipt. Preview shows the
+allowlist and pool changes; apply requires its digest and a request key. It
+filters names in place without reordering the survivors or changing scalar
+defaults. A model used by a current graph pin, task choice, scalar default or
+pending funding review cannot be removed. Explicit pools must remain nonempty.
+No other policy or hold field can accompany this overlay.
+
+The restriction is stored on that receipt and applied after funding overlays.
+The original policy snapshot, retired graph nodes and historical attempts remain
+unchanged. Holds, accounting, generation, recovery grants, funding reviews and
+deadlines are preserved, including expired deadlines. Apply leaves the task
+paused and creates no funding, execution or lease authority. Its audit records
+the reviewed preview and supports replay after a lost response.
+
 ### Explicit progress continuation of a recovered artifact
 
 The `progress_continuation` mode of `factory_amend_policy` is a standing-human

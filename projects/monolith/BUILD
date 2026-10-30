@@ -9501,6 +9501,18 @@ py_test(
 )
 
 py_test(
+    name = "factory_model_restriction_test",
+    srcs = ["factory/orchestration/factory_model_restriction_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_runtime_meter_test",
     srcs = ["factory/orchestration/factory_runtime_meter_test.py"],
     imports = ["."],

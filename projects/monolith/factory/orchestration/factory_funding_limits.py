@@ -74,7 +74,30 @@ def amendment(db, task_id):
 def effective_policy(db, row):
     policy = json.loads(row.policy_json)
     grant = amendment(db, row.task_id)
-    return {**policy, **grant["policy_overlay"]} if grant else policy
+    if grant:
+        policy = {**policy, **grant["policy_overlay"]}
+    restriction = json.loads(row.direction_json or "{}").get("model_restriction")
+    return (
+        restrict_models(policy, restriction["removed_models"])
+        if restriction
+        else policy
+    )
+
+
+def restrict_models(policy, removed_models):
+    """Apply the receipt's restriction after grants without changing pool order."""
+    result = {
+        **policy,
+        "allowed_models": [
+            m for m in policy["allowed_models"] if m not in removed_models
+        ],
+    }
+    if "model_pools" in policy:
+        result["model_pools"] = {
+            role: [m for m in pool if m not in removed_models]
+            for role, pool in policy["model_pools"].items()
+        }
+    return result
 
 
 def objective_task_ids(db, receipt):
