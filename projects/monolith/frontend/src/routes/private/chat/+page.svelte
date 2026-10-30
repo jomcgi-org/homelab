@@ -717,7 +717,7 @@
   <title>Knowledge Explorer</title>
 </svelte:head>
 
-<div class="explorer">
+<div class="td explorer">
   <div class="explorer-body">
     <aside class="chat-panel">
       <header class="explorer-header">
@@ -812,8 +812,8 @@
         <div class="drawer-meta">
           <span
             class="drawer-type"
-            style="background: {TYPE_COLORS[drawerNote.type]?.border ||
-              '#ffd54f'}">{drawerNote.type}</span
+            style="border-color: {TYPE_COLORS[drawerNote.type]?.border ||
+              'currentColor'}">{drawerNote.type}</span
           >
           {#each drawerNote.tags || [] as tag}
             <span class="drawer-tag">{tag}</span>
@@ -849,10 +849,13 @@
     margin: 0;
     padding: 0;
   }
+  /* The explorer is a sheet split in two: the chat column and the drawn
+     graph. Chrome reads from the sheet tokens so it follows the scheme. */
   .explorer {
     height: 100vh;
-    background: #faf8f4;
-    color: #1a1a1a;
+    background: var(--sheet);
+    color: var(--ink);
+    font-family: var(--font-ui);
   }
   .explorer-body {
     display: flex;
@@ -865,20 +868,20 @@
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    border-right: 2px solid #1a1a1a;
-    background: #fffef7;
-    font-family: monospace;
+    border-right: 1px solid var(--stroke);
+    background: var(--sheet);
+    font-family: var(--font-code);
     font-size: 13px;
   }
   .explorer-header {
-    background: #ffd54f;
-    color: #1a1a1a;
-    font-family: monospace;
+    background: var(--band);
+    color: var(--ink-2);
+    font-family: var(--font-code);
     padding: 4px 12px;
     display: flex;
     align-items: center;
     flex-shrink: 0;
-    border-bottom: 2px solid #1a1a1a;
+    border-bottom: 1px solid var(--stroke);
   }
   .header-title {
     font-weight: 700;
@@ -899,7 +902,7 @@
     text-align: right;
   }
   .chat-msg--assistant {
-    border-left: 3px solid #ffd54f;
+    border-left: 3px solid var(--accent-ink);
     padding-left: 10px;
   }
   .chat-role {
@@ -937,13 +940,13 @@
     margin: 2px 0;
   }
   .chat-text :global(code) {
-    background: #e5e0d8;
+    background: var(--band);
     padding: 1px 3px;
     font-size: 12px;
   }
   .chat-text :global(pre) {
-    background: #1a1a1a;
-    color: #f5f0e8;
+    background: var(--band);
+    color: var(--ink);
     padding: 6px;
     overflow-x: auto;
     font-size: 12px;
@@ -974,13 +977,13 @@
     padding: 12px;
   }
   .chat-input-bar {
-    border-top: 1.5px solid #1a1a1a;
+    border-top: 1px solid var(--stroke);
     display: flex;
   }
   .chat-input-bar input {
     flex: 1;
     padding: 12px;
-    font-family: monospace;
+    font-family: var(--font-code);
     font-size: 13px;
     border: none;
     background: transparent;
@@ -988,11 +991,11 @@
   }
   .chat-input-bar button {
     padding: 12px 14px;
-    font-family: monospace;
+    font-family: var(--font-code);
     font-weight: 700;
     font-size: 14px;
     border: none;
-    border-left: 1.5px solid #1a1a1a;
+    border-left: 1px solid var(--stroke);
     background: transparent;
     cursor: pointer;
   }
@@ -1007,7 +1010,7 @@
     position: relative;
   }
   .graph-empty {
-    font-family: monospace;
+    font-family: var(--font-code);
     text-align: center;
     padding: 40px;
     opacity: 0.4;
@@ -1024,9 +1027,9 @@
     stroke-linejoin: round;
   }
   .node-label {
-    font-family: monospace;
+    font-family: var(--font-code);
     font-weight: 700;
-    fill: #1a1a1a;
+    fill: var(--ink);
     pointer-events: none;
   }
   .node-label--discarded {
@@ -1066,13 +1069,12 @@
     top: 0;
     bottom: 0;
     width: 75vw;
-    background: #fffef7;
-    border-left: 2px solid #1a1a1a;
+    background: var(--sheet);
+    border-left: 1px solid var(--ink);
     overflow-y: auto;
     padding: 1.5rem;
-    font-family: monospace;
+    font-family: var(--font-code);
     z-index: 100;
-    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.1);
     animation: slideIn 200ms ease-out;
   }
   @keyframes slideIn {
@@ -1091,7 +1093,7 @@
     border: none;
     font-size: 1.5rem;
     cursor: pointer;
-    font-family: monospace;
+    font-family: var(--font-code);
     line-height: 1;
   }
   .drawer-title {
@@ -1108,7 +1110,8 @@
     margin-bottom: 1rem;
   }
   .drawer-type {
-    color: #1a1a1a;
+    border-left: 2px solid currentColor;
+    color: var(--ink);
     padding: 0.15rem 0.5rem;
     font-size: 0.75rem;
     text-transform: uppercase;
@@ -1116,14 +1119,14 @@
     font-weight: 700;
   }
   .drawer-tag {
-    background: #e5e0d8;
+    background: var(--band);
     padding: 0.15rem 0.5rem;
     font-size: 0.75rem;
   }
   .drawer-content {
     font-size: 0.85rem;
     line-height: 1.6;
-    border-top: 1px solid #c0b8a8;
+    border-top: 1px solid var(--line);
     padding-top: 1rem;
   }
   .drawer-content :global(h1),
@@ -1138,13 +1141,13 @@
     margin: 0.5rem 0;
   }
   .drawer-content :global(code) {
-    background: #e5e0d8;
+    background: var(--band);
     padding: 0.1rem 0.3rem;
     font-size: 0.8rem;
   }
   .drawer-content :global(pre) {
-    background: #1a1a1a;
-    color: #f5f0e8;
+    background: var(--band);
+    color: var(--ink);
     padding: 0.75rem;
     overflow-x: auto;
     font-size: 0.8rem;
@@ -1172,22 +1175,22 @@
   }
   .drawer-content :global(th),
   .drawer-content :global(td) {
-    border: 1px solid #c0b8a8;
+    border: 1px solid var(--line);
     padding: 0.4rem 0.6rem;
     text-align: left;
   }
   .drawer-content :global(th) {
-    background: #f0ebe3;
+    background: var(--band);
     font-weight: 700;
     text-transform: uppercase;
     font-size: 0.75rem;
     letter-spacing: 0.03em;
   }
   .drawer-content :global(tr:nth-child(even)) {
-    background: #f8f5ef;
+    background: var(--band);
   }
   .drawer-edges {
-    border-top: 1px solid #c0b8a8;
+    border-top: 1px solid var(--line);
     padding-top: 1rem;
     margin-top: 1rem;
   }

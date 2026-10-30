@@ -39,12 +39,12 @@
   .statusbar {
     position: relative;
     height: 32px;
-    background: #f5d90a;
-    border-bottom: 1.5px solid #141414;
+    background: var(--band, #f5d90a);
+    border-bottom: 1px solid var(--stroke, #141414);
     overflow: hidden;
     z-index: 4;
-    font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
-    color: #141414;
+    font-family: var(--font-code, ui-monospace, monospace);
+    color: var(--ink-2, #141414);
   }
   .statusbar-track {
     display: flex;
@@ -65,8 +65,7 @@
     content: "";
     width: 5px;
     height: 5px;
-    background: #141414;
-    border-radius: 50%;
+    background: var(--ink-2, #141414);
     display: inline-block;
     margin-right: 4px;
   }

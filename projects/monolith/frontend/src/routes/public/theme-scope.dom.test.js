@@ -117,8 +117,10 @@ describe("rendered theme scopes", () => {
     const ember = emberTarget.querySelector(".td.sheet");
     expect(grimoire).not.toBeNull();
     expect(ember).not.toBeNull();
-    expect(token(grimoire, "--grim-accent")).toBe("#33507a");
-    expect(token(grimoire, "--accent")).toBe("#33507a");
+    // The public Grimoire pages sit on the sheet, so the ledger's roles
+    // resolve to the sheet's tokens through the bridge in theme.css.
+    expect(token(grimoire, "--grim-accent")).toBe(token(ember, "--accent-ink"));
+    expect(token(grimoire, "--accent")).toBe(token(ember, "--accent-ink"));
     expect(token(ember, "--sheet")).toBe("#ffffff");
     expect(token(ember, "--ink")).toBe("#26231c");
     expect(emberTarget.querySelector(".ember-site")).toBeNull();

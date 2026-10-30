@@ -34,65 +34,55 @@
 </div>
 
 <style>
+  /* A small panel at the foot of the sheet: the undo offer is a control
+     row, drawn like any other. */
   .toast {
     position: fixed;
     bottom: 1.25rem;
     left: 50%;
-    transform: translateX(-50%);
+    z-index: 200;
     display: inline-flex;
     align-items: center;
     gap: 1rem;
-    padding: 0.5rem 0.75rem 0.5rem 1rem;
-    background: var(--bg);
-    border: 0.06rem solid var(--border);
-    border-radius: 4px;
-    font-family: var(--font);
-    font-size: 0.8rem;
-    color: var(--fg);
-    z-index: 200;
     max-width: min(36rem, calc(100vw - 2rem));
+    padding: 0.5rem 0.75rem 0.5rem 1rem;
+    border: 1px solid var(--ink);
+    background: var(--sheet);
+    color: var(--ink);
+    font: 0.8rem var(--font-code);
+    transform: translateX(-50%);
   }
 
   .toast-label {
-    white-space: nowrap;
     overflow: hidden;
+    white-space: nowrap;
     text-overflow: ellipsis;
   }
 
   .toast-undo {
-    font-family: var(--font);
-    font-size: 0.65rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--fg);
-    background: transparent;
-    border: 0.04rem solid var(--border);
     padding: 0.3rem 0.6rem;
-    border-radius: 2px;
+    border: 1px solid var(--stroke);
+    background: var(--band);
+    color: var(--accent-ink);
+    font: 0.75rem var(--font-code);
     cursor: pointer;
   }
 
   .toast-undo:hover {
-    background: var(--surface);
-  }
-
-  .toast-undo:focus-visible {
-    outline: 1.5px solid var(--fg);
-    outline-offset: 2px;
+    color: var(--ink);
   }
 
   .toast-dismiss {
-    background: transparent;
-    border: none;
-    color: var(--fg-tertiary);
-    font-size: 1rem;
+    padding: 0 0.25rem;
+    border: 0;
+    background: none;
+    color: var(--ink-2);
+    font: 1rem var(--font-code);
     line-height: 1;
     cursor: pointer;
-    padding: 0 0.25rem;
   }
 
   .toast-dismiss:hover {
-    color: var(--fg);
+    color: var(--ink);
   }
 </style>

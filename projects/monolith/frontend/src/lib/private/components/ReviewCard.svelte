@@ -173,198 +173,157 @@
 </article>
 
 <style>
-  /* Neo-brutalist treatment: 2px solid black borders, pure white surface,
-     hard 0px corners, explicit monospace everywhere (so h2 does not fall
-     back to the browser serif default), bright accent fills for the type
-     badge and danger action, and inverted hover on buttons. Matches the
-     hard-edge / mono / uppercase language of Nav.svelte and the
-     --border-heavy token. */
-
+  /* The card is the panel's body: a record partitioned by rules. The head
+     row names the kind and the item, the metadata is a spec table, bodies
+     are ruled sections, and the decisions close the record as a divided
+     row of controls. */
   .card {
-    border: var(--border-heavy);
-    background: var(--bg);
-    padding: 1.25rem 1.5rem;
-    font-family: var(--font-mono);
-    color: var(--fg);
     display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    /* Single-screen layout: fill the parent's remaining height so the
-       review surface fits in one viewport. Body subpanels scroll
-       internally; actions stay pinned at the bottom. */
     flex: 1 1 auto;
+    flex-direction: column;
     min-height: 0;
+    background: var(--sheet);
+    color: var(--ink);
   }
-
-  /* ── Header strip ─────────────────────────────────────────────── */
 
   .card-header {
     display: grid;
+    flex-shrink: 0;
     grid-template-columns: max-content 1fr max-content;
     align-items: center;
     gap: 1rem;
-    padding-bottom: 1rem;
-    border-bottom: var(--border-heavy);
-    flex-shrink: 0;
+    padding: 0.9rem 1rem;
+    border-bottom: 1px solid var(--stroke);
   }
 
+  /* The kind marker keeps the graph's meaning colours (gap, note) as a bar. */
   .card-tab {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    font-weight: 700;
+    padding: 0.25rem 0.5rem;
+    border-left: 2px solid var(--tone-disk);
+    color: var(--ink-2);
+    font: 500 0.68rem var(--font-code);
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--fg);
-    padding: 0.3rem 0.6rem;
-    border: 2px solid var(--fg);
-    background: var(--bg);
     white-space: nowrap;
   }
 
-  /* Matches the knowledge graph's coral gaps and green paper notes. */
-  .card-tab--gap {
-    background: var(--coral);
-  }
-
   .card-tab--note {
-    background: var(--green);
+    border-left-color: var(--tone-ram);
   }
 
   .card-title {
     margin: 0;
-    /* Explicit font-family so the h2 user-agent serif default does NOT
-       win over the inherited card-level mono. */
-    font-family: var(--font-mono);
-    font-size: 1.5rem;
-    font-weight: 800;
-    line-height: 1.2;
+    font-size: clamp(1.1rem, 2vw, 1.35rem);
+    font-weight: 700;
     letter-spacing: -0.02em;
-    color: var(--fg);
+    line-height: 1.2;
     word-break: break-word;
   }
 
   .card-badges {
     display: inline-flex;
-    gap: 0.5rem;
     flex-wrap: wrap;
+    gap: 0.5rem;
     justify-content: flex-end;
   }
 
   .badge {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--fg);
-    padding: 0.3rem 0.55rem;
-    border: 2px solid var(--fg);
-    background: var(--bg);
-    font-variant-numeric: tabular-nums;
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--stroke);
+    color: var(--ink-2);
+    font: 0.68rem var(--font-code);
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 
   .badge-glyph {
     font-size: 0.8rem;
     line-height: 1;
-    color: var(--fg);
   }
 
   .badge--ok {
-    background: var(--st-ok);
-    color: var(--bg);
-    border-color: var(--st-ok);
+    border-color: var(--ok);
+    color: var(--ok);
   }
-
-  /* ── Metadata grid ────────────────────────────────────────────── */
 
   .card-meta {
     display: grid;
-    grid-template-columns: max-content 1fr;
-    column-gap: 1.5rem;
-    row-gap: 0.5rem;
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    line-height: 1.5;
+    flex-shrink: 0;
+    grid-template-columns: minmax(7em, 11em) minmax(0, 1fr);
+    row-gap: 0;
+    border-bottom: 1px solid var(--stroke);
   }
 
   .meta-key {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--fg);
-    padding-top: 0.2rem;
+    padding: 0.5em 0.6em 0.5em 1rem;
+    border-top: 1px solid var(--line);
+    color: var(--ink-2);
+    font: 500 0.72rem/1.5 var(--font-code);
   }
 
   .meta-val {
-    color: var(--fg);
-    font-family: var(--font-mono);
-    word-break: break-word;
+    padding: 0.5em 1rem 0.5em 1.2em;
+    border-top: 1px solid var(--line);
+    border-left: 1px solid var(--line);
+    color: var(--ink);
+    font-size: 0.85rem;
+    line-height: 1.5;
     white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .meta-key:first-child,
+  .meta-key:first-child + .meta-val {
+    border-top: 0;
   }
 
   .meta-val--break {
     overflow-wrap: anywhere;
   }
 
-  /* ── Tags ─────────────────────────────────────────────────────── */
-
+  /* Tags are one divided value. */
   .card-tags {
     display: flex;
+    flex-shrink: 0;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    margin: -1px 0 0 -1px;
+    border-bottom: 1px solid var(--stroke);
   }
 
   .tag {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--fg);
-    padding: 0.25rem 0.55rem;
-    border: 2px solid var(--fg);
-    background: var(--cream);
+    padding: 0.45em 0.9em;
+    border-top: 1px solid var(--line);
+    border-left: 1px solid var(--line);
+    color: var(--ink-2);
+    font: 0.72rem/1.5 var(--font-code);
   }
 
-  /* ── Body subpanel (snippet / stub / answer) ──────────────────── */
-
-  /* The LAST card-body (which is always the big one -- snippet or stub)
-     flex-grows so the card fills available vertical space. Earlier
-     bodies (a captured answer above the stub for gaps) stay
-     natural-sized and DO NOT shrink -- otherwise their inner <pre>
-     overflows the box and visually bleeds into the next subpanel. */
+  /* Body sections: a mono label row over the text. The last one grows to
+     fill the card and scrolls inside, so a long stub never pushes the
+     decisions off the screen. */
   .card-body {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    border: var(--border-heavy);
-    background: var(--bg);
-    padding: 0.85rem 1rem;
     flex-shrink: 0;
+    min-height: 0;
+    border-bottom: 1px solid var(--stroke);
   }
 
   .card-body:last-of-type {
     flex: 1 1 auto;
-    min-height: 0;
   }
 
   .body-label {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    font-weight: 700;
+    padding: 0.45em 1rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--band);
+    color: var(--ink-2);
+    font: 500 0.68rem var(--font-code);
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--fg);
-    background: var(--cream);
-    padding: 0.25rem 0.55rem;
-    border: 2px solid var(--fg);
-    align-self: flex-start;
   }
 
   .body-scroll {
@@ -373,85 +332,54 @@
     min-height: 0;
     overflow: auto;
     scrollbar-width: thin;
-    scrollbar-color: var(--fg) transparent;
-  }
-
-  .body-scroll::-webkit-scrollbar {
-    width: 6px;
-  }
-
-  .body-scroll::-webkit-scrollbar-thumb {
-    background: var(--fg);
   }
 
   .body-text {
     margin: 0;
-    font-family: var(--font-mono);
-    font-size: 0.88rem;
-    line-height: 1.6;
-    color: var(--fg);
+    padding: 0.75rem 1rem;
+    color: var(--ink);
+    font: 0.82rem/1.6 var(--font-code);
     white-space: pre-wrap;
     word-break: break-word;
   }
 
-  /* ── Actions ──────────────────────────────────────────────────── */
-
+  /* Decisions: a row of divided cells, each its own control, the key hint
+     in the label. The verdict colours mark the cell's left edge. */
   .actions {
     display: flex;
-    gap: 0.75rem;
-    justify-content: flex-end;
-    flex-wrap: wrap;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    margin-top: auto;
   }
 
   .action {
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--fg);
-    background: var(--bg);
-    border: 2px solid var(--fg);
-    padding: 0.55rem 1rem;
+    padding: 0.7em 1rem;
+    border: 0;
+    border-right: 1px solid var(--stroke);
+    border-left: 2px solid transparent;
+    background: var(--sheet);
+    color: var(--ink);
+    font: 0.78rem var(--font-code);
     cursor: pointer;
-    /* Flat-by-default, pop-on-hover: button lifts up-left and casts a
-       hard offset shadow; on active it lands flat again. */
-    transform: translate(0, 0);
-    transition:
-      transform 0.08s ease,
-      box-shadow 0.08s ease;
   }
 
   .action:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: 4px 4px 0 0 var(--fg);
-  }
-
-  .action:active {
-    transform: translate(0, 0);
-    box-shadow: 0 0 0 0 var(--fg);
+    background: var(--band);
+    color: var(--accent-ink);
   }
 
   .action:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    outline: 2px solid var(--accent-ink);
+    outline-offset: -2px;
   }
 
-  /* Variant fills -- semantically coloured per cluster palette. */
-  .action--keep {
-    background: var(--yellow);
-  }
-
-  .action--reject {
-    background: var(--coral);
-  }
-
+  .action--keep,
   .action--agree {
-    background: var(--green);
+    border-left-color: var(--ok);
   }
 
+  .action--reject,
   .action--danger {
-    background: var(--coral);
+    border-left-color: var(--tone-disk);
   }
 </style>

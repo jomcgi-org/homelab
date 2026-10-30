@@ -1013,8 +1013,8 @@
   }
   .failure {
     padding: 14px;
-    border: 1px solid #9c3028;
-    color: #9c3028;
+    border: 1px solid var(--tone-disk);
+    color: var(--tone-disk);
   }
   a {
     color: var(--grim-accent);
