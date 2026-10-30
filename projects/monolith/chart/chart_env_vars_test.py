@@ -27,6 +27,20 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_planner_hold_refusal_is_default_off_and_configurable(enabled):
+    chart = find_chart_dir()
+    command = ["helm", "template", "test", str(chart), "--set", "swarm.enabled=true"]
+    if enabled:
+        command += ["--set", "swarm.factoryPlannerHoldRefusalEnabled=true"]
+    rendered = subprocess.check_output(command, text=True)
+    expected = str(enabled).lower()
+    assert re.search(
+        rf'- name: FACTORY_PLANNER_HOLD_REFUSAL_ENABLED\n\s+value: "{expected}"',
+        rendered,
+    )
+
+
 def find_config_modules():
     """Discover all config.py files in the monolith directory tree.
 

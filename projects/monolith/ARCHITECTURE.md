@@ -373,6 +373,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
+| Refuse planner-origin unmerged holds while preserving operator provenance and live acceptance | Joe's 2026-10-30 direction; #7450 revert lever | #7449, #7451 | repository-only staged work; flag disabled; rollout, activation, backlog triage and measurement remain |
 | Optional queue-driven inventory refill, default-off with durable advisory execution and bounded issue publication | section 4, recorded Conductor rescope and cap decision | #7376 | repository-only; operational checklist remains on the issue; no shipped policy enablement |
 | Admit agent-ready security findings under existing ownership and eligibility fences | Joe's 2026-10-28 decision, section 4 | [#7372](https://github.com/jomcgi-org/homelab/issues/7372) | repository-only staged delivery; guarded migration, rollout and natural-sweep acceptance remain |
 | Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
@@ -433,6 +434,17 @@ must not replace homelab's policy, freeze inherited limits or start work merely
 by being added (#6463). See [repositories](factory/orchestration/FACTORY.md#serving-more-than-one-repository).
 
 ### Capacity and delivery rationale
+
+**Why.** Operator provenance owns landing holds (#7449): a server-supplied
+`operator:` cause or authoritative `human` issue ownership can retain an
+unmerged hold; a true declared effect still requires the human decision path.
+Planner text supplies neither authority nor provenance. The default-off
+`FACTORY_PLANNER_HOLD_REFUSAL_ENABLED` stages refusal audits and exact-provenance
+inheritance filtering while preserving unknown and explicit operator holds.
+Disabling it restores prior handling. #7450 must land first and supplies the
+revert lever. A verified disabled rollout, reviewed activation coordinated with
+#7451, rollback validation, backlog triage and the 14-day measurement remain
+outstanding on #7449. Repository delivery establishes none of those outcomes.
 
 **Why.** Conflicting chart and lane ceilings starved advisory work; hourly sweeps
 then filled capacity too slowly. Factory work can wait, so shared background

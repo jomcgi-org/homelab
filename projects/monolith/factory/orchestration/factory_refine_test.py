@@ -2062,6 +2062,40 @@ def test_reversible_refine_default_posts_comment_and_continues(
     assert conductor._task(delivery["task_id"])["conductor_gates"] == [gate]
 
 
+def test_refine_planner_hold_refusal_cannot_settle_success(db, monkeypatch):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    gate = {
+        "kind": "live_validation",
+        "classification": "reversible",
+        "effects": dict.fromkeys(gates.GATE_EFFECTS, False),
+        "reason": "stage",
+        "scope": "Repository-only default-off work",
+        "live_checks": ["Verify rollout"],
+        "leave_unmerged": True,
+    }
+    run = settle_attempt(
+        task, "succeeded", human_artifact(comment["html_url"], "deliver", gate=gate)
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] != "succeeded"
+    assert "Remove leave_unmerged" in snapshot["evidence"]["reason"]
+    assert "landing_hold" not in snapshot["direction"]
+    with Session(db) as session:
+        events = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "landing_hold_refused",
+            )
+        ).all()
+        assert len(events) == 1
+
+
 def test_refine_rejects_irreversible_gate_claimed_ready(db, monkeypatch):
     """A node cannot classify prod deletion and bypass the human gate via its label."""
     task, policy = make_task()
