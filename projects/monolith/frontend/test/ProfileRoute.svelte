@@ -9,6 +9,7 @@
   import BazelFallback from "../src/routes/public/ember/bazel/+page.svelte";
   import PostgresFallback from "../src/routes/public/ember/postgres/+page.svelte";
   import Firecracker from "../src/routes/public/ember/firecracker/+page.svelte";
+  import Agents from "../src/routes/public/ember/agents/+page.svelte";
   // Mirrors Kit's error-node preload, including the implicit legacy CSS.
   import RootError from "../src/routes/+error.svelte";
   let { surface = "home", data = { stats: null } } = $props();
@@ -28,6 +29,7 @@
       {:else if surface === "engineering"}<Engineering />
       {:else if surface === "ships"}<Ships {data} />
       {:else if surface === "firecracker"}<Firecracker />
+      {:else if surface === "agents"}<Agents />
       {:else if surface === "ember"}<Ember
           data={{ status: null, savings: null }}
         />

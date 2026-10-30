@@ -33,6 +33,7 @@ SUITES = {
     "review": ("review-preview", "Private review components", "interactive"),
     "trips": ("trips-preview", "Trips sheets and photo viewer", "gallery"),
     "stars": ("stars-preview", "Stars live and historical map", "gallery"),
+    "agents": ("agents-preview", "Agents technical-drawing sheet", "gallery"),
 }
 REQUIRED_SUITES = ("blog", "factory", "review")
 
@@ -83,7 +84,9 @@ def owner_module(directory):
 
 def selected_suites(requested=None):
     names = requested or list(REQUIRED_SUITES) + [
-        name for name in ("trips", "stars") if (FRONTEND / SUITES[name][0]).is_dir()
+        name
+        for name in ("trips", "stars", "agents")
+        if (FRONTEND / SUITES[name][0]).is_dir()
     ]
     require(len(names) == len(set(names)), "duplicate suite")
     for name in names:
@@ -98,6 +101,16 @@ def selected_suites(requested=None):
 
 def expected_captures(name):
     require(name in SUITES, f"unregistered suite: {name}")
+    if name == "agents":
+        return {
+            f"agents-{width}-{scheme}-{mode}-{state}.png"
+            for width, scheme, mode, state in itertools.product(
+                (390, 1440),
+                ("light", "dark"),
+                ("normal", "reduced", "no-js"),
+                ("opening", "full", "resume", "banner"),
+            )
+        }
     if name == "blog":
         return {
             f"{size}-{state}.png"
@@ -199,7 +212,13 @@ def compose(directory, built, evidence, sha):
             (target / "index.html").write_bytes(
                 page(
                     title,
-                    f'<a href="../../">All fixture demos</a><h1>{title}</h1><p>Invented data and offline basemap. Captured controls and viewer states; this gallery has no interactive map.</p><code>{sha}</code><ul>{"".join(items)}</ul>',
+                    f'<a href="../../">All fixture demos</a><h1>{title}</h1><p>'
+                    + (
+                        "Production agents route with synthetic layout data. Normal, reduced-motion and script-disabled SSR captures; no live acceptance."
+                        if name == "agents"
+                        else "Invented data and offline basemap. Captured controls and viewer states; this gallery has no interactive map."
+                    )
+                    + f"</p><code>{sha}</code><ul>{''.join(items)}</ul>",
                 )
             )
         links.append(f'<li><a href="suites/{name}/">{title}</a> ({mode})</li>')
@@ -279,7 +298,12 @@ def run(output, evidence, sha, requested=None, source=TOOL_ROOT):
         "suites": [],
         "status": "failed",
     }
-    env = {**os.environ, "FACTORY_PREVIEW_SHA": sha, "STARS_PREVIEW_SHA": sha}
+    env = {
+        **os.environ,
+        "FACTORY_PREVIEW_SHA": sha,
+        "STARS_PREVIEW_SHA": sha,
+        "AGENTS_PREVIEW_SHA": sha,
+    }
     original_cwd = Path.cwd()
     try:
         with tempfile.TemporaryDirectory(prefix="fixture-suite-") as temporary:
@@ -338,7 +362,9 @@ def run(output, evidence, sha, requested=None, source=TOOL_ROOT):
                 before = digest_tree(destination)
                 # Owner checkers with relative git/module paths run at frontend.
                 os.chdir(FRONTEND)
-                with capture.instrument(suite_evidence, record, maps=mode == "gallery"):
+                with capture.instrument(
+                    suite_evidence, record, maps=name in {"trips", "stars"}
+                ):
                     if name == "review":
                         capture.review(destination, suite_evidence)
                     else:
