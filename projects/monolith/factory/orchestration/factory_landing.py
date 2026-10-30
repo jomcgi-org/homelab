@@ -1135,6 +1135,31 @@ def _verify_rollout(repo: str, item: dict) -> bool:
             _error(item["task_id"], "rollout_identity", exc)
             return False
     result = factory_rollout.verify(repo, merge_sha, item["pr_number"])
+    if result.get("rollback_targets"):
+        from factory.orchestration import factory_rollback_runtime
+        from factory.orchestration.factory_models import FactoryControl
+
+        # Every network call finishes before the durable window core opens its
+        # fresh session. landing_tick itself runs inside asyncio.to_thread.
+        try:
+            pull = github_get(repo, f"pulls/{item['pr_number']}")
+            with _read_session() as db:
+                policy = json.loads(db.get(FactoryControl, "factory").policy_json)
+            targets = factory_rollout.collect_rollback_signals(
+                policy, result["rollback_targets"]
+            )
+            window = factory_rollback_runtime.observe_targets(
+                policy, item, pull, targets
+            )
+            if window != "rollout_verified":
+                result = {**result, "verified": False, "reason": window}
+        except Exception as exc:  # noqa: BLE001 - missing evidence cannot close a window
+            _error(item["task_id"], "rollback_window", exc)
+            result = {
+                **result,
+                "verified": False,
+                "reason": "rollback_observation_unknown",
+            }
     if result["verified"]:
         _record(
             item["task_id"],
@@ -1389,7 +1414,9 @@ def _enforce_landing_hold(repo: str, item: dict) -> bool:
     try:
         with controls._read_session() as db:
             row = controls._receipt(db, item["task_id"])
-            if not controls.landing_held(row):
+            from factory.orchestration.factory_rollback_runtime import parent_held
+
+            if not controls.landing_held(row) and not parent_held(db, row):
                 return False
             repo = row.repo
         pull = github_get(repo, f"pulls/{item['pr_number']}")
@@ -1422,6 +1449,9 @@ def landing_tick(policy: dict) -> None:
     """
     try:
         from factory import review_publisher
+        from factory.orchestration import factory_rollback_runtime
+
+        factory_rollback_runtime.tick(policy)
 
         merge_enabled = auto_merge_enabled(policy)
         publish_enabled = review_publisher.enabled()

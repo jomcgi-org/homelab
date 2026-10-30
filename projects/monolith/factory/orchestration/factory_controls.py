@@ -4091,6 +4091,10 @@ def _can_start(
     db: Session, control: FactoryControl, task_id: str, start_key: str | None = None
 ) -> dict:
     row = _receipt(db, task_id)
+    from factory.orchestration.factory_rollback_runtime import parent_held
+
+    if row is not None and parent_held(db, row):
+        return {"ok": False, "reason": "rollback_parent_held"}
     if review_recovery_held(task_id, session=db):
         return {"ok": False, "reason": "review_only_recovery"}
     reason = None

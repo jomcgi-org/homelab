@@ -874,7 +874,12 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     "reason": "model_restriction_invalid",
                     "detail": str(exc),
                 }
-        task_id = mint_task_id()
+        from factory.orchestration.factory_rollback_runtime import admission_identity
+
+        try:
+            task_id = admission_identity(db, row) or mint_task_id()
+        except ValueError as exc:
+            return {"ok": False, "reason": "rollback_recovery_held", "detail": str(exc)}
         task = SwarmTask(
             id=task_id,
             task_text=(

@@ -17,6 +17,10 @@ from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
     FactoryReceipt,
+    FactoryStart,
+    WorkItem,
+    WorkItemEdge,
+    WorkItemEvent,
 )
 from factory.orchestration.models import SwarmTask
 
@@ -119,7 +123,16 @@ def engine(tmp_path, monkeypatch):
         result,
         tables=[
             m.__table__
-            for m in (SwarmTask, FactoryControl, FactoryReceipt, FactoryAudit)
+            for m in (
+                SwarmTask,
+                FactoryControl,
+                FactoryReceipt,
+                FactoryAudit,
+                FactoryStart,
+                WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
+            )
         ],
     )
     with Session(result) as db:
@@ -588,3 +601,242 @@ def test_breaker_is_factory_wide(engine):
 def test_source_revert_detected_without_receipt_or_observation(engine, source):
     d = delivery(**source)
     assert rollback.reserve(POLICY, d, sample(d), now=NOW)["state"] == "needs_human"
+
+
+@pytest.fixture
+def runtime(engine, monkeypatch):
+    from factory.orchestration import factory_landing as landing
+    from factory.orchestration import factory_rollback_runtime as runtime
+
+    monkeypatch.setattr(landing, "_now", lambda: NOW)
+    monkeypatch.setattr(controls, "_now", lambda: NOW)
+    # Every external read/write is a local fake. Unexpected paths fail tests.
+    issues = {
+        11: {
+            "number": 11,
+            "title": "original",
+            "body": "original body",
+            "labels": [],
+            "state": "closed",
+        }
+    }
+    writes = []
+    pulls = []
+
+    def get(_repo, path):
+        if path.startswith("issues/"):
+            return json.loads(json.dumps(issues[int(path.split("/")[1])]))
+        if path.startswith("pulls/"):
+            return next(p for p in pulls if p["number"] == int(path.split("/")[1]))
+        raise AssertionError(path)
+
+    def listing(_repo, path):
+        if path.startswith("issues?"):
+            return list(issues.values())
+        if path.startswith("pulls?"):
+            return pulls
+        raise AssertionError(path)
+
+    def write(_repo, path, body, *, method="POST"):
+        writes.append((path, body, method))
+        if path == "issues":
+            number = max(issues) + 1
+            value = {
+                "number": number,
+                "state": "open",
+                **body,
+                "labels": [{"name": n} for n in body.get("labels", [])],
+            }
+            issues[number] = value
+            return value
+        number = int(path.split("/")[1])
+        if path.endswith("/labels"):
+            issues[number]["labels"].extend({"name": name} for name in body["labels"])
+        elif method == "PATCH":
+            issues[number].update(body)
+        else:
+            raise AssertionError(path)
+        return issues[number]
+
+    monkeypatch.setattr(landing, "github_get", get)
+    monkeypatch.setattr(landing, "github_list", listing)
+    monkeypatch.setattr(landing, "github_write", write)
+    monkeypatch.setattr(
+        landing, "_error", lambda _task, _where, exc: (_ for _ in ()).throw(exc)
+    )
+    return runtime, issues, writes, pulls
+
+
+def test_issue_create_crash_reconciles_marker_once(engine, runtime, monkeypatch):
+    r, issues, writes, _pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    original = r._record
+
+    def crash(delivery, action, token, **detail):
+        if action == "rollback_external_issue_observed":
+            raise RuntimeError("crash after issue creation")
+        return original(delivery, action, token, **detail)
+
+    monkeypatch.setattr(r, "_record", crash)
+    with pytest.raises(RuntimeError):
+        r._issue_once(d, "breaker:one", "breaker", "evidence", ["needs-human"])
+    monkeypatch.setattr(r, "_record", original)
+    for _ in range(2):
+        assert (
+            r._issue_once(d, "breaker:one", "breaker", "evidence", ["needs-human"])[
+                "number"
+            ]
+            == 12
+        )
+    assert len([w for w in writes if w[0] == "issues"]) == 1
+    assert issues[12]["labels"] == [{"name": "needs-human"}]
+
+
+def test_issue_create_fence_unknown_never_duplicates(engine, runtime):
+    r, _issues, writes, _pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    r._record(d, "rollback_external_issue_started", "unknown")
+    assert r._issue_once(d, "unknown", "breaker", "evidence", []) is None
+    assert not writes
+
+
+def test_dispatch_replays_same_normal_receipt_after_fence(engine, runtime):
+    r, _issues, writes, _pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    rollback.reserve(POLICY, d, sample(d), now=NOW)
+    # A fence committed with no create is reconciled by the deterministic
+    # recovery receipt. It does not strand the delivery after a process crash.
+    rollback.begin_pr_creation(d, now=NOW)
+    for _ in range(2):
+        r._dispatch(d, {"generation": 0})
+    assert len([w for w in writes if w[0] == "issues"]) == 1
+    receipts = events(engine, "rollback_receipt")
+    assert len(receipts) == 1
+    with Session(engine) as db:
+        row = db.get(FactoryReceipt, receipts[0]["receipt_id"])
+        assert row.state == "queued"  # Ordinary admission still owns starts.
+        assert row.actor == controls.INTAKE_ACTOR
+        assert r.admission_identity(db, row) == "rollback-" + rollback.identity(d)[:32]
+        controls._receipt(db, d["task_id"]).task_paused = True
+        db.commit()
+        assert r.parent_held(db, row)
+        with pytest.raises(ValueError, match="held"):
+            r.admission_identity(db, row)
+
+
+@pytest.mark.parametrize("label", ["human", "needs-human"])
+def test_human_ownership_blocks_dispatch(engine, runtime, label):
+    r, issues, writes, _pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    rollback.reserve(POLICY, d, sample(d), now=NOW)
+    issues[11]["labels"] = [{"name": label}]
+    r._dispatch(d, {"generation": 0})
+    assert not writes
+
+
+def test_reopen_crash_then_settlement_only_after_actual_merge(
+    engine, runtime, monkeypatch
+):
+    r, issues, writes, _pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    rollback.reserve(POLICY, d, sample(d), now=NOW)
+    rollback.begin_pr_creation(d, now=NOW)
+    p = pull(d)
+    rollback.observe_pr(d, p, now=NOW)
+    assert not r.settle(d)
+    p.update(merged=True, merge_commit_sha="e" * 40, merged_at=NOW.isoformat())
+    rollback.observe_pr(d, p, now=NOW)
+    original = r._record
+
+    def crash(delivery, action, token, **detail):
+        if action == "rollback_issue_reopened":
+            raise RuntimeError("crash after reopen")
+        return original(delivery, action, token, **detail)
+
+    monkeypatch.setattr(r, "_record", crash)
+    with pytest.raises(RuntimeError):
+        r._reopen(d, p)
+    assert not r.settle(d)
+    monkeypatch.setattr(r, "_record", original)
+    r._reopen(d, p)
+    r.settle(d)
+    assert issues[11]["state"] == "open"
+    assert issues[11]["labels"] == [{"name": "agent-ready"}]
+    assert len([w for w in writes if w[2] == "PATCH"]) == 1
+    assert len(events(engine, "reverted")) == 1
+    assert len(events(engine, "rollback_settled")) == 1
+    with Session(engine) as db:
+        assert controls._receipt(db, d["task_id"]).state == "failed"
+
+
+def test_reopen_preserves_human_ownership_and_hold(engine, runtime):
+    r, issues, _writes, _pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    rollback.reserve(POLICY, d, sample(d), now=NOW)
+    rollback.begin_pr_creation(d, now=NOW)
+    p = pull(d, merged=True, merge_commit_sha="e" * 40, merged_at=NOW.isoformat())
+    rollback.observe_pr(d, p, now=NOW)
+    issues[11]["labels"] = [{"name": "human"}]
+    with controls._locked_session() as (db, _control):
+        controls._receipt(db, d["task_id"]).direction_json = json.dumps(
+            {"landing_hold": {"reason": "hold"}}
+        )
+    r._reopen(d, p)
+    assert issues[11]["labels"] == [{"name": "human"}]
+    with Session(engine) as db:
+        assert controls.landing_held(controls._receipt(db, d["task_id"]))
+
+
+def test_landing_caller_observes_healthy_window_without_intent(
+    engine, runtime, monkeypatch
+):
+    r, _issues, _writes, _pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    p = {
+        "merged": True,
+        "merged_at": d["merged_at"],
+        "merge_commit_sha": d["merge_commit_sha"],
+        "commits": 1,
+    }
+    for minute, expected in [(0, "rollout_observing"), (15, "rollout_verified")]:
+        now = NOW + timedelta(minutes=minute)
+        monkeypatch.setattr(r.landing, "_now", lambda: now)
+        target = {k: d[k] for k in ("application", "chart", "revision")}
+        target["observations"] = [
+            sample(d, outcome="healthy", observed_at=now.isoformat())
+        ]
+        assert r.observe_targets({"repo": d["repo"]}, d, p, [target]) == expected
+    assert not events(engine, "rollback_reserved")
+
+
+def test_disabled_runtime_observes_head_move_and_merge(engine, runtime):
+    r, issues, _writes, pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    rollback.reserve(POLICY, d, sample(d), now=NOW)
+    rollback.begin_pr_creation(d, now=NOW)
+    with controls._locked_session() as (_db, control):
+        control.policy_json = json.dumps({"rollback": {"enabled": False}})
+    p = pull(d)
+    pulls.append(p)
+    r.tick({"repo": d["repo"]})
+    p["head"]["sha"] = "f" * 40
+    r.tick({"repo": d["repo"]})
+    assert not events(engine, "rollback_landed")
+    p.update(merged=True, merged_at=NOW.isoformat(), merge_commit_sha="e" * 40)
+    r.tick({"repo": d["repo"]})
+    assert len(events(engine, "rollback_landed")) == 1
+    assert issues[11]["state"] == "open"
+
+
+def test_generated_revert_is_recognized_by_outcome_sweep():
+    from factory.orchestration.factory_reverts import revert_evidence
+
+    assert revert_evidence("revert(demo): recover\n\nReverts #12")[1] == {12}

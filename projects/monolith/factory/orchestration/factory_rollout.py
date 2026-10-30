@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import posixpath
 import re
 import time
@@ -958,6 +959,7 @@ def verify(
     # Keep repeated ancestry, catalog and CI reads within this observation
     # coherent, without extending the shared 30s freshness window.
     get, listing = lru_cache(maxsize=1024)(get or _get), listing or _listing
+    rollback_targets = []
     try:
         if not isinstance(merge_sha, str) or not SHA.fullmatch(merge_sha):
             raise Pending("merge_identity_missing")
@@ -993,6 +995,7 @@ def verify(
                 ("snapshot", repo, tuple(sorted(scoped))),
                 lambda: asyncio.run(observe()),
             )
+        rollback_targets = rollback_evidence(repo, publications, snapshot, scoped)
         apps = evaluate(repo, publications, snapshot, scoped)
         # A mixed fleet has no single deployed publication. Per-app evidence is
         # authoritative; keep the common fields only where they agree.
@@ -1015,6 +1018,7 @@ def verify(
             "applications": apps,
             "scoped_applications": sorted(scoped),
             "changed_files_count": len(files) if files is not None else None,
+            "rollback_targets": rollback_targets,
         }
         if not scoped:
             result.update(
@@ -1032,6 +1036,7 @@ def verify(
             "reason": str(exc),
             "application": exc.application,
             "resource": exc.resource,
+            **({"rollback_targets": rollback_targets} if rollback_targets else {}),
         }
     except Exception as exc:  # noqa: BLE001 - failed observation is never proof
         return {
@@ -1040,4 +1045,181 @@ def verify(
             "error_type": type(exc).__name__,
             "application": None,
             "resource": None,
+            **({"rollback_targets": rollback_targets} if rollback_targets else {}),
         }
+
+
+def rollback_evidence(repo, publications, snapshot, scoped):
+    """Bind failures to the first covering publication, including failed syncs.
+
+    A target/request alone is insufficient health evidence. Failed operations
+    must name the expected chart revision; stale comparison and unavailable
+    workloads cannot provide a healthy sample.
+    """
+    catalog = publications.catalog(publications.scope)
+    versions = {chart: version for chart, (_path, version) in catalog.items()}
+    targets = []
+    for app in snapshot["applications"]:
+        name = app["metadata"]["name"]
+        if name not in scoped or not managed(repo, app):
+            continue
+        for index, source in enumerate(sources(app)):
+            chart = source.get("chart")
+            if source.get("repoURL") != REGISTRY or chart not in versions:
+                continue
+            revision = versions[chart]
+            status = app.get("status", {})
+            operation = status.get("operationState") or {}
+            operated = operation.get("syncResult") or {}
+            operation_revs = operated.get("revisions") or [operated.get("revision")]
+            revs = deployed_revisions(app)
+            current = index < len(revs) and revs[index] == revision
+            failed_operation = (
+                operation.get("phase") in {"Failed", "Error"}
+                and index < len(operation_revs)
+                and operation_revs[index] == revision
+            )
+            compared = status.get("sync", {}).get("comparedTo", {})
+            observed_sources = compared.get("sources") or (
+                [compared["source"]] if compared.get("source") else []
+            )
+            comparison_current = normalized(observed_sources) == normalized(
+                sources(app)
+            )
+            outcome = "unknown"
+            if comparison_current and (
+                failed_operation
+                or (current and status.get("health", {}).get("status") == "Degraded")
+            ):
+                outcome = "failed"
+            else:
+                try:
+                    application_evidence(
+                        repo,
+                        publications.proven(publications.scope),
+                        snapshot,
+                        versions,
+                        publications.get,
+                        app,
+                    )
+                    outcome = "healthy"
+                except Pending:
+                    pass
+            targets.append(
+                {
+                    "application": name,
+                    "chart": chart,
+                    "revision": revision,
+                    "observations": [
+                        {
+                            "signal": "argocd",
+                            "available": True,
+                            "outcome": outcome,
+                            "observed_at": snapshot.get("observed_at"),
+                        }
+                    ],
+                }
+            )
+    return targets
+
+
+async def _rollback_network_signals(targets):
+    from cluster.mcp import verify_deployment
+
+    result = []
+    async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
+        for target in targets:
+            name, revision = target["application"], target["revision"]
+            signals = []
+            try:
+                proof = await verify_deployment(name, revision)
+                kargo = proof.get("kargo") or {}
+                promotion = (
+                    kargo.get("current_promotion") or kargo.get("last_promotion") or {}
+                )
+                if promotion.get("version") == revision and promotion.get("phase") in {
+                    "Failed",
+                    "Errored",
+                    "Aborted",
+                }:
+                    signals.append(
+                        {
+                            "signal": "kargo_promotion",
+                            "available": True,
+                            "outcome": "failed",
+                            "observed_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+            except Exception:  # noqa: BLE001 - missing evidence remains unknown
+                pass
+            # This is the existing private monolith revision endpoint. Never
+            # follow URLs supplied by issue text or probe data.
+            if name == "monolith" and target["chart"] == "monolith":
+                try:
+                    response = await client.get(
+                        "http://monolith.monolith.svc.cluster.local:8000/healthz"
+                    )
+                    body = response.json() if len(response.content) <= 65536 else {}
+                    if body.get("chart_version") == revision:
+                        outcome = (
+                            "healthy"
+                            if response.status_code == 200
+                            and body.get("status") == "ok"
+                            else "failed"
+                            if body.get("status") == "unhealthy"
+                            else "unknown"
+                        )
+                        signals.append(
+                            {
+                                "signal": "revision_health",
+                                "available": True,
+                                "outcome": outcome,
+                                "observed_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                except Exception:  # noqa: BLE001 - transport failure is not service failure
+                    pass
+            result.append(
+                {**target, "observations": [*target["observations"], *signals]}
+            )
+    return result
+
+
+def collect_rollback_signals(policy, targets):
+    """Network first, then fresh synchronous sessions on the landing thread."""
+    from core.platform_probe import PlatformProbe
+    from factory.orchestration import factory_controls as controls
+
+    async def bounded():
+        return await asyncio.wait_for(_rollback_network_signals(targets), timeout=30)
+
+    try:
+        targets = asyncio.run(bounded())
+    except Exception:  # noqa: BLE001 - retain the available Argo observation
+        pass
+    config = controls.rollback_policy(policy)
+    with controls._read_session() as db:
+        for target in targets:
+            signal = config["charts"].get(target["chart"], {}).get("synthetic_signal")
+            if not signal:
+                continue
+            row = db.get(PlatformProbe, signal)
+            if row is None:
+                continue
+            try:
+                detail = json.loads(row.detail)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(detail, dict) or any(
+                detail.get(k) != target[k] for k in ("application", "chart", "revision")
+            ):
+                continue
+            target["observations"].append(
+                {
+                    "signal": "synthetic:" + signal,
+                    "available": True,
+                    "outcome": "healthy" if row.ok else "failed",
+                    "observed_at": row.checked_at.isoformat(),
+                }
+            )
+    return targets
