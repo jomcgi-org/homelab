@@ -775,7 +775,10 @@ def rollback_policy(policy: dict) -> dict:
     """Operator-owned, default-off rollback configuration; no deployment flips."""
     value = policy.get("rollback", {})
     if not isinstance(value, dict) or set(value) - {
-        "enabled", "window_minutes", "max_per_hour", "charts"
+        "enabled",
+        "window_minutes",
+        "max_per_hour",
+        "charts",
     }:
         raise ValueError("invalid rollback policy")
     enabled = value.get("enabled", False)
@@ -783,8 +786,12 @@ def rollback_policy(policy: dict) -> dict:
         raise ValueError("invalid rollback.enabled")
     result = {
         "enabled": enabled,
-        "window_minutes": _integer(value.get("window_minutes", 15), "rollback.window_minutes", 1, 1440),
-        "max_per_hour": _integer(value.get("max_per_hour", 2), "rollback.max_per_hour", 1, 2),
+        "window_minutes": _integer(
+            value.get("window_minutes", 15), "rollback.window_minutes", 1, 1440
+        ),
+        "max_per_hour": _integer(
+            value.get("max_per_hour", 2), "rollback.max_per_hour", 1, 2
+        ),
         "charts": {},
     }
     charts = value.get("charts", {})
@@ -793,12 +800,24 @@ def rollback_policy(policy: dict) -> dict:
     for name, override in charts.items():
         if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", name):
             raise ValueError("invalid rollback chart name")
-        if not isinstance(override, dict) or set(override) - {"window_minutes", "synthetic_signal"}:
+        if not isinstance(override, dict) or set(override) - {
+            "window_minutes",
+            "synthetic_signal",
+        }:
             raise ValueError("invalid rollback chart override")
-        parsed = {"window_minutes": _integer(override.get("window_minutes", result["window_minutes"]), "rollback chart window_minutes", 1, 1440)}
+        parsed = {
+            "window_minutes": _integer(
+                override.get("window_minutes", result["window_minutes"]),
+                "rollback chart window_minutes",
+                1,
+                1440,
+            )
+        }
         if "synthetic_signal" in override:
             signal = override["synthetic_signal"]
-            if not isinstance(signal, str) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_.:-]{0,127}", signal):
+            if not isinstance(signal, str) or not re.fullmatch(
+                r"[a-zA-Z][a-zA-Z0-9_.:-]{0,127}", signal
+            ):
                 raise ValueError("invalid rollback synthetic_signal")
             parsed["synthetic_signal"] = signal
         result["charts"][name] = parsed
