@@ -5323,6 +5323,16 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_gate_blocks_test",
+    srcs = ["factory/orchestration/factory_gate_blocks_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_factory_escalation_test",
     srcs = ["factory/orchestration/factory_escalation_test.py"],
     data = ["factory/orchestration/fixtures/conductor_gates_20260918.json"],

@@ -279,13 +279,16 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
     task["landing_hold"] = "landing_hold" in direction
     conductor._post_decision_card(repo, number, marker, text)
     if gate["kind"] == "live_validation":
+        from factory.orchestration.factory_gate_blocks import render, rewrite
+
         issue = conductor.github_get(repo, f"issues/{number}")
         body = issue.get("body") or ""
-        if marker not in body:
+        updated, _ = rewrite(body, render(task["id"], identity, text))
+        if updated != body:
             github_write(
                 repo,
                 f"issues/{number}",
-                {"body": body + "\n\n" + marker + "\n" + text},
+                {"body": updated},
                 method="PATCH",
             )
     if gate["kind"] == "live_validation":
