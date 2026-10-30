@@ -952,6 +952,8 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 		chmod +x "$workflow_root/$tool"
 	done
 	mkdir -p "$workflow_root/bazel/tools/ci"
+	# Exercise the shared runners with the same command stubs as the workflow.
+	cp "${CI%/*}/ratchets.sh" "$LOCAL_AFFECTED_TEST" "$workflow_root/bazel/tools/ci/"
 	printf '#!/usr/bin/env bash\necho //fixture:test\n' >"$workflow_root/bazel/tools/ci/affected-targets.sh"
 	chmod +x "$workflow_root/bazel/tools/ci/affected-targets.sh"
 	for failed_guard in none verification_genrule_guard central_build_ratchet chart_version_guard source_ratchet test_source_reachability; do
@@ -1001,6 +1003,8 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 			rm() {
 				if [[ "$*" == *sandbox_stash* ]]; then echo cleanup >>"$TRACE"; else command rm "$@"; fi
 			}
+			export real_git scenario failed_guard
+			export -f git bazel python3 rm
 			source "$workflow_body"
 		) >"$workflow_root/output-$failed_guard" 2>&1
 		rc=$?
