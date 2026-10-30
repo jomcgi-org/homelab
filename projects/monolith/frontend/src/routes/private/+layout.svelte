@@ -1,5 +1,6 @@
 <script>
   import "$lib/public/styles/technical-drawing.css";
+  import SchemePreference from "$lib/public/components/SchemePreference.svelte";
   import { page } from "$app/stores";
 
   let { children } = $props();
@@ -26,6 +27,8 @@
   );
   let showBack = $derived.by(() => {
     if (path === "/") return false;
+    // The updates journal has its own dashboard Trail.
+    if (/^\/updates\/?$/.test(path)) return false;
     if (/^\/(app|review|chat|notes|qwen)(\/|$)/.test(path)) return false;
     // The factory documents and the execution console carry their own Trail,
     // whose root is the dashboard, and their own persisted scheme switch.
@@ -39,17 +42,8 @@
   });
 </script>
 
-<svelte:head>
-  <!-- The back link can be the only sheet surface on a fresh child load.
-       Restore the same preference as SchemeToggle before it is painted. -->
-  <script>
-    try {
-      var t = localStorage.getItem("td-theme");
-      if (t === "light" || t === "dark")
-        document.documentElement.dataset.theme = t;
-    } catch (e) {}
-  </script>
-</svelte:head>
+<!-- Fresh child pages need preference restoration even without a toggle. -->
+<SchemePreference />
 
 {#snippet backLink()}
   <a class="back-to-dashboard td-chrome" href="/">&larr; dashboard</a>
