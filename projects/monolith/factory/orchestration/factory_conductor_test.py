@@ -20215,6 +20215,101 @@ def live_gate():
     }
 
 
+@pytest.mark.parametrize("legacy_tasks", [[], ["same", "same"], ["old", "historical"]])
+def test_gate_issue_write_replaces_contract_with_history_and_comment_idempotency(
+    feedback_db, monkeypatch, legacy_tasks
+):
+    import hashlib
+
+    from factory.orchestration import factory_gates as gates
+    from factory.orchestration import factory_landing as landing
+    from factory.orchestration.factory_gate_blocks import blocks
+
+    task, _ = feedback_task()
+    gate = live_gate()
+    legacy = "\n\n".join(
+        f"<!-- factory-gate:{name}:{'a' * 20} -->\n{gates.rescope_text(gate)}"
+        for name in legacy_tasks
+    )
+    issue = {
+        "body": "Human intro\n- [ ] Manual\n\n" + legacy + "\n\nHuman tail",
+        "state": "open",
+    }
+    comments, patches = [], []
+    monkeypatch.setattr(conductor, "github_get", lambda *_: issue.copy())
+    monkeypatch.setattr(conductor, "github_list", lambda *_: comments.copy())
+
+    def write(_repo, path, payload, **kwargs):
+        # Assert persist-before-write against a real receipt on every seam.
+        assert gate in conductor._task(task["id"])["conductor_gates"]
+        if path.endswith("/comments"):
+            comments.append(payload)
+            return {"html_url": "https://example.test/comment"}
+        assert kwargs["method"] == "PATCH"
+        patches.append(payload)
+        issue.update(payload)
+        return issue.copy()
+
+    monkeypatch.setattr(landing, "github_write", write)
+    assert gates.resolve(task, {"gate": gate}, "test:first")
+    assert len(blocks(issue["body"])) == 1
+    first = gate
+    gate = {
+        **gate,
+        "scope": "Second repository scope",
+        "live_checks": ["Second live drill"],
+    }
+    assert gates.resolve(task, {"gate": gate}, "test:second")
+    expected = hashlib.sha256(json.dumps(gate, sort_keys=True).encode()).hexdigest()[
+        :20
+    ]
+    [block] = blocks(issue["body"])
+    assert block.identity == expected
+    assert block.task == task["id"]
+    assert "Second repository scope" in block.text
+    assert "Second live drill" in block.text
+    assert first["scope"] not in issue["body"]
+    assert issue["body"].startswith("Human intro\n- [ ] Manual\n\n")
+    assert "\n\nHuman tail" in issue["body"]
+    assert gates.pending_live_validation(issue["body"])
+    assert gates.resolve(task, {"gate": gate}, "test:second")
+    assert len(patches) == 2
+    # The task-only issue boundary must not suppress a second per-hash card.
+    assert len(comments) == 2
+    assert comments[0]["body"] != comments[1]["body"]
+    assert conductor._task(task["id"])["conductor_gates"] == [first, gate]
+
+
+@pytest.mark.parametrize("failure", ["patch", "malformed"])
+def test_gate_issue_write_failure_retains_all_history(
+    feedback_db, monkeypatch, failure
+):
+    from factory.orchestration import factory_gates as gates
+    from factory.orchestration import factory_landing as landing
+
+    task, _ = feedback_task()
+    first = live_gate()
+    monkeypatch.setattr(conductor, "_post_decision_card", lambda *_: None)
+    monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": ""})
+    monkeypatch.setattr(landing, "github_write", lambda *_a, **_kw: {})
+    assert gates.resolve(task, {"gate": first}, "test:first")
+    second = {**first, "scope": "Updated scope"}
+    if failure == "malformed":
+        monkeypatch.setattr(
+            conductor, "github_get", lambda *_: {"body": "<!-- factory-gate:broken -->"}
+        )
+
+    def fail(*_a, **_kw):
+        if failure == "malformed":
+            pytest.fail("malformed body must never be patched")
+        raise RuntimeError("GitHub unavailable")
+
+    monkeypatch.setattr(landing, "github_write", fail)
+    with pytest.raises(ValueError if failure == "malformed" else RuntimeError):
+        gates.resolve(task, {"gate": second}, "test:second")
+    assert conductor._task(task["id"])["conductor_gates"] == [first, second]
+
+
 def record_closing_gate(task, monkeypatch):
     """Record a real receipt decision while keeping GitHub effects hermetic."""
     from factory.orchestration import factory_landing

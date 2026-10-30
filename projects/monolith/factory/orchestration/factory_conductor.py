@@ -3222,7 +3222,7 @@ def revalidate_escalations() -> dict[str, int]:
             ):
                 continue
             # This card owns an execution pause, not an issue-text question.
-            # Rewriting (including our own rescope checklist) or closing the
+            # Replacing the bounded generated rescope block or closing the
             # issue does not answer resume/stop. Dismissing it would hide the
             # only decision while the watchdog keeps awaiting that decision.
             if decidable(row, escalation):
