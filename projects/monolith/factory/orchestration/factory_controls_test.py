@@ -107,6 +107,28 @@ def admitted(policy):
     return admit_next("scheduler")["task_id"]
 
 
+def test_rollback_policy_is_optional_and_default_off(policy):
+    parsed = controls.validate_policy(policy)
+    assert parsed["rollback"] == {
+        "enabled": False,
+        "window_minutes": 15,
+        "max_per_hour": 2,
+        "charts": {},
+    }
+    policy["rollback"] = {"charts": {"demo": {"window_minutes": 3}}}
+    assert controls.validate_policy(policy)["rollback"]["charts"]["demo"] == {
+        "window_minutes": 3,
+    }
+
+
+@pytest.mark.parametrize(
+    "config", [{"enabled": "false"}, {"max_per_hour": 3}, {"window_minutes": 0}]
+)
+def test_validate_policy_rejects_unsafe_rollback_blocks(policy, config):
+    with pytest.raises(ValueError):
+        controls.validate_policy({**policy, "rollback": config})
+
+
 def grant(task_id, key="one", **kwargs):
     return controls.authorize_start(
         task_id,

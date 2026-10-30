@@ -141,6 +141,15 @@ hand-edited pins. EmberVM's dev stage is restored on the hub; restoring the mono
 custom merge reconciler was superseded by the native queue; its reasoning about
 concurrent branches becoming stale after every merge still holds.
 
+**Why.** Automated rollback must reverse source through a fresh chart and the
+ordinary review and merge queue. A pin change cannot establish that recovery
+path. The #7450 recovery checkpoint adds default-off policy validation and a
+revision-scoped evidence and durable reservation core. Production dispatch and
+landing integration remain incomplete. The revision gate stays disabled and
+reuses the existing `chart_version` wiring. Authorized live acceptance remains
+on #7450, including the deliberate low-risk failure exercise and verification
+that the reverse commit forward-promotes to the expected healthy revision.
+
 ---
 
 ## 5. Storage
@@ -354,7 +363,7 @@ this table when the work ships or the issue closes without it.
 | Hub-only Renovate and reviewed dependency maintenance | section 9 | #7068, #7001 | cleanup integrated by #7358 with both hub schedules suspended; verified identity, required evidence check, CI isolation and #7186 activation acceptance outstanding |
 | Shared CNPG backup-age observations feed the private advisory and Discord notifier | section 5 | #7002 | repository implementation staged off; rollout, effective RBAC and failure/recovery acceptance outstanding |
 | Native `NetworkPolicy` successor enforcement on the hub | section 3 | #5276, #5277 | inert templates removed in #5816; native egress remains staged off pending its own live validation; hub-only since #4964 closed 2026-09-18 |
-| Kargo promotion on the hub gains a functional verification gate, not just stage ordering | section 4 | #4745 | staged: revision-aware `/healthz` gate wired on the monolith prod Stage behind `promotion.revisionGate.enabled` (off); the monolith must expose `chart_version` before the flip; functional assertions remain out of scope |
+| Kargo promotion on the hub gains a functional verification gate, not just stage ordering | section 4 | #4745 | staged: revision-aware `/healthz` gate wired on the monolith prod Stage behind `promotion.revisionGate.enabled` (off); reuse existing `chart_version` wiring and verify it live before activation; #7450 rollback policy and reservation core are default-off and incomplete, with production acceptance outstanding |
 
 ## Decision history
 

@@ -1,9 +1,10 @@
 """Offline rollback policy and recovery regressions."""
 
 import json
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from threading import Barrier
 
 import pytest
@@ -65,7 +66,7 @@ def test_invalid_policy(value):
         rollback_policy({"rollback": value})
 
 
-NOW = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 30, 12, tzinfo=UTC)
 POLICY = {"rollback": {"enabled": True}}
 
 
@@ -457,7 +458,7 @@ def test_reverse_source_uses_real_git_revert_and_resumes(tmp_path, merge_commit)
             capture_output=True,
             text=True,
             env={
-                **__import__("os").environ,
+                **os.environ,
                 "GIT_AUTHOR_NAME": "Rollback test",
                 "GIT_AUTHOR_EMAIL": "test@example.invalid",
                 "GIT_COMMITTER_NAME": "Rollback test",
@@ -481,7 +482,6 @@ def test_reverse_source_uses_real_git_revert_and_resumes(tmp_path, merge_commit)
     branch = "factory/rollback-" + rollback.identity(d)[:32]
     git("checkout", "-b", branch)
     # Supply an isolated test identity to the production subprocess seam.
-    import os
     from unittest.mock import patch
 
     with patch.dict(

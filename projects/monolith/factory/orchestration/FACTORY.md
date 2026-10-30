@@ -2388,6 +2388,46 @@ existed, are never judged and read as unknown. With rebase merges the merge
 commit is only a pull request's last rebased commit, so a partial revert of an
 earlier commit in the same pull request is not detected.
 
+### Automated rollback
+
+Issue #7450 remains an implementation and operational acceptance task. The
+repository recovery checkpoint adds a default-off `rollback` policy and the
+`factory_rollback.py` evidence and reservation core. No deployed policy enables
+rollback, and `promotion.revisionGate.enabled` remains off. Existing
+`MONOLITH_CHART_VERSION` and `/healthz` `chart_version` wiring is unchanged.
+
+The policy defaults to `enabled: false`, `window_minutes: 15` and
+`max_per_hour: 2`. `charts.<chart>.window_minutes` overrides the observation
+window; `charts.<chart>.synthetic_signal` names an optional synthetic signal.
+The core accepts only matching delivery, merge, application, chart and revision
+identities with available, fresh observations. Its verdict contract is
+`rollout_failed`, `rollout_observing`, `rollout_verified` or `unknown`. It
+recognizes explicit ArgoCD, Kargo Promotion, revision-health and configured
+synthetic failures. Missing or malformed observations remain unknown. Healthy
+completion requires the configured window and a fresh healthy sample.
+
+Intent reservation uses the existing factory control-row transaction lock and
+append-only audit ledger. It reserves once per delivery before external effects
+and counts reservations in the rolling interval `(now - 1 hour, now]`. A third
+reservation records one breaker-opening audit. A one-shot PR-creation fence
+requires reconciliation after an uncertain response. It never grants another
+create attempt merely because time passed or the process restarted. Existing
+intent and PR observations remain readable with the flag disabled. The local
+source helper runs `git revert` on the actual landed commit, using first-parent
+mainline for merge commits, and does not touch pins or cluster state.
+
+This checkpoint is incomplete. The core has no production reconciliation caller
+yet. Dispatching a reverse-commit worker, adopting its revert PR into independent
+exact-head review and the ordinary landing queue, publishing the breaker issue,
+reopening the original issue and settling the original task after landed rollback
+remain implementation work. The intended PR title is `revert(<scope>): ...` and
+its body includes `Reverts #N`. PR creation, queue acceptance and the existing
+seven-day outcome scan cannot establish rollback landing. Live acceptance on
+#7450 still requires the authorized low-risk failure exercise, fresh-chart
+forward promotion, issue recovery, healthy-window observation, breaker checks
+and disabled-policy reconciliation. Offline tests establish none of those live
+claims.
+
 ### A delivery pause is a decision request
 
 The delivery planner's fifth action is `pause`, and it now leaves the lane
