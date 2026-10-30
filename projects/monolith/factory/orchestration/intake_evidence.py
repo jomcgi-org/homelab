@@ -1,7 +1,7 @@
 """Bounded, private per-sweep observations. Receipt creation is not admission.
 
 The sweep stages plain observations before the conductor's admission pass.
-Finalization takes the factory lock, resolves actual receipt states, and appends
+Finalization takes the factory lock, resolves committed admissions, and appends
 one candidate audit per identity. Replaying finalization is a no-op. An abandoned
 pending sweep is finalized before the next sweep; no audit history is rewritten.
 """
@@ -268,6 +268,22 @@ def backlog(db, now=None):
         if row.state in ("admitted", "landing", "uncertain")
         or (row.state == "succeeded" and not is_advisory(receipt_task_class(row)))
     }
+    task_keys = {
+        row.task_id: (row.repo, row.issue_number) for row in receipts if row.task_id
+    }
+    transitions = (
+        db.exec(
+            select(FactoryAudit.task_id, func.max(FactoryAudit.created_at))
+            .where(
+                FactoryAudit.task_id.in_(task_keys),
+                FactoryAudit.action == "admit_next",
+            )
+            .group_by(FactoryAudit.task_id)
+        ).all()
+        if task_keys
+        else []
+    )
+    admitted_at = {task_keys[task_id]: aware(at) for task_id, at in transitions}
     rows = []
     observed = data.get("observed_at")
     stale = observed is None or now - aware(
@@ -284,6 +300,7 @@ def backlog(db, now=None):
             item.created_at if item.authority == "local" else None
         )
         prior_time = prior.get("observed_at") if prior else None
+        transition = admitted_at.get((item.github_repo, item.github_issue_number))
         row_stale = prior_time is not None and now - aware(
             datetime.fromisoformat(prior_time)
         ) >= timedelta(seconds=data.get("fresh_for_seconds", 240))
@@ -299,7 +316,12 @@ def backlog(db, now=None):
                 "observed_at": prior.get("observed_at") if prior else None,
                 "stale": row_stale,
                 "subsequently_admitted": (item.github_repo, item.github_issue_number)
-                in admitted,
+                in admitted
+                or (
+                    transition is not None
+                    and prior_time is not None
+                    and transition > aware(datetime.fromisoformat(prior_time))
+                ),
             }
         )
     known = {(item.github_repo, item.github_issue_number) for item in items}

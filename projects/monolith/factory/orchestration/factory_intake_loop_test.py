@@ -341,7 +341,10 @@ def test_backlog_uses_latest_evidence_age_and_current_closure(db, monkeypatch):
     assert view["issues"][0]["reason"] == "human"
 
 
-def test_digest_removes_issue_admitted_after_its_latest_skip(db, monkeypatch):
+@pytest.mark.parametrize("settled_state", ["admitted", "failed"])
+def test_digest_removes_issue_admitted_after_its_latest_skip(
+    db, monkeypatch, settled_state
+):
     from factory.orchestration.factory_intake import receive_issue, admit_next
     from factory.orchestration.intake_evidence import backlog
     from factory.orchestration.retro import _intake_skips
@@ -367,9 +370,25 @@ def test_digest_removes_issue_admitted_after_its_latest_skip(db, monkeypatch):
     assert received["ok"]
     assert admit_next("test")["ok"]
     with Session(db) as session:
-        data = backlog(session, NOW)
+        receipt = session.get(FactoryReceipt, received["receipt"]["id"])
+        receipt.state = settled_state
+        event = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "admit_next")
+        ).one()
+        event.created_at = NOW + timedelta(seconds=1)
+        session.commit()
+    with Session(db) as session:
+        data = backlog(session, NOW + timedelta(seconds=2))
     assert data["issues"][0]["subsequently_admitted"] is True
     assert "owner/repo#1:" not in "\n".join(_intake_skips({"intake_backlog": data}))
+    if settled_state == "failed":
+        release_sweep(db)
+        monkeypatch.setattr(intake_loop, "_now", lambda: NOW + timedelta(seconds=3))
+        intake_loop.intake_tick(configured, generation=0, observe_only=True)
+        with Session(db) as session:
+            data = backlog(session, NOW + timedelta(seconds=4))
+        assert data["issues"][0]["subsequently_admitted"] is False
+        assert "owner/repo#1:" in "\n".join(_intake_skips({"intake_backlog": data}))
 
 
 def intake_receipt(session, number, task_class="bug-fix", **overrides):

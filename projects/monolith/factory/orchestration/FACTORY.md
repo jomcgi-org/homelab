@@ -1052,7 +1052,7 @@ into append-only `intake_candidate` rows and one private inventory snapshot.
 Finalization is replay-safe under the same control lock and batches candidate
 inserts. A standalone observation pass records queued receipts as `skipped`
 with reason `queued`. Recovery finalizes abandoned staged evidence against
-actual receipt state; an interrupted sweep before staging remains unfinished.
+committed admission audits; an interrupted sweep before staging remains unfinished.
 The legacy aggregate `intake_admitted` audit still marks receipt creation for
 the existing sweep clock. It is not the admission oracle for candidate rows.
 
@@ -1062,7 +1062,8 @@ observation time. Never-considered issues have no decision. Partial, unavailable
 unfinished and stale evidence remains labelled. Freshness follows the existing
 four-minute complete-sweep or hourly incomplete-sweep clock. A partial sweep
 retains earlier observations with their original timestamps. Closed work leaves
-the view; receipts admitted after an observation are marked separately. The
+the view; committed admissions after an observation are marked separately, even
+if the receipt has already failed. A newer skip supersedes that admission. The
 daily digest names up to three oldest currently skipped issues and their reasons,
 excludes subsequently admitted and closed work, and names insufficient coverage.
 The public snapshot publisher explicitly disables this private reader extension;
