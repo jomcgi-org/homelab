@@ -62,7 +62,6 @@ _CONTEXT_FIELDS = frozenset(
         "task_deadline_at",
         "effort",
         "closing_instruction",
-        "read_only",
         "browser_evidence_review",
         "capture_evidence_ttl_seconds",
     )
@@ -1450,11 +1449,16 @@ def admit_dispatch(
             return refuse("invalid_dispatch_key")
         context_fields = _CONTEXT_FIELDS
         if isinstance(context, dict) and "read_only" in context:
-            from factory.orchestration import backlog_refill
+            from factory.orchestration import backlog_refill, factory_merged_delivery
 
-            # Only the fixed refill roles with their server-authored schema
-            # enter here. Other read-only callers retain their existing fence.
-            if (
+            merged_review = (
+                factory_merged_delivery.enabled()
+                and factory_merged_delivery.review_target(node_key) is not None
+                and context["read_only"] is True
+            )
+            # Preserve the separately scoped refill path. The staged merged-head
+            # exception grants nothing to other read-only callers.
+            if not merged_review and (
                 node_key not in backlog_refill.NODES
                 or context["read_only"] is not True
                 or not isinstance(context.get("artifact_schema"), dict)
@@ -1463,15 +1467,13 @@ def admit_dispatch(
             ):
                 return refuse("invalid_execution_context")
             source = context["artifact_schema"].get("x-factory-refill-inspection")
-            if source is not None and (
+            if not merged_review and source is not None and (
                 context.get("branch") != "commit:" + source["sha"]
                 or context.get("hydration_branch") != "commit:" + source["sha"]
             ):
                 return refuse("invalid_execution_context")
             context_fields = context_fields | {"read_only"}
         if not isinstance(context, dict) or set(context) - context_fields:
-            return refuse("invalid_execution_context")
-        if "read_only" in context and type(context["read_only"]) is not bool:
             return refuse("invalid_execution_context")
         try:
             context = json.loads(dumps(context))

@@ -162,6 +162,46 @@ def _owned_issue(task: dict) -> bool:
     return not ({"human", "needs-human"} & set(_label_names(issue)))
 
 
+def _settle_blocked(db, control, row, task: dict, pr: dict, *, reason=None) -> bool:
+    """Settle a quiescent expired or permanently refused handoff under its lock.
+
+    Transient authority, identity and execution fences still wait. An expired
+    terminal receipt stays settled; it cannot reacquire an execution slot.
+    """
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_controls as controls
+
+    if not _authority(db, control, row, task["id"]):
+        return False
+    fresh = conductor._task(task["id"], session=db)
+    if (
+        not conductor.delivery_identity_matches(fresh, pr)
+        or conductor.delivery_pr_number(fresh) not in (None, pr["number"])
+        or controls._quiescence_refusal(db, task["id"])
+    ):
+        return False
+    expired = controls._snapshot(db, row)["limits"]["deadline_expired"]
+    if not expired and reason is None:
+        return False
+    if row.state == "admitted":
+        controls.finish_task(
+            task["id"],
+            "failed" if expired else "escalated",
+            conductor.ACTOR,
+            session=db,
+            paused_trigger="deadline" if expired and row.task_paused else None,
+            evidence={
+                "state": "task_deadline" if expired else "merged_review_missing",
+                "reason": (
+                    "Absolute task deadline elapsed before merged delivery verified; all starts and runs are terminal."
+                    if expired
+                    else f"Owned merged-head review cannot proceed: {reason}"[:1000]
+                ),
+            },
+        )
+    return True
+
+
 def _handoff(task: dict, policy: dict, pr: dict) -> None:
     """Append one read-only review under existing identity, bounds and locks.
 
@@ -204,8 +244,6 @@ def _handoff(task: dict, policy: dict, pr: dict) -> None:
         review_rounds_remaining=0,
         fan_ins_remaining=0,
     )
-    if projection.refusal is not None:
-        return
     with controls._locked_session() as (db, control):
         row = controls._receipt(db, task["id"])
         if not _authority(db, control, row, task["id"]):
@@ -220,8 +258,7 @@ def _handoff(task: dict, policy: dict, pr: dict) -> None:
             or controls._quiescence_refusal(db, task["id"])
         ):
             return
-        limits = controls._snapshot(db, row)["limits"]
-        if limits["deadline_expired"]:
+        if _settle_blocked(db, control, row, task, pr, reason=projection.refusal):
             return
         if not existing:
             result = graph.apply_edits(
@@ -295,6 +332,8 @@ def _drive(task: dict, policy: dict, runs: list[dict], pr: dict) -> None:
     # reserve_node and the physical start guard recheck authority. Only this
     # node is offered: stale implementation/planning nodes cannot be reopened.
     if not controls.can_start(task["id"])["ok"]:
+        with controls._locked_session() as (db, control):
+            _settle_blocked(db, control, controls._receipt(db, task["id"]), task, pr)
         return
     fresh = conductor._task(task["id"])
     nodes = [n for n in graph.load_graph(task["id"]) if n["node_key"] == key]
@@ -352,7 +391,7 @@ def recover_stranded(policy: dict) -> None:
                 reconcile_merged_delivery(
                     task, pinned_policy, conductor.graph.node_runs(task_id)
                 )
-        except (httpx.HTTPError, ValueError):
+        except Exception:
             logger.exception("Merged verification discovery failed for %s", task_id)
 
 
@@ -428,6 +467,12 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
         merge_commit_sha=pr.get("merge_commit_sha"),
         armed_by_factory=False,
     )
+    if enabled() and _owned_issue(task):
+        with controls._locked_session() as (db, control):
+            if _settle_blocked(
+                db, control, controls._receipt(db, task["id"]), task, pr
+            ):
+                return True
     if any(run["status"] not in graph.TERMINAL_RUN_STATUSES for run in runs):
         if enabled():
             _drive(task, policy, runs, pr)
@@ -467,6 +512,11 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
         # fenced and allow only deadline escalation, never issue-closed or
         # legacy pause cancellation. The locked helper is inert when unpaused.
         conductor._settle_paused_task(task, policy, runs, merge_unknown=True)
+        if enabled() and _owned_issue(task):
+            with controls._locked_session() as (db, control):
+                _settle_blocked(
+                    db, control, controls._receipt(db, task["id"]), task, pr
+                )
         return True
     if enabled():
         if not _owned_issue(task):
@@ -475,6 +525,8 @@ def reconcile_merged_delivery(task: dict, policy: dict, runs: list[dict]) -> boo
         # execution after GitHub/status/session authentication and before finish.
         with controls._locked_session() as (db, control):
             row = controls._receipt(db, task["id"])
+            if _settle_blocked(db, control, row, task, pr):
+                return True
             fresh = conductor._task(task["id"], session=db)
             if (
                 _authority(db, control, row, task["id"])
