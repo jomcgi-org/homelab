@@ -34,6 +34,21 @@ const values = (body) =>
   );
 
 describe("technical-drawing tokens", () => {
+  it("shares only palette declarations with token-only chrome", () => {
+    const selectors = [
+      ".td-chrome,\n.td",
+      '  :root:not([data-theme="light"]) .td-chrome,\n  :root:not([data-theme="light"]) .td',
+      ':root[data-theme="dark"] .td-chrome,\n:root[data-theme="dark"] .td',
+    ];
+    for (const selector of selectors) {
+      const [body] = blocks(css, selector);
+      expect(body).toBeTruthy();
+      expect(body).not.toMatch(
+        /(?:^|;)\s*(?:overflow|font-size|position|display)\s*:/,
+      );
+    }
+    expect(css).not.toMatch(/:has\([^)]*td-chrome/);
+  });
   it("keeps the two night blocks identical", () => {
     const media = blocks(css, '  :root:not([data-theme="light"]) .td');
     const explicit = blocks(css, ':root[data-theme="dark"] .td');

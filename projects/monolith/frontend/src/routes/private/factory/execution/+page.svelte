@@ -1,4 +1,5 @@
 <script>
+  import "$lib/private/dashboard-theme.css";
   import { onMount, tick } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
