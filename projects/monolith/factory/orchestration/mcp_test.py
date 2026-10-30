@@ -2701,3 +2701,36 @@ def test_refill_adapter_binds_actor_and_requires_preview(monkeypatch):
         ),
     )["ok"]
     assert calls == [(p.subject, True, "astra", True, 0, "reason", "key", "digest")]
+
+
+def test_progress_preview_returns_bounded_subscription_refusal(monkeypatch):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    diagnostics = {
+        "refused_model": {
+            "model": "spark",
+            "provider": None,
+            "state": "unsupported_subscription_feed",
+        }
+    }
+
+    def refuse(*args):
+        raise progress.SubscriptionRefusal(
+            "progress_subscription_evidence_stale", diagnostics
+        )
+
+    monkeypatch.setattr(progress, "preview", refuse)
+    result = _as(
+        _principal(),
+        lambda: mcp.factory_amend_policy(
+            "preview",
+            927,
+            {"progress_continuation": {"pr_number": 7436, "head_sha": "a" * 40}},
+            "explain without changing admission",
+        ),
+    )
+    assert result == {
+        "ok": False,
+        "reason": "progress_subscription_evidence_stale",
+        "subscription_diagnostics": diagnostics,
+    }

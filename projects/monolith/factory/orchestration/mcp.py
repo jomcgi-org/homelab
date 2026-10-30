@@ -1442,6 +1442,7 @@ def _amend_policy(
     expected_preview_sha256,
 ):
     from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration.factory_progress_continuation import SubscriptionRefusal
 
     try:
         if "progress_continuation" in overlay:
@@ -1480,6 +1481,12 @@ def _amend_policy(
             request_key=request_key,
             expected_preview_sha256=expected_preview_sha256,
         )
+    except SubscriptionRefusal as exc:
+        return {
+            "ok": False,
+            "reason": str(exc),
+            "subscription_diagnostics": exc.diagnostics,
+        }
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
     except httpx.HTTPError:

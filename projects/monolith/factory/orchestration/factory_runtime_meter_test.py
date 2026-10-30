@@ -4397,3 +4397,63 @@ def test_progress_failed_latest_review_returns_to_normal_reconciliation(
             )
             == 1
         )
+
+
+@pytest.mark.parametrize(
+    "fault, expected",
+    [
+        ("spark", "unsupported_subscription_feed"),
+        ("stale", "stale_observation"),
+        ("missing", "missing_observation"),
+        ("exhausted", "subscription_unavailable"),
+    ],
+)
+def test_progress_refusal_identifies_exact_feed_without_mutation(
+    database, progress_recovery, fault, expected
+):
+    from factory.orchestration import factory_progress_continuation as progress
+
+    args, raw = progress_recovery
+    raw["providers"]["codex"]["observed_at"] = "2026-10-30T02:40:00Z"
+    if fault == "stale":
+        raw["providers"]["codex"]["age_seconds"] = 901
+    elif fault == "missing":
+        raw["providers"] = {}
+    elif fault == "exhausted":
+        raw["providers"]["codex"]["windows"][0]["used_percent"] = 100
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if fault == "spark":
+            policy = json.loads(row.policy_json)
+            policy["model_pools"] = {"implement": ["astra", "spark"]}
+            row.policy_json = json.dumps(policy)
+        before = row.model_dump()
+        audits = len(db.exec(select(FactoryAudit)).all())
+    with pytest.raises(progress.SubscriptionRefusal) as caught:
+        progress.preview(**args)
+    detail = caught.value.diagnostics
+    refused = detail["refused_model"]
+    assert refused["state"] == expected
+    assert detail["effect"] == "read_only_refusal_no_admission"
+    if fault == "spark":
+        assert refused["model"] == "spark" and refused["family"] == "muse"
+        assert refused["provider"] is None and refused["observed_at"] is None
+        assert refused["required_by"] == ["model_pools.implement"]
+        assert any(m["state"] == "fresh_admissible" for m in detail["models"])
+    elif fault == "stale":
+        assert refused["provider"] == "codex" and refused["age_seconds"] == 901
+        assert refused["observed_at"] == "2026-10-30T02:40:00Z"
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump() == before
+        assert len(db.exec(select(FactoryAudit)).all()) == audits
+
+
+def test_progress_subscription_diagnostic_is_bounded_and_keeps_exact_refusal():
+    from factory.orchestration import factory_progress_continuation as progress
+
+    policy = {"allowed_models": [f"unknown{i:02}" for i in range(40)]}
+    detail = progress._subscription_diagnostics(
+        policy, [], {"providers": {}}, {}, "unknown39"
+    )
+    assert len(detail["models"]) == 32 and detail["truncated"]
+    assert detail["refused_model"]["model"] == "unknown39"
