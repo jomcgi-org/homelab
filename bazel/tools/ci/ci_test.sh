@@ -972,10 +972,16 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 				if [[ "$1" == diff && "$*" == *HEAD~1* ]]; then
 					case "$scenario" in
 					diff-failure) return 9 ;;
-					partial-diff) printf 'projects/service/chart/Chart.yaml\0'; return 9 ;;
+					partial-diff)
+						printf 'projects/service/chart/Chart.yaml\0'
+						return 9
+						;;
 					esac
 				fi
-				if [[ "$scenario" == formatter && "$*" == "log -1 --format=%an" ]]; then echo ci-format-bot; return; fi
+				if [[ "$scenario" == formatter && "$*" == "log -1 --format=%an" ]]; then
+					echo ci-format-bot
+					return
+				fi
 				"$real_git" "$@"
 			}
 			bazel() { printf 'bazel %s\n' "$*" >>"$TRACE"; }
