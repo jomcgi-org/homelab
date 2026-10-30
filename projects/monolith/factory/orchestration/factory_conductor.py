@@ -1091,11 +1091,11 @@ def _budget_evidence(task_id: str) -> dict:
         }
 
 
-def _schema(node_key: str) -> dict:
-    if node_key == "backlog_refill_collect_1":
-        from factory.orchestration.backlog_refill import SCHEMA
+def _schema(node_key: str, task_id: str | None = None) -> dict:
+    if node_key in {"backlog_refill_collect_1", "backlog_refill_review_1"}:
+        from factory.orchestration.backlog_refill import dispatch_schema, schema
 
-        return SCHEMA
+        return dispatch_schema(task_id, node_key) if task_id else schema(node_key)
     if node_key in {"scout_collect_1", "scout_review_1"}:
         from factory.orchestration.factory_improvement_scout import schema
 
@@ -1495,7 +1495,7 @@ def _add(
         )
     )
     scouting = key in {"scout_collect_1", "scout_review_1"}
-    refilling = key == "backlog_refill_collect_1"
+    refilling = key in {"backlog_refill_collect_1", "backlog_refill_review_1"}
     if refilling:
         from factory.orchestration.backlog_refill import READ_ONLY_BOUNDARY
 
@@ -5953,10 +5953,10 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
     # DBOS 2.29. get_workflow_status is the supported nullable lookup.
     state = dbos.get_workflow_status(key)
     if state is None:
-        if pin["node_key"] == "backlog_refill_collect_1":
+        if pin["node_key"] in {"backlog_refill_collect_1", "backlog_refill_review_1"}:
             from factory.orchestration.backlog_refill import dispatch_allowed
 
-            if not dispatch_allowed(task["id"]):
+            if not dispatch_allowed(task["id"], pin["node_key"], pin["attempt"]):
                 return None
         if pin["node_key"] in {"scout_collect_1", "scout_review_1"}:
             from factory.orchestration.factory_improvement_scout import dispatch_allowed
@@ -7816,11 +7816,11 @@ def _dispatch_ready(
         if dispatched >= limit:
             break
         node_key = node["node_key"]
-        refilling = node_key == "backlog_refill_collect_1"
+        refilling = node_key in {"backlog_refill_collect_1", "backlog_refill_review_1"}
         if refilling:
             from factory.orchestration.backlog_refill import dispatch_allowed
 
-            if not dispatch_allowed(task_id):
+            if not dispatch_allowed(task_id, node_key):
                 continue
         scouting = node_key in {"scout_collect_1", "scout_review_1"}
         if scouting:
@@ -7856,16 +7856,17 @@ def _dispatch_ready(
         )
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
         key = f"factory-node:{task_id}:{node_key}:{attempt}"
+        artifact_schema = _schema(node_key, task_id) if refilling else _schema(node_key)
         context = {
             "repo": task["repo"],
             "branch": branch,
             "workflow_id": key,
             "artifact_path": f".factory/{task_id}/{node_key}-{attempt}.json",
             "artifact_schema": (
-                dependency_prs.artifact_schema(_schema(node_key))
+                dependency_prs.artifact_schema(artifact_schema)
                 if task.get("dependency_review")
                 and not node_key.startswith("conductor_")
-                else _schema(node_key)
+                else artifact_schema
             ),
             "hydration_branch": branch_hydration(task, branch, hydration),
             "retry_context": json.dumps(

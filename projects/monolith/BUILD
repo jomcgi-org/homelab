@@ -1479,6 +1479,8 @@ py_library(
         "factory/orchestration/factory_landing.py",
         "factory/orchestration/factory_models.py",
         "factory/orchestration/factory_pause.py",
+        # Refill physical transport reuses exact-model quota freshness and floors.
+        "factory/orchestration/model_pool.py",
         "factory/orchestration/models.py",
     ],
     imports = ["."],
@@ -9496,6 +9498,20 @@ py_test(
         ":pkg_swarm",
         "@pip//pytest",
         "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "factory_operator_flow_test",
+    srcs = ["factory/orchestration/factory_operator_flow_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastmcp",
+        "@pip//pytest",
         "@pip//sqlmodel",
     ],
 )

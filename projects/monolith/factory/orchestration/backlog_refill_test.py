@@ -27,9 +27,16 @@ from factory.orchestration.factory_models import (
     WorkItemEdge,
     WorkItemEvent,
 )
-from factory.orchestration.models import SwarmNodeRun, SwarmTask
+from factory.orchestration.models import (
+    SwarmConductorCall,
+    SwarmNodeRun,
+    SwarmPlanNode,
+    SwarmPlanVersion,
+    SwarmTask,
+)
 
 NOW = datetime(2026, 10, 29, 12, tzinfo=UTC)
+_REAL_REFILL_QUOTA = refill.quota
 
 
 @pytest.fixture
@@ -51,6 +58,9 @@ def world(tmp_path, monkeypatch):
             for model in (
                 SwarmTask,
                 SwarmNodeRun,
+                SwarmPlanNode,
+                SwarmPlanVersion,
+                SwarmConductorCall,
                 FactoryAudit,
                 FactoryControl,
                 FactoryReceipt,
@@ -67,6 +77,11 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(controls, "get_engine", lambda: engine)
     monkeypatch.setattr(controls, "_now", lambda: clock[0])
     monkeypatch.setattr(intake, "_now", lambda: clock[0])
+    monkeypatch.setattr(
+        refill,
+        "quota",
+        lambda model: {"model": model, "checked_at": clock[0].isoformat()},
+    )
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
     policy = controls.validate_policy(
         {
@@ -134,6 +149,7 @@ def admit(world, start):
                 repo=policy["repo"],
                 conductor_model="opus",
                 created_at=clock[0],
+                budget_usd=policy["task_budget_usd"],
             )
         )
         db.flush()
@@ -144,9 +160,22 @@ def admit(world, start):
 
 
 def publication_start(world):
+    """Historical single-role ledger fixture for existing publication semantics."""
     start = refill.observe(world[1], eligible=0, complete=True)
+    legacy_start(world, start)
     admit(world, start)
     return start
+
+
+def legacy_start(world, start):
+    import json
+
+    with Session(world[0]) as db:
+        row = refill.latest_event(db, "started", run_id=start["run_id"])
+        detail = json.loads(row.detail_json)
+        detail.pop("review_contract")
+        row.detail_json = dumps(detail)
+        db.commit()
 
 
 def test_omitted_legacy_and_recorded_defaults(world):
@@ -859,6 +888,7 @@ def test_worker_graph_uses_one_pinned_read_only_node(world, monkeypatch):
 
     engine, policy, _clock = world
     start = refill.observe(policy, eligible=0, complete=True)
+    legacy_start(world, start)
     with Session(engine) as db:
         db.add(
             SwarmTask(
@@ -922,6 +952,606 @@ def test_worker_graph_uses_one_pinned_read_only_node(world, monkeypatch):
         run.model = "opus"
         db.commit()
     assert not factory_session_allowed(identity)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_refill_real_reservation_preserves_read_only_pin(world, monkeypatch, legacy):
+    from factory.orchestration import backlog_refill_worker as worker
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import node_workflows
+
+    engine, policy, _clock = world
+    for module in (conductor, conductor.graph):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    start = refill.observe(policy, eligible=0, complete=True)
+    if legacy:
+        legacy_start(world, start)
+    task_id = admit(world, start)
+    task = conductor._task(task_id)
+    worker.reconcile(task, policy, [], [], 0)
+    key = f"factory-node:{task_id}:{refill.NODE}:1"
+    result = conductor.reserve_node(
+        task_id,
+        refill.NODE,
+        key,
+        {
+            "repo": policy["repo"],
+            "branch": "main",
+            "workflow_id": key,
+            "artifact_path": f".factory/{task_id}/collection.json",
+            "artifact_schema": conductor._schema(refill.NODE, task_id),
+            "read_only": True,
+        },
+    )
+    assert result, result.refusal_code
+    [run] = conductor.graph.node_runs(task_id)
+    pin = node_workflows._validate_pin(run["pin"])
+    assert pin["read_only"] is True
+    assert pin["artifact_schema"] == (
+        refill.SCHEMA if legacy else refill.COLLECT_SCHEMA
+    )
+    assert pin["model"] == normalize(policy)["model"]
+    assert controls.task_snapshot(task_id)["starts"][0]["model"] == pin["model"]
+    context = {
+        key: value
+        for key, value in run["pin"].items()
+        if key in conductor.graph._CONTEXT_FIELDS
+    }
+    changed = conductor.graph.admit_dispatch(
+        task_id, refill.NODE, dispatch_key=key, execution_context=context
+    )
+    assert changed.refusal_code == "dispatch_key_conflict"
+    for unrelated in (
+        "scout_collect_1",
+        "scout_review_1",
+        "implement_browser_capture_1",
+        "review_dependency_1",
+    ):
+        refused = conductor.graph.admit_dispatch(
+            task_id, unrelated, execution_context={**context, "read_only": True}
+        )
+        assert refused.refusal_code == "invalid_execution_context"
+
+
+@pytest.fixture
+def reviewed_run(world, github, monkeypatch, request):
+    from types import SimpleNamespace
+
+    from factory.execution.models import AgentSession
+    from factory.orchestration import backlog_refill_worker as worker
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import node_workflows
+
+    engine, policy, clock = world
+    engine.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(engine, tables=[AgentSession.__table__])
+    for module in (conductor, conductor.graph):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: {"object": {"sha": "a" * 40}}
+    )
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [])
+    update(world, backlog_refill={"enabled": True, "model": "opus", "max_findings": 5})
+    start = refill.observe(policy, eligible=0, complete=True)
+    task_id = admit(world, start)
+    task = conductor._task(task_id)
+    with controls._read_session() as db:
+        detail = refill._detail(
+            refill.latest_event(db, "started", run_id=start["run_id"])
+        )
+    checked = []
+    monkeypatch.setattr(refill, "quota", lambda model: checked.append(model) or {})
+
+    def reconcile():
+        worker.reconcile(
+            task,
+            policy,
+            conductor.graph.load_graph(task_id),
+            conductor.graph.node_runs(task_id),
+            conductor.graph.current_version(task_id),
+        )
+
+    def dispatch(node_key):
+        checked.clear()
+        assert conductor._dispatch_ready(
+            task,
+            conductor.graph.load_graph(task_id),
+            conductor.graph.node_runs(task_id),
+            1,
+            fan_out=False,
+            parallel=1,
+            policy=policy,
+        )
+        [run] = conductor.graph.node_runs(task_id, node_key)
+        pin = node_workflows._validate_pin(run["pin"])
+        assert checked == ["opus" if node_key == refill.NODE else "astra"]
+        assert pin["read_only"] is True
+        assert "Do not modify source" in node_workflows._node_prompt(
+            pin["prompt"],
+            pin["artifact_path"],
+            pin["artifact_schema"],
+            branch=pin["branch"],
+        )
+        assert refill.dispatch_allowed(task_id, node_key, physical=True)
+        assert len(checked) == 2
+        return run
+
+    def settle(run, artifact):
+        pin = node_workflows._validate_pin(run["pin"])
+        identity = node_workflows._expected_session_identity(pin)
+        with Session(engine) as db:
+            session = AgentSession(
+                **identity, workspace="/workspace", admission_tier="background"
+            )
+            db.add(session)
+            db.flush()
+            session_id = session.id
+            db.commit()
+        assert conductor.graph.record_dispatch(
+            task_id, run["node_key"], 1, session_id, None
+        ).ok
+        assert conductor.graph.record_outcome(
+            task_id,
+            run["node_key"],
+            1,
+            "succeeded",
+            0.1,
+            None,
+            dumps({"value": artifact}),
+        ).ok
+        assert controls.record_start_outcome(
+            task_id,
+            pin["workflow_id"],
+            "succeeded",
+            "test-worker",
+            cost_usd=0.1,
+            session_id=session_id,
+        )["ok"]
+
+    collection = {
+        "summary": "Repository inventory with evidence.",
+        "findings": [
+            {
+                "key": "ready",
+                "title": "factory: verify refill dispatch",
+                "body": "Reproduced at graph.py:1366.",
+            },
+            {
+                "key": "duplicate",
+                "title": "factory: duplicate tracked work",
+                "body": "Already tracked.",
+            },
+        ],
+    }
+    maximum = getattr(request, "param", None) == "maximum"
+    if maximum:
+        collection = {
+            "summary": "\U0001f9ea" * 12000,
+            "findings": [
+                {
+                    "key": f"finding-{index}",
+                    "title": f"factory: finding {index}",
+                    "body": '"' * 3000,
+                }
+                for index in range(5)
+            ],
+        }
+    reconcile()
+    collector = dispatch(refill.NODE)
+    settle(collector, collection)
+    reconcile()
+    assert writer.advance(detail) is None and not github[1]
+    reviewer = dispatch(refill.REVIEW_NODE)
+    assert reviewer["pin"]["model"] == "astra" and reviewer["pin"]["effort"] == "xhigh"
+    assert conductor.graph.load_graph(task_id)[-1]["deps"] == [refill.NODE]
+    verdict = {
+        "collection_digest": refill.digest(collection),
+        "summary": "Verified the failure; rejected the existing issue.",
+        "decisions": [
+            {
+                "key": "ready",
+                "approved": True,
+                "evidence": "The current focused test fails at graph admission.",
+                "plan": "Edit graph.py and its focused test. Revert the PR if unrelated dispatch changes.",
+                "acceptance": "Run pytest backlog_refill_test.py; expect every test to pass.",
+            },
+            {
+                "key": "duplicate",
+                "approved": False,
+                "evidence": "An existing issue owns this work.",
+                "plan": "Wait for the current owner.",
+                "acceptance": "Require a distinct reproducible defect.",
+            },
+        ],
+    }
+    if maximum:
+        verdict["summary"] = "r" * 12000
+        verdict["decisions"] = [
+            {
+                "key": finding["key"],
+                "approved": True,
+                **{
+                    field: field[0] * 3000
+                    for field in ("evidence", "plan", "acceptance")
+                },
+            }
+            for finding in collection["findings"]
+        ]
+    settle(reviewer, verdict)
+    return SimpleNamespace(
+        engine=engine,
+        policy=policy,
+        clock=clock,
+        task_id=task_id,
+        start=detail,
+        collector=collector,
+        reviewer=reviewer,
+        verdict=verdict,
+        collection=collection,
+        reconcile=reconcile,
+        checked=checked,
+        github=github,
+    )
+
+
+def test_independent_refill_review_precedes_every_new_issue(reviewed_run):
+    state = reviewed_run
+    assert not state.github[1]
+    for _ in range(3):
+        state.reconcile()
+    assert len(state.github[1]) == 2
+    finding, summary = state.github[0]
+    assert finding["title"] == state.collection["findings"][0]["title"]
+    assert "Implementation plan:" in finding["body"]
+    assert "Acceptance criteria:" in finding["body"]
+    assert "expect every test to pass" in finding["body"]
+    assert "Independent review:" in summary["body"]
+    with controls._read_session() as db:
+        evidence = refill._detail(
+            refill.latest_event(db, "reviewed", run_id=state.start["run_id"])
+        )
+        assert evidence["collector_session_id"] != evidence["reviewer_session_id"]
+        assert evidence["collection_digest"] == refill.digest(state.collection)
+        completed = refill._detail(
+            refill.latest_event(db, "completed", run_id=state.start["run_id"])
+        )
+        assert completed["new_issues"] == 1 and completed["low_yield"]
+    assert (
+        refill.observe(state.policy, eligible=0, complete=True)["reason"] == "cooldown"
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "digest",
+        "missing_decision",
+        "empty_plan",
+        "same_session",
+        "wrong_session_model",
+        "wrong_pin_model",
+        "wrong_start_model",
+        "missing_start",
+        "wrong_artifact",
+    ],
+)
+def test_refill_review_refuses_unproven_provenance(reviewed_run, change):
+    import json
+
+    from factory.execution.models import AgentSession
+
+    state = reviewed_run
+    with Session(state.engine) as db:
+        collector = db.get(SwarmNodeRun, state.collector["id"])
+        reviewer = db.get(SwarmNodeRun, state.reviewer["id"])
+        grant = db.exec(
+            select(FactoryStart).where(FactoryStart.start_key == reviewer.dispatch_key)
+        ).one()
+        artifact = json.loads(reviewer.outcome_json)["value"]
+        if change == "digest":
+            artifact["collection_digest"] = "0" * 64
+        elif change == "missing_decision":
+            artifact["decisions"].pop()
+        elif change == "empty_plan":
+            artifact["decisions"][0]["plan"] = " "
+        elif change == "same_session":
+            reviewer.session_id = grant.session_id = collector.session_id
+        elif change == "wrong_session_model":
+            db.get(AgentSession, reviewer.session_id).model = "opus"
+        elif change == "wrong_pin_model":
+            pin = json.loads(reviewer.pin_json)
+            pin["model"] = "opus"
+            reviewer.pin_json = dumps(pin)
+        elif change == "wrong_start_model":
+            grant.model = "opus"
+        elif change == "missing_start":
+            db.delete(grant)
+        elif change == "wrong_artifact":
+            collector.outcome_json = dumps(
+                {"value": {"summary": "changed", "findings": []}}
+            )
+        reviewer.outcome_json = dumps({"value": artifact})
+        db.commit()
+    with pytest.raises(ValueError):
+        writer.review(state.start["run_id"], state.reviewer["id"])
+    assert writer.advance(state.start) is None
+    assert not state.github[1]
+
+
+@pytest.mark.parametrize("change", ["pause", "cancel", "expire", "policy"])
+def test_reviewed_refill_rechecks_owner_after_discovery(
+    reviewed_run, monkeypatch, change
+):
+    state = reviewed_run
+    writer.review(state.start["run_id"], state.reviewer["id"])
+    discover = writer.producer._discover
+
+    def race(*args):
+        if change == "expire":
+            state.clock[0] += timedelta(seconds=state.policy["task_timeout_seconds"])
+        else:
+            with Session(state.engine) as db:
+                row = db.get(FactoryReceipt, state.start["receipt_id"])
+                if change == "pause":
+                    row.task_paused = True
+                elif change == "cancel":
+                    row.cancellation_requested = True
+                else:
+                    control = db.get(FactoryControl, "factory")
+                    control.policy_json = dumps({**state.policy, "generation": 1})
+                db.commit()
+        return discover(*args)
+
+    monkeypatch.setattr(writer.producer, "_discover", race)
+    assert writer.advance(state.start) is None
+    assert not state.github[1]
+
+
+def test_refill_review_cannot_authorize_an_unreviewed_output(reviewed_run):
+    state = reviewed_run
+    writer.review(state.start["run_id"], state.reviewer["id"])
+    for kind in ("finding", "summary"):
+        assert (
+            writer.publish(
+                writer.output(
+                    state.policy["repo"],
+                    state.start["run_id"],
+                    kind,
+                    "injected",
+                    "factory: unrelated output",
+                    "Unreviewed prose",
+                    ["agent-ready"],
+                )
+            )
+            is None
+        )
+    assert not state.github[1]
+
+
+def test_rejected_refill_findings_settle_as_zero_yield(reviewed_run):
+    state = reviewed_run
+    for decision in state.verdict["decisions"]:
+        decision["approved"] = False
+    with Session(state.engine) as db:
+        db.get(SwarmNodeRun, state.reviewer["id"]).outcome_json = dumps(
+            {"value": state.verdict}
+        )
+        db.commit()
+    state.reconcile()
+    assert len(state.github[1]) == 1
+    assert state.github[1][0]["labels"] == ["needs-human"]
+    with controls._read_session() as db:
+        result = refill._detail(
+            refill.latest_event(db, "completed", run_id=state.start["run_id"])
+        )
+        assert result["new_issues"] == 0 and result["low_yield"]
+
+
+def test_failed_review_releases_run_without_publishing_collection(reviewed_run):
+    from factory.orchestration import backlog_refill_worker as worker
+
+    state = reviewed_run
+    with Session(state.engine) as db:
+        run = db.get(SwarmNodeRun, state.reviewer["id"])
+        run.status = "failed"
+        db.exec(
+            select(FactoryStart).where(FactoryStart.start_key == run.dispatch_key)
+        ).one().status = "failed"
+        db.commit()
+    state.reconcile()
+    worker.tick(state.policy)
+    assert not state.github[1]
+    with controls._read_session() as db:
+        assert refill.latest_event(db, "reviewed", run_id=state.start["run_id"]) is None
+        result = refill._detail(
+            refill.latest_event(db, "completed", run_id=state.start["run_id"])
+        )
+        assert result["success"] is False and result["new_issues"] == 0
+
+
+@pytest.mark.parametrize(
+    "node_key,model", [(refill.NODE, "opus"), (refill.REVIEW_NODE, "astra")]
+)
+@pytest.mark.parametrize("change", ["quota", "pause_during_read", "expire_during_read"])
+def test_refill_role_dispatch_needs_fresh_quota_and_current_authority(
+    world, monkeypatch, node_key, model, change
+):
+    engine, policy, clock = world
+    update(world, backlog_refill={"enabled": True, "model": "opus"})
+    start = refill.observe(policy, eligible=0, complete=True)
+    task_id = admit(world, start)
+    checked = []
+
+    def read(chosen):
+        checked.append(chosen)
+        if change == "quota":
+            raise ValueError("refill_subscription_unavailable")
+        if change == "pause_during_read":
+            with Session(engine) as db:
+                db.get(FactoryReceipt, start["receipt_id"]).task_paused = True
+                db.commit()
+        else:
+            clock[0] += timedelta(seconds=policy["task_timeout_seconds"])
+
+    monkeypatch.setattr(refill, "quota", read)
+    assert not refill.dispatch_allowed(task_id, node_key)
+    assert checked == [model]
+    with controls._read_session() as db:
+        assert not db.exec(select(FactoryStart)).all()
+
+
+@pytest.mark.parametrize("model,provider", [("opus", "claude"), ("astra", "codex")])
+@pytest.mark.parametrize(
+    "state", ["fresh", "stale", "unknown", "exhausted", "unoffered"]
+)
+def test_refill_quota_uses_fresh_exact_subscription(
+    world, monkeypatch, model, provider, state
+):
+    from factory import execution
+    from factory.execution import provider_quota
+
+    monkeypatch.setattr(
+        execution,
+        "offered_models",
+        lambda: [] if state == "unoffered" else ["opus", "astra"],
+    )
+    calls = []
+
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        return {
+            "available": True,
+            "providers": {
+                provider: {
+                    "observed": state != "unknown",
+                    "age_seconds": 100000 if state == "stale" else 0,
+                    "windows": [
+                        {
+                            "name": "primary" if provider == "codex" else "5h",
+                            "used_percent": 100 if state == "exhausted" else 1,
+                        }
+                    ],
+                }
+            },
+        }
+
+    monkeypatch.setattr(provider_quota, "fetch_provider_quota_sync", fetch)
+    if state == "fresh":
+        assert _REAL_REFILL_QUOTA(model)["provider"] == provider
+    else:
+        with pytest.raises(ValueError, match="refill_"):
+            _REAL_REFILL_QUOTA(model)
+    assert calls == ([] if state == "unoffered" else [{"force": True}])
+
+
+def test_legacy_collection_is_explicitly_unreviewed(world):
+    start = publication_start(world)
+    writer.collection(
+        start["run_id"], {"summary": "Historical inventory", "findings": []}
+    )
+    with controls._read_session() as db:
+        historical = refill._detail(
+            refill.latest_event(db, "started", run_id=start["run_id"])
+        )
+        collected = refill._detail(
+            refill.latest_event(db, "collection", run_id=start["run_id"])
+        )
+        assert "review_contract" not in historical
+        assert collected["review_status"] == "legacy_unreviewed"
+        assert refill.latest_event(db, "reviewed", run_id=start["run_id"]) is None
+
+
+@pytest.mark.parametrize("character", ['"', "\\", "\n", "\U0001f9ea"])
+def test_new_refill_schema_maximum_fits_review_without_losing_evidence(character):
+    import json
+
+    from jsonschema import Draft202012Validator
+
+    schema = refill.schema(refill.NODE)
+    fields = schema["properties"]
+    finding_fields = fields["findings"]["items"]["properties"]
+    value = {
+        "summary": character * fields["summary"]["maxLength"],
+        "findings": [
+            {
+                "key": str(index).ljust(finding_fields["key"]["maxLength"], "k"),
+                "title": "a" * 18 + ": " + '"' * 180,
+                "body": character * finding_fields["body"]["maxLength"],
+            }
+            for index in range(fields["findings"]["maxItems"])
+        ],
+    }
+    Draft202012Validator(schema).validate(value)
+    prompt = refill.review_brief(value)
+    assert len(refill.READ_ONLY_BOUNDARY + prompt) <= 60000
+    assert json.loads(prompt.split("\n", 1)[1])["collection"] == value
+    assert (
+        fields["summary"]["maxLength"]
+        + len("\n\nIndependent review:\n")
+        + refill.REVIEW_SCHEMA["properties"]["summary"]["maxLength"]
+        <= 60000
+    )
+
+
+@pytest.mark.parametrize(
+    "summary_length,body_length,count", [(60000, 0, 0), (1000, 12000, 5), (55000, 0, 0)]
+)
+def test_new_collector_schema_rejects_evidence_too_large_for_review(
+    world, summary_length, body_length, count
+):
+    from jsonschema import Draft202012Validator
+
+    value = {
+        "summary": "s" * summary_length,
+        "findings": [
+            {
+                "key": f"finding-{index}",
+                "title": f"factory: finding {index}",
+                "body": "b" * body_length,
+            }
+            for index in range(count)
+        ],
+    }
+    assert list(Draft202012Validator(refill.schema(refill.NODE)).iter_errors(value))
+    assert not list(Draft202012Validator(refill.SCHEMA).iter_errors(value))
+    start = refill.observe(world[1], eligible=0, complete=True)
+    with pytest.raises(ValueError, match="invalid bounded refill collection"):
+        writer.collection(start["run_id"], value)
+    with controls._read_session() as db:
+        assert refill.latest_event(db, "collection", run_id=start["run_id"]) is None
+
+
+@pytest.mark.parametrize("reviewed_run", ["maximum"], indirect=True)
+def test_maximum_new_collection_and_review_publish_without_truncation(reviewed_run):
+    state = reviewed_run
+    for _ in range(6):
+        state.reconcile()
+    assert len(state.github[0]) == 6
+    for original, published in zip(state.collection["findings"], state.github[0][:5]):
+        assert published["body"].startswith(original["body"])
+        for field in ("evidence", "plan", "acceptance"):
+            assert field[0] * 3000 in published["body"]
+    assert state.collection["summary"] in state.github[0][-1]["body"]
+    assert state.verdict["summary"] in state.github[0][-1]["body"]
+    with controls._read_session() as db:
+        completed = refill._detail(
+            refill.latest_event(db, "completed", run_id=state.start["run_id"])
+        )
+        assert completed["new_issues"] == 5 and completed["success"] is True
+
+
+@pytest.mark.parametrize("codepoint", [0, 1, 11, 12, 31, 0xD800, 0xDFFF])
+def test_new_collection_schema_refuses_text_outside_escaping_bound(codepoint):
+    from jsonschema import Draft202012Validator
+
+    assert list(
+        Draft202012Validator(refill.COLLECT_SCHEMA).iter_errors(
+            {"summary": chr(codepoint), "findings": []}
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -1265,17 +1895,19 @@ def test_receipt_identity_cannot_match_numeric_prefix(world):
 @pytest.fixture
 def control_world(world, monkeypatch):
     import json
+
     from sqlalchemy import text
+
     from factory.execution.models import (
-        AgentSession,
-        AgentTurn,
         AgentCapacityPool,
         AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
         PendingMessage,
     )
     from factory.orchestration import refill_control as api
 
-    engine, policy, clock = world
+    engine, _policy, clock = world
     engine.update_execution_options(
         schema_translate_map={"swarm": None, "agent_sessions": None}
     )
@@ -1336,7 +1968,9 @@ def control_world(world, monkeypatch):
 
 def test_safe_refill_control_minimal_diff_hourly_replay_and_history(control_world):
     import json
+
     from sqlalchemy import text
+
     from factory.orchestration import refill_control as api
 
     engine, _, _ = control_world
@@ -1407,17 +2041,46 @@ def test_safe_refill_control_minimal_diff_hourly_replay_and_history(control_worl
     assert r["generation"] == before["generation"] and not r["dispatched"]
 
 
+def test_refill_control_checks_both_roles_without_hourly_learning(
+    control_world, monkeypatch
+):
+    from factory.orchestration import refill_control as api
+
+    checked = []
+    read = api._quota
+    monkeypatch.setattr(
+        api, "_quota", lambda model: checked.append(model) or read(model)
+    )
+    preview = api.preview(True, "opus", False, 0, "rank and challenge")
+    assert checked == ["opus", "astra"]
+    assert preview["new_run_review_contract"] == refill.REVIEW_CONTRACT
+    checked.clear()
+    result = api.apply(
+        "operator",
+        True,
+        "opus",
+        False,
+        0,
+        "rank and challenge",
+        "dual-role",
+        preview["preview_sha256"],
+    )
+    assert checked == ["opus", "astra"] and not result["dispatched"]
+
+
 @pytest.mark.parametrize(
     "mutation",
     ["version", "policy", "locked", "held", "pending", "uncertain", "unknown"],
 )
 def test_refill_control_refuses_stale_or_executing_learning(control_world, mutation):
     import json
+
     from sqlalchemy import text
+
     from factory.execution.models import (
+        AgentCapacityReservation,
         AgentSession,
         AgentTurn,
-        AgentCapacityReservation,
         PendingMessage,
     )
     from factory.orchestration import refill_control as api
@@ -1570,6 +2233,7 @@ def test_new_refill_batch_is_enforced_before_collection_audit(world):
 
 def test_disable_legacy_refill_keeps_unavailable_default_inert(control_world):
     import json
+
     from factory.orchestration import refill_control as api
 
     engine, _, _ = control_world

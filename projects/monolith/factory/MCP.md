@@ -310,8 +310,10 @@ Standing operators use `factory_configure_refill` with `operation=preview`, the
 current control version, an offered `astra` or `opus` model, `enabled` and
 `hourly`. Apply the reviewed digest with identical arguments and a stable request
 key. Replays return the original result; changed versions, policy or job state
-refuse. Enabling requires fresh subscription admission; hourly learning also
-requires Codex admission for its existing Luna/Astra stages. No paid fallback is
+refuse. Enabling requires fresh subscription admission for the configured
+generator and independent Astra reviewer. The preview digest includes the new-run
+review contract. Hourly learning also requires Codex admission for its existing
+Luna/Astra stages. No paid fallback is
 added. Model aliases come from deployed availability, not an assumed version name.
 
 The control changes only the refill block and, when requested, the existing daily
@@ -329,3 +331,72 @@ feeds are distinguished from stale observations and unavailable subscription
 capacity. This is read-only evidence; it changes no admission rule or quota and
 never authorizes a retry. At most 32 model rows are returned, with the exact
 refused model retained separately if truncated. No prompts or credentials appear.
+
+### Native registration and caller discovery
+
+`factory_status.control_catalog` reports only two entries from the running
+native FastMCP registry: `factory_configure_refill` and `factory_amend_policy`.
+Each includes registration, schema and description hashes, bounded argument
+names and offered operations/models. It is operator-only, read-only and reports
+`caller_visibility=not_observed`. It does not return the whole tool catalogue.
+
+A missing native entry identifies a backend registration/deployment problem.
+A registered entry that the caller cannot invoke identifies a remaining
+upstream discovery or visibility gap, not its exact layer. The deployed path
+also has Context Forge discovery, existing tool associations/visibility and the
+client's cached catalogue. Compare the native hashes with supported gateway
+and client discovery evidence when available. See
+[the gateway discovery contract](../../mcp/ARCHITECTURE.md). Repository tests
+cover native registration and the gateway's description rules; they cannot
+refresh an already-running client's tools. Deployment alone is not proof of
+caller exposure. Use the connector's supported refresh/reconnect workflow if
+available, or request its operator to reconcile discovery without changing
+access. If the tool remains absent, report that capability gap and stop the
+activation. Do not substitute legacy configure, a new alias, direct database
+writes, or a previously denied HTTP path.
+
+### Separate restriction, continuation and refill activation
+
+After code release, each live change still needs its applicable authority.
+Neither code deployment nor a successful preview grants execution.
+
+1. For a held paused receipt, preview `factory_amend_policy` with the exact
+   receipt and `overlay={"remove_models":["spark"]}`. Apply the returned digest
+   and a stable request key only under restriction authority. The control
+   refuses a current graph/scalar pin or unresolved execution. Read back the
+   effective pool, unchanged task/artifact/accounting, pause, holds and expired
+   deadline. Historical Spark runs remain evidence, not current selection.
+2. Under separate explicit continuation authority, obtain a new preview with
+   `overlay={"progress_continuation":{"pr_number":N,"head_sha":SHA}}`.
+   This binds the current version, exact receipt/task/repository/artifact,
+   original grant, funding, graph revision and independent native review.
+   GitHub head/required CI and genuine subscription observations for every
+   effective model are rechecked on apply. Missing, unsupported, stale or
+   exhausted feeds refuse. Apply only the fresh digest with a distinct stable
+   request key. It authorizes the same task under a two-hour lease and clears
+   its pause, retaining landing and other holds; it does not dispatch a worker.
+   Renewals require new reviewed progress, fresh quota and no repeated failure.
+   Read back the lease and actual native progress separately. Do not use
+   ordinary resume to replace this grant, or retry an unknown original start.
+3. Once `factory_configure_refill` is actually callable and activation is
+   authorized, read bounded status and preview `enabled=true`, `model=opus`,
+   `hourly=true`, the fresh `expected_version` and a concrete reason. The
+   existing runtime maps `opus` to `claude-opus-5-5`; verify the deployed mapping
+   and fresh Claude/Codex subscription admission before applying. New
+   collections use that generator, then independent Astra challenge/planning.
+   Apply identical arguments with the preview digest and a stable request key.
+   Read back generation, receipts, holds, budgets, breaker history and the
+   existing job's hourly interval. Reconcile a lost response through status
+   and idempotent replay before another action. There is no paid fallback.
+4. Observe generation, independent review, issue publication, eligibility,
+   admission and execution as distinct stages. Existing intake exclusions and
+   allowlists may prevent a valid published issue from being admitted. No step
+   above releases them or authorizes busywork, another scheduler or a duplicate
+   executor. Unknown execution such as receipt 996 stays fenced.
+
+The authenticated integration target `factory_operator_flow_test` drives the
+real MCP schema and local ledger with only GitHub/quota I/O replaced. It covers
+two saved-artifact lineages, separate authority/digests, expired paused deadlines,
+idempotence, changed grants/heads/revisions/funding/holds, fresh subscription
+coverage and an unresolved original despite a later non-invocation. These are
+local regression fixtures, not claims of live continuation or activation.

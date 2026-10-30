@@ -31,60 +31,92 @@ def reconcile(task, policy, nodes, runs, expected_version):
     start = owned["start"]
     if start is None:
         return  # Missing intent is a refusal fence, never generic planner work.
-    prior = next((run for run in runs if run["node_key"] == refill.NODE), None)
-    if prior is not None:
-        if prior["status"] == "succeeded":
-            try:
-                producer.collection(owned["run_id"], conductor._artifact(prior))
-            except ValueError:
-                controls.finish_task(
-                    task["id"],
-                    "failed",
-                    refill.ACTOR,
-                    evidence={"reason": "invalid_refill_collection"},
-                )
+    completed = {run["node_key"]: run for run in runs if run["status"] == "succeeded"}
+    collector = completed.get(refill.NODE)
+    reviewing = start.get("review_contract") is not None
+    key = refill.NODE
+    try:
+        if collector is not None:
+            value = conductor._artifact(collector)
+            producer.collection(
+                owned["run_id"], value, collector_run_id=collector.get("id")
+            )
+            if reviewing:
+                key = refill.REVIEW_NODE
+                if key in completed:
+                    producer.review(owned["run_id"], completed[key].get("id"))
+            if not reviewing or refill.REVIEW_NODE in completed:
+                outcome = producer.advance(start)
+                if outcome is not None:
+                    result = controls.finish_task(
+                        task["id"],
+                        "succeeded" if outcome["success"] else "failed",
+                        refill.ACTOR,
+                        evidence={
+                            "reason": "reviewed_refill_published"
+                            if reviewing
+                            else "refill_published"
+                        },
+                    )
+                    if result["ok"]:
+                        refill.settle(owned["run_id"], **outcome)
                 return
-            outcome = producer.advance(start)
-            if outcome is not None:
-                result = controls.finish_task(
-                    task["id"],
-                    "succeeded" if outcome["success"] else "failed",
-                    refill.ACTOR,
-                    evidence={"reason": "refill_published"},
-                )
-                if result["ok"]:
-                    refill.settle(owned["run_id"], **outcome)
-        elif prior["status"] in conductor.graph.TERMINAL_RUN_STATUSES:
+        if any(
+            run["node_key"] == key
+            and run["status"] in conductor.graph.TERMINAL_RUN_STATUSES
+            for run in runs
+        ):
             controls.finish_task(
                 task["id"],
                 "failed",
                 refill.ACTOR,
-                evidence={"reason": "refill_attempt_failed"},
+                evidence={"reason": f"refill_attempt_failed: {key}"},
             )
-        return
-    if any(node["node_key"] == refill.NODE for node in nodes):
-        return
-    if not refill.dispatch_allowed(task["id"]):
-        return
-    result = conductor._add(
-        task,
-        policy,
-        refill.NODE,
-        refill.inventory_brief(
-            owned["run_id"], max_findings=start["policy"].get("max_findings", 100)
-        ),
-        [],
-        start["policy"]["model"],
-        "factory-backlog-refill",
-        "Bounded report-only inventory",
-        refine=True,
-        max_attempts=1,
-        effort=start["policy"]["effort"],
-        turn_timeout_seconds=policy["turn_timeout_seconds"],
-        expected_version=expected_version,
-    )
-    if result.ok:
-        conductor._record_allowance(task["id"], policy, "factory-backlog-refill")
+            return
+        if any(node["node_key"] == key for node in nodes):
+            return
+        if not refill.dispatch_allowed(task["id"], key):
+            return
+        chosen = refill.role(start, key)
+        prompt = (
+            refill.review_brief(value)
+            if key == refill.REVIEW_NODE
+            else refill.inventory_brief(
+                owned["run_id"],
+                max_findings=start["policy"].get("max_findings", 100),
+                reviewed=reviewing,
+            )
+        )
+        result = conductor._add(
+            task,
+            policy,
+            key,
+            prompt,
+            [refill.NODE] if key == refill.REVIEW_NODE else [],
+            chosen["model"],
+            "factory-backlog-refill",
+            "Independent challenge and executable planning"
+            if key == refill.REVIEW_NODE
+            else "Bounded report-only inventory",
+            refine=True,
+            max_attempts=1,
+            effort=chosen["effort"],
+            turn_timeout_seconds=policy["turn_timeout_seconds"],
+            expected_version=expected_version,
+        )
+        if result.ok:
+            conductor._record_allowance(task["id"], policy, "factory-backlog-refill")
+    except ValueError:
+        controls.finish_task(
+            task["id"],
+            "failed",
+            refill.ACTOR,
+            evidence={
+                "reason": "invalid_refill_review"
+                if reviewing
+                else "invalid_refill_collection"
+            },
+        )
 
 
 def tick(policy):
@@ -112,7 +144,13 @@ def tick(policy):
         outcome = producer.advance(start, allow_new=False)
         with controls._read_session() as db:
             has_collection = (
-                refill.latest_event(db, "collection", run_id=start["run_id"])
+                refill.latest_event(
+                    db,
+                    "reviewed"
+                    if start.get("review_contract") is not None
+                    else "collection",
+                    run_id=start["run_id"],
+                )
                 is not None
             )
         if has_collection and outcome is None:

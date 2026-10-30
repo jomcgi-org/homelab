@@ -15,11 +15,12 @@ Trimmed results keep ordinary calls usable in a voice conversation.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
-import httpx
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
+import httpx
 from auth.api import Principal, current_principal
 from core.clock import iso_or_str
 from core.mcp_app import mcp
@@ -770,6 +771,37 @@ def _operator_view(
         }
 
 
+async def _control_catalog() -> dict:
+    """Bounded native evidence, not a claim about gateway or client discovery."""
+    tools = {}
+    for name in ("factory_configure_refill", "factory_amend_policy"):
+        tool = await mcp.get_tool(name)
+        if tool is None:
+            tools[name] = {"registered": False}
+            continue
+        parameters = tool.parameters
+        properties = parameters.get("properties", {})
+        tools[name] = {
+            "registered": True,
+            "schema_sha256": hashlib.sha256(
+                json.dumps(parameters, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "description_sha256": hashlib.sha256(
+                (tool.description or "").encode()
+            ).hexdigest(),
+            "arguments": list(properties)[:16],
+            "operations": properties.get("operation", {}).get("enum", [])[:4],
+        }
+        if "model" in properties:
+            tools[name]["models"] = properties["model"].get("enum", [])[:8]
+    return {
+        "source": "native_server_registry",
+        "observed_at": _now(),
+        "caller_visibility": "not_observed",
+        "tools": tools,
+    }
+
+
 @mcp.tool
 async def factory_status(
     include_recent: bool = False,
@@ -797,11 +829,16 @@ async def factory_status(
         response carries ``observed_at`` and a ``coverage`` map. Cloud
         sessions hold no factory record, so an empty active list is not
         evidence that nothing is running anywhere.
+        ``control_catalog`` reports native refill and amendment registration.
+        It cannot observe or refresh a gateway or caller's cached tool list.
     """
     refusal = _refuse(current_principal())
     if refusal is not None:
         return refusal
-    return await asyncio.to_thread(_status_payload, include_recent, offset, limit)
+    result = await asyncio.to_thread(_status_payload, include_recent, offset, limit)
+    if result.get("ok"):
+        result["control_catalog"] = await _control_catalog()
+    return result
 
 
 @mcp.tool

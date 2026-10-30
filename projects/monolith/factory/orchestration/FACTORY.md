@@ -1033,13 +1033,30 @@ Normal admission, task budgets, quota and transport controls still apply.
 The existing sweep pacing is unchanged; there is no calendar schedule.
 Settlement, fresh intake evidence and the cooldown permit another run.
 
-The worker performs #7366's report-only inventory and function-level dead-code
-delta. It returns an artifact with findings and both tables. The trusted
-producer creates agent-ready finding issues and one needs-human inventory
-summary; these labels are fixed. Every output has a run marker and a separate
+New starts pin two single-attempt read-only roles. The configured generator
+performs #7366's inventory and function-level dead-code delta, prioritizing useful
+work. Selecting `opus` through the bounded refill control uses the deployed Opus
+mapping. An independent Astra xhigh session challenges every finding, rejects
+duplicates and unready scope, and supplies executable plans and acceptance checks.
+Each dispatch requires fresh quota for its exact model without fallback.
+New collections contain at most five findings, a 12,000-character summary and
+3,000 characters per finding body. The schema excludes non-whitespace control
+characters and lone Unicode surrogates. Lossless Unicode JSON rendering keeps
+the full collection and review instructions within 60,000 characters, including
+worst-case escaping. The independent summary is limited to 12,000 characters.
+Legacy dispatch retains the original schema and limits.
+
+The producer verifies both graph runs, start reservations, immutable pins and
+distinct server-owned sessions. The review must bind the collection digest and
+decide every finding before any issue write. Only approved findings become
+agent-ready issues, followed by one needs-human inventory summary. Legacy starts
+without the review contract retain their original single-role behavior and are
+explicitly recorded as unreviewed. Existing ledgers are never upgraded in place.
+The labels are fixed. Every output has a run marker and a separate
 stable output marker. Finding identity derives from the normalized title, so
 renaming the model's key cannot count the same title as fresh yield. This is
-conservative title matching. It does not detect rephrased duplicates.
+conservative title matching. The independent reviewer also checks semantic
+duplicates against current open work.
 
 A pre-write intent commits before POST. Immediately before that commit, the
 producer rechecks the owning receipt, pause/cancellation state, generation,

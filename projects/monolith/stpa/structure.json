@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "68c9ca11c",
+  "commit": "631c56c59",
   "nodes": [
     {
       "key": "console-caller",
@@ -584,21 +584,21 @@
     },
     {
       "key": "factory-refill.dispatch",
-      "label": "Dispatch the pinned read-only inventory node under receipt authority",
+      "label": "Dispatch pinned read-only collection and independent review with fresh role quota",
       "view": "logical",
       "from": "factory-refill",
       "to": "agent-runner",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/orchestration/backlog_refill.py:414"
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill.py:584"
     },
     {
       "key": "refill-producer.collect",
-      "label": "Validate and store a bounded inventory artifact",
+      "label": "Authenticate collection and independent review before storing approved plans",
       "view": "logical",
       "from": "refill-producer",
       "to": "postgres",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/orchestration/backlog_refill_producer.py:260"
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill_producer.py:343,410"
     },
     {
       "key": "refill-producer.publish",

@@ -126,6 +126,7 @@ def test_factory_tools_are_registered():
         "factory_escalations",
         "factory_decide",
         "factory_amend_policy",
+        "factory_configure_refill",
         "factory_release_landing_hold",
         "factory_find_receipts",
         "factory_prepare_validation",
@@ -135,6 +136,47 @@ def test_factory_tools_are_registered():
         "factory_context",
         "factory_verify_synthetics",
     } <= registered, f"factory tools not registered; got: {sorted(registered)}"
+
+
+def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatch):
+    monkeypatch.setattr(mcp, "_status_payload", lambda *_: {"ok": True})
+    result = _as(_principal(), mcp.factory_status)
+    catalog = result["control_catalog"]
+    assert catalog["source"] == "native_server_registry"
+    assert catalog["caller_visibility"] == "not_observed"
+    assert set(catalog["tools"]) == {"factory_configure_refill", "factory_amend_policy"}
+    refill = catalog["tools"]["factory_configure_refill"]
+    assert refill["registered"] is True
+    assert refill["operations"] == ["preview", "apply"]
+    assert refill["models"] == ["astra", "opus"]
+    assert len(refill["schema_sha256"]) == 64
+    assert len(refill["description_sha256"]) == 64
+    assert len(json.dumps(catalog)) < 2500
+
+
+def test_status_reports_missing_native_control_without_inventing_visibility(
+    monkeypatch,
+):
+    monkeypatch.setattr(mcp, "_status_payload", lambda *_: {"ok": True})
+    original = mcp.mcp.get_tool
+
+    async def missing(name):
+        return None if name == "factory_configure_refill" else await original(name)
+
+    monkeypatch.setattr(mcp.mcp, "get_tool", missing)
+    catalog = _as(_principal(), mcp.factory_status)["control_catalog"]
+    assert catalog["tools"]["factory_configure_refill"] == {"registered": False}
+    assert catalog["tools"]["factory_amend_policy"]["registered"] is True
+
+
+def test_status_does_not_probe_registry_for_a_nonoperator(monkeypatch):
+    async def forbidden(_name):
+        raise AssertionError("nonoperator reached native catalogue")
+
+    monkeypatch.setattr(mcp.mcp, "get_tool", forbidden)
+    assert (
+        _as(_principal(groups=()), mcp.factory_status)["error"] == mcp.OPERATOR_REQUIRED
+    )
 
 
 def _synthetic_request():
@@ -272,7 +314,9 @@ def test_status_reaches_the_composer_for_an_operator(monkeypatch):
         "_status_payload",
         lambda include_recent, offset=0, limit=20, session=None: {"ok": True},
     )
-    assert _as(_principal(), mcp.factory_status) == {"ok": True}
+    result = _as(_principal(), mcp.factory_status)
+    assert result["ok"] is True
+    assert result["control_catalog"]["source"] == "native_server_registry"
 
 
 def test_escalations_reach_the_composer_for_an_operator(monkeypatch):

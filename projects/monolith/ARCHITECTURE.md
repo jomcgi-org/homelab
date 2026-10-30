@@ -310,9 +310,23 @@ POST. An ambiguous write retains its duplicate-post fence; after six reads it
 is quarantined independently of run settlement and reconciled daily. Temporary
 rolling limits resume automatically, while interrupted runs remain neutral to
 yield and failure streaks. Finding titles provide server-owned duplicate
-identity. Shared JSON encoding keeps the audit contract aligned with factory
+identity. New starts pin a generator and an independent Astra challenge with
+executable acceptance checks. The producer authenticates both run and start
+ledgers, distinct server-owned sessions and the collection digest before issue
+publication. Legacy starts retain their recorded contract and remain explicitly
+unreviewed. Shared JSON encoding keeps the audit contract aligned with factory
 controls. Live enablement, output and breaker drills remain on #7376.
 (see: /projects/monolith/factory/orchestration/FACTORY.md)
+
+**Why.** Native tool registration and caller visibility are separate observations.
+Bounded factory status exposes hashes and argument names for the existing refill
+and receipt-amendment controls, without claiming it can inspect or refresh a
+client catalogue. Registration and description validation run against the real
+module registry. Authenticated local integration tests exercise restriction and
+separately authorized continuation through that same MCP schema, preserving
+expired paused deadlines and uncertain execution. No second control route or
+access change is introduced to work around stale discovery.
+(see: /projects/monolith/factory/MCP.md)
 
 **Why.** Factory outcome comparisons use receipt cohorts and count every attempt
 through an explicit as-of bound. A positive requires successful delivery CI and

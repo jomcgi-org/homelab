@@ -20,8 +20,13 @@ from factory.orchestration import backlog_refill as refill
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_problem_issues as producer
 from factory.orchestration.backlog_refill_policy import normalize
-from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, WorkItem
-from factory.orchestration.models import SwarmTask
+from factory.orchestration.factory_models import (
+    FactoryAudit,
+    FactoryReceipt,
+    FactoryStart,
+    WorkItem,
+)
+from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
 TERMINAL = {"created", "existing", "rejected", "abandoned"}
 SETTLED = TERMINAL | {"quarantined"}
@@ -65,35 +70,63 @@ def _record(output, status, **extra):
         return item
 
 
-def _allowed(db, control, output):
+def _allowed(db, control, item):
     """Recheck the owner at the committed write boundary, after discovery I/O."""
     policy = json.loads(control.policy_json or "{}") if control else {}
     if (
         control is None
         or control.state != "enabled"
-        or policy.get("repo") != output["repo"]
+        or policy.get("repo") != item["repo"]
         or not normalize(policy)["enabled"]
-        or output["repo"] not in controls.enabled_repos(policy)
+        or item["repo"] not in controls.enabled_repos(policy)
     ):
         return False
-    if output["kind"] == "breaker":
+    if item["kind"] == "breaker":
         return True
-    start = refill.latest_event(db, "started", run_id=output["run_id"])
+    start = refill.latest_event(db, "started", run_id=item["run_id"])
     if start is None:
         return False
     detail = refill._detail(start)
+    if detail.get("review_contract") is not None:
+        reviewed = refill.latest_event(db, "reviewed", run_id=item["run_id"])
+        if reviewed is None:
+            return False
+        accepted = refill._detail(reviewed)["collection"]
+        # A review authorizes only the exact server-rendered approved outputs.
+        candidates = [
+            output(
+                detail["repo"],
+                detail["run_id"],
+                "finding",
+                finding["key"],
+                finding["title"],
+                finding["body"],
+                ["agent-ready"],
+            )
+            for finding in accepted["findings"]
+        ]
+        if item["kind"] == "finding" and item not in candidates:
+            return False
+        if item["kind"] not in {"finding", "summary"}:
+            return False
+        if item["kind"] == "summary":
+            results = [_last(db, candidate["output_id"]) for candidate in candidates]
+            if any(not result or result["status"] not in SETTLED for result in results):
+                return False
+            if item != _summary(detail, reviewed.created_at, accepted, results):
+                return False
     owner = db.get(FactoryReceipt, detail["receipt_id"])
     if (
         owner is None
         or owner.actor != refill.ACTOR
-        or owner.repo != output["repo"]
-        or owner.recurrence_key != output["run_id"]
+        or owner.repo != item["repo"]
+        or owner.recurrence_key != item["run_id"]
         or owner.state != "admitted"
         or owner.task_paused
         or owner.cancellation_requested
         or owner.generation != policy.get("generation")
         or detail["policy_digest"] != refill.digest(policy)
-        or refill.latest_event(db, "completed", run_id=output["run_id"])
+        or refill.latest_event(db, "completed", run_id=item["run_id"])
     ):
         return False
     charter = db.get(WorkItem, owner.work_item_id) if owner.work_item_id else None
@@ -257,7 +290,57 @@ def publish(output, *, allow_new=True):
     return _record(output, "created", issue_number=result["number"])
 
 
-def collection(run_id, value):
+def _role_run(db, start, node_key, run_id):
+    """Authenticate one completed role against both ledgers and its session."""
+    from factory.orchestration.node_workflows import resolve_node_session_id
+
+    owner = db.get(FactoryReceipt, start["receipt_id"])
+    run = db.get(SwarmNodeRun, run_id) if type(run_id) is int else None
+    expected = refill.role(start, node_key)
+    if (
+        owner is None
+        or run is None
+        or run.task_id != owner.task_id
+        or run.node_key != node_key
+        or run.attempt != 1
+        or run.status != "succeeded"
+        or run.model != expected["model"]
+        or type(run.session_id) is not int
+        or run.session_id <= 0
+    ):
+        raise ValueError("refill role identity mismatch")
+    pin = json.loads(run.pin_json or "{}")
+    if (
+        pin.get("model") != expected["model"]
+        or pin.get("effort") != expected["effort"]
+        or pin.get("task_id") != owner.task_id
+        or pin.get("node_key") != node_key
+        or pin.get("attempt") != 1
+        or pin.get("read_only") is not True
+        or pin.get("artifact_schema") != refill.schema(node_key)
+        or pin.get("workflow_id") != run.dispatch_key
+        or resolve_node_session_id(pin, session=db) != run.session_id
+    ):
+        raise ValueError("refill role pin mismatch")
+    grant = db.exec(
+        select(FactoryStart).where(
+            FactoryStart.task_id == owner.task_id,
+            FactoryStart.start_key == run.dispatch_key,
+        )
+    ).first()
+    if (
+        grant is None
+        or grant.status != "succeeded"
+        or grant.model != run.model
+        or grant.session_id != run.session_id
+        or grant.max_cost_usd != pin.get("max_cost_usd")
+    ):
+        raise ValueError("refill role reservation mismatch")
+    outcome = json.loads(run.outcome_json or "{}")
+    return run, outcome.get("value") or outcome.get("artifact") or {}
+
+
+def collection(run_id, value, *, collector_run_id=None):
     """Validate the bounded artifact before storing any publication authority."""
     if (
         not isinstance(value, dict)
@@ -295,12 +378,109 @@ def collection(run_id, value):
             "policy"
         ].get("max_findings", 100):
             raise ValueError("refill collection exceeds pinned batch")
+        detail = refill._detail(start)
+        reviewed_contract = detail.get("review_contract") is not None
+        if reviewed_contract:
+            from jsonschema import Draft202012Validator
+
+            if list(Draft202012Validator(refill.COLLECT_SCHEMA).iter_errors(value)):
+                raise ValueError("invalid bounded refill collection")
+            _run, artifact = _role_run(db, detail, refill.NODE, collector_run_id)
+            if artifact != value:
+                raise ValueError("refill collection artifact mismatch")
         prior = refill.latest_event(db, "collection", run_id=run_id)
         if prior is not None:
-            if refill._detail(prior)["collection"] != value:
+            previous = refill._detail(prior)
+            if previous["collection"] != value or (
+                reviewed_contract
+                and previous.get("collector_run_id") != collector_run_id
+            ):
                 raise ValueError("refill collection changed")
             return
-        refill.record(db, "collection", run_id=run_id, collection=value)
+        refill.record(
+            db,
+            "collection",
+            run_id=run_id,
+            collection=value,
+            collector_run_id=collector_run_id,
+            review_status="pending" if reviewed_contract else "legacy_unreviewed",
+        )
+
+
+def review(run_id, reviewer_run_id):
+    """Store only independently accepted findings with executable plans."""
+    from jsonschema import Draft202012Validator
+
+    with controls._locked_session() as (db, _control):
+        start = refill.latest_event(db, "started", run_id=run_id)
+        collected = refill.latest_event(db, "collection", run_id=run_id)
+        if start is None or collected is None:
+            raise ValueError("refill review missing collection")
+        detail, collected = refill._detail(start), refill._detail(collected)
+        collector, value = _role_run(
+            db, detail, refill.NODE, collected.get("collector_run_id")
+        )
+        reviewer, verdict = _role_run(db, detail, refill.REVIEW_NODE, reviewer_run_id)
+        if (
+            value != collected["collection"]
+            or collector.session_id == reviewer.session_id
+            or list(Draft202012Validator(refill.REVIEW_SCHEMA).iter_errors(verdict))
+            or verdict["collection_digest"] != refill.digest(value)
+            or "\u2014" in json.dumps(verdict, ensure_ascii=False)
+            or "<!-- factory-" in json.dumps(verdict)
+        ):
+            raise ValueError("invalid independent refill review")
+        decisions = {item["key"]: item for item in verdict["decisions"]}
+        if (
+            len(decisions) != len(verdict["decisions"])
+            or set(decisions) != {item["key"] for item in value["findings"]}
+            or any(
+                not item[field].strip()
+                for item in verdict["decisions"]
+                for field in ("evidence", "plan", "acceptance")
+            )
+        ):
+            raise ValueError("refill review must decide every finding")
+        accepted = []
+        for finding in value["findings"]:
+            decision = decisions[finding["key"]]
+            if decision["approved"]:
+                accepted.append(
+                    {
+                        **finding,
+                        "body": finding["body"]
+                        + "\n\nIndependent challenge:\n"
+                        + decision["evidence"]
+                        + "\n\nImplementation plan:\n"
+                        + decision["plan"]
+                        + "\n\nAcceptance criteria:\n"
+                        + decision["acceptance"],
+                    }
+                )
+        approved = {
+            "summary": value["summary"]
+            + "\n\nIndependent review:\n"
+            + verdict["summary"],
+            "findings": accepted,
+        }
+        if len(approved["summary"]) > 60000:
+            raise ValueError("refill reviewed summary exceeds bound")
+        result = {
+            "run_id": run_id,
+            "collector_run_id": collector.id,
+            "reviewer_run_id": reviewer.id,
+            "collector_session_id": collector.session_id,
+            "reviewer_session_id": reviewer.session_id,
+            "collection_digest": refill.digest(value),
+            "review_digest": refill.digest(verdict),
+            "collection": approved,
+        }
+        prior = refill.latest_event(db, "reviewed", run_id=run_id)
+        if prior is not None:
+            if refill._detail(prior) != result:
+                raise ValueError("refill review changed")
+            return
+        refill.record(db, "reviewed", **result)
 
 
 def output(repo, run_id, kind, key, title, body, labels):
@@ -323,10 +503,38 @@ def output(repo, run_id, kind, key, title, body, labels):
     }
 
 
+def _summary(start, created_at, value, results):
+    links = "\n".join(
+        f"- #{item['issue_number']}" for item in results if "issue_number" in item
+    )
+    unresolved = "\n".join(
+        f"- {item['title']}" for item in results if item["status"] == "quarantined"
+    )
+    publication_note = (
+        "\n\nUnresolved publications (reconciliation continues without reposting):\n"
+        + unresolved
+        if unresolved
+        else ""
+    )
+    return output(
+        start["repo"],
+        start["run_id"],
+        "summary",
+        start["run_id"],
+        f"repo: project inventory {aware(created_at).date().isoformat()}",
+        value["summary"] + "\n\nFinding issues:\n" + links + publication_note,
+        ["needs-human"],
+    )
+
+
 def advance(start, *, allow_new=True):
     """Publish one output per tick; yield counts only this run's new findings."""
     with controls._read_session() as db:
-        row = refill.latest_event(db, "collection", run_id=start["run_id"])
+        row = refill.latest_event(
+            db,
+            "reviewed" if start.get("review_contract") is not None else "collection",
+            run_id=start["run_id"],
+        )
     if row is None:
         return None
     value = refill._detail(row)["collection"]
@@ -353,27 +561,7 @@ def advance(start, *, allow_new=True):
         results.append(result)
         if previous is None:
             return None  # At most one new output boundary per tick.
-    links = "\n".join(
-        f"- #{item['issue_number']}" for item in results if "issue_number" in item
-    )
-    unresolved = "\n".join(
-        f"- {item['title']}" for item in results if item["status"] == "quarantined"
-    )
-    publication_note = (
-        "\n\nUnresolved publications (reconciliation continues without reposting):\n"
-        + unresolved
-        if unresolved
-        else ""
-    )
-    summary = output(
-        start["repo"],
-        start["run_id"],
-        "summary",
-        start["run_id"],
-        f"repo: project inventory {aware(row.created_at).date().isoformat()}",
-        value["summary"] + "\n\nFinding issues:\n" + links + publication_note,
-        ["needs-human"],
-    )
+    summary = _summary(start, row.created_at, value, results)
     result = publish(summary, allow_new=allow_new)
     if not result or result["status"] not in SETTLED:
         return None
