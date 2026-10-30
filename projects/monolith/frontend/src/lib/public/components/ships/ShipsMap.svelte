@@ -1,5 +1,11 @@
 <script>
   import { onMount } from "svelte";
+  import { Button } from "@homelab/design-system/components";
+  import {
+    readPalette,
+    paintBasemap,
+    HEAT_STEPS,
+  } from "$lib/public/ships/palette.js";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import "maplibre-gl/dist/maplibre-gl.css";
@@ -11,9 +17,7 @@
 
   let { vessels = [] } = $props();
 
-  // OpenFreeMap needs no API key. Self-hosting the tiles + style is a
-  // follow-up; for now we point at the hosted liberty style and tint the
-  // canvas toward the cream palette with a CSS filter (see <style>).
+  // Keep the existing provider and attribution. Paint follows the scoped sheet.
   const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
   // A fix older than this is almost certainly a vessel that stopped
@@ -32,11 +36,14 @@
   let maplibregl; // loaded lazily in onMount (browser-only module)
   let mapContainer; // bound <div>
   let map = null;
-  let pal = null; // design-token palette, resolved once the map is up
+  let pal = null; // resolved on the map surface at load and on scheme changes
   let rafId = null;
   let lastDrMs = 0;
   let didFit = false;
   let layerReady = false;
+  let disposed = false;
+  let heatRequest = null;
+  let trackRequest = null;
 
   // mmsi -> { row, fixLat, fixLon, fixTimeMs, speed, course, rotation, icon }
   // `row` is the original snapshot object, kept for the detail panel.
@@ -49,19 +56,6 @@
   let track = $state(null); // { mmsi, count, track } or null
   let trackLoading = $state(false);
 
-  // Vessel-type palette. A vibrant MotherDuck-flavored set used for both the
-  // map markers and the legend boxes. Kept local (not the global --blue/--teal
-  // tokens) so the map pops without churning the site's restrained palette: the
-  // muddy --teal/--ink-3 read as dull behind the basemap's grayscale filter.
-  const VESSEL_COLORS = {
-    passenger: "#3b8ef5", // azure
-    cargo: "#14c4a9", // aqua-mint (distinct from the green Special)
-    tanker: "#ff564a", // coral-red
-    hsc: "#ffcb1f", // golden
-    special: "#35cb5b", // spring green
-    unknown: "#8b6fe8", // periwinkle violet (completes the spectrum)
-  };
-
   // Vessel-type filter. Each legend box toggles whether that ITU band shows on
   // the map; toggling sets a MapLibre layer filter on the `icon` property.
   const LEGEND = [
@@ -69,37 +63,37 @@
       key: "passenger",
       label: "Passenger",
       icon: "ship-passenger",
-      color: VESSEL_COLORS.passenger,
+      color: "var(--ships-passenger)",
     },
     {
       key: "cargo",
       label: "Cargo",
       icon: "ship-cargo",
-      color: VESSEL_COLORS.cargo,
+      color: "var(--ships-cargo)",
     },
     {
       key: "tanker",
       label: "Tanker",
       icon: "ship-tanker",
-      color: VESSEL_COLORS.tanker,
+      color: "var(--ships-tanker)",
     },
     {
       key: "hsc",
       label: "High-speed",
       icon: "ship-hsc",
-      color: VESSEL_COLORS.hsc,
+      color: "var(--ships-hsc)",
     },
     {
       key: "special",
       label: "Special",
       icon: "ship-special",
-      color: VESSEL_COLORS.special,
+      color: "var(--ships-special)",
     },
     {
       key: "unknown",
       label: "Other",
       icon: "ship-unknown",
-      color: VESSEL_COLORS.unknown,
+      color: "var(--ships-unknown)",
     },
   ];
   // The full legend order, used as the vessel-type allow-list + "all on" default
@@ -147,26 +141,9 @@
   const HEAT_SOURCE = "heat-cells";
   const HEAT_LAYER = "heat-fill";
 
-  // Neo-brutalist stepped plasma palette: vivid violet through magenta and rose
-  // to orange/red. Deliberately skips green and pale blue so even the quiet end
-  // stays vibrant against the green-and-beige basemap when zoomed out, and the
-  // brightness climbs monotonically so the busiest lanes read as the BRIGHTEST
-  // red (not a dark maroon: the old deep #c1121f top step, compounded by the
-  // basemap filter, made busy water look muddy instead of hot).
-  //
-  // The breakpoints are no longer fixed. All-time vessel-day counts grow
-  // unbounded, so a hardcoded ramp would saturate the whole map to red. The
-  // backend derives per-fetch quantile breaks (data.stops, ascending+unique,
-  // first is 1) and we build the step ramp + legend from those. FALLBACK_BREAKS
-  // covers old cached payloads or an empty grid (no stops).
-  const HEAT_COLORS = [
-    "#7b2ff7", // vivid violet
-    "#d61f9c", // magenta
-    "#ff0a78", // hot rose
-    "#ff6a00", // vivid orange
-    "#ff2a1f", // bright red
-    "#ff0019", // pure vivid red (hottest)
-  ];
+  // Quantile stops come from the backend. The scheme-aware sequential ramp
+  // and its legend share the sheet's --ships-heat-* roles. Older cached or
+  // empty payloads retain the established fallback breaks.
   const FALLBACK_BREAKS = [1, 3, 6, 10, 15, 20];
 
   // MapLibre `step` wants STRICTLY ASCENDING stop inputs: first the default
@@ -175,9 +152,9 @@
   // expression is always valid.
   function rampFor(stops) {
     const breaks = stops && stops.length ? stops : FALLBACK_BREAKS;
-    const expr = ["step", ["get", "count"], HEAT_COLORS[0]];
-    for (let i = 1; i < breaks.length && i < HEAT_COLORS.length; i++) {
-      expr.push(breaks[i], HEAT_COLORS[i]);
+    const expr = ["step", ["get", "count"], pal.heat[0]];
+    for (let i = 1; i < breaks.length && i < HEAT_STEPS; i++) {
+      expr.push(breaks[i], pal.heat[i]);
     }
     return { expr, breaks };
   }
@@ -227,12 +204,15 @@
   }
 
   async function loadHeat() {
-    if (heatLoaded) return;
+    if (heatLoaded || heatRequest || disposed || !layerReady) return;
+    const request = new AbortController();
+    heatRequest = request;
     try {
       // Same-origin proxy to /api/ships/heat (see heat/+server.js).
-      const res = await fetch("/app/ships/heat");
+      const res = await fetch("/app/ships/heat", { signal: request.signal });
       if (!res.ok) return;
       const data = await res.json();
+      if (disposed || request.signal.aborted) return;
       const { expr, breaks } = rampFor(data.stops);
       map.setPaintProperty(HEAT_LAYER, "fill-color", expr);
       heatBreaks = breaks; // re-render the legend from the live breaks
@@ -240,6 +220,8 @@
       heatLoaded = true;
     } catch {
       // Leave the grid empty on failure; the toggle still works.
+    } finally {
+      if (heatRequest === request) heatRequest = null;
     }
   }
 
@@ -270,14 +252,13 @@
     return { type: "FeatureCollection", features: [] };
   }
 
-  // Marker fills come from VESSEL_COLORS (vibrant, single-sourced with the
-  // legend); only the ink stroke is pulled from the design tokens.
-  function palette() {
-    const s = getComputedStyle(document.documentElement);
-    return {
-      ...VESSEL_COLORS,
-      ink: s.getPropertyValue("--ink").trim(),
-    };
+  function refreshPalette() {
+    if (!map || !layerReady) return;
+    pal = readPalette(mapContainer);
+    paintBasemap(map, pal);
+    registerIcons(pal);
+    map.setPaintProperty(HEAT_LAYER, "fill-color", rampFor(heatBreaks).expr);
+    map.setPaintProperty("ship-track-line", "line-color", pal.ink);
   }
 
   // ITU AIS ship_type bands mapped onto the icon ids registered below.
@@ -321,8 +302,8 @@
     return v.heading ?? v.course ?? 0;
   }
 
-  // Rasterize the ship arrow once per palette color into a canvas image and
-  // register it with the map. Per-color icons let a single data-driven
+  // Rasterize the ship arrow per palette color and update registered images
+  // in place on scheme changes. Per-color icons let a single data-driven
   // `icon-image` expression pick the right tint with no SDF machinery.
   function registerIcons(p) {
     const colors = {
@@ -337,23 +318,21 @@
     const box = 22; // logical icon size in px
     const px = box * ratio;
     for (const [id, fill] of Object.entries(colors)) {
-      if (map.hasImage(id)) continue;
       const canvas = document.createElement("canvas");
       canvas.width = px;
       canvas.height = px;
       const ctx = canvas.getContext("2d");
       ctx.scale(px / 20, px / 20); // path authored in a 20x20 viewBox
       const path = new Path2D("M10 1 L17 18 L10 14 L3 18 Z");
-      // The basemap renders at native saturation (no canvas filter), so the
-      // fills are drawn at their true legend colors with no saturation
-      // compensation.
       ctx.fillStyle = fill;
       ctx.fill(path);
       ctx.lineWidth = 1.5;
       ctx.lineJoin = "round";
       ctx.strokeStyle = p.ink;
       ctx.stroke(path);
-      map.addImage(id, ctx.getImageData(0, 0, px, px), { pixelRatio: ratio });
+      const image = ctx.getImageData(0, 0, px, px);
+      if (map.hasImage(id)) map.updateImage(id, image);
+      else map.addImage(id, image, { pixelRatio: ratio });
     }
   }
 
@@ -518,28 +497,43 @@
   }
 
   async function selectVessel(v) {
+    trackRequest?.abort();
+    const request = new AbortController();
+    trackRequest = request;
     selected = v;
     selectedMmsi = String(v.mmsi);
     pushData(); // highlight immediately, don't wait for the next DR tick
     track = null;
+    drawTrack([]);
     trackLoading = true;
     try {
       // Same-origin site route, proxied to /api/ships/track/{mmsi} server-side
       // by +server.js. The browser never touches the private API surface.
-      const res = await fetch(`/app/ships/track/${encodeURIComponent(v.mmsi)}`);
+      const res = await fetch(
+        `/app/ships/track/${encodeURIComponent(v.mmsi)}`,
+        { signal: request.signal },
+      );
       if (res.ok) {
         const body = await res.json();
+        if (disposed || request.signal.aborted || trackRequest !== request)
+          return;
         track = body;
         drawTrack(body.track);
       }
     } catch {
       // Network blip: keep the panel open with snapshot fields, just no track.
     } finally {
-      trackLoading = false;
+      if (trackRequest === request) {
+        trackLoading = false;
+        trackRequest = null;
+      }
     }
   }
 
   function closePanel() {
+    trackRequest?.abort();
+    trackRequest = null;
+    trackLoading = false;
     selected = null;
     selectedMmsi = null;
     track = null;
@@ -574,6 +568,8 @@
   onMount(() => {
     let cleanup = () => {};
     let destroyed = false;
+    let warmup;
+    let idleWarmup = false;
 
     (async () => {
       maplibregl = await import("maplibre-gl");
@@ -628,17 +624,20 @@
         attrib?.removeAttribute("open");
         attrib?.classList.remove("maplibregl-compact-show");
       };
-      mapContainer.addEventListener("click", (e) => {
+      const onAttributionClick = (e) => {
         if (e.target.closest(".maplibregl-ctrl-attrib-button")) {
           userOpenedAttrib = true;
         }
-      });
+      };
+      mapContainer.addEventListener("click", onAttributionClick);
       map.on("styledata", collapseAttrib);
       map.on("sourcedata", collapseAttrib);
       collapseAttrib();
 
       map.on("load", () => {
-        pal = palette();
+        if (disposed || layerReady) return;
+        pal = readPalette(mapContainer);
+        paintBasemap(map, pal);
         registerIcons(pal);
 
         // Traffic-density heatmap, hidden until toggled into Heat mode. Added
@@ -654,11 +653,8 @@
             // Placeholder fallback ramp; replaced with the data-derived ramp in
             // loadHeat() once the grid (and its quantile breaks) arrives.
             "fill-color": rampFor(null).expr,
-            // High opacity keeps the beige/green basemap from bleeding through
-            // and muting the ramp; the cells already sit on water/lanes so the
-            // map underneath stays readable at the edges.
-            "fill-opacity": 0.9,
-            "fill-outline-color": "rgba(0, 0, 0, 0)",
+            // Opaque cells match the legend exactly in either scheme.
+            "fill-opacity": 1,
           },
         });
 
@@ -740,13 +736,29 @@
         // on idle after first paint instead of waiting for the toggle.
         // loadHeat() is a no-op once cached, so the toggle handler stays correct.
         if (typeof requestIdleCallback === "function") {
-          requestIdleCallback(() => loadHeat(), { timeout: 3000 });
+          idleWarmup = true;
+          warmup = requestIdleCallback(() => loadHeat(), { timeout: 3000 });
         } else {
-          setTimeout(() => loadHeat(), 1500);
+          warmup = setTimeout(() => loadHeat(), 1500);
         }
       });
 
+      const scheme = new MutationObserver(refreshPalette);
+      scheme.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      media.addEventListener("change", refreshPalette);
+
       cleanup = () => {
+        scheme.disconnect();
+        media.removeEventListener("change", refreshPalette);
+        mapContainer.removeEventListener("click", onAttributionClick);
+        if (idleWarmup) cancelIdleCallback(warmup);
+        else clearTimeout(warmup);
+        heatRequest?.abort();
+        trackRequest?.abort();
         if (rafId) cancelAnimationFrame(rafId);
         fleet.clear();
         map?.remove();
@@ -757,6 +769,7 @@
 
     return () => {
       destroyed = true;
+      disposed = true;
       cleanup();
     };
   });
@@ -769,54 +782,48 @@
 >
   <div class="map" bind:this={mapContainer}></div>
 
-  <nav class="map-chip" aria-label="Breadcrumb">
-    <a class="chip-home" href="/"
-      >jomcgi.dev<span class="chip-home-arrow" aria-hidden="true">↗</span></a
-    >
-    <span class="chip-sep">/</span>
-    <span class="chip-name">ships</span>
-    <span class="chip-sep chip-sep-live">/</span>
-    <span class="chip-live">live</span>
-    <span class="chip-dot" aria-hidden="true"></span>
-  </nav>
-
   <div class="mode-toggle" role="group" aria-label="Map mode">
-    <button
-      class:active={mode === "vessels"}
+    <Button
+      variant="secondary"
+      aria-pressed={mode === "vessels"}
       onclick={() => setMode("vessels")}
     >
       Vessels
-    </button>
-    <button class:active={mode === "heat"} onclick={() => setMode("heat")}>
+    </Button>
+    <Button
+      variant="secondary"
+      aria-pressed={mode === "heat"}
+      onclick={() => setMode("heat")}
+    >
       Heat
-    </button>
+    </Button>
   </div>
 
   {#if mode === "vessels"}
-    <div class="legend">
-      <p class="eyebrow legend-title">Vessel type</p>
+    <div class="legend edition">
+      <p class="ed-head legend-title">Vessel type</p>
       <div class="legend-grid">
         {#each LEGEND as item (item.key)}
-          <button
-            type="button"
+          <Button
+            variant="secondary"
             class="legend-item"
-            class:is-off={!active.has(item.key)}
-            style="background: {item.color}"
+            style="--vessel-color: {item.color}"
             aria-pressed={active.has(item.key)}
             onclick={() => toggleType(item.key)}
           >
+            <span class="vessel-sw" aria-hidden="true"></span>
             <span class="legend-label">{item.label}</span>
-          </button>
+          </Button>
         {/each}
       </div>
     </div>
   {:else}
-    <div class="legend">
-      <p class="eyebrow legend-title">Ships seen per map square, all time</p>
+    <div class="legend edition">
+      <p class="ed-head legend-title">Ships seen per map square, all time</p>
       <ul class="heat-scale">
-        {#each heatBreaks.slice(0, HEAT_COLORS.length) as br, i (br)}
+        {#each heatBreaks.slice(0, HEAT_STEPS) as br, i (br)}
           <li>
-            <span class="heat-sw" style="background: {HEAT_COLORS[i]}"
+            <span class="heat-sw" style="background: var(--ships-heat-{i + 1})"
             ></span>{heatLabel(heatBreaks, i)}
           </li>
         {/each}
@@ -825,39 +832,40 @@
   {/if}
 
   {#if selected}
-    <aside class="panel">
-      <button
+    <aside class="panel edition" aria-label="Vessel details">
+      <Button
+        variant="secondary"
         class="panel-close"
         onclick={closePanel}
-        aria-label="Close vessel panel">&times;</button
+        aria-label="Close vessel panel">&times;</Button
       >
       <h2 class="panel-name">
         {selected.name ||
           selected.ship_name ||
           `MMSI ${selected.mmsi} (ship radio id)`}
       </h2>
-      <dl class="panel-rows">
-        <div>
+      <dl class="panel-rows spec">
+        <div class="row">
           <dt title="a ship's radio id">MMSI</dt>
           <dd>{selected.mmsi}</dd>
         </div>
-        <div>
+        <div class="row">
           <dt>Type</dt>
           <dd>{shipTypeLabel(selected.ship_type)}</dd>
         </div>
-        <div>
+        <div class="row">
           <dt>Speed</dt>
           <dd>{fmtSpeed(selected.speed)}</dd>
         </div>
-        <div>
+        <div class="row">
           <dt>Course</dt>
           <dd>{fmtDeg(selected.course)}</dd>
         </div>
-        <div>
+        <div class="row">
           <dt>Heading</dt>
           <dd>{fmtDeg(selected.heading)}</dd>
         </div>
-        <div>
+        <div class="row">
           <dt>Destination</dt>
           <dd>{selected.destination || "Unknown"}</dd>
         </div>
@@ -876,439 +884,208 @@
     position: absolute;
     inset: 0;
     overflow: hidden;
-    background: var(--cream);
+    background: var(--sheet);
   }
-
   .map {
     position: absolute;
     inset: 0;
   }
 
-  /* No CSS filter on the basemap canvas: it renders at the OpenFreeMap style's
-     native colors. Earlier revisions desaturated it toward the cream palette,
-     but that read as dull next to the vibrant heatmap, and even a light tint
-     wasn't worth the muting, so the markers and heat ramp now sit on the full
-     basemap. */
-
-  /* The bottom-right stack (zoom + the collapsed attribution "i") sits in the
-     map's corner, where a device safe area can clip the controls offscreen:
-     the home-indicator inset on the bottom, and on a notched device held in
-     landscape the rounded-corner/notch inset on the right. Inset the whole
-     corner past both so nothing hides behind them. Falls back to 0 on devices
-     without a safe area. */
+  /* Keep the provider's controls and attribution, with flat sheet styling and
+     44px pointer targets. Safe-area insets protect the bottom/right stack. */
   .map :global(.maplibregl-ctrl-bottom-right) {
     bottom: env(safe-area-inset-bottom, 0);
     right: env(safe-area-inset-right, 0);
   }
-
-  /* Drop the group container entirely so each +/- button is its own square
-     that lifts off, rather than a button recessing into a bordered box. */
-  .map :global(.maplibregl-ctrl-group) {
-    border: none;
+  .map :global(.maplibregl-ctrl-group),
+  .map :global(.maplibregl-ctrl-attrib) {
+    border: 1px solid var(--stroke);
     border-radius: 0;
-    background: transparent;
+    background: var(--sheet);
     box-shadow: none;
-    overflow: visible; /* don't clip the lifted button's shadow */
+    color: var(--ink);
   }
-
-  .map :global(.maplibregl-ctrl-group button) {
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease;
-  }
-
-  /* maplibre stacks the +/- buttons flush; separate them so each lifts alone. */
-  .map :global(.maplibregl-ctrl-group button + button) {
-    margin-top: 6px;
-  }
-
-  /* Lift off and KEEP the shadow on hover/press/focus, like the homepage
-     buttons. No collapse-to-flat on :active (that read as "falling in"). */
-  .map :global(.maplibregl-ctrl-group button:hover),
-  .map :global(.maplibregl-ctrl-group button:focus-visible),
-  .map :global(.maplibregl-ctrl-group button:active) {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
-    background: var(--paper);
-    position: relative;
-    z-index: 1;
-  }
-
-  /* Compact attribution: a single square "i" toggle that matches the zoom
-     controls stacked above it, rather than MapLibre's default round white pill.
-     The required OSM/OpenMapTiles credits expand on tap.
-
-     The "i" button is `position: absolute; top: 0` inside this container, so the
-     container has to stay tall enough to hold it: MapLibre's default min-height
-     does that, but a previous `min-height: 0` collapsed the box to ~4px and the
-     24px button then overflowed *below* it. Because this control is anchored to
-     the map's bottom edge, that overflow fell off the bottom of the viewport and
-     clipped the lower ~10px of the "i". Match the container to the button (24px,
-     vertical padding zeroed for a clean square) so the button is fully held. */
-  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact) {
-    min-height: 24px;
-    padding-block: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-
+  .map :global(.maplibregl-ctrl-group button),
   .map :global(.maplibregl-ctrl-attrib-button) {
-    width: 24px;
-    height: 24px;
-    border: 2px solid var(--ink);
+    width: 44px;
+    height: 44px;
     border-radius: 0;
-    background-color: var(--paper);
+    background: var(--sheet);
+    color: var(--ink);
   }
-
-  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact-show) {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: 0;
+  .map :global(.maplibregl-ctrl-group button + button) {
+    border-top: 1px solid var(--stroke);
   }
-
-  .map :global(.maplibregl-ctrl-attrib-inner) {
-    font-family: var(--mono);
-    font-size: 10px;
+  /* Text glyphs inherit ink in both schemes, unlike the provider's black PNGs. */
+  .map :global(.maplibregl-ctrl-icon) {
+    background-image: none;
   }
-
-  .map-chip {
+  .map :global(.maplibregl-ctrl-zoom-in)::after {
+    content: "+";
+  }
+  .map :global(.maplibregl-ctrl-zoom-out)::after {
+    content: "−";
+  }
+  .map :global(.maplibregl-ctrl-group button)::after {
     position: absolute;
-    top: 16px;
-    left: 16px;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font: 24px var(--font-code);
+  }
+  .map :global(.maplibregl-ctrl-group button) {
+    position: relative;
+  }
+  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact) {
+    min-height: 44px;
+    padding: 0 44px 0 0;
+  }
+  .map :global(.maplibregl-ctrl-attrib-button)::before {
+    content: "i";
+    background: none;
+    font: 20px var(--font-code);
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+  }
+  .map :global(.maplibregl-ctrl-attrib-button) {
+    display: grid;
+    place-items: center;
+    list-style: none;
+  }
+  .map :global(.maplibregl-ctrl-attrib-inner) {
+    padding: 0.5rem;
+    font: 11px var(--font-code);
+    max-width: min(300px, calc(100vw - 70px));
+  }
+  .map :global(.maplibregl-ctrl-attrib-inner a) {
+    color: var(--ink);
+  }
+  .map :global(button:focus-visible),
+  .map :global(summary:focus-visible) {
+    outline: 2px solid var(--accent-ink);
+    outline-offset: -3px;
   }
 
-  /* Vessels/Heat switch, top-right. The detail panel is shifted below it. */
   .mode-toggle {
     position: absolute;
-    top: 16px;
-    right: 16px;
-    display: inline-flex;
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .mode-toggle button {
-    padding: 8px 14px;
-    background: var(--paper);
-    border: none;
-    color: var(--ink);
-    cursor: pointer;
-    transition: background 120ms ease;
-  }
-
-  .mode-toggle button + button {
-    border-left: 2px solid var(--ink);
-  }
-
-  .mode-toggle button:hover {
-    background: var(--cream);
-  }
-
-  .mode-toggle button.active {
-    background: var(--ink);
-    color: var(--paper);
-  }
-
-  .heat-scale {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 5px 14px;
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-
-  .heat-scale li {
+    top: 12px;
+    right: 12px;
     display: flex;
-    align-items: center;
-    gap: 7px;
+    font: 12px var(--font-code);
   }
-
-  .heat-sw {
-    width: 13px;
-    height: 13px;
-    border: 1.5px solid var(--ink);
-    flex: none;
+  .mode-toggle :global(button + button) {
+    border-left: 0;
   }
-
-  /* The home crumb is a real link out to the apex: underlined by default with
-     a small click-through arrow, and on hover/focus it gets the CV's
-     highlighter-marker treatment (bold + accent swipe) to read as "selected". */
-  .chip-home {
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    /* 2px (even at 2x DPR) + skip-ink: none renders a clean continuous rule;
-       1.5px left a faint lighter streak and skip-ink notched the underline
-       around the "." and the arrow. */
-    text-decoration-thickness: 2px;
-    text-decoration-skip-ink: none;
-    text-underline-offset: 2px;
-    padding: 0 2px;
-    -webkit-box-decoration-break: clone;
-    box-decoration-break: clone;
-    transition:
-      background 140ms ease,
-      text-decoration-color 140ms ease;
+  .mode-toggle :global(button[aria-pressed="true"]) {
+    background: var(--ink);
+    color: var(--sheet);
   }
-
-  .chip-home:hover,
-  .chip-home:focus-visible {
-    background: linear-gradient(transparent 56%, var(--accent) 56%);
-    text-decoration-color: var(--ink);
-  }
-
-  /* inline-block keeps the underline from running under the arrow glyph. */
-  .chip-home-arrow {
-    display: inline-block;
-    margin-left: 2px;
-    font-size: 0.85em;
-    vertical-align: 0.05em;
-    text-decoration: none;
-  }
-
-  .chip-sep {
-    color: var(--ink-3);
-  }
-
-  .chip-dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 999px;
-    background: var(--green);
-    border: 1px solid var(--ink);
-    animation: chip-pulse 1.6s ease-in-out infinite;
-  }
-
-  @keyframes chip-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.3;
-    }
-  }
-
-  /* Hard rectangle (no card-hard: that rounds the corners and lifts on hover,
-     which read as "clickable" on a non-interactive panel). */
   .legend {
     position: absolute;
-    bottom: 16px;
-    left: 16px;
-    padding: 12px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
+    bottom: 12px;
+    left: 12px;
+    width: 264px;
+    max-width: calc(100% - 82px);
+    background: var(--sheet);
   }
-
   .legend-title {
-    margin-bottom: 10px;
+    margin: 0;
+    padding: 0.5rem;
+    font: 12px var(--font-code);
   }
-
   .legend-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+  .legend-grid :global(.legend-item) {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 0;
+    border-top: 1px solid var(--stroke);
+    font: 12px var(--font-code);
+    text-align: left;
+  }
+  .legend-grid :global(.legend-item:nth-child(even)) {
+    border-left: 1px solid var(--stroke);
+  }
+  .vessel-sw,
+  .heat-sw {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--ink-2);
+    flex: none;
+  }
+  .vessel-sw {
+    background: var(--vessel-color);
+  }
+  .legend-grid :global(button[aria-pressed="false"] .vessel-sw) {
+    background: var(--sheet);
+  }
+  .legend-grid :global(button[aria-pressed="false"] .legend-label) {
+    text-decoration: line-through;
+  }
+  .heat-scale {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding: 10px;
+    margin: 0;
+    gap: 10px;
+    list-style: none;
+    font: 12px var(--font-code);
+  }
+  .heat-scale li {
+    display: flex;
+    align-items: center;
     gap: 8px;
   }
-
-  /* Each box is a filter toggle: the box fill is the vessel-type color, with
-     the label on a paper inset so it stays legible on any fill. Clicking
-     toggles that type on the map. */
-  .legend-item {
-    display: flex;
-    padding: 4px;
-    border: 2px solid var(--ink);
-    cursor: pointer;
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease,
-      opacity 110ms ease;
-  }
-
-  .legend-label {
-    width: 100%;
-    padding: 3px 7px;
-    background: var(--paper);
-    border: 1px solid var(--ink);
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    color: var(--ink);
-  }
-
-  .legend-item:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
-  }
-
-  /* Stay lifted while pressed (no "fall in"); the shadow just tucks in a hair. */
-  .legend-item:active {
-    transform: translate(-1px, -1px);
-    box-shadow: 1px 1px 0 var(--ink);
-  }
-
-  /* Filtered-out types dim but stay clickable to re-enable. */
-  .legend-item.is-off {
-    opacity: 0.4;
-  }
-
-  /* Hard rectangle to match the chip + legend (no card-hard: that rounds the
-     corners and lifts on hover, which read as interactive on a display panel). */
   .panel {
     position: absolute;
-    /* Clears the Vessels/Heat toggle (top-right). */
-    top: 64px;
-    right: 16px;
-    width: 280px;
-    max-width: calc(100% - 32px);
-    padding: 18px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
+    top: 68px;
+    right: 12px;
+    width: 300px;
+    max-width: calc(100% - 24px);
+    max-height: calc(100% - 220px);
+    overflow-y: auto;
+    background: var(--sheet);
   }
-
-  .panel-close {
-    position: absolute;
-    top: 8px;
-    right: 10px;
-    background: none;
-    border: none;
-    font-family: var(--mono);
+  .panel :global(.panel-close) {
+    float: right;
+    margin: 6px;
     font-size: 22px;
-    line-height: 1;
-    cursor: pointer;
-    color: var(--ink);
   }
-
   .panel-name {
-    font-family: var(--serif);
-    font-size: 28px;
-    line-height: 1.05;
-    margin: 2px 0 14px;
-    word-break: break-word;
+    margin: 0;
+    padding: 12px;
+    font: 700 1.15rem var(--font-ui);
+    overflow-wrap: anywhere;
   }
-
   .panel-rows {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+    clear: both;
+    margin: 0;
   }
-
-  .panel-rows > div {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    border-bottom: 1px dashed var(--rule-2);
-    padding-bottom: 6px;
-  }
-
   .panel-rows dt {
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
-
   .panel-rows dd {
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 600;
-    text-align: right;
+    margin: 0;
+    overflow-wrap: anywhere;
   }
-
   .panel-meta {
-    margin-top: 12px;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink-3);
-    letter-spacing: 0.04em;
+    margin: 0;
+    padding: 10px 12px;
+    font: 12px var(--font-code);
+    border-top: 1px solid var(--stroke);
+    color: var(--ink-2);
   }
-
   @media (max-width: 640px) {
-    /* Tighten the breadcrumb so the enlarged mode toggle has room beside it. */
-    .map-chip {
-      top: 12px;
-      left: 12px;
-      gap: 6px;
-      padding: 7px 9px;
-      font-size: 11px;
-    }
-
-    /* On a phone the chip and the (larger) mode toggle share the top row and
-       collide right where "live" meets "Vessels". Drop the redundant "/ live"
-       text: the pulsing green dot already signals live, and losing those
-       characters gives the toggle clear room beside the chip. */
-    .chip-sep-live,
-    .chip-live {
-      display: none;
-    }
-
-    /* The primary control on mobile: bigger buttons, bigger touch targets. */
-    .mode-toggle {
-      top: 12px;
-      right: 12px;
-      font-size: 13px;
-    }
-
-    .mode-toggle button {
-      padding: 12px 20px;
-    }
-
-    /* Filters stay on screen (desktop hid them) and grow into easy-to-tap
-       chips, anchored bottom-left clear of the zoom controls bottom-right. */
-    .legend {
-      bottom: 12px;
-      left: 12px;
-      padding: 12px 14px;
-    }
-
-    .legend-grid {
-      gap: 10px;
-    }
-
-    .legend-label {
-      padding: 6px 9px;
-      font-size: 12px;
-    }
-
-    .heat-scale {
-      font-size: 12px;
-      gap: 8px 16px;
-    }
-
-    .heat-sw {
-      width: 15px;
-      height: 15px;
-    }
-
-    /* Reading a vessel takes over the lower screen, so drop the filters while
-       the sheet is up rather than stacking the two bottom panels. */
     .panel-open .legend {
       display: none;
     }
-
-    /* Vessel info becomes a full-bleed bottom sheet that fills more of the
-       screen with larger, more legible type. */
     .panel {
       top: auto;
       bottom: 0;
@@ -1316,48 +1093,13 @@
       right: 0;
       width: auto;
       max-width: none;
-      max-height: 72vh;
-      overflow-y: auto;
-      padding: 22px 20px calc(22px + env(safe-area-inset-bottom));
-      border-width: 2px 0 0;
+      max-height: 50%;
+      padding-bottom: env(safe-area-inset-bottom, 0);
+      border-width: 1px 0 0;
     }
-
-    .panel-close {
-      top: 14px;
-      right: 16px;
-      font-size: 26px;
-    }
-
-    .panel-name {
-      font-size: 32px;
-    }
-
-    .panel-rows {
-      gap: 12px;
-    }
-
-    .panel-rows > div {
-      padding-bottom: 10px;
-    }
-
-    .panel-rows dt {
-      font-size: 11px;
-    }
-
-    .panel-rows dd {
-      font-size: 14px;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .chip-dot {
-      animation: none;
-    }
-    .map :global(.maplibregl-ctrl-group button) {
-      transition: none;
-    }
-    .legend-item {
-      transition: none;
+    /* The details occupy the bottom half; zoom/attribution stay in open water. */
+    .panel-open .map :global(.maplibregl-ctrl-bottom-right) {
+      bottom: 51%;
     }
   }
 </style>

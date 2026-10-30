@@ -1,0 +1,51 @@
+/* Ships owns a full-viewport sheet, with one in-flow chrome row. These rules
+ * cannot affect a sibling sheet after client navigation. */
+.ships-sheet {
+  --ships-passenger: var(--tone-gpu);
+  --ships-cargo: var(--tone-cache);
+  --ships-tanker: var(--tone-disk);
+  --ships-hsc: var(--warn);
+  --ships-special: var(--tone-ram);
+  --ships-unknown: var(--tone-hot);
+  --ships-water: color-mix(in srgb, var(--tone-cache) 12%, var(--sheet));
+  /* One ordered ramp, quiet to busy, shared by GPU cells and legend. */
+  --ships-heat-1: color-mix(in srgb, var(--tone-disk) 25%, var(--ships-water));
+  --ships-heat-2: color-mix(in srgb, var(--tone-disk) 40%, var(--ships-water));
+  --ships-heat-3: color-mix(in srgb, var(--tone-disk) 55%, var(--ships-water));
+  --ships-heat-4: color-mix(in srgb, var(--tone-disk) 70%, var(--ships-water));
+  --ships-heat-5: color-mix(in srgb, var(--tone-disk) 85%, var(--ships-water));
+  --ships-heat-6: var(--tone-disk);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+  padding: 0;
+  background: var(--sheet);
+  color: var(--ink);
+}
+
+.ships-chrome {
+  border-bottom: 1px solid var(--stroke);
+}
+
+.ships-sheet .ships-chrome .chrome {
+  position: static;
+  padding: 0.5rem;
+  align-items: center;
+  background: var(--sheet);
+}
+
+.ships-sheet .ships-chrome .trail-slot {
+  display: block;
+}
+
+.ships-sheet .ships-chrome .scheme,
+.ships-sheet .trail .crumb {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.ships-sheet .ships-chrome .scheme {
+  width: 44px;
+}
