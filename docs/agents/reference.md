@@ -137,6 +137,7 @@ when its row applies.
 | When | Read |
 |------|------|
 | Working under `projects/monolith/` or `projects/embervm/` | that directory's `AGENTS.md` |
+| Factory orchestration, execution or controls | [FACTORY.md](../../projects/monolith/factory/orchestration/FACTORY.md) first; [monolith section 4](../../projects/monolith/ARCHITECTURE.md#4-agents) for ownership, trust, rationale and acceptance |
 | A red CI run you need to diagnose | `docs/agents/ci-triage.md` |
 | Opening, readying or enqueuing a PR without GraphQL (cloud session) | `docs/agents/cloud-sessions.md` |
 | Reviewing a finished PR diff | `docs/agents/review.md` |
