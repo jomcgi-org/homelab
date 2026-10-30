@@ -1672,8 +1672,11 @@ def test_disabled_hold_and_exact_refusal_projection(db, github, monkeypatch):
     assert gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
     assert controls.landing_held(receipt_of(db, task_id))
     monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task = task_of(task_id)
+    assert task["landing_hold"]
     with pytest.raises(gates.LandingHoldRefused):
-        gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
+        gates.resolve(task, {"gate": hold_gate()}, "planner:test")
+    assert not task["landing_hold"]
     direction = json.loads(receipt_of(db, task_id).direction_json)
     assert not controls.landing_held({"direction": direction})
     assert not conductor._planner_direction(direction)["landing_hold"]

@@ -295,6 +295,9 @@ def enforce_hold_origin(task: dict, gate: dict, cause: str) -> str:
             refused = True
     # Raise after the transaction commits, including on replay.
     if refused:
+        from factory.orchestration.factory_controls import landing_held
+
+        task["landing_hold"] = landing_held({"direction": direction})
         raise LandingHoldRefused()
     return origin
 
