@@ -32,7 +32,7 @@ with system mono fallback instead of Google Fonts. Only the agents route has
 server HTML; other direct fixture routes mount client-side. The error stylesheet
 is eagerly included, so Kit's preload timing is not reproduced. Engineering
 has no direct `/ember/agents` link at this task's base; its fixture link exercises
-the component transition. Legacy Ember's existing story link is exercised.
+the component transition. The Ember landing's story link is exercised.
 
 Generated builds and evidence stay outside tracked sources. Merge, rollout and
 real-host checks remain outstanding on #7152.

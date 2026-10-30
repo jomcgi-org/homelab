@@ -298,17 +298,23 @@ def check(root, output, expected_sha):
                             page.locator(
                                 'nav[aria-label="Keep going"] a[href="/ember"]'
                             ).click()
-                            page.locator(".ember-site").wait_for()
-                            assert page.locator(".chrome, button.scheme").count() == 0
-                            geometry("agents-to-legacy")
-                            legacy_paint = page.locator(".ember-site").evaluate(
+                            # The Ember landing is a sheet too: the same chrome
+                            # and the same stored scheme carry across.
+                            page.locator("main.ember-sheet").wait_for()
+                            assert page.locator(".chrome, button.scheme").count() == 2
+                            assert (
+                                page.evaluate("document.documentElement.dataset.theme")
+                                == scheme
+                            )
+                            geometry("agents-to-ember")
+                            ember_paint = page.locator("main.ember-sheet").evaluate(
                                 "el=>({background:getComputedStyle(el).backgroundColor,font:getComputedStyle(el).fontFamily})"
                             )
-                            page.locator(".ember-site details").filter(
+                            page.locator("main.ember-sheet details").filter(
                                 has=page.locator('a[href="/ember/agents"]')
                             ).locator("summary").click()
                             page.locator(
-                                '.ember-site a[href="/ember/agents"]'
+                                'main.ember-sheet a[href="/ember/agents"]'
                             ).first.click()
                             page.locator(".agent-sheet").wait_for()
                             assert page.locator(".chrome, button.scheme").count() == 2
@@ -316,7 +322,7 @@ def check(root, output, expected_sha):
                                 page.evaluate("document.documentElement.dataset.theme")
                                 == scheme
                             )
-                            geometry("legacy-to-agents")
+                            geometry("ember-to-agents")
                             page.get_by_role(
                                 "link", name="Engineering fixture", exact=True
                             ).click()
@@ -329,12 +335,12 @@ def check(root, output, expected_sha):
                                 is True
                             )
                             page.goto(base + "/ember", wait_until="networkidle")
-                            page.locator(".ember-site").wait_for()
+                            page.locator("main.ember-sheet").wait_for()
                             assert (
-                                page.locator(".ember-site").evaluate(
+                                page.locator("main.ember-sheet").evaluate(
                                     "el=>({background:getComputedStyle(el).backgroundColor,font:getComputedStyle(el).fontFamily})"
                                 )
-                                == legacy_paint
+                                == ember_paint
                             )
 
                         page.goto(
