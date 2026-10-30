@@ -1,6 +1,14 @@
 <script>
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
+  import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
+  import Button from "@homelab/design-system/components/Button.svelte";
+  import {
+    readMapPalette,
+    applyMapPalette,
+    cellColors,
+    markerColors,
+  } from "$lib/public/stars/mapTheme.js";
   import {
     relativeMax,
     monthBars,
@@ -38,56 +46,18 @@
     heatVisible = false,
   } = $props();
 
-  // OpenFreeMap needs no API key (same hosted liberty style as /app/ships and
-  // /app/hikes, so the maps read as siblings). The liberty style ships light and
-  // we keep it light: these are daytime drive-planning maps, the dark skies are
-  // the subject, not the chrome.
+  // Keep the hosted vector style and its geography. Paint follows the sheet
+  // in place after load and on every explicit or system scheme change.
   const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
-
-  // Marker buckets: muted (poor) -> blue (fair) -> violet (prime). Hardcoded in
-  // JS (a data-viz ramp, not a design-system surface), tuned to read on the
-  // light basemap; the prime stop is the funky violet that also marks Stars in
-  // the nav. Mirrors how HikesMap keeps its EFFORT_RAMP stops in JS.
-  //
-  // The marker `score` is always a 0..100 RELATIVE percentile of clear-dark hours
-  // (heat / max-heat) in both modes, so the 35 / 65 breaks read as low / medium /
-  // high thirds of whatever is in view. Colours only (the legend labels these
-  // Low/Medium/High); muted slate -> blue -> violet (prime), tuned for the light
-  // basemap, the violet matching the Stars nav accent.
   const SCORE_BUCKETS = [
-    { key: "low", label: "Low", color: "#94a3b8" }, // muted slate
-    { key: "mid", label: "Medium", color: "#3b82f6" }, // blue
-    { key: "high", label: "High", color: "#7c3aed" }, // violet (prime)
+    { key: "low", label: "Low", color: "var(--stars-ink-2)" },
+    { key: "mid", label: "Medium", color: "var(--stars-low)" },
+    { key: "high", label: "High", color: "var(--stars-quarter)" },
   ];
-
-  // Box-cell heatmap ramp (cool -> warm), keyed on each cell's `score` (0..100:
-  // absolute live quality, or a relative percentile of clear-dark hours in
-  // historical). Like
-  // ShipsMap's HEAT_STOPS these are JS map-paint colours, not design tokens: a
-  // saturated plasma scale that stays vivid on the light basemap. Smooth
-  // `interpolate` (not stepped) so the field reads as a heatmap; the three named
-  // stops below feed the legend so it stays truthful to the fill.
-  const CELL_LOW = "#3b82f6"; // blue (low)
-  const CELL_MID = "#d61f9c"; // magenta (medium)
-  const CELL_HIGH = "#ff2a1f"; // hot red (best)
-  const CELL_FILL_COLOR = [
-    "interpolate",
-    ["linear"],
-    ["get", "score"],
-    0,
-    CELL_LOW,
-    35,
-    "#7c3aed", // violet
-    65,
-    CELL_MID,
-    85,
-    "#ff6a00", // orange
-    100,
-    CELL_HIGH,
-  ];
-  // Fill opacity: high enough to read as solid blocks over the light basemap,
-  // low enough that coastlines/place labels still ghost through at the edges
-  // (ShipsMap uses 0.9 over water; stars cells sit on land so go a touch lower).
+  const CELL_LOW = "var(--stars-low)";
+  const CELL_MID = "var(--stars-mid)";
+  const CELL_HIGH = "var(--stars-high)";
+  // Retain the relative cool-to-warm data scale and translucent geography.
   const CELL_FILL_OPACITY = 0.72;
 
   // How many upcoming windows the detail card lists at once. best_hours ships
@@ -235,15 +205,6 @@
     if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return false;
     if (lat === 0 && lon === 0) return false;
     return true;
-  }
-
-  // Marker stroke comes from the design tokens (ink), a dark ring that lifts
-  // every dot off the light basemap regardless of its score colour.
-  function palette() {
-    const s = getComputedStyle(document.documentElement);
-    return {
-      ink: s.getPropertyValue("--ink").trim(),
-    };
   }
 
   // Upcoming clear-window count this site reaches across the currently selected
@@ -496,6 +457,9 @@
     (async () => {
       maplibregl = await import("maplibre-gl");
       if (destroyed) return;
+      // Vite must bundle the worker's shared imports too. The package-relative
+      // default URL otherwise points at a missing asset in a production build.
+      maplibregl.setWorkerUrl(workerUrl);
 
       map = new maplibregl.Map({
         container: mapContainer,
@@ -521,23 +485,59 @@
         attrib?.removeAttribute("open");
         attrib?.classList.remove("maplibregl-compact-show");
       };
-      mapContainer.addEventListener("click", (e) => {
+      const trackAttribution = (e) => {
         if (e.target.closest(".maplibregl-ctrl-attrib-button")) {
           userOpenedAttrib = true;
         }
-      });
+      };
+      mapContainer.addEventListener("click", trackAttribution);
       map.on("styledata", collapseAttrib);
       map.on("sourcedata", collapseAttrib);
       collapseAttrib();
 
+      const restyle = () => {
+        if (map && layerReady)
+          applyMapPalette(map, readMapPalette(mapContainer));
+      };
+      const scheme = new MutationObserver(restyle);
+      scheme.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      media.addEventListener("change", restyle);
+      const resize = new ResizeObserver(() => map?.resize());
+      resize.observe(mapContainer);
+
+      // MapLibre supplies keyboard pan and zoom. Enter selects the site under
+      // the map centre; Escape closes its details without moving focus.
+      const canvas = map.getCanvas();
+      canvas.setAttribute("aria-label", "Dark-sky sites");
+      canvas.setAttribute(
+        "aria-description",
+        "Arrow keys pan, plus and minus zoom, Enter selects a site at the map centre, Escape closes its details.",
+      );
+      const keyboard = (event) => {
+        if (event.key === "Escape") closeCard();
+        if (event.key !== "Enter" || !layerReady) return;
+        event.preventDefault();
+        const point = map.project(map.getCenter());
+        const feature = map.queryRenderedFeatures(point, {
+          layers: [heatVisible ? CELL_LAYER : LAYER_ID],
+        })[0];
+        const site = feature && index.get(feature.properties.id);
+        if (site) selectSite(site);
+      };
+      canvas.addEventListener("keydown", keyboard);
+
       map.on("load", () => {
-        const pal = palette();
+        const pal = readMapPalette(mapContainer);
 
         map.addSource(SOURCE_ID, { type: "geojson", data: emptyFC() });
         map.addSource(CELL_SOURCE, { type: "geojson", data: emptyFC() });
 
         // Box-cell heatmap first, so it sits BENEATH the markers. One square per
-        // site, filled by the cell `score` via the plasma ramp; visible only when
+        // site, filled by the cell `score` via the sheet ramp; visible only when
         // the parent toggles heat on (always in historical), where the markers
         // hide. Transparent outline so adjacent same-score cells merge into a
         // field rather than a grid of boxes.
@@ -547,7 +547,7 @@
           source: CELL_SOURCE,
           layout: { visibility: heatVisible ? "visible" : "none" },
           paint: {
-            "fill-color": CELL_FILL_COLOR,
+            "fill-color": cellColors(pal),
             "fill-opacity": CELL_FILL_OPACITY,
             "fill-outline-color": "rgba(0, 0, 0, 0)",
           },
@@ -560,19 +560,9 @@
           // Markers hide while the box heatmap is on (and vice versa).
           layout: { visibility: heatVisible ? "none" : "visible" },
           paint: {
-            // Fill by the marker `score` value (absolute live quality, or a
-            // 0..100 relative percentile in historical), stepped at the 35 / 65
-            // bucket boundaries. Ink stroke keeps every dot legible on the light
-            // basemap; better sites read a touch larger.
-            "circle-color": [
-              "step",
-              ["get", "score"],
-              SCORE_BUCKETS[0].color,
-              35,
-              SCORE_BUCKETS[1].color,
-              65,
-              SCORE_BUCKETS[2].color,
-            ],
+            // Relative clear-dark-hour percentile in both views, with the
+            // existing 35 / 65 breaks. Better sites read a touch larger.
+            "circle-color": markerColors(pal),
             "circle-radius": [
               "interpolate",
               ["linear"],
@@ -582,11 +572,12 @@
               100,
               11,
             ],
-            "circle-stroke-width": 1.5,
+            "circle-stroke-width": 1,
             "circle-stroke-color": pal.ink,
           },
         });
         layerReady = true;
+        restyle();
 
         // Click opens the detail card from either representation; only the
         // visible layer fires, so the two handlers never both run for one click.
@@ -608,6 +599,11 @@
       });
 
       cleanup = () => {
+        scheme.disconnect();
+        media.removeEventListener("change", restyle);
+        resize.disconnect();
+        canvas.removeEventListener("keydown", keyboard);
+        mapContainer.removeEventListener("click", trackAttribution);
         index.clear();
         map?.remove();
         map = null;
@@ -627,18 +623,24 @@
   <div class="map" bind:this={mapContainer}></div>
 
   {#if selected}
-    <aside class="card">
+    <aside
+      class="card edition"
+      aria-label={mode === "historical"
+        ? "Clear dark hours by month"
+        : windowsTitle}
+    >
       <!-- The section title is always present, so it anchors a header row with
            the close glyph on its right: no empty band, and the glyph needs no
            border of its own. -->
-      <header class="card-head">
+      <header class="card-head ed-head">
         <p class="card-title">
           {mode === "historical" ? "Clear dark hours by month" : windowsTitle}
         </p>
-        <button
+        <Button
           class="card-close"
+          variant="quiet"
           onclick={closeCard}
-          aria-label="Close site card">&times;</button
+          aria-label="Close site card">&times;</Button
         >
       </header>
 
@@ -647,16 +649,16 @@
              (sun below -12 deg AND under 10% cloud), its dark-hour denominator,
              the clear rate, and a 12-month breakdown so the seasonal shape
              reads at a glance (stars v2). No hourly windows. -->
-        <dl class="card-metric">
-          <div>
+        <dl class="card-metric spec">
+          <div class="row">
             <dt>Clear dark hours</dt>
             <dd>{selected.clear_dark_hours ?? 0}</dd>
           </div>
-          <div>
+          <div class="row">
             <dt>Dark hours</dt>
             <dd>{selected.dark_hours ?? 0}</dd>
           </div>
-          <div>
+          <div class="row">
             <dt>Clear rate</dt>
             <dd>{fmtPct(selected.clear_rate)}</dd>
           </div>
@@ -666,7 +668,7 @@
         <!-- Inline SVG bar chart (no charting dep): one bar per month-of-year,
              height relative to the busiest month, the tallest bar(s) accented
              and value-labelled. viewBox does the scaling so the CSS width keeps
-             it crisp. Mono labels + 2px ink strokes mirror the card chrome. The
+             it crisp. Mono labels and 1px rules follow the sheet. The
              per-month data rides on the selected row (selected.clear) from the
              single all-months payload, so there is no per-card fetch. -->
         <svg
@@ -735,8 +737,7 @@
         {/if}
       {/if}
 
-      <!-- Location footer: the coordinates themselves are the link out to maps
-           (this is the card's primary action, hence the accent fill). -->
+      <!-- Location footer: the coordinates themselves link out to maps. -->
       <a class="card-loc" href={mapsLink} target="_blank" rel="noopener">
         <span class="card-loc-coord"
           >{fmtCoord(selected.lat, selected.lon)}<span
@@ -763,377 +764,276 @@
 
 <style>
   .map-wrap {
-    position: absolute;
-    inset: 0;
-    overflow: hidden;
-    /* Light base behind the map while tiles stream in, so the load flash
-       matches the light liberty basemap rather than flashing dark. */
-    background: var(--paper);
+    /* Data ramps retain low/cool, medium, high/warm meaning in both schemes.
+       Geography uses neutral sheet roles so it cannot compete with the data. */
+    --stars-sheet: var(--sheet);
+    --stars-ink: var(--ink);
+    --stars-ink-2: var(--ink-2);
+    --stars-stroke: var(--stroke);
+    --stars-band: var(--band);
+    --stars-water: color-mix(in srgb, var(--tone-cache) 10%, var(--sheet));
+    --stars-low: var(--tone-gpu);
+    --stars-quarter: color-mix(in srgb, var(--tone-gpu), var(--tone-hot));
+    --stars-mid: var(--tone-hot);
+    --stars-upper: color-mix(in srgb, var(--tone-hot), var(--tone-disk));
+    --stars-high: var(--tone-disk);
+    position: relative;
+    background: var(--sheet);
+    min-width: 0;
   }
 
   .map {
-    position: absolute;
-    inset: 0;
+    height: clamp(32rem, calc(100dvh - 7rem), 54rem);
+    background: var(--sheet);
   }
 
-  /* Inset the bottom-right control stack past device safe areas (same reasons
-     as ShipsMap / HikesMap: home indicator + landscape notch). */
-  .map :global(.maplibregl-ctrl-bottom-right) {
-    bottom: env(safe-area-inset-bottom, 0);
-    right: env(safe-area-inset-right, 0);
-  }
-
-  /* Each zoom button is its own square that lifts off (neobrutalist), matching
-     the ships + hikes maps and the homepage buttons. */
+  /* MapLibre's controls keep their behavior; their surfaces use sheet roles. */
   .map :global(.maplibregl-ctrl-group) {
-    border: none;
+    border: 1px solid var(--ink);
     border-radius: 0;
-    background: transparent;
+    background: var(--sheet);
     box-shadow: none;
     overflow: visible;
   }
 
   .map :global(.maplibregl-ctrl-group button) {
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease;
+    width: 44px;
+    height: 44px;
+    background: var(--sheet);
   }
 
   .map :global(.maplibregl-ctrl-group button + button) {
-    margin-top: 6px;
+    border-top: 1px solid var(--stroke);
   }
 
-  .map :global(.maplibregl-ctrl-group button:hover),
-  .map :global(.maplibregl-ctrl-group button:focus-visible),
-  .map :global(.maplibregl-ctrl-group button:active) {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
-    background: var(--paper);
-    position: relative;
-    z-index: 1;
+  .map :global(.maplibregl-ctrl-group button:hover) {
+    background: var(--band);
   }
 
-  /* Compact attribution: a single square "i" toggle matching the zoom stack. */
-  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact) {
-    min-height: 24px;
-    padding-block: 0;
-    background: transparent;
+  /* The stock icons are black bitmap SVGs. Text glyphs inherit ink instead. */
+  .map :global(.maplibregl-ctrl-icon) {
+    background-image: none;
+    display: grid;
+    place-items: center;
+    font: 1.5rem var(--font-code);
+    color: var(--ink);
+  }
+
+  .map :global(.maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon)::before {
+    content: "+";
+  }
+
+  .map :global(.maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon)::before {
+    content: "−";
+  }
+
+  .map :global(.maplibregl-ctrl-attrib) {
+    background: var(--sheet);
+    color: var(--ink-2);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     box-shadow: none;
+    font: 0.65rem var(--font-code);
+  }
+
+  .map :global(.maplibregl-ctrl-attrib a) {
+    color: var(--ink-2);
   }
 
   .map :global(.maplibregl-ctrl-attrib-button) {
-    width: 24px;
-    height: 24px;
-    border: 2px solid var(--ink);
     border-radius: 0;
-    background-color: var(--paper);
+    background: var(--sheet);
+    color: var(--ink);
   }
 
-  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact-show) {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: 0;
+  .map :global(.maplibregl-ctrl-attrib-button)::before {
+    content: "i";
+    font: 1rem var(--font-code);
   }
 
-  .map :global(.maplibregl-ctrl-attrib-inner) {
-    font-family: var(--mono);
-    font-size: 10px;
+  .map :global(.maplibregl-canvas:focus-visible) {
+    outline-offset: -3px;
   }
 
-  /* Site detail card: a flat sharp-bordered paper overlay, top-right and clear
-     of the global app chrome (matches the hikes + ships overlays). */
   .card {
     position: absolute;
-    top: 16px;
-    right: 16px;
-    width: 340px;
-    max-width: calc(100% - 32px);
-    max-height: calc(100% - 32px);
+    z-index: 3;
+    top: 1rem;
+    right: 1rem;
+    width: 18rem;
+    max-width: calc(100% - 2rem);
+    max-height: calc(100% - 10rem);
     overflow-y: auto;
-    padding: 18px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
+    background: var(--sheet);
   }
 
-  /* Header row: the section title (always present) anchors the left, the close
-     glyph the right. A bare muted glyph, not a bordered box: it darkens on
-     hover, keeps a 40px hit area, and uses negative margins to tuck into the
-     corner without inflating the row height. */
   .card-head {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 16px;
+    padding: 0.4rem 0.75rem;
+    gap: 0.5rem;
   }
 
   .card-title {
-    flex: 1 1 auto;
+    flex: 1;
     margin: 0;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 0.75rem/1.5 var(--font-code);
     color: var(--ink);
   }
 
-  .card-close {
-    flex: 0 0 auto;
-    margin: -8px -8px -8px 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 40px;
-    height: 40px;
-    background: none;
-    border: none;
-    font-family: var(--mono);
-    font-size: 26px;
-    line-height: 1;
-    cursor: pointer;
-    color: var(--ink-3);
-    transition: color 110ms ease;
+  .card-head :global(.card-close) {
+    flex: none;
+    padding: 0;
+    font-size: 1.5rem;
+    text-decoration: none;
   }
 
-  .card-close:hover,
-  .card-close:focus-visible {
-    color: var(--ink);
-  }
-
-  /* Historical headline metrics: a plain inline row of label/value pairs, the
-     numbers carrying the weight, no box. */
   .card-metric {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px 20px;
-    margin-bottom: 14px;
+    margin: 0 0 1rem;
   }
 
-  .card-metric > div {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
+  .card-metric.spec .row {
+    grid-template-columns: 1fr 1fr;
   }
 
-  .card-metric dt {
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--ink-3);
+  .card-metric.spec dt,
+  .card-metric.spec dd {
+    padding: 0.5rem 0.75rem;
   }
 
-  .card-metric dd {
-    margin: 0;
-    font-family: var(--mono);
-    font-size: 16px;
-    font-weight: 700;
-  }
-
-  /* Day / Time / Cloud kept simple: one rule under the header, generous row
-     padding instead of a line on every row. */
   .card-windows {
-    width: 100%;
+    width: calc(100% - 1.5rem);
     border-collapse: collapse;
-    font-family: var(--mono);
-    font-size: 13px;
-    margin-bottom: 6px;
+    margin: 0.5rem 0.75rem;
+    font: 0.8rem var(--font-code);
+  }
+
+  .card-windows th,
+  .card-windows td {
+    padding: 0.55rem 0;
+    text-align: left;
   }
 
   .card-windows th {
-    text-align: left;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-    border-bottom: 2px solid var(--ink);
-    padding: 0 8px 8px 0;
+    color: var(--ink-2);
+    border-bottom: 1px solid var(--stroke);
+    font-size: 0.7rem;
+    font-weight: 500;
   }
 
-  .card-windows td {
-    padding: 9px 8px 9px 0;
-    font-weight: 700;
-  }
-
-  /* Cloud reads as a right-aligned number column. */
   .card-windows th:last-child,
   .card-windows td:last-child {
     text-align: right;
-    padding-right: 0;
   }
 
-  /* Day label spans its group's hours (rowspan), sitting top-aligned against the
-     first time. One light rule separates day groups so the list reads in blocks
-     without a line on every row. */
-  .card-windows .win-day {
+  .win-day {
     vertical-align: top;
-    padding-right: 18px;
-    font-weight: 700;
   }
 
   .card-windows tbody tr.day-start:not(:first-child) td {
-    border-top: 1px solid var(--rule-2);
+    border-top: 1px solid var(--line);
   }
 
-  /* 12-month clear-dark-hours bar chart: a flat SVG block sitting in the card,
-     bars in the blue data colour with a 2px ink edge, the busiest month(s)
-     flipped to accent so the seasonal peak pops. */
   .month-chart {
     display: block;
-    width: 100%;
+    width: calc(100% - 1.5rem);
     height: auto;
-    margin-bottom: 12px;
+    margin: 0.75rem;
   }
 
-  .month-chart .chart-axis {
-    stroke: var(--ink);
-    stroke-width: 2;
+  .chart-axis,
+  .chart-bar {
+    stroke: var(--stroke);
+    stroke-width: 1;
   }
 
-  .month-chart .chart-bar {
-    fill: var(--blue);
-    stroke: var(--ink);
-    stroke-width: 2;
+  .chart-bar {
+    fill: var(--stars-low);
   }
 
-  .month-chart .chart-bar.is-max {
-    fill: var(--accent);
+  .chart-bar.is-max {
+    fill: var(--stars-high);
   }
 
-  .month-chart .chart-val {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    fill: var(--ink);
+  .chart-val,
+  .chart-tick {
+    font: 11px var(--font-code);
+    fill: var(--ink-2);
     text-anchor: middle;
   }
 
-  .month-chart .chart-tick {
-    font-family: var(--mono);
-    font-size: 9px;
-    fill: var(--ink-3);
-    text-anchor: middle;
+  .chart-tick {
+    font-size: 10px;
   }
 
   .card-empty {
-    font-family: var(--mono);
-    font-size: 11px;
-    line-height: 1.5;
-    color: var(--ink-3);
-    margin-bottom: 14px;
+    margin: 0.75rem;
+    font: 0.75rem/1.6 var(--font-code);
+    color: var(--ink-2);
   }
 
-  /* Location footer: a full-bleed accent block (yellow + ink, high contrast and
-     readable) that borrows the card's bottom + side edges and is set off by a
-     single top rule. The whole block is the maps link and the card's primary
-     action; it inverts to ink/paper on hover for press feedback. */
   .card-loc {
-    display: flex;
-    align-items: center;
-    margin: 16px -18px -18px;
-    padding: 16px 18px;
-    background: var(--accent);
-    border-top: 2px solid var(--ink);
-    color: var(--ink);
-    text-decoration: none;
-    font-family: var(--mono);
-    transition:
-      background 110ms ease,
-      color 110ms ease;
+    display: block;
+    padding: 0.8rem 0.75rem;
+    background: var(--band);
+    border-top: 1px solid var(--stroke);
+    font: 0.8rem var(--font-code);
+    text-underline-offset: 0.2em;
   }
 
-  .card-loc:hover,
-  .card-loc:focus-visible {
-    background: var(--ink);
-    color: var(--paper);
-  }
-
-  .card-loc-coord {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 15px;
-    font-weight: 700;
+  .card-loc:hover {
+    color: var(--accent-ink);
   }
 
   .card-loc-arrow {
-    font-size: 0.9em;
+    margin-left: 0.5rem;
   }
 
-  /* Marker legend, bottom-left, clear of the bottom-right zoom + attribution. */
   .legend {
-    position: absolute;
-    left: 16px;
-    bottom: 16px;
-    z-index: 4;
     display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 10px 12px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    font-family: var(--mono);
-  }
-
-  .legend-title {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    padding: 0.75rem;
+    border-top: 1px solid var(--stroke);
+    font: 0.7rem var(--font-code);
     color: var(--ink-2);
   }
 
   .legend-list {
     display: flex;
-    flex-direction: column;
-    gap: 5px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    color: var(--ink);
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
   .legend-list li {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 0.4rem;
   }
 
   .legend-sw {
-    width: 13px;
-    height: 13px;
-    border: 1.5px solid var(--ink);
+    width: 0.8rem;
+    height: 0.8rem;
+    border: 1px solid var(--ink-2);
     flex: none;
   }
 
-  @media (max-width: 640px) {
-    /* On phones the card is a bottom sheet, so the legend would collide with
-       it; drop the legend there (the colours stay self-evident). */
-    .legend {
-      display: none;
+  @media (max-width: 760px) {
+    .map {
+      height: 28rem;
     }
 
-    /* The card becomes a bottom sheet so the map keeps the upper screen. */
+    /* Details stay in the document on phones, leaving pan and zoom reachable. */
     .card {
-      top: auto;
-      bottom: 0;
-      left: 0;
-      right: 0;
+      position: static;
       width: auto;
       max-width: none;
-      max-height: 72vh;
-      border-width: 2px 0 0;
-      box-shadow: none;
-      padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .map :global(.maplibregl-ctrl-group button) {
-      transition: none;
+      max-height: none;
+      border-width: 1px 0 0;
     }
   }
 </style>
