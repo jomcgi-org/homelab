@@ -89,9 +89,21 @@ def _allocation_pause(db, row, last_lease):
         .where(FactoryAudit.task_id == row.task_id, FactoryAudit.action == "pause_task")
         .order_by(FactoryAudit.id.desc())
     ).first()
+    cause = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == row.task_id,
+            FactoryAudit.action == "nonrenewable_recovery_paused",
+        )
+        .order_by(FactoryAudit.id.desc())
+    ).first()
+    reason = json.loads(cause.detail_json).get("reason", "") if cause else ""
     if (
         pause is None
+        or cause is None
         or pause.actor != "factory:nonrenewable-recovery"
+        or cause.actor != pause.actor
+        or cause.id <= pause.id
         or not json.loads(pause.detail_json).get("ok")
         or pause.id <= last_lease["audit_id"]
         or not factory_pause.is_card(card)
@@ -99,12 +111,11 @@ def _allocation_pause(db, row, last_lease):
         or card.get("task_id") != row.task_id
         or card.get("resolved") is not None
         or card.get("options") != [factory_pause.STOP]
-        or not card.get("reason", "").startswith(
-            "Correction plan exceeds current allocation:"
-        )
+        or reason != card.get("reason", "")[:1000]
+        or not reason.startswith("Correction plan exceeds current allocation:")
     ):
         raise ValueError("progress_pause_not_owned")
-    return pause.id
+    return {"pause_audit_id": pause.id, "cause_audit_id": cause.id}
 
 
 def _review(db, task_id):
@@ -468,7 +479,7 @@ def _preview(
             renewal=True,
             resume_paused=resume_paused,
             authorization_audit_id=authorization["audit_id"],
-            pause_audit_id=_allocation_pause(
+            pause_binding=_allocation_pause(
                 db, row, funding.latest(db, row.task_id, LEASE)
             )
             if resume_paused
