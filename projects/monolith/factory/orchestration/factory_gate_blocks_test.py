@@ -49,6 +49,41 @@ def test_append_replace_retry():
     assert updated == "intro\n\n" + second
 
 
+@pytest.mark.parametrize("bounded", [False, True])
+@pytest.mark.parametrize("checked", [0, 1, 2])
+@pytest.mark.parametrize("tick", ["x", "X"])
+def test_ticked_items_preserved_through_cleanup_and_identical_retry(
+    bounded, checked, tick
+):
+    contract = text() + "\n- [ ] Second\n- [ ] Third"
+    lines = contract.splitlines()
+    lines[checked + 1] = lines[checked + 1].replace("[ ]", f"[{tick}]")
+    ticked = "\n".join(lines)
+    latest = (
+        render("task", "b" * 20, ticked)
+        if bounded
+        else f"<!-- factory-gate:task:{'b' * 20} -->\n{ticked}"
+    )
+    before = "intro\n\n" + legacy() + "\n\n" + latest + "\n\nhuman tail"
+    after, count = rewrite(before)
+    assert count == 2
+    assert after == before.replace(legacy(), "", 1).replace(
+        latest, render("task", "b" * 20, ticked), 1
+    )
+    assert blocks(after)[0].text == ticked
+    assert rewrite(after, render("task", "b" * 20, contract))[0] == after
+    assert cleanup([issue(1, after)], None, lambda _: None, audit=True) == 0
+    replacement = render("task", "c" * 20, text("changed"))
+    assert blocks(rewrite(after, replacement)[0])[0].text == text("changed")
+
+
+def test_marker_free_unclosed_fence_appends_without_parsing_human_body():
+    body = "Human instructions\n```\nunfinished example"
+    replacement = render("task", "a" * 20, text())
+    assert rewrite(body, replacement) == (body + "\n\n" + replacement, 0)
+    assert rewrite(body) == (body, 0)
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -95,6 +130,7 @@ def issue(number, body=None, **extra):
         "state": "open",
         "body": body or legacy() + "\n\n" + legacy("latest"),
         "updated_at": "2026-10-30T00:00:00Z",
+        "labels": [],
         **extra,
     }
 
@@ -162,6 +198,50 @@ def test_stale_or_closed_issue_never_written(delta):
     assert rows[0]["status"] == "skipped"
 
 
+@pytest.mark.parametrize("label", ["human", "needs-human"])
+@pytest.mark.parametrize("apply", [False, True])
+def test_cleanup_skips_human_holds_without_reading_or_writing(label, apply):
+    snapshot = issue(1, labels=[{"name": label}])
+    rows = []
+
+    def api(*_args):
+        pytest.fail("held issue must not reach apply")
+
+    assert cleanup([snapshot], api, rows.append, apply=apply) == 0
+    assert rows[0]["status"] == "skipped"
+    assert rows[0]["labels"] == [label]
+    assert rows[-1]["held"] == 1
+    assert rows[-1]["changed"] == 0
+
+
+@pytest.mark.parametrize("label", ["human", "needs-human"])
+def test_apply_rechecks_hold_even_when_body_and_timestamp_are_unchanged(label):
+    snapshot = issue(1)
+    rows = []
+
+    def api(path, payload=None):
+        assert path == "issues/1"
+        assert payload is None
+        return {**snapshot, "labels": [{"name": label}]}
+
+    assert cleanup([snapshot], api, rows.append, apply=True) == 1
+    assert rows[0]["status"] == "skipped"
+    assert rows[0]["labels"] == [label]
+    assert rows[-1]["changed"] == 0
+
+
+def test_audit_still_counts_duplicates_on_held_issues():
+    rows = []
+    assert (
+        cleanup([issue(1, labels=["needs-human"])], None, rows.append, audit=True) == 1
+    )
+    assert rows[0]["status"] == "held"
+    assert rows[1]["status"] == "duplicate"
+    assert rows[-1]["held"] == 1
+    assert rows[-1]["duplicates"] == 1
+    assert rows[-1]["changed"] == 0
+
+
 def test_failed_page_and_uncertain_write_stop_and_report():
     def failed_page(path):
         if "page=1" in path:
@@ -188,6 +268,36 @@ def test_audit_duplicates_ambiguity_and_closed_issues():
     assert (
         cleanup(
             [issue(1), issue(2, state="closed"), issue(3, "Conductor rescope: manual")],
+            None,
+            rows.append,
+            audit=True,
+        )
+        == 1
+    )
+    assert rows[-1]["duplicates"] == 1
+    assert rows[-1]["errors"] == 0
+    assert rows[-1]["warnings"] == 1
+
+
+def test_audit_single_unowned_rescope_warns_without_failing_or_writing():
+    rows = []
+    assert (
+        cleanup(
+            [issue(6991, "Conductor rescope: manual")], None, rows.append, audit=True
+        )
+        == 0
+    )
+    assert rows[0]["status"] == "warning"
+    assert rows[-1]["duplicates"] == 0
+    assert rows[-1]["errors"] == 0
+
+
+@pytest.mark.parametrize("other", [legacy(), "Conductor rescope: another manual scope"])
+def test_multiple_owned_or_unowned_rescopes_require_inspection(other):
+    rows = []
+    assert (
+        cleanup(
+            [issue(1, other + "\n\nConductor rescope: manual")],
             None,
             rows.append,
             audit=True,

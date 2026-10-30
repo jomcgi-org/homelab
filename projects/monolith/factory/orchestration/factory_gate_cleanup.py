@@ -13,6 +13,14 @@ from factory.orchestration.factory_gate_blocks import blocks, rewrite, unowned_r
 REPO = "jomcgi-org/homelab"
 
 
+def human_holds(issue):
+    labels = {
+        label.get("name") if isinstance(label, dict) else label
+        for label in issue.get("labels", [])
+    }
+    return sorted(labels & {"human", "needs-human"})
+
+
 def gh_api(suffix: str, payload: dict | None = None):
     args = ["gh", "api", f"repos/{REPO}/{suffix}"]
     if payload is not None:
@@ -50,7 +58,7 @@ def open_issues(api):
 
 def cleanup(issues, api, emit, *, apply=False, audit=False):
     """Report each case and coverage; uncertain writes stop this invocation."""
-    errors = duplicates = changed = 0
+    errors = duplicates = changed = held = warnings = 0
     try:
         for issue in issues:
             number = issue["number"]
@@ -63,14 +71,38 @@ def cleanup(issues, api, emit, *, apply=False, audit=False):
                     }
                 )
                 continue
+            holds = human_holds(issue)
+            if holds:
+                held += 1
+                emit(
+                    {
+                        "number": number,
+                        "status": "held" if audit else "skipped",
+                        "reason": "human hold; body changes can supersede decision cards",
+                        "labels": holds,
+                    }
+                )
+                if not audit:
+                    continue
             before = issue.get("body") or ""
             try:
                 found = blocks(before)
-                # Unmarked rescope lines could be manual or malformed. Report
-                # them for inspection; they cannot become a passing audit.
-                if unowned_rescopes(before, found):
+                unowned = unowned_rescopes(before, found)
+                total = len(found) + unowned
+                duplicates += total > 1
+                # One unowned paragraph already meets the no-duplicates rule.
+                # Never rewrite it; multiple contracts need manual inspection.
+                if unowned and total > 1:
                     raise ValueError("unowned rescope lines require manual inspection")
-                duplicates += len(found) > 1
+                if unowned:
+                    warnings += 1
+                    emit(
+                        {
+                            "number": number,
+                            "status": "warning",
+                            "reason": "single unowned rescope; preserved for manual inspection",
+                        }
+                    )
                 if audit or len(found) < 2:
                     emit(
                         {
@@ -96,6 +128,19 @@ def cleanup(issues, api, emit, *, apply=False, audit=False):
             }
             if apply:
                 fresh = api(f"issues/{number}")
+                fresh_holds = human_holds(fresh)
+                if fresh_holds:
+                    held += 1
+                    errors += 1
+                    emit(
+                        {
+                            "number": number,
+                            "status": "skipped",
+                            "reason": "human hold appeared before write",
+                            "labels": fresh_holds,
+                        }
+                    )
+                    continue
                 if (
                     fresh.get("state") != "open"
                     or "pull_request" in fresh
@@ -136,6 +181,8 @@ def cleanup(issues, api, emit, *, apply=False, audit=False):
             "errors": errors,
             "duplicates": duplicates,
             "changed": changed,
+            "held": held,
+            "warnings": warnings,
             "apply": apply,
             "audit": audit,
         }

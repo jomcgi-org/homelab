@@ -13,6 +13,7 @@ _MARKER = re.compile(
     re.MULTILINE,
 )
 _AUDIT = re.compile(r"<!-- factory-gate-hash:([0-9a-f]{20}) -->")
+_ITEM = re.compile(r"- \[[ xX]\] \S.*")
 _SUFFIX = (
     ". Deliver repository changes default-off or staged. Operational acceptance "
     "remains on the issue; do not close it."
@@ -45,7 +46,7 @@ def _contract(lines: list[str]) -> bool:
         len(lines) >= 2
         and lines[0].startswith("Conductor rescope: ")
         and lines[0].endswith(_SUFFIX)
-        and all(re.fullmatch(r"- \[ \] \S.*", line) for line in lines[1:])
+        and all(_ITEM.fullmatch(line) for line in lines[1:])
     )
 
 
@@ -69,8 +70,8 @@ def _visible_body(body: str) -> str:
     return "".join(visible)
 
 
-def unowned_rescopes(body: str, found: list[Block]) -> bool:
-    return any(
+def unowned_rescopes(body: str, found: list[Block]) -> int:
+    return sum(
         not any(block.start <= match.start() < block.end for block in found)
         for match in re.finditer(r"(?m)^Conductor rescope:", _visible_body(body))
     )
@@ -98,13 +99,13 @@ def blocks(body: str) -> list[Block]:
             raise ValueError("gate content must start on a new line")
         if opening["hash"]:
             # The old writer emitted exactly one line of scope then one or
-            # more unchecked, single-line acceptance items. Stop immediately
-            # at a blank or non-list line; never consume surrounding prose.
+            # more single-line acceptance items, possibly ticked since writing.
+            # Stop at a blank or non-list line; never consume surrounding prose.
             end = start + 1
             lines = []
             for line in body[end:].splitlines(keepends=True):
                 text = line.removesuffix("\n")
-                if lines and not re.fullmatch(r"- \[ \] \S.*", text):
+                if lines and not _ITEM.fullmatch(text):
                     break
                 lines.append(text)
                 end += len(line)
@@ -147,11 +148,19 @@ def rewrite(body: str, replacement: str | None = None) -> tuple[str, int]:
     Without a replacement, retain the last contract for manual cleanup.
     Receipt history and decision comments are deliberately outside this API.
     """
+    # Marker-free prose cannot contain an owned block. Preserve the old append
+    # behavior even when the human body contains an unfinished code fence.
+    if not re.search(r"<!--\s*/?factory-gate:", body):
+        return (body + "\n\n" + replacement if replacement else body), 0
     found = blocks(body)
     if not found:
         return (body + "\n\n" + replacement if replacement else body), 0
     newest = found[-1]
     current = replacement or render(newest.task, newest.identity, newest.text)
+    unchecked = re.sub(r"(?m)^- \[[xX]\] ", "- [ ] ", newest.text)
+    if replacement == render(newest.task, newest.identity, unchecked):
+        # A retry of the same contract must retain human completion ticks.
+        current = render(newest.task, newest.identity, newest.text)
     updated = body
     for block in reversed(found):
         updated = (
