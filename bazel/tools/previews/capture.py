@@ -170,11 +170,17 @@ def review(root, output):
                 with checked_context(browser, output, name, width, scheme) as page:
                     page.goto(base, wait_until="networkidle")
                     page.evaluate("document.fonts.ready")
-                    assert page.evaluate(
-                        "document.body.classList.contains('dark')"
-                    ) == (scheme == "dark"), (
-                        "private scheme did not follow browser preference"
+                    # The sheet follows the browser preference: night ground
+                    # on the dark context, the white sheet on the light one.
+                    sheet = (
+                        "rgb(24, 26, 32)" if scheme == "dark" else "rgb(255, 255, 255)"
                     )
+                    assert (
+                        page.locator("main").evaluate(
+                            "e=>getComputedStyle(e).backgroundColor"
+                        )
+                        == sheet
+                    ), "private scheme did not follow browser preference"
                     paint = page.locator("article.card").evaluate(
                         "e=>({background:getComputedStyle(e).backgroundColor,ink:getComputedStyle(e).color})"
                     )
@@ -182,9 +188,7 @@ def review(root, output):
                         "e=>getComputedStyle(e).color"
                     )
                     assert scaffold == paint["ink"], "private scaffold scheme mismatch"
-                    assert paint["background"] == (
-                        "rgb(0, 0, 0)" if scheme == "dark" else "rgb(255, 255, 255)"
-                    ), paint
+                    assert paint["background"] == sheet, paint
                     page.get_by_role("navigation", name="Record type").get_by_role(
                         "button", name=tab.capitalize()
                     ).click()
