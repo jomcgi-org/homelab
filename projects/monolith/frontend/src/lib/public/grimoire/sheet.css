@@ -98,18 +98,43 @@
 .grimoire-sheet.immersive > .frame {
   padding-inline: 1rem;
 }
+/* The landing story needs the measure, so its spine becomes one row across
+   the top: the trail at its own width, the section index beside it, and the
+   site index folded away (the trail's root is one click from everything). */
 .grimoire-sheet.immersive .spine {
   position: static;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.75rem 2rem;
   max-height: none;
+}
+.grimoire-sheet.immersive .trail-dock {
+  margin-bottom: 0;
+}
+.grimoire-sheet.immersive .index.strip {
+  flex: 1;
+  min-width: 14em;
+}
+.grimoire-sheet.immersive .index.strip > .sec-label {
+  display: none;
+}
+.grimoire-sheet.immersive .site-index {
+  display: none;
 }
 .grimoire-sheet.immersive .index-list {
   display: flex;
   flex-wrap: wrap;
+  padding: 0;
+  border-bottom: 0;
 }
 .grimoire-sheet.immersive .index-list a {
+  padding: 0.45rem 0.9rem;
   border-left: 0;
-  border-bottom: 1px solid var(--stroke);
-  padding: 0.5rem 1rem;
+  border-bottom: 2px solid transparent;
+}
+.grimoire-sheet.immersive .index-list a.active {
+  border-bottom-color: var(--accent-ink);
 }
 @media (max-width: 760px) {
   .grimoire-sheet .spine {

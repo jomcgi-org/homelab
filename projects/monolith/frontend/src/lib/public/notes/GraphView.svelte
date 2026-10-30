@@ -145,7 +145,11 @@
 
 <div class="graph-view sheet-graph">
   <header class="graph-bar">
-    <span class="graph-chip graph-chip--touched">{touched.length} TOUCHED</span>
+    {#if touched.length}
+      <span class="graph-chip graph-chip--touched"
+        >{touched.length} TOUCHED</span
+      >
+    {/if}
     <span class="graph-chip">{nodes.length} NODES</span>
     <span class="graph-chip">×{zoom.toFixed(1)}</span>
     <span class="graph-hover" title={hoverTitle}>

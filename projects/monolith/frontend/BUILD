@@ -298,6 +298,8 @@ js_library(
         "test/stars/Route.svelte",
         "test/stars/fixtures.js",
         "test/stars/maplibre.js",
+        "test/hikes/Route.svelte",
+        "test/hikes/fixtures.js",
         "test/ships-fixtures.js",
         "test/ships-map-double.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
