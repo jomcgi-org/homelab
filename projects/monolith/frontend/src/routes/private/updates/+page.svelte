@@ -1,4 +1,6 @@
 <script>
+  // This unmigrated document owns its legacy day/night tokens.
+  import "$lib/private/dashboard-theme.css";
   import {
     facetHref,
     formatDate,
