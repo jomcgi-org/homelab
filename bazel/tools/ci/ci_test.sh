@@ -907,6 +907,11 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 	printf 'version: 1.0.0\n' >"$workflow_root/projects/service/chart/Chart.yaml"
 	printf 'targetRevision: 1.0.0\n' >"$workflow_root/projects/service/deploy/application.yaml"
 	printf 'source\n' >"$workflow_root/source.py"
+	# The destination must be new for Git's default rename detection to hide
+	# source.py behind the allowed destination. This case catches that regression.
+	if [[ "$scenario" == rename-in ]]; then
+		rm "$workflow_root/projects/service/chart/Chart.yaml"
+	fi
 	"$real_git" -C "$workflow_root" add .
 	"$real_git" -C "$workflow_root" commit -qm 'chore(charts): publish initial'
 	"$real_git" -C "$workflow_root" update-ref refs/remotes/origin/main HEAD
@@ -1015,6 +1020,16 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 			grep -q "/$guard.py" "$TRACE" || fail "workflow_${scenario}_$guard" 'head guard was skipped'
 		done
 		grep -q '^cleanup$' "$TRACE" || fail "workflow_${scenario}_cleanup" 'snapshot hygiene was skipped'
+		case "$scenario" in
+		ordinary | handmade | formatter)
+			grep -q 'write-back-versions.sh' "$TRACE" || fail "workflow_${scenario}_publish" 'normal main publication was skipped'
+			;;
+		*)
+			if grep -q 'push-changed.sh\|write-back-versions.sh' "$TRACE"; then
+				fail "workflow_${scenario}_publish" 'write-back or non-main head published'
+			fi
+			;;
+		esac
 		case "$scenario" in
 		qualifying | chart-only | app-only | multi-project)
 			if ! grep -q '^bazel test\|push_all\|push-changed.sh\|write-back-versions.sh\|check_go_stubs' "$TRACE"; then
