@@ -1,6 +1,6 @@
 # Private factory fixture QA
 
-This harness mounts the three production private factory pages inside their
+This harness mounts the production private factory and dashboard pages inside their
 real root and private layouts. It includes the root error node's preloaded
 legacy stylesheet, dashboard tokens and the shared sheet. All data and
 operator responses are invented. Browser fetch is an explicit in-memory
@@ -8,10 +8,20 @@ allowlist, CSP denies connections, and Chromium rejects non-fixture requests.
 No private service, account or credential is used.
 
 The public `factory-preview` remains separate: its module guard excludes private
-code. The private build permits only these three routes and the existing pure
-execution helpers they consume. Its `build.json` records the source digests and
+code. The private build also includes updates, Qwen, execution and drain for
+child-route regressions. Its `build.json` records the source digests and
 tested SHA; it rejects server modules. Neither fixture enters the production
 application build.
+
+Execution and drain header checks render their real pages at 390px and 1440px,
+in both stored schemes against the opposite OS preference. They assert that
+the dashboard link is above each page's own clickable back link and the
+execution console still fits the viewport. Reads return synthetic empty
+sessions, runs, repositories and drain jobs. The VM stream is an inert fixture;
+these checks do not exercise operator actions. The dashboard's external font
+stylesheet is present in the DOM, but CSP blocks it in the browser fixture.
+Screenshots use the bundled Schibsted font; real-host font loading remains live
+acceptance.
 
 The `Factory mobile preview` workflow invokes the public browser entry point,
 which runs `ci_check.py` after its unchanged public checks. This runs the existing
@@ -47,6 +57,30 @@ replay versus refusal, busy/error feedback, query-state toggling, relationship
 add/remove and persisted scheme selection against the opposite system scheme.
 Screenshots require visual review. CI evidence is linked from the PR, expires
 after 14 days and must be regenerated if the PR head changes.
+
+## Dashboard and child cascade (#7153)
+
+The same private-only harness mounts the production dashboard, updates journal
+and Qwen page. Its exact module allowlist still rejects server code. Dashboard
+refresh, form actions and SSE chat receive explicit synthetic responses. The
+form adapter tests UI outcomes only; it does not claim server serialization
+coverage. No loader or proxy is changed by this migration.
+
+`dashboard.test.js` covers polling and cleanup, task deduplication and optimistic
+success/revert, split SSE frames and history, empty/error states and destinations.
+`dashboard_browser_check.py` runs through `ci_check.py` in the existing Linux
+browser job. `private/dashboard/MATRIX.md` links the 390/1440 light/dark captures;
+`results.json` records source hashes, dimensions, scrolling, focus, synthetic
+interactions and fresh-load/client-navigation parity for adjacent consumers.
+Stored sheet choice is tested against the opposite OS scheme. Updates and Qwen
+retain their OS-driven palette; Qwen retains a viewport-high chat with an
+internally scrolling transcript and its existing mobile statistics below.
+
+The dashboard no longer uses `.shell` or its legacy token aliases. Updates,
+Qwen and execution import their own compatibility stylesheet. The shared back
+link uses `.td-chrome`, which shares only palette declarations with `.td` and
+does not opt full-screen children into `body:has(.td)` scrolling. Factory pages
+keep their own Trail and scheme control, without duplicate back chrome.
 
 ## Non-factory task integration (#7400)
 

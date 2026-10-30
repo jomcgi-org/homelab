@@ -6,6 +6,14 @@ export default defineConfig({
   resolve: { conditions: ["browser"], alias: aliases },
   test: {
     environment: "happy-dom",
+    environmentOptions: {
+      happyDOM: {
+        settings: {
+          disableCSSFileLoading: true,
+          handleDisabledFileLoadingAsSuccess: true,
+        },
+      },
+    },
     include: ["private-factory-preview/*.test.js"],
   },
 });

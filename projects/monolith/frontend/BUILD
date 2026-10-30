@@ -579,6 +579,7 @@ js_library(
         ":node_modules/@esbuild/linux-x64",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/marked",
         ":node_modules/svelte",
         ":node_modules/vite",
         ":node_modules/vitest",

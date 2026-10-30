@@ -60,6 +60,21 @@ def main():
             },
             check=True,
         )
+
+        subprocess.run(
+            [
+                sys.executable,
+                str(frontend / "private-factory-preview/dashboard_browser_check.py"),
+                "--artifact",
+                artifact,
+                "--output",
+                str(args.output.resolve() / "dashboard"),
+                "--expected-sha",
+                args.expected_sha,
+            ],
+            cwd=frontend,
+            check=True,
+        )
         subprocess.run(
             [
                 sys.executable,
