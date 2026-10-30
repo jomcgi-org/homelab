@@ -442,8 +442,9 @@ missing guest row, an old reason string, or a stored hash cannot satisfy that
 check. This diagnostic does not add a fallback.
 
 For an expired guest, corroboration may remain in EmberVM's durable `ops` journal.
-Terminal session projections expire after seven days; journal prefix compaction
-uses a separate configured horizon, normally thirty days. Retention policy is
+Terminal session projections become eligible for pruning after seven days,
+subject to residency-intent retention pins. Journal prefix compaction uses a
+separate configured horizon, normally thirty days. Retention policy is
 not proof that a particular event still exists. An authorized evidence reader
 would need the exact session's creation, invocation and terminal events, their
 sequence/timestamps and generation, and coverage of any later transitions.
