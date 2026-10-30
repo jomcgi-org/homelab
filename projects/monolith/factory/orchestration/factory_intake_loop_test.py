@@ -146,6 +146,11 @@ def test_candidate_audit_one_per_identity_per_actual_sweep(db, monkeypatch):
     observations = candidate_evidence(db)
     assert len(observations) == 4
     assert len({row["sweep_id"] for row in observations}) == 2
+    replay = intake_loop.intake_evidence.Sweep(observations[0]["sweep_id"], NOW)
+    replay.observe("owner/repo", issue(1, ["agent-ready"]))
+    replay.stage()
+    finalize()
+    assert len(candidate_evidence(db)) == 4
 
 
 def test_candidate_blocker_uses_github_issue_identity(db, monkeypatch):
@@ -334,6 +339,37 @@ def test_backlog_uses_latest_evidence_age_and_current_closure(db, monkeypatch):
         view = backlog(session, NOW)
     assert [row["issue_number"] for row in view["issues"]] == [2]
     assert view["issues"][0]["reason"] == "human"
+
+
+def test_digest_removes_issue_admitted_after_its_latest_skip(db, monkeypatch):
+    from factory.orchestration.factory_intake import receive_issue, admit_next
+    from factory.orchestration.intake_evidence import backlog
+    from factory.orchestration.retro import _intake_skips
+
+    configured = multi_repo_policy(repos={"owner/repo": {}})
+    assert controls.set_control("configure", "operator", policy=configured)["ok"]
+    assert controls.set_control("enable", "operator")["ok"]
+    candidate = issue(1, ["agent-ready"])
+    fake_pages(monkeypatch, [candidate])
+    assert intake_loop.intake_tick(configured, generation=0, observe_only=True) == []
+    with Session(db) as session:
+        data = backlog(session, NOW)
+    assert "owner/repo#1:" in "\n".join(_intake_skips({"intake_backlog": data}))
+    received = receive_issue(
+        "owner/repo",
+        1,
+        candidate["title"],
+        candidate["body"],
+        candidate["html_url"],
+        intake_loop.ACTOR,
+        issue=candidate,
+    )
+    assert received["ok"]
+    assert admit_next("test")["ok"]
+    with Session(db) as session:
+        data = backlog(session, NOW)
+    assert data["issues"][0]["subsequently_admitted"] is True
+    assert "owner/repo#1:" not in "\n".join(_intake_skips({"intake_backlog": data}))
 
 
 def intake_receipt(session, number, task_class="bug-fix", **overrides):
