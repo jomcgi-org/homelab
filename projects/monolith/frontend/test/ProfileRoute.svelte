@@ -6,6 +6,8 @@
   import Engineering from "../src/routes/public/engineering/+page.svelte";
   import Ember from "../src/routes/public/ember/+page.svelte";
   import Ships from "../src/routes/public/app/ships/+page.svelte";
+  import BazelFallback from "../src/routes/public/ember/bazel/+page.svelte";
+  import PostgresFallback from "../src/routes/public/ember/postgres/+page.svelte";
   // Mirrors Kit's error-node preload, including the implicit legacy CSS.
   import RootError from "../src/routes/+error.svelte";
   let { surface = "home", data = { stats: null } } = $props();
@@ -27,6 +29,8 @@
       {:else if surface === "ember"}<Ember
           data={{ status: null, savings: null }}
         />
+      {:else if surface === "bazel-fallback"}<BazelFallback />
+      {:else if surface === "postgres-fallback"}<PostgresFallback />
       {:else}<main class="legacy-fixture">
           <a class="btn" href="/">Legacy control</a>
         </main>{/if}

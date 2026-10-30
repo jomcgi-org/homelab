@@ -16,6 +16,8 @@
         "/public/engineering": "engineering",
         "/public/app/ships": "ships",
         "/public/ember": "ember",
+        "/public/ember/bazel": "bazel-fallback",
+        "/public/ember/postgres": "postgres-fallback",
         "/public/legacy-fixture": "legacy",
       }[routed] ?? "error";
     data = {
@@ -56,6 +58,8 @@
         "/cv",
         "/engineering",
         "/ember",
+        "/ember/bazel",
+        "/ember/postgres",
         "/legacy-fixture",
         "/app/ships",
       ].includes(next.pathname)
@@ -76,6 +80,10 @@
   Synthetic repository preview, invented {surface === "ships"
     ? "AIS"
     : "stats"}. No live acceptance.
+  {#if surface.endsWith("-fallback")}
+    {surface}: component fixture only. The real route redirects HTTP 308 to
+    /ember/firecracker#replay.
+  {/if}
 </div>
 <Route {surface} {data} />
 <nav
@@ -86,8 +94,10 @@
   <a href="/app/ships">Ships fixture</a>
   <a href="/">Home fixture</a><a href="/cv">CV fixture</a><a href="/engineering"
     >Engineering fixture</a
-  ><a href="/ember">Legacy Ember fixture</a><a href="/legacy-fixture"
-    >Legacy Nav fixture</a
+  ><a href="/ember">Ember fixture</a><a href="/ember/bazel"
+    >Bazel fallback fixture</a
+  ><a href="/ember/postgres">Postgres fallback fixture</a><a
+    href="/legacy-fixture">Legacy Nav fixture</a
   >
 </nav>
 
