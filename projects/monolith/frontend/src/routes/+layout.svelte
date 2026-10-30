@@ -35,10 +35,9 @@
   // the viewport. The site nav both looks wrong on a standalone artifact and
   // pushes the iframe down, so suppress it like the /app/* experiences.
   //
-  // The /ember/* pages are their own small site in the fcstory visual
-  // language, each with its own wordmark topbar linking home; they had this
-  // suppression under the old /app/firecracker path and lost it in the move
-  // to /ember.
+  // The Ember landing and retired demo fallbacks carry sheet chrome. The
+  // separate Firecracker and agents stories retain their own chrome, so
+  // every /ember route continues to suppress this shared legacy Nav.
   let hideNav = $derived(
     isPrivate ||
       isFriends ||
