@@ -1962,7 +1962,9 @@ async def factory_permit_diagnostics(
     Requires a standing human operator. Supply up to twenty distinct permit IDs.
     Returns persisted metadata without prompts, results, payloads or credentials.
     Does not contact guests, reconcile permits, rearm jobs or authorize recovery.
-    Missing or old observations are not evidence that execution has ceased.
+    Recorded cessation fields are historical supervisor observations, not
+    independent verification. Missing or old observations and hashes alone
+    do not prove current cessation or authorize recovery.
     """
     refusal = _refuse(current_principal())
     if refusal is not None:

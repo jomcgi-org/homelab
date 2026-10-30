@@ -2086,6 +2086,139 @@ def test_dispatch_diagnostics_reject_malformed_metadata(database, usage):
     }
 
 
+def test_diagnostics_preserve_supervisor_evidence_after_settlement(
+    database, monkeypatch
+):
+    from factory.execution import admission_diagnostics as diagnostics
+
+    with database.begin() as connection:
+        connection.execute(
+            text("CREATE TABLE workflow_status (workflow_uuid TEXT, status TEXT)")
+        )
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    now = datetime.now(timezone.utc)
+    pid = seed(
+        database,
+        tier="kg",
+        routine_job_name=None,
+        recovery_updates={
+            "last_dispatch_at": (now - timedelta(seconds=120)).isoformat()
+        },
+    )
+    observed = proof(
+        state="destroyed",
+        invoke_started_at=int((now - timedelta(seconds=100)).timestamp() * 1000),
+        last_invoke_at=None,
+        updated_at=int((now - timedelta(seconds=11)).timestamp() * 1000),
+    )
+    sweep(observed)
+    settled = before(database, pid)
+    assert settled[0]["state"] == "settled"
+    with Session(database) as db, db.begin():
+        audit = db.get(ProbeObservation, pid)
+        expected_identity = audit.identity_sha256
+        saved = json.loads(audit.evidence_json)
+        # Fields outside the diagnostic allowlist must not leave the query.
+        saved["private"] = {"token": "secret-evidence-not-projected"}
+        audit.evidence_json = json.dumps(saved)
+        db.add(audit)
+        saved_audit = audit.model_dump()
+
+    def read_rows(*args, **kwargs):
+        rows = original_rows(*args, **kwargs)
+        assert "secret-evidence-not-projected" not in json.dumps(rows)
+        return rows
+
+    original_rows = diagnostics._rows
+    monkeypatch.setattr(diagnostics, "_rows", read_rows)
+    # The settlement is immutable to the supervisor even after GET stops working.
+    sweep(RuntimeError("guest record expired"))
+    with Session(database) as db:
+        result = diagnostics.inspect_permits([pid], session=db)
+        assert db.get(ProbeObservation, pid).model_dump() == saved_audit
+    evidence = result["items"][0]["observation"]["recorded_cessation"]
+    assert evidence == {
+        "identity_sha256": expected_identity,
+        **{
+            key: saved[key]
+            for key in (
+                "session_id",
+                "observed_at",
+                "response_sha256",
+                "terminal_state",
+                "cessation_evidence",
+                "generation",
+                "invoke_started_at",
+                "updated_at",
+                "last_invoke_at",
+            )
+        },
+    }
+    assert evidence["terminal_state"] == "destroyed"
+    assert evidence["cessation_evidence"] == "terminal_dispatch"
+    assert result["recovery_authorized"] is False
+    assert "Guest cessation is not verified" in result["coverage"]
+    assert before(database, pid) == settled
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not-json",
+        "null",
+        "[]",
+        "{}",
+        '{"generation":' + "9" * 5000 + "}",
+        json.dumps(
+            {
+                "session_id": {"secret": "not-projected"},
+                "observed_at": ["not-projected"],
+                "response_sha256": "f" * 65,
+                "terminal_state": "running",
+                "cessation_evidence": "untrusted",
+                "generation": True,
+                "invoke_started_at": 1.5,
+                "updated_at": -1,
+                "last_invoke_at": 2**64,
+            }
+        ),
+        json.dumps(
+            {
+                key: "x" * 257
+                for key in (
+                    "session_id",
+                    "observed_at",
+                    "response_sha256",
+                    "terminal_state",
+                    "cessation_evidence",
+                    "generation",
+                    "invoke_started_at",
+                    "updated_at",
+                    "last_invoke_at",
+                )
+            }
+        ),
+    ],
+)
+def test_recorded_cessation_diagnostics_reject_malformed_fields(database, raw):
+    from factory.execution.admission_diagnostics import _recorded_cessation
+
+    pid = seed(database)
+    with Session(database) as db, db.begin():
+        db.add(
+            ProbeObservation(
+                permit_id=pid,
+                identity_sha256="not-a-hash",
+                evidence_json=raw,
+                checked_at=datetime.now(timezone.utc),
+            )
+        )
+    with Session(database) as db:
+        assert _recorded_cessation(db, 999999) is None
+        result = _recorded_cessation(db, pid)
+    assert result and all(value is None for value in result.values())
+
+
 def test_session_dispatch_diagnostics_without_turn_or_permit(database):
     from sqlalchemy import event
     from factory.execution.admission_diagnostics import inspect_session_turn
