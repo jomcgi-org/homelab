@@ -34,6 +34,7 @@ def test_legacy_collapse_keeps_newest_and_all_surrounding_bytes(tasks):
         last, render(tasks[1], "a" * 20, text(tasks[1])), 1
     )
     assert len(blocks(updated)) == 1
+    assert cleanup([issue(1, updated)], None, lambda _row: None, audit=True) == 0
     assert rewrite(updated)[0] == updated
 
 
@@ -59,7 +60,6 @@ def test_append_replace_retry():
         ),
         render("one", "a" * 20, text()).replace("- [ ] Verify new", "unknown content"),
         legacy() + "\n<!-- factory-gate:task -->",
-        "```\n" + legacy() + "\n```",
         "<!-- factory-gate:task:"
         + "a" * 20
         + " -->\nConductor rescope: human\n- [ ] Manual",
@@ -72,6 +72,19 @@ def test_append_replace_retry():
 def test_unknown_boundaries_fail_without_rewriting(body):
     with pytest.raises(ValueError):
         rewrite(body)
+
+
+def test_inline_and_fenced_marker_examples_are_preserved():
+    examples = (
+        "Use `<!-- factory-gate:{task_id} -->` in the issue.\n\n"
+        "```markdown\n" + legacy() + "\n```\n\n"
+        "~~~\n<!-- factory-gate:example -->\n~~~\n\n"
+    )
+    original = examples + legacy("actual")
+    updated, count = rewrite(original)
+    assert count == 1
+    assert updated.startswith(examples)
+    assert len(blocks(updated)) == 1
 
 
 def issue(number, body=None, **extra):
