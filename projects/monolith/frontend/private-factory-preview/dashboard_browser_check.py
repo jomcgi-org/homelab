@@ -198,11 +198,12 @@ def main():
                             assert child_result["backLinks"] == (
                                 1 if child == "updates" else 0
                             )
-                            # Legacy pages still follow the OS, opposite to stored scheme.
-                            assert child_result["sheet"] == (
-                                "#181a20" if scheme == "light" else "#ffffff"
-                            ), child_result
                             if child == "updates":
+                                # The journal sits on the sheet: it follows the
+                                # stored scheme, like the dashboard.
+                                assert child_result["sheet"] == (
+                                    "#ffffff" if scheme == "light" else "#181a20"
+                                ), child_result
                                 assert child_result["backInk"] == root["ink"], (
                                     child_result
                                 )
@@ -210,6 +211,11 @@ def main():
                                     """() => document.querySelector('.back-to-dashboard').getBoundingClientRect().bottom < document.querySelector('.spine').getBoundingClientRect().top"""
                                 )
                                 assert child_result["backClearsContent"], child_result
+                            else:
+                                # Qwen still follows the OS, opposite to the stored scheme.
+                                assert child_result["sheet"] == (
+                                    "#181a20" if scheme == "light" else "#ffffff"
+                                ), child_result
                         if child == "qwen":
                             assert child_result["bodyOverflow"] == "hidden", (
                                 child_result
@@ -293,14 +299,17 @@ def main():
                 page.evaluate("document.fonts.ready")
                 result = measure(page)
                 result.update(image=f"{name}.png", state=view, commit=args.expected_sha)
+                # The console and drain carry their own header, whose trail root
+                # is the dashboard, so the shared back link stays out of their
+                # way entirely: nothing may overlap the header's own control.
                 bounds = page.evaluate(
                     """(target) => {
-                  const back = document.querySelector('.back-to-dashboard');
                   const own = document.querySelector(target);
-                  const b = back.getBoundingClientRect(), h = own.getBoundingClientRect();
+                  const h = own.getBoundingClientRect();
                   const console = document.querySelector('main.console');
                   return {
-                    backBottom: b.bottom, headerTop: h.top,
+                    backLinks: document.querySelectorAll('.back-to-dashboard').length,
+                    headerTop: h.top,
                     headerClickable: own.contains(document.elementFromPoint(h.x + h.width / 2, h.y + h.height / 2)),
                     consoleBottom: console?.getBoundingClientRect().bottom ?? null
                   };
@@ -308,7 +317,8 @@ def main():
                     target,
                 )
                 result["headerBounds"] = bounds
-                assert bounds["backBottom"] < bounds["headerTop"], bounds
+                assert bounds["backLinks"] == 0, bounds
+                assert bounds["headerTop"] >= 0, bounds
                 assert bounds["headerClickable"], bounds
                 assert result["documentWidth"] == width, result
                 if view == "execution":

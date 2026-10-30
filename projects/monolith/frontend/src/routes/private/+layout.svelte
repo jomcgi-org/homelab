@@ -24,13 +24,16 @@
   let path = $derived(
     $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/",
   );
-  let executionBack = $derived(/^\/factory\/execution(\/|$)/.test(path));
   let showBack = $derived.by(() => {
     if (path === "/") return false;
     if (/^\/(app|review|chat|notes|qwen)(\/|$)/.test(path)) return false;
-    // These factory documents carry their own Trail and persisted scheme
-    // switch. Execution routes still need the legacy dashboard link.
-    if (/^\/factory(?:\/?|\/escalations\/?|\/work-items\/[^/]+\/?)$/.test(path))
+    // The factory documents and the execution console carry their own Trail,
+    // whose root is the dashboard, and their own persisted scheme switch.
+    if (
+      /^\/factory(?:\/?|\/escalations\/?|\/work-items\/[^/]+\/?|\/execution(?:\/.*)?)$/.test(
+        path,
+      )
+    )
       return false;
     return true;
   });
@@ -52,43 +55,10 @@
   <a class="back-to-dashboard td-chrome" href="/">&larr; dashboard</a>
 {/snippet}
 
-{#if executionBack}
-  <!-- Execution and drain own the top-left of their headers. Reserve a row
-       instead of laying the opaque dashboard link over their navigation. -->
-  <div class="private-execution">
-    <nav class="back-row td-chrome" aria-label="Dashboard">
-      {@render backLink()}
-    </nav>
-    {@render children()}
-  </div>
-{:else}
-  {#if showBack}{@render backLink()}{/if}
-  {@render children()}
-{/if}
+{#if showBack}{@render backLink()}{/if}
+{@render children()}
 
 <style>
-  .private-execution {
-    --private-back-height: 48px;
-  }
-
-  .back-row {
-    height: var(--private-back-height);
-    display: flex;
-    align-items: center;
-    padding: 0 1.2rem;
-    background: var(--sheet);
-  }
-
-  .back-row .back-to-dashboard {
-    position: static;
-  }
-
-  /* Keep the full-screen console, including its visual-viewport override,
-     inside the space below the reserved row. Drain remains scrollable. */
-  .private-execution :global(main.console) {
-    height: calc(var(--console-h, 100dvh) - var(--private-back-height));
-  }
-
   /* Token-only chrome must not match body:has(.td): full-screen children
      own their scroll containers. The shared palette follows data-theme. */
   .back-to-dashboard {

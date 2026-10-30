@@ -15,8 +15,9 @@ application build.
 
 Execution and drain header checks render their real pages at 390px and 1440px,
 in both stored schemes against the opposite OS preference. They assert that
-the dashboard link is above each page's own clickable back link and the
-execution console still fits the viewport. Reads return synthetic empty
+no shared dashboard link renders over each page's own clickable header (the
+console's trail root is the dashboard) and the execution console still fits
+the viewport. Reads return synthetic empty
 sessions, runs, repositories and drain jobs. The VM stream is an inert fixture;
 these checks do not exercise operator actions. The dashboard's external font
 stylesheet is present in the DOM, but CSP blocks it in the browser fixture.
@@ -72,15 +73,16 @@ success/revert, split SSE frames and history, empty/error states and destination
 browser job. `private/dashboard/MATRIX.md` links the 390/1440 light/dark captures;
 `results.json` records source hashes, dimensions, scrolling, focus, synthetic
 interactions and fresh-load/client-navigation parity for adjacent consumers.
-Stored sheet choice is tested against the opposite OS scheme. Updates and Qwen
-retain their OS-driven palette; Qwen retains a viewport-high chat with an
-internally scrolling transcript and its existing mobile statistics below.
+Stored sheet choice is tested against the opposite OS scheme. Updates sits on
+the sheet and follows the stored scheme; Qwen retains its OS-driven palette, a
+viewport-high chat with an internally scrolling transcript and its existing
+mobile statistics below.
 
-The dashboard no longer uses `.shell` or its legacy token aliases. Updates,
-Qwen and execution import their own compatibility stylesheet. The shared back
-link uses `.td-chrome`, which shares only palette declarations with `.td` and
-does not opt full-screen children into `body:has(.td)` scrolling. Factory pages
-keep their own Trail and scheme control, without duplicate back chrome.
+The dashboard no longer uses `.shell` or its legacy token aliases. Qwen imports
+its own compatibility stylesheet. The shared back link uses `.td-chrome`, which
+shares only palette declarations with `.td` and does not opt full-screen
+children into `body:has(.td)` scrolling. Factory pages and the execution
+console keep their own Trail and scheme control, without duplicate back chrome.
 
 ## Non-factory task integration (#7400)
 

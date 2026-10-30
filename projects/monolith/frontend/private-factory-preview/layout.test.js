@@ -75,10 +75,6 @@ for (const view of ["board", "escalations", "item"]) {
 }
 
 test.each([
-  "/factory/execution",
-  "/factory/execution/drain",
-  "/private/factory/execution/",
-  "/private/factory/execution/drain/",
   "/factory/escalations-extra",
   "/factory/work-items",
   "/updates",
@@ -101,9 +97,6 @@ test.each([
     document.querySelector(".back-to-dashboard").getAttribute("href"),
   ).toBe("/");
   expect(document.querySelector(".scheme")).toBeNull();
-  expect(Boolean(document.querySelector(".back-row .back-to-dashboard"))).toBe(
-    /^\/(?:private\/)?factory\/execution(?:\/|$)/.test(path),
-  );
 });
 
 test.each([
@@ -121,6 +114,10 @@ test.each([
   "/factory/escalations/",
   "/factory/work-items/1/",
   "/private/factory/work-items/1/",
+  "/factory/execution",
+  "/factory/execution/drain",
+  "/private/factory/execution/",
+  "/private/factory/execution/drain/",
 ])("suppresses shared back chrome on %s", async (path) => {
   page.set({
     url: new URL(`https://private.example.test${path}`),
