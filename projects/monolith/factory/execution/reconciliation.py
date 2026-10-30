@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
+from core.clock import aware
 from factory.execution import admission
 from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.models import AgentCapacityReservation, AgentSession
@@ -232,7 +233,6 @@ def read_never_dispatched_factory_attempt(
     read_not_invoked_factory_attempt, whose first dispatch was claimed and
     whose dispatch_count is exactly one.
     """
-    from datetime import timezone
     from sqlalchemy import or_
 
     from factory.execution import normalize_model
@@ -310,9 +310,6 @@ def read_never_dispatched_factory_attempt(
         or message.partial_activities is not None
     ):
         return None
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     if aware(agent.last_turn_at) > aware(message.created_at):
         return None
@@ -446,13 +443,9 @@ def _interrupted_dispatch_receipts(
     mutable turn row. Missing, conflicting or non-drain responses are unknown.
     This proof says nothing about earlier spend and must never refund it.
     """
-    from datetime import timezone
     from sqlalchemy import or_
     from factory.execution import result_receipts, store
     from factory.execution.models import AgentResultReceipt
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     ids = db.exec(
         select(AgentResultReceipt.id)
@@ -575,7 +568,7 @@ def _read_not_invoked_factory_attempt(
     evidence under pool/session locks; it never settles capacity, clears a
     binding, or infers physical cessation from an absent guest.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
     from sqlalchemy import or_
 
     from factory.execution import normalize_model, store
@@ -636,9 +629,6 @@ def _read_not_invoked_factory_attempt(
         )
     except (AttributeError, TypeError, ValueError):
         return None
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     permits = db.exec(
         select(AgentCapacityReservation)
@@ -2357,9 +2347,6 @@ def cancel_queued_factory_attempt(db: Session, pin: dict, session_id: int | None
     ):
         return None
 
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
     # Initial creation precedes enqueue. A later last_turn_at is valid only
     # when the existing one-shot recovery wrote its matching completion marker;
     # that path never resets dispatch_count and refuses attempted messages.
@@ -2510,7 +2497,7 @@ def inspect_lost_before_guest_factory_attempt(
     Like the not-invoked proof this reads under the pool and session locks,
     settles nothing and clears nothing; settlement is a separate call.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
     from sqlalchemy import or_
 
     from factory.execution import normalize_model
@@ -2607,9 +2594,6 @@ def inspect_lost_before_guest_factory_attempt(
         )
     except (AttributeError, TypeError, ValueError):
         return None, "missing_dispatch_identity"
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     if not aware(dispatched) <= aware(turn.created_at):
         return None, "missing_dispatch_identity"
@@ -2798,9 +2782,6 @@ def inspect_lost_before_session_factory_attempt(
         is not None
     ):
         return None, "result_receipt_exists"
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     if (_utcnow() - aware(start.created_at)).total_seconds() <= pin[
         "turn_timeout_seconds"
