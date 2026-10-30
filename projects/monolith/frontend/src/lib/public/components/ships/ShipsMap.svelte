@@ -9,6 +9,7 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import "maplibre-gl/dist/maplibre-gl.css";
+  import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
   import { deadReckon } from "$lib/public/ships/deadReckoning.js";
   import {
     readShipsParams,
@@ -574,6 +575,9 @@
     (async () => {
       maplibregl = await import("maplibre-gl");
       if (destroyed) return;
+      // Vite must bundle the worker's shared imports too. The package-relative
+      // default URL otherwise points at a missing asset in a production build.
+      maplibregl.setWorkerUrl(workerUrl);
 
       // Seed the initial viewport from the SSR snapshot so the map's first paint
       // is already framed on the fleet. Without this the map opened at a whole-

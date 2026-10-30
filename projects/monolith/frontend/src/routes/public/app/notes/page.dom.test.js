@@ -349,23 +349,33 @@ describe("public notes sheet DOM", () => {
     expect(paints).toHaveLength(0);
   });
 
-  it("leaves the actual private consumer on its legacy palette and endpoint", async () => {
+  it("mounts the private consumer on the same sheet palette with its own endpoint", async () => {
+    target.className = "td";
     await render(PrivatePage, {
       data: { graph: { ...graphFixture, indexed_at: null } },
     });
     await loaded();
-    expect(target.querySelector(".sheet-graph")).toBeNull();
+    expect(target.querySelector(".td.notes-root")).not.toBeNull();
+    expect(target.querySelector(".legend .swatch").style.background).toBe(
+      "var(--warn)",
+    );
+    const stage = target.querySelector(".stage");
+    const day = resolveGraphPalette(stage, true);
     expect(
-      target.querySelector(".legend .swatch").style.background.toLowerCase(),
-    ).toBe("#f5d90a");
-    const fillColors = paints
-      .filter((p) => p.method === "fill")
-      .map((p) => p.fill);
-    expect(fillColors).toContain("#F5D90A");
+      paints.some((p) => p.method === "fill" && p.fill === day.clusters.atom),
+    ).toBe(true);
     paints.length = 0;
     document.documentElement.dataset.theme = "dark";
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(paints).toHaveLength(0);
+    target.classList.toggle("test-style-refresh");
+    await vi.waitFor(() =>
+      expect(
+        paints.some(
+          (p) =>
+            p.method === "fill" &&
+            p.fill === resolveGraphPalette(stage, true).clusters.atom,
+        ),
+      ).toBe(true),
+    );
     expect(fetchMock).not.toHaveBeenCalled();
     const canvas = target.querySelector("canvas");
     canvas.dispatchEvent(

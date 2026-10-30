@@ -123,11 +123,6 @@ describe("Firecracker production route composition", () => {
     },
   );
 
-  it("retains legacy navigation on unrelated Ember-like paths", async () => {
-    await render("/emberstore", "legacy");
-    expect(target.querySelectorAll(".md-nav")).toHaveLength(1);
-  });
-
   it("keeps all explanation in the DOM under reduced motion and after resizing", async () => {
     reduced = true;
     await render();

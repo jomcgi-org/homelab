@@ -1,84 +1,13 @@
 <script>
   import "@homelab/design-system/tokens/contract.css";
   import "$lib/global.css";
-  import { page } from "$app/stores";
-  import { Nav } from "$lib/public/components";
 
   let { children } = $props();
 
-  let isPrivate = $derived($page.url.hostname.startsWith("private."));
-  let isFriends = $derived($page.url.hostname.startsWith("friends."));
-
-  // The private tier drops the shared Nav entirely: the dashboard at the
-  // private root IS the nav (launcher grid, queue links, back affordances),
-  // and routes/private/+layout.svelte renders its own minimal chrome (a
-  // small "back to dashboard" link on non-root private paths).
-  //
-  // Apps under /app/* are full-screen experiences (e.g. the live ships map)
-  // that render their own chrome, so the site nav is suppressed for them. The
-  // hooks.js reroute keeps the browser path un-prefixed, but match the
-  // /public|/private prefixes too in case a route is hit directly.
-  //
-  // Home, CV, blog, docs, engineering and slop pages carry the technical drawing
-  // chrome (Trail + scheme switch, site sections in the spine), so the
-  // site nav would stack a second bar on top of it. Every page migrated to
-  // that language joins this list until the nav itself retires. The docs
-  // pattern matches /docs and /docs/* but not unrelated prefixes like
-  // /docstore.
-  //
-  // Error pages (the 404 in src/routes/+error.svelte) also suppress the
-  // nav: a not-found page renders its own "back home" affordance and the
-  // cross-tier nav would only clutter the dead-end.
-  //
-  // Artifacts under /artifact/* (ADR 024 goosecracker) are full-bleed sandboxed
-  // pages: the page is a 100vh iframe with body overflow hidden, meant to fill
-  // the viewport. The site nav both looks wrong on a standalone artifact and
-  // pushes the iframe down, so suppress it like the /app/* experiences.
-  //
-  // The Ember landing and retired demo fallbacks carry sheet chrome. The
-  // separate Firecracker and agents stories retain their own chrome, so
-  // every /ember route continues to suppress this shared legacy Nav.
-  let hideNav = $derived(
-    isPrivate ||
-      isFriends ||
-      /^\/(?:public\/?|(?:public\/)?cv\/?)?$/.test($page.url.pathname) ||
-      /^\/private(?:\/|$)/.test($page.url.pathname) ||
-      /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
-      /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
-      /^\/(public\/|private\/)?blog(\/|$)/.test($page.url.pathname) ||
-      /^\/(public\/|private\/)?engineering(\/|$)/.test($page.url.pathname) ||
-      /^\/(public\/|private\/)?slop(\/|$)/.test($page.url.pathname) ||
-      /^\/(public\/|private\/)?artifact(\/|$)/.test($page.url.pathname) ||
-      /^\/(public\/|private\/)?ember(\/|$)/.test($page.url.pathname) ||
-      $page.error != null,
-  );
-
-  // Active-state derivation. The hooks.js reroute remaps
-  // public.jomcgi.dev/* → /public/* and private.jomcgi.dev/* → /private/*
-  // internally, but $page.url reflects the *browser* URL. So:
-  // - /review (private host) → "review"
-  // - /engineering (any host) → "engineering"
-  // - /cv (any host) → "cv"
-  // - any other URL on public.jomcgi.dev → "home"
-  // - everything else → no active state
-  // Notes lives under /app/notes: like the other /app/* apps it is full-screen
-  // and renders no site nav at all (the global nav is suppressed above), so it
-  // needs no active-state detection here.
-  let activeRoute = $derived.by(() => {
-    const host = $page.url.hostname;
-    const path = $page.url.pathname;
-    if (path === "/review" || path.startsWith("/review/")) return "review";
-    if (path === "/engineering" || path.startsWith("/engineering/")) {
-      return "engineering";
-    }
-    if (path === "/cv" || path.startsWith("/cv/")) return "cv";
-    if (host.startsWith("public.")) return "home";
-    return "";
-  });
+  // No site-wide chrome: every tier renders its own. Public pages carry the
+  // technical-drawing trail and scheme switch, the private dashboard is the
+  // private tier's nav, and the friends screens are their own tools. The
+  // brutalist nav bar retired with its last consumer (#7160).
 </script>
-
-{#if !hideNav}
-  <Nav route={activeRoute} {isPrivate} />
-{/if}
 
 {@render children()}

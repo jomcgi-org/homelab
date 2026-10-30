@@ -3,6 +3,7 @@ import { vi } from "vitest";
 // Narrow MapLibre double: enforce source/layer/image identity and fail writes
 // after remove. Rendering and provider loading are checked in the real browser.
 export const maps = [];
+export const setWorkerUrl = vi.fn();
 export class Map {
   constructor(options) {
     this.options = options;

@@ -25,7 +25,7 @@
   <title>Character sheets · Grimoire</title>
 </svelte:head>
 
-<main class="grimoire sheets-page">
+<main class="td grimoire sheets-page">
   <header class="page-head">
     <div>
       <p class="eyebrow">Grimoire · private table</p>
@@ -293,9 +293,10 @@
 <style>
   .sheets-page {
     min-height: 100vh;
-    padding: 5rem clamp(1rem, 4vw, 4rem);
-    background: var(--grim-surface-2);
-    color: var(--grim-ink);
+    padding: 3.5rem clamp(1rem, 4vw, 4rem) 4rem;
+    background: var(--sheet);
+    color: var(--ink);
+    font-family: var(--font-ui);
   }
   .page-head,
   .campaign-head,
@@ -318,24 +319,29 @@
   p {
     margin-top: 0;
   }
+  /* Document scale, as on every sheet: headlines are weight, not size. */
   h1 {
     margin-bottom: 0.5rem;
-    font-size: clamp(2.5rem, 7vw, 5rem);
-    line-height: 0.95;
+    font-size: clamp(1.4rem, 2.5vw, 1.8rem);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1.15;
   }
   h2 {
-    font-size: 1.8rem;
+    font-size: 1.15rem;
+    font-weight: 700;
   }
   h3 {
     margin-bottom: 0.25rem;
-    font-size: 1.5rem;
+    font-size: 1rem;
+    font-weight: 700;
   }
   .eyebrow {
     margin-bottom: 0.35rem;
+    font: 500 0.68rem var(--font-code);
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    letter-spacing: 0.14em;
-    font-size: 0.72rem;
-    font-weight: 700;
+    color: var(--ink-2);
   }
   .lede,
   .summary,
@@ -344,16 +350,14 @@
   }
   .contract,
   .status {
-    border: 1px solid currentColor;
-    border-radius: 999px;
-    padding: 0.35rem 0.65rem;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    border: 1px solid var(--stroke);
+    padding: 0.3rem 0.6rem;
+    font: 0.72rem var(--font-code);
+    color: var(--ink-2);
     white-space: nowrap;
   }
   .status.approved {
-    color: #26633a;
+    color: var(--ok);
   }
   .campaign {
     max-width: 78rem;
@@ -372,10 +376,9 @@
   }
   .sheet-card,
   .empty {
-    border: 1px solid var(--grim-line);
-    background: var(--grim-surface);
+    border: 1px solid var(--ink);
+    background: var(--sheet);
     padding: clamp(1rem, 3vw, 1.75rem);
-    border-radius: 0.6rem;
   }
   .builder {
     margin-top: 1.5rem;
@@ -435,7 +438,7 @@
   .submit-row,
   .decision {
     margin-top: 1rem;
-    border-top: 1px solid #d7cfbd;
+    border-top: 1px solid var(--stroke);
     padding-top: 1rem;
   }
   .submit-row p {
@@ -449,7 +452,7 @@
     margin-top: 1.5rem;
   }
   .derived div {
-    border-left: 2px solid #b58a3a;
+    border-left: 2px solid var(--accent-ink);
     padding-left: 0.65rem;
   }
   .derived strong {
@@ -462,17 +465,16 @@
   .notice {
     max-width: 78rem;
     margin: 0 auto 1rem;
-    border: 1px solid #9b8b59;
+    border: 1px solid var(--warn);
     padding: 0.75rem 1rem;
-    background: #fff7d8;
+    background: var(--band);
   }
   .notice--error {
-    border-color: #a3483e;
-    background: #fde9e4;
+    border-color: var(--tone-disk);
   }
   blockquote {
     margin: 1rem 0 0;
-    border-left: 3px solid #a3483e;
+    border-left: 2px solid var(--stroke);
     padding-left: 1rem;
   }
   blockquote footer,

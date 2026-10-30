@@ -372,61 +372,65 @@
 
 <svelte:head><title>Review · private.jomcgi.dev</title></svelte:head>
 
-<section class="review">
-  <header class="bar">
-    <div class="tabs" role="tablist" aria-label="Review tab">
-      <button
-        role="tab"
-        aria-selected={data.tab === "gaps"}
-        class:active={data.tab === "gaps"}
-        onclick={() => setTab("gaps")}
-      >
-        Gaps
-      </button>
-      <button
-        role="tab"
-        aria-selected={data.tab === "notes"}
-        class:active={data.tab === "notes"}
-        onclick={() => setTab("notes")}
-      >
-        Notes
-      </button>
-    </div>
+<main class="td sheet review-page">
+  <section class="review edition">
+    <header class="bar ed-head">
+      <div class="tabs" role="tablist" aria-label="Review tab">
+        <button
+          role="tab"
+          aria-selected={data.tab === "gaps"}
+          class:here={data.tab === "gaps"}
+          onclick={() => setTab("gaps")}
+        >
+          Gaps
+        </button>
+        <button
+          role="tab"
+          aria-selected={data.tab === "notes"}
+          class:here={data.tab === "notes"}
+          onclick={() => setTab("notes")}
+        >
+          Notes
+        </button>
+      </div>
 
-    <ModeToggle mode={data.mode} onChange={setMode} />
+      <ModeToggle mode={data.mode} onChange={setMode} />
 
-    {#if visibleItems.length}
-      <span class="counter" aria-label="Queue position"
-        >{index + 1} / {visibleItems.length}</span
-      >
+      <span class="end">
+        {#if visibleItems.length}
+          <span class="counter num" aria-label="Queue position"
+            >{index + 1} / {visibleItems.length}</span
+          >
+        {/if}
+      </span>
+    </header>
+
+    {#if pendingError}
+      <div class="banner" role="alert">
+        <span>{pendingError}</span>
+        <button
+          type="button"
+          class="banner-dismiss"
+          onclick={() => (pendingError = null)}
+          aria-label="Dismiss error">×</button
+        >
+      </div>
     {/if}
-  </header>
 
-  {#if pendingError}
-    <div class="banner" role="alert">
-      <span>{pendingError}</span>
-      <button
-        type="button"
-        class="banner-dismiss"
-        onclick={() => (pendingError = null)}
-        aria-label="Dismiss error">×</button
-      >
-    </div>
-  {/if}
-
-  {#if data.error}
-    <p class="error">{data.error}</p>
-  {:else if !current}
-    <p class="empty">Queue empty for {data.tab} / {data.mode}.</p>
-  {:else}
-    <ReviewCard
-      item={current}
-      tab={data.tab}
-      mode={data.mode}
-      onDecide={handleDecide}
-    />
-  {/if}
-</section>
+    {#if data.error}
+      <p class="error">{data.error}</p>
+    {:else if !current}
+      <p class="empty">Queue empty for {data.tab} / {data.mode}.</p>
+    {:else}
+      <ReviewCard
+        item={current}
+        tab={data.tab}
+        mode={data.mode}
+        onDecide={handleDecide}
+      />
+    {/if}
+  </section>
+</main>
 
 {#if tombstone}
   {#key tombstone.key}
@@ -439,128 +443,101 @@
 {/if}
 
 <style>
-  /* Page chrome: brutalist counterpart to Nav. 2px black border on the
-     bar (matching --border-heavy), explicit monospace throughout, and
-     the active-tab underline mirrors Nav.svelte's coral-on-hover /
-     black-on-active so this page reads as a sibling of the site nav. */
+  /* One panel, one screen: the review queue is a single record whose head
+     band carries the tab strip, the mode strip and the queue position, and
+     whose body is the card. The card fills the remaining height so the
+     reviewer powers through items without scrolling; its subpanels scroll
+     internally. */
+  .review-page {
+    padding: 1.5rem clamp(1rem, 3vw, 2.5rem) 1.5rem;
+    min-height: 100vh;
+  }
 
-  /* Single-screen layout: the whole review surface fits in one viewport
-     so the user can power through items without scrolling. The Card
-     flex-grows to fill remaining height; its body subpanels scroll
-     internally when content overflows. */
   .review {
-    padding: 1.5rem 2.5rem 1.5rem;
-    font-family: var(--font-mono);
-    color: var(--fg);
-    background: var(--bg);
-    height: calc(100vh - 4rem); /* 4rem reserves the site Nav header */
     display: flex;
     flex-direction: column;
-    gap: 1rem;
-    overflow: hidden;
+    height: calc(100vh - 3rem);
+    background: var(--sheet);
   }
 
   .bar {
-    display: flex;
-    gap: 1.5rem;
-    align-items: center;
-    padding-bottom: 0.75rem;
-    border-bottom: var(--border-heavy);
     flex-shrink: 0;
+    gap: 0.35em 1.5rem;
   }
 
-  /* Flat-by-default, pop-on-hover. Active tab is a filled yellow block
-     that sits flat (already chosen, no need to advertise interactivity);
-     inactive tabs gain a border + offset shadow on hover. */
+  /* The tab strips reuse the band's divided-cells vocabulary. */
   .tabs {
     display: inline-flex;
-    gap: 0.6rem;
-    align-items: center;
+    margin: -0.55em 0;
   }
 
   .tabs button {
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--fg-tertiary);
-    background: transparent;
-    border: 2px solid transparent;
-    padding: 0.45rem 0.75rem;
+    padding: 0.55em 0.8em;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--ink-2);
+    font: inherit;
     cursor: pointer;
-    transform: translate(0, 0);
-    transition:
-      transform 0.08s ease,
-      box-shadow 0.08s ease,
-      background 0.08s ease,
-      color 0.08s ease,
-      border-color 0.08s ease;
   }
 
-  .tabs button:hover:not(.active) {
-    color: var(--fg);
-    border-color: var(--fg);
-    transform: translate(-2px, -2px);
-    box-shadow: 4px 4px 0 0 var(--fg);
+  .tabs button + button {
+    border-left: 1px solid var(--stroke);
   }
 
-  .tabs button.active {
-    color: var(--fg);
-    background: var(--yellow);
-    border-color: var(--fg);
+  .tabs button:hover {
+    color: var(--ink);
+  }
+
+  .tabs button.here {
+    border-bottom-color: var(--accent-ink);
+    color: var(--accent-ink);
   }
 
   .counter {
-    margin-left: auto;
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    font-weight: 700;
-    color: var(--fg);
-    letter-spacing: 0.08em;
-    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    font-weight: 600;
   }
 
-  .banner {
+  .banner,
+  .error {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    margin-bottom: 1.25rem;
-    padding: 0.65rem 0.85rem;
-    border: 2px solid var(--fg);
-    background: var(--coral);
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    font-weight: 700;
+    margin: 0;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--stroke);
+    border-left: 2px solid var(--tone-disk);
+    color: var(--ink);
+    font: 0.8rem/1.5 var(--font-code);
   }
 
   .banner-dismiss {
-    background: transparent;
-    border: none;
-    color: inherit;
-    font-size: 1.1rem;
+    padding: 0 0.25rem;
+    border: 0;
+    background: none;
+    color: var(--ink-2);
+    font: 1.1rem var(--font-code);
     line-height: 1;
     cursor: pointer;
-    padding: 0 0.25rem;
-    font-weight: 700;
   }
 
-  .error {
-    color: var(--fg);
-    background: var(--coral);
-    border: 2px solid var(--fg);
-    padding: 0.65rem 0.85rem;
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    font-weight: 700;
+  .banner-dismiss:hover {
+    color: var(--ink);
   }
 
   .empty {
-    color: var(--fg-tertiary);
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    letter-spacing: 0.04em;
+    margin: 0;
+    padding: 1rem;
+    color: var(--ink-2);
+    font: 0.8rem/1.5 var(--font-code);
+  }
+
+  @media (max-width: 760px) {
+    .review {
+      height: auto;
+      min-height: calc(100vh - 3rem);
+    }
   }
 </style>

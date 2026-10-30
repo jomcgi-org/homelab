@@ -104,15 +104,6 @@ describe("home/CV composed route chrome", () => {
     },
   );
 
-  it.each(["/cvstore", "/docstore", "/public/cv/unknown"])(
-    "does not suppress legacy navigation on the unrelated route %s",
-    async (path) => {
-      await render(path, "legacy");
-      expect(target.querySelectorAll(".md-nav")).toHaveLength(1);
-      expect(target.querySelector(".chrome, .scheme")).toBeNull();
-    },
-  );
-
   it.each([
     "/artifact/one",
     "/public/artifact/one",

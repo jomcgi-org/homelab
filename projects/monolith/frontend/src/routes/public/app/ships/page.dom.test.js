@@ -22,6 +22,9 @@ vi.mock(
 );
 vi.mock("$app/stores", () => import("../../../../../test/profile-stores.js"));
 vi.mock("maplibre-gl", () => import("../../../../../test/ships-map-double.js"));
+vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
+  default: "/ships-test-worker.js",
+}));
 vi.mock("$app/navigation", () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 
 let instance, target, media, fetchMock, idle;
