@@ -1621,10 +1621,12 @@ next round only, at the two turns it really costs, because the engine inserts
 its correction and its re-review at one attempt each. A correction that fails
 costs the round rather than the turn: the engine opens the next round against
 the same reviewed head and the same findings, and the failed round still counts
-against `max_review_rounds`. One attempt is a deliberate trade: a correction or
-re-review that fails or stalls spends a round rather than retrying silently
-inside a round nobody sized for it, and the planner is asked once the rounds
-are spent.
+against `max_review_rounds`. Each correction and re-review has one attempt;
+failed corrections consume a round instead of retrying within it. Exhausted
+correction rounds return to the planner. A failed re-review consumes its round
+and returns missing evidence directly to the planner under
+[execution and evidence](#execution-and-evidence); it does not open another
+correction against the earlier findings.
 
 An operator can set `max_review_recovery_rounds` to 1 or 2 to continue a
 review that still requests changes after the ordinary round bound. The default
@@ -1730,6 +1732,31 @@ agree: a node the graph keeps ready whose every start the turn gate refuses
 pauses the task instead of retrying it. Confirmed failed artifacts feed
 bounded retry context back to the next attempt. Unknown execution retains its
 reservation and requires reconciliation before another attempt starts.
+
+A failed re-review keeps the delivered correction and returns the missing review
+evidence to the planner as a named deviation. A lost or invalid verdict supplies
+no new findings against that head. The planner resolves the missing review
+evidence within the task's normal limits; the engine never re-implements the
+correction against superseded findings. Result adoption and cessation fences
+still own unknown invocation outcomes.
+
+The lost-before-session sweep runs before ordinary task reconciliation and the
+deadline backstop, after the node's pinned `turn_timeout_seconds` has elapsed
+(#6285). `swarm.factoryLostBeforeSessionSweepEnabled` maps to
+`FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED`. The chart default is false;
+`projects/monolith/deploy/values-gke.yaml` sets it true. The sweep does not widen
+manual repair, session-based reconciliation or uncertain-execution release.
+
+The exact owning DBOS workflow must report `ERROR` or `CANCELLED`, or a successful
+lookup must explicitly prove it absent. Under the control lock shared with
+session creation, the proof requires immutable run and start ownership, no bound
+or deterministic session, no cost or outcome, and no permit or result receipt.
+The terminal graph transition fences a delayed submitter, including the
+absent-workflow case. A nonterminal workflow, failed ownership or lookup error
+leaves the attempt untouched. Both ledgers settle atomically as `failed` at zero
+cost with `no_model_post` and `never_dispatched`. Ordinary bounded reconciliation
+then decides whether the node may retry. Elapsed time or a missing binding alone
+cannot refund an attempt with contradictory execution evidence.
 
 The DBOS application version is pinned to the node workflow's own source:
 `execute_node`, the helpers that decide which steps run, and every step they
@@ -1897,15 +1924,23 @@ the same before deciding the attempt has no result. The model runs once, and
 the node owner supplies the declared artifact path a hold reconstructed from
 durable rows cannot know, so a recovered attempt keeps its artifact.
 
+Receipt reads use the durable, dispatch-exact hold in place of the live
+30-second claim stamp the lost executor can no longer refresh. An executor-written
+hold names one receipt and carries the request digest, generation and invoke
+start; other ownership checks remain unchanged. Held adoption sets no guest reuse
+fence: the original POST observer is gone and cannot clear one. The hold itself
+fences reuse until the ordinary turn writer consumes it.
+
 The 2026-10-01 evidence in #6670 identified eleven cessations during monolith
 promotions. `agents.sessions.rolloutHandoffEnabled` now fences claims at SIGTERM
 and hands off the exact in-flight POST before receipt-observer cancellation
 cleanup or DBOS destruction. The existing cancellation hold remains the
 flag-off path. A turn without an adoptable receipt gets a five-second grace;
 hold writes and cancellation each have a five-second drain budget inside the
-chart's thirty-second termination grace. The enabled backend bounds HTTP drain
-at five seconds before lifespan handoff. The flag defaults false and the GKE
-overlay enables it with a dated comment. The file-backed two-replica test rolls
+chart's thirty-second termination grace. Shutdown hold writes use a two-second
+row-lock timeout. The enabled backend bounds HTTP drain at five seconds before
+lifespan handoff. The flag defaults false and the GKE overlay enables it with a
+dated comment. The file-backed two-replica test rolls
 the observer mid-invoke, adopts its receipt through the ordinary writer, and
 checks the node workflow succeeds. It does not cover a control-plane restart
 (#6664) or cross-brick rejoin (#6663).
@@ -1917,6 +1952,14 @@ hold writer refuses changed ownership and already-committed terminal results;
 if recovery is disabled or the hold cannot be written, the existing conservative
 unknown-outcome path remains. Historical attempts whose claims were already
 removed still require separate positive reconciliation evidence.
+
+A replica killed outright writes no marker. The claim lease backstop can hold a
+stale claim with an exact, unsuperseded, unconsumed receipt, including one whose
+result has not yet been published. An unpublished receipt's remaining capture
+window bounds that hold. Registration alone proves no delivery or completion;
+only the ordinary validated result writer can finish it. A reconstructed hold
+has no request digest and selects its receipt by full dispatch identity. Claims
+without an exact receipt retain ordinary unknown settlement.
 
 A factory guest cold-parked without a recorded drain continuation is a candidate
 for conditional retirement, not cessation proof by itself. Recovery asks EmberVM
@@ -1954,6 +1997,11 @@ default and dependent on `resultReceiptsEnabled`: with no receipt to adopt, a
 hold would only delay the same unknown outcome. Every owner that writes,
 finishes or ends a hold reads that one flag, so off is the behaviour this lane
 had before any of this existed (#5938, #4322).
+
+A separate control-plane result cache is not planned. The #4322 decision is
+reconsidered only if #5938's bounded native canary demonstrates a completed-result
+recovery gap that the receipt path cannot cover and a bounded receipt fix cannot
+address.
 
 The pre-guest response-loss window is intentionally separate. A response-loss
 hold requires the exact persisted guest binding, result receipt, executor
@@ -2451,6 +2499,21 @@ The operational health loop reports landing or observed-merged active work
 waiting over 30 minutes for reconciliation or rollout. Health evaluation does
 not settle, resume or otherwise repair that work.
 
+Merge observation runs before review publication, including previously refused
+deliveries. A bounded rotating scan revisits those receipts even with merging
+disabled. A recorded merge must match the owned repository, base, branch and
+approved head. Observation grants no new merge authority and preserves explicit
+holds and pause fences.
+
+For active work, `factory_merged_delivery.py` records `owned_pr_merged` when the
+owned PR merged elsewhere. Existing invocations drain through normal accounting
+before exact-head independent review and CI verification. Approved work enters
+landing even with `auto_merge` off. Missing or rejected review escalates without
+another planner turn or funding grant. A paused receipt with an observed owned
+merge may finish verification, but cannot publish a review, recover or arm an
+unmerged PR. Infrastructure rollout and outstanding functional acceptance remain
+separate, including when another actor closed the issue.
+
 #### Dependency queue evidence
 
 `factory/dependency-evidence` is a trusted monolith check, staged off by default
@@ -2733,21 +2796,36 @@ writes one row per task and that row is its fence.
 A merge is not task success. Landing verifies a completed chart publication
 receipt on main whose source includes the merged commit, plus successful
 `pr-checks` on that source. No-op publication receipts prove reused versions.
-It checks actual Argo sync revisions against the receipt and source ancestry,
-Healthy/Synced status, the compared source specification, workload generations,
-ready replica counts, and running pod images. Repository-built images must be
-digest pinned; external tagged images must match the workload specification.
-The verifier conservatively checks every live application managed by this
-repository, so an unrelated stale or unhealthy managed application keeps the
-delivery pending too. It does not claim functional acceptance or verify charts
-that have no live application.
+Rollout scope follows the merged PR's deploy surface: registry chart versions
+moved since the merge, git paths and their kustomize surface, and `$values` files
+(#6660). Chart scope uses the publication with the earliest proven source
+containing the merge; later unrelated chart bumps do not widen it. Chart
+deployment proof uses the newest proven source, while git revisions need only
+contain the delivery's source. Source ancestry orders receipts; the receipt
+commit bounds the history search even when a publisher finishes late. Unknown
+kustomize keys conservatively include the Application. Workload reads begin only
+after scope selection, and unreadable evidence fails closed. A PR reaching no
+live Application records `no_live_application` with its publication receipt's
+successful `pr-checks` render check.
+
+For scoped Applications, the verifier checks actual Argo sync revisions against
+the receipt and source ancestry, Healthy/Synced status, the compared source
+specification, workload generations, ready replica counts, and running pod images.
+Repository-built images must be digest pinned; external tagged images must match
+the workload specification.
+Pod evidence excludes terminal and deleting remnants while requiring the desired
+number of active, ready replicas running the requested images. Unrelated
+Applications do not block scoped acceptance. This verification does not claim
+functional acceptance.
 
 Unknown, missing, paginated or unavailable observations fail closed. Each task
 records at most one pending observation per minute; mutable reads are shared
 for at most 30 seconds, including failed reads that remain failures rather than
 empty successful inventories. This prevents a cluster timeout from repeating
-for every pending delivery in one tick. Immutable SHA reads have a bounded cache. Reads do
-not mutate Argo, restart guests, or grant credentials. A durable
+for every pending delivery in one tick. A wait appears in status and the daily
+digest at 30 minutes and pages once at 60 minutes. Landing keeps polling each
+minute. Immutable SHA reads have a bounded cache. Reads do not mutate Argo,
+restart guests, or grant credentials. A durable
 `rollout_verified` audit binds the approved PR head, merge, publication and
 source SHAs to observed application revisions and workload images. Only that
 trusted matching proof allows `landing` to settle `succeeded`. Disabling
@@ -3501,6 +3579,14 @@ Refine decisions carry into delivery admission; the receipt preserves decisions
 across restarts and every planner and worker receives the current scope.
 
 #### Handing off live checks
+
+Normal plan edits and completed work artifacts persist typed operational gates
+before further work and before publishing their GitHub rescope. Gate and graph
+decisions have separate identities, so an edit interrupted after gate persistence
+can still retry. Re-admission retains the checklist in receipt direction.
+Landing reloads it before closure and independently checks that the merged PR
+confirms completion of this issue. A reference-only or explicitly rescoped PR
+leaves the issue open even after rollout verification.
 
 `FACTORY_OPERATIONAL_HANDOFF_ENABLED` (`swarm.factoryOperationalHandoffEnabled`,
 default false) makes "the repository work is delivered, only live checks
