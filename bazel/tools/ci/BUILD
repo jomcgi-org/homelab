@@ -94,6 +94,8 @@ sh_test(
     data = [
         "ci",
         "local-affected-test.sh",
+        "ratchets.sh",
+        "runner-resources.env",
         "//:buildbuddy.yaml",
     ],
 )
@@ -108,4 +110,15 @@ sh_test(
     name = "local_affected_test_test",
     srcs = ["local_affected_test_test.sh"],
     data = ["local-affected-test.sh"],
+)
+
+sh_test(
+    name = "shared_runners_test",
+    srcs = ["shared_runners_test.sh"],
+    data = [
+        "affected-targets.sh",
+        "local-affected-test.sh",
+        "ratchets.sh",
+        "//:buildbuddy.yaml",
+    ],
 )

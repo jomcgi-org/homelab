@@ -77,63 +77,63 @@ resource_requests="$(awk '
 	}
 ' "$BUILD_BUDDY")"
 
-resource_properties=()
-while IFS= read -r property; do
-	[[ -n "$property" ]] && resource_properties+=("$property")
-done < <(grep -oE -- '--runner_exec_properties=[^[:space:]\\]+=[^[:space:]\\]+' "$CI" |
-	sed 's/.*--runner_exec_properties=//')
+check_resource_parity() {
+	local -a resource_properties=()
+	while IFS= read -r property; do
+		[[ -n "$property" ]] && resource_properties+=("$property")
+	done < <(sed -n 's/^--runner_exec_properties=//p' "$1")
 
-# Record each drift with its specific cause, and do not stop at the first one.
-# The whole reason this test exists is that the drift is otherwise silent, so a
-# failure that only says "they do not match" leaves the reader doing by hand the
-# comparison the test just did.
-drift=()
+	# Record each drift with its specific cause, and do not stop at the first one.
+	# The whole reason this test exists is that the drift is otherwise silent, so a
+	# failure that only says "they do not match" leaves the reader doing by hand the
+	# comparison the test just did.
+	local -a drift=()
 
-while IFS='=' read -r yaml_key _; do
-	case "$yaml_key" in
-	'') ;;
-	cpu | memory | disk) ;;
-	*) drift+=("buildbuddy.yaml pr-checks declares resource_requests key '$yaml_key', which this test has no mapping for: add it here and pass it in cmd_test") ;;
-	esac
-done <<<"$resource_requests"
+	while IFS='=' read -r yaml_key _; do
+		case "$yaml_key" in
+		'') ;;
+		cpu | memory | disk) ;;
+		*) drift+=("buildbuddy.yaml pr-checks declares resource_requests key '$yaml_key', which this test has no mapping for: add it here and pass it in cmd_test") ;;
+		esac
+	done <<<"$resource_requests"
 
-for yaml_key in cpu memory disk; do
-	case "$yaml_key" in
-	cpu) property="EstimatedCPU" ;;
-	memory) property="EstimatedMemory" ;;
-	disk) property="EstimatedFreeDiskBytes" ;;
-	esac
-	yaml_value="$(printf '%s\n' "$resource_requests" | awk -F= -v key="$yaml_key" '$1 == key { print $2 }')"
-	ci_value=""
-	for candidate in "${resource_properties[@]}"; do
-		if [[ "${candidate%%=*}" == "$property" ]]; then
-			ci_value="${candidate#*=}"
+	for yaml_key in cpu memory disk; do
+		case "$yaml_key" in
+		cpu) property="EstimatedCPU" ;;
+		memory) property="EstimatedMemory" ;;
+		disk) property="EstimatedFreeDiskBytes" ;;
+		esac
+		yaml_value="$(printf '%s\n' "$resource_requests" | awk -F= -v key="$yaml_key" '$1 == key { print $2 }')"
+		ci_value=""
+		for candidate in "${resource_properties[@]}"; do
+			if [[ "${candidate%%=*}" == "$property" ]]; then
+				ci_value="${candidate#*=}"
+			fi
+		done
+		if [[ -z "$yaml_value" ]]; then
+			drift+=("buildbuddy.yaml pr-checks declares no '$yaml_key' under resource_requests (parse failure, or the key was removed)")
+		elif [[ -z "$ci_value" ]]; then
+			drift+=("ci cmd_test passes no $property, but buildbuddy.yaml pr-checks declares $yaml_key: $yaml_value")
+		elif [[ "$yaml_value" != "$ci_value" ]]; then
+			drift+=("ci cmd_test passes $property=$ci_value, but buildbuddy.yaml pr-checks declares $yaml_key: $yaml_value")
 		fi
 	done
-	if [[ -z "$yaml_value" ]]; then
-		drift+=("buildbuddy.yaml pr-checks declares no '$yaml_key' under resource_requests (parse failure, or the key was removed)")
-	elif [[ -z "$ci_value" ]]; then
-		drift+=("ci cmd_test passes no $property, but buildbuddy.yaml pr-checks declares $yaml_key: $yaml_value")
-	elif [[ "$yaml_value" != "$ci_value" ]]; then
-		drift+=("ci cmd_test passes $property=$ci_value, but buildbuddy.yaml pr-checks declares $yaml_key: $yaml_value")
+
+	for property in "${resource_properties[@]}"; do
+		property_name="${property%%=*}"
+		case "$property_name" in
+		EstimatedCPU | EstimatedMemory | EstimatedFreeDiskBytes | EstimatedComputeUnits) ;;
+		Estimated*)
+			drift+=("ci cmd_test passes $property_name, which BuildBuddy does not recognise: it will silently fall back to the default rather than fail")
+			;;
+		esac
+	done
+
+	if [[ ${#drift[@]} -ne 0 ]]; then
+		printf "%s\n" "${drift[@]}" >&2
+		return 1
 	fi
-done
-
-for property in "${resource_properties[@]}"; do
-	property_name="${property%%=*}"
-	case "$property_name" in
-	EstimatedCPU | EstimatedMemory | EstimatedFreeDiskBytes | EstimatedComputeUnits) ;;
-	Estimated*)
-		drift+=("ci cmd_test passes $property_name, which BuildBuddy does not recognise: it will silently fall back to the default rather than fail")
-		;;
-	esac
-done
-
-if [[ ${#drift[@]} -eq 0 ]]; then
-	pass "buildbuddy_resource_parity"
-else
-	fail "buildbuddy_resource_parity" "$(printf '%s | ' "${drift[@]}")"
-fi
+}
 
 # Keep deployment folded into the required check. Action names are part of
 # BuildBuddy's snapshot key, so accidentally restoring a separate deploy action
@@ -221,9 +221,9 @@ else
 	fail "header_docs" "missing usage/docs markers"
 fi
 
-ratchet_ln=$(grep -n 'central_build_ratchet.py "$base_ref" HEAD' "$BUILD_BUDDY" | head -1 | cut -d: -f1)
+ratchet_ln=$(grep -n 'ratchets.sh "$base_ref" HEAD' "$BUILD_BUDDY" | head -1 | cut -d: -f1)
 reachability_ln=$(grep -n 'test_source_reachability.py' "$BUILD_BUDDY" | head -1 | cut -d: -f1)
-affected_ln=$(grep -n 'affected-targets.sh "$base_ref" HEAD' "$BUILD_BUDDY" | head -1 | cut -d: -f1)
+affected_ln=$(grep -n 'local-affected-test.sh "$base_ref"' "$BUILD_BUDDY" | head -1 | cut -d: -f1)
 if [[ -n "$ratchet_ln" && -n "$affected_ln" && "$ratchet_ln" -lt "$affected_ln" ]] &&
 	grep -q 'git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}"' "$BUILD_BUDDY" &&
 	grep -q 'git merge-base "$base_ref" HEAD' "$BUILD_BUDDY"; then
@@ -281,12 +281,13 @@ STUB_BIN="$TMP/ci-stub-bin"
 mkdir -p "$FAKE_ROOT" "$STUB_BIN"
 mkdir -p "$FAKE_ROOT/bazel/tools/ci"
 cp "$LOCAL_AFFECTED_TEST" "$FAKE_ROOT/bazel/tools/ci/local-affected-test.sh"
+cp "${CI%/*}/ratchets.sh" "${CI%/*}/runner-resources.env" "$FAKE_ROOT/bazel/tools/ci/"
 
 # Execute the workflow's pre-query image-index preparation against a fake
 # generator. The read-only heads must never regenerate indexes, and a normal
 # PR must reach it before the first Bazel graph query.
 index_prepare="$(awk '
-    $0 == "          # Regenerate image indexes before any Bazel query analyzes them. A" { in_prepare = 1 }
+    $0 == "          # Regenerate image indexes before any Bazel query analyzes them." { in_prepare = 1 }
     in_prepare && $0 ~ /# ---- 1b\. tracked Python test reachability/ { exit }
     in_prepare { sub(/^          /, ""); print }
 ' "$BUILD_BUDDY")"
@@ -320,6 +321,8 @@ for scenario in pr main queue bot push unnamed; do
 		unnamed) GIT_BRANCH= ;;
 		esac
 		git() { printf '%s\n' "$TEST_INDEX_AUTHOR"; }
+		# Graph generation is exercised separately with a real fixture below.
+		prepare_go_build_graph() { :; }
 		eval "$index_prepare"
 		if [[ "$scenario" == pr ]]; then
 			[[ -f generated ]]
@@ -514,6 +517,8 @@ run_guard_case() {
 	local output="$TMP/$name.out" got_status=0
 	local guard_log="$TMP/$name.guards" base_log="$TMP/$name.base"
 	local bb_log="$TMP/$name.bb.log"
+	local -a command_args=()
+	[[ -z "${8:-}" ]] || command_args+=("$8")
 	: >"$guard_log"
 	: >"$base_log"
 	if (cd "$FAKE_ROOT" && XDG_CACHE_HOME="$TMP/$name-cache" \
@@ -522,7 +527,7 @@ run_guard_case() {
 		GUARD_LOG="$guard_log" MERGE_BASE_LOG="$base_log" \
 		FAIL_GUARD="$failed_guard" FAIL_MERGE_BASE="$fail_base" \
 		BB_FIXTURE="$TMP/green_run" BB_STATUS=0 BB_LOG="$bb_log" \
-		"$CI" >"$output" 2>&1); then
+		"$CI" "${command_args[@]}" >"$output" 2>&1); then
 		got_status=0
 	else
 		got_status=$?
@@ -567,6 +572,7 @@ for guard in verification_genrule_guard.py central_build_ratchet.py chart_versio
 	done
 done
 run_guard_case guards_default_base "" 0 "" 0 0 "$guard_calls"
+run_guard_case explicit_ratchet "" 1 "" 0 0 "$guard_calls" ratchet
 run_guard_case guards_custom_base origin/release 0 "" 0 0 "$guard_calls"
 run_guard_case guards_skip_remote "" 1 "" 0 0 "$guard_calls"
 run_guard_case guards_missing_base origin/missing 0 "" 1 1 ""
@@ -603,6 +609,41 @@ run_behavioral_case() {
 }
 
 run_behavioral_case "green_run_passes" "$TMP/green_run" 0 0
+# Compare sourced constants, emitted bb arguments and static YAML independently.
+source "${CI%/*}/runner-resources.env"
+if [[ "$resource_requests" == "cpu=$CI_RUNNER_CPU"$'\n'"memory=$CI_RUNNER_MEMORY"$'\n'"disk=$CI_RUNNER_DISK" ]] &&
+	check_resource_parity "$TMP/green_run_passes.bb.log"; then
+	pass "buildbuddy_resource_parity_runtime"
+else
+	fail "buildbuddy_resource_parity_runtime" "sourced values, YAML and emitted bb arguments must agree"
+fi
+sed 's/EstimatedCPU=8/EstimatedCPU=6/' "$TMP/green_run_passes.bb.log" >"$TMP/wrong-resources"
+if check_resource_parity "$TMP/wrong-resources" >"$TMP/wrong-resources.out" 2>&1; then
+	fail "resource_mismatch_control" "mismatch passed"
+elif grep -qF 'EstimatedCPU=6' "$TMP/wrong-resources.out"; then
+	pass "resource_mismatch_control"
+else
+	fail "resource_mismatch_control" "missing specific diagnostic"
+fi
+sed 's/EstimatedCPU=/EstimatedCPUs=/' "$TMP/green_run_passes.bb.log" >"$TMP/typo-resources"
+if check_resource_parity "$TMP/typo-resources" >"$TMP/typo-resources.out" 2>&1; then
+	fail "resource_typo_control" "unknown property passed"
+elif grep -qF 'does not recognise' "$TMP/typo-resources.out" &&
+	grep -qF 'passes no EstimatedCPU' "$TMP/typo-resources.out"; then
+	pass "resource_typo_control"
+else
+	fail "resource_typo_control" "missing unknown-property or missing-property diagnostic"
+fi
+saved_requests="$resource_requests"
+resource_requests+=$'\n'"accelerators=1"
+if check_resource_parity "$TMP/green_run_passes.bb.log" >"$TMP/unknown-resource.out" 2>&1; then
+	fail "unknown_yaml_resource_control" "unmapped YAML key passed"
+elif grep -qF "key 'accelerators'" "$TMP/unknown-resource.out"; then
+	pass "unknown_yaml_resource_control"
+else
+	fail "unknown_yaml_resource_control" "missing unmapped-key diagnostic"
+fi
+resource_requests="$saved_requests"
 run_behavioral_case "singular_green_passes" "$TMP/singular_green_run" 0 0
 run_behavioral_case "no_affected_targets_passes" "$TMP/no_affected_targets" 0 0
 run_behavioral_case "action_failed_caught" "$TMP/action_failed" 0 1
@@ -642,6 +683,12 @@ if grep -qxF -- "--env=CI_BASE_REF=origin/main" "$TMP/green_run_passes.bb.log" &
 	pass "default_uses_affected_runner"
 else
 	fail "default_uses_affected_runner" "args=$(tr '\n' ' ' <"$TMP/green_run_passes.bb.log")"
+fi
+if [[ "$(sed -n '/^--script=/,$p' "$TMP/green_run_passes.bb.log")" == "--script=$(cat "$LOCAL_AFFECTED_TEST")" ]] &&
+	grep -qxF -- '--runner_exec_properties=include-secrets=true' "$TMP/green_run_passes.bb.log"; then
+	pass "exact_shared_script_and_secret_scope"
+else
+	fail "exact_shared_script_and_secret_scope" "embedded script or secret access changed"
 fi
 
 explicit_output="$TMP/explicit_target.out"

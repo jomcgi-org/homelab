@@ -6,12 +6,13 @@
 #   2. regen    selective generators, Helm dependency sync and migration checks
 #               (BUILD generation is CI-only)
 #   3. ratchet  verification tags, central BUILD entries, chart versions, source patterns
-#   4. test     bb remote (Linux) affected Bazel tests with the PR Test flags
+#   4. test     bb remote (Linux) affected Bazel tests with the pr-checks flags
 #
 # Usage:
 #   ci              # lint + regen + ratchet + remote test
 #   ci lint         # format changed files only
 #   ci regen        # selective generators (gazelle itself runs only in CI)
+#   ci ratchet      # ordered repository guards against the resolved merge base
 #   ci test         # bb remote affected tests only
 #   ci test -- //path:target  # explicit target override, including //...
 #   ci --help
@@ -20,8 +21,8 @@
 #   CI_BASE_REF     git ref to diff against (default: origin/main)
 #   SKIP_REMOTE=1   skip the remote test step when running full `ci`
 #
-# Test flags are locked to buildbuddy.yaml "Test" for action-cache sharing.
-# Local and PR feedback use affected targets; the merge queue alone runs `//...`.
+# Test flags are locked to buildbuddy.yaml "pr-checks" for action-cache sharing.
+# Local and PR feedback use affected targets; queue and main run `//...`.
 #
 # Secrets: `ci test` passes include-secrets=true so the remote runner matches CI
 # (Docker Hub etc.). That widens org secrets from CI-only runners to any local
@@ -256,10 +257,7 @@ cmd_ratchet() {
 		return 1
 	fi
 	log "ratchet: checking verification tags, central BUILD entries, chart versions and source patterns"
-	python3 ./bazel/tools/ci/verification_genrule_guard.py .
-	python3 ./bazel/tools/ci/central_build_ratchet.py "$merge_base" HEAD
-	python3 ./bazel/tools/ci/chart_version_guard.py "$merge_base" HEAD
-	python3 ./bazel/tools/ci/source_ratchet.py "$merge_base" HEAD
+	./bazel/tools/ci/ratchets.sh "$merge_base" HEAD
 }
 
 # ---------- test (bb remote = Workflows backend, Linux) ----------
@@ -313,8 +311,9 @@ cmd_test() {
 	fi
 	dim "  (include-secrets=true: runner may receive org secrets; treat as CI)"
 
-	# Match the Test action's `resource_requests` in buildbuddy.yaml: disk 120GB,
-	# cpu 8, memory 10GB.
+	# Match pr-checks resource_requests; snapshot-key warning lives with values.
+	source "$ROOT/bazel/tools/ci/runner-resources.env"
+	: "${CI_RUNNER_DISK:?missing runner disk}" "${CI_RUNNER_CPU:?missing runner cpu}" "${CI_RUNNER_MEMORY:?missing runner memory}"
 	#
 	# Parity with CI was previously argv-only: targets, --config, --deleted_packages
 	# and --test_tag_filters all matched, but resource requests live in the YAML
@@ -332,7 +331,7 @@ cmd_test() {
 	# rather than on RBE and their concurrency is capped by its cores, not by
 	# --jobs. A default-sized runner therefore serialises the slowest part of a
 	# cold //... here while CI runs it 8-wide, which is the opposite of what "1:1
-	# with the Test action" claims.
+	# with the pr-checks action" claims.
 	#
 	# Memory is raised alongside deliberately, not for its own sake: 8 concurrent
 	# apko builds on a default memory allowance is how you trade a slow run for an
@@ -350,9 +349,9 @@ cmd_test() {
 	local esc=$'\x1b'
 	bb remote --os=linux --arch=amd64 \
 		--runner_exec_properties=include-secrets=true \
-		--runner_exec_properties=EstimatedFreeDiskBytes=120GB \
-		--runner_exec_properties=EstimatedCPU=8 \
-		--runner_exec_properties=EstimatedMemory=10GB \
+		--runner_exec_properties=EstimatedFreeDiskBytes="$CI_RUNNER_DISK" \
+		--runner_exec_properties=EstimatedCPU="$CI_RUNNER_CPU" \
+		--runner_exec_properties=EstimatedMemory="$CI_RUNNER_MEMORY" \
 		"${remote_args[@]}" 2>&1 | tee "$out" || bb_status=$?
 
 	# bb remote exits 0 when the remote ACTION fails, so require positive evidence
@@ -443,6 +442,10 @@ main() {
 		shift
 		cmd_regen "$@"
 		;;
+	ratchet)
+		shift
+		cmd_ratchet "$@"
+		;;
 	test)
 		shift
 		cmd_test "$@"
@@ -451,7 +454,7 @@ main() {
 		usage
 		;;
 	*)
-		err "unknown command: $cmd (try: ci | ci lint | ci regen | ci test)"
+		err "unknown command: $cmd (try: ci | ci lint | ci regen | ci ratchet | ci test)"
 		exit 2
 		;;
 	esac
