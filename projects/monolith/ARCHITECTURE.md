@@ -2121,7 +2121,7 @@ by trust in the guest.
 - `/app/trips`: geotagged trip and photo feed with a private ingest path and public cached reads. (see: /projects/monolith/trips/read_router.py)
 - `/app/stars`: astronomy forecasts and historical climatology heatmaps. (see: /projects/monolith/stars/router.py)
 - `/app/ships`: current and historical maritime tracks and heat cells. (see: /projects/monolith/ships/router.py)
-- `/app/wc2026`: cached dynamic tournament summary and odds data. (see: /projects/monolith/worldcup/router.py)
+- The World Cup page is retired (#6916); its stored-data routes under `worldcup/` remain until that lane removes the backend.
 - `/app/grimoire`: public knowledge graph, entity explorer, adventure index, and open-book reader with extracted illustrations. (see: /projects/monolith/grimoire/router_public.py)
 - `/app/notes`: public knowledge graph browsing, including note links from the factory context viewer. Notes chat is retired.
 - `/app/grimoire/chat`: Turnstile-gated Grimoire RAG chat. (see: /projects/monolith/grimoire_chat/router.py)
