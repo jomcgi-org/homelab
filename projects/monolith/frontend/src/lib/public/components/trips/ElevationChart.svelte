@@ -74,11 +74,11 @@
   .tick {
     position: absolute;
     right: 2px;
-    font-family: var(--mono);
+    font-family: var(--font-code);
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.04em;
-    color: var(--ink-3);
+    color: var(--ink-2);
     pointer-events: none;
   }
   .tick.top {
