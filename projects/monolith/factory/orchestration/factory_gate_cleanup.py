@@ -5,11 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import subprocess
 from pathlib import Path
 
-from factory.orchestration.factory_gate_blocks import blocks, rewrite
+from factory.orchestration.factory_gate_blocks import blocks, rewrite, unowned_rescopes
 
 REPO = "jomcgi-org/homelab"
 
@@ -69,14 +68,7 @@ def cleanup(issues, api, emit, *, apply=False, audit=False):
                 found = blocks(before)
                 # Unmarked rescope lines could be manual or malformed. Report
                 # them for inspection; they cannot become a passing audit.
-                unowned = [
-                    match.start()
-                    for match in re.finditer(r"(?m)^Conductor rescope:", before)
-                    if not any(
-                        block.start <= match.start() < block.end for block in found
-                    )
-                ]
-                if unowned:
+                if unowned_rescopes(before, found):
                     raise ValueError("unowned rescope lines require manual inspection")
                 duplicates += len(found) > 1
                 if audit or len(found) < 2:

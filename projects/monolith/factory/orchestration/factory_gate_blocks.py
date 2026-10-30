@@ -49,6 +49,31 @@ def _contract(lines: list[str]) -> bool:
     )
 
 
+def _visible_body(body: str) -> str:
+    # Inline marker examples are ordinary prose. Mask fenced examples while
+    # retaining offsets, so the issue describing this fix can itself migrate.
+    visible = []
+    fence = None
+    for line in body.splitlines(keepends=True):
+        delimiter = re.fullmatch(r" {0,3}(`{3,}|~{3,})([^\n]*)\n?", line)
+        was_fenced = fence is not None
+        if delimiter:
+            run, rest = delimiter.groups()
+            if fence is None:
+                fence = run
+            elif run[0] == fence[0] and len(run) >= len(fence) and not rest.strip():
+                fence = None
+        visible.append(re.sub(r"[^\n]", " ", line) if was_fenced or fence else line)
+    return "".join(visible)
+
+
+def unowned_rescopes(body: str, found: list[Block]) -> bool:
+    return any(
+        not any(block.start <= match.start() < block.end for block in found)
+        for match in re.finditer(r"(?m)^Conductor rescope:", _visible_body(body))
+    )
+
+
 def blocks(body: str) -> list[Block]:
     """Reject unknown marker content; never infer a legacy block past its list.
 
@@ -56,16 +81,10 @@ def blocks(body: str) -> list[Block]:
     block is therefore the newest, including when a later receipt owns it.
     Blank-line-separated prose and manual lists are outside legacy boundaries.
     """
-    markers = list(_MARKER.finditer(body))
-    if len(markers) != body.count("<!-- factory-gate:") + body.count(
-        "<!-- /factory-gate:"
-    ):
+    masked = _visible_body(body)
+    markers = list(_MARKER.finditer(masked))
+    if len(markers) != len(re.findall(r"(?m)^[ \t]*<!-- /?factory-gate:", masked)):
         raise ValueError("malformed gate marker")
-    # Examples inside fenced code are not safe replacement candidates.
-    for marker in markers:
-        prefix = body[: marker.start()]
-        if len(re.findall(r"(?m)^\s*(?:```|~~~)", prefix)) % 2:
-            raise ValueError("gate marker inside fenced text")
     result = []
     index = 0
     while index < len(markers):

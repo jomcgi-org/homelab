@@ -12,8 +12,9 @@ Historical writers appended contracts in body order, so cleanup retains the
 last generated block, including when its task differs from earlier blocks.
 Legacy recognition requires the exact generated rescope suffix followed by
 contiguous unchecked single-line checklist items. Blank-line-separated human
-prose and manual lists remain byte-for-byte unchanged. Malformed, nested,
-mismatched, fenced or unknown marker content is an error. Ambiguous legacy
+prose and manual lists remain byte-for-byte unchanged. Inline and fenced marker
+examples are preserved. Malformed, nested, mismatched or unknown generated
+marker content is an error. Ambiguous legacy
 content requires manual inspection; never extend a boundary to consume prose.
 A manual checklist immediately adjoining an old generated checklist has no
 recoverable boundary. Separate it using reviewed before/after evidence before
