@@ -290,6 +290,8 @@ js_library(
         "test/sheet-fixtures.js",
         "test/profile-page.svelte.js",
         "test/profile-stores.js",
+        "test/ships-fixtures.js",
+        "test/ships-map-double.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
         # rationale: lives outside src/ so it never reaches the app bundle.
         "test/env-dynamic-private-stub.js",

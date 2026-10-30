@@ -3,6 +3,7 @@
   import { setPage } from "../test/profile-page.svelte.js";
   import { reroute } from "../src/hooks.js";
   import { stats } from "./fixtures.js";
+  import { snapshot } from "../test/ships-fixtures.js";
 
   let surface = $state("home");
   let data = $state({});
@@ -13,11 +14,13 @@
         "/public/": "home",
         "/public/cv": "cv",
         "/public/engineering": "engineering",
+        "/public/app/ships": "ships",
         "/public/ember": "ember",
         "/public/legacy-fixture": "legacy",
       }[routed] ?? "error";
     data = {
       stats: url.searchParams.has("empty") ? null : stats,
+      snapshot: url.searchParams.has("empty") ? { vessels: [] } : snapshot,
       hasBlog: true,
       maintenanceBanner: url.searchParams.has("banner")
         ? "Synthetic maintenance notice"
@@ -48,9 +51,14 @@
     if (
       next.origin !== location.origin ||
       next.hash ||
-      !["/", "/cv", "/engineering", "/ember", "/legacy-fixture"].includes(
-        next.pathname,
-      )
+      ![
+        "/",
+        "/cv",
+        "/engineering",
+        "/ember",
+        "/legacy-fixture",
+        "/app/ships",
+      ].includes(next.pathname)
     )
       return;
     event.preventDefault();
@@ -64,11 +72,18 @@
   onclick={click}
   onpopstate={() => navigate(new URL(location.href))}
 />
-<div class="fixture-note">
-  Synthetic repository preview, invented stats. No live acceptance.
+<div class="fixture-note" class:ships-note={surface === "ships"}>
+  Synthetic repository preview, invented {surface === "ships"
+    ? "AIS"
+    : "stats"}. No live acceptance.
 </div>
 <Route {surface} {data} />
-<nav class="fixture-links" aria-label="Fixture routes">
+<nav
+  class="fixture-links"
+  class:ships-links={surface === "ships"}
+  aria-label="Fixture routes"
+>
+  <a href="/app/ships">Ships fixture</a>
   <a href="/">Home fixture</a><a href="/cv">CV fixture</a><a href="/engineering"
     >Engineering fixture</a
   ><a href="/ember">Legacy Ember fixture</a><a href="/legacy-fixture"
@@ -77,6 +92,17 @@
 </nav>
 
 <style>
+  .ships-note {
+    position: fixed;
+    top: 75px;
+    left: 12px;
+    z-index: 1;
+    max-width: 175px;
+    pointer-events: none;
+  }
+  .ships-links {
+    display: none !important;
+  }
   .fixture-note,
   .fixture-links {
     padding: 0.4rem 1rem;
