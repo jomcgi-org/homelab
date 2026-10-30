@@ -8,7 +8,7 @@ from core.jsonio import dumps
 from sqlalchemy import inspect, text
 from sqlmodel import select
 
-from factory.execution import admission, offered_models, provider_quota
+from factory.execution import admission
 from factory.execution.models import (
     AgentCapacityReservation,
     AgentSession,
@@ -17,7 +17,7 @@ from factory.execution.models import (
 from factory.execution.review_leases import digest
 from factory.orchestration import backlog_refill as refill
 from factory.orchestration import factory_controls as controls
-from factory.orchestration import learning, model_pool
+from factory.orchestration import learning
 from factory.orchestration.backlog_refill_policy import normalize
 from factory.orchestration.factory_models import FactoryAudit
 
@@ -133,36 +133,14 @@ def status(db, control):
 
 
 def _quota(model):
-    if model not in {"astra", "opus"} or model not in offered_models():
-        raise ValueError("refill_model_unavailable")
-    raw = provider_quota.fetch_provider_quota_sync(force=True)
-    quota = provider_quota.summarise(raw.get("providers", {}))
-    provider = model_pool.QUOTA_PROVIDERS.get(model_pool.family_for(model))
-    view = quota.get(provider, {})
-    if (
-        raw.get("available") is not True
-        or model_pool.grant_observation_state(view) != "fresh"
-        or not view.get("windows")
-        or any(
-            not w.get("usable") or w.get("used_percent", 100) >= 100
-            for w in view["windows"]
-        )
-    ):
-        raise ValueError("refill_subscription_unavailable")
-    if not model_pool.availability(model, quota, "worker")[0]:
-        raise ValueError("refill_subscription_unavailable")
-    return {
-        "provider": provider,
-        "observation": view,
-        "checked_at": controls._now().isoformat(),
-    }
+    return refill.quota(model)
 
 
 def _observations(enabled, model, hourly):
     observations = {}
     if enabled:
         observations[model] = _quota(model)
-    if hourly and "astra" not in observations:
+    if (enabled or hourly) and "astra" not in observations:
         # The existing Luna evidence job and Astra evaluation use Codex capacity.
         observations["astra"] = _quota("astra")
     return observations
@@ -188,9 +166,11 @@ def _plan(db, control, enabled, model, hourly, expected_version, reason, quota):
             or policy.get("repo") not in controls.enabled_repos(policy)
         ):
             raise ValueError("refill_intake_not_enabled")
-        if model not in policy.get("allowed_models", []):
+        if not {model, "astra"} <= set(policy.get("allowed_models", [])):
             raise ValueError("refill_model_not_allowed")
-    for required in ({model} if enabled else set()) | ({"astra"} if hourly else set()):
+    for required in ({model, "astra"} if enabled else set()) | (
+        {"astra"} if hourly else set()
+    ):
         if required not in quota or controls._now() - aware(
             datetime.fromisoformat(quota[required]["checked_at"])
         ) > timedelta(seconds=30):
@@ -278,6 +258,7 @@ def _plan(db, control, enabled, model, hourly, expected_version, reason, quota):
         "reason": controls._text(reason, "reason"),
         "generation": policy.get("generation"),
         "preserves_breaker_history": True,
+        "new_run_review_contract": refill.REVIEW_CONTRACT if enabled else None,
     }
     proposal["preview_sha256"] = digest(proposal)
     return proposal, job

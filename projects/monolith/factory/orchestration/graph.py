@@ -1363,7 +1363,22 @@ def admit_dispatch(
             or len(dispatch_key) > 256
         ):
             return refuse("invalid_dispatch_key")
-        if not isinstance(context, dict) or set(context) - _CONTEXT_FIELDS:
+        context_fields = _CONTEXT_FIELDS
+        if isinstance(context, dict) and "read_only" in context:
+            from factory.orchestration import backlog_refill
+
+            # Only the fixed refill roles with their server-authored schema
+            # enter here. Other read-only callers retain their existing fence.
+            if (
+                node_key not in backlog_refill.NODES
+                or context["read_only"] is not True
+                or not isinstance(context.get("artifact_schema"), dict)
+                or context.get("artifact_schema")
+                != backlog_refill.dispatch_schema(task_id, node_key, session=db)
+            ):
+                return refuse("invalid_execution_context")
+            context_fields = context_fields | {"read_only"}
+        if not isinstance(context, dict) or set(context) - context_fields:
             return refuse("invalid_execution_context")
         try:
             context = json.loads(dumps(context))
@@ -1382,7 +1397,7 @@ def admit_dispatch(
                     or {
                         key: value
                         for key, value in pin.items()
-                        if key in _CONTEXT_FIELDS
+                        if key in context_fields or key == "read_only"
                     }
                     != context
                 ):

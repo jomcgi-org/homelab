@@ -65,11 +65,13 @@ def _register_all_tools() -> int:
 # register_mcp bodies are side-effect imports (factory/module.py registers
 # factory.execution.mcp AND factory.orchestration.mcp), so dropping one line
 # would take a whole domain out of this test's field of view while leaving
-# the count non-zero and the run green. These four span four separate
+# the count non-zero and the run green. These sentinels span four separate
 # register_mcp bodies, including the orchestration module that carried the
 # semicolons this test was wired up for.
 SENTINEL_TOOLS = {
     "factory_control",
+    "factory_configure_refill",
+    "factory_amend_policy",
     "k8s_list_resources",
     "monolith_agent_notify",
     "search_knowledge",
