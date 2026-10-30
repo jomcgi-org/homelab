@@ -153,6 +153,19 @@ def test_candidate_audit_one_per_identity_per_actual_sweep(db, monkeypatch):
     assert len(candidate_evidence(db)) == 4
 
 
+def test_observation_only_cannot_start_optional_refill(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    refill_calls = []
+    monkeypatch.setattr(
+        intake_loop, "_refill_observation", lambda *args: refill_calls.append(args)
+    )
+    assert intake_loop.intake_tick(policy(), generation=0, observe_only=True) == []
+    assert refill_calls == []
+    assert candidate_evidence(db)[0]["reason"] == "capacity"
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).all() == []
+
+
 def test_candidate_blocker_uses_github_issue_identity(db, monkeypatch):
     fake_pages(
         monkeypatch,

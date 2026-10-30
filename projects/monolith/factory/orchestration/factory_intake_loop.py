@@ -1148,7 +1148,7 @@ def intake_tick(
                     **({"truncated": True} if truncated else {}),
                 }
             )
-            if listing_due:
+            if listing_due and not observe_only:
                 _refill_observation(
                     policy,
                     eligible,
@@ -1340,7 +1340,7 @@ def intake_tick(
                     ),
                 }
             )
-        if listing_due:
+        if listing_due and not observe_only:
             _refill_observation(
                 policy,
                 eligible,
