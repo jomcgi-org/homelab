@@ -558,7 +558,7 @@ def tick(policy):
                 delivery,
                 "breaker:" + entry["opening"],
                 "Factory rollback breaker opened",
-                "Two automatic rollback reservations occurred in the rolling hour. "
+                "The configured rolling-hour automatic rollback limit was reached. "
                 "Further automatic reversals are blocked.\n\n"
                 + recovery_prompt(delivery),
                 ["needs-human"],

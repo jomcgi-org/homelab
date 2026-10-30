@@ -124,6 +124,52 @@ def enable(policy):
     assert controls.set_control("enable", "operator")["ok"]
 
 
+@pytest.mark.parametrize("held", [False, True])
+def test_rollback_receipt_uses_normal_admission_and_parent_fence(db, policy, held):
+    enable(policy)
+    issue(1)
+    parent_id = admit_next("scheduler")["task_id"]
+    child = issue(2)["receipt"]["id"]
+    key = "c" * 64
+    with Session(db) as session:
+        parent = controls._receipt(session, parent_id)
+        parent.state = "landing"  # Recovery starts after the source delivery merged.
+        parent.task_paused = held
+        recovery = session.get(FactoryReceipt, child)
+        recovery.direction_json = json.dumps(
+            {"rollback_parent_task_id": parent_id, "rollback_delivery_key": key}
+        )
+        controls._audit(
+            session,
+            "factory:rollback",
+            "rollback_receipt",
+            task_id=parent_id,
+            delivery_key=key,
+            receipt_id=child,
+        )
+        controls._audit(
+            session,
+            "factory:rollback",
+            "rollback_pr_started",
+            task_id=parent_id,
+            delivery_key=key,
+        )
+        session.commit()
+    result = admit_next("scheduler")
+    if held:
+        assert result["reason"] == "rollback_recovery_held"
+        with Session(db) as session:
+            assert session.get(FactoryReceipt, child).state == "queued"
+    else:
+        assert result["task_id"] == "rollback-" + key[:32]
+        with Session(db) as session:
+            controls._receipt(session, parent_id).task_paused = True
+            session.commit()
+            assert controls._can_start(
+                session, session.get(FactoryControl, "factory"), result["task_id"]
+            ) == {"ok": False, "reason": "rollback_parent_held"}
+
+
 @pytest.mark.parametrize("identity", ["canonical", "alias", "legacy"])
 @pytest.mark.parametrize("history", ["cancelled", "held", "failed_refinement"])
 def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_others(

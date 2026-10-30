@@ -1063,3 +1063,24 @@ def test_named_synthetic_requires_exact_revision(engine):
     assert result["signal"] == "synthetic:demo.ready"
     assert _rollback_synthetic("other", d) is None
     assert _rollback_synthetic("demo.ready", {**d, "revision": "1.2.4"}) is None
+
+
+def test_landing_caller_enforces_source_hold_on_recovery(engine, runtime, monkeypatch):
+    r, _issues, _writes, pulls = runtime
+    source = delivery()
+    child = delivery(2)
+    seed(engine, source)
+    seed(engine, child)
+    with controls._locked_session() as (db, _control):
+        controls._receipt(db, source["task_id"]).task_paused = True
+        controls._receipt(db, child["task_id"]).direction_json = json.dumps(
+            {"rollback_parent_task_id": source["task_id"]}
+        )
+    pulls.append({"number": child["pr_number"], "merged": False, "node_id": "node"})
+    monkeypatch.setattr(r.landing, "_queued_ids", lambda _ids: set())
+    refusals = []
+    monkeypatch.setattr(
+        r.landing, "_refuse", lambda _item, reason: refusals.append(reason)
+    )
+    assert r.landing._enforce_landing_hold(child["repo"], child)
+    assert refusals == ["receipt_landing_held"]
