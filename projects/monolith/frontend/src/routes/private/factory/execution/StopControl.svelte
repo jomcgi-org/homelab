@@ -76,7 +76,7 @@
     min-height: 30px;
     padding: 0 12px;
     border: 1px solid var(--err-line);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--err);
     background: transparent;
     font: 600 12px var(--font-ui);

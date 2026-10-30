@@ -347,7 +347,7 @@
   }
   .box {
     border: 1px solid var(--line-strong);
-    border-radius: 6px;
+    border-radius: 0;
     background: var(--panel-bg);
   }
   .box:focus-within {
@@ -394,7 +394,7 @@
     padding: 0 24px 0 7px;
     appearance: none;
     border: 0;
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--text-soft);
     background: transparent;
     font: 12px var(--font-mono);
@@ -437,7 +437,7 @@
     justify-content: center;
     padding: 0;
     border: 1px solid var(--ink);
-    border-radius: 4px;
+    border-radius: 0;
     color: var(--ink-text);
     background: var(--ink);
   }
@@ -462,7 +462,7 @@
     margin: -12px 0;
     padding: 4px 12px;
     overflow: hidden;
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--muted);
     font-size: 12px;
     line-height: 1.2;
@@ -512,7 +512,7 @@
     gap: 12px;
     padding: 8px 12px;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: 0;
     color: inherit;
     background: transparent;
     text-align: left;
@@ -525,7 +525,7 @@
     width: 8px;
     height: 8px;
     flex: 0 0 8px;
-    border-radius: var(--radius-circle);
+    border-radius: 0;
     background: var(--dot-idle);
   }
   .dot.running,
@@ -550,7 +550,7 @@
     width: 7px;
     height: 7px;
     flex: 0 0 7px;
-    border-radius: 2px;
+    border-radius: 0;
     background: currentColor;
   }
   .shape-node.gate {
@@ -597,7 +597,7 @@
     margin-top: 10px;
     padding: 0 12px;
     border: 0;
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--muted);
     background: transparent;
     font-size: 12px;

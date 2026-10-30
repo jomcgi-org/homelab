@@ -100,7 +100,7 @@
     gap: 8px;
     padding: 0 12px;
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--text);
     background: var(--panel-bg);
     font: 500 13px var(--font-ui);
