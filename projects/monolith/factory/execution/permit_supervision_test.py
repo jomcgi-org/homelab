@@ -1,13 +1,14 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
 import json
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from factory.execution import admission, permit_supervision as supervision
+from factory.execution import admission
+from factory.execution import permit_supervision as supervision
 from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.models import (
     AgentCapacityPool,
@@ -1846,6 +1847,7 @@ def test_never_invoked_settlement_requires_the_exact_idle_guest(never_invoked, c
 
 def test_permit_diagnostics_are_select_only_and_redacted(database):
     from sqlalchemy import event
+
     from factory.execution.admission_diagnostics import inspect_permits
 
     permit_id = seed(database, tier="kg", job_held=True)
@@ -1986,6 +1988,7 @@ def test_permit_diagnostics_reject_unbounded_or_ambiguous_requests(ids):
 
 def test_routine_permit_lookup_is_exact_bounded_and_select_only(database):
     from sqlalchemy import event
+
     from factory.execution.admission_diagnostics import find_routine_permits
 
     first = seed(
@@ -2096,7 +2099,7 @@ def test_diagnostics_preserve_supervisor_evidence_after_settlement(
             text("CREATE TABLE workflow_status (workflow_uuid TEXT, status TEXT)")
         )
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     pid = seed(
         database,
         tier="kg",
@@ -2210,7 +2213,7 @@ def test_recorded_cessation_diagnostics_reject_malformed_fields(database, raw):
                 permit_id=pid,
                 identity_sha256="not-a-hash",
                 evidence_json=raw,
-                checked_at=datetime.now(timezone.utc),
+                checked_at=datetime.now(UTC),
             )
         )
     with Session(database) as db:
@@ -2221,6 +2224,7 @@ def test_recorded_cessation_diagnostics_reject_malformed_fields(database, raw):
 
 def test_session_dispatch_diagnostics_without_turn_or_permit(database):
     from sqlalchemy import event
+
     from factory.execution.admission_diagnostics import inspect_session_turn
 
     now = datetime.now(timezone.utc)
@@ -2340,9 +2344,10 @@ def test_raw_diagnostics_reject_nonexact_job_before_read(name):
 
 
 def test_raw_diagnostics_bounded_select_only_and_redacted(database):
-    from sqlalchemy import event
-    from factory.execution.admission_diagnostics import inspect_raw_extraction
     from knowledge.api import EXTRACTION_VERSION
+    from sqlalchemy import event
+
+    from factory.execution.admission_diagnostics import inspect_raw_extraction
 
     raw_id = "a" * 64
     permit_id = seed(database, tier="kg", job_held=True)
