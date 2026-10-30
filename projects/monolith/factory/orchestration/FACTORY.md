@@ -3534,6 +3534,14 @@ means "doubts it". The deterministic short-circuits (a refusal three times,
 a node re-added and failing again, identical failures, three implementation
 attempts without a commit) are that doubt on their face and still page.
 
+The card offers Resume, Stop and Rescope on the receipt, the issue and Discord.
+A watchdog pause holds until a person answers the card or uses `resume_task`;
+the reconciler's pause expiry does not cancel it. A `progressing` verdict records
+an audit row and re-arms at the next step. A new commit or pull request when no
+watchdog decision is open, or a successful resume, clears the watchdog and
+re-arms a full `progress_watchdog.threshold_turns` step from the current settled
+turn count. A delivery does not release an open watchdog pause.
+
 **Why.** Muse Spark always reasons, and reasoning counts against `max_tokens`.
 At the earlier 512-token cap both assessments on 2026-10-01 (#6529, #6530)
 spent 509 of their 512 tokens reasoning and returned no verdict, so every

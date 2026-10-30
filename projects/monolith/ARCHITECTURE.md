@@ -1517,10 +1517,10 @@ and externally observed merges. See [live-check handoff](factory/orchestration/F
 
 ### Control loops that gate work
 
-A factory control loop that can demote, pause or reroute work ships only with a
-independently reviewed bound recorded here first: what it measures, the threshold, how
-it recovers, and the longest it may hold a class or lane restricted before it
-escalates to a person instead.
+A factory control loop that can demote, pause or reroute work ships only with an
+independently reviewed bound recorded in [FACTORY.md](factory/orchestration/FACTORY.md)
+and linked here first: what it measures, the threshold, how it recovers, and the
+longest it may hold a class or lane restricted before it escalates to a person.
 
 Use `AGENTS.md` "Merge authority" to land changes within established goals and
 policies. A new policy decision or exception to an existing bound needs Joe's
