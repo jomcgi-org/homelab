@@ -18,6 +18,7 @@
         "/public/ember": "ember",
         "/public/ember/bazel": "bazel-fallback",
         "/public/ember/postgres": "postgres-fallback",
+        "/public/ember/firecracker": "firecracker",
         "/public/legacy-fixture": "legacy",
       }[routed] ?? "error";
     data = {
@@ -62,6 +63,7 @@
         "/ember/postgres",
         "/legacy-fixture",
         "/app/ships",
+        "/ember/firecracker",
       ].includes(next.pathname)
     )
       return;
@@ -98,7 +100,7 @@
     >Bazel fallback fixture</a
   ><a href="/ember/postgres">Postgres fallback fixture</a><a
     href="/legacy-fixture">Legacy Nav fixture</a
-  >
+  ><a href="/ember/firecracker">Firecracker fixture</a>
 </nav>
 
 <style>
