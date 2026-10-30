@@ -50,9 +50,7 @@ def render(enabled):
         if d["kind"] == "ConfigMap"
         and d["metadata"]["name"] == "authentik-mcp-blueprints"
     )
-    items = {
-        d["metadata"]["name"] for d in documents if d["kind"] == "OnePasswordItem"
-    }
+    items = {d["metadata"]["name"] for d in documents if d["kind"] == "OnePasswordItem"}
     return blueprints, items
 
 
@@ -95,7 +93,9 @@ def test_enabled_changes_only_grimoire_and_resolves_in_creation_order():
     expected = yaml.load(before["grimoire-auth.yaml"], Loader=Loader)
     expected["entries"][:0] = fragment()
     provider = next(
-        e for e in expected["entries"] if e.get("identifiers", {}).get("name") == "grimoire"
+        e
+        for e in expected["entries"]
+        if e.get("identifiers", {}).get("name") == "grimoire"
     )
     provider["attrs"]["authentication_flow"] = KeyReference("discord-authentication")
     parsed = yaml.load(after["grimoire-auth.yaml"], Loader=Loader)
@@ -103,7 +103,10 @@ def test_enabled_changes_only_grimoire_and_resolves_in_creation_order():
 
     created = set()
     for entry in parsed["entries"]:
-        assert references(entry) <= created, (entry.get("id"), references(entry) - created)
+        assert references(entry) <= created, (
+            entry.get("id"),
+            references(entry) - created,
+        )
         if entry.get("id"):
             created.add(entry["id"])
 
@@ -159,7 +162,12 @@ def run_gate(monkeypatch):
     return run, existing
 
 
-VERIFIED = {"id": "1234", "username": "rowan", "email": "Rowan@example.test", "verified": True}
+VERIFIED = {
+    "id": "1234",
+    "username": "rowan",
+    "email": "Rowan@example.test",
+    "verified": True,
+}
 
 
 def test_gate_accepts_verified_discord_identity(run_gate):
@@ -191,7 +199,8 @@ def test_gate_never_claims_an_existing_email(run_gate):
 def mapping(info):
     context = {"info": info}
     exec(  # noqa: S102 - reviewed local blueprint mapping under test
-        "def props():\n" + textwrap.indent(expression("oauthsourcepropertymapping"), "    "),
+        "def props():\n"
+        + textwrap.indent(expression("oauthsourcepropertymapping"), "    "),
         context,
     )
     return context["props"]()
