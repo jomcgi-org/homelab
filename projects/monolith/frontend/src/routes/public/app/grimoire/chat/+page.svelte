@@ -309,8 +309,8 @@
 <h1 class="sr-only">Ask the Grimoire</h1>
 
 <div class="chat-page">
-  <section class="chat-box">
-    <div class="panel-head">
+  <section class="chat-box edition">
+    <div class="panel-head ed-head">
       <span class="panel-tag">ASK THE GRIMOIRE</span>
       <span class="session" class:on={admitted}>
         <span class="led" class:on={admitted}></span>
@@ -531,16 +531,16 @@
     display: flex;
     padding: 20px 28px;
     font-family: var(--sans);
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .chat-box {
     flex: 1;
     min-height: 0;
     width: 100%;
-    border: 1px solid var(--grim-line);
-    border-radius: 10px;
-    background: var(--grim-surface);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -552,37 +552,37 @@
     align-items: center;
     gap: 12px;
     padding: 12px 18px;
-    background: var(--grim-surface);
-    border-bottom: 1px solid var(--grim-line);
+    background: var(--sheet);
+    border-bottom: 1px solid var(--stroke);
   }
   .panel-tag {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.14em;
     padding: 4px 10px;
-    border-radius: 4px;
-    background: var(--grim-accent);
-    color: var(--grim-on-accent);
+    border-radius: 0;
+    background: var(--accent-ink);
+    color: var(--sheet);
   }
   .session {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.12em;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
   .session.on {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
   .led {
     width: 8px;
     height: 8px;
-    border-radius: 999px;
-    border: 1.5px solid var(--grim-line);
+    border-radius: 0;
+    border: 1px solid var(--stroke);
     background: var(--grim-type-creature);
     display: inline-block;
     flex-shrink: 0;
@@ -595,11 +595,9 @@
   @keyframes led-pulse {
     0%,
     100% {
-      box-shadow: 0 0 0 0 var(--grim-type-location);
       opacity: 1;
     }
     50% {
-      box-shadow: 0 0 0 3px transparent;
       opacity: 0.55;
     }
   }
@@ -607,41 +605,41 @@
     flex: 1;
   }
   .bar-btn {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.1em;
     padding: 6px 12px;
-    border: 1px solid var(--grim-line);
-    border-radius: 6px;
-    background: var(--grim-surface);
-    color: var(--grim-ink);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
+    color: var(--ink);
     cursor: pointer;
     transition:
       background 120ms ease,
       border-color 120ms ease;
   }
   .bar-btn:hover {
-    background: var(--grim-accent-soft);
-    border-color: var(--grim-accent);
+    background: var(--band);
+    border-color: var(--accent-ink);
   }
   .bar-btn:disabled {
     cursor: default;
     opacity: 0.6;
   }
   .bar-btn:disabled:hover {
-    background: var(--grim-surface);
-    border-color: var(--grim-line);
+    background: var(--sheet);
+    border-color: var(--stroke);
   }
   .share-feedback {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.08em;
-    color: var(--grim-ink);
-    background: var(--grim-accent-soft);
-    border: 1px solid var(--grim-accent);
-    border-radius: 4px;
+    color: var(--ink);
+    background: var(--band);
+    border: 1px solid var(--accent-ink);
+    border-radius: 0;
     padding: 3px 8px;
     max-width: 40ch;
     overflow: hidden;
@@ -667,7 +665,7 @@
     display: flex;
     flex-direction: column;
     gap: 22px;
-    background: var(--grim-paper);
+    background: var(--sheet);
   }
 
   /* ── session constellation panel ───────────────────────────────
@@ -680,8 +678,8 @@
     flex-direction: column;
     gap: 10px;
     padding: 16px 14px;
-    border-left: 1px solid var(--grim-line);
-    background: var(--grim-paper);
+    border-left: 1px solid var(--stroke);
+    background: var(--sheet);
     overflow: hidden;
     animation: constel-in 0.45s cubic-bezier(0.22, 1, 0.36, 1);
   }
@@ -700,11 +698,11 @@
     }
   }
   .constellation-cap {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 9.5px;
     font-weight: 700;
     letter-spacing: 0.13em;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
   .constellation :global(.mini-stage) {
     flex: 1;
@@ -732,18 +730,18 @@
     align-items: flex-start;
   }
   .eyebrow {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 11px;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-weight: 600;
     margin: 0;
   }
   .chat-gate-copy {
     font-size: 13px;
     line-height: 1.6;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     max-width: 54ch;
   }
 
@@ -764,11 +762,7 @@
     max-width: 18ch;
   }
   .empty-hl {
-    background: linear-gradient(
-      transparent 8%,
-      var(--grim-accent-soft) 8% 92%,
-      transparent 92%
-    );
+    background: var(--band);
     padding: 0 6px;
     -webkit-box-decoration-break: clone;
     box-decoration-break: clone;
@@ -776,7 +770,7 @@
   .empty-sub {
     font-size: 13px;
     line-height: 1.65;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     max-width: 58ch;
   }
   .chat-examples {
@@ -786,22 +780,22 @@
     margin-top: 2px;
   }
   .chat-example {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 12px;
     font-weight: 600;
     padding: 10px 14px;
-    border: 1px solid var(--grim-line);
-    border-radius: 6px;
-    background: var(--grim-surface);
-    color: var(--grim-ink);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
+    color: var(--ink);
     cursor: pointer;
     transition:
       background 120ms ease,
       border-color 120ms ease;
   }
   .chat-example:hover {
-    background: var(--grim-accent-soft);
-    border-color: var(--grim-accent);
+    background: var(--band);
+    border-color: var(--accent-ink);
   }
 
   /* ── turns ──────────────────────────────────────────────────── */
@@ -815,9 +809,9 @@
     justify-content: flex-end;
   }
   .user-bubble {
-    background: var(--grim-accent-soft);
-    border: 1px solid var(--grim-accent);
-    border-radius: 12px;
+    background: var(--band);
+    border: 1px solid var(--accent-ink);
+    border-radius: 0;
     padding: 11px 14px;
     font-size: 13px;
     line-height: 1.55;
@@ -831,13 +825,13 @@
   }
   .bot-label {
     display: inline-block;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.14em;
-    color: var(--grim-on-accent);
-    background: var(--grim-accent);
-    border-radius: 4px;
+    color: var(--sheet);
+    background: var(--accent-ink);
+    border-radius: 0;
     padding: 2px 8px;
     margin: 0 0 9px;
   }
@@ -845,10 +839,10 @@
      ANSWER text has real contrast, while the GROUNDED IN row (inside, as a
      muted footer) recedes instead of competing with it. */
   .turn-card {
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 12px;
-    box-shadow: 0 1px 2px rgba(20, 24, 32, 0.05);
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+
     padding: 16px 18px;
   }
   .turn-md {
@@ -863,7 +857,7 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     max-width: 100%;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   .turn-md :global(p) {
     margin: 0 0 9px;
@@ -885,16 +879,16 @@
     margin-bottom: 3px;
   }
   .turn-md :global(code) {
-    background: var(--grim-surface-2);
+    background: var(--band);
     padding: 1px 5px;
-    border: 1px solid var(--grim-line);
-    border-radius: 3px;
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     font-size: 12px;
   }
   .turn-md :global(pre) {
-    background: var(--grim-surface-2);
-    border: 1px solid var(--grim-line);
-    border-radius: 6px;
+    background: var(--band);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 10px 12px;
     margin: 9px 0;
     overflow-x: auto;
@@ -912,8 +906,8 @@
   .turn-md :global(blockquote) {
     margin: 9px 0;
     padding: 6px 12px;
-    border-left: 2px solid var(--grim-accent);
-    background: var(--grim-surface-2);
+    border-left: 1px solid var(--accent-ink);
+    background: var(--band);
   }
   .turn-md :global(table) {
     border-collapse: collapse;
@@ -923,16 +917,16 @@
   }
   .turn-md :global(th),
   .turn-md :global(td) {
-    border: 1px solid var(--grim-line);
+    border: 1px solid var(--stroke);
     padding: 4px 8px;
     text-align: left;
   }
   .turn-md :global(th) {
-    background: var(--grim-surface-2);
+    background: var(--band);
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 0.06em;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   /* Grounded entity mentions (highlightMentions): a visible, clickable link
      to the entity's World page. The color rides in via the inline
@@ -944,7 +938,7 @@
     text-decoration: underline;
     text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
-    border-radius: 4px;
+    border-radius: 0;
     padding: 0.5px 4px;
     margin: 0 -1px;
     background: color-mix(in srgb, currentColor 12%, transparent);
@@ -961,7 +955,7 @@
     height: 1.05em;
     margin-left: 2px;
     vertical-align: text-bottom;
-    background: var(--grim-ink);
+    background: var(--ink);
     animation: caret-blink 900ms steps(2, start) infinite;
   }
   @keyframes caret-blink {
@@ -974,17 +968,17 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 12px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     padding-left: 14px;
-    border-left: 2px solid var(--grim-line);
+    border-left: 1px solid var(--stroke);
   }
   .turn-thinking .dot {
     width: 5px;
     height: 5px;
-    border-radius: 999px;
-    background: var(--grim-text-faint);
+    border-radius: 0;
+    background: var(--ink-2);
     display: inline-block;
     animation: dot-pulse 1s ease-in-out infinite;
   }
@@ -1019,26 +1013,26 @@
     gap: 7px;
     margin-top: 14px;
     padding-top: 10px;
-    border-top: 1px dashed var(--grim-line);
+    border-top: 1px dashed var(--stroke);
   }
   .turn-touched-label {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.14em;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
   .touched-chip {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 11px;
     padding: 3px 9px;
-    border-radius: 999px;
-    border: 1px solid var(--grim-line);
-    background: var(--grim-surface-2);
-    color: var(--grim-text-dim);
+    border-radius: 0;
+    border: 1px solid var(--stroke);
+    background: var(--band);
+    color: var(--ink-2);
     text-decoration: none;
     max-width: 100%;
     overflow: hidden;
@@ -1052,31 +1046,31 @@
   }
   .touched-chip:hover,
   .touched-chip:focus-visible {
-    background: var(--grim-accent-soft);
-    border-color: var(--grim-accent);
-    color: var(--grim-ink);
+    background: var(--band);
+    border-color: var(--accent-ink);
+    color: var(--ink);
   }
   /* Entity chips: a small dot tinted with the entity's type color, same
      currentColor-driven idea as .gmark above but a solid dot instead of a
      pill background, since this row wants to stay quiet. */
   .touched-chip-entity {
-    color: var(--chip-color, var(--grim-text-dim));
+    color: var(--chip-color, var(--ink-2));
   }
   .touched-chip-entity::before {
     content: "";
     width: 6px;
     height: 6px;
-    border-radius: 999px;
+    border-radius: 0;
     background: var(--chip-color, currentColor);
     flex-shrink: 0;
   }
   .touched-chip-entity:hover,
   .touched-chip-entity:focus-visible {
-    color: var(--chip-color, var(--grim-ink));
-    border-color: var(--chip-color, var(--grim-accent));
+    color: var(--chip-color, var(--ink));
+    border-color: var(--chip-color, var(--accent-ink));
     background: color-mix(
       in srgb,
-      var(--chip-color, var(--grim-accent)) 12%,
+      var(--chip-color, var(--accent-ink)) 12%,
       transparent
     );
   }
@@ -1087,27 +1081,27 @@
     align-items: center;
     gap: 10px;
     padding: 10px 18px;
-    border-top: 1px solid var(--grim-line);
+    border-top: 1px solid var(--stroke);
     background: color-mix(in srgb, var(--grim-type-creature) 12%, transparent);
     font-size: 12px;
   }
   .chat-notice.busy {
-    background: var(--grim-accent-soft);
+    background: var(--band);
   }
   .chat-notice-text {
     flex: 1;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
   .chat-notice-retry {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.08em;
     padding: 5px 10px;
-    border: 1px solid var(--grim-line);
-    border-radius: 6px;
-    background: var(--grim-surface);
-    color: var(--grim-ink);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
+    color: var(--ink);
     cursor: pointer;
   }
 
@@ -1117,8 +1111,8 @@
     gap: 10px;
     align-items: flex-end;
     padding: 14px 18px;
-    border-top: 1px solid var(--grim-line);
-    background: var(--grim-surface);
+    border-top: 1px solid var(--stroke);
+    background: var(--sheet);
   }
   .chat-input textarea {
     flex: 1;
@@ -1129,16 +1123,16 @@
     font-size: 13px;
     line-height: 1.5;
     padding: 12px 13px;
-    border: 1px solid var(--grim-line);
-    border-radius: 8px;
-    background: var(--grim-paper);
-    color: var(--grim-ink);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+    background: var(--sheet);
+    color: var(--ink);
     transition: border-color 120ms ease;
   }
   .chat-input textarea:focus,
   .chat-input textarea:focus-visible {
     outline: none;
-    border-color: var(--grim-accent);
+    border-color: var(--accent-ink);
   }
   .chat-input textarea:disabled {
     opacity: 0.6;
@@ -1150,9 +1144,9 @@
     gap: 6px;
   }
   .chat-count {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 9px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     letter-spacing: 0.04em;
   }
   .chat-count.warn {
@@ -1160,16 +1154,16 @@
     font-weight: 700;
   }
   .chat-send {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.08em;
     min-height: 46px;
     padding: 0 22px;
     border: none;
-    border-radius: 8px;
-    background: var(--grim-accent);
-    color: var(--grim-on-accent);
+    border-radius: 0;
+    background: var(--accent-ink);
+    color: var(--sheet);
     cursor: pointer;
     transition:
       filter 120ms ease,

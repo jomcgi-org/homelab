@@ -1,0 +1,132 @@
+/* Public-only Grimoire roles. The friends/private legacy theme stays intact.
+ * Entity meanings reuse the sheet's contrast-tested figure tones in both
+ * schemes. These aliases also serve safe, dynamic entity-type references. */
+.grimoire-sheet {
+  --grim-type-location: var(--tone-ram);
+  --grim-type-creature: var(--tone-disk);
+  --grim-type-npc: var(--warn);
+  --grim-type-faction: var(--tone-hot);
+  --grim-type-org: var(--tone-hot);
+  --grim-type-deity: var(--warn);
+  --grim-type-item: var(--tone-hot);
+  --grim-type-spell: var(--tone-gpu);
+  --grim-type-event: var(--warn);
+  --grim-type-quest: var(--tone-cache);
+  --grim-type-class: var(--ink-2);
+  --grim-type-condition: var(--ink-2);
+  --grim-type-feat: var(--ink-2);
+  --grim-type-race: var(--ink-2);
+  --grim-type-background: var(--ink-2);
+  --grim-type-subclass: var(--ink-2);
+  --grim-type-class_feature: var(--ink-2);
+  --grim-type-action: var(--ink-2);
+  --grim-type-rule: var(--ink-2);
+  --grim-type-table: var(--ink-2);
+  --grim-cover-1: var(--band);
+  --grim-cover-2: var(--band);
+  --grim-cover-3: var(--band);
+  --grim-cover-4: var(--band);
+  --grim-cover-5: var(--band);
+  --grim-cover-6: var(--band);
+  --mono: var(--font-code);
+}
+.grimoire-sheet .grim-title {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.grimoire-sheet .grim-smallcaps {
+  font-family: var(--font-code);
+  font-size: 0.75rem;
+}
+.grimoire-sheet .grim-rule {
+  height: 0;
+  border: 0;
+  border-top: 1px solid var(--stroke);
+  margin: 0.75rem 0;
+}
+.grimoire-sheet .grim-paper {
+  background: var(--sheet);
+  color: var(--ink);
+}
+.grimoire-sheet :is(.wrap, .wrap-narrow) {
+  width: 100%;
+  max-width: 54em;
+  margin-inline: auto;
+}
+.grimoire-sheet :is(h1, h2, h3, p, ul) {
+  margin-block-start: 0;
+}
+.grimoire-sheet :is(h1, h2, h3) {
+  font-size: 1.35rem;
+}
+.grimoire-sheet :is(button, input, textarea, select) {
+  font-family: var(--font-ui);
+  border-radius: 0;
+}
+.grimoire-sheet :is(a, button) {
+  text-underline-offset: 0.2em;
+}
+.grimoire-sheet :is(.detail-page, .library-page, .locked-notice) {
+  padding: 1.2rem;
+}
+.grimoire-sheet :is(.detail-page, .locked-notice, .chat-box) {
+  border: 1px solid var(--ink);
+}
+.grimoire-sheet :is(.status-error, .empty) {
+  padding: 1rem;
+  color: var(--ink-2);
+}
+.grimoire-sheet :is(.content, .page-turn, .reader-layout, .chat-layout) {
+  min-width: 0;
+}
+.grimoire-sheet
+  :is(.rel-name, .source-preview, .adventure-summary, .msg-content) {
+  overflow-wrap: anywhere;
+}
+.grimoire-sheet .skeleton-block {
+  min-height: 5rem;
+  border: 1px solid var(--stroke);
+  background: var(--band);
+}
+/* The scroll story uses viewport coordinates. Keep its full-width stage
+ * outside the journal measure while the navigation and prose stay on it. */
+.grimoire-sheet.immersive {
+  padding-inline: 0;
+}
+.grimoire-sheet.immersive > .frame {
+  padding-inline: 1rem;
+}
+.grimoire-sheet.immersive .spine {
+  position: static;
+  max-height: none;
+}
+.grimoire-sheet.immersive .index-list {
+  display: flex;
+  flex-wrap: wrap;
+}
+.grimoire-sheet.immersive .index-list a {
+  border-left: 0;
+  border-bottom: 1px solid var(--stroke);
+  padding: 0.5rem 1rem;
+}
+@media (max-width: 760px) {
+  .grimoire-sheet .spine {
+    display: block;
+    position: static;
+    max-height: none;
+  }
+  .grimoire-sheet .index-list {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .grimoire-sheet .index-list a {
+    padding: 0.5rem 0.75rem;
+    border-left: 0;
+    border-bottom: 1px solid var(--stroke);
+  }
+  .grimoire-sheet :is(.detail-page, .library-page, .locked-notice) {
+    padding: 1rem;
+  }
+}

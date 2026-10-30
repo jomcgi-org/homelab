@@ -201,17 +201,17 @@
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    background: var(--grim-surface);
-    color: var(--grim-ink);
-    border: 1px solid var(--grim-line);
-    border-radius: 999px;
+    background: var(--sheet);
+    color: var(--ink);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     cursor: pointer;
   }
 
   .pub-chapters-btn:hover,
   .pub-chapters-btn--open {
-    color: var(--grim-accent);
-    border-color: var(--grim-accent);
+    color: var(--accent-ink);
+    border-color: var(--accent-ink);
   }
 
   /* Self-contained dropdown, positioned relative to .pub-chapters (this
@@ -228,10 +228,10 @@
     width: min(320px, calc(100vw - 40px));
     max-height: 60vh;
     overflow-y: auto;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 10px;
-    box-shadow: 0 8px 24px rgba(20, 24, 32, 0.14);
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
+
     /* Base reading face for nested rows; top-level rows opt into the serif
      * display face below. */
     font-family: var(--sans);
@@ -248,7 +248,7 @@
     background: transparent;
     border: 0;
     border-radius: 0;
-    box-shadow: none;
+
     margin-top: 0;
   }
 
@@ -267,8 +267,8 @@
     gap: 12px;
     min-height: 36px;
     padding: 7px 14px;
-    border-left: 2px solid transparent;
-    color: var(--grim-text-dim);
+    border-left: 1px solid transparent;
+    color: var(--ink-2);
   }
 
   .pub-chapters--sidebar .pub-chapters-row {
@@ -281,23 +281,23 @@
   }
 
   .pub-chapters-row:hover {
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .pub-chapters-row--h1 {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-weight: 600;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .pub-chapters-row--active {
-    border-left-color: var(--grim-accent);
-    color: var(--grim-accent);
+    border-left-color: var(--accent-ink);
+    color: var(--accent-ink);
     font-weight: 600;
   }
 
   .pub-chapters--dropdown .pub-chapters-row--active {
-    background: var(--grim-accent-soft);
+    background: var(--band);
   }
 
   .pub-chapters-row-title {
@@ -323,10 +323,10 @@
     padding: 7px 14px;
     background: none;
     border: 0;
-    border-left: 2px solid transparent;
+    border-left: 1px solid transparent;
     font: inherit;
     text-align: left;
-    color: var(--grim-ink);
+    color: var(--ink);
     cursor: pointer;
   }
 
@@ -336,11 +336,11 @@
   }
 
   .pub-chapters-chapter:hover {
-    color: var(--grim-accent);
+    color: var(--accent-ink);
   }
 
   .pub-chapters-chapter .pub-chapters-row-title {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-weight: 600;
     font-size: 12.5px;
   }
@@ -348,7 +348,7 @@
   .pub-chapters-chevron {
     flex-shrink: 0;
     align-self: center;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     transform: rotate(0deg);
     transition: transform 140ms ease;
   }
@@ -366,7 +366,7 @@
   .pub-chapters-status {
     padding: 14px;
     font-size: 11px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   .pub-chapters--sidebar .pub-chapters-status {

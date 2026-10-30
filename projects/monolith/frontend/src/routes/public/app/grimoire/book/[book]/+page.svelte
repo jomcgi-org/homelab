@@ -112,14 +112,14 @@
   }
 
   .locked-body {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 15px;
     line-height: 1.65;
     margin: 0 0 14px;
   }
 
   .locked-body a {
-    color: var(--grim-accent);
+    color: var(--accent-ink);
     text-decoration: none;
   }
 
@@ -135,7 +135,7 @@
     font-size: 11px;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-weight: 600;
     margin: 0;
   }
@@ -158,17 +158,17 @@
     padding: 16px 20px;
     text-decoration: none;
     color: inherit;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line-soft);
-    border-radius: 8px;
+    background: var(--sheet);
+    border: 1px solid var(--line);
+    border-radius: 0;
     transition:
       background 0.12s,
       border-color 0.12s;
   }
 
   .adventure-row:hover {
-    background: var(--grim-surface-2);
-    border-color: var(--grim-line);
+    background: var(--band);
+    border-color: var(--stroke);
   }
 
   .adventure-main {
@@ -182,23 +182,23 @@
     font-size: 20px;
     /* Explicit color: the row is color:inherit, so without this the title
        renders dark-on-dark in dark mode. */
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .adventure-level {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 12px;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .adventure-summary {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 13px;
   }
 
   .adventure-count {
-    font-family: var(--font-mono);
-    color: var(--grim-text-dim);
+    font-family: var(--font-code);
+    color: var(--ink-2);
     font-size: 11px;
   }
 </style>

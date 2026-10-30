@@ -51,7 +51,7 @@
   }
 </script>
 
-<div class="wrap-narrow detail-page page">
+<div class="wrap-narrow detail-page page edition">
   {#if loading}
     <div class="skeleton-block"></div>
   {:else if notFound}
@@ -64,6 +64,7 @@
       Could not load this right now. Try again in a moment.
     </p>
   {:else if entity}
+    <h1 class="sr-only">{entity.name}</h1>
     <EntityDetail {entity} />
 
     {#if relationships.length}
@@ -115,7 +116,7 @@
     font-size: 11px;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-weight: 600;
     margin: 0;
   }
@@ -139,13 +140,13 @@
   }
 
   .arrow {
-    font-family: var(--font-mono);
-    color: var(--grim-text-faint);
+    font-family: var(--font-code);
+    color: var(--ink-2);
   }
 
   .rel-type {
-    font-family: var(--font-mono);
-    color: var(--grim-text-faint);
+    font-family: var(--font-code);
+    color: var(--ink-2);
     font-size: 12px;
   }
 
@@ -155,7 +156,7 @@
   }
 
   .rel-name:hover {
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .source {
@@ -166,21 +167,21 @@
     min-height: 44px;
     text-decoration: none;
     color: inherit;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line-soft);
-    border-radius: 8px;
+    background: var(--sheet);
+    border: 1px solid var(--line);
+    border-radius: 0;
     transition:
       background 0.12s,
       border-color 0.12s;
   }
 
   .source:hover {
-    background: var(--grim-surface-2);
-    border-color: var(--grim-line);
+    background: var(--band);
+    border-color: var(--stroke);
   }
 
   .source-where {
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   .source-preview {
@@ -189,7 +190,7 @@
     line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .empty {
@@ -203,24 +204,19 @@
   }
 
   .empty-help {
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   .status-error {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     color: var(--grim-type-creature);
     padding: 32px 0;
   }
 
   .skeleton-block {
     height: 320px;
-    border-radius: 7px;
-    background: linear-gradient(
-      90deg,
-      var(--grim-surface-2) 25%,
-      transparent 37%,
-      var(--grim-surface-2) 63%
-    );
+    border-radius: 0;
+    background: var(--band);
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;
   }

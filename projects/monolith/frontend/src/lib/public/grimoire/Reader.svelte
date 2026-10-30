@@ -343,7 +343,7 @@
   });
 </script>
 
-<div class="pub-reader">
+<div class="pub-reader edition">
   <!-- Reading-progress bar: fixed under the app topbar (58px, see
        +layout.svelte's `.topbar`). scaleX only -- never width -- so a scroll
        storm is pure compositor work, no reflow. Hidden entirely when the
@@ -493,9 +493,10 @@
 
 <style>
   .pub-reader {
+    container-type: inline-size;
     min-height: 60vh;
-    background: var(--grim-paper);
-    color: var(--grim-ink);
+    background: var(--sheet);
+    color: var(--ink);
   }
 
   /* Reading-progress bar: fixed directly under the app topbar (58px, see
@@ -509,7 +510,7 @@
     right: 0;
     z-index: 6;
     height: 2px;
-    background: var(--grim-line-soft);
+    background: var(--line);
     opacity: 0;
     transition: opacity 160ms ease;
     pointer-events: none;
@@ -522,7 +523,7 @@
   .pub-progress-fill {
     height: 100%;
     width: 100%;
-    background: var(--grim-accent);
+    background: var(--accent-ink);
     transform: scaleX(0);
     transform-origin: left center;
   }
@@ -533,9 +534,8 @@
     }
   }
 
-  /* Floating mobile-only Chapters affordance. The sidebar below is hidden
-     under 900px, so this is the only way to jump sections on a phone (the
-     old sticky sub-nav bar that used to host it is gone). */
+  /* Collapse chapters against the reader's available width, including the
+     outer sheet spine, rather than the viewport width. */
   .pub-mobile-chapters {
     display: none;
   }
@@ -557,17 +557,17 @@
     top: 76px;
     max-height: calc(100vh - 116px);
     overflow-y: auto;
-    border-right: 1px solid var(--grim-line-soft);
+    border-right: 1px solid var(--line);
     padding-right: 20px;
   }
 
   .pub-toc-label {
     margin: 0 0 14px;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-weight: 700;
     font-size: 15px;
     line-height: 1.25;
-    color: var(--grim-ink);
+    color: var(--ink);
     overflow-wrap: break-word;
   }
 
@@ -580,7 +580,7 @@
     margin: 28px 0;
     height: 1px;
     border: 0;
-    background: var(--grim-line);
+    background: var(--stroke);
   }
 
   .pub-heading {
@@ -597,26 +597,26 @@
     margin: 0 0 6px;
     font-size: 13px;
     font-weight: 700;
-    color: var(--grim-accent);
+    color: var(--accent-ink);
   }
 
   .pub-section-title {
     margin: 0;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 30px;
     font-weight: 600;
     letter-spacing: -0.01em;
     line-height: 1.15;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .pub-chunk {
     position: relative;
     max-width: 72ch;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 17px;
     line-height: 1.66;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .pub-chunk p {
@@ -625,10 +625,10 @@
 
   .pub-inline-heading {
     margin: 26px 0 8px;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 18px;
     font-weight: 600;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .pub-inline-heading:first-child {
@@ -656,7 +656,7 @@
     text-decoration: underline;
     text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
-    border-radius: 4px;
+    border-radius: 0;
     padding: 0.5px 4px;
     margin: 0 -1px;
     background: color-mix(in srgb, currentColor 12%, transparent);
@@ -673,7 +673,7 @@
     left: -28px;
     top: 3px;
     font-size: 13px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     text-decoration: none;
     opacity: 0;
     transition: opacity 120ms ease;
@@ -685,7 +685,7 @@
   }
 
   .pub-anchor:hover {
-    color: var(--grim-accent);
+    color: var(--accent-ink);
   }
 
   .pub-figure {
@@ -703,16 +703,16 @@
     height: auto;
     max-height: 70vh;
     object-fit: contain;
-    border: 1px solid var(--grim-line);
-    border-radius: 10px;
+    border: 1px solid var(--stroke);
+    border-radius: 0;
   }
 
   .pub-caption {
     margin-top: 10px;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-style: italic;
     font-size: 14px;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     text-align: center;
   }
 
@@ -727,7 +727,7 @@
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   /* License attribution required by CC BY 4.0 / ORC for the open books that
@@ -738,7 +738,7 @@
     font-size: 11.5px;
     line-height: 1.5;
     text-align: center;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   .pub-retry {
@@ -748,19 +748,19 @@
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    background: var(--grim-surface);
-    color: var(--grim-ink);
-    border: 1px solid var(--grim-line);
-    border-radius: 9px;
+    background: var(--sheet);
+    color: var(--ink);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     cursor: pointer;
   }
 
   .pub-retry:hover {
-    color: var(--grim-accent);
-    border-color: var(--grim-accent);
+    color: var(--accent-ink);
+    border-color: var(--accent-ink);
   }
 
-  @media (max-width: 900px) {
+  @container (max-width: 58rem) {
     .pub-layout {
       grid-template-columns: minmax(0, 72ch);
       padding-top: 20px;
