@@ -661,7 +661,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         )
 
         # Autonomous receipts may have waited in the queue across sweeps.
-        # Reorder only equal lane/rank autonomous work by issue age. Each
+        # Reorder only equal repo/lane/rank autonomous work by issue age. Each
         # group's original queue position and operator FIFO remain unchanged.
         natural = FactoryReceipt.actor == INTAKE_ACTOR
         issue_age = (
@@ -697,6 +697,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         queue_position = func.min(FactoryReceipt.created_at).over(
             partition_by=(
                 case((natural, 0), else_=FactoryReceipt.id),
+                FactoryReceipt.repo,
                 lane_rank,
                 rank,
             )

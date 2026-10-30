@@ -166,6 +166,68 @@ def test_autonomous_receipt_queue_preserves_issue_age_and_ties(
         )
 
 
+def test_full_repo_autonomous_queue_cannot_overtake_operator_receipts(
+    db, policy, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "3")
+    policy.update(
+        max_tasks={"delivery": 3, "advisory": 0},
+        intake={"enabled": True},
+        repos={
+            "owner/repo": {"max_tasks": {"delivery": 1, "advisory": 0}},
+            "owner/other": {
+                "enabled": True,
+                "max_tasks": {"delivery": 1, "advisory": 0},
+            },
+        },
+    )
+    enable(policy)
+    issue(1, repo="owner/other")
+    occupied = admit_next("test")
+    assert occupied["ok"], occupied
+
+    queued = []
+    for repo, number, actor in (
+        ("owner/other", 3, INTAKE_ACTOR),
+        ("owner/repo", 1, "operator"),
+        ("owner/repo", 2, "operator"),
+        ("owner/repo", 3, INTAKE_ACTOR),
+    ):
+        snapshot = github_issue(number)
+        snapshot["html_url"] = f"https://github.com/{repo}/issues/{number}"
+        received = receive_issue(
+            repo,
+            number,
+            snapshot["title"],
+            "body",
+            snapshot["html_url"],
+            actor,
+            issue=snapshot,
+        )
+        queued.append(received["receipt"]["id"])
+    with Session(db) as session:
+        for offset, receipt_id in enumerate(queued):
+            session.get(FactoryReceipt, receipt_id).created_at = datetime(
+                2026, 1, 1, tzinfo=UTC
+            ) + timedelta(minutes=offset)
+        session.commit()
+
+    # The oldest autonomous receipt cannot run while its repo is full. It
+    # must not lend that queue position to newer work in the other repo.
+    for receipt_id in queued[1:]:
+        admitted = admit_next("test")
+        assert admitted["ok"], admitted
+        assert admitted["receipt_id"] == receipt_id
+        with Session(db) as session:
+            assert session.get(FactoryReceipt, queued[0]).state == "queued"
+            assert (
+                session.get(FactoryReceipt, occupied["receipt_id"]).state == "admitted"
+            )
+        assert controls.finish_task(admitted["task_id"], "succeeded", "test")["ok"]
+
+
 @pytest.mark.parametrize("identity", ["canonical", "alias", "legacy"])
 @pytest.mark.parametrize("history", ["cancelled", "held", "failed_refinement"])
 def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_others(
