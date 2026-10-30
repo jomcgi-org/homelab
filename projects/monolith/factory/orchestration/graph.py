@@ -1363,7 +1363,20 @@ def admit_dispatch(
             or len(dispatch_key) > 256
         ):
             return refuse("invalid_dispatch_key")
-        if not isinstance(context, dict) or set(context) - _CONTEXT_FIELDS:
+        context_fields = _CONTEXT_FIELDS
+        if isinstance(context, dict) and "read_only" in context:
+            from factory.orchestration import factory_merged_delivery
+
+            # Stage only the merged-head recovery caller. Existing scout,
+            # refill and browser contexts retain their pre-handoff refusal.
+            if (
+                not factory_merged_delivery.enabled()
+                or factory_merged_delivery.review_target(node_key) is None
+                or context["read_only"] is not True
+            ):
+                return refuse("invalid_execution_context")
+            context_fields = context_fields | {"read_only"}
+        if not isinstance(context, dict) or set(context) - context_fields:
             return refuse("invalid_execution_context")
         try:
             context = json.loads(dumps(context))
@@ -1382,7 +1395,7 @@ def admit_dispatch(
                     or {
                         key: value
                         for key, value in pin.items()
-                        if key in _CONTEXT_FIELDS
+                        if key in context_fields
                     }
                     != context
                 ):

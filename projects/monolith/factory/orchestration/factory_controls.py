@@ -46,13 +46,14 @@ _ACTIVE = ("admitted", "uncertain")
 _UNRESOLVED_STARTS = ("reserved", "uncertain")
 _TERMINAL = ("succeeded", "failed", "cancelled")
 # A receipt whose task asked a person for a decision and left the lane to wait
-# for it. It holds no slot, starts nothing and keeps its graph, and it leaves
-# this state only when an operator decides: a re-admission returns it to
-# queued, every other answer settles it cancelled.
+# for it. It holds no slot and keeps its graph. An operator re-admission returns
+# it to queued; other answers settle it cancelled. The default-off
+# FACTORY_MERGED_VERIFY_HANDOFF_ENABLED route can instead reactivate the same
+# task for an owned merged-head review, only without an open human decision.
 ESCALATED = "escalated"
 # Every state a reconciler treats as finished. An escalated receipt is not
-# terminal, because a decision can still return it to the lane, but nothing
-# the server does on its own will move it either.
+# terminal: an operator decision or the gated merged-review exception above
+# can return it to the lane.
 _SETTLED = (*_TERMINAL, ESCALATED)
 GENERATION_RECONCILIATION_LIMIT = 50
 GENERATION_RETIREMENT_ACTOR = "factory:generation-retirement"
@@ -4035,6 +4036,11 @@ def _can_start(
     db: Session, control: FactoryControl, task_id: str, start_key: str | None = None
 ) -> dict:
     row = _receipt(db, task_id)
+    if start_key is not None:
+        from factory.orchestration.factory_merged_delivery import dispatch_authorized
+
+        if not dispatch_authorized(db, control, row, task_id, start_key):
+            return {"ok": False, "reason": "merged_verification_fenced"}
     if review_recovery_held(task_id, session=db):
         return {"ok": False, "reason": "review_only_recovery"}
     reason = None
@@ -4869,9 +4875,10 @@ def finish_task(
             db.add(task)
         if outcome in _SETTLED:
             # An escalated task is settled the same way a terminal one is.
-            # Nothing the server does on its own runs another node on it, and
-            # a decision that re-admits the work mints a new task rather than
-            # waking this one.
+            # An operator re-admission mints a new task. The default-off
+            # FACTORY_MERGED_VERIFY_HANDOFF_ENABLED exception may reactivate
+            # this task for owned merged-head review within its original
+            # deadline and bounds, with no open human decision or other hold.
             task = db.get(SwarmTask, task_id)
             task.settled_at = _now()
             task.start_state = outcome

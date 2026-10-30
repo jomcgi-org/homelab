@@ -2761,6 +2761,14 @@ def verify_delivery(
         raise IndependentReviewMissing(
             "independent exact-head review evidence is missing"
         )
+    if merged:
+        from factory.orchestration import factory_merged_delivery
+
+        if (
+            factory_merged_delivery.enabled()
+            and not factory_merged_delivery.authenticated_review(task["id"], review)
+        ):
+            raise IndependentReviewMissing("review execution provenance is missing")
     dependency_prs.verify(task, pr, runs)
     checks = github_get(task["repo"], f"commits/{head}/status")
     if not _required_checks_passed(checks):
@@ -7794,7 +7802,13 @@ def _dispatch_ready(
     limit = min(solo + extra, budget)
     if limit <= 0:
         return False
-    hydration = hydration_branch(task)
+    from factory.orchestration import factory_merged_delivery
+
+    hydration = (
+        task["base_branch"]
+        if all(factory_merged_delivery.review_target(n["node_key"]) for n in ready)
+        else hydration_branch(task)
+    )
     task_id = task["id"]
     # The wave decides which source-writing nodes may start and in what order,
     # so it leads the queue. Everything else keeps its graph order behind it.
@@ -7837,6 +7851,11 @@ def _dispatch_ready(
         )
         if branch is None:
             continue
+        merged_target = factory_merged_delivery.review_target(node_key)
+        if merged_target is not None:
+            # The merged branch may have been deleted or moved. Checkout the
+            # immutable PR head and never enter source-writing correction.
+            branch = merged_target[1]
         reviewer = None
         if node_key.startswith("review_") and policy is not None:
             may_run, reviewer = _reviewer_override(task_id, policy, node)
@@ -7867,7 +7886,9 @@ def _dispatch_ready(
                 and not node_key.startswith("conductor_")
                 else _schema(node_key)
             ),
-            "hydration_branch": branch_hydration(task, branch, hydration),
+            "hydration_branch": merged_target[1]
+            if merged_target is not None
+            else branch_hydration(task, branch, hydration),
             "retry_context": json.dumps(
                 [r for r in runs if r["node_key"] == node_key], default=str
             )[-MAX_RETRY_CONTEXT_CHARS:],
@@ -7896,6 +7917,22 @@ def _dispatch_ready(
         if scouting:
             context["read_only"] = True
             reviewer = "sol"  # Exact subscription model; no quota/provider fallback.
+        if merged_target is not None:
+            number, head = merged_target
+            context["read_only"] = True
+            context["hydration_branch"] = head
+            context["artifact_schema"] = json.loads(
+                json.dumps(context["artifact_schema"])
+            )
+            context["artifact_schema"]["x-factory-merged-read-only"] = True
+            context["artifact_schema"]["properties"]["pr_number"] = {"const": number}
+            context["artifact_schema"]["properties"]["head_sha"] = {"const": head}
+            context["closing_instruction"] = (
+                "Read-only verification of an already merged PR. Do not modify source, "
+                "commit, push, merge, deploy or close issues. Report findings against "
+                "the immutable head even when changes are required. Outstanding live "
+                "acceptance remains outstanding."
+            )
         if refilling:
             context["read_only"] = True
             reviewer = node["model"]  # Pin the granted refill model, no fallback.

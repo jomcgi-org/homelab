@@ -617,10 +617,48 @@ those receipts with merging disabled too. Observed merges must match the owned
 repository, base, branch and approved head. They do not authorize a new merge.
 For an active task whose owned PR merged elsewhere, existing invocations drain
 through normal accounting before exact-head review and CI verification. Approved
-work enters landing even with auto-merge off; missing or rejected review escalates
-without another planner or funding grant. Paused and explicitly held receipts
-remain fenced. Infrastructure rollout and outstanding functional acceptance are
-separate from repository merge observation, including externally closed issues.
+work enters landing even with auto-merge off. With
+`FACTORY_MERGED_VERIFY_HANDOFF_ENABLED` absent or false, missing or rejected review
+retains the existing escalation behavior. The staged route defaults off and has
+no chart enablement in this delivery.
+
+When enabled, the conductor appends one read-only review keyed by the owned PR
+and immutable merged head. Approval reuse requires a matching successful graph
+run and start ledger, an independent server-owned session, an eligible dispatch
+model and an approving artifact for that PR/head. Session ownership authenticates
+the dispatched model; guest model claims, PR prose, merge observation and pause
+release grant no approval. The existing reviewer pool and judgment floor still
+apply, including permitted fallback. A rejected or ambiguous merged-head review
+stays visible and cannot create a source-writing correction round.
+Graph admission accepts `read_only` only for this flag-gated merged-head
+caller. Existing scout, refill, browser and dependency-review contexts retain
+their previous admission refusal; this change does not enable those callers.
+
+The existing landing owner's normal tick also scans escalated receipts with an
+owned-merge observation, using its ten-receipt observation bound and a rotating
+cursor. Each candidate gets isolated read-only discovery before locked mutation.
+A held or failing candidate cannot consume the rest of that pass. Scan failures
+also leave the rest of the landing tick reachable. Handoff
+identity and graph revision serialize competing ticks. This separate scan covers
+old review-stranded escalations absent from the settled-delivery scan. It keeps
+the same receipt and task, original history and spend, allowance envelope and
+absolute deadline. Reacquisition uses existing execution capacity. A task pause
+can retain a recorded handoff while preventing dispatch; human decisions, landing
+holds, cancellation and unresolved execution remain fences. No recovery grant,
+fresh task or deadline extension is created. This flag-gated reactivation is
+the exception to ordinary operator-directed re-admission with a new task.
+Once execution is quiescent, an expired deadline fails the task and releases
+capacity, including after a handoff or verification I/O. An allowance refusal
+retains the legacy missing-review escalation instead of holding an active slot.
+
+**Why.** The graph/review owner already reserves attempts and authenticates
+physical session creation. The merged route uses that owner with an immutable
+checkout and a read-only output contract. It bypasses ordinary correction and
+planner loops. Discovery belongs to landing, which already follows deliveries
+merged by another actor with merging disabled. Required checks, infrastructure
+rollout and outstanding functional acceptance remain separate gates, including
+when another actor closed the issue. Repository verification alone cannot close
+an issue with recorded live acceptance.
 
 Execution capacity uses one projection: admitted and uncertain receipts count
 across generations, except paused or landing-held receipts with no reserved or
@@ -3111,4 +3149,3 @@ bounded evaluation so the factory can retain useful changes and retire failed
 ones. The existing scout collects and independently reviews findings before
 ordinary issue refinement. This adds no scheduler or policy enablement, and
 does not change pinned task limits or explicit holds.
-
