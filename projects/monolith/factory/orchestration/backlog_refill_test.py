@@ -1592,3 +1592,47 @@ def test_disable_legacy_refill_keeps_unavailable_default_inert(control_world):
             api.status(db, db.get(FactoryControl, "factory"))["policy"]["enabled"]
             is False
         )
+
+
+def test_refill_control_preserves_existing_active_uncertain_and_held_receipts(
+    control_world,
+):
+    from factory.orchestration import refill_control as api
+
+    engine, policy, _ = control_world
+    with Session(engine) as db:
+        db.add_all(
+            [
+                FactoryReceipt(
+                    repo=policy["repo"],
+                    issue_number=i,
+                    actor="owner",
+                    title="existing",
+                    body="",
+                    url="",
+                    state=state,
+                    task_paused=state == "escalated",
+                    allowance_json='{"spent":4}',
+                    direction_json='{"landing_hold":true}',
+                    policy_json=dumps(policy),
+                )
+                for i, state in enumerate(
+                    ("queued", "admitted", "uncertain", "escalated"), 20
+                )
+            ]
+        )
+        db.commit()
+        before = [
+            r.model_dump()
+            for r in db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
+        ]
+    p = api.preview(True, "astra", False, 0, "enable")
+    api.apply(
+        "operator", True, "astra", False, 0, "enable", "preserve", p["preview_sha256"]
+    )
+    with Session(engine) as db:
+        after = [
+            r.model_dump()
+            for r in db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
+        ]
+        assert after == before
