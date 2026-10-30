@@ -1513,10 +1513,18 @@ async def factory_amend_policy(
     quiescence and no repeated failures. Holds and accounting remain intact.
     It cannot be combined with ordinary policy fields or renew other receipts.
 
+    A remove_models overlay containing only a nonempty list of existing model
+    names restricts one paused, quiescent receipt. It removes those names from
+    allowed_models and every explicit model pool, preserving order. Models used
+    by scalar defaults, task choices, graph pins or a pending funding review
+    cannot be removed; no pool can become empty. No other field can accompany
+    this mode. It preserves funding, holds, accounting and all deadlines,
+    including expired deadlines, and grants no execution or lease renewal.
+
     Preview first. Apply requires its digest, identical arguments and a fresh
     request key. Replay that key after a lost response. Changes in control,
-    graph or accounting invalidate the preview. Only task/turn budgets, work
-    and planner turn caps, review rounds and the task timeout can change.
+    graph or accounting invalidate the preview. Ordinary overlays can change
+    task/turn budgets, work and planner turn caps, review rounds and task timeout.
     Add landing_hold true to retain a reviewed unmerged delivery. A hold-only
     overlay can restrict a quiescent active receipt without pausing it or
     changing funding or deadlines. Other amendments require a paused task.
@@ -1528,8 +1536,8 @@ async def factory_amend_policy(
     This restriction is sticky. Further bounds require another human amendment.
     Dollar fields are recorded but never refuse work. This changes neither
     provider/global limits nor the $500/$1000 emergency limits.
-    A hold-only amendment preserves funding and the current pause state. Other
-    amendments supersede stale funding review and leave the same task paused.
+    Hold-only and remove_models amendments preserve funding and pause state.
+    Other amendments supersede stale funding review and leave the same task paused.
     Every existing node pin is unchanged. Review budget amendments before
     explicitly resuming.
     """

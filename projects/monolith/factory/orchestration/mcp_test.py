@@ -2574,6 +2574,49 @@ def test_progress_continuation_requires_standing_human_and_preview(monkeypatch):
     assert calls == []
 
 
+def test_model_restriction_requires_standing_human_and_preview(monkeypatch):
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    calls = []
+    monkeypatch.setattr(
+        amendments, "apply", lambda *a, **kw: calls.append((a, kw)) or {"ok": True}
+    )
+
+    async def invoke():
+        return await mcp.factory_amend_policy(
+            "apply",
+            927,
+            {"remove_models": ["spark"]},
+            "Restrict unused lane",
+            "request",
+            "b" * 64,
+        )
+
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(authority=Authority.ANONYMOUS, groups=()),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(principal, invoke)["ok"]
+    assert not calls
+    assert _as(_principal(), invoke)["ok"]
+    assert calls[0][0] == (927, {"remove_models": ["spark"]}, "Restrict unused lane")
+    assert calls[0][1]["actor"] == "joe"
+    calls.clear()
+
+    async def unpreviewed():
+        return await mcp.factory_amend_policy(
+            "apply", 927, {"remove_models": ["spark"]}, "Restrict unused lane"
+        )
+
+    assert (
+        _as(_principal(), unpreviewed)["reason"]
+        == "amendment_requires_preview_and_request_key"
+    )
+    assert not calls
+
+
 @pytest.mark.parametrize(
     "overlay",
     [

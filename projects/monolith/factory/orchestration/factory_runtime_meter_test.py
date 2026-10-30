@@ -4363,6 +4363,53 @@ def test_progress_refuses_non_subscription_execution_lane(
         progress.preview(**args)
 
 
+def test_model_restriction_unblocks_subscription_preview_without_renewing_expiry(
+    database, progress_recovery, monkeypatch
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding_limits as funding
+
+    args, _ = progress_recovery
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        policy = json.loads(row.policy_json)
+        policy["allowed_models"].append("spark")
+        policy["model_pools"] = {
+            role: ["astra", "spark"] for role in ("implement", "refine", "worker")
+        }
+        row.policy_json = json.dumps(policy)
+        recovery = controls.task_recovery_grant("task", session=db)
+        grant = funding.amendment(db, "task")
+    now = datetime.fromisoformat(recovery["deadline_at"]) + timedelta(minutes=1)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    with pytest.raises(progress.SubscriptionRefusal) as caught:
+        progress.preview(**args)
+    assert caught.value.diagnostics["refused_model"]["model"] == "spark"
+    assert (
+        caught.value.diagnostics["refused_model"]["state"]
+        == "unsupported_subscription_feed"
+    )
+    overlay = {"remove_models": ["spark"]}
+    proposal = amendments.preview(838, overlay, "Remove unused Spark")
+    amendments.apply(
+        838,
+        overlay,
+        "Remove unused Spark",
+        actor="operator",
+        request_key="remove-spark",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    continuation = progress.preview(**args)
+    assert "spark" not in continuation["policy"]["allowed_models"]
+    with Session(database) as db:
+        assert controls.task_recovery_grant("task", session=db) == recovery
+        assert funding.amendment(db, "task") == grant
+        assert controls._recovery_deadline(db, "task") < now
+        assert db.get(FactoryReceipt, 838).task_paused
+        assert funding.latest(db, "task", progress.LEASE) is None
+
+
 def test_progress_failed_latest_review_returns_to_normal_reconciliation(
     database, progress_recovery
 ):
