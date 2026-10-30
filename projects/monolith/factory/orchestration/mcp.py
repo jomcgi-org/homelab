@@ -343,6 +343,7 @@ def _status_payload(
         "intake": view.get("intake"),
         "lanes": view.get("lanes"),
         "review_routing": view.get("review_routing"),
+        "refill": view.get("refill"),
         "active": active,
         "queued": queued,
         "needs_operator": needs_operator,
@@ -740,6 +741,9 @@ def _operator_view(
         ]
         decisions = _decision_page(db, False, offset, limit)
         generated = _now()
+        from factory.orchestration import refill_control
+
+        refill_status = refill_control.status(db, control)
         return {
             "ok": True,
             "state": control.state,
@@ -752,6 +756,7 @@ def _operator_view(
             "control_updated_at": iso_or_str(control.updated_at),
             "admitted_count": control.admitted_count,
             "generated_at": generated,
+            "refill": refill_status,
             "intake": controls.intake_state(policy, session=db),
             "lanes": controls.lane_usage(
                 policy,
@@ -2374,6 +2379,56 @@ async def factory_reconcile_quota_probe(
             session_id,
             seq,
             permit_id,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_configure_refill(
+    operation: Literal["preview", "apply"],
+    enabled: bool,
+    model: Literal["astra", "opus"],
+    hourly: bool,
+    expected_version: Annotated[MCPInteger, Field(ge=0)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Preview or apply bounded refill and existing learning cadence as an operator.
+
+    Read factory_status, preview exact arguments and review the digest. Apply
+    with a stable request key. Changes only refill activation/model/batch size
+    and optionally the existing daily learning job to hourly. Preserves policy
+    generation, receipts, intake selections, holds, budgets and breaker history.
+    Fresh subscription evidence is mandatory on enable. In-flight refill or
+    held/uncertain learning execution refuses changes. No task is dispatched
+    by this operation. Inspect generated, eligible, admitted and executing
+    evidence separately through ordinary factory status after activation.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import refill_control
+
+    try:
+        if operation == "preview":
+            return await asyncio.to_thread(
+                refill_control.preview, enabled, model, hourly, expected_version, reason
+            )
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "refill_preview_required"}
+        return await asyncio.to_thread(
+            refill_control.apply,
+            principal.subject,
+            enabled,
+            model,
+            hourly,
+            expected_version,
             reason,
             request_key,
             expected_preview_sha256,

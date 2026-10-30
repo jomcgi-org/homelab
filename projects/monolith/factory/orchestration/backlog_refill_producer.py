@@ -290,6 +290,11 @@ def collection(run_id, value):
     ):
         raise ValueError("invalid refill prose")
     with controls._locked_session() as (db, _control):
+        start = refill.latest_event(db, "started", run_id=run_id)
+        if start is None or len(value["findings"]) > refill._detail(start)[
+            "policy"
+        ].get("max_findings", 100):
+            raise ValueError("refill collection exceeds pinned batch")
         prior = refill.latest_event(db, "collection", run_id=run_id)
         if prior is not None:
             if refill._detail(prior)["collection"] != value:

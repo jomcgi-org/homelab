@@ -2648,3 +2648,56 @@ def test_probe_reconciliation_adapter_binds_actor_and_requires_preview(monkeypat
         ),
     )["ok"]
     assert calls == [(p.subject, 6463, 1, 3339, "reason", "key", "digest")]
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_refill_control_requires_standing_operator(monkeypatch, principal):
+    from factory.orchestration import refill_control
+
+    def forbidden(*args):
+        raise AssertionError("unauthorized")
+
+    monkeypatch.setattr(refill_control, "preview", forbidden)
+    assert (
+        _as(
+            principal,
+            lambda: mcp.factory_configure_refill(
+                "preview", True, "astra", True, 0, "reason"
+            ),
+        )["error"]
+        == mcp.OPERATOR_REQUIRED
+    )
+
+
+def test_refill_adapter_binds_actor_and_requires_preview(monkeypatch):
+    from factory.orchestration import refill_control
+
+    calls = []
+    monkeypatch.setattr(
+        refill_control, "apply", lambda *args: calls.append(args) or {"ok": True}
+    )
+    p = _principal()
+    assert (
+        _as(
+            p,
+            lambda: mcp.factory_configure_refill(
+                "apply", True, "astra", True, 0, "reason"
+            ),
+        )["reason"]
+        == "refill_preview_required"
+    )
+    assert not calls
+    assert _as(
+        p,
+        lambda: mcp.factory_configure_refill(
+            "apply", True, "astra", True, 0, "reason", "key", "digest"
+        ),
+    )["ok"]
+    assert calls == [(p.subject, True, "astra", True, 0, "reason", "key", "digest")]

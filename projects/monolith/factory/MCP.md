@@ -298,3 +298,26 @@ are paused. No receipt or hold is changed. Apply leaves admissions paused. A
 separate explicit enable permits normal live eligibility and ownership checks;
 a preview does not promise that any candidate is eligible or reserve work.
 Identical request replay returns the recorded result; changed arguments conflict.
+
+### Bounded refill control
+
+`factory_status.refill` reports the effective refill/scout policy, bounded intake
+selection, producer checkpoints and the existing `factory-retro-daily` schedule.
+A schedule or enabled flag does not prove generation, eligibility, admission or
+execution; inspect those stages separately.
+
+Standing operators use `factory_configure_refill` with `operation=preview`, the
+current control version, an offered `astra` or `opus` model, `enabled` and
+`hourly`. Apply the reviewed digest with identical arguments and a stable request
+key. Replays return the original result; changed versions, policy or job state
+refuse. Enabling requires fresh subscription admission; hourly learning also
+requires Codex admission for its existing Luna/Astra stages. No paid fallback is
+added. Model aliases come from deployed availability, not an assumed version name.
+
+The control changes only the refill block and, when requested, the existing daily
+job's interval to one hour. It caps new collections at five findings, preserves
+old pinned collections and asks planning to prioritize useful blocked work without
+releasing holds. It retains intake selection, generation, receipts, budgets,
+uncertainty and breaker history. In-flight refill and held or uncertain learning
+execution refuse modification. It neither creates a scheduler nor dispatches work.
+Existing cooldowns, admission, deduplication and low-yield stopping remain in force.
